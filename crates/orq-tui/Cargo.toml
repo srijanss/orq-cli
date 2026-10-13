@@ -2,3 +2,6 @@
 name = "orq-tui"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+ratatui = "0.30"
