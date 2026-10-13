@@ -83,6 +83,9 @@ fn run_git(dir: &Path, args: &[&str]) {
         .arg("-C")
         .arg(dir)
         .args(args)
+        // Isolate from the developer's git config (signing, hooks, templates).
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .status()
         .expect("run git");
     assert!(status.success(), "git {args:?} failed");
