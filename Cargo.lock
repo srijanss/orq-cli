@@ -762,6 +762,9 @@ version = "0.1.0"
 [[package]]
 name = "orq-git"
 version = "0.1.0"
+dependencies = [
+ "orq-test-support",
+]
 
 [[package]]
 name = "orq-herdr"

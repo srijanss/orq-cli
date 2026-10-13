@@ -2,3 +2,6 @@
 name = "orq-git"
 version.workspace = true
 edition.workspace = true
+
+[dev-dependencies]
+orq-test-support = { path = "../orq-test-support" }
