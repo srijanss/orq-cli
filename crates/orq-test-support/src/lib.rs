@@ -1,3 +1,7 @@
+mod fake_agent;
+
+pub use fake_agent::{FakeAgent, FakeAgentBuilder, Run};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
