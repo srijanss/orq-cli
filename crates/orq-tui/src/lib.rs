@@ -1,6 +1,7 @@
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Everything the popup header needs, as plain data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,8 @@ fn display_width(text: &str) -> usize {
 }
 
 /// Keep the tail of `text` within `max` display columns, marking the cut with
-/// an ellipsis. The tail of a path is the part that tells repos apart.
+/// an ellipsis. The tail of a path is the part that tells repos apart. Whole
+/// grapheme clusters are kept or dropped, never split.
 fn truncate_left(text: &str, max: usize) -> String {
     if display_width(text) <= max {
         return text.to_string();
@@ -33,15 +35,15 @@ fn truncate_left(text: &str, max: usize) -> String {
         return String::new();
     }
     let mut budget = max - 1; // room for the ellipsis
-    let mut tail: Vec<char> = Vec::new();
-    for ch in text.chars().rev() {
-        let w = display_width(ch.encode_utf8(&mut [0; 4]));
+    let mut tail: Vec<&str> = Vec::new();
+    for cluster in text.graphemes(true).rev() {
+        let w = display_width(cluster);
         if w > budget {
             break;
         }
         budget -= w;
-        tail.push(ch);
+        tail.push(cluster);
     }
     tail.reverse();
-    format!("…{}", tail.into_iter().collect::<String>())
+    format!("…{}", tail.concat())
 }

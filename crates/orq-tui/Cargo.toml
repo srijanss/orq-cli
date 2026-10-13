@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 ratatui = "0.30"
+unicode-segmentation = "1"
