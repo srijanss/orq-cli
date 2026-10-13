@@ -1,6 +1,6 @@
 # SPEC.md — Orq (`orq`)
 
-**Status:** Proposed | **Version:** 0.2 | **Product:** Orq | **Command:** `orq` | **CLI crate:** `orq-cli` | **Primary language:** Rust | **Initial host:** Herdr on Debian development VM
+**Status:** Proposed | **Version:** 0.3 | **Product:** Orq | **Command:** `orq` | **CLI crate:** `orq-cli` | **Primary language:** Rust | **Initial host:** Herdr on Debian development VM
 
 ## Naming and distribution
 
@@ -11,21 +11,21 @@
 - **Other workspace crates:** `orq-core`, `orq-features`, `orq-orchestrator`, `orq-git`, `orq-agents`, `orq-storage`, `orq-herdr`, `orq-tui`, `orq-server` (introduced only when needed).
 - **Future browser UI:** **Orq Web**, sourced from `web/`.
 - **Herdr integration:** **Orq for Herdr**, a popup frontend to Orq, not a separate execution engine.
-- **Configuration examples:** preserve each repository's existing `.tdd-features.json`; future optional Orq settings use `.orq.toml` only when justified.
+- **Configuration examples:** preserve each repository's existing `.tdd-features.json`; Orq's own settings (model profiles and per-role defaults, see §5) live in `.orq.toml`. Orq reads `.tdd-config.json` but never writes it.
 - **Availability caveat:** verify crates.io, repository naming and command collisions before publishing; this spec does not assert that the names are available.
 
 ## 1. Purpose
 
 Build a project-aware, mouse-first TDD feature orchestrator that starts inside a Herdr popup and evolves into a durable, multi-agent pipeline service with a browser dashboard. The initial source of features is **`<repo>/.tdd-features.json`**. The system must orchestrate feature implementation, review, push, merge request/pull request creation, and optional merge against an explicitly selected target branch (default `main`).
 
-The current working Bash orchestrator is a **behavioural reference and migration fallback**, not the permanent engine. Rust will own orchestration rules, lifecycle, persistence, Git coordination and agent integrations. Rust can invoke external executables (`git`, `claude`, `codex`, `pi`, provider CLIs) with validated argument vectors; it should not run unconstrained shell commands supplied by feature files or agents.
+The current working Bash orchestrator is a **behavioural reference and migration fallback**, not the permanent engine. Rust will own orchestration rules, lifecycle, persistence, Git coordination and agent integrations. Rust can invoke external executables (`git`, `claude`, `pi`, provider CLIs) with validated argument vectors; it should not run unconstrained shell commands supplied by feature files or agents.
 
 ## 2. Principles and invariants
 
 1. **Project scope is authoritative.** Opening the popup from a pane displays only that pane's repository's `.tdd-features.json`. A separate All Projects view applies to pipeline history, not to choosing a feature to start.
 2. **Explicit base.** Each run records its repository, remote, target branch (default `main`), resolved remote-tracking commit, feature ID and isolated worktree. The base is never inferred from the currently checked-out feature branch.
 3. **One runtime, multiple clients.** CLI, Herdr popup and future browser use the same Rust orchestration core and public command/event contracts.
-4. **Durable workflow, not portable model memory.** Persist stage state, worktree changes, native agent session identifiers when supported, checkpoints, handoff summaries and command results. Do not claim Claude's internal conversation can be loaded by Codex.
+4. **Durable workflow, not portable model memory.** Persist stage state, worktree changes, native agent session identifiers when supported, checkpoints, handoff summaries and command results. Do not claim one harness's internal conversation can be loaded by another.
 5. **Human-controlled risk.** Merges, destructive cleanup, abandoning changes and remote mutations require explicit policy and confirmations. Starting a run is an explicit action.
 6. **Safe concurrency.** Prevent accidental duplicate active runs for a feature and guard shared repositories, branch names and Git operations. Multiple independent features may run in separate worktrees.
 7. **Graceful control.** Pause and switching agents happen at safe checkpoints first; mid-task interruption is a later feature.
@@ -42,12 +42,12 @@ The current working Bash orchestrator is a **behavioural reference and migration
 - List features, change eligible `draft` entries to `pending`, choose a target branch and start a run.
 - Spawn independent tracked execution, record the Herdr workspace/tab/pane identifiers, navigate back to the pane, and show clickable MR/PR URLs.
 - Orchestrate implementation → review → test/verification → push → MR/PR → optional merge, with bounded retries and approval gates.
-- Graceful pause/resume, checkpoint-based agent switching, recovery after crash, global run history.
+- Graceful pause/resume, checkpoint-based model switching, recovery after crash, global run history.
 - Later: Rust web API and React monitoring/control dashboard.
 
 ### Out of scope for initial releases
 
-- A new general-purpose LLM agent framework, multi-machine distributed scheduling, automatic prompt engineering, rebuilding Claude/Codex/Pi, auto-merging without configured approvals, remote terminal execution in the browser, native modifications to Herdr's internal Settings UI, automatic repair of arbitrary partial code changes.
+- A new general-purpose LLM agent framework, multi-machine distributed scheduling, automatic prompt engineering, rebuilding Claude Code or Pi, auto-merging without configured approvals, remote terminal execution in the browser, native modifications to Herdr's internal Settings UI, automatic repair of arbitrary partial code changes.
 
 ## 4. Terminology and ownership
 
@@ -57,6 +57,9 @@ The current working Bash orchestrator is a **behavioural reference and migration
 | Feature | Project `.tdd-features.json` | Feature definition and its TDD lifecycle status |
 | Pipeline run | Orchestrator database | Immutable feature/repo/remote/base inputs, progress, assigned agents |
 | Stage attempt | Orchestrator database | One invocation, agent session, timestamps, result, retry count |
+| Harness | Orq adapter | Executable that runs a model (`claude`, `pi`); declares its capabilities |
+| Model profile | `.orq.toml` | Named harness + model ID + optional thinking level + provider; the unit a user selects |
+| Role | Pipeline run | `implementer` or `reviewer`; each run records one model profile per role |
 | Checkpoint | Orchestrator | Git state, test results, handoff artifact, pending next action |
 | Herdr location | Herdr | Session/workspace/tab/pane reference; an optional navigational link, not execution state |
 | MR/PR | Git provider | Remote review object's URL, ID, head/base, status and merge outcome |
@@ -78,7 +81,7 @@ Rust orchestration core  ◄───────────────── 
   ├── scheduler + state machine                    │ SSE / authenticated HTTP
   ├── run supervisor + crash recovery              ▼
   ├── Git / worktree / provider adapters        React dashboard
-  ├── agent adapters (Claude / Codex / Pi)
+  ├── harness adapters (claude / pi) + model profiles
   ├── Herdr CLI/socket adapter
   └── SQLite repository + event log
        │
@@ -99,7 +102,7 @@ orq/
 │   ├── orq-features/       # .tdd-features.json adapter + atomic writes
 │   ├── orq-orchestrator/   # scheduler, stages, checkpoints, approvals
 │   ├── orq-git/            # Git worktrees + GitLab/GitHub adapters
-│   ├── orq-agents/         # Claude/Codex/Pi process adapters, handoffs
+│   ├── orq-agents/         # harness adapters (claude, pi), model profiles, handoffs
 │   ├── orq-storage/        # SQLite, migrations, event log
 │   ├── orq-herdr/          # Herdr CLI/socket requests and location mapping
 │   ├── orq-cli/            # `orq` executable and legacy parity commands
@@ -117,6 +120,42 @@ orq/
 ```
 
 Use `tokio` for async process management and IPC, `serde` for data types, `sqlx` or `rusqlite` for SQLite (pick one), `ratatui` + `crossterm` for the UI, and `axum` only when the API MVP arrives. Avoid a generic plugin engine until multiple actual agent adapters need it.
+
+### Models, harnesses and roles
+
+Users choose **which model** does a job, not which agent product. A model is run by a **harness**; Orq has one adapter per harness (initially `claude` and `pi`), not one per model or vendor.
+
+```toml
+# .orq.toml
+[models.opus]
+harness = "claude"
+model = "opus"
+provider = "anthropic"
+
+[models.gpt-6-astra]
+harness = "pi"
+model = "openai/gpt-6-astra"
+thinking = "medium"
+provider = "openai"
+
+[roles]
+implementer = "opus"
+reviewer = "gpt-6-astra"
+```
+
+- **Profile:** `harness` + `model` + optional `thinking` + `provider`. The same model may appear in two profiles with different harnesses. `provider` is what usage/quota hints attach to (`orq_extra_spec.md`).
+- **Roles:** every run has an `implementer` and a `reviewer` profile, chosen independently and stored immutably in the run record with the other run inputs.
+- **Profile name:** the key after `models.` (`opus`, `gpt-6-astra` above). It is a short label of the user's choosing for one harness + model + thinking combination, used in the picker and in `--implementer` / `--reviewer`. It is not the model ID the harness receives; that is the `model` field.
+- **Reviewer default:** per-run selection (popup/CLI) → `reviewers.default` in `.tdd-config.json` when present → `[roles].reviewer` in `.orq.toml` → built-in default. `reviewers.default` is used directly as harness (`reviewer`), `model` and `thinking`; it needs no matching profile.
+- **Implementer default:** per-run selection → `[roles].implementer` in `.orq.toml` → built-in default.
+- **`.tdd-config.json` is authoritative where it speaks.** When `reviewers.allowedModels` is present, it overrides every other setting, including a per-run selection: a reviewer is allowed only if its `model` field equals an entry in the list. The picker offers only those and `orq run` rejects any other reviewer with a typed error. Orq never edits this file.
+- **No shared-file mutation per run.** The main checkout's `.tdd-config.json` is shared by all worktrees (`TDD_CONFIG_PATH`), so writing a reviewer into it would leak between concurrent features. Orq passes the run's reviewer to the review step as explicit arguments (`--reviewer <harness> --model <id> --thinking <level>`).
+- **Per-feature choice** follows from per-run storage: two features can run at once with different pairs. Remembered per-feature defaults, if added later, live in Orq's storage, not in `.tdd-features.json`.
+
+**Capabilities, not harness names.** Each harness adapter declares a capability set, for example `resume_session`, `remote_control`, `push_notification`, `auto_compact`, `mcp_preapproval`, `print_mode`. Orchestration code asks for a capability and never branches on the harness name.
+
+- A stage that needs a capability the run's harness lacks is skipped or takes its documented fallback (for example a fresh session with a handoff summary instead of resuming), and emits an event saying so. Orq does not emulate Claude-specific features on other harnesses.
+- **Initial restriction:** the implementer must be a profile whose harness is `claude`; the reviewer may be any profile. This is a single policy check on the implementer role, so lifting it later does not change the run model, storage or UI.
 
 ## 6. Project discovery and feature definitions
 
@@ -158,17 +197,17 @@ Additional terminal states: `failed`, `cancelled`; nonterminal `blocked` / `awai
 
 Default: `prepare → implement → review → verify → push → create_review → await_approval → merge → final_verify → done`. Stage enabling/policy configurable; a repo using manual merge can finish at `review_ready` rather than `merged`.
 
-- Capture `stage.started`, `stage.completed`, `stage.failed`, `run.pause_requested`, `run.paused`, `run.resumed`, `agent.switch_requested`, `agent.switched`, `review.created`, `merge.completed`, etc.
+- Capture `stage.started`, `stage.completed`, `stage.failed`, `run.pause_requested`, `run.paused`, `run.resumed`, `model.switch_requested`, `model.switched`, `capability.unavailable`, `review.created`, `merge.completed`, etc.
 - Every command has correlation IDs, stage-attempt IDs, recorded stdout/stderr log locations and exit codes.
 - Review feedback loops have configurable bounded retries and a stop condition.
 
-## 9. Pause, resume and agent switching
+## 9. Pause, resume and model switching
 
 **MVP pause semantics:** cooperative *pause after current stage*. A request changes status to `pausing`, completes/reconciles the current operation, persists checkpoint, then enters `paused`. Pausing one run must not pause unrelated runs.
 
 **Resume:** validate checkpoint, actual worktree and branch state, expected remote objects, stage result and agent readiness before scheduling the next unfinished stage. If uncertainty remains, enter `blocked` with a recovery action rather than automatically redoing remote effects.
 
-**Switch agent (first implementation):** queue handoff at a checkpoint; keep the same worktree, immutable run inputs and stage history; create a structured summary of goal, changes, diff, tests, remaining tasks and review findings; start the replacement agent in the same worktree; record both adapter and native session IDs. The replacement agent verifies repository state. Claude/Codex/Pi session files are not assumed interchangeable.
+**Switch model (first implementation):** a switch names a role and a new model profile. Queue it at a checkpoint; keep the same worktree, immutable run inputs and stage history; record the switch as an event rather than rewriting the run's original selection. If the new profile uses the same harness and that harness has `resume_session`, the native session may be resumed with the new model. Otherwise create a structured summary of goal, changes, diff, tests, remaining tasks and review findings, start the replacement in the same worktree, and record both harness and native session IDs. The replacement verifies repository state. Session files are not assumed interchangeable between harnesses. Reviewer switches are allowed from the start; implementer switches stay within `claude` profiles until the initial restriction (§5) is lifted.
 
 **Advanced interruption (later):** request cooperative agent cancellation, wait for children to stop, snapshot dirty Git state and tests, and mark checkpoint validity. `SIGSTOP`/`SIGCONT` is not the standard persistence mechanism. Never kill a Git push/merge blindly without reconciliation.
 
@@ -192,9 +231,11 @@ The popup is launched from the originating project's active pane. It should rese
 
 **Features view:** searchable feature list, current TDD status, detail/dependencies, Draft → Pending action where legal, Start button (requires eligible feature). Clicking a feature must never silently start a run.
 
-**Pipelines view:** project's active and recent runs by default; All Projects toggle for monitoring; stage/status/agent/badges; click row for detail; click 'Open pane' to dismiss popup and focus the stored Herdr location; click MR/PR URL to open/copy according to host configuration.
+**Launch panel:** before Start, show an *Implementer* and a *Reviewer* model selector, pre-filled from the configured defaults. Each lists only the profiles valid for that role (implementer: `claude` harness initially; reviewer: limited to `reviewers.allowedModels` when set) and shows the harness beside the model name.
 
-**Details view:** stage history, current agent, logs, tests, worktree path, source/target, review URL, Pause/Resume, Switch agent, retry/approval actions when allowed.
+**Pipelines view:** project's active and recent runs by default; All Projects toggle for monitoring; stage/status/model badges; click row for detail; click 'Open pane' to dismiss popup and focus the stored Herdr location; click MR/PR URL to open/copy according to host configuration.
+
+**Details view:** stage history, implementer and reviewer models (with harness), logs, tests, worktree path, source/target, review URL, Pause/Resume, Switch model, retry/approval actions when allowed.
 
 **Interaction:** left-click primary, mouse scrolling, visual hover/selected states where terminal capabilities allow; keyboard fallback (Tab/arrows, Enter, Esc, / search); errors and progress visible without relying on colour. Right-click is optional and must be tested against Herdr mouse forwarding. The TUI should never block while running Git/agent subprocesses.
 
@@ -208,15 +249,17 @@ CLI examples (proposed `orq` interface; command flags finalised during MVP 1):
 orq project inspect --cwd <path>
 orq features --repo <path>
 orq feature set-status --repo <path> --id <id> --status pending
-orq run --repo <path> --feature <id> --remote origin --target main
+orq models [--repo <path>]
+orq run --repo <path> --feature <id> --remote origin --target main \
+        [--implementer <profile>] [--reviewer <profile>]
 orq ps [--repo <path>]
 orq pause <run-id>
 orq resume <run-id>
-orq agent switch <run-id> --agent codex
+orq model switch <run-id> --role reviewer --model <profile>
 orq ui
 ```
 
-Internal typed commands: `ResolveProject`, `ListFeatures`, `TransitionFeature`, `StartRun`, `PauseRun`, `ResumeRun`, `SwitchAgent`, `ApproveMerge`, `GetRuns`, `GetEvents`, `FocusRunPane`.
+Internal typed commands: `ResolveProject`, `ListFeatures`, `TransitionFeature`, `StartRun`, `PauseRun`, `ResumeRun`, `ListModels`, `SwitchModel`, `ApproveMerge`, `GetRuns`, `GetEvents`, `FocusRunPane`.
 
 Representative event envelope:
 
@@ -231,11 +274,11 @@ Representative event envelope:
   "stage": "review",
   "attempt": 1,
   "occurred_at": "2026-10-14T00:00:00Z",
-  "payload": { "agent": "codex", "result": "passed" }
+  "payload": { "role": "reviewer", "model": "gpt-6-astra", "harness": "pi", "result": "passed" }
 }
 ```
 
-Run record must include: run ID, project/repo identity, feature ID, remote/provider, target branch, immutable base commit, source branch/worktree, state, current stage, attempts, agent assignment/session references, review URL/ID, current Herdr navigation identifiers, timestamps and last error.
+Run record must include: run ID, project/repo identity, feature ID, remote/provider, target branch, immutable base commit, source branch/worktree, state, current stage, attempts, resolved model profile per role (harness, model ID, thinking), harness session references, review URL/ID, current Herdr navigation identifiers, timestamps and last error.
 
 ## 13. MVP roadmap and acceptance criteria
 
@@ -261,6 +304,7 @@ Run record must include: run ID, project/repo identity, feature ID, remote/provi
 **Goal:** replace Bash for one feature end-to-end before adding more UI.
 
 - Implement domain state machine and Rust CLI; fetch target, create isolated worktree from selected remote branch, invoke agent and review stages, verify, push and open MR/PR.
+- Resolve implementer and reviewer model profiles (§5) from flags and `.orq.toml`, enforce `reviewers.allowedModels` and the `claude`-only implementer rule, and pass the reviewer to the review step as arguments.
 - Use fake agents/providers for automated tests; first real end-to-end runs against a disposable test repo.
 - Preserve logs, stage exit codes and success/failure classification.
 - **Done when:** both GitLab and GitHub flows can complete with correct target (`main` and a non-main branch), Bash parity scenarios pass, no implicit merge occurs without policy.
@@ -270,7 +314,7 @@ Run record must include: run ID, project/repo identity, feature ID, remote/provi
 **Goal:** use Herdr rather than manually invoking orchestration.
 
 - Start the Rust runner from the selected feature; ensure it survives closing the popup.
-- Show run list, stage, agent, status; create/track a Herdr execution pane or tab; click to navigate; open/copy MR/PR link.
+- Choose implementer and reviewer models at launch; show run list, stage, models, status; create/track a Herdr execution pane or tab; click to navigate; open/copy MR/PR link.
 - **Done when:** two projects independently start and monitor runs, popup close does not cancel jobs, missing pane produces safe recovery UI.
 
 ### MVP 4 — Persistent supervisor + recovery
@@ -288,13 +332,14 @@ Run record must include: run ID, project/repo identity, feature ID, remote/provi
 - Add pause requested/pausing/paused states, checkpoint validity, resume confirmation and UI controls.
 - **Done when:** pausing run A leaves run B unaffected; closing Herdr does not remove checkpoint; resume does not rerun completed push or MR creation.
 
-### MVP 6 — Agent handoff and switching
+### MVP 6 — Model switching and cross-harness handoff
 
-**Goal:** switch future work between Claude, Codex and optionally Pi.
+**Goal:** change a run's implementer or reviewer model mid-run, including across harnesses.
 
-- Agent adapter trait, capability matrix (start, prompt, resume native session, interrupt, status), structured context handoff and per-stage agent selection.
-- Change agent only at safe checkpoint initially; preserve prior agent session references.
-- **Done when:** Claude → Codex handoff continues in the same worktree using saved diff/tests/feature plan; reverse switch works; no assumption of shared conversation format.
+- The harness adapter trait, capability set, model profiles and per-role selection exist from MVP 2; this MVP adds switching during a run and structured context handoff.
+- Change model only at a safe checkpoint initially; preserve prior session references.
+- Lift the `claude`-only implementer restriction once a second harness passes the implementer contract tests; stages needing a missing capability use their fallback.
+- **Done when:** a reviewer switch between `pi` and `claude` profiles works; an implementer handoff from a `claude` profile to a `pi` profile continues in the same worktree using saved diff/tests/feature plan, and back; Claude-only capabilities are skipped with an event on `pi`; no assumption of shared conversation format.
 
 ### MVP 7 — Local Rust web service + streaming
 
@@ -330,7 +375,8 @@ Run record must include: run ID, project/repo identity, feature ID, remote/provi
 - **Domain tests:** valid/invalid transitions; pause/retry/approval invariants; duplicate-run lock; stage-specific failure classification.
 - **File tests:** missing/malformed `.tdd-features.json`, nested CWD, worktree resolution, lock contention, concurrent edit, field preservation, permissions, symlinks.
 - **Git integration:** dirty base checkout, nonexistent target branch, branch collision, stale remote, failed fetch/push, detached HEAD, already-created MR, divergent targets.
-- **Adapter contract tests:** fake agent exits, hangs, loses session, emits malformed output, requires approval, switches with dirty working tree.
+- **Adapter contract tests:** fake agent exits, hangs, loses session, emits malformed output, requires approval, switches with dirty working tree; a harness without a capability takes the fallback and emits `capability.unavailable`.
+- **Model selection tests:** precedence order, unknown profile, reviewer outside `reviewers.allowedModels` rejected, non-`claude` implementer rejected, two concurrent runs keep different reviewers, `.tdd-config.json` never written.
 - **Recovery tests:** crash before/after remote create, after push, during process start, after stage success but before persisted event, Herdr pane closed, supervisor restarted.
 - **Security tests:** shell injection paths, malicious feature fields, Git URL/provider mismatches, secrets in logs, unauthorized remote control, double-click actions.
 - **UI tests:** mouse select/scroll, keyboard fallback, stale data, narrow terminal, modal dismiss, focus failures, project switch.
@@ -356,7 +402,7 @@ Each MVP requires unit tests + one executable end-to-end demonstration + concise
 | Building a general durable agent platform | Limit to stage-based coding workflow and explicit checkpoints | Only if real use cases exceed stages |
 | Rewriting working Bash scripts wholesale | Rust adapter parity tests; migrate one stage at a time | MVP 2 |
 | Herdr private API coupling | Public CLI/socket only; popup integration spike | MVP 0 |
-| Cross-agent conversation portability | Handoff summaries + Git state, not shared session blobs | MVP 6 |
+| Cross-harness conversation portability | Handoff summaries + Git state, not shared session blobs | MVP 6 |
 | Mid-token pause or process freezing | Graceful stage-boundary pause first | MVP 10 |
 | Browser remote shell/security exposure | Read-only API first; authenticated action API later | MVP 9 |
 | Multi-host distributed scheduler | Single Debian VM + isolated worktrees initially | Beyond MVP 10 |
@@ -374,7 +420,7 @@ Each MVP requires unit tests + one executable end-to-end demonstration + concise
 
 ## 18. Definition of project success
 
-A developer can open a single mouse-first Herdr popup from any repository, choose a feature from that repository's `.tdd-features.json`, select a target branch (default `main`), start a tracked Rust orchestration run in an isolated worktree, watch implementation/review/test/push/MR or PR/merge progress, jump into the correct agent pane, gracefully pause/resume or switch agents at checkpoints, and inspect durable history through the future web dashboard without tying execution to a particular terminal or agent.
+A developer can open a single mouse-first Herdr popup from any repository, choose a feature from that repository's `.tdd-features.json`, select a target branch (default `main`) and the implementer and reviewer models, start a tracked Rust orchestration run in an isolated worktree, watch implementation/review/test/push/MR or PR/merge progress, jump into the correct agent pane, gracefully pause/resume or switch models at checkpoints, and inspect durable history through the future web dashboard without tying execution to a particular terminal or agent.
 
 ## 19. External integration references
 
