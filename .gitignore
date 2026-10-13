@@ -11,3 +11,6 @@
 .mcpctl.lock
 .mcpctl.*
 
+
+# Rust build output
+target/
