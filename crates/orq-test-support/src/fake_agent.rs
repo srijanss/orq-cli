@@ -83,9 +83,10 @@ impl FakeAgentBuilder {
         } else {
             format!("exit {}", self.exit_code)
         };
+        // The script locates its own directory via $0, so no path is embedded
+        // in shell source and nothing needs quoting.
         let body = format!(
-            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\nprintf '%s\\0' \"$PWD\" \"$@\" > '{dir}/record'\ncat '{dir}/stdout'\n{finish}\n",
-            dir = dir.display(),
+            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\ncat \"$dir/stdout\"\n{finish}\n",
         );
         fs::write(&script, body).expect("write fake agent script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake agent");
