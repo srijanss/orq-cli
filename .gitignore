@@ -1,0 +1,13 @@
+# Local AI tooling config (kept per-machine, not shared)
+.agents/
+.claude/
+.codex/
+.pi/
+.project-mcp/
+.mcp.json
+.tdd-*.json
+.tdd-*.lock
+.tdd-session.log
+.mcpctl.lock
+.mcpctl.*
+
