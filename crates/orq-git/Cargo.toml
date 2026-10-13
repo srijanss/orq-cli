@@ -1,0 +1,4 @@
+[package]
+name = "orq-git"
+version.workspace = true
+edition.workspace = true

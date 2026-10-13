@@ -1,0 +1,4 @@
+[package]
+name = "orq-core"
+version.workspace = true
+edition.workspace = true
