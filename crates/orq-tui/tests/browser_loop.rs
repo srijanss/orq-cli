@@ -692,26 +692,26 @@ fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_to
     let text = lines.join("\n");
     assert!(text.contains("[pending]") && text.contains("short text"), "{lines:?}");
 
-    // Navigation continues from the new bounds: Down has nowhere to go, Up stays put.
-    // A fresh fixture, so the reload really happens inside this session.
-    let fresh = shared(vec![long_detail()]);
-    fresh.borrow_mut().on_second_load = Some(vec![BrowserEntry {
-        description: Some("short text".into()),
-        depends_on: vec![],
-        ..long_detail()
-    }]);
-    let again = last_frame(
-        &fresh,
-        vec![
-            key(KeyCode::Down),
-            key(KeyCode::Enter),
-            key(KeyCode::PageDown),
-            key(KeyCode::Char('r')),
-            key(KeyCode::Down),
-            key(KeyCode::Up),
-        ],
-    );
-    assert_eq!(again, lines, "navigation after the reload must leave the short content unchanged");
+    // Navigation continues from the new bounds. Each key is checked on its own
+    // fresh fixture so the reload really happens inside the session and one key
+    // cannot mask the other.
+    let reload = || {
+        let fresh = shared(vec![long_detail()]);
+        fresh.borrow_mut().on_second_load = Some(vec![BrowserEntry {
+            description: Some("short text".into()),
+            depends_on: vec![],
+            ..long_detail()
+        }]);
+        fresh
+    };
+    let to_reload = || vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::PageDown), key(KeyCode::Char('r'))];
+
+    for (name, code) in [("Down", KeyCode::Down), ("Up", KeyCode::Up)] {
+        let mut events = to_reload();
+        events.push(key(code));
+        let after = last_frame(&reload(), events);
+        assert_eq!(after, lines, "{name} after the reload must leave the short content unchanged");
+    }
 }
 
 #[test]
