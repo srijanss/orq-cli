@@ -174,13 +174,8 @@ pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
     if !project.is_linked_worktree || own.try_exists().unwrap_or(true) {
         return own;
     }
-    // Only a standard `<checkout>/.git` names its checkout; with a separate
-    // git dir, a submodule or a bare repository the parent is not one.
-    let common = &project.git_common_dir;
-    match common.parent() {
-        Some(main_root) if common.file_name().is_some_and(|name| name == ".git") => {
-            main_root.join(LEDGER_FILE)
-        }
-        _ => own,
+    match orq_git::main_checkout_root(project) {
+        Some(main_root) => main_root.join(LEDGER_FILE),
+        None => own,
     }
 }

@@ -168,3 +168,35 @@ fn git_rev_parse(path: &Path, args: &[&str]) -> Result<Vec<u8>, ResolveError> {
     }
     Ok(bytes)
 }
+
+/// The main checkout of `project`'s repository, from Git's own worktree list
+/// (its first record is the main worktree). `None` when there is none to name:
+/// a bare repository, a Git directory kept outside any checkout (Git then
+/// reports the directory itself, which holds no `.git`), or Git being unable
+/// to say.
+pub fn main_checkout_root(project: &Project) -> Option<PathBuf> {
+    let mut command = Command::new("git");
+    for var in REPOSITORY_SELECTION_VARS {
+        command.env_remove(var);
+    }
+    let output = command
+        .arg("-C")
+        .arg(&project.root)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut fields = output.stdout.split(|b| *b == 0);
+    let path = fields.next()?.strip_prefix(b"worktree ")?;
+    let is_bare = fields
+        .take_while(|field| !field.is_empty())
+        .any(|field| field == b"bare");
+    if is_bare || path.is_empty() {
+        return None;
+    }
+    let root = PathBuf::from(OsString::from_vec(path.to_vec()));
+    root.join(".git").exists().then_some(root)
+}
