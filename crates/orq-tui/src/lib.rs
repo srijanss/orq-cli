@@ -92,9 +92,37 @@ pub fn leave_title_sequence(out: &mut impl io::Write) -> io::Result<()> {
     out.flush()
 }
 
+/// Remembers whether this session pushed a title, so `leave` pops only what
+/// `enter` saved (a failed entry must not pop a parent's saved title).
+#[derive(Debug, Default)]
+pub struct TitleState {
+    saved: bool,
+}
+
+impl TitleState {
+    /// Pushes the current title and sets ORQ; records the push once written.
+    pub fn enter(&mut self, out: &mut impl io::Write) -> io::Result<()> {
+        out.write_all(b"\x1b[22;2t")?;
+        self.saved = true;
+        ratatui::crossterm::queue!(out, ratatui::crossterm::terminal::SetTitle(TERMINAL_TITLE))?;
+        out.flush()
+    }
+
+    /// Pops the saved title if, and only if, this session pushed one.
+    pub fn leave(&mut self, out: &mut impl io::Write) -> io::Result<()> {
+        if !std::mem::take(&mut self.saved) {
+            return Ok(());
+        }
+        leave_title_sequence(out)
+    }
+}
+
 /// The real terminal: raw mode, alternate screen, mouse capture and the ORQ
 /// title on enter, all undone on leave.
-pub struct CrosstermMode;
+#[derive(Default)]
+pub struct CrosstermMode {
+    title: TitleState,
+}
 
 impl TerminalMode for CrosstermMode {
     fn enter(&mut self) -> io::Result<()> {
@@ -102,13 +130,13 @@ impl TerminalMode for CrosstermMode {
         use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
         enable_raw_mode()?;
         ratatui::crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        enter_title_sequence(&mut io::stdout())
+        self.title.enter(&mut io::stdout())
     }
 
     fn leave(&mut self) -> io::Result<()> {
         use ratatui::crossterm::event::DisableMouseCapture;
         use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-        let title = leave_title_sequence(&mut io::stdout());
+        let title = self.title.leave(&mut io::stdout());
         let screen =
             ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         disable_raw_mode()?;
@@ -129,7 +157,7 @@ impl EventSource for CrosstermEvents {
 pub fn run_on_terminal(model: &PopupModel) -> Result<PopupState, Box<dyn Error>> {
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    run_popup_session(&mut CrosstermMode, &mut terminal, model, &mut CrosstermEvents)
+    run_popup_session(&mut CrosstermMode::default(), &mut terminal, model, &mut CrosstermEvents)
 }
 
 /// Run the popup between `enter` and `leave`. The terminal is always left
@@ -1252,7 +1280,7 @@ pub trait BrowserBackend {
 pub fn run_browser_on_terminal(model: &PopupModel, backend: &mut dyn BrowserBackend) -> Result<(), Box<dyn Error>> {
     let crossterm = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(crossterm)?;
-    run_browser_session(&mut CrosstermMode, &mut terminal, model, backend, &mut CrosstermEvents)
+    run_browser_session(&mut CrosstermMode::default(), &mut terminal, model, backend, &mut CrosstermEvents)
 }
 
 /// As `run_popup_session`, for the feature browser.

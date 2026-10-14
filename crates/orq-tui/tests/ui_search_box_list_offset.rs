@@ -40,8 +40,11 @@ fn the_first_row_is_drawn_where_the_shifted_area_says_it_starts() {
     };
 
     let list_top = search_area(area, &search).y + 2; // below the two header rows
-    let drawn = row_of("alpha-feature").expect("row drawn");
-    assert!(drawn >= list_top, "row at {drawn}, list starts at {list_top}");
-    // And below the box, never over it.
-    assert!(drawn > row_of("Search by").unwrap());
+    let search_row = row_of("Search by").expect("search box drawn");
+    // The first card's top border is the first rounded corner below the box.
+    let card_top = (search_row + 2..buffer.area.height)
+        .find(|&y| (0..buffer.area.width).any(|x| buffer[(x, y)].symbol() == "╭"))
+        .expect("card border drawn");
+    assert_eq!(card_top, list_top, "the first row is drawn exactly where hit-testing starts the list");
+    assert!(row_of("alpha-feature").expect("row drawn") > search_row);
 }
