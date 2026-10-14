@@ -589,11 +589,23 @@ pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec
 /// As `matching_features`, but a query also matches a row's status, ignoring
 /// case. `rows` and `items` are parallel; extra items match on text only.
 pub fn matching_rows(rows: &[FeatureRow], items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
+    matching_rows_visiting(rows, items, query, |_| {})
+}
+
+/// As `matching_rows`, calling `on_visit` with the index of every row it
+/// examines, so tests can assert the filter does a single pass.
+pub fn matching_rows_visiting(
+    rows: &[FeatureRow],
+    items: &[(String, Option<String>)],
+    query: &str,
+    mut on_visit: impl FnMut(usize),
+) -> Vec<usize> {
     let needle = query.to_lowercase();
     items
         .iter()
         .enumerate()
         .filter(|(index, (name, description))| {
+            on_visit(*index);
             needle.is_empty()
                 || name.to_lowercase().contains(&needle)
                 || description.as_deref().is_some_and(|d| d.to_lowercase().contains(&needle))

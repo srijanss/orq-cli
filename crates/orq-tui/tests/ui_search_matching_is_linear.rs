@@ -2,7 +2,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use orq_tui::{matching_rows, FeatureRow};
+use orq_tui::{matching_rows, matching_rows_visiting, FeatureRow};
 
 fn fixture(count: usize) -> (Vec<FeatureRow>, Vec<(String, Option<String>)>) {
     let rows = (0..count)
@@ -106,4 +106,34 @@ fn filtering_work_per_row_does_not_grow_with_the_list() {
 
     assert!(small <= 15_000 * 4, "{small} allocations for 15k rows");
     assert!(large <= small * 4 + 64, "15k rows used {small} allocations, 60k rows used {large}");
+}
+
+fn visits_for(count: usize, query: &str) -> (usize, usize) {
+    let (rows, items) = fixture(count);
+    let mut visits = 0;
+    let matches = matching_rows_visiting(&rows, &items, query, |_| visits += 1);
+    (visits, matches.len())
+}
+
+/// The filter reports every row it examines. A single pass examines each row
+/// exactly once, so the count is the list length for any query; a filter that
+/// re-scans per row examines more and the growth is no longer linear.
+#[test]
+fn each_row_is_examined_exactly_once_whatever_the_query() {
+    for query in ["feature", "pending", "no-such-text", ""] {
+        let (small, _) = visits_for(1_000, query);
+        let (large, _) = visits_for(4_000, query);
+
+        assert_eq!(small, 1_000, "query {query:?}");
+        assert_eq!(large, 4_000, "query {query:?}");
+    }
+}
+
+#[test]
+fn the_visiting_variant_returns_what_matching_rows_returns() {
+    let (rows, items) = fixture(10);
+
+    for query in ["feature-3", "done", "zzz", ""] {
+        assert_eq!(matching_rows_visiting(&rows, &items, query, |_| {}), matching_rows(&rows, &items, query));
+    }
 }
