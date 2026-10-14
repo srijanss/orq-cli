@@ -83,42 +83,62 @@ impl LoadedLedger {
         let mut name = self.path.file_name().unwrap_or_default().to_os_string();
         name.push(".lock");
         let lock_path = self.path.with_file_name(name);
-        // Opening a FIFO for writing blocks until a reader shows up, and a
-        // symlink could point at one, so only a regular file (or nothing yet)
-        // is acceptable.
-        match std::fs::symlink_metadata(&lock_path) {
-            Ok(metadata) if !metadata.file_type().is_file() => {
-                return Err(SaveError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "ledger lock path is not a regular file",
-                )));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(SaveError::Io(e)),
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(SaveError::Io)?;
-        let deadline = Instant::now() + wait;
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(TryLockError::WouldBlock) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(SaveError::Locked);
-                    }
-                    std::thread::sleep(LOCK_POLL.min(remaining));
-                    if Instant::now() >= deadline {
-                        return Err(SaveError::Locked);
-                    }
+        let file = open_lock_file(&lock_path).map_err(SaveError::Io)?;
+        poll_lock(&mut || file.try_lock(), &Instant::now, &std::thread::sleep, wait)?;
+        Ok(file)
+    }
+}
+
+/// Opens the lock file without ever blocking or following a symlink: a FIFO
+/// planted at the path would otherwise stall the open (`O_NONBLOCK` makes it
+/// fail instead), and the descriptor itself is checked to be a regular file,
+/// so there is no window between a path check and the open.
+#[cfg(unix)]
+fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "ledger lock path is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_lock_file(_path: &Path) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "ledger locking is only supported on Unix"))
+}
+
+/// Retries `try_lock` until it succeeds or `wait` has elapsed. The clock and
+/// the sleeper are injected so the deadline behaviour can be tested exactly.
+fn poll_lock(
+    try_lock: &mut dyn FnMut() -> Result<(), TryLockError>,
+    now: &dyn Fn() -> Instant,
+    sleep: &dyn Fn(Duration),
+    wait: Duration,
+) -> Result<(), SaveError> {
+    let deadline = now() + wait;
+    loop {
+        match try_lock() {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(now());
+                if remaining.is_zero() {
+                    return Err(SaveError::Locked);
                 }
-                Err(TryLockError::Error(e)) => return Err(SaveError::Io(e)),
+                sleep(LOCK_POLL.min(remaining));
+                if now() >= deadline {
+                    return Err(SaveError::Locked);
+                }
             }
+            Err(TryLockError::Error(e)) => return Err(SaveError::Io(e)),
         }
     }
 }
@@ -126,6 +146,27 @@ impl LoadedLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wait_ends_at_the_deadline_even_if_the_lock_frees_right_after_it() {
+        use std::cell::Cell;
+        let start = Instant::now();
+        let elapsed = Cell::new(Duration::ZERO);
+        // The lock frees 5ms in; the caller only waits 1ms.
+        let mut try_lock = || {
+            if elapsed.get() >= Duration::from_millis(5) { Ok(()) } else { Err(TryLockError::WouldBlock) }
+        };
+
+        let result = poll_lock(
+            &mut try_lock,
+            &|| start + elapsed.get(),
+            &|d| elapsed.set(elapsed.get() + d),
+            Duration::from_millis(1),
+        );
+
+        assert!(matches!(result, Err(SaveError::Locked)), "{result:?}");
+        assert_eq!(elapsed.get(), Duration::from_millis(1));
+    }
 
     #[test]
     fn a_failing_write_is_an_io_error_not_a_conflict() {

@@ -770,6 +770,7 @@ version = "0.1.0"
 name = "orq-features"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "orq-core",
  "orq-git",
  "orq-test-support",

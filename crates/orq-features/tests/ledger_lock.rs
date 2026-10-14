@@ -119,23 +119,6 @@ fn the_lock_is_released_after_success_conflict_and_io_failure() {
 }
 
 #[test]
-fn the_wait_is_never_exceeded_even_if_the_lock_frees_just_after_it() {
-    let path = scratch("deadline");
-    let loaded = LoadedLedger::load(&path).unwrap();
-    let held = hold(&path);
-    let releaser = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(5));
-        drop(held);
-    });
-
-    let result = loaded.save_waiting(UPDATED, Duration::from_millis(1));
-
-    releaser.join().unwrap();
-    assert!(matches!(result, Err(SaveError::Locked)), "{result:?}");
-    assert_eq!(fs::read_to_string(&path).unwrap(), ORIGINAL);
-}
-
-#[test]
 fn a_fifo_in_the_lock_path_is_an_io_error_not_a_hang() {
     let path = scratch("fifo");
     let loaded = LoadedLedger::load(&path).unwrap();
