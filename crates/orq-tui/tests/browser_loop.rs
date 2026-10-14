@@ -346,3 +346,88 @@ fn ignored_mouse_events_cause_no_size_queries_or_redraws() {
 
     assert_eq!(with_noise, baseline);
 }
+
+/// Runs `events` and returns the last frame drawn, whether or not the script
+/// ends by closing the popup (a script that runs dry still leaves its frame).
+fn last_frame(shared: &Rc<RefCell<Shared>>, events: Vec<Event>) -> Vec<String> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let mut events = Script(events.into());
+    let _ = run_browser(&mut terminal, &model, &mut Fake(shared.clone()), &mut events);
+    let buffer = terminal.backend().buffer();
+    (0..10)
+        .map(|y| (0..40).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+fn detailed(name: &str, status: &str) -> BrowserEntry {
+    BrowserEntry {
+        name: name.into(),
+        description: Some("does the thing".into()),
+        status: status.into(),
+        depends_on: vec!["base".into(), "ghost".into()],
+        test_file: Some("tests/alpha.rs".into()),
+    }
+}
+
+#[test]
+fn enter_opens_the_detail_of_the_selected_feature_and_escape_returns_with_the_selection_kept() {
+    let state = shared(vec![entry("base", "completed"), detailed("alpha", "pending"), entry("zeta", "pending")]);
+
+    let in_detail = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)]);
+    let text = in_detail.join("\n");
+    assert!(text.contains("alpha") && text.contains("[pending]"), "{in_detail:?}");
+    assert!(text.contains("does the thing"), "{in_detail:?}");
+    assert!(text.contains("test file: tests/alpha.rs"), "{in_detail:?}");
+    assert!(text.contains("base") && text.contains("(completed)"), "{in_detail:?}");
+    assert!(text.contains("ghost") && text.contains("not in ledger"), "{in_detail:?}");
+    assert!(!text.contains("zeta"), "{in_detail:?}");
+
+    // Esc goes back to the list (not out), and the same row is still selected:
+    // pressing Enter again shows the same feature.
+    let again = last_frame(
+        &state,
+        vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Esc), key(KeyCode::Enter)],
+    );
+    assert!(again.join("\n").contains("test file: tests/alpha.rs"), "{again:?}");
+
+    let back = run(
+        &state,
+        vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Esc), key(KeyCode::Esc)],
+    );
+    let text = back.join("\n");
+    assert!(text.contains("zeta") && text.contains("base"), "{back:?}");
+}
+
+#[test]
+fn a_draft_can_be_promoted_from_the_detail_view_and_a_pending_one_cannot() {
+    let state = shared(vec![detailed("alpha", "draft")]);
+
+    let lines = last_frame(
+        &state,
+        vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('p'))],
+    );
+
+    assert_eq!(state.borrow().promotes, vec!["alpha".to_string()]);
+    let text = lines.join("\n");
+    assert!(text.contains("[pending]") && text.contains("does the thing"), "{lines:?}");
+    assert!(!text.contains("Mark pending"), "{lines:?}");
+
+    last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('p'))]);
+    assert_eq!(state.borrow().promotes.len(), 1);
+}
+
+#[test]
+fn enter_with_nothing_selected_or_during_search_entry_opens_no_detail() {
+    let state = shared(vec![detailed("alpha", "pending")]);
+
+    let nothing = last_frame(&state, vec![key(KeyCode::Enter)]);
+    assert!(!nothing.join("\n").contains("test file:"), "{nothing:?}");
+
+    // Enter in the search field only leaves the field.
+    let searching = last_frame(
+        &state,
+        vec![key(KeyCode::Down), key(KeyCode::Char('/')), key(KeyCode::Char('a')), key(KeyCode::Enter)],
+    );
+    assert!(!searching.join("\n").contains("test file:"), "{searching:?}");
+}

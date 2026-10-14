@@ -848,6 +848,8 @@ struct Browser {
     notice: Option<String>,
     search: SearchState,
     list: FeatureListState,
+    /// Name of the feature whose detail view is open, if any.
+    detail: Option<String>,
 }
 
 impl Browser {
@@ -873,6 +875,24 @@ impl Browser {
         let matches = matching_features(&self.items, &self.search.query);
         let index = self.list.selected?.min(matches.len().checked_sub(1)?);
         self.rows.get(*matches.get(index)?).cloned()
+    }
+
+    /// The open detail's entry; closes the detail when a reload dropped it.
+    fn open_detail(&mut self) -> Option<(FeatureDetail, FeatureRow)> {
+        let name = self.detail.as_deref()?;
+        let Some(entry) = self.entries.iter().find(|e| e.name == name) else {
+            self.detail = None;
+            return None;
+        };
+        let detail = FeatureDetail {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            status: entry.status.clone(),
+            test_file: entry.test_file.clone(),
+            dependencies: dependency_statuses(&entry.depends_on, &self.rows),
+        };
+        let row = FeatureRow { name: entry.name.clone(), status: entry.status.clone() };
+        Some((detail, row))
     }
 
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
@@ -905,10 +925,18 @@ impl Browser {
         self.notice = view.notice;
     }
 
-    fn draw(&self, frame: &mut Frame, model: &PopupModel) {
+    fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
         let area = frame.area();
         if let Some(error) = &self.error {
             render_ledger_error(frame, model, error);
+            return;
+        }
+        if let Some((detail, row)) = self.open_detail() {
+            let body = body_area(area, self.notice.is_some());
+            let (text, _) = promote_split(body, Some(&row));
+            render_feature_detail(frame, text, &detail);
+            render_promote_button(frame, body, Some(&row));
+            render_notice(frame, area, self.notice.as_deref());
             return;
         }
         let body_height = area.height.saturating_sub(u16::from(self.notice.is_some()));
@@ -941,6 +969,7 @@ where
         notice: None,
         search: SearchState::default(),
         list: FeatureListState::default(),
+        detail: None,
     };
     browser.apply_load(backend.load());
     let mut dirty = true;
@@ -959,6 +988,29 @@ where
                             dirty = true;
                         }
                         _ => {}
+                    }
+                    continue;
+                }
+                if let Some((_, row)) = browser.open_detail() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Backspace => browser.detail = None,
+                        code if reload_requested(code) => {
+                            browser.notice = None;
+                            browser.apply_load(backend.load());
+                        }
+                        code => {
+                            if let Some(intent) = promote_intent_for_key(code, Some(&row)) {
+                                browser.promote(backend, intent);
+                            }
+                        }
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Enter && !browser.search.active {
+                    if let Some(row) = browser.selected_row() {
+                        browser.detail = Some(row.name);
+                        dirty = true;
                     }
                     continue;
                 }
@@ -1004,6 +1056,13 @@ where
                 }
                 let area = Rect::from((Position::ORIGIN, terminal.size()?));
                 let body = body_area(area, browser.notice.is_some());
+                if let Some((_, row)) = browser.open_detail() {
+                    if let Some(intent) = promote_intent_for_mouse(body, Some(&row), mouse) {
+                        browser.promote(backend, intent);
+                        dirty = true;
+                    }
+                    continue;
+                }
                 let selected = browser.selected_row();
                 if let Some(intent) = promote_intent_for_mouse(body, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);

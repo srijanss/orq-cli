@@ -184,3 +184,35 @@ fn a_file_changed_behind_the_popups_back_is_a_conflict_and_is_not_overwritten() 
     assert!(drawn.contains("nothing was saved"), "{drawn}");
     assert!(drawn.contains("zeta"), "{drawn}");
 }
+
+#[test]
+fn enter_opens_the_detail_view_and_escape_returns_to_the_list_before_closing() {
+    let repo = GitFixture::new();
+    write_ledger(
+        repo.root(),
+        &[
+            LedgerEntry::new("base", "completed"),
+            LedgerEntry::new("alpha", "pending").description("zebrastripe").depends_on(&["base"]),
+        ],
+    );
+
+    let (code, drawn) = drive(
+        repo.root(),
+        serde_json::json!([
+            {"wait": "alpha"},
+            {"send": DOWN},
+            {"send": DOWN},
+            {"sleep": 0.3},
+            {"send": "0d"},
+            {"wait": "zebrastripe"},
+            {"sleep": 0.3},
+            {"send": ESC},
+            {"sleep": 0.3},
+            {"send": ESC},
+        ]),
+    );
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("zebrastripe"), "{drawn}");
+    assert!(drawn.contains("depends"), "{drawn}");
+}
