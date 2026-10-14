@@ -40,6 +40,14 @@ impl LoadedLedger {
         Ok(Self { path: path.to_path_buf(), bytes, entries })
     }
 
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn entries(&self) -> &[FeatureEntry] {
         &self.entries
     }

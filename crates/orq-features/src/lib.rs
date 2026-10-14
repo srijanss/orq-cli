@@ -197,3 +197,6 @@ pub use write::write_ledger_atomic;
 
 mod save;
 pub use save::{LoadedLedger, SaveError};
+
+mod promote;
+pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
