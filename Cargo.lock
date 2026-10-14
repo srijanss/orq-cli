@@ -758,6 +758,7 @@ dependencies = [
  "orq-git",
  "orq-herdr",
  "orq-test-support",
+ "orq-tui",
  "serde_json",
 ]
 

@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::io;
 
-use ratatui::backend::Backend;
+use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -117,6 +117,23 @@ where
 pub enum PopupView {
     Project(PopupModel),
     NotARepository { path: String },
+}
+
+/// Render `view` once into a `width` x `height` text screen (no terminal
+/// needed). Trailing blanks are trimmed from every line.
+pub fn render_snapshot(view: &PopupView, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend is infallible");
+    terminal
+        .draw(|frame| render_view(frame, view))
+        .expect("test backend is infallible");
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            let line: String = (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+            line.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn render_view(frame: &mut Frame, view: &PopupView) {
