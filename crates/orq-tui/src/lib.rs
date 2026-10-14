@@ -2,7 +2,8 @@ use std::error::Error;
 use std::io;
 
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{Event, KeyCode};
+use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
@@ -13,6 +14,52 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct PopupModel {
     pub project_name: String,
     pub repo_path: String,
+}
+
+/// A clickable part of the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    ProjectName,
+    RepoPath,
+}
+
+/// Interactive state of the popup.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PopupState {
+    pub selected: Option<Region>,
+}
+
+impl PopupState {
+    /// Select the region under a left-button press.
+    pub fn handle_mouse(&mut self, area: Rect, model: &PopupModel, mouse: MouseEvent) {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        if let Some(region) = hit_test(area, model, mouse.column, mouse.row) {
+            self.selected = Some(region);
+        }
+    }
+}
+
+/// The rectangle each clickable region occupies, as rendered in `area`.
+fn layout(area: Rect, model: &PopupModel) -> [(Region, Rect); 2] {
+    let max = usize::from(area.width);
+    let row = |index: u16, text: &str| {
+        let width = display_width(&truncate_left(text, max)) as u16;
+        Rect::new(area.x, area.y + index, width.min(area.width), 1)
+    };
+    [
+        (Region::ProjectName, row(0, &model.project_name)),
+        (Region::RepoPath, row(1, &model.repo_path)),
+    ]
+}
+
+/// The region under the cell at `column`, `row`, if any.
+pub fn hit_test(area: Rect, model: &PopupModel, column: u16, row: u16) -> Option<Region> {
+    layout(area, model)
+        .into_iter()
+        .find(|(_, rect)| rect.contains((column, row).into()))
+        .map(|(region, _)| region)
 }
 
 /// Where the popup's input events come from (the real terminal, or a script).
