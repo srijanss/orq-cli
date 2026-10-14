@@ -398,6 +398,72 @@ pub fn render_ledger_error(frame: &mut Frame, model: &PopupModel, error: &Ledger
     frame.render_widget(Paragraph::new(lines), panel);
 }
 
+/// One `dependsOn` entry with the status of that feature, or `None` when the
+/// ledger has no feature of that name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyStatus {
+    pub name: String,
+    pub status: Option<String>,
+}
+
+/// Everything the detail view shows about the selected feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureDetail {
+    pub name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub test_file: Option<String>,
+    pub dependencies: Vec<DependencyStatus>,
+}
+
+/// Look each dependency up among `rows`, keeping the order given.
+pub fn dependency_statuses(depends_on: &[String], rows: &[FeatureRow]) -> Vec<DependencyStatus> {
+    depends_on
+        .iter()
+        .map(|name| DependencyStatus {
+            name: name.clone(),
+            status: rows.iter().find(|row| &row.name == name).map(|row| row.status.clone()),
+        })
+        .collect()
+}
+
+/// Draw `detail` read-only into `area`: name, status, description (or a
+/// placeholder), the test file when recorded, and each dependency with its
+/// current status, flagged when the ledger has no such feature. Control
+/// characters from the ledger are replaced before drawing.
+pub fn render_feature_detail(frame: &mut Frame, area: Rect, detail: &FeatureDetail) {
+    let area = area.intersection(frame.area());
+    if area.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    let clean = |text: &str| -> String {
+        text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    };
+    let mut text = vec![
+        format!("{} [{}]", clean(&detail.name), clean(&detail.status)),
+        match &detail.description {
+            Some(description) => clean(description),
+            None => "(no description)".to_string(),
+        },
+    ];
+    if let Some(test_file) = &detail.test_file {
+        text.push(format!("test file: {}", clean(test_file)));
+    }
+    if !detail.dependencies.is_empty() {
+        text.push("depends on:".to_string());
+        for dependency in &detail.dependencies {
+            let status = match &dependency.status {
+                Some(status) => clean(status),
+                None => "not in ledger".to_string(),
+            };
+            text.push(format!("  {} ({status})", clean(&dependency.name)));
+        }
+    }
+    let lines: Vec<Line> = text.iter().map(|line| Line::from(truncate_right(line, width))).collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 const MARKER_WIDTH: usize = 2;
 const HEADER_ROWS: u16 = 2;
 
