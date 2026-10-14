@@ -1,9 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// What a [`FakeAgent`] observed on its most recent invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,9 +69,7 @@ impl FakeAgentBuilder {
     }
 
     pub fn build(self) -> FakeAgent {
-        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("orq-fake-agent-{}-{unique}", std::process::id()));
-        fs::create_dir_all(&dir).expect("create fake agent dir");
+        let dir = crate::private_dir("orq-fake-agent");
         fs::write(dir.join("stdout"), &self.stdout).expect("write stdout file");
 
         let script = dir.join("agent");

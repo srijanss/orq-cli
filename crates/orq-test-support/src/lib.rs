@@ -9,6 +9,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Create a new, empty directory under the temp dir that only this user can
+/// enter. `create_dir` fails on an existing path (including a planted symlink),
+/// so a pre-created directory is never adopted: the next name is tried instead.
+pub(crate) fn private_dir(prefix: &str) -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+
+    loop {
+        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{unique}", std::process::id()));
+        match fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return dir,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => panic!("create private temp dir {dir:?}: {err}"),
+        }
+    }
+}
+
 /// A throwaway Git repository in a unique temp directory, removed on drop.
 pub struct GitFixture {
     base: PathBuf,
@@ -18,8 +35,7 @@ pub struct GitFixture {
 
 impl GitFixture {
     pub fn new() -> Self {
-        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let base = std::env::temp_dir().join(format!("orq-fixture-{}-{unique}", std::process::id()));
+        let base = private_dir("orq-fixture");
         let root = base.join("repo");
         let nested = root.join("src").join("nested");
         fs::create_dir_all(&nested).expect("create fixture dirs");
