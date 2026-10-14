@@ -720,3 +720,58 @@ pub fn promote_intent_for_mouse(area: Rect, selected: Option<&FeatureRow>, mouse
     }
     promotable(selected).map(|row| PromoteIntent { feature: row.name.clone() })
 }
+
+/// What happened to a promote the caller attempted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromoteOutcome {
+    Saved,
+    Failed { reason: String },
+}
+
+/// The rows to show and the message to display after an outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeView {
+    pub rows: Vec<FeatureRow>,
+    pub notice: Option<String>,
+}
+
+/// Applies a promote outcome: success marks the feature pending locally;
+/// failure reports that nothing was saved and reloads from `fresh`.
+pub fn apply_promote_outcome(
+    rows: &[FeatureRow],
+    feature: &str,
+    outcome: &PromoteOutcome,
+    fresh: &[FeatureRow],
+) -> OutcomeView {
+    match outcome {
+        PromoteOutcome::Saved => {
+            let mut rows = rows.to_vec();
+            if let Some(row) = rows.iter_mut().find(|row| row.name == feature) {
+                row.status = "pending".into();
+            }
+            OutcomeView { rows, notice: None }
+        }
+        PromoteOutcome::Failed { reason } => {
+            let reason: String = reason.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            OutcomeView {
+                rows: fresh.to_vec(),
+                notice: Some(format!("nothing was saved: {reason}")),
+            }
+        }
+    }
+}
+
+/// Whether `code` asks to re-read the ledger on demand.
+pub fn reload_requested(code: KeyCode) -> bool {
+    code == KeyCode::Char('r')
+}
+
+/// Draws `notice`, if any, on the last row of `area`, clipped to its width.
+pub fn render_notice(frame: &mut Frame, area: Rect, notice: Option<&str>) {
+    let Some(text) = notice else { return };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let line = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+    frame.render_widget(Paragraph::new(truncate_right(text, area.width as usize)), line);
+}
