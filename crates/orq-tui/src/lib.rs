@@ -505,13 +505,23 @@ fn render_rows<'a>(
                 let row = row(index);
                 let (name, status) = feature_row_parts(row, room);
                 Line::from(vec![
-                    Span::raw(format!("{marker}{name}")),
+                    Span::styled(format!("{marker}{name}"), name_style(selected == Some(index))),
                     Span::styled(status, status_style(&row.status)),
                 ])
             })
             .collect()
     };
     frame.render_widget(Paragraph::new(lines), list);
+}
+
+/// The feature name's style: bright white and bold when selected, so the
+/// selection reads clearly on dark terminals; the default otherwise.
+fn name_style(selected: bool) -> Style {
+    if selected {
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    }
 }
 
 /// Cards for the rows that fit whole in `list`, the selected one with a
@@ -545,13 +555,15 @@ fn render_cards<'a>(
         let (name, status) = feature_row_parts(row, width.saturating_sub(MARKER_WIDTH));
         let used = MARKER_WIDTH + display_width(&name) + display_width(&status);
         let pad = width.saturating_sub(used);
+        let is_selected = selected == Some(index);
+        let summary_style = if is_selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
         let lines = vec![
             Line::styled(
                 format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&summary, width.saturating_sub(MARKER_WIDTH))),
-                Style::new().fg(Color::DarkGray),
+                summary_style,
             ),
             Line::from(vec![
-                Span::raw(format!("{marker}{name}")),
+                Span::styled(format!("{marker}{name}"), name_style(is_selected)),
                 Span::raw(" ".repeat(pad)),
                 Span::styled(status, status_style(&row.status)),
             ]),
