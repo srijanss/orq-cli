@@ -166,10 +166,12 @@ const LEDGER_FILE: &str = ".tdd-features.json";
 
 /// The ledger file for a resolved project: the worktree's own when it has
 /// one, otherwise the main checkout's. Derived only from `project`, so an
-/// inherited `TDD_FEATURES_PATH` is never consulted.
+/// inherited `TDD_FEATURES_PATH` is never consulted. Only a confirmed absence
+/// falls back: a local ledger that cannot be inspected stays the answer, so
+/// loading it reports the real error.
 pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
     let own = project.root.join(LEDGER_FILE);
-    if !project.is_linked_worktree || own.exists() {
+    if !project.is_linked_worktree || own.try_exists().unwrap_or(true) {
         return own;
     }
     match project.git_common_dir.parent() {
