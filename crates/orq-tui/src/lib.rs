@@ -1834,6 +1834,13 @@ where
                     continue;
                 }
                 if let Some(highlight) = browser.dropdown {
+                    let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                    if browser.dropdown_shown(area) == 0 {
+                        // The layout shrank under an open dropdown: no option is visible.
+                        browser.dropdown = None;
+                        dirty = true;
+                        continue;
+                    }
                     let last = status_options(&browser.rows).len().saturating_sub(1);
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('f') => browser.dropdown = None,
@@ -1939,6 +1946,9 @@ where
                 let (list, promote_area, _) = list_layout(body, selected.as_ref(), bulk);
                 let control = filter_control_rect(list, browser.status_filter.as_deref());
                 let press = Position::new(mouse.column, mouse.row);
+                if browser.dropdown.is_some() && browser.dropdown_shown(area) == 0 {
+                    browser.dropdown = None;
+                }
                 if let Some(highlight) = browser.dropdown {
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                         let options = status_options(&browser.rows);
@@ -1957,6 +1967,7 @@ where
                     }
                 } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && control.is_some_and(|c| c.contains(press))
+                    && browser.dropdown_shown(area) > 0
                 {
                     browser.toggle_dropdown();
                 } else if bulk > 0 && bulk_hit(promote_area, bulk, mouse) {
@@ -1969,7 +1980,13 @@ where
                 }
                 dirty = true;
             }
-            Event::Resize(..) => dirty = true,
+            Event::Resize(..) => {
+                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                if browser.dropdown.is_some() && browser.dropdown_shown(area) == 0 {
+                    browser.dropdown = None;
+                }
+                dirty = true;
+            }
             _ => {}
         }
     }
