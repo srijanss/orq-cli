@@ -780,14 +780,10 @@ pub fn feature_detail_lines(detail: &FeatureDetail, width: usize) -> Vec<String>
 /// Narrowest width a section box is drawn at; below it the plain lines are used.
 const SECTION_MIN_WIDTH: usize = 8;
 
-/// One bordered section: a titled top rule, `body` wrapped inside `│ … │`,
-/// and a bottom rule, every line exactly `width` columns.
-fn section_box(title: &str, body: &[String], width: usize) -> Vec<String> {
-    section_rows(title, body, width, false).into_iter().map(|(text, _)| text).collect()
-}
-
-/// `section_box` rows paired with whether each is a status-tag row (`tagged`
-/// marks every body row; rules never are).
+/// One bordered section as rows: a titled top rule, `body` wrapped inside
+/// `│ … │`, and a bottom rule, every line exactly `width` columns. Each row
+/// carries whether it is a status-tag row (`tagged` marks every body row;
+/// rules never are).
 fn section_rows(title: &str, body: &[String], width: usize, tagged: bool) -> Vec<(String, bool)> {
     let inner = width.saturating_sub(4);
     let title = truncate_right(&format!(" {title} "), width.saturating_sub(2));
