@@ -52,15 +52,16 @@ impl Scanner<'_> {
     fn status_span_of(mut self, name: &str) -> Result<Option<(usize, usize)>, EditError> {
         self.skip_ws();
         self.expect(b'[')?;
+        // Every entry is scanned, so an ill-shaped one is reported wherever it sits.
+        let mut found = None;
         loop {
             self.skip_ws();
             match self.peek() {
-                Some(b']') => return Ok(None),
+                Some(b']') => return Ok(found),
                 Some(b',') => self.pos += 1,
                 Some(b'{') => {
-                    if let Some(found) = self.entry(name)? {
-                        return Ok(Some(found));
-                    }
+                    let span = self.entry(name)?;
+                    found = found.or(span);
                 }
                 _ => return Err(EditError::Malformed),
             }
