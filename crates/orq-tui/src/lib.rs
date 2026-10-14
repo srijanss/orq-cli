@@ -216,7 +216,10 @@ pub fn render_view(frame: &mut Frame, view: &PopupView) {
 }
 
 pub fn render_popup(frame: &mut Frame, model: &PopupModel) {
-    let area = frame.area();
+    render_header(frame, frame.area(), model);
+}
+
+fn render_header(frame: &mut Frame, area: Rect, model: &PopupModel) {
     let width = usize::from(area.width);
     let header = Paragraph::new(vec![
         Line::from(truncate_left(&model.project_name, width)),
@@ -468,8 +471,20 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_popup(frame, model);
-    let full = list_area(frame.area());
+    render_search_in(frame, frame.area(), model, rows, items, search, state);
+}
+
+fn render_search_in(
+    frame: &mut Frame,
+    area: Rect,
+    model: &PopupModel,
+    rows: &[FeatureRow],
+    items: &[(String, Option<String>)],
+    search: &SearchState,
+    state: &FeatureListState,
+) {
+    render_header(frame, area, model);
+    let full = list_area(area);
     if full.is_empty() {
         return;
     }
@@ -478,7 +493,7 @@ pub fn render_feature_search(
         let line = truncate_left(&field, usize::from(full.width));
         frame.render_widget(Paragraph::new(line), Rect::new(full.x, full.y, full.width, 1));
     }
-    let list = list_area(search_area(frame.area(), search));
+    let list = list_area(search_area(area, search));
     let matches: Vec<usize> = matching_features(items, &search.query)
         .into_iter()
         .filter(|&index| index < rows.len())
@@ -774,4 +789,229 @@ pub fn render_notice(frame: &mut Frame, area: Rect, notice: Option<&str>) {
     }
     let line = Rect::new(area.x, area.bottom() - 1, area.width, 1);
     frame.render_widget(Paragraph::new(truncate_right(text, area.width as usize)), line);
+}
+
+/// One feature as the browser holds it: everything the list, search and
+/// detail views need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserEntry {
+    pub name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub depends_on: Vec<String>,
+    pub test_file: Option<String>,
+}
+
+/// Where the browser's data lives: reads the ledger and performs promotes.
+/// The browser itself never touches a file.
+pub trait BrowserBackend {
+    fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView>;
+    fn promote(&mut self, feature: &str) -> PromoteOutcome;
+}
+
+/// `orq ui`'s popup on the real terminal: the feature browser between `enter`
+/// and `leave`.
+pub fn run_browser_on_terminal(model: &PopupModel, backend: &mut dyn BrowserBackend) -> Result<(), Box<dyn Error>> {
+    let crossterm = ratatui::backend::CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(crossterm)?;
+    run_browser_session(&mut CrosstermMode, &mut terminal, model, backend, &mut CrosstermEvents)
+}
+
+/// As `run_popup_session`, for the feature browser.
+pub fn run_browser_session<B: Backend>(
+    mode: &mut dyn TerminalMode,
+    terminal: &mut Terminal<B>,
+    model: &PopupModel,
+    backend: &mut dyn BrowserBackend,
+    events: &mut dyn EventSource,
+) -> Result<(), Box<dyn Error>>
+where
+    B::Error: 'static,
+{
+    if let Err(err) = mode.enter() {
+        let _ = mode.leave();
+        return Err(err.into());
+    }
+    let result = run_browser(terminal, model, backend, events);
+    let restored = mode.leave();
+    result?;
+    restored?;
+    Ok(())
+}
+
+struct Browser {
+    entries: Vec<BrowserEntry>,
+    error: Option<LedgerErrorView>,
+    notice: Option<String>,
+    search: SearchState,
+    list: FeatureListState,
+}
+
+impl Browser {
+    fn rows(&self) -> Vec<FeatureRow> {
+        self.entries
+            .iter()
+            .map(|e| FeatureRow { name: e.name.clone(), status: e.status.clone() })
+            .collect()
+    }
+
+    fn items(&self) -> Vec<(String, Option<String>)> {
+        self.entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect()
+    }
+
+    /// The row the selection indexes once the search filter is applied.
+    fn selected_row(&self) -> Option<FeatureRow> {
+        let matches = matching_features(&self.items(), &self.search.query);
+        let index = self.list.selected?.min(matches.len().checked_sub(1)?);
+        let entry = &self.entries[*matches.get(index)?];
+        Some(FeatureRow { name: entry.name.clone(), status: entry.status.clone() })
+    }
+
+    fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
+        match loaded {
+            Ok(entries) => {
+                self.entries = entries;
+                self.error = None;
+            }
+            Err(error) => {
+                self.entries.clear();
+                self.error = Some(error);
+            }
+        }
+    }
+
+    fn promote(&mut self, backend: &mut dyn BrowserBackend, intent: PromoteIntent) {
+        let outcome = backend.promote(&intent.feature);
+        let fresh = backend.load();
+        let fresh_rows: Vec<FeatureRow> = match &fresh {
+            Ok(entries) => entries
+                .iter()
+                .map(|e| FeatureRow { name: e.name.clone(), status: e.status.clone() })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let view = apply_promote_outcome(&self.rows(), &intent.feature, &outcome, &fresh_rows);
+        self.apply_load(fresh);
+        if self.error.is_none() {
+            // Whatever the outcome, the shown statuses are the view's.
+            for (entry, row) in self.entries.iter_mut().zip(&view.rows) {
+                if entry.name == row.name {
+                    entry.status = row.status.clone();
+                }
+            }
+        }
+        self.notice = view.notice;
+    }
+
+    fn draw(&self, frame: &mut Frame, model: &PopupModel) {
+        let area = frame.area();
+        if let Some(error) = &self.error {
+            render_ledger_error(frame, model, error);
+            return;
+        }
+        let body_height = area.height.saturating_sub(u16::from(self.notice.is_some()));
+        let body = Rect::new(area.x, area.y, area.width, body_height);
+        let selected = self.selected_row();
+        let (list, _) = promote_split(body, selected.as_ref());
+        render_search_in(frame, list, model, &self.rows(), &self.items(), &self.search, &self.list);
+        render_promote_button(frame, body, selected.as_ref());
+        render_notice(frame, area, self.notice.as_deref());
+    }
+}
+
+/// The feature browser: lists the backend's features with search, selection,
+/// scrolling, and promote (key or button). A ledger that cannot be loaded is
+/// shown read-only with its error. Esc clears a search first, then closes.
+pub fn run_browser<B: Backend>(
+    terminal: &mut Terminal<B>,
+    model: &PopupModel,
+    backend: &mut dyn BrowserBackend,
+    events: &mut dyn EventSource,
+) -> Result<(), Box<dyn Error>>
+where
+    B::Error: 'static,
+{
+    let mut browser = Browser {
+        entries: Vec::new(),
+        error: None,
+        notice: None,
+        search: SearchState::default(),
+        list: FeatureListState::default(),
+    };
+    browser.apply_load(backend.load());
+    let mut dirty = true;
+    loop {
+        if dirty {
+            terminal.draw(|frame| browser.draw(frame, model))?;
+            dirty = false;
+        }
+        match events.next_event()? {
+            Event::Key(key) => {
+                if browser.error.is_some() {
+                    match key.code {
+                        KeyCode::Esc => return Ok(()),
+                        code if reload_requested(code) => {
+                            browser.apply_load(backend.load());
+                            dirty = true;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let selected = browser.selected_row();
+                let intent = if browser.search.active {
+                    None
+                } else {
+                    promote_intent_for_key(key.code, selected.as_ref())
+                };
+                if browser.search.active || intent.is_none() && !reload_requested(key.code) {
+                    match browser.search.handle_key(key.code) {
+                        SearchKey::Close => return Ok(()),
+                        SearchKey::Handled => {
+                            browser.list.selected = None;
+                            browser.list.offset = 0;
+                            dirty = true;
+                            continue;
+                        }
+                        SearchKey::Ignored => {}
+                    }
+                }
+                if let Some(intent) = intent {
+                    browser.promote(backend, intent);
+                } else if reload_requested(key.code) && !browser.search.active {
+                    browser.notice = None;
+                    browser.apply_load(backend.load());
+                } else {
+                    let body = body_area(area, browser.notice.is_some());
+                    let (list, _) = promote_split(body, selected.as_ref());
+                    let len = matching_features(&browser.items(), &browser.search.query).len();
+                    browser.list.handle_key(key.code, search_area(list, &browser.search), len);
+                }
+                dirty = true;
+            }
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                if browser.error.is_some() {
+                    continue;
+                }
+                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let body = body_area(area, browser.notice.is_some());
+                let selected = browser.selected_row();
+                if let Some(intent) = promote_intent_for_mouse(body, selected.as_ref(), mouse) {
+                    browser.promote(backend, intent);
+                } else {
+                    let (list, _) = promote_split(body, selected.as_ref());
+                    let len = matching_features(&browser.items(), &browser.search.query).len();
+                    browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
+                }
+                dirty = true;
+            }
+            Event::Resize(..) => dirty = true,
+            _ => {}
+        }
+    }
+}
+
+fn body_area(area: Rect, notice: bool) -> Rect {
+    Rect::new(area.x, area.y, area.width, area.height.saturating_sub(u16::from(notice)))
 }

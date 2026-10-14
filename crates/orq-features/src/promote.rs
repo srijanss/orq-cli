@@ -43,6 +43,16 @@ pub fn promote_feature_waiting(
     promote_loaded(&loaded, name, wait)
 }
 
+impl LoadedLedger {
+    /// Promotes `name` from draft to pending in the ledger as it was loaded:
+    /// if the file has changed since, nothing is written and the result is
+    /// [`PromoteError::Conflict`]. Waits at most `wait` for the lock (the
+    /// default wait when `None`).
+    pub fn promote(&self, name: &str, wait: Option<Duration>) -> Result<FeatureEntry, PromoteError> {
+        promote_loaded(self, name, wait)
+    }
+}
+
 pub(crate) fn promote_loaded(
     loaded: &LoadedLedger,
     name: &str,

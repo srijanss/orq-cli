@@ -219,14 +219,74 @@ fn ui(args: &[OsString]) -> ExitCode {
                 repo_path: path,
             },
         };
-        return match orq_tui::run_on_terminal(&model) {
-            Ok(_) => ExitCode::SUCCESS,
+        let result = match orq_git::resolve_project(&cwd) {
+            Ok(project) => {
+                let mut backend = LedgerBackend::new(orq_features::ledger_path(&project));
+                orq_tui::run_browser_on_terminal(&model, &mut backend)
+            }
+            Err(_) => orq_tui::run_on_terminal(&model).map(|_| ()),
+        };
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
             Err(err) => fail(err),
         };
     }
     let (width, height) = SNAPSHOT_SIZE;
     println!("{}", orq_tui::render_snapshot(&view, width, height));
     ExitCode::SUCCESS
+}
+
+/// The popup's data source: the project's own ledger, loaded when the popup
+/// opens (and on reload) and promoted against exactly those loaded bytes, so a
+/// file changed behind the popup's back is a conflict rather than overwritten.
+struct LedgerBackend {
+    path: PathBuf,
+    loaded: Option<orq_features::LoadedLedger>,
+}
+
+impl LedgerBackend {
+    fn new(path: PathBuf) -> Self {
+        Self { path, loaded: None }
+    }
+}
+
+impl orq_tui::BrowserBackend for LedgerBackend {
+    fn load(&mut self) -> Result<Vec<orq_tui::BrowserEntry>, orq_tui::LedgerErrorView> {
+        match orq_features::LoadedLedger::load(&self.path) {
+            Ok(loaded) => {
+                let entries = loaded
+                    .entries()
+                    .iter()
+                    .map(|entry| orq_tui::BrowserEntry {
+                        name: entry.feature_name.clone(),
+                        description: entry.description.clone(),
+                        status: status_text(&entry.status).to_string(),
+                        depends_on: entry.depends_on.clone(),
+                        test_file: entry.test_file.clone(),
+                    })
+                    .collect();
+                self.loaded = Some(loaded);
+                Ok(entries)
+            }
+            Err(err) => {
+                self.loaded = None;
+                Err(orq_tui::LedgerErrorView {
+                    path: self.path.to_string_lossy().into_owned(),
+                    reason: ledger_error_text(&err),
+                })
+            }
+        }
+    }
+
+    fn promote(&mut self, feature: &str) -> orq_tui::PromoteOutcome {
+        let Some(loaded) = &self.loaded else {
+            return orq_tui::PromoteOutcome::Failed { reason: "ledger is not loaded".to_string() };
+        };
+        match loaded.promote(feature, None) {
+            Ok(_) => orq_tui::PromoteOutcome::Saved,
+            Err(err) => orq_tui::PromoteOutcome::Failed { reason: promote_error_text(&err, feature) },
+        }
+    }
 }
 
 /// What the popup should show for `cwd`: its project, or why there is none.
