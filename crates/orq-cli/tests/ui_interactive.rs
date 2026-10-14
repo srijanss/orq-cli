@@ -29,7 +29,22 @@ while time.time() < deadline:
     if not sent and b"repo" in out:
         os.write(fd, b"\x1b")
         sent = True
-_, status = os.waitpid(pid, 0)
+import signal
+status = None
+end = time.time() + 5
+while status is None and time.time() < end:
+    done, st = os.waitpid(pid, os.WNOHANG)
+    if done:
+        status = st
+    else:
+        time.sleep(0.05)
+if status is None:
+    # Never block on a wedged child: kill it and report the output so far.
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    sys.stdout.buffer.write(out)
+    sys.stdout.buffer.write(b"\n[driver: orq did not exit and was killed]")
+    sys.exit(124)
 sys.stdout.buffer.write(out)
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
