@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::io;
 
@@ -463,7 +464,7 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let list = list_area(frame.area());
-    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, state, "no features");
+    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, None, state, "no features");
 }
 
 /// Rows `0..len` of `row` that fit in `list`, the selected one marked. Only
@@ -474,6 +475,7 @@ fn render_rows<'a>(
     len: usize,
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
+    marked: Option<&dyn Fn(usize) -> bool>,
     state: &FeatureListState,
     empty: &str,
 ) {
@@ -483,7 +485,7 @@ fn render_rows<'a>(
     let width = usize::from(list.width);
     let card = item_height(list);
     if card > 1 && len > 0 {
-        render_cards(frame, list, len, row, depends, state);
+        render_cards(frame, list, len, row, depends, marked, state);
         return;
     }
     let lines: Vec<Line> = if len == 0 {
@@ -501,17 +503,32 @@ fn render_rows<'a>(
                     (true, _) => "> ",
                     (false, _) => "  ",
                 };
-                let room = width.saturating_sub(MARKER_WIDTH);
+                let mark = mark_prefix(marked, index);
+                let room = width.saturating_sub(MARKER_WIDTH + mark.chars().count());
                 let row = row(index);
                 let (name, status) = feature_row_parts(row, room);
                 Line::from(vec![
-                    Span::styled(format!("{marker}{name}"), name_style(selected == Some(index))),
+                    Span::styled(format!("{marker}{mark}{name}"), name_style(selected == Some(index))),
                     Span::styled(status, status_style(&row.status)),
                 ])
             })
             .collect()
     };
     frame.render_widget(Paragraph::new(lines), list);
+}
+
+const MARK_ON: &str = "[x] ";
+const MARK_OFF: &str = "[ ] ";
+
+/// The check box drawn before a name once any row is marked, so the names
+/// stay aligned; empty while nothing is marked. `index` is the row's index
+/// in the list being drawn.
+fn mark_prefix(marked: Option<&dyn Fn(usize) -> bool>, index: usize) -> &'static str {
+    match marked {
+        Some(is_marked) if is_marked(index) => MARK_ON,
+        Some(_) => MARK_OFF,
+        None => "",
+    }
 }
 
 /// The feature name's style: bright white and bold when selected, so the
@@ -532,6 +549,7 @@ fn render_cards<'a>(
     len: usize,
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
+    marked: Option<&dyn Fn(usize) -> bool>,
     state: &FeatureListState,
 ) {
     let visible = usize::from(list.height / CARD_HEIGHT);
@@ -552,7 +570,9 @@ fn render_cards<'a>(
         let row = row(index);
         let summary = depends(index).unwrap_or_else(|| format!("#{}", index + 1));
         let marker = if selected == Some(index) { "> " } else { "  " };
-        let (name, status) = feature_row_parts(row, width.saturating_sub(MARKER_WIDTH));
+        let mark = mark_prefix(marked, index);
+        let (name, status) = feature_row_parts(row, width.saturating_sub(MARKER_WIDTH + mark.chars().count()));
+        let name = format!("{mark}{name}");
         let used = MARKER_WIDTH + display_width(&name) + display_width(&status);
         let pad = width.saturating_sub(used);
         let is_selected = selected == Some(index);
@@ -715,7 +735,7 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_search_in(frame, frame.area(), model, rows, items, search, state, &|_| None);
+    render_search_in(frame, frame.area(), model, rows, items, search, state, &|_| None, None);
 }
 
 fn render_search_in(
@@ -727,6 +747,7 @@ fn render_search_in(
     search: &SearchState,
     state: &FeatureListState,
     depends: &dyn Fn(usize) -> Option<String>,
+    marked: Option<&dyn Fn(usize) -> bool>,
 ) {
     render_header(frame, area, model);
     let full = list_area(area);
@@ -768,7 +789,18 @@ fn render_search_in(
         .filter(|&index| index < rows.len())
         .collect();
     let empty = if rows.is_empty() { "no features" } else { "no matches" };
-    render_rows(frame, list, matches.len(), |i| &rows[matches[i]], &|i| depends(matches[i]), state, empty);
+    let matched = &matches;
+    let marked_match = marked.map(|is_marked| move |i: usize| is_marked(matched[i]));
+    render_rows(
+        frame,
+        list,
+        matches.len(),
+        |i| &rows[matches[i]],
+        &|i| depends(matches[i]),
+        marked_match.as_ref().map(|f| f as &dyn Fn(usize) -> bool),
+        state,
+        empty,
+    );
 }
 
 /// Why the ledger could not be shown: where it was looked for and the reason.
@@ -1328,6 +1360,8 @@ struct Browser {
     list: FeatureListState,
     /// The open detail view, built once when it is opened or the data reloads.
     detail: Option<DetailView>,
+    /// Names of the rows marked with Space; never written anywhere.
+    marked: HashSet<String>,
 }
 
 struct DetailView {
@@ -1363,6 +1397,10 @@ impl Browser {
             .collect();
         self.items = entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect();
         self.entries = entries;
+        if !self.marked.is_empty() {
+            let present: HashSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
+            self.marked.retain(|name| present.contains(name.as_str()));
+        }
         // The open detail follows the reloaded data, or closes when its feature is gone.
         if let Some(open) = self.detail.take() {
             self.detail = self.detail_for(&open.row.name).map(|view| DetailView { scroll: open.scroll, ..view });
@@ -1481,9 +1519,12 @@ impl Browser {
         let (list, promote_area, panel) = list_layout(body, selected.as_ref());
         let entries = &self.entries;
         let depends = |index: usize| entries.get(index).map(|e| dependency_summary(&e.depends_on));
-        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends);
+        let marks = &self.marked;
+        let is_marked = |index: usize| entries.get(index).is_some_and(|e| marks.contains(&e.name));
+        let marked: Option<&dyn Fn(usize) -> bool> = if marks.is_empty() { None } else { Some(&is_marked) };
+        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends, marked);
         match panel {
-            Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref()),
+            Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref(), marks.len()),
             None => render_promote_button(frame, body, selected.as_ref()),
         }
         render_notice(frame, area, self.notice.as_deref());
@@ -1511,6 +1552,7 @@ where
         search: SearchState::default(),
         list: FeatureListState::default(),
         detail: None,
+        marked: HashSet::new(),
     };
     browser.apply_load(backend.load());
     let mut dirty = true;
@@ -1563,6 +1605,20 @@ where
                             }
                         }
                     }
+                    continue;
+                }
+                if key.code == KeyCode::Char(' ') && !browser.search.active {
+                    if let Some(row) = browser.selected_row() {
+                        if !browser.marked.remove(&row.name) {
+                            browser.marked.insert(row.name);
+                        }
+                        dirty = true;
+                    }
+                    continue;
+                }
+                if key.code == KeyCode::Esc && !search_field_shown(&browser.search) && !browser.marked.is_empty() {
+                    browser.marked.clear();
+                    dirty = true;
                     continue;
                 }
                 if key.code == KeyCode::Enter && !browser.search.active {
@@ -1700,13 +1756,14 @@ fn detail_viewport(panel: Rect) -> Rect {
     Block::bordered().inner(panel)
 }
 
-fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: Option<&FeatureRow>) {
+fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: Option<&FeatureRow>, marked: usize) {
     let title = match selected {
         Some(row) => format!(" Selected feature · {} ", row.name),
         None => " Selected feature ".to_string(),
     };
     let title: String = title.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
-    let hint: String = PANEL_HINT.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
+    let hint = if marked == 0 { PANEL_HINT.to_string() } else { format!(" {marked} marked ·{PANEL_HINT}") };
+    let hint: String = hint.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
