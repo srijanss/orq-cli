@@ -13,10 +13,28 @@ pid, fd = pty.fork()
 if pid == 0:
     fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     os.execv(sys.argv[1], [sys.argv[1], "ui"])
+# Keep our own slave descriptor so the terminal's attributes can be compared
+# before and after the child runs.
+slave = os.open(os.ptsname(fd), os.O_RDWR | os.O_NOCTTY)
+before = termios.tcgetattr(slave)
 out = b""
 sent = False
 deadline = time.time() + 15
+status = None
 while time.time() < deadline:
+    done, st = os.waitpid(pid, os.WNOHANG)
+    if done:
+        status = st
+        # Drain what the child wrote before it exited.
+        while select.select([fd], [], [], 0)[0]:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+        break
     r, _, _ = select.select([fd], [], [], 0.2)
     if r:
         try:
@@ -30,7 +48,6 @@ while time.time() < deadline:
         os.write(fd, b"\x1b")
         sent = True
 import signal
-status = None
 end = time.time() + 5
 while status is None and time.time() < end:
     done, st = os.waitpid(pid, os.WNOHANG)
@@ -45,7 +62,9 @@ if status is None:
     sys.stdout.buffer.write(out)
     sys.stdout.buffer.write(b"\n[driver: orq did not exit and was killed]")
     sys.exit(124)
+after = termios.tcgetattr(slave)
 sys.stdout.buffer.write(out)
+sys.stdout.buffer.write(b"\n[termios-restored]" if after[3] == before[3] else b"\n[termios-differs]")
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
     let output = Command::new("python3")
@@ -69,6 +88,8 @@ fn interactive_ui_draws_the_project_and_exits_cleanly_on_esc() {
 
     assert_eq!(code, 0, "{drawn}");
     assert!(drawn.contains(root.to_str().unwrap()), "{drawn}");
+    // Raw mode is undone (echo and canonical input are back).
+    assert!(drawn.ends_with("[termios-restored]"), "{drawn:?}");
     // The terminal is put back: mouse capture off and the alternate screen
     // left, after they were turned on.
     let position = |needle: &str| drawn.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {drawn:?}"));
