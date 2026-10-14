@@ -129,7 +129,14 @@ pub fn render_snapshot(view: &PopupView, width: u16, height: u16) -> String {
     let buffer = terminal.backend().buffer();
     (0..height)
         .map(|y| {
-            let line: String = (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+            let mut line = String::with_capacity(usize::from(width));
+            let mut x = 0;
+            while x < width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                // A wide glyph owns the following continuation cell(s) too.
+                x += u16::try_from(display_width(symbol).max(1)).unwrap_or(1);
+            }
             line.trim_end().to_string()
         })
         .collect::<Vec<_>>()
