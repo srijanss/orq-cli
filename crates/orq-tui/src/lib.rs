@@ -74,6 +74,44 @@ pub trait TerminalMode {
     fn leave(&mut self) -> io::Result<()>;
 }
 
+/// The real terminal: raw mode, alternate screen and mouse capture on enter,
+/// all undone on leave.
+pub struct CrosstermMode;
+
+impl TerminalMode for CrosstermMode {
+    fn enter(&mut self) -> io::Result<()> {
+        use ratatui::crossterm::event::EnableMouseCapture;
+        use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+        enable_raw_mode()?;
+        ratatui::crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+    }
+
+    fn leave(&mut self) -> io::Result<()> {
+        use ratatui::crossterm::event::DisableMouseCapture;
+        use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+        let screen =
+            ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        disable_raw_mode()?;
+        screen
+    }
+}
+
+/// Input events read from the real terminal.
+pub struct CrosstermEvents;
+
+impl EventSource for CrosstermEvents {
+    fn next_event(&mut self) -> io::Result<Event> {
+        ratatui::crossterm::event::read()
+    }
+}
+
+/// Run the popup on the real terminal until Esc.
+pub fn run_on_terminal(model: &PopupModel) -> Result<PopupState, Box<dyn Error>> {
+    let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    run_popup_session(&mut CrosstermMode, &mut terminal, model, &mut CrosstermEvents)
+}
+
 /// Run the popup between `enter` and `leave`. The terminal is always left
 /// again once entered, whether the popup closed normally or failed.
 pub fn run_popup_session<B: Backend>(

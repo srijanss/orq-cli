@@ -95,10 +95,11 @@ fn project_inspect(args: &[OsString]) -> ExitCode {
 }
 
 fn ui(args: &[OsString]) -> ExitCode {
-    match args {
-        [flag] if flag == "--snapshot" => {}
+    let snapshot = match args {
+        [] => false,
+        [flag] if flag == "--snapshot" => true,
         _ => return usage_error(),
-    }
+    };
 
     let cwd = match launch_cwd(None) {
         Ok(cwd) => cwd,
@@ -108,6 +109,19 @@ fn ui(args: &[OsString]) -> ExitCode {
         Ok(view) => view,
         Err(code) => return code,
     };
+    if !snapshot {
+        let model = match view {
+            PopupView::Project(model) => model,
+            PopupView::NotARepository { path } => PopupModel {
+                project_name: "not a Git repository".to_string(),
+                repo_path: path,
+            },
+        };
+        return match orq_tui::run_on_terminal(&model) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(err) => fail(err),
+        };
+    }
     let (width, height) = SNAPSHOT_SIZE;
     println!("{}", orq_tui::render_snapshot(&view, width, height));
     ExitCode::SUCCESS
