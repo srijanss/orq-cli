@@ -18,6 +18,8 @@ fn doctor(pane_cwd: Option<&Path>, process_cwd: &Path) -> Output {
     for var in VARS {
         command.env_remove(var);
     }
+    // Never run a real installed herdr from the suite.
+    command.env("HERDR_BIN_PATH", "/nonexistent/orq-test-herdr");
     if let Some(cwd) = pane_cwd {
         command.env("HERDR_ACTIVE_PANE_CWD", cwd);
     }

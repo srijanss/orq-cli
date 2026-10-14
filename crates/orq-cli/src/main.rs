@@ -224,6 +224,38 @@ const HERDR_VARS: [&str; 6] = [
 /// `orq doctor herdr [--cwd <path>]`: a read-only report of what Herdr passed
 /// in and what Orq resolved from it. An unusable launch directory is an error,
 /// never a silent fallback to another project.
+/// How long the Herdr version probe may run before it is abandoned.
+const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// `<bin> --version` stdout, or `None` when it fails, cannot start or does not
+/// finish in time. The child is killed and reaped on every path.
+fn herdr_version(bin: &OsString) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    let bytes = rx.recv_timeout(VERSION_PROBE_TIMEOUT).ok();
+    if bytes.is_none() {
+        let _ = child.kill();
+    }
+    let status = child.wait().ok()?;
+    let bytes = bytes?;
+    status.success().then(|| String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
 fn doctor_herdr(args: &[OsString]) -> ExitCode {
     let explicit: Option<PathBuf> = match args {
         [] => None,
@@ -238,12 +270,9 @@ fn doctor_herdr(args: &[OsString]) -> ExitCode {
         }
     }
     let herdr_bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| OsString::from("herdr"));
-    match std::process::Command::new(&herdr_bin).arg("--version").output() {
-        Ok(out) if out.status.success() => {
-            let version = String::from_utf8_lossy(&out.stdout);
-            println!("herdr version: {}", printable(version.trim()));
-        }
-        Ok(_) | Err(_) => println!("herdr version: unavailable ({})", printable(&herdr_bin.to_string_lossy())),
+    match herdr_version(&herdr_bin) {
+        Some(version) => println!("herdr version: {}", printable(&version)),
+        None => println!("herdr version: unavailable ({})", printable(&herdr_bin.to_string_lossy())),
     }
 
     let cwd = match launch_cwd(explicit.as_deref()) {
