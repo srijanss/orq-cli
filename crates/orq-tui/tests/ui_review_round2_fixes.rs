@@ -141,7 +141,7 @@ fn a_short_viewport_scrolls_the_dropdown_so_every_status_is_selectable() {
 
     let (_, lines) = run(&state, 60, 7, to_last_option());
 
-    assert!(has(&lines, "Status: other"), "{lines:#?}");
+    assert!(has(&lines, "Status: weird"), "{lines:#?}");
 }
 
 #[test]
@@ -152,5 +152,5 @@ fn a_notice_row_does_not_make_the_dropdown_select_hidden_options() {
 
     let (_, lines) = run(&state, 60, 7, events);
 
-    assert!(has(&lines, "Status: other"), "{lines:#?}");
+    assert!(has(&lines, "Status: weird"), "{lines:#?}");
 }

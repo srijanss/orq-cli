@@ -649,28 +649,27 @@ impl SearchState {
     }
 }
 
-/// The statuses the browser names; anything else is filed under "other".
+/// The statuses the browser knows the lifecycle order of; any other status
+/// is listed after them under its own name.
 const KNOWN_STATUSES: [&str; 4] = ["draft", "pending", "in_progress", "completed"];
 const FILTER_ALL: &str = "All";
-const FILTER_OTHER: &str = "other";
 
 /// Whether `status` passes the dropdown's filter; `None` is "All".
 fn status_matches(filter: Option<&str>, status: &str) -> bool {
     match filter {
         None => true,
-        Some(FILTER_OTHER) => !KNOWN_STATUSES.contains(&status),
         Some(wanted) => status == wanted,
     }
 }
 
 /// "All" plus every known status in lifecycle order (present or not), then
-/// "other" when a status outside the known four is present.
+/// each distinct other status present by its own name, sorted.
 fn status_options(rows: &[FeatureRow]) -> Vec<String> {
     let mut options = vec![FILTER_ALL.to_string()];
     options.extend(KNOWN_STATUSES.iter().map(|s| (*s).to_string()));
-    if rows.iter().any(|r| !KNOWN_STATUSES.contains(&r.status.as_str())) {
-        options.push(FILTER_OTHER.to_string());
-    }
+    let unknown: std::collections::BTreeSet<&str> =
+        rows.iter().map(|r| r.status.as_str()).filter(|s| !KNOWN_STATUSES.contains(s)).collect();
+    options.extend(unknown.into_iter().map(str::to_string));
     options
 }
 

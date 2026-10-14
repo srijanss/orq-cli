@@ -129,7 +129,7 @@ fn the_highlighted_last_option_is_drawn_before_it_is_chosen() {
 
     let (_, lines) = run(&state, 60, 7, open_and_go_down(key(KeyCode::Char('f'))));
 
-    assert!(has(&lines, "other"), "{lines:#?}");
+    assert!(has(&lines, "weird"), "{lines:#?}");
     assert!(has(&lines, "Status: All"), "nothing is chosen before Enter: {lines:#?}");
 }
 
@@ -141,7 +141,7 @@ fn the_highlighted_last_option_is_drawn_when_a_notice_takes_a_row() {
 
     let (_, lines) = run(&state, 60, 7, events);
 
-    assert!(has(&lines, "other"), "{lines:#?}");
+    assert!(has(&lines, "weird"), "{lines:#?}");
 }
 
 #[test]
@@ -151,16 +151,16 @@ fn clicking_a_scrolled_option_chooses_the_one_that_is_drawn() {
     let (line_y, line) = lines
         .iter()
         .enumerate()
-        .find(|(y, l)| *y != usize::from(row) && l.contains("other"))
+        .find(|(y, l)| *y != usize::from(row) && l.contains("weird"))
         .expect("last option drawn");
-    let option_column = u16::try_from(line[..line.find("other").unwrap()].chars().count()).unwrap();
+    let option_column = u16::try_from(line[..line.find("weird").unwrap()].chars().count()).unwrap();
     let _ = column;
 
     let mut events = open_and_go_down(key(KeyCode::Char('f')));
     events.push(click(option_column, u16::try_from(line_y).unwrap()));
     let (_, lines) = run(&shared(five()), 60, 7, events);
 
-    assert!(has(&lines, "Status: other"), "{lines:#?}");
+    assert!(has(&lines, "Status: weird"), "{lines:#?}");
 }
 
 #[test]
@@ -177,9 +177,9 @@ fn no_path_selects_an_option_that_is_not_drawn() {
             events.push(key(KeyCode::Enter));
             let (_, after) = run(&shared(five()), 60, height, events);
 
-            if !has(&before, "other") {
+            if !has(&before, "weird") {
                 assert!(
-                    !has(&after, "Status: other"),
+                    !has(&after, "Status: weird"),
                     "height {height} mouse {use_mouse}: chose an undrawn option\n{before:#?}\n{after:#?}"
                 );
             }
@@ -279,7 +279,7 @@ mod resizing {
         let lines = run_steps(steps);
 
         assert!(has(&lines, "Status: All"), "{lines:#?}");
-        assert!(!has(&lines, "other"), "{lines:#?}");
+        assert!(!has(&lines, "weird"), "{lines:#?}");
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod resizing {
             let lines = run_steps(steps);
 
             assert!(has(&lines, "Status: All"), "click {use_click}: {lines:#?}");
-            assert!(!has(&lines, "other"), "click {use_click}: {lines:#?}");
+            assert!(!has(&lines, "weird"), "click {use_click}: {lines:#?}");
         }
     }
 }

@@ -103,7 +103,7 @@ fn f_lists_all_and_every_known_status() {
     let (closed, lines) = run(ledger(), vec![ch('f')]);
 
     assert!(!closed);
-    for option in ["All", "draft", "pending", "in_progress", "completed", "other"] {
+    for option in ["All", "draft", "pending", "in_progress", "completed", "mystery"] {
         assert!(has(&lines, &format!("  {option}")) || has(&lines, &format!("> {option}")), "{option}: {lines:#?}");
     }
 }
@@ -163,11 +163,11 @@ fn selecting_all_again_resets_the_filter() {
 }
 
 #[test]
-fn other_selects_statuses_the_browser_has_no_name_for() {
+fn an_unknown_status_is_selectable_by_its_own_name() {
     let events = vec![ch('f'), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)];
     let (_, lines) = run(ledger(), events);
 
-    assert!(has(&lines, "Status: other ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: mystery ▾"), "{lines:#?}");
     assert!(has(&lines, "zulu") && !has(&lines, "alpha") && !has(&lines, "delta"), "{lines:#?}");
 }
 
