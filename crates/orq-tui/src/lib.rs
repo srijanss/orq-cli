@@ -590,12 +590,16 @@ pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec
 /// case. `rows` and `items` are parallel; extra items match on text only.
 pub fn matching_rows(rows: &[FeatureRow], items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
     let needle = query.to_lowercase();
-    let by_text = matching_features(items, query);
-    if needle.is_empty() {
-        return by_text;
-    }
-    (0..items.len())
-        .filter(|&i| by_text.contains(&i) || rows.get(i).is_some_and(|r| r.status.to_lowercase().contains(&needle)))
+    items
+        .iter()
+        .enumerate()
+        .filter(|(index, (name, description))| {
+            needle.is_empty()
+                || name.to_lowercase().contains(&needle)
+                || description.as_deref().is_some_and(|d| d.to_lowercase().contains(&needle))
+                || rows.get(*index).is_some_and(|row| row.status.to_lowercase().contains(&needle))
+        })
+        .map(|(index, _)| index)
         .collect()
 }
 
