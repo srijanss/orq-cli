@@ -336,23 +336,29 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 /// As `render_popup_with_features`, with the selected row marked by `> `.
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
-    let area = frame.area();
-    let width = usize::from(area.width);
-    let list = list_area(area);
+    let list = list_area(frame.area());
+    let shown: Vec<&FeatureRow> = rows.iter().collect();
+    render_rows(frame, list, &shown, state, "no features");
+}
+
+/// Rows of `shown` that fit in `list`, the selected one marked. Only those
+/// rows are formatted, however long the ledger is.
+fn render_rows(frame: &mut Frame, list: Rect, shown: &[&FeatureRow], state: &FeatureListState, empty: &str) {
     if list.is_empty() {
         return;
     }
-    // Only the rows that fit are formatted, however long the ledger is.
-    let lines: Vec<Line> = if rows.is_empty() {
-        vec![Line::from(truncate_left("no features", width))]
+    let width = usize::from(list.width);
+    let lines: Vec<Line> = if shown.is_empty() {
+        vec![Line::from(truncate_left(empty, width))]
     } else {
         let height = usize::from(list.height);
-        rows.iter()
+        shown
+            .iter()
             .enumerate()
-            .skip(window(state.selected, state.offset, height, rows.len()))
+            .skip(window(state.selected, state.offset, height, shown.len()))
             .take(height)
             .map(|(index, row)| {
-                let selected = state.selected.map(|i| i.min(rows.len() - 1)) == Some(index);
+                let selected = state.selected.map(|i| i.min(shown.len() - 1)) == Some(index);
                 // The marker has priority over the row text on narrow popups.
                 let marker = match (selected, width) {
                     (true, 0 | 1) => ">",
@@ -366,6 +372,100 @@ pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[Featur
             .collect()
     };
     frame.render_widget(Paragraph::new(lines), list);
+}
+
+/// What a key did to the search: consumed it, left it for the list, or asked
+/// for the popup to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchKey {
+    Handled,
+    Ignored,
+    Close,
+}
+
+/// The search field: `/` opens it, typing edits `query`, Enter keeps the
+/// filter and leaves the field, and Esc clears before it ever closes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SearchState {
+    pub active: bool,
+    pub query: String,
+}
+
+impl SearchState {
+    pub fn handle_key(&mut self, code: KeyCode) -> SearchKey {
+        match code {
+            KeyCode::Esc if self.active || !self.query.is_empty() => {
+                self.active = false;
+                self.query.clear();
+                SearchKey::Handled
+            }
+            KeyCode::Esc => SearchKey::Close,
+            KeyCode::Char('/') if !self.active => {
+                self.active = true;
+                SearchKey::Handled
+            }
+            KeyCode::Char(c) if self.active => {
+                if !c.is_control() {
+                    self.query.push(c);
+                }
+                SearchKey::Handled
+            }
+            KeyCode::Backspace if self.active => {
+                self.query.pop();
+                SearchKey::Handled
+            }
+            KeyCode::Enter if self.active => {
+                self.active = false;
+                SearchKey::Handled
+            }
+            _ => SearchKey::Ignored,
+        }
+    }
+}
+
+/// Indexes of the items whose name or description contains `query`, ignoring
+/// case, in their original order. An empty query matches everything.
+pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
+    let needle = query.to_lowercase();
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, description))| {
+            needle.is_empty()
+                || name.to_lowercase().contains(&needle)
+                || description.as_deref().is_some_and(|d| d.to_lowercase().contains(&needle))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// As `render_feature_list`, filtered by `search`. `items` are the name and
+/// description of each of `rows`; the selection indexes the filtered rows.
+pub fn render_feature_search(
+    frame: &mut Frame,
+    model: &PopupModel,
+    rows: &[FeatureRow],
+    items: &[(String, Option<String>)],
+    search: &SearchState,
+    state: &FeatureListState,
+) {
+    render_popup(frame, model);
+    let mut list = list_area(frame.area());
+    if list.is_empty() {
+        return;
+    }
+    if search.active || !search.query.is_empty() {
+        let field = format!("/{}", search.query.chars().filter(|c| !c.is_control()).collect::<String>());
+        let line = truncate_left(&field, usize::from(list.width));
+        frame.render_widget(Paragraph::new(line), Rect::new(list.x, list.y, list.width, 1));
+        list = Rect::new(list.x, list.y + 1, list.width, list.height - 1);
+    }
+    let shown: Vec<&FeatureRow> = matching_features(items, &search.query)
+        .into_iter()
+        .filter_map(|index| rows.get(index))
+        .collect();
+    let empty = if rows.is_empty() { "no features" } else { "no matches" };
+    render_rows(frame, list, &shown, state, empty);
 }
 
 /// Why the ledger could not be shown: where it was looked for and the reason.
