@@ -26,6 +26,10 @@ fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+fn wheel(kind: MouseEventKind, column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE })
+}
+
 fn click(column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -54,6 +58,10 @@ struct Shared {
     /// Applied to `entries` when a promote fails (what changed behind our back).
     on_failure: Option<Vec<BrowserEntry>>,
     loads: usize,
+    /// Replaces `entries` when the second load happens (changed on disk).
+    on_second_load: Option<Vec<BrowserEntry>>,
+    /// Applied to `entries` whenever a promote succeeds (a concurrent writer).
+    alongside_promote: Option<(String, String)>,
 }
 
 struct Fake(Rc<RefCell<Shared>>);
@@ -62,6 +70,11 @@ impl BrowserBackend for Fake {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
         let mut shared = self.0.borrow_mut();
         shared.loads += 1;
+        if shared.loads == 2 {
+            if let Some(changed) = shared.on_second_load.take() {
+                shared.entries = changed;
+            }
+        }
         match &shared.load_error {
             Some(error) => Err(error.clone()),
             None => Ok(shared.entries.clone()),
@@ -79,6 +92,11 @@ impl BrowserBackend for Fake {
         }
         for e in shared.entries.iter_mut().filter(|e| e.name == feature) {
             e.status = "pending".into();
+        }
+        if let Some((other, status)) = shared.alongside_promote.clone() {
+            for e in shared.entries.iter_mut().filter(|e| e.name == other) {
+                e.status = status.clone();
+            }
         }
         PromoteOutcome::Saved
     }
@@ -141,14 +159,19 @@ fn a_failed_promote_says_nothing_was_saved_and_shows_the_fresh_data() {
 }
 
 #[test]
-fn the_reload_key_rereads_the_ledger_on_demand() {
-    let state = shared(vec![entry("alpha", "draft")]);
+fn the_reload_key_replaces_the_shown_data_with_what_the_ledger_holds_now() {
+    let state = shared(vec![entry("alpha", "draft"), entry("gone", "draft")]);
+    // Between the initial load and the reload the ledger changes on disk.
+    state.borrow_mut().on_second_load = Some(vec![entry("alpha", "pending"), entry("late", "draft")]);
 
-    state.borrow_mut().entries.push(entry("late", "draft"));
     let lines = run(&state, vec![key(KeyCode::Char('r')), key(KeyCode::Esc)]);
 
-    assert_eq!(state.borrow().loads, 2); // the initial load and the reload
-    assert!(lines.join("\n").contains("late"), "{lines:?}");
+    assert_eq!(state.borrow().loads, 2);
+    let text = lines.join("\n");
+    assert!(text.contains("late"), "{lines:?}");
+    assert!(!text.contains("gone"), "{lines:?}");
+    let alpha = lines.iter().find(|l| l.contains("alpha")).expect("alpha row");
+    assert!(alpha.contains("pending"), "{lines:?}");
 }
 
 #[test]
@@ -198,4 +221,34 @@ fn a_search_filters_the_list_and_promotion_targets_the_filtered_selection() {
     );
 
     assert_eq!(state.borrow().promotes, vec!["beta".to_string()]);
+}
+
+#[test]
+fn the_mouse_wheel_scrolls_the_list() {
+    let entries = (0..12).map(|i| entry(&format!("f{i:02}"), "pending")).collect();
+    let state = shared(entries);
+
+    // 10 rows: 2 header rows leave 8 for the list; two wheel steps move it by two.
+    let lines = run(
+        &state,
+        vec![
+            wheel(MouseEventKind::ScrollDown, 3, 3),
+            wheel(MouseEventKind::ScrollDown, 3, 3),
+            key(KeyCode::Esc),
+        ],
+    );
+
+    assert!(lines[2].contains("f02"), "{lines:?}");
+    assert!(!lines.join("\n").contains("f00"), "{lines:?}");
+}
+
+#[test]
+fn a_successful_promote_shows_the_reloaded_statuses_including_concurrent_changes() {
+    let state = shared(vec![entry("alpha", "draft"), entry("beta", "draft")]);
+    state.borrow_mut().alongside_promote = Some(("beta".into(), "pending".into()));
+
+    let lines = run(&state, vec![key(KeyCode::Down), key(KeyCode::Char('p')), key(KeyCode::Esc)]);
+
+    let beta = lines.iter().find(|l| l.contains("beta")).expect("beta row");
+    assert!(beta.contains("pending") && !beta.contains("draft"), "{lines:?}");
 }

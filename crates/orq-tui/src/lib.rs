@@ -891,15 +891,9 @@ impl Browser {
             Err(_) => Vec::new(),
         };
         let view = apply_promote_outcome(&self.rows(), &intent.feature, &outcome, &fresh_rows);
+        // A successful load is authoritative, whatever the outcome was: it
+        // already includes this promote and any concurrent writer's changes.
         self.apply_load(fresh);
-        if self.error.is_none() {
-            // Whatever the outcome, the shown statuses are the view's.
-            for (entry, row) in self.entries.iter_mut().zip(&view.rows) {
-                if entry.name == row.name {
-                    entry.status = row.status.clone();
-                }
-            }
-        }
         self.notice = view.notice;
     }
 
@@ -990,7 +984,7 @@ where
                 }
                 dirty = true;
             }
-            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+            Event::Mouse(mouse) => {
                 if browser.error.is_some() {
                     continue;
                 }
