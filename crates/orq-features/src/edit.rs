@@ -61,6 +61,10 @@ impl Scanner<'_> {
                 Some(b',') => self.pos += 1,
                 Some(b'{') => {
                     let span = self.entry(name)?;
+                    if found.is_some() && span.is_some() {
+                        // The loader rejects a repeated featureName, so must the editor.
+                        return Err(EditError::Malformed);
+                    }
                     found = found.or(span);
                 }
                 _ => return Err(EditError::Malformed),
@@ -73,6 +77,7 @@ impl Scanner<'_> {
         self.expect(b'{')?;
         let mut matches = false;
         let mut status = None;
+        let (mut seen_name, mut seen_status) = (false, false);
         loop {
             self.skip_ws();
             match self.peek() {
@@ -95,9 +100,21 @@ impl Scanner<'_> {
             let value = (start, self.pos);
             match key.as_str() {
                 "featureName" => {
+                    if seen_name {
+                        return Err(EditError::Malformed);
+                    }
+                    seen_name = true;
                     matches = self.bytes[start] == b'"' && self.decode(value)? == name;
                 }
-                "status" if self.bytes[start] == b'"' => status = Some(value),
+                "status" => {
+                    if seen_status {
+                        return Err(EditError::Malformed);
+                    }
+                    seen_status = true;
+                    if self.bytes[start] == b'"' {
+                        status = Some(value);
+                    }
+                }
                 _ => {}
             }
         }
