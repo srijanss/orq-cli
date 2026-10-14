@@ -82,18 +82,41 @@ impl LoadedLedger {
     fn lock(&self, wait: Duration) -> Result<std::fs::File, SaveError> {
         let mut name = self.path.file_name().unwrap_or_default().to_os_string();
         name.push(".lock");
+        let lock_path = self.path.with_file_name(name);
+        // Opening a FIFO for writing blocks until a reader shows up, and a
+        // symlink could point at one, so only a regular file (or nothing yet)
+        // is acceptable.
+        match std::fs::symlink_metadata(&lock_path) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(SaveError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "ledger lock path is not a regular file",
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(SaveError::Io(e)),
+        }
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
-            .open(self.path.with_file_name(name))
+            .open(&lock_path)
             .map_err(SaveError::Io)?;
         let deadline = Instant::now() + wait;
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(file),
-                Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(LOCK_POLL),
-                Err(TryLockError::WouldBlock) => return Err(SaveError::Locked),
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(SaveError::Locked);
+                    }
+                    std::thread::sleep(LOCK_POLL.min(remaining));
+                    if Instant::now() >= deadline {
+                        return Err(SaveError::Locked);
+                    }
+                }
                 Err(TryLockError::Error(e)) => return Err(SaveError::Io(e)),
             }
         }
@@ -117,5 +140,32 @@ mod tests {
 
         assert!(matches!(result, Err(SaveError::Io(_))), "{result:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
+    }
+
+    #[test]
+    fn the_lock_is_held_during_the_write_and_free_after_a_failed_one() {
+        let dir = std::env::temp_dir().join(format!("orq-save-critical-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".tdd-features.json");
+        std::fs::write(&path, "[]").unwrap();
+        let loaded = LoadedLedger::load(&path).unwrap();
+        let probe = || {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(dir.join(".tdd-features.json.lock"))
+                .unwrap();
+            matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+        };
+
+        let result = loaded.save_with("[1]", Duration::ZERO, &|_, _| {
+            assert!(probe(), "lock not held during the write");
+            Err(std::io::Error::other("injected"))
+        });
+
+        assert!(matches!(result, Err(SaveError::Io(_))));
+        assert!(!probe(), "lock still held after the failed write");
     }
 }
