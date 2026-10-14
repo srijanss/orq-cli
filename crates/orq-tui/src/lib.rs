@@ -147,14 +147,23 @@ where
     B::Error: 'static,
 {
     let mut state = PopupState::default();
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| render_popup(frame, model))?;
+        if dirty {
+            terminal.draw(|frame| render_popup(frame, model))?;
+            dirty = false;
+        }
         match events.next_event()? {
             Event::Key(key) if key.code == KeyCode::Esc => return Ok(state),
-            Event::Mouse(mouse) => {
+            // Only a left press can change anything; motion and drag events
+            // (mouse capture sends many) need neither a size query nor a redraw.
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                 let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let before = state.clone();
                 state.handle_mouse(area, model, mouse);
+                dirty = state != before;
             }
+            Event::Resize(..) => dirty = true,
             _ => {}
         }
     }
