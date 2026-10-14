@@ -586,6 +586,19 @@ pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec
         .collect()
 }
 
+/// As `matching_features`, but a query also matches a row's status, ignoring
+/// case. `rows` and `items` are parallel; extra items match on text only.
+pub fn matching_rows(rows: &[FeatureRow], items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
+    let needle = query.to_lowercase();
+    let by_text = matching_features(items, query);
+    if needle.is_empty() {
+        return by_text;
+    }
+    (0..items.len())
+        .filter(|&i| by_text.contains(&i) || rows.get(i).is_some_and(|r| r.status.to_lowercase().contains(&needle)))
+        .collect()
+}
+
 /// The popup area as the list handlers must see it: one row shorter at the
 /// top while the search field is drawn, so `list_area` of the result is
 /// exactly where the filtered rows are rendered.
@@ -648,7 +661,7 @@ fn render_search_in(
         frame.render_widget(Paragraph::new(line), Rect::new(full.x, full.y, full.width, 1));
     }
     let list = list_area(search_area(area, search));
-    let matches: Vec<usize> = matching_features(items, &search.query)
+    let matches: Vec<usize> = matching_rows(rows, items, &search.query)
         .into_iter()
         .filter(|&index| index < rows.len())
         .collect();
@@ -1282,7 +1295,7 @@ impl Browser {
 
     /// The row the selection indexes once the search filter is applied.
     fn selected_row(&self) -> Option<FeatureRow> {
-        let matches = matching_features(&self.items, &self.search.query);
+        let matches = matching_rows(&self.rows, &self.items, &self.search.query);
         let index = self.list.selected?.min(matches.len().checked_sub(1)?);
         self.rows.get(*matches.get(index)?).cloned()
     }
@@ -1484,7 +1497,7 @@ where
                 } else {
                     let body = body_area(area, browser.notice.is_some());
                     let (list, _, _) = list_layout(body, selected.as_ref());
-                    let len = matching_features(browser.items(), &browser.search.query).len();
+                    let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
                     browser.list.handle_key(key.code, search_area(list, &browser.search), len);
                 }
                 dirty = true;
@@ -1517,7 +1530,7 @@ where
                 if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);
                 } else {
-                    let len = matching_features(browser.items(), &browser.search.query).len();
+                    let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
                     browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
                 }
                 dirty = true;
