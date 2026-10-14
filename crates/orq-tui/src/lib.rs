@@ -3,7 +3,7 @@ use std::io;
 
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
@@ -81,33 +81,38 @@ pub fn run_popup_session<B: Backend>(
     terminal: &mut Terminal<B>,
     model: &PopupModel,
     events: &mut dyn EventSource,
-) -> Result<(), Box<dyn Error>>
+) -> Result<PopupState, Box<dyn Error>>
 where
     B::Error: 'static,
 {
     mode.enter()?;
     let result = run_popup(terminal, model, events);
     let restored = mode.leave();
-    result?;
+    let state = result?;
     restored?;
-    Ok(())
+    Ok(state)
 }
 
-/// Draw the popup and process events until Esc is pressed.
+/// Draw the popup and process events until Esc is pressed, returning the
+/// final interactive state.
 pub fn run_popup<B: Backend>(
     terminal: &mut Terminal<B>,
     model: &PopupModel,
     events: &mut dyn EventSource,
-) -> Result<(), Box<dyn Error>>
+) -> Result<PopupState, Box<dyn Error>>
 where
     B::Error: 'static,
 {
+    let mut state = PopupState::default();
     loop {
         terminal.draw(|frame| render_popup(frame, model))?;
-        if let Event::Key(key) = events.next_event()? {
-            if key.code == KeyCode::Esc {
-                return Ok(());
+        match events.next_event()? {
+            Event::Key(key) if key.code == KeyCode::Esc => return Ok(state),
+            Event::Mouse(mouse) => {
+                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                state.handle_mouse(area, model, mouse);
             }
+            _ => {}
         }
     }
 }
