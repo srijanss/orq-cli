@@ -9,6 +9,8 @@ pub struct Project {
     pub name: String,
     pub root: PathBuf,
     pub git_common_dir: PathBuf,
+    /// True when `root` is a linked worktree rather than the main checkout.
+    pub is_linked_worktree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,16 +24,28 @@ pub enum ResolveError {
 pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
     let root = rev_parse(path, "--show-toplevel")?;
     let git_common_dir = rev_parse(path, "--git-common-dir")?;
-    let name = root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let git_dir = rev_parse(path, "--git-dir")?;
 
     Ok(Project {
-        name,
+        name: project_name(&git_common_dir),
         root,
+        is_linked_worktree: git_dir != git_common_dir,
         git_common_dir,
     })
+}
+
+/// The owning project's name, taken from the common directory so that every
+/// worktree of one repository reports the same name: `<repo>/.git` -> `repo`,
+/// a bare `repo.git` -> `repo`.
+fn project_name(git_common_dir: &Path) -> String {
+    let named = if git_common_dir.file_name().is_some_and(|name| name == ".git") {
+        git_common_dir.parent().and_then(Path::file_name)
+    } else {
+        git_common_dir.file_stem()
+    };
+    named
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Run `git rev-parse --path-format=absolute <flag>` and return its single
