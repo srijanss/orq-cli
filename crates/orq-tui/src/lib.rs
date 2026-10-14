@@ -677,8 +677,17 @@ fn status_options(rows: &[FeatureRow]) -> Vec<String> {
 /// longer names are clipped for display only (matching uses the full name).
 const MAX_STATUS_CELLS: usize = 20;
 
-fn filter_label(filter: Option<&str>) -> String {
-    let name = truncate_right(filter.unwrap_or(FILTER_ALL), MAX_STATUS_CELLS);
+/// Columns kept free beside the control in the header row.
+const FILTER_HEADER_RESERVE: usize = 16;
+
+/// The control's text for a header `list_width` cells wide. The status name
+/// is clipped to what the header can spare, but never below "All"'s width, so
+/// the control stays usable whenever the initial "Status: All ▾" fits.
+fn filter_label(filter: Option<&str>, list_width: u16) -> String {
+    let frame = display_width("Status:  ▾");
+    let spare = usize::from(list_width).saturating_sub(FILTER_HEADER_RESERVE + frame);
+    let budget = spare.clamp(display_width(FILTER_ALL), MAX_STATUS_CELLS);
+    let name = truncate_right(filter.unwrap_or(FILTER_ALL), budget);
     format!("Status: {name} ▾")
 }
 
@@ -690,7 +699,7 @@ fn active_option(options: &[String], filter: Option<&str>) -> usize {
 
 /// The one-row control on the right of the header's first row.
 fn filter_control_rect(list: Rect, filter: Option<&str>) -> Option<Rect> {
-    let width = u16::try_from(filter_label(filter).chars().count()).ok()?;
+    let width = u16::try_from(display_width(&filter_label(filter, list.width))).ok()?;
     if list.height == 0 || list.width < width + 16 {
         return None;
     }
@@ -1732,7 +1741,7 @@ impl Browser {
         let filter = self.status_filter.as_deref();
         if let Some(control) = filter_control_rect(list, filter) {
             frame.render_widget(ratatui::widgets::Clear, control);
-            frame.render_widget(Paragraph::new(filter_label(filter)), control);
+            frame.render_widget(Paragraph::new(filter_label(filter, list.width)), control);
             if let Some(highlight) = self.dropdown {
                 let options = status_options(&self.rows);
                 let rect = dropdown_rect(list, control, &options);

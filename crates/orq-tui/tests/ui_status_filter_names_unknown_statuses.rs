@@ -40,8 +40,12 @@ fn key(code: KeyCode) -> Event {
 }
 
 fn run(entries: Vec<BrowserEntry>, events: Vec<Event>) -> Vec<String> {
+    run_at(60, entries, events)
+}
+
+fn run_at(width: u16, entries: Vec<BrowserEntry>, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let (width, height) = (60u16, 24u16);
+    let height = 24u16;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let _ = run_browser(&mut terminal, &model, &mut Fixed(entries), &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
@@ -132,4 +136,38 @@ fn a_wide_character_status_is_filterable_and_reachable() {
 
     assert!(has(&lines, "Status: "), "{lines:#?}");
     assert!(has(&lines, "alpha") && !has(&lines, "bravo"), "{lines:#?}");
+}
+
+fn long_status_events(downs: usize) -> Vec<Event> {
+    let mut events = vec![key(KeyCode::Char('f'))];
+    events.extend(std::iter::repeat_with(|| key(KeyCode::Down)).take(downs));
+    events.push(key(KeyCode::Enter));
+    events
+}
+
+#[test]
+fn a_long_status_keeps_the_control_at_narrow_widths_and_can_be_left() {
+    let long = "a-very-long-status-name-that-would-not-fit-in-the-header";
+    let entries = vec![entry("alpha", long), entry("bravo", "draft")];
+
+    for width in [29u16, 32, 40, 45] {
+        let mut events = long_status_events(5);
+        events.push(key(KeyCode::Char('f')));
+        events.extend(std::iter::repeat_with(|| key(KeyCode::Up)).take(5));
+        events.push(key(KeyCode::Enter));
+        let lines = run_at(width, entries.clone(), events);
+
+        assert!(has(&lines, "Status: All ▾"), "width {width}: reopening and leaving must work: {lines:#?}");
+        assert!(has(&lines, "bravo"), "width {width}: {lines:#?}");
+    }
+}
+
+#[test]
+fn a_wide_character_status_control_keeps_its_arrow() {
+    let wide = "完了完了完了完了完了完了完了完了完了完了完了完了";
+    let entries = vec![entry("alpha", wide), entry("bravo", "draft")];
+
+    let lines = run_at(60, entries, long_status_events(5));
+
+    assert!(lines.iter().any(|l| l.contains("Status: ") && l.contains('…') && l.contains('▾')), "{lines:#?}");
 }
