@@ -28,13 +28,14 @@ fn lines(query: &str) -> String {
 }
 
 #[test]
-fn a_query_matches_the_feature_status_ignoring_case() {
+fn a_query_no_longer_matches_the_feature_status() {
     let shown = lines("PENDING");
-    assert!(shown.contains("alpha") && shown.contains("gamma"), "{shown}");
-    assert!(!shown.contains("beta"), "{shown}");
+    assert!(shown.contains("no matches"), "{shown}");
 }
 
 #[test]
-fn a_status_that_matches_nothing_shows_no_matches() {
-    assert!(lines("blocked").contains("no matches"));
+fn a_query_still_matches_the_feature_name_ignoring_case() {
+    let shown = lines("ALPH");
+    assert!(shown.contains("alpha"), "{shown}");
+    assert!(!shown.contains("beta") && !shown.contains("gamma"), "{shown}");
 }

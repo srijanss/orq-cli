@@ -31,10 +31,10 @@ fn screen(query: &str) -> String {
 #[test]
 fn each_field_the_placeholder_names_is_searchable() {
     let hint = screen("");
-    assert!(hint.contains("name") && hint.contains("status"), "{hint}");
+    assert!(hint.contains("feature name") && !hint.contains("status"), "{hint}");
 
     let by_name = screen("login");
     assert!(by_name.contains("login") && !by_name.contains("export"), "{by_name}");
     let by_status = screen("completed");
-    assert!(by_status.contains("export") && !by_status.contains("login"), "{by_status}");
+    assert!(by_status.contains("no matches"), "{by_status}");
 }

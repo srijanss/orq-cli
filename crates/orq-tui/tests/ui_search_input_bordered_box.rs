@@ -29,7 +29,7 @@ fn an_open_field_is_a_three_row_rounded_box_titled_search_holding_the_placeholde
     let top = out.iter().position(|l| l.contains('╭') && l.contains("Search")).unwrap_or_else(|| panic!("{out:#?}"));
 
     assert!(out[top + 1].starts_with('│') && out[top + 1].trim_end().ends_with('│'), "{out:#?}");
-    assert!(out[top + 1].contains("Search by feature name or status"), "{out:#?}");
+    assert!(out[top + 1].contains("Search by feature name"), "{out:#?}");
     assert!(out[top + 2].starts_with('╰') && out[top + 2].trim_end().ends_with('╯'), "{out:#?}");
 }
 

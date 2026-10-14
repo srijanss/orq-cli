@@ -58,9 +58,9 @@ fn typed(query: &str) -> Vec<KeyCode> {
 }
 
 #[test]
-fn a_status_only_query_opens_the_displayed_feature_not_the_first_underlying_row() {
-    let mut keys = typed("completed");
-    keys.extend([KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+fn a_name_query_opens_the_displayed_feature_not_the_first_underlying_row() {
+    let mut keys = typed("ddd");
+    keys.extend([KeyCode::Down, KeyCode::Enter]);
     let screen = press(&keys);
 
     assert!(screen.contains("ddd description"), "{screen}");

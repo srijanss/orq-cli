@@ -665,16 +665,17 @@ pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec
         .collect()
 }
 
-/// As `matching_features`, but a query also matches a row's status, ignoring
-/// case. `rows` and `items` are parallel; extra items match on text only.
-pub fn matching_rows(rows: &[FeatureRow], items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
-    matching_rows_visiting(rows, items, query, |_| {})
+/// As `matching_features`, over rows parallel to `items`. A query matches the
+/// name or description only, ignoring case; the status is never searched (it
+/// has its own filter).
+pub fn matching_rows(_rows: &[FeatureRow], items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
+    matching_rows_visiting(_rows, items, query, |_| {})
 }
 
 /// As `matching_rows`, calling `on_visit` with the index of every row it
 /// examines, so tests can assert the filter does a single pass.
 pub fn matching_rows_visiting(
-    rows: &[FeatureRow],
+    _rows: &[FeatureRow],
     items: &[(String, Option<String>)],
     query: &str,
     mut on_visit: impl FnMut(usize),
@@ -688,7 +689,6 @@ pub fn matching_rows_visiting(
             needle.is_empty()
                 || name.to_lowercase().contains(&needle)
                 || description.as_deref().is_some_and(|d| d.to_lowercase().contains(&needle))
-                || rows.get(*index).is_some_and(|row| row.status.to_lowercase().contains(&needle))
         })
         .map(|(index, _)| index)
         .collect()
@@ -718,7 +718,7 @@ pub fn search_area(area: Rect, search: &SearchState) -> Rect {
     Rect::new(area.x, area.y + rows, area.width, area.height - rows)
 }
 
-const SEARCH_PLACEHOLDER: &str = "Search by feature name or status…";
+const SEARCH_PLACEHOLDER: &str = "Search by feature name…";
 
 fn search_field_shown(search: &SearchState) -> bool {
     search.active || !search.query.is_empty()

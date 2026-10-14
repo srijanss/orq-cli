@@ -4,7 +4,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 
-const PLACEHOLDER: &str = "Search by feature name or status";
+const PLACEHOLDER: &str = "Search by feature name";
 
 fn frame(search: &SearchState, width: u16) -> Terminal<TestBackend> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };

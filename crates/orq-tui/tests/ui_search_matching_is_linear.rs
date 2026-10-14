@@ -13,12 +13,12 @@ fn fixture(count: usize) -> (Vec<FeatureRow>, Vec<(String, Option<String>)>) {
 }
 
 #[test]
-fn matches_keep_their_order_whether_text_or_status_matched() {
+fn matches_keep_their_order_and_ignore_the_status() {
     let (rows, items) = fixture(6);
 
-    assert_eq!(matching_rows(&rows, &items, "PENDING"), vec![0, 2, 4]);
+    assert!(matching_rows(&rows, &items, "PENDING").is_empty());
     assert_eq!(matching_rows(&rows, &items, "feature-3"), vec![3]);
-    // "e" is in every name and every status: all rows, once each, in order.
+    // "e" is in every name: all rows, once each, in order.
     assert_eq!(matching_rows(&rows, &items, "e"), vec![0, 1, 2, 3, 4, 5]);
 }
 
@@ -50,7 +50,7 @@ fn quadrupling_the_rows_does_not_square_the_filtering_cost() {
 }
 
 /// Deterministic companion to the timing check above: a large list is
-/// filtered completely and in order, with a status-only query as well.
+/// filtered completely and in order; a status word matches nothing.
 #[test]
 fn a_large_list_is_filtered_completely_and_in_order() {
     let (rows, items) = fixture(60_000);
@@ -59,9 +59,7 @@ fn a_large_list_is_filtered_completely_and_in_order() {
     assert_eq!(all.len(), 60_000);
     assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
 
-    let pending = matching_rows(&rows, &items, "pending");
-    assert_eq!(pending.len(), 30_000);
-    assert!(pending.iter().all(|i| i % 2 == 0));
+    assert!(matching_rows(&rows, &items, "pending").is_empty());
 }
 
 thread_local! {
@@ -120,7 +118,7 @@ fn visits_for(count: usize, query: &str) -> (usize, usize) {
 /// re-scans per row examines more and the growth is no longer linear.
 #[test]
 fn each_row_is_examined_exactly_once_whatever_the_query() {
-    for query in ["feature", "pending", "no-such-text", ""] {
+    for query in ["feature", "feature-1", "no-such-text", ""] {
         let (small, _) = visits_for(1_000, query);
         let (large, _) = visits_for(4_000, query);
 
@@ -133,7 +131,7 @@ fn each_row_is_examined_exactly_once_whatever_the_query() {
 fn the_visiting_variant_returns_what_matching_rows_returns() {
     let (rows, items) = fixture(10);
 
-    for query in ["feature-3", "done", "zzz", ""] {
+    for query in ["feature-3", "feature", "zzz", ""] {
         assert_eq!(matching_rows_visiting(&rows, &items, query, |_| {}), matching_rows(&rows, &items, query));
     }
 }
