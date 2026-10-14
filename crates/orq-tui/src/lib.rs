@@ -112,6 +112,28 @@ where
     }
 }
 
+/// What the popup shows: a resolved project, or why there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PopupView {
+    Project(PopupModel),
+    NotARepository { path: String },
+}
+
+pub fn render_view(frame: &mut Frame, view: &PopupView) {
+    match view {
+        PopupView::Project(model) => render_popup(frame, model),
+        PopupView::NotARepository { path } => {
+            let area = frame.area();
+            let width = usize::from(area.width);
+            let empty = Paragraph::new(vec![
+                Line::from(truncate_left("not a Git repository", width)),
+                Line::from(truncate_left(path, width)),
+            ]);
+            frame.render_widget(empty, area);
+        }
+    }
+}
+
 pub fn render_popup(frame: &mut Frame, model: &PopupModel) {
     let area = frame.area();
     let width = usize::from(area.width);
