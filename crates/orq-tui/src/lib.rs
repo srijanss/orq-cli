@@ -841,6 +841,9 @@ where
 
 struct Browser {
     entries: Vec<BrowserEntry>,
+    /// Derived from `entries` once per load, so redraws and keys do not clone the ledger.
+    rows: Vec<FeatureRow>,
+    items: Vec<(String, Option<String>)>,
     error: Option<LedgerErrorView>,
     notice: Option<String>,
     search: SearchState,
@@ -848,33 +851,38 @@ struct Browser {
 }
 
 impl Browser {
-    fn rows(&self) -> Vec<FeatureRow> {
-        self.entries
+    fn set_entries(&mut self, entries: Vec<BrowserEntry>) {
+        self.rows = entries
             .iter()
             .map(|e| FeatureRow { name: e.name.clone(), status: e.status.clone() })
-            .collect()
+            .collect();
+        self.items = entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect();
+        self.entries = entries;
     }
 
-    fn items(&self) -> Vec<(String, Option<String>)> {
-        self.entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect()
+    fn rows(&self) -> &[FeatureRow] {
+        &self.rows
+    }
+
+    fn items(&self) -> &[(String, Option<String>)] {
+        &self.items
     }
 
     /// The row the selection indexes once the search filter is applied.
     fn selected_row(&self) -> Option<FeatureRow> {
-        let matches = matching_features(&self.items(), &self.search.query);
+        let matches = matching_features(&self.items, &self.search.query);
         let index = self.list.selected?.min(matches.len().checked_sub(1)?);
-        let entry = &self.entries[*matches.get(index)?];
-        Some(FeatureRow { name: entry.name.clone(), status: entry.status.clone() })
+        self.rows.get(*matches.get(index)?).cloned()
     }
 
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
         match loaded {
             Ok(entries) => {
-                self.entries = entries;
+                self.set_entries(entries);
                 self.error = None;
             }
             Err(error) => {
-                self.entries.clear();
+                self.set_entries(Vec::new());
                 self.error = Some(error);
             }
         }
@@ -890,7 +898,7 @@ impl Browser {
                 .collect(),
             Err(_) => Vec::new(),
         };
-        let view = apply_promote_outcome(&self.rows(), &intent.feature, &outcome, &fresh_rows);
+        let view = apply_promote_outcome(self.rows(), &intent.feature, &outcome, &fresh_rows);
         // A successful load is authoritative, whatever the outcome was: it
         // already includes this promote and any concurrent writer's changes.
         self.apply_load(fresh);
@@ -907,7 +915,7 @@ impl Browser {
         let body = Rect::new(area.x, area.y, area.width, body_height);
         let selected = self.selected_row();
         let (list, _) = promote_split(body, selected.as_ref());
-        render_search_in(frame, list, model, &self.rows(), &self.items(), &self.search, &self.list);
+        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list);
         render_promote_button(frame, body, selected.as_ref());
         render_notice(frame, area, self.notice.as_deref());
     }
@@ -927,6 +935,8 @@ where
 {
     let mut browser = Browser {
         entries: Vec::new(),
+        rows: Vec::new(),
+        items: Vec::new(),
         error: None,
         notice: None,
         search: SearchState::default(),
@@ -979,7 +989,7 @@ where
                 } else {
                     let body = body_area(area, browser.notice.is_some());
                     let (list, _) = promote_split(body, selected.as_ref());
-                    let len = matching_features(&browser.items(), &browser.search.query).len();
+                    let len = matching_features(browser.items(), &browser.search.query).len();
                     browser.list.handle_key(key.code, search_area(list, &browser.search), len);
                 }
                 dirty = true;
@@ -999,7 +1009,7 @@ where
                     browser.promote(backend, intent);
                 } else {
                     let (list, _) = promote_split(body, selected.as_ref());
-                    let len = matching_features(&browser.items(), &browser.search.query).len();
+                    let len = matching_features(browser.items(), &browser.search.query).len();
                     browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
                 }
                 dirty = true;

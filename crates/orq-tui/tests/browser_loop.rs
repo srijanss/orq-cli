@@ -271,3 +271,78 @@ fn pointer_motion_and_releases_change_nothing() {
     assert!(state.borrow().promotes.is_empty());
     assert!(lines.join("\n").contains("Mark pending"), "{lines:?}");
 }
+
+/// A backend that counts size queries and flushes (one per redraw).
+struct Counting {
+    inner: TestBackend,
+    sizes: Rc<std::cell::Cell<usize>>,
+    flushes: Rc<std::cell::Cell<usize>>,
+}
+
+impl ratatui::backend::Backend for Counting {
+    type Error = <TestBackend as ratatui::backend::Backend>::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.inner.draw(content)
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.inner.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.inner.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.inner.get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(&mut self, position: P) -> Result<(), Self::Error> {
+        self.inner.set_cursor_position(position)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.inner.clear()
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.inner.clear_region(clear_type)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.sizes.set(self.sizes.get() + 1);
+        self.inner.size()
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.inner.window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.flushes.set(self.flushes.get() + 1);
+        self.inner.flush()
+    }
+}
+
+fn work_done(events: Vec<Event>) -> (usize, usize) {
+    let state = shared(vec![entry("alpha", "draft")]);
+    let sizes = Rc::new(std::cell::Cell::new(0));
+    let flushes = Rc::new(std::cell::Cell::new(0));
+    let backend = Counting { inner: TestBackend::new(40, 10), sizes: sizes.clone(), flushes: flushes.clone() };
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(backend).unwrap();
+    run_browser(&mut terminal, &model, &mut Fake(state), &mut Script(events.into())).unwrap();
+    (sizes.get(), flushes.get())
+}
+
+#[test]
+fn ignored_mouse_events_cause_no_size_queries_or_redraws() {
+    let baseline = work_done(vec![key(KeyCode::Down), key(KeyCode::Esc)]);
+
+    let with_noise = work_done(vec![
+        key(KeyCode::Down),
+        wheel(MouseEventKind::Moved, 3, 9),
+        wheel(MouseEventKind::Up(MouseButton::Left), 3, 9),
+        wheel(MouseEventKind::Drag(MouseButton::Left), 3, 9),
+        wheel(MouseEventKind::Down(MouseButton::Right), 3, 9),
+        wheel(MouseEventKind::ScrollLeft, 3, 9),
+        key(KeyCode::Esc),
+    ]);
+
+    assert_eq!(with_noise, baseline);
+}
