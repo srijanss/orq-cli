@@ -186,3 +186,6 @@ pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
 
 mod edit;
 pub use edit::{set_entry_status, EditError};
+
+mod write;
+pub use write::write_ledger_atomic;
