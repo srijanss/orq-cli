@@ -36,16 +36,24 @@ pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
 
 /// The owning project's name, taken from the common directory so that every
 /// worktree of one repository reports the same name: `<repo>/.git` -> `repo`,
-/// a bare `repo.git` -> `repo`.
+/// a bare `repo.git` -> `repo`. Any other bare directory keeps its full name.
 fn project_name(git_common_dir: &Path) -> String {
-    let named = if git_common_dir.file_name().is_some_and(|name| name == ".git") {
+    let is_dot_git = git_common_dir.file_name().is_some_and(|name| name == ".git");
+    let basename = if is_dot_git {
         git_common_dir.parent().and_then(Path::file_name)
     } else {
-        git_common_dir.file_stem()
+        git_common_dir.file_name()
     };
-    named
+    let name = basename
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if is_dot_git {
+        return name;
+    }
+    match name.strip_suffix(".git") {
+        Some(stem) if !stem.is_empty() => stem.to_string(),
+        _ => name,
+    }
 }
 
 /// Run `git rev-parse --path-format=absolute <flag>` and return its single
