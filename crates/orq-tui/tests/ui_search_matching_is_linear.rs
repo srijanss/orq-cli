@@ -20,13 +20,28 @@ fn matches_keep_their_order_whether_text_or_status_matched() {
     assert_eq!(matching_rows(&rows, &items, "e"), vec![0, 1, 2, 3, 4, 5]);
 }
 
+/// Best of three runs, so one descheduled run cannot distort the figure.
+fn best_time(count: usize) -> Duration {
+    let (rows, items) = fixture(count);
+    (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            let matches = matching_rows(&rows, &items, "feature");
+            let elapsed = started.elapsed();
+            assert_eq!(matches.len(), count);
+            elapsed
+        })
+        .min()
+        .unwrap()
+}
+
+/// Four times the rows should cost about four times as much; a quadratic
+/// filter costs sixteen times. The bound sits far from both, and no absolute
+/// deadline is involved, so a slow machine does not fail it.
 #[test]
-fn filtering_a_large_list_where_most_rows_match_stays_fast() {
-    let (rows, items) = fixture(60_000);
-    let started = Instant::now();
+fn quadrupling_the_rows_does_not_square_the_filtering_cost() {
+    let small = best_time(15_000).max(Duration::from_micros(50));
+    let large = best_time(60_000);
 
-    let matches = matching_rows(&rows, &items, "feature");
-
-    assert_eq!(matches.len(), 60_000);
-    assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
+    assert!(large < small * 10, "15k rows took {small:?}, 60k rows took {large:?}");
 }
