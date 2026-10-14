@@ -1,3 +1,5 @@
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use orq_tui::{matching_rows, FeatureRow};
@@ -60,4 +62,48 @@ fn a_large_list_is_filtered_completely_and_in_order() {
     let pending = matching_rows(&rows, &items, "pending");
     assert_eq!(pending.len(), 30_000);
     assert!(pending.iter().all(|i| i % 2 == 0));
+}
+
+thread_local! {
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Counts allocations per thread, so parallel tests do not disturb each
+/// other and the figure is the same on every machine and run.
+struct Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+fn allocations_for(count: usize) -> usize {
+    let (rows, items) = fixture(count);
+    let before = ALLOCATIONS.with(Cell::get);
+    let matches = matching_rows(&rows, &items, "feature");
+    let used = ALLOCATIONS.with(Cell::get) - before;
+    assert_eq!(matches.len(), count);
+    used
+}
+
+/// Deterministic scaling check, with no clock involved: the filter's work is
+/// counted as allocations (each row's lowercase copies), which a linear pass
+/// keeps at a fixed few per row. Re-scanning, re-collecting or re-filtering
+/// per row multiplies that count, and quadrupling the rows then does more than
+/// quadruple it.
+#[test]
+fn filtering_work_per_row_does_not_grow_with_the_list() {
+    let small = allocations_for(15_000);
+    let large = allocations_for(60_000);
+
+    assert!(small <= 15_000 * 4, "{small} allocations for 15k rows");
+    assert!(large <= small * 4 + 64, "15k rows used {small} allocations, 60k rows used {large}");
 }
