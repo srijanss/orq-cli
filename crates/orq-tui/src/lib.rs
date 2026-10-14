@@ -232,57 +232,92 @@ pub struct FeatureRow {
     pub status: String,
 }
 
-/// Which feature row is selected, if any.
+/// Which feature row is selected, if any, and the first row shown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FeatureListState {
     pub selected: Option<usize>,
+    pub offset: usize,
 }
 
 impl FeatureListState {
-    /// Up and Down move the selection within `len` rows and stop at the ends.
-    /// A selection left past the end of a shrunken list is clamped first, and
-    /// cleared when the list is empty. Selecting never starts or edits anything.
-    pub fn handle_key(&mut self, code: KeyCode, len: usize) {
-        self.normalize(len);
+    /// Up and Down move the selection within `len` rows and stop at the ends,
+    /// scrolling just far enough to keep it in view. A selection left past the
+    /// end of a shrunken list is clamped first, and cleared when the list is
+    /// empty. Selecting never starts or edits anything.
+    pub fn handle_key(&mut self, code: KeyCode, area: Rect, len: usize) {
+        self.normalize(area, len);
         if len == 0 {
             return;
         }
         match code {
             KeyCode::Down => self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(len - 1))),
             KeyCode::Up => self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1))),
+            _ => return,
+        }
+        self.offset = self.window(area, len);
+    }
+
+    /// A left press on a listed row selects it; the wheel scrolls one row and
+    /// stops at both ends, pulling the selection into view if it would leave.
+    /// Any other place or event is ignored.
+    pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
+        self.normalize(area, len);
+        let list = list_area(area);
+        let height = usize::from(list.height);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if !list.contains((mouse.column, mouse.row).into()) {
+                    return;
+                }
+                let index = self.offset + usize::from(mouse.row - list.y);
+                if index < len {
+                    self.selected = Some(index);
+                }
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                if height == 0 {
+                    return;
+                }
+                let max = len.saturating_sub(height);
+                self.offset = if mouse.kind == MouseEventKind::ScrollDown {
+                    (self.offset + 1).min(max)
+                } else {
+                    self.offset.saturating_sub(1)
+                };
+                if let Some(i) = self.selected {
+                    self.selected = Some(i.clamp(self.offset, (self.offset + height - 1).min(len - 1)));
+                }
+            }
             _ => {}
         }
     }
 
-    /// A left press on a listed row selects it; any other place is ignored.
-    pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
-        self.normalize(len);
-        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-            return;
-        }
-        let list = list_area(area);
-        if !list.contains((mouse.column, mouse.row).into()) {
-            return;
-        }
-        let index = first_visible(self.selected, usize::from(list.height)) + usize::from(mouse.row - list.y);
-        if index < len {
-            self.selected = Some(index);
-        }
-    }
-
-    fn normalize(&mut self, len: usize) {
+    fn normalize(&mut self, area: Rect, len: usize) {
         self.selected = match self.selected {
             Some(_) if len == 0 => None,
             Some(i) => Some(i.min(len - 1)),
             None => None,
         };
+        self.offset = self.window(area, len);
+    }
+
+    /// The first row shown: `offset`, kept within the list and moved just far
+    /// enough that the selected row is inside the window.
+    fn window(&self, area: Rect, len: usize) -> usize {
+        window(self.selected, self.offset, usize::from(list_area(area).height), len)
     }
 }
 
-/// The first row shown: the window slides just far enough that the selected
-/// row is always inside it. Mouse hit-testing uses the same offset.
-fn first_visible(selected: Option<usize>, height: usize) -> usize {
-    selected.map_or(0, |i| (i + 1).saturating_sub(height))
+fn window(selected: Option<usize>, offset: usize, height: usize, len: usize) -> usize {
+    if height == 0 || len == 0 {
+        return 0;
+    }
+    let offset = offset.min(len.saturating_sub(height));
+    match selected.map(|i| i.min(len - 1)) {
+        Some(i) if i < offset => i,
+        Some(i) if i >= offset + height => i + 1 - height,
+        _ => offset,
+    }
 }
 
 fn list_area(area: Rect) -> Rect {
@@ -313,7 +348,7 @@ pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[Featur
         let height = usize::from(list.height);
         rows.iter()
             .enumerate()
-            .skip(first_visible(state.selected.map(|i| i.min(rows.len() - 1)), height))
+            .skip(window(state.selected, state.offset, height, rows.len()))
             .take(height)
             .map(|(index, row)| {
                 let selected = state.selected.map(|i| i.min(rows.len() - 1)) == Some(index);

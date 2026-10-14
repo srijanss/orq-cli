@@ -39,16 +39,16 @@ fn down_and_up_move_the_selection_and_stop_at_the_ends() {
     let mut state = FeatureListState::default();
     assert_eq!(state.selected, None);
 
-    state.handle_key(KeyCode::Down, 3);
+    state.handle_key(KeyCode::Down, AREA, 3);
     assert_eq!(state.selected, Some(0));
-    state.handle_key(KeyCode::Down, 3);
-    state.handle_key(KeyCode::Down, 3);
-    state.handle_key(KeyCode::Down, 3);
+    state.handle_key(KeyCode::Down, AREA, 3);
+    state.handle_key(KeyCode::Down, AREA, 3);
+    state.handle_key(KeyCode::Down, AREA, 3);
     assert_eq!(state.selected, Some(2));
-    state.handle_key(KeyCode::Up, 3);
+    state.handle_key(KeyCode::Up, AREA, 3);
     assert_eq!(state.selected, Some(1));
-    state.handle_key(KeyCode::Up, 3);
-    state.handle_key(KeyCode::Up, 3);
+    state.handle_key(KeyCode::Up, AREA, 3);
+    state.handle_key(KeyCode::Up, AREA, 3);
     assert_eq!(state.selected, Some(0));
 }
 
@@ -66,7 +66,7 @@ fn a_left_click_on_a_row_selects_it_and_it_is_shown_as_selected() {
 
 #[test]
 fn a_click_outside_the_list_changes_nothing() {
-    let mut state = FeatureListState { selected: Some(1) };
+    let mut state = FeatureListState { selected: Some(1), ..Default::default() };
 
     state.handle_mouse(AREA, 3, click(5, 0)); // header
     state.handle_mouse(AREA, 3, click(5, 6)); // below the last row
@@ -79,7 +79,7 @@ fn a_click_outside_the_list_changes_nothing() {
 fn selection_is_never_set_for_an_empty_list() {
     let mut state = FeatureListState::default();
 
-    state.handle_key(KeyCode::Down, 0);
+    state.handle_key(KeyCode::Down, AREA, 0);
     state.handle_mouse(AREA, 0, click(5, 2));
 
     assert_eq!(state.selected, None);
@@ -87,19 +87,19 @@ fn selection_is_never_set_for_an_empty_list() {
 
 #[test]
 fn a_selection_beyond_a_shrunken_list_is_clamped_or_cleared() {
-    let mut state = FeatureListState { selected: Some(9) };
-    state.handle_key(KeyCode::Up, 3);
+    let mut state = FeatureListState { selected: Some(9), ..Default::default() };
+    state.handle_key(KeyCode::Up, AREA, 3);
     assert_eq!(state.selected, Some(1));
 
-    let mut state = FeatureListState { selected: Some(9) };
-    state.handle_key(KeyCode::Down, 3);
+    let mut state = FeatureListState { selected: Some(9), ..Default::default() };
+    state.handle_key(KeyCode::Down, AREA, 3);
     assert_eq!(state.selected, Some(2));
 
-    let mut state = FeatureListState { selected: Some(2) };
-    state.handle_key(KeyCode::Down, 0);
+    let mut state = FeatureListState { selected: Some(2), ..Default::default() };
+    state.handle_key(KeyCode::Down, AREA, 0);
     assert_eq!(state.selected, None);
 
-    let mut state = FeatureListState { selected: Some(2) };
+    let mut state = FeatureListState { selected: Some(2), ..Default::default() };
     state.handle_mouse(AREA, 0, click(5, 2));
     assert_eq!(state.selected, None);
 }
@@ -122,7 +122,7 @@ fn draw(width: u16, height: u16, rows: &[FeatureRow], state: &FeatureListState) 
 fn a_selection_below_the_visible_rows_stays_marked_and_clickable() {
     // 5 rows high: 2 header rows leave 3 list rows for 10 features.
     let rows = many_rows(10);
-    let state = FeatureListState { selected: Some(7) };
+    let state = FeatureListState { selected: Some(7), ..Default::default() };
 
     let lines = draw(40, 5, &rows, &state);
 
@@ -131,7 +131,7 @@ fn a_selection_below_the_visible_rows_stays_marked_and_clickable() {
     assert!(marked[0].contains("f7"), "{lines:?}");
 
     // Clicking the first visible list row selects the feature shown there.
-    let mut clicked = FeatureListState { selected: Some(7) };
+    let mut clicked = FeatureListState { selected: Some(7), ..Default::default() };
     clicked.handle_mouse(Rect::new(0, 0, 40, 5), 10, click(3, 2));
     assert_eq!(clicked.selected, Some(5));
 }
@@ -139,7 +139,7 @@ fn a_selection_below_the_visible_rows_stays_marked_and_clickable() {
 #[test]
 fn a_two_column_popup_shows_the_marker_and_one_column_keeps_it_distinguishable() {
     let rows = many_rows(2);
-    let selected = FeatureListState { selected: Some(0) };
+    let selected = FeatureListState { selected: Some(0), ..Default::default() };
     let none = FeatureListState::default();
 
     let wide = draw(2, 4, &rows, &selected);
