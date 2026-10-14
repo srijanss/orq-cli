@@ -53,6 +53,9 @@ impl LoadedLedger {
     /// the TDD MCP takes), so cooperating writers cannot interleave between
     /// them. A writer that ignores the lock is not excluded. If another
     /// process holds the lock for the whole wait, returns [`SaveError::Locked`].
+    ///
+    /// Saving is supported on Unix only; elsewhere it returns an
+    /// [`SaveError::Io`] of kind `Unsupported`.
     pub fn save(&self, contents: &str) -> Result<(), SaveError> {
         self.save_waiting(contents, LOCK_WAIT)
     }
@@ -168,6 +171,7 @@ mod tests {
         assert_eq!(elapsed.get(), Duration::from_millis(1));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_write_is_an_io_error_not_a_conflict() {
         let dir = std::env::temp_dir().join(format!("orq-save-io-{}", std::process::id()));
@@ -183,6 +187,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_lock_is_held_during_the_write_and_free_after_a_failed_one() {
         let dir = std::env::temp_dir().join(format!("orq-save-critical-{}", std::process::id()));

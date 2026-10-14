@@ -134,3 +134,45 @@ fn a_fifo_in_the_lock_path_is_an_io_error_not_a_hang() {
     assert!(matches!(result, Err(SaveError::Io(_))), "{result:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), ORIGINAL);
 }
+
+#[test]
+fn a_symlink_in_the_lock_path_is_refused_and_not_followed() {
+    let path = scratch("symlink");
+    let loaded = LoadedLedger::load(&path).unwrap();
+    let target = path.with_file_name("elsewhere");
+    fs::write(&target, "untouched").unwrap();
+    std::os::unix::fs::symlink(&target, lock_path(&path)).unwrap();
+
+    let result = loaded.save_waiting(UPDATED, Duration::from_millis(100));
+
+    assert!(matches!(result, Err(SaveError::Io(_))), "{result:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), ORIGINAL);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+}
+
+#[test]
+fn a_fifo_with_a_reader_attached_is_refused_by_the_descriptor_check() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = scratch("fifo-reader");
+    let loaded = LoadedLedger::load(&path).unwrap();
+    let status = std::process::Command::new("mkfifo").arg(lock_path(&path)).status().unwrap();
+    assert!(status.success());
+    // With a reader attached the write-only open succeeds at the OS level.
+    let _reader = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(lock_path(&path))
+        .unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(loaded.save_waiting(UPDATED, Duration::from_millis(100)));
+    });
+    let result = rx.recv_timeout(Duration::from_secs(3)).expect("save hung on a FIFO lock path");
+
+    match result {
+        Err(SaveError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), ORIGINAL);
+}
