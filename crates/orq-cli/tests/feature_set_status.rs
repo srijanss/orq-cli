@@ -115,3 +115,28 @@ fn a_held_lock_is_refused_and_the_file_is_untouched() {
 
     assert_refused(&out, &before, repo.root(), "locked");
 }
+
+#[test]
+fn an_unrecognised_status_is_refused_and_the_file_is_untouched() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("odd", "weird")]);
+    let before = ledger_bytes(repo.root());
+
+    let out = set_status(repo.root(), "odd", "pending");
+
+    assert_refused(&out, &before, repo.root(), "unrecognised status");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("weird"));
+}
+
+#[test]
+fn control_characters_in_the_id_never_reach_stderr_raw() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("alpha", "draft")]);
+    let before = ledger_bytes(repo.root());
+
+    let out = set_status(repo.root(), "x\u{1b}[31m\nforged: line", "pending");
+
+    assert_refused(&out, &before, repo.root(), "unknown feature");
+    assert!(!out.stderr.contains(&0x1b));
+    assert_eq!(out.stderr.iter().filter(|b| **b == b'\n').count(), 1);
+}
