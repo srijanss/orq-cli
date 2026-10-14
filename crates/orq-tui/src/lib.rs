@@ -332,8 +332,10 @@ impl FeatureListState {
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let index = self.offset + usize::from(mouse.row - list.y) / card;
-                if index < len {
+                let slot = usize::from(mouse.row - list.y) / card;
+                // Rows below the last whole card are blank: nothing to select there.
+                let index = self.offset + slot;
+                if slot < height && index < len {
                     self.selected = Some(index);
                 }
             }
