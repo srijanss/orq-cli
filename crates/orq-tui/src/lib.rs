@@ -159,7 +159,8 @@ where
             // Only a left press can change anything; motion and drag events
             // (mouse capture sends many) need neither a size query nor a redraw.
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                // The plain popup draws no chrome: hit-test the whole terminal.
+                let area = Rect::from((Position::ORIGIN, terminal.size()?));
                 let before = state.clone();
                 state.handle_mouse(area, model, mouse);
                 dirty = state != before;
