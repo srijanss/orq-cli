@@ -632,8 +632,8 @@ pub fn feature_detail_lines(detail: &FeatureDetail, width: usize) -> Vec<String>
     lines
 }
 
-/// Break `text` into lines of at most `width` display columns, at character
-/// boundaries; a zero-width mark stays with the character before it.
+/// Break `text` into lines of at most `width` display columns, at grapheme
+/// cluster boundaries, so joined emoji and combining marks are never split.
 fn wrap_hard(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return Vec::new();
@@ -641,13 +641,19 @@ fn wrap_hard(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let w = Span::raw(c.to_string()).width();
+    for cluster in text.graphemes(true) {
+        // A cluster wider than the whole viewport cannot be shown intact; an
+        // ellipsis stands in for it so no line overflows.
+        let (cluster, w) = if display_width(cluster) > width {
+            ("…".to_string(), 1)
+        } else {
+            (cluster.to_string(), display_width(cluster))
+        };
         if used + w > width && !line.is_empty() {
             lines.push(std::mem::take(&mut line));
             used = 0;
         }
-        line.push(c);
+        line.push_str(&cluster);
         used += w;
     }
     lines.push(line);
@@ -663,9 +669,26 @@ pub fn render_feature_detail_scrolled(frame: &mut Frame, area: Rect, detail: &Fe
         return;
     }
     let lines = feature_detail_lines(detail, usize::from(area.width));
-    let start = scroll.min(lines.len().saturating_sub(usize::from(area.height)));
-    let shown: Vec<Line> = lines.into_iter().skip(start).map(Line::from).collect();
+    render_detail_lines(frame, area, &lines, scroll);
+}
+
+/// Draw only the visible slice of already laid-out `lines`, from `scroll`
+/// (clamped so the last line can reach the bottom and no further).
+fn render_detail_lines(frame: &mut Frame, area: Rect, lines: &[String], scroll: usize) {
+    let height = usize::from(area.height);
+    let start = scroll.min(lines.len().saturating_sub(height));
+    let shown: Vec<Line> = lines.iter().skip(start).take(height).map(|l| Line::from(l.as_str())).collect();
     frame.render_widget(Paragraph::new(shown), area);
+}
+
+thread_local! {
+    static DETAIL_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has laid a detail view out (wrapped its text);
+/// a diagnostic for tests that scrolling reuses the cached layout.
+pub fn detail_layouts() -> usize {
+    DETAIL_LAYOUTS.with(|count| count.get())
 }
 
 /// `prefix` + `name`, then `tag`, within `width` columns. The tag is kept
@@ -920,6 +943,21 @@ struct DetailView {
     detail: FeatureDetail,
     row: FeatureRow,
     scroll: usize,
+    /// `detail` wrapped for `width` columns; rebuilt only when the width
+    /// changes (a reload builds a fresh view, so it starts empty).
+    lines: Vec<String>,
+    width: Option<usize>,
+}
+
+impl DetailView {
+    fn layout(&mut self, width: usize) -> &[String] {
+        if self.width != Some(width) {
+            self.lines = feature_detail_lines(&self.detail, width);
+            self.width = Some(width);
+            DETAIL_LAYOUTS.with(|count| count.set(count.get() + 1));
+        }
+        &self.lines
+    }
 }
 
 impl Browser {
@@ -948,6 +986,8 @@ impl Browser {
             },
             row: FeatureRow { name: entry.name.clone(), status: entry.status.clone() },
             scroll: 0,
+            lines: Vec::new(),
+            width: None,
         })
     }
 
@@ -971,7 +1011,7 @@ impl Browser {
         let Some(open) = &mut self.detail else {
             return false;
         };
-        let total = feature_detail_lines(&open.detail, usize::from(text.width)).len();
+        let total = open.layout(usize::from(text.width)).len();
         let max = total.saturating_sub(usize::from(text.height));
         let next = open.scroll.min(max).saturating_add_signed(delta).min(max);
         let moved = next != open.scroll;
@@ -1009,16 +1049,22 @@ impl Browser {
         self.notice = view.notice;
     }
 
-    fn draw(&self, frame: &mut Frame, model: &PopupModel) {
+    fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
         let area = frame.area();
         if let Some(error) = &self.error {
             render_ledger_error(frame, model, error);
             return;
         }
-        if let Some(open) = &self.detail {
-            let body = body_area(area, self.notice.is_some());
+        let notice = self.notice.is_some();
+        if let Some(open) = &mut self.detail {
+            let body = body_area(area, notice);
             let (text, _) = promote_split(body, Some(&open.row));
-            render_feature_detail_scrolled(frame, text, &open.detail, open.scroll);
+            let text = text.intersection(area);
+            let scroll = open.scroll;
+            if !text.is_empty() {
+                let lines = open.layout(usize::from(text.width));
+                render_detail_lines(frame, text, lines, scroll);
+            }
             render_promote_button(frame, body, Some(&open.row));
             render_notice(frame, area, self.notice.as_deref());
             return;
@@ -1077,8 +1123,14 @@ where
                 }
                 if let Some(open) = &browser.detail {
                     let row = open.row.clone();
-                    let area = Rect::from((Position::ORIGIN, terminal.size()?));
-                    let text = promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0;
+                    let scrolls = matches!(key.code, KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp);
+                    // Only the scroll keys need the viewport, so ignored keys query nothing.
+                    let text = if scrolls {
+                        let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                        promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0
+                    } else {
+                        Rect::default()
+                    };
                     match key.code {
                         KeyCode::Esc | KeyCode::Backspace => {
                             browser.detail = None;

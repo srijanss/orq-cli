@@ -4,7 +4,7 @@ use std::io;
 use std::rc::Rc;
 
 use orq_tui::{
-    run_browser, BrowserBackend, BrowserEntry, EventSource, LedgerErrorView, PopupModel, PromoteOutcome,
+    detail_layouts, feature_detail_lines, run_browser, FeatureDetail, BrowserBackend, BrowserEntry, EventSource, LedgerErrorView, PopupModel, PromoteOutcome,
 };
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{
@@ -486,6 +486,22 @@ fn detail_keys_that_change_nothing_cause_no_redraws() {
 }
 
 #[test]
+fn ignored_keys_in_the_detail_view_cause_no_size_queries() {
+    let baseline = work_done(vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Esc), key(KeyCode::Esc)]);
+
+    let with_noise = work_done(vec![
+        key(KeyCode::Down),
+        key(KeyCode::Enter),
+        key(KeyCode::Char('x')),
+        key(KeyCode::Left),
+        key(KeyCode::Esc),
+        key(KeyCode::Esc),
+    ]);
+
+    assert_eq!(with_noise, baseline);
+}
+
+#[test]
 fn a_reload_in_detail_follows_the_data_and_closes_it_when_the_feature_is_gone() {
     let state = shared(vec![detailed("alpha", "pending")]);
     state.borrow_mut().on_second_load = Some(vec![BrowserEntry {
@@ -517,4 +533,205 @@ fn a_failed_promote_from_detail_says_nothing_was_saved_and_shows_fresh_data() {
     assert_eq!(state.borrow().promotes, vec!["alpha".to_string()]);
     assert!(text.contains("nothing was saved"), "{lines:?}");
     assert!(text.contains("fresh text"), "{lines:?}");
+}
+
+fn described(text: &str) -> FeatureDetail {
+    FeatureDetail {
+        name: "a".into(),
+        description: Some(text.into()),
+        status: "s".into(),
+        test_file: None,
+        dependencies: vec![],
+    }
+}
+
+#[test]
+fn wrapping_keeps_joined_emoji_and_combining_marks_whole_and_never_overflows() {
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let body = |lines: Vec<String>| lines[1..].to_vec();
+
+    let joined = body(feature_detail_lines(&described(&format!("ab{family}cd")), 4));
+    assert_eq!(joined, vec![format!("ab{family}"), "cd".to_string()]);
+
+    let combining = body(feature_detail_lines(&described("abe\u{301}cd"), 3));
+    assert_eq!(combining, vec!["abe\u{301}".to_string(), "cd".to_string()]);
+
+    // A cluster wider than the viewport is replaced by an ellipsis, not emitted oversized.
+    let cjk = body(feature_detail_lines(&described("\u{4F60}a"), 1));
+    assert_eq!(cjk, vec!["\u{2026}".to_string(), "a".to_string()]);
+}
+
+#[test]
+fn scrolling_the_detail_lays_it_out_once_per_width_not_once_per_key() {
+    let state = shared(vec![long_detail()]);
+    let mut events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+    events.extend((0..10).map(|_| key(KeyCode::Down)));
+    events.extend((0..10).map(|_| wheel(MouseEventKind::ScrollUp, 3, 3)));
+    events.push(key(KeyCode::PageDown));
+    events.push(key(KeyCode::Esc));
+    events.push(key(KeyCode::Esc));
+
+    let before = detail_layouts();
+    run(&state, events);
+
+    assert_eq!(detail_layouts() - before, 1);
+}
+
+/// A backend whose size follows `target`, so a script can resize the terminal.
+struct Resizable {
+    inner: std::cell::RefCell<TestBackend>,
+    target: Rc<std::cell::Cell<(u16, u16)>>,
+}
+
+impl ratatui::backend::Backend for Resizable {
+    type Error = <TestBackend as ratatui::backend::Backend>::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.inner.borrow_mut().draw(content)
+    }
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().hide_cursor()
+    }
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.inner.borrow_mut().get_cursor_position()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(&mut self, position: P) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().set_cursor_position(position)
+    }
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().clear()
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().clear_region(clear_type)
+    }
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        let (width, height) = self.target.get();
+        self.inner.borrow_mut().resize(width, height);
+        Ok(ratatui::layout::Size::new(width, height))
+    }
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.inner.borrow_mut().window_size()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.inner.borrow_mut().flush()
+    }
+}
+
+/// Feeds `events`, resizing the terminal whenever a `Resize` is delivered.
+struct ResizingScript {
+    events: VecDeque<Event>,
+    target: Rc<std::cell::Cell<(u16, u16)>>,
+}
+
+impl EventSource for ResizingScript {
+    fn next_event(&mut self) -> io::Result<Event> {
+        let event = self
+            .events
+            .pop_front()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "script exhausted"))?;
+        if let Event::Resize(width, height) = event {
+            self.target.set((width, height));
+        }
+        Ok(event)
+    }
+}
+
+/// The last frame after `events` on a 40x10 terminal that `Resize` events resize.
+fn resized_frame(shared: &Rc<RefCell<Shared>>, events: Vec<Event>) -> Vec<String> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let target = Rc::new(std::cell::Cell::new((40, 10)));
+    let backend = Resizable { inner: std::cell::RefCell::new(TestBackend::new(40, 10)), target: target.clone() };
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut script = ResizingScript { events: events.into(), target: target.clone() };
+    let _ = run_browser(&mut terminal, &model, &mut Fake(shared.clone()), &mut script);
+    let (width, height) = target.get();
+    let inner = terminal.backend().inner.borrow();
+    let buffer = inner.buffer();
+    (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn page_keys_move_a_screenful_in_both_directions() {
+    let state = shared(vec![long_detail()]);
+    let open = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+
+    let mut down = open.clone();
+    down.push(key(KeyCode::PageDown));
+    let bottom = last_frame(&state, down);
+    let text = bottom.join("\n");
+    assert!(text.contains("dep7") && !text.contains("[pending]"), "{bottom:?}");
+
+    let mut back = open;
+    back.extend([key(KeyCode::PageDown), key(KeyCode::PageDown), key(KeyCode::PageUp)]);
+    let top = last_frame(&state, back);
+    let text = top.join("\n");
+    assert!(text.contains("[pending]") && !text.contains("dep7"), "{top:?}");
+}
+
+#[test]
+fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_top() {
+    let state = shared(vec![long_detail()]);
+    state.borrow_mut().on_second_load = Some(vec![BrowserEntry {
+        description: Some("short text".into()),
+        depends_on: vec![],
+        ..long_detail()
+    }]);
+
+    let lines = last_frame(
+        &state,
+        vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::PageDown), key(KeyCode::Char('r'))],
+    );
+    let text = lines.join("\n");
+    assert!(text.contains("[pending]") && text.contains("short text"), "{lines:?}");
+
+    // Navigation continues from the new bounds: Down has nowhere to go, Up stays put.
+    let again = last_frame(
+        &state,
+        vec![
+            key(KeyCode::Down),
+            key(KeyCode::Enter),
+            key(KeyCode::PageDown),
+            key(KeyCode::Char('r')),
+            key(KeyCode::Down),
+            key(KeyCode::Up),
+        ],
+    );
+    assert!(again.join("\n").contains("short text"), "{again:?}");
+}
+
+#[test]
+fn a_resize_while_scrolled_rewraps_and_navigation_follows_the_new_bounds() {
+    let state = shared(vec![long_detail()]);
+    let open = vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::PageDown)];
+
+    // Wider: the content gets shorter, so the old offset is clamped, not blank.
+    let mut wider = open.clone();
+    wider.push(Event::Resize(80, 10));
+    let lines = resized_frame(&state, wider.clone());
+    let text = lines.join("\n");
+    assert!(text.contains("dep7") && text.contains("TAILWORD"), "{lines:?}");
+    assert!(lines.iter().all(|l| l.chars().count() <= 80), "{lines:?}");
+
+    // From there, Up uses the new bounds and reaches the header again.
+    wider.extend((0..5).map(|_| key(KeyCode::Up)));
+    let top = resized_frame(&state, wider);
+    assert!(top.join("\n").contains("[pending]"), "{top:?}");
+
+    // Narrower: the content gets longer and Down still reaches its end.
+    let mut narrower = vec![key(KeyCode::Down), key(KeyCode::Enter), Event::Resize(20, 10)];
+    narrower.extend((0..40).map(|_| key(KeyCode::Down)));
+    let end = resized_frame(&state, narrower);
+    // The names are cut to fit 20 columns, so count the dependency rows instead:
+    // all eight are on screen, and the header has scrolled away.
+    assert_eq!(end.iter().filter(|l| l.starts_with("  d")).count(), 8, "{end:?}");
+    assert!(!end.join("\n").contains("[pending]"), "{end:?}");
+    assert!(end.iter().all(|l| l.chars().count() <= 20), "{end:?}");
 }
