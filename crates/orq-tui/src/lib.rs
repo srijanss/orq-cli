@@ -229,13 +229,15 @@ fn render_header(frame: &mut Frame, area: Rect, model: &PopupModel) {
     frame.render_widget(header, area);
 }
 
-/// Rows taken by the product header line and the bordered tab bar.
-pub const CHROME_ROWS: u16 = 4;
+/// Rows taken by the product header line, the bordered tab bar and the
+/// section title.
+pub const CHROME_ROWS: u16 = 5;
 const CHROME_MIN_WIDTH: u16 = 20;
 const CHROME_MIN_HEIGHT: u16 = 14;
 const HEADER_TITLE: &str = "ORQ / Developer Control Plane";
 const READY_BADGE: &str = "ready";
 const FEATURES_TAB: &str = "Features";
+const LEDGER_FILE: &str = ".tdd-features.json";
 
 /// What is left of `area` once the chrome is drawn: all of it when the
 /// viewport is too small to show the chrome at all.
@@ -271,6 +273,15 @@ pub fn render_chrome(frame: &mut Frame, area: Rect) -> Rect {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Blue));
     frame.render_widget(Paragraph::new(format!(" {FEATURES_TAB} ")).block(block), tab);
+
+    let file = truncate_left(LEDGER_FILE, width.saturating_sub(FEATURES_TAB.len() + 1));
+    let gap = width.saturating_sub(FEATURES_TAB.len() + display_width(&file));
+    let title = Line::from(vec![
+        Span::styled(FEATURES_TAB, Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(file, Style::new().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(title), Rect::new(area.x, area.y + 4, area.width, 1));
     body
 }
 
