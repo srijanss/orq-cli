@@ -777,6 +777,67 @@ pub fn feature_detail_lines(detail: &FeatureDetail, width: usize) -> Vec<String>
     lines
 }
 
+/// Narrowest width a section box is drawn at; below it the plain lines are used.
+const SECTION_MIN_WIDTH: usize = 8;
+
+/// One bordered section: a titled top rule, `body` wrapped inside `│ … │`,
+/// and a bottom rule, every line exactly `width` columns.
+fn section_box(title: &str, body: &[String], width: usize) -> Vec<String> {
+    let inner = width.saturating_sub(4);
+    let title = truncate_right(&format!(" {title} "), width.saturating_sub(2));
+    let rule = width.saturating_sub(2 + display_width(&title));
+    let mut lines = vec![format!("╭{title}{}╮", "─".repeat(rule))];
+    for text in body {
+        let pad = inner.saturating_sub(display_width(text));
+        lines.push(format!("│ {text}{} │", " ".repeat(pad)));
+    }
+    lines.push(format!("╰{}╯", "─".repeat(width.saturating_sub(2))));
+    lines
+}
+
+/// The detail view as bordered sections for `width` columns: the name and
+/// status, Description, Test file (when recorded) and Dependencies. Text is
+/// wrapped, never cut, and control characters are replaced.
+pub fn detail_section_lines(detail: &FeatureDetail, width: usize) -> Vec<String> {
+    if width < SECTION_MIN_WIDTH {
+        return feature_detail_lines(detail, width);
+    }
+    let inner = width - 4;
+    let clean = |text: &str| -> String {
+        text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    };
+    let mut lines = section_box(
+        "Feature",
+        &[name_with_tag("", &clean(&detail.name), &format!("[{}]", clean(&detail.status)), inner)],
+        width,
+    );
+    let description = match &detail.description {
+        Some(description) => wrap_hard(&clean(description), inner),
+        None => vec![truncate_right("(no description)", inner)],
+    };
+    lines.extend(section_box("Description", &description, width));
+    if let Some(test_file) = &detail.test_file {
+        lines.extend(section_box("Test file", &wrap_hard(&clean(test_file), inner), width));
+    }
+    let dependencies: Vec<String> = if detail.dependencies.is_empty() {
+        vec![truncate_right("(none)", inner)]
+    } else {
+        detail
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                let status = match &dependency.status {
+                    Some(status) => clean(status),
+                    None => "not in ledger".to_string(),
+                };
+                name_with_tag("", &clean(&dependency.name), &format!("({status})"), inner)
+            })
+            .collect()
+    };
+    lines.extend(section_box("Dependencies", &dependencies, width));
+    lines
+}
+
 /// Break `text` into lines of at most `width` display columns, at grapheme
 /// cluster boundaries, so joined emoji and combining marks are never split.
 fn wrap_hard(text: &str, width: usize) -> Vec<String> {
@@ -1111,7 +1172,7 @@ struct DetailView {
 impl DetailView {
     fn layout(&mut self, width: usize) -> &[String] {
         if self.width != Some(width) {
-            self.lines = feature_detail_lines(&self.detail, width);
+            self.lines = detail_section_lines(&self.detail, width);
             self.width = Some(width);
             DETAIL_LAYOUTS.with(|count| count.set(count.get() + 1));
         }

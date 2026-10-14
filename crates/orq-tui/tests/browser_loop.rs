@@ -350,12 +350,17 @@ fn ignored_mouse_events_cause_no_size_queries_or_redraws() {
 /// Runs `events` and returns the last frame drawn, whether or not the script
 /// ends by closing the popup (a script that runs dry still leaves its frame).
 fn last_frame(shared: &Rc<RefCell<Shared>>, events: Vec<Event>) -> Vec<String> {
+    last_frame_tall(shared, events, 10)
+}
+
+/// Like `last_frame`, in a 40-column terminal `height` rows tall.
+fn last_frame_tall(shared: &Rc<RefCell<Shared>>, events: Vec<Event>, height: u16) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
     let mut events = Script(events.into());
     let _ = run_browser(&mut terminal, &model, &mut Fake(shared.clone()), &mut events);
     let buffer = terminal.backend().buffer();
-    (0..10)
+    (0..height)
         .map(|y| (0..40).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
         .collect()
 }
@@ -374,22 +379,23 @@ fn detailed(name: &str, status: &str) -> BrowserEntry {
 fn enter_opens_the_detail_of_the_selected_feature_and_escape_returns_with_the_selection_kept() {
     let state = shared(vec![entry("base", "completed"), detailed("alpha", "pending"), entry("zeta", "pending")]);
 
-    let in_detail = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)]);
+    let in_detail = last_frame_tall(&state, vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)], 22);
     let text = in_detail.join("\n");
     assert!(text.contains("alpha") && text.contains("[pending]"), "{in_detail:?}");
     assert!(text.contains("does the thing"), "{in_detail:?}");
-    assert!(text.contains("test file: tests/alpha.rs"), "{in_detail:?}");
+    assert!(text.contains("tests/alpha.rs"), "{in_detail:?}");
     assert!(text.contains("base") && text.contains("(completed)"), "{in_detail:?}");
     assert!(text.contains("ghost") && text.contains("not in ledger"), "{in_detail:?}");
     assert!(!text.contains("zeta"), "{in_detail:?}");
 
     // Esc goes back to the list (not out), and the same row is still selected:
     // pressing Enter again shows the same feature.
-    let again = last_frame(
+    let again = last_frame_tall(
         &state,
         vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Esc), key(KeyCode::Enter)],
+        22,
     );
-    assert!(again.join("\n").contains("test file: tests/alpha.rs"), "{again:?}");
+    assert!(again.join("\n").contains("tests/alpha.rs"), "{again:?}");
 
     let back = run(
         &state,
@@ -664,13 +670,13 @@ fn page_keys_move_a_screenful_in_both_directions() {
     let open = vec![key(KeyCode::Down), key(KeyCode::Enter)];
 
     let mut down = open.clone();
-    down.push(key(KeyCode::PageDown));
+    down.extend([key(KeyCode::PageDown), key(KeyCode::PageDown)]);
     let bottom = last_frame(&state, down);
     let text = bottom.join("\n");
     assert!(text.contains("dep7") && !text.contains("[pending]"), "{bottom:?}");
 
     let mut back = open;
-    back.extend([key(KeyCode::PageDown), key(KeyCode::PageDown), key(KeyCode::PageUp)]);
+    back.extend([key(KeyCode::PageDown), key(KeyCode::PageDown), key(KeyCode::PageUp), key(KeyCode::PageUp)]);
     let top = last_frame(&state, back);
     let text = top.join("\n");
     assert!(text.contains("[pending]") && !text.contains("dep7"), "{top:?}");
@@ -685,9 +691,10 @@ fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_to
         ..long_detail()
     }]);
 
-    let lines = last_frame(
+    let lines = last_frame_tall(
         &state,
         vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::PageDown), key(KeyCode::Char('r'))],
+        16,
     );
     let text = lines.join("\n");
     assert!(text.contains("[pending]") && text.contains("short text"), "{lines:?}");
@@ -709,7 +716,7 @@ fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_to
     for (name, code) in [("Down", KeyCode::Down), ("Up", KeyCode::Up)] {
         let mut events = to_reload();
         events.push(key(code));
-        let after = last_frame(&reload(), events);
+        let after = last_frame_tall(&reload(), events, 16);
         assert_eq!(after, lines, "{name} after the reload must leave the short content unchanged");
     }
 }
@@ -733,12 +740,12 @@ fn a_resize_while_scrolled_rewraps_and_navigation_follows_the_new_bounds() {
     assert!(top.join("\n").contains("[pending]"), "{top:?}");
 
     // Narrower: the content gets longer and Down still reaches its end.
-    let mut narrower = vec![key(KeyCode::Down), key(KeyCode::Enter), Event::Resize(20, 10)];
+    let mut narrower = vec![key(KeyCode::Down), key(KeyCode::Enter), Event::Resize(20, 12)];
     narrower.extend((0..40).map(|_| key(KeyCode::Down)));
     let end = resized_frame(&state, narrower);
     // The names are cut to fit 20 columns, so count the dependency rows instead:
     // all eight are on screen, and the header has scrolled away.
-    assert_eq!(end.iter().filter(|l| l.trim_start_matches('│').starts_with("  d")).count(), 8, "{end:?}");
+    assert_eq!(end.iter().filter(|l| l.trim_start_matches('│').trim_start().starts_with("dep")).count(), 8, "{end:?}");
     assert!(!end.join("\n").contains("[pending]"), "{end:?}");
     assert!(end.iter().all(|l| l.chars().count() <= 20), "{end:?}");
 }
