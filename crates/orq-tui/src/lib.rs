@@ -337,37 +337,40 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let list = list_area(frame.area());
-    let shown: Vec<&FeatureRow> = rows.iter().collect();
-    render_rows(frame, list, &shown, state, "no features");
+    render_rows(frame, list, rows.len(), |i| &rows[i], state, "no features");
 }
 
-/// Rows of `shown` that fit in `list`, the selected one marked. Only those
-/// rows are formatted, however long the ledger is.
-fn render_rows(frame: &mut Frame, list: Rect, shown: &[&FeatureRow], state: &FeatureListState, empty: &str) {
+/// Rows `0..len` of `row` that fit in `list`, the selected one marked. Only
+/// the visible window is fetched and formatted, however long the ledger is.
+fn render_rows<'a>(
+    frame: &mut Frame,
+    list: Rect,
+    len: usize,
+    row: impl Fn(usize) -> &'a FeatureRow,
+    state: &FeatureListState,
+    empty: &str,
+) {
     if list.is_empty() {
         return;
     }
     let width = usize::from(list.width);
-    let lines: Vec<Line> = if shown.is_empty() {
+    let lines: Vec<Line> = if len == 0 {
         vec![Line::from(truncate_left(empty, width))]
     } else {
         let height = usize::from(list.height);
-        shown
-            .iter()
-            .enumerate()
-            .skip(window(state.selected, state.offset, height, shown.len()))
-            .take(height)
-            .map(|(index, row)| {
-                let selected = state.selected.map(|i| i.min(shown.len() - 1)) == Some(index);
+        let first = window(state.selected, state.offset, height, len);
+        let selected = state.selected.map(|i| i.min(len - 1));
+        (first..len.min(first + height))
+            .map(|index| {
                 // The marker has priority over the row text on narrow popups.
-                let marker = match (selected, width) {
+                let marker = match (selected == Some(index), width) {
                     (true, 0 | 1) => ">",
                     (false, 0 | 1) => " ",
                     (true, _) => "> ",
                     (false, _) => "  ",
                 };
                 let room = width.saturating_sub(MARKER_WIDTH);
-                Line::from(format!("{marker}{}", feature_row_text(row, room)))
+                Line::from(format!("{marker}{}", feature_row_text(row(index), room)))
             })
             .collect()
     };
@@ -439,8 +442,24 @@ pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec
         .collect()
 }
 
+/// The popup area as the list handlers must see it: one row shorter at the
+/// top while the search field is drawn, so `list_area` of the result is
+/// exactly where the filtered rows are rendered.
+pub fn search_area(area: Rect, search: &SearchState) -> Rect {
+    if search_field_shown(search) && area.height > 0 {
+        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+    } else {
+        area
+    }
+}
+
+fn search_field_shown(search: &SearchState) -> bool {
+    search.active || !search.query.is_empty()
+}
+
 /// As `render_feature_list`, filtered by `search`. `items` are the name and
 /// description of each of `rows`; the selection indexes the filtered rows.
+/// Handlers for the same frame take `search_area(area, search)`.
 pub fn render_feature_search(
     frame: &mut Frame,
     model: &PopupModel,
@@ -450,22 +469,22 @@ pub fn render_feature_search(
     state: &FeatureListState,
 ) {
     render_popup(frame, model);
-    let mut list = list_area(frame.area());
-    if list.is_empty() {
+    let full = list_area(frame.area());
+    if full.is_empty() {
         return;
     }
-    if search.active || !search.query.is_empty() {
+    if search_field_shown(search) {
         let field = format!("/{}", search.query.chars().filter(|c| !c.is_control()).collect::<String>());
-        let line = truncate_left(&field, usize::from(list.width));
-        frame.render_widget(Paragraph::new(line), Rect::new(list.x, list.y, list.width, 1));
-        list = Rect::new(list.x, list.y + 1, list.width, list.height - 1);
+        let line = truncate_left(&field, usize::from(full.width));
+        frame.render_widget(Paragraph::new(line), Rect::new(full.x, full.y, full.width, 1));
     }
-    let shown: Vec<&FeatureRow> = matching_features(items, &search.query)
+    let list = list_area(search_area(frame.area(), search));
+    let matches: Vec<usize> = matching_features(items, &search.query)
         .into_iter()
-        .filter_map(|index| rows.get(index))
+        .filter(|&index| index < rows.len())
         .collect();
     let empty = if rows.is_empty() { "no features" } else { "no matches" };
-    render_rows(frame, list, &shown, state, empty);
+    render_rows(frame, list, matches.len(), |i| &rows[matches[i]], state, empty);
 }
 
 /// Why the ledger could not be shown: where it was looked for and the reason.
