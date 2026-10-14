@@ -19,3 +19,20 @@ fn an_unknown_status_is_kept_verbatim_and_does_not_fail_the_file() {
     assert_eq!(entries[2].status, LedgerStatus::Unrecognised("Completed".to_string()));
     assert_eq!(entries[0].status.known(), Some(FeatureStatus::Pending));
 }
+
+#[test]
+fn every_known_status_spelling_maps_to_its_status() {
+    let table = [
+        ("draft", FeatureStatus::Draft),
+        ("pending", FeatureStatus::Pending),
+        ("in_progress", FeatureStatus::InProgress),
+        ("completed", FeatureStatus::Completed),
+        ("abandoned", FeatureStatus::Abandoned),
+    ];
+    for (text, expected) in table {
+        let json = format!(r#"[{{"featureName":"a","status":"{text}"}}]"#);
+        let entries = parse_ledger(&json).unwrap();
+        assert_eq!(entries[0].status, LedgerStatus::Known(expected), "{text}");
+        assert_eq!(entries[0].status.known(), Some(expected), "{text}");
+    }
+}

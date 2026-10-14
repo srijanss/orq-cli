@@ -33,3 +33,42 @@ fn parses_every_field_of_the_real_ledger_shape_in_order() {
     assert_eq!(entries[1].description, None);
     assert_eq!(entries[1].status.known(), Some(FeatureStatus::Draft));
 }
+
+#[test]
+fn malformed_or_mistyped_ledgers_are_rejected_as_a_whole() {
+    let valid = r#"{"featureName":"ok","status":"draft"}"#;
+    let cases = [
+        ("not json", "{".to_string()),
+        ("root is an object", r#"{"featureName":"a","status":"draft"}"#.to_string()),
+        ("root is a string", r#""[]""#.to_string()),
+        ("entry is not an object", "[1]".to_string()),
+        ("entry is a positional array", r#"[["a","draft"]]"#.to_string()),
+        ("missing featureName", r#"[{"status":"draft"}]"#.to_string()),
+        ("missing status", r#"[{"featureName":"a"}]"#.to_string()),
+        ("status is not a string", r#"[{"featureName":"a","status":1}]"#.to_string()),
+        ("dependsOn is not a list", r#"[{"featureName":"a","status":"draft","dependsOn":"b"}]"#.to_string()),
+        ("cyclesCompleted is negative", r#"[{"featureName":"a","status":"draft","cyclesCompleted":-1}]"#.to_string()),
+        ("one bad entry rejects the valid one", format!("[{valid},{{\"status\":\"draft\"}}]")),
+    ];
+    for (label, text) in cases {
+        assert!(parse_ledger(&text).is_err(), "{label}");
+    }
+}
+
+#[test]
+fn an_empty_ledger_and_a_minimal_entry_use_the_documented_defaults() {
+    assert!(parse_ledger("[]").unwrap().is_empty());
+
+    let entries = parse_ledger(r#"[{"featureName":"min","status":"in_progress"}]"#).unwrap();
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry.feature_name, "min");
+    assert_eq!(entry.status.known(), Some(FeatureStatus::InProgress));
+    assert_eq!(entry.description, None);
+    assert!(entry.depends_on.is_empty());
+    assert_eq!(entry.test_file, None);
+    assert!(entry.target_files.is_empty());
+    assert_eq!(entry.recorded_at, None);
+    assert_eq!(entry.cycles_completed, None);
+}
