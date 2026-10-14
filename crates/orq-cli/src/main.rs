@@ -412,7 +412,12 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             return orq_tui::PromoteOutcome::Failed { reason: "ledger is not loaded".to_string() };
         };
         match loaded.promote(feature, None) {
-            Ok(_) => orq_tui::PromoteOutcome::Saved,
+            Ok(_) => {
+                // Our own write made the snapshot stale; re-snapshot so the next
+                // promote in a bulk run is not a conflict with ourselves.
+                self.loaded = orq_features::LoadedLedger::load(&self.path).ok();
+                orq_tui::PromoteOutcome::Saved
+            }
             Err(err) => orq_tui::PromoteOutcome::Failed { reason: promote_error_text(&err, feature) },
         }
     }
@@ -434,4 +439,50 @@ fn view_for(cwd: &Path) -> Result<PopupView, ExitCode> {
 
 fn path_str(path: &Path) -> Option<&str> {
     path.to_str()
+}
+
+#[cfg(test)]
+mod ledger_backend_tests {
+    use orq_tui::{BrowserBackend, PromoteOutcome};
+
+    use super::LedgerBackend;
+
+    fn ledger(names: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("orq-backend-{}-{}", std::process::id(), names.join("-")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".tdd-features.json");
+        let entries: Vec<String> =
+            names.iter().map(|n| format!(r#"{{"featureName":"{n}","status":"draft"}}"#)).collect();
+        std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn promoting_several_features_in_a_row_saves_each_one() {
+        let (dir, path) = ledger(&["a", "b", "c"]);
+        let mut backend = LedgerBackend::new(path.clone());
+        backend.load().unwrap();
+
+        let outcomes: Vec<bool> =
+            ["a", "b", "c"].iter().map(|n| matches!(backend.promote(n), PromoteOutcome::Saved)).collect();
+
+        assert_eq!(outcomes, vec![true, true, true]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches(r#""status":"pending""#).count(), 3, "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_external_edit_after_the_last_load_is_still_a_conflict() {
+        let (dir, path) = ledger(&["a", "b"]);
+        let mut backend = LedgerBackend::new(path.clone());
+        backend.load().unwrap();
+        std::fs::write(&path, r#"[{"featureName":"a","status":"draft"},{"featureName":"b","status":"draft"} ]"#).unwrap();
+
+        let outcome = backend.promote("a");
+
+        assert!(matches!(outcome, PromoteOutcome::Failed { .. }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
