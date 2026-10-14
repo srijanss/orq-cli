@@ -673,8 +673,19 @@ fn status_options(rows: &[FeatureRow]) -> Vec<String> {
     options
 }
 
+/// Longest status name shown in the control or the dropdown, in terminal cells;
+/// longer names are clipped for display only (matching uses the full name).
+const MAX_STATUS_CELLS: usize = 20;
+
 fn filter_label(filter: Option<&str>) -> String {
-    format!("Status: {} ▾", filter.unwrap_or(FILTER_ALL))
+    let name = truncate_right(filter.unwrap_or(FILTER_ALL), MAX_STATUS_CELLS);
+    format!("Status: {name} ▾")
+}
+
+/// Index of the active option. Option 0 is always the unfiltered sentinel, so
+/// a status that happens to be called "All" is still a distinct, later option.
+fn active_option(options: &[String], filter: Option<&str>) -> usize {
+    filter.and_then(|f| options.iter().skip(1).position(|o| o == f)).map_or(0, |i| i + 1)
 }
 
 /// The one-row control on the right of the header's first row.
@@ -694,7 +705,7 @@ fn dropdown_top(shown: usize, highlight: usize) -> usize {
 }
 
 fn dropdown_rect(list: Rect, control: Rect, options: &[String]) -> Rect {
-    let widest = options.iter().map(|o| display_width(o)).max().unwrap_or(0);
+    let widest = options.iter().map(|o| display_width(o).min(MAX_STATUS_CELLS)).max().unwrap_or(0);
     let width = u16::try_from(widest + 4).unwrap_or(u16::MAX).min(list.width);
     let height = u16::try_from(options.len() + 2).unwrap_or(u16::MAX).min(list.bottom().saturating_sub(control.bottom()));
     let x = control.right().saturating_sub(width).max(list.x);
@@ -1545,8 +1556,7 @@ impl Browser {
             Some(_) => None,
             None => {
                 let options = status_options(&self.rows);
-                let active = self.status_filter.as_deref().unwrap_or(FILTER_ALL);
-                Some(options.iter().position(|o| o == active).unwrap_or(0))
+                Some(active_option(&options, self.status_filter.as_deref()))
             }
         };
     }
@@ -1555,7 +1565,7 @@ impl Browser {
     fn choose_status(&mut self, index: usize) {
         let options = status_options(&self.rows);
         self.status_filter = match options.get(index) {
-            Some(option) if option != FILTER_ALL => Some(option.clone()),
+            Some(option) if index > 0 => Some(option.clone()),
             _ => None,
         };
         self.dropdown = None;
@@ -1731,13 +1741,13 @@ impl Browser {
                 let inner = block.inner(rect);
                 frame.render_widget(block, rect);
                 let width = usize::from(inner.width);
-                let active = filter.unwrap_or(FILTER_ALL);
+                let active = active_option(&options, filter);
                 let top = dropdown_top(usize::from(inner.height), highlight);
                 for (i, option) in options.iter().enumerate().skip(top).take(usize::from(inner.height)) {
                     let marker = if i == highlight { "> " } else { "  " };
                     let at = i - top;
                     let line = truncate_right(&format!("{marker}{option}"), width);
-                    let style = if option == active { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+                    let style = if i == active { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
                     let row = Rect::new(inner.x, inner.y + u16::try_from(at).unwrap_or(0), inner.width, 1);
                     frame.render_widget(Paragraph::new(Span::styled(line, style)), row);
                 }

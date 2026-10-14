@@ -85,3 +85,51 @@ fn choosing_an_unknown_status_shows_only_its_features() {
     assert!(has(&lines, "bravo") && has(&lines, "candy"), "{lines:#?}");
     assert!(!has(&lines, "alpha") && !has(&lines, "delta"), "{lines:#?}");
 }
+
+fn choose(entries: Vec<BrowserEntry>, downs: usize) -> Vec<String> {
+    let mut events = vec![key(KeyCode::Char('f'))];
+    events.extend(std::iter::repeat_with(|| key(KeyCode::Down)).take(downs));
+    events.push(key(KeyCode::Enter));
+    run(entries, events)
+}
+
+#[test]
+fn a_status_literally_named_all_filters_by_that_status_not_the_sentinel() {
+    let entries = vec![entry("alpha", "All"), entry("bravo", "draft"), entry("candy", "zeta")];
+    // All, draft, pending, in_progress, completed, then the literal "All".
+    let lines = choose(entries, 5);
+
+    assert!(has(&lines, "alpha"), "{lines:#?}");
+    assert!(!has(&lines, "bravo") && !has(&lines, "candy"), "{lines:#?}");
+}
+
+#[test]
+fn a_very_long_status_name_keeps_the_control_and_can_be_left_again() {
+    let long = "a-very-long-status-name-that-would-not-fit-in-the-header";
+    let entries = vec![entry("alpha", long), entry("bravo", "draft")];
+    let lines = choose(entries.clone(), 5);
+
+    assert!(has(&lines, "Status: a-very-long"), "control must stay: {lines:#?}");
+    assert!(has(&lines, "a-very-long-status-name") && !has(&lines, "bravo"), "{lines:#?}");
+
+    // Reopen from the same screen and go back up to All.
+    let mut events = vec![key(KeyCode::Char('f'))];
+    events.extend(std::iter::repeat_with(|| key(KeyCode::Down)).take(5));
+    events.push(key(KeyCode::Enter));
+    events.push(key(KeyCode::Char('f')));
+    events.extend(std::iter::repeat_with(|| key(KeyCode::Up)).take(5));
+    events.push(key(KeyCode::Enter));
+    let lines = run(entries, events);
+    assert!(has(&lines, "Status: All"), "{lines:#?}");
+    assert!(has(&lines, "a-very-long-status-name") && has(&lines, "bravo"), "{lines:#?}");
+}
+
+#[test]
+fn a_wide_character_status_is_filterable_and_reachable() {
+    let wide = "完了完了完了完了完了完了完了完了完了完了完了完了";
+    let entries = vec![entry("alpha", wide), entry("bravo", "draft")];
+    let lines = choose(entries, 5);
+
+    assert!(has(&lines, "Status: "), "{lines:#?}");
+    assert!(has(&lines, "alpha") && !has(&lines, "bravo"), "{lines:#?}");
+}
