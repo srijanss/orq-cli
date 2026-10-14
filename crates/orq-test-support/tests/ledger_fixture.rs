@@ -19,9 +19,9 @@ fn written_entries_parse_back_from_a_repo_and_a_linked_worktree() {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].feature_name, "alpha");
         assert_eq!(parsed[0].description.as_deref(), Some("first thing"));
-        assert_eq!(parsed[0].status, FeatureStatus::Pending);
+        assert_eq!(parsed[0].status.known(), Some(FeatureStatus::Pending));
         assert_eq!(parsed[1].depends_on, vec!["alpha".to_string()]);
-        assert_eq!(parsed[1].status, FeatureStatus::Draft);
+        assert_eq!(parsed[1].status.known(), Some(FeatureStatus::Draft));
     }
 }
 
