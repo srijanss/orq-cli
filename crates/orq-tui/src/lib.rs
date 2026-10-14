@@ -1318,8 +1318,13 @@ impl Browser {
             let panel = text.intersection(area);
             let scroll = open.scroll;
             if !panel.is_empty() {
-                frame.render_widget(detail_block(&open.detail.name, panel.width), panel);
                 let text = detail_viewport(panel);
+                let mut position = None;
+                if !text.is_empty() {
+                    let total = open.layout(usize::from(text.width)).len();
+                    position = scroll_position(scroll, usize::from(text.height), total);
+                }
+                frame.render_widget(detail_block(&open.detail.name, panel.width, position.as_deref()), panel);
                 if !text.is_empty() {
                     let lines = open.layout(usize::from(text.width));
                     render_detail_lines(frame, text, lines, scroll);
@@ -1521,16 +1526,32 @@ fn list_layout(body: Rect, selected: Option<&FeatureRow>) -> (Rect, Rect, Option
 const DETAIL_HINT: &str = " Esc back · ↑↓ PgUp PgDn scroll ";
 
 /// The rounded panel the detail view is drawn in, titled with the feature.
-fn detail_block(name: &str, width: u16) -> Block<'static> {
+fn detail_block(name: &str, width: u16, position: Option<&str>) -> Block<'static> {
     let room = usize::from(width.saturating_sub(2));
     let clean: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     let title = truncate_right(&format!(" Feature · {clean} "), room);
-    let hint = truncate_right(DETAIL_HINT, room);
-    Block::bordered()
+    let position = position.map(|p| format!(" {p} ")).unwrap_or_default();
+    let hint = truncate_right(DETAIL_HINT, room.saturating_sub(display_width(&position)));
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(dim)
         .title(title)
-        .title_bottom(Line::from(hint).style(Style::default().fg(Color::DarkGray)))
+        .title_bottom(Line::from(hint).style(dim));
+    if !position.is_empty() {
+        block = block.title_bottom(Line::from(position).style(dim).right_aligned());
+    }
+    block
+}
+
+/// "first-last/total" for the lines visible in a `height`-row viewport of
+/// `total` lines scrolled to `scroll`, or `None` when everything fits.
+fn scroll_position(scroll: usize, height: usize, total: usize) -> Option<String> {
+    if height == 0 || total <= height {
+        return None;
+    }
+    let start = scroll.min(total - height);
+    Some(format!("{}-{}/{}", start + 1, start + height, total))
 }
 
 /// The scrollable text area inside the detail panel drawn in `panel`.
