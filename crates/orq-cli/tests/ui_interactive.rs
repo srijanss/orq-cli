@@ -9,14 +9,19 @@ use orq_test_support::GitFixture;
 fn run_in_pty(pane_dir: &Path) -> (i32, String) {
     const DRIVER: &str = r#"
 import fcntl, os, pty, select, struct, sys, termios, time
-pid, fd = pty.fork()
-if pid == 0:
-    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-    os.execv(sys.argv[1], [sys.argv[1], "ui"])
-# Keep our own slave descriptor so the terminal's attributes can be compared
-# before and after the child runs.
-slave = os.open(os.ptsname(fd), os.O_RDWR | os.O_NOCTTY)
+fd, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+# Baseline taken before the child exists, so it cannot race the UI's raw mode.
 before = termios.tcgetattr(slave)
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+    for n in (0, 1, 2):
+        os.dup2(slave, n)
+    os.close(fd)
+    os.close(slave)
+    os.execv(sys.argv[1], [sys.argv[1], "ui"])
 out = b""
 sent = False
 deadline = time.time() + 15
@@ -64,7 +69,10 @@ if status is None:
     sys.exit(124)
 after = termios.tcgetattr(slave)
 sys.stdout.buffer.write(out)
-sys.stdout.buffer.write(b"\n[termios-restored]" if after[3] == before[3] else b"\n[termios-differs]")
+if after == before:
+    sys.stdout.buffer.write(b"\n[termios-restored]")
+else:
+    sys.stdout.buffer.write(("\n[termios-differs: before=%r after=%r]" % (before, after)).encode())
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
     let output = Command::new("python3")
