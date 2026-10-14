@@ -45,8 +45,9 @@ impl PopupState {
 fn layout(area: Rect, model: &PopupModel) -> [(Region, Rect); 2] {
     let max = usize::from(area.width);
     let row = |index: u16, text: &str| {
-        let width = display_width(&truncate_left(text, max)) as u16;
-        Rect::new(area.x, area.y + index, width.min(area.width), 1)
+        let width = u16::try_from(display_width(&truncate_left(text, max))).unwrap_or(u16::MAX);
+        // Clip to the popup: rows the area is too short to render are not clickable.
+        Rect::new(area.x, area.y.saturating_add(index), width, 1).intersection(area)
     };
     [
         (Region::ProjectName, row(0, &model.project_name)),
