@@ -15,13 +15,21 @@ pub struct Project {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
-    /// `git` ran but did not produce a repository for `path`.
-    Git { path: PathBuf, message: String },
+    /// `path` is not inside a Git repository (or does not exist).
+    NotARepository { path: PathBuf },
+    /// `git` could not be run, or failed for a reason other than the path not
+    /// being a repository.
+    GitUnavailable { path: PathBuf, message: String },
 }
 
 /// Resolve the repository containing `path`. Read-only: only `git rev-parse`
 /// is invoked, with a fixed argv.
 pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
+    if !path.is_dir() {
+        return Err(ResolveError::NotARepository {
+            path: path.to_path_buf(),
+        });
+    }
     let root = rev_parse(path, "--show-toplevel")?;
     let git_common_dir = rev_parse(path, "--git-common-dir")?;
     let git_dir = rev_parse(path, "--git-dir")?;
@@ -60,7 +68,7 @@ fn project_name(git_common_dir: &Path) -> String {
 /// output path byte-for-byte (paths may hold newlines or non-UTF-8 bytes, so
 /// only the one trailing newline git adds is removed).
 fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
-    let fail = |message: String| ResolveError::Git {
+    let unavailable = |message: String| ResolveError::GitUnavailable {
         path: path.to_path_buf(),
         message,
     };
@@ -68,10 +76,18 @@ fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--path-format=absolute", flag])
+        // Stable English diagnostics, so "not a git repository" is recognisable.
+        .env("LC_ALL", "C")
         .output()
-        .map_err(|err| fail(err.to_string()))?;
+        .map_err(|err| unavailable(err.to_string()))?;
     if !output.status.success() {
-        return Err(fail(String::from_utf8_lossy(&output.stderr).trim().to_string()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.to_lowercase().contains("not a git repository") {
+            return Err(ResolveError::NotARepository {
+                path: path.to_path_buf(),
+            });
+        }
+        return Err(unavailable(stderr.trim().to_string()));
     }
 
     let mut bytes = output.stdout;
@@ -79,7 +95,7 @@ fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
         bytes.pop();
     }
     if bytes.is_empty() {
-        return Err(fail(format!("git rev-parse {flag} produced no output")));
+        return Err(unavailable(format!("git rev-parse {flag} produced no output")));
     }
     Ok(PathBuf::from(OsString::from_vec(bytes)))
 }
