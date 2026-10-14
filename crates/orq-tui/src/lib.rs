@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEv
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{Frame, Terminal};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -159,7 +159,7 @@ where
             // Only a left press can change anything; motion and drag events
             // (mouse capture sends many) need neither a size query nor a redraw.
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                 let before = state.clone();
                 state.handle_mouse(area, model, mouse);
                 dirty = state != before;
@@ -227,6 +227,51 @@ fn render_header(frame: &mut Frame, area: Rect, model: &PopupModel) {
         Line::from(truncate_left(&model.repo_path, width)),
     ]);
     frame.render_widget(header, area);
+}
+
+/// Rows taken by the product header line and the bordered tab bar.
+pub const CHROME_ROWS: u16 = 4;
+const CHROME_MIN_WIDTH: u16 = 20;
+const CHROME_MIN_HEIGHT: u16 = 14;
+const HEADER_TITLE: &str = "ORQ / Developer Control Plane";
+const READY_BADGE: &str = "ready";
+const FEATURES_TAB: &str = "Features";
+
+/// What is left of `area` once the chrome is drawn: all of it when the
+/// viewport is too small to show the chrome at all.
+pub fn chrome_body(area: Rect) -> Rect {
+    if area.width < CHROME_MIN_WIDTH || area.height < CHROME_MIN_HEIGHT {
+        return area;
+    }
+    Rect::new(area.x, area.y + CHROME_ROWS, area.width, area.height - CHROME_ROWS)
+}
+
+/// The product header (title, static "ready" badge on the right) and the
+/// tab bar with only the Features tab, active in a rounded blue border.
+/// Returns the area left for the body.
+pub fn render_chrome(frame: &mut Frame, area: Rect) -> Rect {
+    let body = chrome_body(area);
+    if body == area {
+        return area;
+    }
+    let width = usize::from(area.width);
+    let badge_width = READY_BADGE.len();
+    let title = truncate_right(HEADER_TITLE, width.saturating_sub(badge_width + 1));
+    let gap = width.saturating_sub(display_width(&title) + badge_width);
+    let header = Line::from(vec![
+        Span::styled(title, Style::new().add_modifier(ratatui::style::Modifier::BOLD)),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(READY_BADGE, Style::new().fg(Color::Green)),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, area.y, area.width, 1));
+
+    let tab_width = u16::try_from(FEATURES_TAB.len() + 4).unwrap_or(u16::MAX).min(area.width);
+    let tab = Rect::new(area.x, area.y + 1, tab_width, 3);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Blue));
+    frame.render_widget(Paragraph::new(format!(" {FEATURES_TAB} ")).block(block), tab);
+    body
 }
 
 /// One feature as the popup lists it: a name and its status as text.
@@ -520,8 +565,11 @@ pub struct LedgerErrorView {
 /// Control characters are replaced so nothing from the file can steer the
 /// terminal.
 pub fn render_ledger_error(frame: &mut Frame, model: &PopupModel, error: &LedgerErrorView) {
-    render_popup(frame, model);
-    let area = frame.area();
+    render_ledger_error_in(frame, frame.area(), model, error);
+}
+
+fn render_ledger_error_in(frame: &mut Frame, area: Rect, model: &PopupModel, error: &LedgerErrorView) {
+    render_header(frame, area, model);
     let panel = list_area(area);
     if panel.is_empty() {
         return;
@@ -1075,9 +1123,10 @@ impl Browser {
     }
 
     fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
-        let area = frame.area();
+        let full = frame.area();
+        let area = render_chrome(frame, full);
         if let Some(error) = &self.error {
-            render_ledger_error(frame, model, error);
+            render_ledger_error_in(frame, area, model, error);
             return;
         }
         let notice = self.notice.is_some();
@@ -1151,7 +1200,7 @@ where
                     let scrolls = matches!(key.code, KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp);
                     // Only the scroll keys need the viewport, so ignored keys query nothing.
                     let text = if scrolls {
-                        let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                        let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                         promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0
                     } else {
                         Rect::default()
@@ -1186,7 +1235,7 @@ where
                     }
                     continue;
                 }
-                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                 let selected = browser.selected_row();
                 let intent = if browser.search.active {
                     None
@@ -1226,7 +1275,7 @@ where
                 if browser.error.is_some() || !acted_on {
                     continue;
                 }
-                let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                 let body = body_area(area, browser.notice.is_some());
                 if let Some(open) = &browser.detail {
                     let row = open.row.clone();

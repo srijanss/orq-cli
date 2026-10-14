@@ -216,3 +216,16 @@ fn enter_opens_the_detail_view_and_escape_returns_to_the_list_before_closing() {
     assert!(drawn.contains("zebrastripe"), "{drawn}");
     assert!(drawn.contains("depends"), "{drawn}");
 }
+
+#[test]
+fn the_browser_shows_the_product_header_and_the_features_tab() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("alpha", "pending")]);
+
+    let (code, drawn) = drive(repo.root(), serde_json::json!([{"wait": "alpha"}, {"sleep": 0.3}, {"send": ESC}]));
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("Developer"), "{drawn}");
+    assert!(drawn.contains("Features"), "{drawn}");
+    assert!(!drawn.contains("Orchestrations"), "{drawn}");
+}
