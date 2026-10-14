@@ -243,7 +243,7 @@ fn herdr_version(bin: &OsString) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut stdout = child.stdout.take()?;
+    let stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -251,16 +251,29 @@ fn herdr_version(bin: &OsString) -> Option<String> {
         let _ = stdout.take(VERSION_PROBE_MAX_BYTES + 1).read_to_end(&mut bytes);
         let _ = tx.send(bytes);
     });
+
+    // One deadline covers both the output and the process exiting: a child
+    // that closes stdout and keeps running is cut off the same way.
+    let deadline = std::time::Instant::now() + VERSION_PROBE_TIMEOUT;
     let bytes = rx
         .recv_timeout(VERSION_PROBE_TIMEOUT)
         .ok()
         .filter(|bytes| bytes.len() as u64 <= VERSION_PROBE_MAX_BYTES);
-    if bytes.is_none() {
-        let _ = child.kill();
-    }
-    let status = child.wait().ok()?;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if bytes.is_some() && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
     let bytes = bytes?;
-    status.success().then(|| String::from_utf8_lossy(&bytes).trim().to_string())
+    status?.success().then(|| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
 fn doctor_herdr(args: &[OsString]) -> ExitCode {
