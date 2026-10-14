@@ -110,3 +110,61 @@ fn run_git(dir: &Path, args: &[&str]) {
         .expect("run git");
     assert!(status.success(), "git {args:?} failed");
 }
+
+/// One entry to write into a fixture `.tdd-features.json`.
+pub struct LedgerEntry {
+    feature_name: String,
+    status: String,
+    description: Option<String>,
+    depends_on: Vec<String>,
+}
+
+impl LedgerEntry {
+    pub fn new(feature_name: &str, status: &str) -> Self {
+        Self {
+            feature_name: feature_name.to_string(),
+            status: status.to_string(),
+            description: None,
+            depends_on: Vec::new(),
+        }
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_string());
+        self
+    }
+
+    pub fn depends_on(mut self, names: &[&str]) -> Self {
+        self.depends_on = names.iter().map(|name| name.to_string()).collect();
+        self
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "featureName": self.feature_name,
+            "dependsOn": self.depends_on,
+            "status": self.status,
+        });
+        if let Some(description) = &self.description {
+            entry["description"] = description.clone().into();
+        }
+        entry
+    }
+}
+
+/// Writes `entries` as `<dir>/.tdd-features.json` (2-space JSON array, trailing
+/// newline) and returns the path. `dir` is a fixture repository or worktree.
+pub fn write_ledger(dir: &Path, entries: &[LedgerEntry]) -> PathBuf {
+    let array: Vec<serde_json::Value> = entries.iter().map(LedgerEntry::to_json).collect();
+    let mut text = serde_json::to_string_pretty(&array).expect("serialize ledger");
+    text.push('\n');
+    write_ledger_bytes(dir, text.as_bytes())
+}
+
+/// Writes `bytes` verbatim as `<dir>/.tdd-features.json` (for malformed or
+/// non-UTF-8 cases) and returns the path.
+pub fn write_ledger_bytes(dir: &Path, bytes: &[u8]) -> PathBuf {
+    let path = dir.join(".tdd-features.json");
+    fs::write(&path, bytes).expect("write fixture ledger");
+    path
+}
