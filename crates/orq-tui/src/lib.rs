@@ -471,16 +471,19 @@ pub fn render_feature_detail(frame: &mut Frame, area: Rect, detail: &FeatureDeta
 }
 
 /// `prefix` + `name`, then `tag`, within `width` columns. The tag is kept
-/// whole when it leaves a few columns for the name; only the name gives way, so a status
+/// whole when the line fits, else when it leaves a few columns for the name; only the name gives way, so a status
 /// or flag is never hidden by a long name, and the name never vanishes.
 fn name_with_tag(prefix: &str, name: &str, tag: &str, width: usize) -> String {
+    let head = format!("{prefix}{name}");
+    if display_width(&head) + 1 + display_width(tag) <= width {
+        return format!("{head} {tag}");
+    }
     let tag = truncate_left(tag, (width / 2).max(width.saturating_sub(5)).max(1));
     let name_room = width.saturating_sub(display_width(&tag) + 1);
     if name_room == 0 {
         return tag;
     }
-    let head = truncate_right(&format!("{prefix}{name}"), name_room);
-    format!("{head} {tag}")
+    format!("{} {tag}", truncate_right(&head, name_room))
 }
 
 const MARKER_WIDTH: usize = 2;

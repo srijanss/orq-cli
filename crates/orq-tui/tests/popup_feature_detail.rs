@@ -166,3 +166,36 @@ fn wide_and_combining_text_is_cut_on_whole_clusters_and_keeps_the_status() {
     assert!(lines[0].contains('…'), "{lines:?}");
     assert!(!lines[0].starts_with('\u{301}'), "{lines:?}");
 }
+
+#[test]
+fn a_short_name_keeps_a_status_that_fits_exactly() {
+    let short = FeatureDetail {
+        name: "a".into(),
+        status: "completed".into(),
+        dependencies: vec![DependencyStatus { name: "b".into(), status: Some("completed".into()) }],
+        ..detail()
+    };
+
+    let lines = draw(15, 6, &short);
+
+    assert_eq!(lines[0], "a [completed]", "{lines:?}");
+    assert!(lines.iter().any(|l| l == "  b (completed)"), "{lines:?}");
+}
+
+#[test]
+fn clusters_at_the_cut_are_kept_whole_or_omitted_never_split() {
+    // Width 14 with "[pending]" leaves a 4-column name field: 3 columns of text
+    // plus the ellipsis.
+    let draw_name = |name: &str| {
+        let d = FeatureDetail { name: name.into(), ..detail() };
+        draw(14, 6, &d)[0].clone()
+    };
+
+    // Whole wide character that fits, then the cut. The buffer shows the
+    // wide cell's continuation as a blank.
+    assert_eq!(draw_name("日本語日本語"), "日 … [pending]");
+    // A combining sequence that fits exactly is kept with its base.
+    assert_eq!(draw_name("abe\u{301}fg"), "abe\u{301}… [pending]");
+    // One that does not fit is omitted entirely, mark included.
+    assert_eq!(draw_name("abce\u{301}x"), "abc… [pending]");
+}
