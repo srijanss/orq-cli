@@ -368,6 +368,36 @@ pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[Featur
     frame.render_widget(Paragraph::new(lines), list);
 }
 
+/// Why the ledger could not be shown: where it was looked for and the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerErrorView {
+    pub path: String,
+    pub reason: String,
+}
+
+/// The header followed by a read-only panel naming the ledger path and why it
+/// could not be used. There is no list, no selection and no action to take.
+/// Control characters are replaced so nothing from the file can steer the
+/// terminal.
+pub fn render_ledger_error(frame: &mut Frame, model: &PopupModel, error: &LedgerErrorView) {
+    render_popup(frame, model);
+    let area = frame.area();
+    let panel = list_area(area);
+    if panel.is_empty() {
+        return;
+    }
+    let width = usize::from(area.width);
+    let printable = |text: &str| -> String {
+        text.chars().map(|c| if c.is_control() { '\u{fffd}' } else { c }).collect()
+    };
+    let lines = vec![
+        Line::from(truncate_left("ledger error", width)),
+        Line::from(truncate_left(&printable(&error.path), width)),
+        Line::from(truncate_right(&printable(&error.reason), width)),
+    ];
+    frame.render_widget(Paragraph::new(lines), panel);
+}
+
 const MARKER_WIDTH: usize = 2;
 const HEADER_ROWS: u16 = 2;
 
