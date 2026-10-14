@@ -74,3 +74,14 @@ fn a_held_lock_is_a_locked_error_and_the_file_is_unchanged() {
     assert!(matches!(result, Err(PromoteError::Locked)), "{result:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), LEDGER);
 }
+
+#[test]
+fn a_lock_path_that_cannot_be_opened_is_an_io_error_and_the_file_is_unchanged() {
+    let path = scratch("lock-io", LEDGER);
+    fs::create_dir(path.with_file_name(".tdd-features.json.lock")).unwrap();
+
+    let result = promote_feature_waiting(&path, "a", Some(Duration::from_millis(50)));
+
+    assert!(matches!(result, Err(PromoteError::Io(_))), "{result:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), LEDGER);
+}
