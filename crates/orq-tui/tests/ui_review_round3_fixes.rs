@@ -186,3 +186,114 @@ fn no_path_selects_an_option_that_is_not_drawn() {
         }
     }
 }
+
+mod resizing {
+    use super::*;
+    use std::cell::Cell;
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell as BufCell;
+    use ratatui::layout::{Position, Size};
+
+    /// A test backend whose reported size the script can change between events.
+    struct Resizable {
+        inner: TestBackend,
+        size: Rc<Cell<(u16, u16)>>,
+    }
+
+    impl Backend for Resizable {
+        type Error = std::convert::Infallible;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a BufCell)>,
+        {
+            let (w, h) = self.size.get();
+            self.inner.draw(content.filter(move |(x, y, _)| *x < w && *y < h))
+        }
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> { self.inner.hide_cursor() }
+        fn show_cursor(&mut self) -> Result<(), Self::Error> { self.inner.show_cursor() }
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> { self.inner.get_cursor_position() }
+        fn set_cursor_position<P: Into<Position>>(&mut self, p: P) -> Result<(), Self::Error> { self.inner.set_cursor_position(p) }
+        fn clear(&mut self) -> Result<(), Self::Error> { self.inner.clear() }
+        fn clear_region(&mut self, t: ClearType) -> Result<(), Self::Error> { self.inner.clear_region(t) }
+        fn size(&self) -> Result<Size, Self::Error> {
+            let (width, height) = self.size.get();
+            Ok(Size { width, height })
+        }
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> { self.inner.window_size() }
+        fn flush(&mut self) -> Result<(), Self::Error> { self.inner.flush() }
+    }
+
+    enum Step {
+        Send(Event),
+        Resize(u16, u16, bool),
+    }
+
+    struct Scripted {
+        steps: VecDeque<Step>,
+        size: Rc<Cell<(u16, u16)>>,
+    }
+
+    impl EventSource for Scripted {
+        fn next_event(&mut self) -> io::Result<Event> {
+            match self.steps.pop_front() {
+                Some(Step::Send(event)) => Ok(event),
+                Some(Step::Resize(w, h, announce)) => {
+                    self.size.set((w, h));
+                    if announce {
+                        Ok(Event::Resize(w, h))
+                    } else {
+                        // An unannounced change: the next event is the real one.
+                        self.next_event()
+                    }
+                }
+                None => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "script exhausted")),
+            }
+        }
+    }
+
+    fn run_steps(steps: Vec<Step>) -> Vec<String> {
+        let size = Rc::new(Cell::new((60u16, 12u16)));
+        let backend = Resizable { inner: TestBackend::new(60, 12), size: size.clone() };
+        let mut terminal = Terminal::new(backend).unwrap();
+        let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+        let mut events = Scripted { steps: steps.into(), size };
+        let _ = run_browser(&mut terminal, &model, &mut Fake(shared(five())), &mut events);
+        let buffer = terminal.backend().inner.buffer();
+        (0..12u16)
+            .map(|y| (0..60u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    fn open_to_last() -> Vec<Step> {
+        let mut steps = vec![Step::Send(key(KeyCode::Char('f')))];
+        steps.extend((0..5).map(|_| Step::Send(down())));
+        steps
+    }
+
+    #[test]
+    fn shrinking_an_open_dropdown_closes_it_and_growing_back_does_not_reopen_it() {
+        let mut steps = open_to_last();
+        steps.extend([Step::Resize(60, 3, true), Step::Resize(60, 12, true), Step::Send(key(KeyCode::Enter))]);
+
+        let lines = run_steps(steps);
+
+        assert!(has(&lines, "Status: All"), "{lines:#?}");
+        assert!(!has(&lines, "other"), "{lines:#?}");
+    }
+
+    #[test]
+    fn input_after_an_unannounced_shrink_cannot_choose_a_hidden_option() {
+        for use_click in [false, true] {
+            let mut steps = open_to_last();
+            steps.push(Step::Resize(60, 3, false));
+            steps.push(Step::Send(if use_click { click(30, 1) } else { key(KeyCode::Enter) }));
+            steps.push(Step::Resize(60, 12, true));
+
+            let lines = run_steps(steps);
+
+            assert!(has(&lines, "Status: All"), "click {use_click}: {lines:#?}");
+            assert!(!has(&lines, "other"), "click {use_click}: {lines:#?}");
+        }
+    }
+}
