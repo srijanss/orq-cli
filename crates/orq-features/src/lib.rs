@@ -57,6 +57,29 @@ struct RawEntry {
     cycles_completed: Option<u64>,
 }
 
+/// A `RawEntry` that only accepts a JSON object: serde's derived struct
+/// deserialiser would also take a positional array.
+struct ObjectEntry(RawEntry);
+
+impl<'de> Deserialize<'de> for ObjectEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ObjectEntry;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a feature entry object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<ObjectEntry, A::Error> {
+                RawEntry::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(ObjectEntry)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 impl From<RawEntry> for FeatureEntry {
     fn from(raw: RawEntry) -> Self {
         FeatureEntry {
@@ -107,7 +130,7 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
     };
     // Deserialise straight into `RawEntry`: going through `Value` first would
     // silently keep the last of any repeated key.
-    let raw: Vec<RawEntry> = match serde_json::from_slice(&bytes) {
+    let raw: Vec<ObjectEntry> = match serde_json::from_slice(&bytes) {
         Ok(raw) => raw,
         Err(e) if e.classify() != serde_json::error::Category::Data => {
             return Err(malformed(e.to_string(), Some((e.line(), e.column()))));
@@ -115,7 +138,7 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
         Err(e) => return Err(malformed(describe_shape_error(&bytes).unwrap_or_else(|| e.to_string()), None)),
     };
     let mut seen = std::collections::HashSet::new();
-    for entry in &raw {
+    for ObjectEntry(entry) in &raw {
         if !seen.insert(entry.feature_name.as_str()) {
             return Err(malformed(
                 format!("featureName \"{}\" is repeated", entry.feature_name),
@@ -123,7 +146,7 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
             ));
         }
     }
-    Ok(raw.into_iter().map(FeatureEntry::from).collect())
+    Ok(raw.into_iter().map(|ObjectEntry(entry)| FeatureEntry::from(entry)).collect())
 }
 
 /// Names what is wrong when the text is valid JSON but not a feature list:
