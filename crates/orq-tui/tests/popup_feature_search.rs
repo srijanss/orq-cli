@@ -127,7 +127,8 @@ fn the_list_shows_only_matching_rows_and_the_field_with_its_query() {
 
     assert!(text.contains("beta-detail") && text.contains("gamma"), "{lines:?}");
     assert!(!text.contains("alpha-list"), "{lines:?}");
-    assert_eq!(lines[2], "/detail", "{lines:?}");
+    // The field is the bordered box below the header: query on its middle row.
+    assert!(lines[3].starts_with("│/detail") && lines[3].ends_with('│'), "{lines:?}");
     // Selection indexes the filtered rows: row 0 is beta-detail.
     let marked: Vec<_> = lines.iter().filter(|l| l.starts_with("> ")).collect();
     assert_eq!(marked.len(), 1, "{lines:?}");
@@ -206,13 +207,13 @@ fn clicks_hit_the_rows_drawn_below_the_field_and_the_field_itself_selects_nothin
     let area = search_area(full, &search);
     let mut state = FeatureListState::default();
 
-    state.handle_mouse(area, 2, click(5, 2)); // the field row
+    state.handle_mouse(area, 2, click(5, 3)); // inside the field box
     assert_eq!(state.selected, None);
-    state.handle_mouse(area, 2, click(5, 4)); // second listed row
+    state.handle_mouse(area, 2, click(5, 6)); // second listed row
     assert_eq!(state.selected, Some(1));
 
     let lines = draw(&search, &state, 8);
-    assert!(lines[4].starts_with("> ") && lines[4].contains("gamma"), "{lines:?}");
+    assert!(lines[6].starts_with("> ") && lines[6].contains("gamma"), "{lines:?}");
 }
 
 #[test]

@@ -54,7 +54,7 @@ fn a_narrow_field_truncates_the_placeholder_to_one_row() {
     let buffer = terminal.backend().buffer();
     let rows_with_hint = (0..buffer.area.height)
         .filter(|&y| {
-            (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().contains("Search")
+            (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().contains("Search by")
         })
         .count();
     assert_eq!(rows_with_hint, 1);

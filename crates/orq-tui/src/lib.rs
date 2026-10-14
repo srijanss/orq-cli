@@ -75,8 +75,25 @@ pub trait TerminalMode {
     fn leave(&mut self) -> io::Result<()>;
 }
 
-/// The real terminal: raw mode, alternate screen and mouse capture on enter,
-/// all undone on leave.
+/// The title the interactive UI shows in its terminal or popup chrome.
+pub const TERMINAL_TITLE: &str = "ORQ";
+
+/// Saves the current terminal title (xterm `CSI 22;2 t`), then sets
+/// [`TERMINAL_TITLE`].
+pub fn enter_title_sequence(out: &mut impl io::Write) -> io::Result<()> {
+    out.write_all(b"\x1b[22;2t")?;
+    ratatui::crossterm::queue!(out, ratatui::crossterm::terminal::SetTitle(TERMINAL_TITLE))?;
+    out.flush()
+}
+
+/// Restores the title saved by [`enter_title_sequence`] (xterm `CSI 23;2 t`).
+pub fn leave_title_sequence(out: &mut impl io::Write) -> io::Result<()> {
+    out.write_all(b"\x1b[23;2t")?;
+    out.flush()
+}
+
+/// The real terminal: raw mode, alternate screen, mouse capture and the ORQ
+/// title on enter, all undone on leave.
 pub struct CrosstermMode;
 
 impl TerminalMode for CrosstermMode {
@@ -84,16 +101,18 @@ impl TerminalMode for CrosstermMode {
         use ratatui::crossterm::event::EnableMouseCapture;
         use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
         enable_raw_mode()?;
-        ratatui::crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+        ratatui::crossterm::execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        enter_title_sequence(&mut io::stdout())
     }
 
     fn leave(&mut self) -> io::Result<()> {
         use ratatui::crossterm::event::DisableMouseCapture;
         use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+        let title = leave_title_sequence(&mut io::stdout());
         let screen =
             ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         disable_raw_mode()?;
-        screen
+        title.and(screen)
     }
 }
 
@@ -615,15 +634,28 @@ pub fn matching_rows_visiting(
         .collect()
 }
 
-/// The popup area as the list handlers must see it: one row shorter at the
-/// top while the search field is drawn, so `list_area` of the result is
-/// exactly where the filtered rows are rendered.
-pub fn search_area(area: Rect, search: &SearchState) -> Rect {
-    if search_field_shown(search) && area.height > 0 {
-        Rect::new(area.x, area.y + 1, area.width, area.height - 1)
+/// Rows taken by the search field: a bordered box, or one plain row when the
+/// popup is too short to show the box and at least a few list rows.
+const SEARCH_BOX_ROWS: u16 = 3;
+const SEARCH_BOX_MIN_LIST_ROWS: u16 = 3;
+
+fn search_rows(area: Rect, search: &SearchState) -> u16 {
+    if !search_field_shown(search) || area.height == 0 {
+        0
+    } else if area.height >= HEADER_ROWS + SEARCH_BOX_ROWS + SEARCH_BOX_MIN_LIST_ROWS {
+        SEARCH_BOX_ROWS
     } else {
-        area
+        1
     }
+}
+
+/// The popup area as the list handlers must see it: shorter at the top by the
+/// rows the search field takes (a three-row box, or one row when the popup is
+/// short), so `list_area` of the result is exactly where the filtered rows
+/// are rendered.
+pub fn search_area(area: Rect, search: &SearchState) -> Rect {
+    let rows = search_rows(area, search);
+    Rect::new(area.x, area.y + rows, area.width, area.height - rows)
 }
 
 const SEARCH_PLACEHOLDER: &str = "Search by feature name or status…";
@@ -661,20 +693,34 @@ fn render_search_in(
     if full.is_empty() {
         return;
     }
-    if search_field_shown(search) {
+    let rows_taken = search_rows(area, search);
+    if rows_taken > 0 {
         let query = search.query.chars().filter(|c| !c.is_control()).collect::<String>();
+        let boxed = rows_taken == SEARCH_BOX_ROWS;
+        let field = Rect::new(full.x, full.y, full.width, rows_taken.min(full.height));
+        let inner = if boxed {
+            let block = Block::bordered().border_type(BorderType::Rounded).title("Search");
+            let inner = block.inner(field);
+            frame.render_widget(block, field);
+            inner
+        } else {
+            field
+        };
+        let width = usize::from(inner.width);
         let line = if query.is_empty() {
             // An open, empty field hints at what can be searched, dimmed so it
             // reads as a hint and never as a query.
-            let hint = truncate_right(SEARCH_PLACEHOLDER, usize::from(full.width).saturating_sub(1));
+            let hint = truncate_right(SEARCH_PLACEHOLDER, width.saturating_sub(1));
             Line::from(vec![
                 Span::raw("/"),
                 Span::styled(hint, Style::new().add_modifier(Modifier::DIM)),
             ])
         } else {
-            Line::from(truncate_left(&format!("/{query}"), usize::from(full.width)))
+            Line::from(truncate_left(&format!("/{query}"), width))
         };
-        frame.render_widget(Paragraph::new(line), Rect::new(full.x, full.y, full.width, 1));
+        if !inner.is_empty() {
+            frame.render_widget(Paragraph::new(line), Rect::new(inner.x, inner.y, inner.width, 1));
+        }
     }
     let list = list_area(search_area(area, search));
     let matches: Vec<usize> = matching_rows(rows, items, &search.query)
