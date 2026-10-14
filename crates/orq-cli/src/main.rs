@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq ui [--snapshot]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq ui [--snapshot]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -21,6 +21,7 @@ fn main() -> ExitCode {
         }
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
         (Some("features"), _) => features(&args[1..]),
+        (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("ui"), _) => ui(&args[1..]),
         _ => usage_error(),
     }
@@ -117,19 +118,67 @@ fn features(args: &[OsString]) -> ExitCode {
         Ok(entries) => entries,
         Err(err) => return fail(ledger_error_text(&err)),
     };
-    let list: Vec<serde_json::Value> = entries
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "name": entry.feature_name,
-                "status": status_text(&entry.status),
-                "description": entry.description,
-                "dependsOn": entry.depends_on,
-            })
-        })
-        .collect();
+    let list: Vec<serde_json::Value> = entries.iter().map(entry_json).collect();
     println!("{}", serde_json::Value::Array(list));
     ExitCode::SUCCESS
+}
+
+fn entry_json(entry: &orq_features::FeatureEntry) -> serde_json::Value {
+    serde_json::json!({
+        "name": entry.feature_name,
+        "status": status_text(&entry.status),
+        "description": entry.description,
+        "dependsOn": entry.depends_on,
+    })
+}
+
+/// `orq feature set-status --repo <path> --id <name> --status pending`:
+/// promotes a draft and prints the updated entry. Every refusal exits
+/// non-zero with a specific message and leaves the ledger untouched.
+fn feature_set_status(args: &[OsString]) -> ExitCode {
+    let (repo, id, status) = match args {
+        [r, repo, i, id, s, status] if r == "--repo" && i == "--id" && s == "--status" => {
+            match (id.to_str(), status.to_str()) {
+                (Some(id), Some(status)) => (PathBuf::from(repo), id, status),
+                _ => return usage_error(),
+            }
+        }
+        _ => return usage_error(),
+    };
+    if status != "pending" {
+        return fail(format!("cannot set status {status:?}: only --status pending is supported"));
+    }
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let path = orq_features::ledger_path(&project);
+    if let Err(err) = orq_features::promote_feature(&path, id) {
+        return fail(promote_error_text(&err, id));
+    }
+    match orq_features::load_ledger(&path) {
+        Ok(entries) => match entries.iter().find(|entry| entry.feature_name == id) {
+            Some(entry) => {
+                println!("{}", entry_json(entry));
+                ExitCode::SUCCESS
+            }
+            None => fail(format!("feature {id} vanished from the ledger after promotion")),
+        },
+        Err(err) => fail(ledger_error_text(&err)),
+    }
+}
+
+fn promote_error_text(err: &orq_features::PromoteError, id: &str) -> String {
+    use orq_features::PromoteError::*;
+    match err {
+        Ledger(err) => ledger_error_text(err),
+        UnknownFeature(_) => format!("unknown feature: {id}"),
+        UnrecognisedStatus(text) => format!("feature {id} has unrecognised status {text:?} and is left alone"),
+        IllegalTransition(t) => format!("feature {id}: {:?} to {:?} is not allowed", t.from, t.to),
+        Conflict => "ledger changed while it was being edited; nothing was written, try again".to_string(),
+        Locked => "ledger is locked by another writer; nothing was written, try again".to_string(),
+        Io(err) => format!("ledger could not be written: {err}"),
+    }
 }
 
 fn status_text(status: &orq_features::LedgerStatus) -> &str {
