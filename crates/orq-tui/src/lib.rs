@@ -691,6 +691,11 @@ fn filter_control_rect(list: Rect, filter: Option<&str>) -> Option<Rect> {
 
 /// The bordered option list, hung under the control; option `i` is on row
 /// `y + 1 + i` inside it.
+/// First option shown when `shown` rows are visible and `highlight` must stay in view.
+fn dropdown_top(shown: usize, highlight: usize) -> usize {
+    highlight.saturating_sub(shown.saturating_sub(1))
+}
+
 fn dropdown_rect(list: Rect, control: Rect, options: &[String]) -> Rect {
     let widest = options.iter().map(|o| display_width(o)).max().unwrap_or(0);
     let width = u16::try_from(widest + 4).unwrap_or(u16::MAX).min(list.width);
@@ -1526,6 +1531,17 @@ impl Browser {
             .collect()
     }
 
+    /// How many dropdown options the current layout can show (0 when the
+    /// control itself does not fit); `area` is the chrome body, as drawn.
+    fn dropdown_shown(&self, area: Rect) -> usize {
+        let body = body_area(area, self.notice.is_some());
+        let selected = self.selected_row();
+        let (list, _, _) = list_layout(body, selected.as_ref(), self.marked_drafts());
+        let options = status_options(&self.rows);
+        filter_control_rect(list, self.status_filter.as_deref())
+            .map_or(0, |c| usize::from(Block::bordered().inner(dropdown_rect(list, c, &options)).height))
+    }
+
     /// Opens the dropdown on the active option, or closes it.
     fn toggle_dropdown(&mut self) {
         self.dropdown = match self.dropdown {
@@ -1577,7 +1593,11 @@ impl Browser {
                 self.error = None;
             }
             Err(error) => {
+                // The ledger could not be read, not emptied: marks that
+                // survived the writes are still the user's to retry.
+                let marked = std::mem::take(&mut self.marked);
                 self.set_entries(Vec::new());
+                self.marked = marked;
                 self.error = Some(error);
             }
         }
@@ -1654,6 +1674,7 @@ impl Browser {
         let area = render_chrome(frame, full);
         if let Some(error) = &self.error {
             render_ledger_error_in(frame, area, model, error);
+            render_notice(frame, area, self.notice.as_deref());
             return;
         }
         let notice = self.notice.is_some();
@@ -1714,11 +1735,13 @@ impl Browser {
                 frame.render_widget(block, rect);
                 let width = usize::from(inner.width);
                 let active = filter.unwrap_or(FILTER_ALL);
-                for (i, option) in options.iter().take(usize::from(inner.height)).enumerate() {
+                let top = dropdown_top(usize::from(inner.height), highlight);
+                for (i, option) in options.iter().enumerate().skip(top).take(usize::from(inner.height)) {
                     let marker = if i == highlight { "> " } else { "  " };
+                    let at = i - top;
                     let line = truncate_right(&format!("{marker}{option}"), width);
                     let style = if option == active { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
-                    let row = Rect::new(inner.x, inner.y + u16::try_from(i).unwrap_or(0), inner.width, 1);
+                    let row = Rect::new(inner.x, inner.y + u16::try_from(at).unwrap_or(0), inner.width, 1);
                     frame.render_widget(Paragraph::new(Span::styled(line, style)), row);
                 }
             }
@@ -1811,13 +1834,7 @@ where
                     continue;
                 }
                 if let Some(highlight) = browser.dropdown {
-                    let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
-                    let selected = browser.selected_row();
-                    let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
-                    let options = status_options(&browser.rows);
-                    let shown = filter_control_rect(list, browser.status_filter.as_deref())
-                        .map_or(0, |c| usize::from(Block::bordered().inner(dropdown_rect(list, c, &options)).height));
-                    let last = options.len().min(shown).saturating_sub(1);
+                    let last = status_options(&browser.rows).len().saturating_sub(1);
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('f') => browser.dropdown = None,
                         KeyCode::Down => browser.dropdown = Some((highlight + 1).min(last)),
@@ -1829,10 +1846,8 @@ where
                     continue;
                 }
                 if key.code == KeyCode::Char('f') && !browser.search.active {
-                    let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
-                    let selected = browser.selected_row();
-                    let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
-                    if filter_control_rect(list, browser.status_filter.as_deref()).is_some() {
+                    let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                    if browser.dropdown_shown(area) > 0 {
                         browser.toggle_dropdown();
                     }
                     dirty = true;
@@ -1930,7 +1945,8 @@ where
                         let hit = control.map(|c| dropdown_rect(list, c, &options)).and_then(|rect| {
                             let inner = Block::bordered().inner(rect);
                             let row = usize::from(press.y.checked_sub(inner.y)?);
-                            (inner.contains(press) && row < options.len()).then_some(row)
+                            let index = dropdown_top(usize::from(inner.height), highlight) + row;
+                            (inner.contains(press) && index < options.len()).then_some(index)
                         });
                         match hit {
                             Some(index) => browser.choose_status(index),

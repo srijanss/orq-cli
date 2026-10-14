@@ -151,7 +151,7 @@ fn f_does_not_open_an_invisible_dropdown_on_a_narrow_viewport() {
 }
 
 #[test]
-fn a_failed_reload_after_a_bulk_promote_keeps_the_outcomes_and_recovers() {
+fn a_failed_reload_after_a_bulk_promote_keeps_the_outcome_and_the_failed_mark() {
     let state = shared(vec![entry("alpha", "draft"), entry("beta", "draft"), entry("gamma", "draft")]);
     state.borrow_mut().fail_for = vec!["beta".to_string()];
     state.borrow_mut().fail_load_at = Some(2);
@@ -160,14 +160,18 @@ fn a_failed_reload_after_a_bulk_promote_keeps_the_outcomes_and_recovers() {
 
     let (_, lines) = run(&state, 60, 24, events.clone());
     assert!(has(&lines, "reload boom"), "{lines:#?}");
+    assert!(has(&lines, "saved 2"), "{lines:#?}");
+    assert!(has(&lines, "beta: disk full"), "{lines:#?}");
     assert_eq!(state.borrow().promotes.len(), 3);
 
-    events.push(key(KeyCode::Char('r')));
+    // Recover with r, then p again: only the failed beta is retried, unmarked by hand.
     let state = shared(vec![entry("alpha", "draft"), entry("beta", "draft"), entry("gamma", "draft")]);
     state.borrow_mut().fail_for = vec!["beta".to_string()];
     state.borrow_mut().fail_load_at = Some(2);
+    events.push(key(KeyCode::Char('r')));
+    events.push(key(KeyCode::Char('p')));
     let (_, lines) = run(&state, 60, 24, events);
-    assert_eq!(state.borrow().promotes.len(), 3, "nothing is retried by a reload");
-    assert!(has(&lines, "beta"), "{lines:#?}");
-    assert!(!has(&lines, "reload boom"), "{lines:#?}");
+    let promotes = state.borrow().promotes.clone();
+    assert_eq!(promotes.len(), 4, "{promotes:?} {lines:#?}");
+    assert_eq!(promotes[3], "beta");
 }
