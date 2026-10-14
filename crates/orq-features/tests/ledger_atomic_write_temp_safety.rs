@@ -19,13 +19,20 @@ fn a_symlink_planted_at_the_old_predictable_temp_name_is_never_followed() {
     let victim = dir.join("victim.txt");
     fs::write(&path, "[]").unwrap();
     fs::write(&victim, "precious").unwrap();
-    let predictable = dir.join(format!(".tdd-features.json.tmp-{}", std::process::id()));
-    symlink(&victim, &predictable).unwrap();
+    // Squat every name this process could generate next, including the
+    // leading extra dot and the per-call counter, so create_new must skip them.
+    let squatted: Vec<_> = (0..500)
+        .map(|n| dir.join(format!("..tdd-features.json.tmp-{}-{n}", std::process::id())))
+        .collect();
+    for squat in &squatted {
+        symlink(&victim, squat).unwrap();
+    }
 
     write_ledger_atomic(&path, "[1]").unwrap();
 
     assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
     assert_eq!(fs::read_to_string(&path).unwrap(), "[1]");
+    assert!(squatted.iter().all(|s| fs::symlink_metadata(s).unwrap().file_type().is_symlink()));
 }
 
 #[test]
