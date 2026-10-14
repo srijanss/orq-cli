@@ -1219,11 +1219,15 @@ impl Browser {
         if let Some(open) = &mut self.detail {
             let body = body_area(area, notice);
             let (text, _) = promote_split(body, Some(&open.row));
-            let text = text.intersection(area);
+            let panel = text.intersection(area);
             let scroll = open.scroll;
-            if !text.is_empty() {
-                let lines = open.layout(usize::from(text.width));
-                render_detail_lines(frame, text, lines, scroll);
+            if !panel.is_empty() {
+                frame.render_widget(detail_block(&open.detail.name, panel.width), panel);
+                let text = detail_viewport(panel);
+                if !text.is_empty() {
+                    let lines = open.layout(usize::from(text.width));
+                    render_detail_lines(frame, text, lines, scroll);
+                }
             }
             render_promote_button(frame, body, Some(&open.row));
             render_notice(frame, area, self.notice.as_deref());
@@ -1292,7 +1296,7 @@ where
                     // Only the scroll keys need the viewport, so ignored keys query nothing.
                     let text = if scrolls {
                         let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
-                        promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0
+                        detail_viewport(promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0)
                     } else {
                         Rect::default()
                     };
@@ -1370,7 +1374,7 @@ where
                 let body = body_area(area, browser.notice.is_some());
                 if let Some(open) = &browser.detail {
                     let row = open.row.clone();
-                    let text = promote_split(body, Some(&row)).0;
+                    let text = detail_viewport(promote_split(body, Some(&row)).0);
                     if let Some(intent) = promote_intent_for_mouse(body, Some(&row), mouse) {
                         browser.promote(backend, intent);
                         dirty = true;
@@ -1416,6 +1420,26 @@ fn list_layout(body: Rect, selected: Option<&FeatureRow>) -> (Rect, Rect, Option
         let (list, _) = promote_split(body, selected);
         (list, body, None)
     }
+}
+
+const DETAIL_HINT: &str = " Esc back · ↑↓ PgUp PgDn scroll ";
+
+/// The rounded panel the detail view is drawn in, titled with the feature.
+fn detail_block(name: &str, width: u16) -> Block<'static> {
+    let room = usize::from(width.saturating_sub(2));
+    let clean: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let title = truncate_right(&format!(" Feature · {clean} "), room);
+    let hint = truncate_right(DETAIL_HINT, room);
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(title)
+        .title_bottom(Line::from(hint).style(Style::default().fg(Color::DarkGray)))
+}
+
+/// The scrollable text area inside the detail panel drawn in `panel`.
+fn detail_viewport(panel: Rect) -> Rect {
+    Block::bordered().inner(panel)
 }
 
 fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: Option<&FeatureRow>) {

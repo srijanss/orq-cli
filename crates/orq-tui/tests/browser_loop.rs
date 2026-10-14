@@ -721,10 +721,10 @@ fn a_resize_while_scrolled_rewraps_and_navigation_follows_the_new_bounds() {
 
     // Wider: the content gets shorter, so the old offset is clamped, not blank.
     let mut wider = open.clone();
-    wider.push(Event::Resize(80, 10));
+    wider.push(Event::Resize(80, 22));
     let lines = resized_frame(&state, wider.clone());
     let text = lines.join("\n");
-    assert!(text.contains("dep7") && text.contains("TAILWORD"), "{lines:?}");
+    assert!(text.contains("dep7") && text.contains("TAILWO"), "{lines:?}");
     assert!(lines.iter().all(|l| l.chars().count() <= 80), "{lines:?}");
 
     // From there, Up uses the new bounds and reaches the header again.
@@ -738,7 +738,7 @@ fn a_resize_while_scrolled_rewraps_and_navigation_follows_the_new_bounds() {
     let end = resized_frame(&state, narrower);
     // The names are cut to fit 20 columns, so count the dependency rows instead:
     // all eight are on screen, and the header has scrolled away.
-    assert_eq!(end.iter().filter(|l| l.starts_with("  d")).count(), 8, "{end:?}");
+    assert_eq!(end.iter().filter(|l| l.trim_start_matches('│').starts_with("  d")).count(), 8, "{end:?}");
     assert!(!end.join("\n").contains("[pending]"), "{end:?}");
     assert!(end.iter().all(|l| l.chars().count() <= 20), "{end:?}");
 }
