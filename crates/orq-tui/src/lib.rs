@@ -4,6 +4,7 @@ use std::io;
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
@@ -373,7 +374,12 @@ fn render_rows<'a>(
                     (false, _) => "  ",
                 };
                 let room = width.saturating_sub(MARKER_WIDTH);
-                Line::from(format!("{marker}{}", feature_row_text(row(index), room)))
+                let row = row(index);
+                let (name, status) = feature_row_parts(row, room);
+                Line::from(vec![
+                    Span::raw(format!("{marker}{name}")),
+                    Span::styled(status, status_style(&row.status)),
+                ])
             })
             .collect()
     };
@@ -710,16 +716,35 @@ fn name_with_tag(prefix: &str, name: &str, tag: &str, width: usize) -> String {
 const MARKER_WIDTH: usize = 2;
 const HEADER_ROWS: u16 = 2;
 
-fn feature_row_text(row: &FeatureRow, width: usize) -> String {
+/// The name part (with its separating space) and the status part of a row,
+/// fitted to `width` columns. The status is what the badge colour applies to.
+fn feature_row_parts(row: &FeatureRow, width: usize) -> (String, String) {
     let status = truncate_left(&row.status, width);
     let status_width = display_width(&status);
     // One column of separation, when the name has any room at all.
     let name_room = width.saturating_sub(status_width + 1);
     if name_room == 0 {
-        return status;
+        return (String::new(), status);
     }
-    let name = truncate_right(&row.name, name_room);
-    format!("{name} {status}")
+    (format!("{} ", truncate_right(&row.name, name_room)), status)
+}
+
+fn feature_row_text(row: &FeatureRow, width: usize) -> String {
+    let (name, status) = feature_row_parts(row, width);
+    format!("{name}{status}")
+}
+
+/// The badge colour of a status. Colour only reinforces the status text,
+/// which is always drawn (SPEC.md §11): an unrecognised status is red.
+pub fn status_style(status: &str) -> Style {
+    let colour = match status {
+        "completed" => Color::Green,
+        "pending" => Color::Blue,
+        "in_progress" => Color::Yellow,
+        "draft" => Color::DarkGray,
+        _ => Color::Red,
+    };
+    Style::new().fg(colour)
 }
 
 /// Keep the head of `text` within `max` display columns, marking the cut with
