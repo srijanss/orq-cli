@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq ui [--snapshot]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         (Some("features"), _) => features(&args[1..]),
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("ui"), _) => ui(&args[1..]),
+        (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
         _ => usage_error(),
     }
 }
@@ -71,7 +72,22 @@ fn launch_cwd(explicit: Option<&Path>) -> Result<PathBuf, ExitCode> {
     };
 
     orq_herdr::resolve_launch_cwd(explicit, pane_cwd.as_deref(), &process_cwd)
-        .map_err(|err| fail(format!("invalid working directory: {err:?}")))
+        .map_err(|err| fail(launch_cwd_error_text(&err)))
+}
+
+fn launch_cwd_error_text(err: &orq_herdr::LaunchCwdError) -> String {
+    use orq_herdr::{CwdSource, LaunchCwdError::*};
+    let source = |source: &CwdSource| match source {
+        CwdSource::Explicit => "--cwd",
+        CwdSource::HerdrActivePaneCwd => "HERDR_ACTIVE_PANE_CWD",
+        CwdSource::ProcessCwd => "the process working directory",
+    };
+    match err {
+        Empty { source: s } => format!("invalid working directory: {} is empty", source(s)),
+        NotFound { source: s, path } => {
+            format!("invalid working directory: {} names {}, which is not a directory", source(s), path.display())
+        }
+    }
 }
 
 fn project_inspect(args: &[OsString]) -> ExitCode {
@@ -194,6 +210,70 @@ fn ledger_error_text(err: &orq_features::LedgerError) -> String {
         Unreadable { path, source } => format!("ledger unreadable: {}: {source}", path.display()),
         Malformed { path, reason, .. } => format!("ledger malformed: {}: {reason}", path.display()),
     }
+}
+
+const HERDR_VARS: [&str; 6] = [
+    "HERDR_ACTIVE_PANE_CWD",
+    "HERDR_ACTIVE_PANE_ID",
+    "HERDR_ACTIVE_TAB_ID",
+    "HERDR_ACTIVE_WORKSPACE_ID",
+    "HERDR_SOCKET_PATH",
+    "HERDR_BIN_PATH",
+];
+
+/// `orq doctor herdr [--cwd <path>]`: a read-only report of what Herdr passed
+/// in and what Orq resolved from it. An unusable launch directory is an error,
+/// never a silent fallback to another project.
+fn doctor_herdr(args: &[OsString]) -> ExitCode {
+    let explicit: Option<PathBuf> = match args {
+        [] => None,
+        [flag, path] if flag == "--cwd" => Some(PathBuf::from(path)),
+        _ => return usage_error(),
+    };
+
+    for var in HERDR_VARS {
+        match std::env::var_os(var) {
+            Some(value) => println!("{var}: {}", printable(&value.to_string_lossy())),
+            None => println!("{var}: (not set)"),
+        }
+    }
+    let herdr_bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| OsString::from("herdr"));
+    match std::process::Command::new(&herdr_bin).arg("--version").output() {
+        Ok(out) if out.status.success() => {
+            let version = String::from_utf8_lossy(&out.stdout);
+            println!("herdr version: {}", printable(version.trim()));
+        }
+        Ok(_) | Err(_) => println!("herdr version: unavailable ({})", printable(&herdr_bin.to_string_lossy())),
+    }
+
+    let cwd = match launch_cwd(explicit.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(code) => return code,
+    };
+    println!("launch directory: {}", printable(&cwd.to_string_lossy()));
+    let project = match orq_git::resolve_project(&cwd) {
+        Ok(project) => project,
+        Err(ResolveError::NotARepository { .. }) => {
+            println!("repo root: none (not a Git repository)");
+            return ExitCode::FAILURE;
+        }
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    println!("repo root: {}", printable(&project.root.to_string_lossy()));
+    println!("linked worktree: {}", if project.is_linked_worktree { "yes" } else { "no" });
+    let ledger = orq_features::ledger_path(&project);
+    println!("ledger: {}", printable(&ledger.to_string_lossy()));
+    match orq_features::load_ledger(&ledger) {
+        Ok(entries) => println!("ledger status: ok ({} features)", entries.len()),
+        Err(orq_features::LedgerError::Missing { .. }) => println!("ledger status: missing"),
+        Err(orq_features::LedgerError::Unreadable { source, .. }) => {
+            println!("ledger status: unreadable ({})", printable(&source.to_string()));
+        }
+        Err(orq_features::LedgerError::Malformed { reason, .. }) => {
+            println!("ledger status: malformed ({})", printable(&reason));
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn ui(args: &[OsString]) -> ExitCode {
