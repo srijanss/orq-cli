@@ -597,6 +597,8 @@ pub fn search_area(area: Rect, search: &SearchState) -> Rect {
     }
 }
 
+const SEARCH_PLACEHOLDER: &str = "Search by feature name or status…";
+
 fn search_field_shown(search: &SearchState) -> bool {
     search.active || !search.query.is_empty()
 }
@@ -631,8 +633,18 @@ fn render_search_in(
         return;
     }
     if search_field_shown(search) {
-        let field = format!("/{}", search.query.chars().filter(|c| !c.is_control()).collect::<String>());
-        let line = truncate_left(&field, usize::from(full.width));
+        let query = search.query.chars().filter(|c| !c.is_control()).collect::<String>();
+        let line = if query.is_empty() {
+            // An open, empty field hints at what can be searched, dimmed so it
+            // reads as a hint and never as a query.
+            let hint = truncate_right(SEARCH_PLACEHOLDER, usize::from(full.width).saturating_sub(1));
+            Line::from(vec![
+                Span::raw("/"),
+                Span::styled(hint, Style::new().add_modifier(Modifier::DIM)),
+            ])
+        } else {
+            Line::from(truncate_left(&format!("/{query}"), usize::from(full.width)))
+        };
         frame.render_widget(Paragraph::new(line), Rect::new(full.x, full.y, full.width, 1));
     }
     let list = list_area(search_area(area, search));
