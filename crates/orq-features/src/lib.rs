@@ -169,6 +169,10 @@ const LEDGER_FILE: &str = ".tdd-features.json";
 /// inherited `TDD_FEATURES_PATH` is never consulted. Only a confirmed absence
 /// falls back: a local ledger that cannot be inspected stays the answer, so
 /// loading it reports the real error.
+///
+/// Known limitation: a repository whose Git directory is kept outside the
+/// checkout *and* is itself named `.git` looks to Git exactly like a normal
+/// checkout, so a linked worktree of it resolves to that directory's parent.
 pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
     let own = project.root.join(LEDGER_FILE);
     if !project.is_linked_worktree || own.try_exists().unwrap_or(true) {
