@@ -1246,6 +1246,35 @@ pub fn promote_intent_for_mouse(area: Rect, selected: Option<&FeatureRow>, mouse
     promotable(selected).map(|row| PromoteIntent { feature: row.name.clone() })
 }
 
+/// The button that promotes the marked drafts, `count` of them.
+fn bulk_label(count: usize) -> String {
+    format!("[ Promote {count} to pending (p) ]")
+}
+
+/// Splits `area` into the list area and, when marked drafts can be promoted,
+/// the one-row bulk button at the bottom.
+fn bulk_split(area: Rect, count: usize) -> (Rect, Option<Rect>) {
+    if count == 0 || area.height == 0 || area.width == 0 {
+        return (area, None);
+    }
+    let width = u16::try_from(bulk_label(count).chars().count()).unwrap_or(u16::MAX).min(area.width);
+    let button = Rect::new(area.x, area.bottom() - 1, width, 1);
+    (Rect::new(area.x, area.y, area.width, area.height - 1), Some(button))
+}
+
+/// Whether `mouse` pressed the bulk button drawn at the bottom of `area`.
+fn bulk_hit(area: Rect, count: usize, mouse: MouseEvent) -> bool {
+    mouse.kind == MouseEventKind::Down(MouseButton::Left)
+        && bulk_split(area, count).1.is_some_and(|b| b.contains(Position::new(mouse.column, mouse.row)))
+}
+
+fn render_bulk_button(frame: &mut Frame, area: Rect, count: usize) {
+    if let (_, Some(button)) = bulk_split(area, count) {
+        let label: String = bulk_label(count).chars().take(usize::from(button.width)).collect();
+        frame.render_widget(Paragraph::new(label), button);
+    }
+}
+
 /// What happened to a promote the caller attempted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromoteOutcome {
@@ -1466,6 +1495,55 @@ impl Browser {
         }
     }
 
+    /// How many marked features are drafts, i.e. what the bulk button would promote.
+    fn marked_drafts(&self) -> usize {
+        if self.marked.is_empty() {
+            return 0;
+        }
+        self.entries.iter().filter(|e| e.status == "draft" && self.marked.contains(&e.name)).count()
+    }
+
+    /// Promotes every marked draft, one write each in list order, then
+    /// reloads. Saved marks are cleared and failed ones stay; marks on
+    /// anything that is not a draft are skipped and counted.
+    fn promote_marked(&mut self, backend: &mut dyn BrowserBackend) {
+        let mut saved = 0usize;
+        let mut skipped = 0usize;
+        let mut failed: Vec<(String, String)> = Vec::new();
+        let targets: Vec<(String, bool)> = self
+            .entries
+            .iter()
+            .filter(|e| self.marked.contains(&e.name))
+            .map(|e| (e.name.clone(), e.status == "draft"))
+            .collect();
+        for (name, is_draft) in targets {
+            if !is_draft {
+                skipped += 1;
+                continue;
+            }
+            match backend.promote(&name) {
+                PromoteOutcome::Saved => {
+                    saved += 1;
+                    self.marked.remove(&name);
+                }
+                PromoteOutcome::Failed { reason } => {
+                    let reason: String = reason.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                    failed.push((name, reason));
+                }
+            }
+        }
+        self.apply_load(backend.load());
+        let mut parts = vec![format!("saved {saved}")];
+        if !failed.is_empty() {
+            let detail: Vec<String> = failed.iter().map(|(n, r)| format!("{n}: {r}")).collect();
+            parts.push(format!("{} failed ({})", failed.len(), detail.join("; ")));
+        }
+        if skipped > 0 {
+            parts.push(format!("{skipped} skipped (not draft)"));
+        }
+        self.notice = Some(parts.join(" · "));
+    }
+
     fn promote(&mut self, backend: &mut dyn BrowserBackend, intent: PromoteIntent) {
         let outcome = backend.promote(&intent.feature);
         let fresh = backend.load();
@@ -1516,7 +1594,8 @@ impl Browser {
         let body_height = area.height.saturating_sub(u16::from(self.notice.is_some()));
         let body = Rect::new(area.x, area.y, area.width, body_height);
         let selected = self.selected_row();
-        let (list, promote_area, panel) = list_layout(body, selected.as_ref());
+        let bulk = self.marked_drafts();
+        let (list, promote_area, panel) = list_layout(body, selected.as_ref(), bulk);
         let entries = &self.entries;
         let depends = |index: usize| entries.get(index).map(|e| dependency_summary(&e.depends_on));
         let marks = &self.marked;
@@ -1524,7 +1603,8 @@ impl Browser {
         let marked: Option<&dyn Fn(usize) -> bool> = if marks.is_empty() { None } else { Some(&is_marked) };
         render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends, marked);
         match panel {
-            Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref(), marks.len()),
+            Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref(), marks.len(), bulk),
+            None if bulk > 0 => render_bulk_button(frame, body, bulk),
             None => render_promote_button(frame, body, selected.as_ref()),
         }
         render_notice(frame, area, self.notice.as_deref());
@@ -1607,6 +1687,11 @@ where
                     }
                     continue;
                 }
+                if key.code == KeyCode::Char('p') && !browser.search.active && !browser.marked.is_empty() {
+                    browser.promote_marked(backend);
+                    dirty = true;
+                    continue;
+                }
                 if key.code == KeyCode::Char(' ') && !browser.search.active {
                     if let Some(row) = browser.selected_row() {
                         if !browser.marked.remove(&row.name) {
@@ -1654,7 +1739,7 @@ where
                     browser.apply_load(backend.load());
                 } else {
                     let body = body_area(area, browser.notice.is_some());
-                    let (list, _, _) = list_layout(body, selected.as_ref());
+                    let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
                     let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
                     browser.list.handle_key(key.code, search_area(list, &browser.search), len);
                 }
@@ -1684,8 +1769,11 @@ where
                     continue;
                 }
                 let selected = browser.selected_row();
-                let (list, promote_area, _) = list_layout(body, selected.as_ref());
-                if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
+                let bulk = browser.marked_drafts();
+                let (list, promote_area, _) = list_layout(body, selected.as_ref(), bulk);
+                if bulk > 0 && bulk_hit(promote_area, bulk, mouse) {
+                    browser.promote_marked(backend);
+                } else if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);
                 } else {
                     let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
@@ -1708,14 +1796,14 @@ const PANEL_HINT: &str = " ↑↓ move · Enter open · / search · r reload · 
 /// Splits the browser body into the list and, on a roomy viewport, the
 /// selected-feature panel below it. Without a panel the promote button
 /// keeps its place under the list.
-fn list_layout(body: Rect, selected: Option<&FeatureRow>) -> (Rect, Rect, Option<Rect>) {
+fn list_layout(body: Rect, selected: Option<&FeatureRow>, bulk: usize) -> (Rect, Rect, Option<Rect>) {
     if body.width >= PANEL_MIN_WIDTH && body.height >= PANEL_MIN_BODY_HEIGHT {
         let list = Rect::new(body.x, body.y, body.width, body.height - PANEL_ROWS);
         let panel = Rect::new(body.x, list.bottom(), body.width, PANEL_ROWS);
         let inner = Rect::new(panel.x + 1, panel.y + 1, panel.width - 2, 1);
         (list, inner, Some(panel))
     } else {
-        let (list, _) = promote_split(body, selected);
+        let (list, _) = if bulk > 0 { bulk_split(body, bulk) } else { promote_split(body, selected) };
         (list, body, None)
     }
 }
@@ -1756,7 +1844,14 @@ fn detail_viewport(panel: Rect) -> Rect {
     Block::bordered().inner(panel)
 }
 
-fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: Option<&FeatureRow>, marked: usize) {
+fn render_selected_panel(
+    frame: &mut Frame,
+    panel: Rect,
+    inner: Rect,
+    selected: Option<&FeatureRow>,
+    marked: usize,
+    bulk: usize,
+) {
     let title = match selected {
         Some(row) => format!(" Selected feature · {} ", row.name),
         None => " Selected feature ".to_string(),
@@ -1774,7 +1869,9 @@ fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: 
         frame.render_widget(Paragraph::new("No feature selected").style(Style::default().fg(Color::DarkGray)), inner);
         return;
     };
-    if promotable(selected).is_some() {
+    if bulk > 0 {
+        render_bulk_button(frame, inner, bulk);
+    } else if promotable(selected).is_some() {
         render_promote_button(frame, inner, selected);
     } else {
         frame.render_widget(
@@ -1783,7 +1880,8 @@ fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: 
         );
     }
     let status_width = u16::try_from(row.status.chars().count()).unwrap_or(u16::MAX);
-    if inner.width > status_width + PROMOTE_LABEL.chars().count() as u16 {
+    let label_width = if bulk > 0 { bulk_label(bulk).chars().count() } else { PROMOTE_LABEL.chars().count() };
+    if usize::from(inner.width) > usize::from(status_width) + label_width {
         let at = Rect::new(inner.right() - status_width, inner.y, status_width, 1);
         frame.render_widget(Paragraph::new(row.status.clone()).style(status_style(&row.status)), at);
     }
