@@ -31,8 +31,16 @@ fn usage_error() -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Diagnostics can carry repository-controlled text (paths, ledger names), so
+/// control characters are shown escaped and never reach the terminal raw.
+fn printable(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] })
+        .collect()
+}
+
 fn fail(message: impl std::fmt::Display) -> ExitCode {
-    eprintln!("orq: {message}");
+    eprintln!("orq: {}", printable(&message.to_string()));
     ExitCode::FAILURE
 }
 

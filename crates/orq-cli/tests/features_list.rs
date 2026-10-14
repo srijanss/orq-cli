@@ -79,3 +79,20 @@ fn a_malformed_ledger_exits_non_zero_with_the_reason_and_no_list() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("malformed"), "{stderr}");
 }
+
+#[test]
+fn control_characters_from_the_ledger_never_reach_stderr_raw() {
+    let repo = GitFixture::new();
+    // A duplicate name whose JSON escape decodes to a literal ESC.
+    write_ledger_bytes(
+        repo.root(),
+        br#"[{"featureName":"a\u001b[31mx","status":"draft"},{"featureName":"a\u001b[31mx","status":"draft"}]"#,
+    );
+
+    let out = features(repo.root());
+
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(!out.stderr.contains(&0x1b), "{:?}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("malformed"));
+}
