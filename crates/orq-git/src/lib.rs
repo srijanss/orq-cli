@@ -25,10 +25,31 @@ pub enum ResolveError {
 /// Resolve the repository containing `path`. Read-only: only `git rev-parse`
 /// is invoked, with a fixed argv.
 pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
-    if !path.is_dir() {
-        return Err(ResolveError::NotARepository {
-            path: path.to_path_buf(),
-        });
+    // Only a path that is genuinely absent (or not a directory) is "not a
+    // repository"; permission and I/O failures are operational errors.
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(ResolveError::NotARepository {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Err(ResolveError::NotARepository {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(err) => {
+            return Err(ResolveError::GitUnavailable {
+                path: path.to_path_buf(),
+                message: err.to_string(),
+            })
+        }
     }
     let root = rev_parse(path, "--show-toplevel")?;
     let git_common_dir = rev_parse(path, "--git-common-dir")?;
