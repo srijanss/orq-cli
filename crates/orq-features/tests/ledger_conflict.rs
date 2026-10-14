@@ -62,3 +62,18 @@ fn a_rewrite_with_identical_bytes_is_not_a_conflict() {
 
     assert!(loaded.save("[]").is_ok());
 }
+
+#[test]
+fn a_ledger_that_cannot_be_inspected_is_an_io_error_not_a_conflict() {
+    let path = scratch("uninspectable");
+    fs::write(&path, ORIGINAL).unwrap();
+    let loaded = LoadedLedger::load(&path).unwrap();
+    // Reading a directory fails with something other than NotFound.
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    let result = loaded.save("[]");
+
+    assert!(matches!(result, Err(SaveError::Io(_))), "{result:?}");
+    assert!(path.is_dir());
+}

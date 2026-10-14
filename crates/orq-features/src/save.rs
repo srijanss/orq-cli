@@ -39,12 +39,40 @@ impl LoadedLedger {
     /// the bytes this ledger was loaded from; otherwise returns
     /// [`SaveError::Conflict`] and leaves the file alone.
     pub fn save(&self, contents: &str) -> Result<(), SaveError> {
+        self.save_with(contents, &write_ledger_atomic)
+    }
+
+    fn save_with(
+        &self,
+        contents: &str,
+        write: &dyn Fn(&Path, &str) -> std::io::Result<()>,
+    ) -> Result<(), SaveError> {
         match std::fs::read(&self.path) {
             Ok(current) if current == self.bytes => {}
             Ok(_) => return Err(SaveError::Conflict),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(SaveError::Conflict),
             Err(e) => return Err(SaveError::Io(e)),
         }
-        write_ledger_atomic(&self.path, contents).map_err(SaveError::Io)
+        write(&self.path, contents).map_err(SaveError::Io)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failing_write_is_an_io_error_not_a_conflict() {
+        let dir = std::env::temp_dir().join(format!("orq-save-io-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".tdd-features.json");
+        std::fs::write(&path, "[]").unwrap();
+        let loaded = LoadedLedger::load(&path).unwrap();
+
+        let result = loaded.save_with("[1]", &|_, _| Err(std::io::Error::other("injected")));
+
+        assert!(matches!(result, Err(SaveError::Io(_))), "{result:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
     }
 }
