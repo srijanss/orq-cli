@@ -693,8 +693,15 @@ fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_to
     assert!(text.contains("[pending]") && text.contains("short text"), "{lines:?}");
 
     // Navigation continues from the new bounds: Down has nowhere to go, Up stays put.
+    // A fresh fixture, so the reload really happens inside this session.
+    let fresh = shared(vec![long_detail()]);
+    fresh.borrow_mut().on_second_load = Some(vec![BrowserEntry {
+        description: Some("short text".into()),
+        depends_on: vec![],
+        ..long_detail()
+    }]);
     let again = last_frame(
-        &state,
+        &fresh,
         vec![
             key(KeyCode::Down),
             key(KeyCode::Enter),
@@ -704,7 +711,7 @@ fn a_reload_to_shorter_content_while_scrolled_to_the_bottom_shows_it_from_the_to
             key(KeyCode::Up),
         ],
     );
-    assert!(again.join("\n").contains("short text"), "{again:?}");
+    assert_eq!(again, lines, "navigation after the reload must leave the short content unchanged");
 }
 
 #[test]
