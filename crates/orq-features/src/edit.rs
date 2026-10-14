@@ -20,7 +20,7 @@ pub fn set_entry_status(
 ) -> Result<String, EditError> {
     // The scanner below assumes well-formed JSON.
     serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
-    let span = Scanner { bytes: text.as_bytes(), pos: 0 }
+    let span = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default() }
         .status_span_of(feature_name)?
         .ok_or(EditError::UnknownFeature)?;
     let mut edited = String::with_capacity(text.len() + 16);
@@ -45,6 +45,8 @@ fn status_text(status: FeatureStatus) -> &'static str {
 struct Scanner<'a> {
     bytes: &'a [u8],
     pos: usize,
+    /// Every entry name met so far, so a repeat is caught whichever entry is edited.
+    names: std::collections::HashSet<String>,
 }
 
 impl Scanner<'_> {
@@ -104,7 +106,13 @@ impl Scanner<'_> {
                         return Err(EditError::Malformed);
                     }
                     seen_name = true;
-                    matches = self.bytes[start] == b'"' && self.decode(value)? == name;
+                    if self.bytes[start] == b'"' {
+                        let entry_name = self.decode(value)?;
+                        matches = entry_name == name;
+                        if !self.names.insert(entry_name) {
+                            return Err(EditError::Malformed);
+                        }
+                    }
                 }
                 "status" => {
                     if seen_status {
