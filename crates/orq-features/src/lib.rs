@@ -77,3 +77,52 @@ pub fn parse_ledger(text: &str) -> Result<Vec<FeatureEntry>, serde_json::Error> 
     let raw: Vec<RawEntry> = serde_json::from_str(text)?;
     Ok(raw.into_iter().map(FeatureEntry::from).collect())
 }
+
+/// Why a ledger could not be loaded.
+#[derive(Debug)]
+pub enum LedgerError {
+    /// The project has no ledger at the path that was looked for.
+    Missing { path: std::path::PathBuf },
+    /// The ledger exists but could not be read.
+    Unreadable { path: std::path::PathBuf, source: std::io::Error },
+    /// The ledger was read but is not a valid feature list.
+    Malformed {
+        path: std::path::PathBuf,
+        reason: String,
+        /// 1-based (line, column), for syntax errors only.
+        position: Option<(usize, usize)>,
+    },
+}
+
+/// Loads and validates the ledger at `path`; never writes it.
+pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerError> {
+    let bytes = std::fs::read(path).map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => LedgerError::Missing { path: path.to_path_buf() },
+        _ => LedgerError::Unreadable { path: path.to_path_buf(), source },
+    })?;
+    let malformed = |reason: String, position| LedgerError::Malformed {
+        path: path.to_path_buf(),
+        reason,
+        position,
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| malformed(e.to_string(), Some((e.line(), e.column()))))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| malformed("expected a JSON array of features".to_string(), None))?;
+    let mut seen = std::collections::HashSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let name = item
+            .get("featureName")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                malformed(format!("entry {index} has no string featureName"), None)
+            })?;
+        if !seen.insert(name) {
+            return Err(malformed(format!("featureName \"{name}\" is repeated"), None));
+        }
+    }
+    serde_json::from_value::<Vec<RawEntry>>(value)
+        .map(|raw| raw.into_iter().map(FeatureEntry::from).collect())
+        .map_err(|e| malformed(e.to_string(), None))
+}
