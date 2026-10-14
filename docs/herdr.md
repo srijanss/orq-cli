@@ -40,8 +40,8 @@ pane (or as a popup command) to see exactly what the popup would resolve.
 
 ## Manual checklist (run in your Herdr session)
 
-- [ ] `prefix+alt+o` opens the popup; Esc closes it and focus returns.
-- [ ] Clicking a card selects it; the wheel scrolls; Enter opens detail.
+- [x] `prefix+alt+o` opens the popup; Esc closes it and focus returns.
+- [x] Clicking a card selects it; the wheel scrolls; Enter opens detail.
 - [ ] Resizing the terminal re-lays out the popup without garbling.
-- [ ] `orq doctor herdr` from a nested directory names the repo root.
-- [ ] From a deleted directory it fails naming `HERDR_ACTIVE_PANE_CWD`.
+- [x] `orq doctor herdr` from a nested directory names the repo root.
+- [x] From a deleted directory it fails naming `HERDR_ACTIVE_PANE_CWD`.

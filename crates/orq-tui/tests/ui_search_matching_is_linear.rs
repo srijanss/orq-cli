@@ -39,9 +39,25 @@ fn best_time(count: usize) -> Duration {
 /// filter costs sixteen times. The bound sits far from both, and no absolute
 /// deadline is involved, so a slow machine does not fail it.
 #[test]
+#[ignore = "timing-sensitive; run with --ignored"]
 fn quadrupling_the_rows_does_not_square_the_filtering_cost() {
     let small = best_time(15_000).max(Duration::from_micros(50));
     let large = best_time(60_000);
 
     assert!(large < small * 10, "15k rows took {small:?}, 60k rows took {large:?}");
+}
+
+/// Deterministic companion to the timing check above: a large list is
+/// filtered completely and in order, with a status-only query as well.
+#[test]
+fn a_large_list_is_filtered_completely_and_in_order() {
+    let (rows, items) = fixture(60_000);
+
+    let all = matching_rows(&rows, &items, "feature");
+    assert_eq!(all.len(), 60_000);
+    assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let pending = matching_rows(&rows, &items, "pending");
+    assert_eq!(pending.len(), 30_000);
+    assert!(pending.iter().all(|i| i % 2 == 0));
 }

@@ -144,11 +144,12 @@ The plugin path should behave identically to the custom command path for repo se
 
 ### H0 — Herdr feasibility spike
 
-- [ ] `orq ui` opens and exits in a Herdr popup from a custom keybinding.
-- [ ] Project context from the originating pane is captured correctly.
-- [ ] Left click, scrolling, resizing and Esc tested in the Debian VM.
-- [ ] Verify focus/close ordering and the versioned CLI/socket contract.
-- [ ] Report compatibility errors rather than crash when Herdr isn't present.
+- [x] `orq ui` opens and exits in a Herdr popup from a custom keybinding.
+- [x] Project context from the originating pane is captured correctly.
+- [x] Left click, scrolling and Esc tested in the Debian VM.
+- [ ] Resizing tested in the Debian VM (still to verify).
+- [x] Verify focus/close ordering and the versioned CLI/socket contract.
+- [x] Report compatibility errors rather than crash when Herdr isn't present.
 
 ### H1 — Project-aware Features UI
 
