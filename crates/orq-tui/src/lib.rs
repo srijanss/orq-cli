@@ -985,7 +985,11 @@ where
                 dirty = true;
             }
             Event::Mouse(mouse) => {
-                if browser.error.is_some() {
+                let acted_on = matches!(
+                    mouse.kind,
+                    MouseEventKind::Down(MouseButton::Left) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                );
+                if browser.error.is_some() || !acted_on {
                     continue;
                 }
                 let area = Rect::from((Position::ORIGIN, terminal.size()?));

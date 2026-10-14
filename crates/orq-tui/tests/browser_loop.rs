@@ -252,3 +252,22 @@ fn a_successful_promote_shows_the_reloaded_statuses_including_concurrent_changes
     let beta = lines.iter().find(|l| l.contains("beta")).expect("beta row");
     assert!(beta.contains("pending") && !beta.contains("draft"), "{lines:?}");
 }
+
+#[test]
+fn pointer_motion_and_releases_change_nothing() {
+    let state = shared(vec![entry("alpha", "draft")]);
+
+    let lines = run(
+        &state,
+        vec![
+            key(KeyCode::Down),
+            wheel(MouseEventKind::Moved, 3, 9),
+            wheel(MouseEventKind::Up(MouseButton::Left), 3, 9),
+            wheel(MouseEventKind::Drag(MouseButton::Left), 3, 9),
+            key(KeyCode::Esc),
+        ],
+    );
+
+    assert!(state.borrow().promotes.is_empty());
+    assert!(lines.join("\n").contains("Mark pending"), "{lines:?}");
+}
