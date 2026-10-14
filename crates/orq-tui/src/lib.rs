@@ -225,6 +225,66 @@ pub fn render_popup(frame: &mut Frame, model: &PopupModel) {
     frame.render_widget(header, area);
 }
 
+/// One feature as the popup lists it: a name and its status as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureRow {
+    pub name: String,
+    pub status: String,
+}
+
+/// The header followed by one row per feature, in the order given, or an
+/// explicit "no features" line when there are none. The status is always
+/// printed as text and is kept visible when the name has to be shortened.
+pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow]) {
+    render_popup(frame, model);
+    let area = frame.area();
+    let width = usize::from(area.width);
+    let lines: Vec<Line> = if rows.is_empty() {
+        vec![Line::from(truncate_left("no features", width))]
+    } else {
+        rows.iter().map(|row| Line::from(feature_row_text(row, width))).collect()
+    };
+    let top = HEADER_ROWS.min(area.height);
+    let list = Rect::new(area.x, area.y + top, area.width, area.height - top);
+    frame.render_widget(Paragraph::new(lines), list);
+}
+
+const HEADER_ROWS: u16 = 2;
+
+fn feature_row_text(row: &FeatureRow, width: usize) -> String {
+    let status = truncate_left(&row.status, width);
+    let status_width = display_width(&status);
+    // One column of separation, when the name has any room at all.
+    let name_room = width.saturating_sub(status_width + 1);
+    if name_room == 0 {
+        return status;
+    }
+    let name = truncate_right(&row.name, name_room);
+    format!("{name} {status}")
+}
+
+/// Keep the head of `text` within `max` display columns, marking the cut with
+/// an ellipsis.
+fn truncate_right(text: &str, max: usize) -> String {
+    if display_width(text) <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut budget = max - 1;
+    let mut head = String::new();
+    for cluster in text.graphemes(true) {
+        let w = display_width(cluster);
+        if w > budget {
+            break;
+        }
+        budget -= w;
+        head.push_str(cluster);
+    }
+    format!("{head}…")
+}
+
 fn display_width(text: &str) -> usize {
     Span::raw(text).width()
 }
