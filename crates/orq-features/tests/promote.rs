@@ -85,3 +85,15 @@ fn a_lock_path_that_cannot_be_opened_is_an_io_error_and_the_file_is_unchanged() 
     assert!(matches!(result, Err(PromoteError::Io(_))), "{result:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), LEDGER);
 }
+
+#[test]
+fn the_committed_entry_is_returned_without_reading_the_ledger_again() {
+    let path = scratch("returned", LEDGER);
+
+    let entry = promote_feature(&path, "a").unwrap();
+    // A later writer must not be able to change what this call reports.
+    fs::write(&path, "[]").unwrap();
+
+    assert_eq!(entry.feature_name, "a");
+    assert_eq!(entry.status, orq_features::LedgerStatus::Known(orq_core::FeatureStatus::Pending));
+}

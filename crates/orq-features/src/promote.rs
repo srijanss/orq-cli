@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use orq_core::{check_transition, FeatureStatus, IllegalTransition};
 
-use crate::{set_entry_status, EditError, LedgerError, LedgerStatus, LoadedLedger, SaveError};
+use crate::{set_entry_status, EditError, FeatureEntry, LedgerError, LedgerStatus, LoadedLedger, SaveError};
 
 /// Why a promotion did not happen. Every variant leaves the ledger unchanged.
 #[derive(Debug)]
@@ -26,14 +26,19 @@ pub enum PromoteError {
 
 /// Promotes the feature `name` in the ledger at `path` from draft to pending:
 /// load, check the transition policy, then save under the ledger's lock with
-/// conflict detection.
-pub fn promote_feature(path: &Path, name: &str) -> Result<(), PromoteError> {
+/// conflict detection. Returns the entry as committed, so a caller reports
+/// what this call wrote rather than re-reading a ledger others may have changed.
+pub fn promote_feature(path: &Path, name: &str) -> Result<FeatureEntry, PromoteError> {
     promote_feature_waiting(path, name, None)
 }
 
 /// Like [`promote_feature`], waiting at most `wait` for the lock (the default
 /// wait when `None`).
-pub fn promote_feature_waiting(path: &Path, name: &str, wait: Option<Duration>) -> Result<(), PromoteError> {
+pub fn promote_feature_waiting(
+    path: &Path,
+    name: &str,
+    wait: Option<Duration>,
+) -> Result<FeatureEntry, PromoteError> {
     let loaded = LoadedLedger::load(path).map_err(PromoteError::Ledger)?;
     promote_loaded(&loaded, name, wait)
 }
@@ -42,7 +47,7 @@ pub(crate) fn promote_loaded(
     loaded: &LoadedLedger,
     name: &str,
     wait: Option<Duration>,
-) -> Result<(), PromoteError> {
+) -> Result<FeatureEntry, PromoteError> {
     let entry = loaded
         .entries()
         .iter()
@@ -71,7 +76,10 @@ pub(crate) fn promote_loaded(
         SaveError::Conflict => PromoteError::Conflict,
         SaveError::Locked => PromoteError::Locked,
         SaveError::Io(e) => PromoteError::Io(e),
-    })
+    })?;
+    let mut committed = entry.clone();
+    committed.status = LedgerStatus::Known(FeatureStatus::Pending);
+    Ok(committed)
 }
 
 #[cfg(all(test, unix))]

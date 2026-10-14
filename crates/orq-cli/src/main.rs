@@ -153,18 +153,12 @@ fn feature_set_status(args: &[OsString]) -> ExitCode {
         Err(err) => return fail(format!("cannot resolve project: {err:?}")),
     };
     let path = orq_features::ledger_path(&project);
-    if let Err(err) = orq_features::promote_feature(&path, id) {
-        return fail(promote_error_text(&err, id));
-    }
-    match orq_features::load_ledger(&path) {
-        Ok(entries) => match entries.iter().find(|entry| entry.feature_name == id) {
-            Some(entry) => {
-                println!("{}", entry_json(entry));
-                ExitCode::SUCCESS
-            }
-            None => fail(format!("feature {id} vanished from the ledger after promotion")),
-        },
-        Err(err) => fail(ledger_error_text(&err)),
+    match orq_features::promote_feature(&path, id) {
+        Ok(entry) => {
+            println!("{}", entry_json(&entry));
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(promote_error_text(&err, id)),
     }
 }
 
