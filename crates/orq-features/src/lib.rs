@@ -183,3 +183,6 @@ pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
         None => own,
     }
 }
+
+mod edit;
+pub use edit::{set_entry_status, EditError};
