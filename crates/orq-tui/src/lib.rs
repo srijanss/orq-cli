@@ -232,15 +232,60 @@ pub struct FeatureRow {
     pub status: String,
 }
 
+/// Which feature row is selected, if any.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FeatureListState {
+    pub selected: Option<usize>,
+}
+
+impl FeatureListState {
+    /// Up and Down move the selection within `len` rows and stop at the ends.
+    /// Nothing else is touched: selecting never starts or edits anything.
+    pub fn handle_key(&mut self, code: KeyCode, len: usize) {
+        if len == 0 {
+            return;
+        }
+        match code {
+            KeyCode::Down => self.selected = Some(self.selected.map_or(0, |i| (i + 1).min(len - 1))),
+            KeyCode::Up => self.selected = Some(self.selected.map_or(0, |i| i.saturating_sub(1))),
+            _ => {}
+        }
+    }
+
+    /// A left press on a listed row selects it; any other place is ignored.
+    pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        let list = list_area(area);
+        if !list.contains((mouse.column, mouse.row).into()) {
+            return;
+        }
+        let index = usize::from(mouse.row - list.y);
+        if index < len {
+            self.selected = Some(index);
+        }
+    }
+}
+
+fn list_area(area: Rect) -> Rect {
+    let top = HEADER_ROWS.min(area.height);
+    Rect::new(area.x, area.y + top, area.width, area.height - top)
+}
+
 /// The header followed by one row per feature, in the order given, or an
 /// explicit "no features" line when there are none. The status is always
 /// printed as text and is kept visible when the name has to be shortened.
 pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow]) {
+    render_feature_list(frame, model, rows, &FeatureListState::default());
+}
+
+/// As `render_popup_with_features`, with the selected row marked by `> `.
+pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let area = frame.area();
     let width = usize::from(area.width);
-    let top = HEADER_ROWS.min(area.height);
-    let list = Rect::new(area.x, area.y + top, area.width, area.height - top);
+    let list = list_area(area);
     if list.is_empty() {
         return;
     }
@@ -249,13 +294,19 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
         vec![Line::from(truncate_left("no features", width))]
     } else {
         rows.iter()
+            .enumerate()
             .take(usize::from(list.height))
-            .map(|row| Line::from(feature_row_text(row, width)))
+            .map(|(index, row)| {
+                let marker = if state.selected == Some(index) { "> " } else { "  " };
+                let room = width.saturating_sub(MARKER_WIDTH);
+                Line::from(format!("{}{}", truncate_left(marker, width), feature_row_text(row, room)))
+            })
             .collect()
     };
     frame.render_widget(Paragraph::new(lines), list);
 }
 
+const MARKER_WIDTH: usize = 2;
 const HEADER_ROWS: u16 = 2;
 
 fn feature_row_text(row: &FeatureRow, width: usize) -> String {
