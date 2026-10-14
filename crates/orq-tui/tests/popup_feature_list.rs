@@ -86,3 +86,17 @@ fn a_viewport_with_no_list_space_renders_without_panicking() {
         let _ = render(&[row("alpha", "draft")], width, height);
     }
 }
+
+#[test]
+fn a_combining_cluster_is_kept_with_its_base_or_dropped_whole_when_cutting() {
+    // Two-column marker + name budget + " draft": width 10 leaves two columns
+    // for the name, so "é" survives with its accent and the rest becomes "…".
+    let fits = render(&[row("e\u{301}xyz", "draft")], 10, 4);
+    assert_eq!(fits[2], "  e\u{301}… draft", "{fits:?}");
+
+    // One column of name budget holds only the ellipsis; the accent is never
+    // left behind without its base.
+    let tight = render(&[row("e\u{301}xyz", "draft")], 9, 4);
+    assert_eq!(tight[2], "  … draft", "{tight:?}");
+    assert!(!tight[2].contains('\u{301}'), "{tight:?}");
+}
