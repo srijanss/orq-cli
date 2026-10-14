@@ -130,8 +130,9 @@ fn a_description_that_ends_in_a_status_like_tag_is_not_coloured() {
     ]);
 
     // The tag at the end of the description row is prose.
-    let prose = colour_in_row(&terminal, "blocked by (completed)", "(completed)");
-    assert_ne!(prose, status_style("completed").fg);
+    let prose = colour_in_row(&terminal, "blocked by (completed)", "(completed)")
+        .expect("description tag should be visible");
+    assert_ne!(Some(prose), status_style("completed").fg);
     // The dependency's identical tag still is a badge.
     assert_eq!(colour_in_row(&terminal, "bbb", "(completed)"), status_style("completed").fg);
 }
