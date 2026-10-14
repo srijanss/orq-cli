@@ -604,6 +604,70 @@ pub fn render_feature_detail(frame: &mut Frame, area: Rect, detail: &FeatureDeta
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The detail view as display lines for `width` columns: the header, the
+/// description and test file wrapped (never cut), and each dependency.
+pub fn feature_detail_lines(detail: &FeatureDetail, width: usize) -> Vec<String> {
+    let clean = |text: &str| -> String {
+        text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    };
+    let mut lines =
+        vec![name_with_tag("", &clean(&detail.name), &format!("[{}]", clean(&detail.status)), width)];
+    match &detail.description {
+        Some(description) => lines.extend(wrap_hard(&clean(description), width)),
+        None => lines.push(truncate_right("(no description)", width)),
+    }
+    if let Some(test_file) = &detail.test_file {
+        lines.extend(wrap_hard(&format!("test file: {}", clean(test_file)), width));
+    }
+    if !detail.dependencies.is_empty() {
+        lines.push(truncate_right("depends on:", width));
+        for dependency in &detail.dependencies {
+            let status = match &dependency.status {
+                Some(status) => clean(status),
+                None => "not in ledger".to_string(),
+            };
+            lines.push(name_with_tag("  ", &clean(&dependency.name), &format!("({status})"), width));
+        }
+    }
+    lines
+}
+
+/// Break `text` into lines of at most `width` display columns, at character
+/// boundaries; a zero-width mark stays with the character before it.
+fn wrap_hard(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = Span::raw(c.to_string()).width();
+        if used + w > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(c);
+        used += w;
+    }
+    lines.push(line);
+    lines
+}
+
+/// Draw `detail` into `area` like `render_feature_detail`, but wrapped and
+/// starting `scroll` lines down, so all of it can be reached. The scroll is
+/// clamped so the last line can reach the bottom and no further.
+pub fn render_feature_detail_scrolled(frame: &mut Frame, area: Rect, detail: &FeatureDetail, scroll: usize) {
+    let area = area.intersection(frame.area());
+    if area.is_empty() {
+        return;
+    }
+    let lines = feature_detail_lines(detail, usize::from(area.width));
+    let start = scroll.min(lines.len().saturating_sub(usize::from(area.height)));
+    let shown: Vec<Line> = lines.into_iter().skip(start).map(Line::from).collect();
+    frame.render_widget(Paragraph::new(shown), area);
+}
+
 /// `prefix` + `name`, then `tag`, within `width` columns. The tag is kept
 /// whole when the line fits, else when it leaves a few columns for the name; only the name gives way, so a status
 /// or flag is never hidden by a long name, and the name never vanishes.
@@ -848,8 +912,14 @@ struct Browser {
     notice: Option<String>,
     search: SearchState,
     list: FeatureListState,
-    /// Name of the feature whose detail view is open, if any.
-    detail: Option<String>,
+    /// The open detail view, built once when it is opened or the data reloads.
+    detail: Option<DetailView>,
+}
+
+struct DetailView {
+    detail: FeatureDetail,
+    row: FeatureRow,
+    scroll: usize,
 }
 
 impl Browser {
@@ -860,6 +930,25 @@ impl Browser {
             .collect();
         self.items = entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect();
         self.entries = entries;
+        // The open detail follows the reloaded data, or closes when its feature is gone.
+        if let Some(open) = self.detail.take() {
+            self.detail = self.detail_for(&open.row.name).map(|view| DetailView { scroll: open.scroll, ..view });
+        }
+    }
+
+    fn detail_for(&self, name: &str) -> Option<DetailView> {
+        let entry = self.entries.iter().find(|e| e.name == name)?;
+        Some(DetailView {
+            detail: FeatureDetail {
+                name: entry.name.clone(),
+                description: entry.description.clone(),
+                status: entry.status.clone(),
+                test_file: entry.test_file.clone(),
+                dependencies: dependency_statuses(&entry.depends_on, &self.rows),
+            },
+            row: FeatureRow { name: entry.name.clone(), status: entry.status.clone() },
+            scroll: 0,
+        })
     }
 
     fn rows(&self) -> &[FeatureRow] {
@@ -877,22 +966,17 @@ impl Browser {
         self.rows.get(*matches.get(index)?).cloned()
     }
 
-    /// The open detail's entry; closes the detail when a reload dropped it.
-    fn open_detail(&mut self) -> Option<(FeatureDetail, FeatureRow)> {
-        let name = self.detail.as_deref()?;
-        let Some(entry) = self.entries.iter().find(|e| e.name == name) else {
-            self.detail = None;
-            return None;
+    /// Scroll the open detail by `delta` lines within `text`; true when it moved.
+    fn scroll_detail(&mut self, text: Rect, delta: isize) -> bool {
+        let Some(open) = &mut self.detail else {
+            return false;
         };
-        let detail = FeatureDetail {
-            name: entry.name.clone(),
-            description: entry.description.clone(),
-            status: entry.status.clone(),
-            test_file: entry.test_file.clone(),
-            dependencies: dependency_statuses(&entry.depends_on, &self.rows),
-        };
-        let row = FeatureRow { name: entry.name.clone(), status: entry.status.clone() };
-        Some((detail, row))
+        let total = feature_detail_lines(&open.detail, usize::from(text.width)).len();
+        let max = total.saturating_sub(usize::from(text.height));
+        let next = open.scroll.min(max).saturating_add_signed(delta).min(max);
+        let moved = next != open.scroll;
+        open.scroll = next;
+        moved
     }
 
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
@@ -925,17 +1009,17 @@ impl Browser {
         self.notice = view.notice;
     }
 
-    fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
+    fn draw(&self, frame: &mut Frame, model: &PopupModel) {
         let area = frame.area();
         if let Some(error) = &self.error {
             render_ledger_error(frame, model, error);
             return;
         }
-        if let Some((detail, row)) = self.open_detail() {
+        if let Some(open) = &self.detail {
             let body = body_area(area, self.notice.is_some());
-            let (text, _) = promote_split(body, Some(&row));
-            render_feature_detail(frame, text, &detail);
-            render_promote_button(frame, body, Some(&row));
+            let (text, _) = promote_split(body, Some(&open.row));
+            render_feature_detail_scrolled(frame, text, &open.detail, open.scroll);
+            render_promote_button(frame, body, Some(&open.row));
             render_notice(frame, area, self.notice.as_deref());
             return;
         }
@@ -991,25 +1075,36 @@ where
                     }
                     continue;
                 }
-                if let Some((_, row)) = browser.open_detail() {
+                if let Some(open) = &browser.detail {
+                    let row = open.row.clone();
+                    let area = Rect::from((Position::ORIGIN, terminal.size()?));
+                    let text = promote_split(body_area(area, browser.notice.is_some()), Some(&row)).0;
                     match key.code {
-                        KeyCode::Esc | KeyCode::Backspace => browser.detail = None,
+                        KeyCode::Esc | KeyCode::Backspace => {
+                            browser.detail = None;
+                            dirty = true;
+                        }
                         code if reload_requested(code) => {
                             browser.notice = None;
                             browser.apply_load(backend.load());
+                            dirty = true;
                         }
+                        KeyCode::Down => dirty = browser.scroll_detail(text, 1),
+                        KeyCode::Up => dirty = browser.scroll_detail(text, -1),
+                        KeyCode::PageDown => dirty = browser.scroll_detail(text, text.height.max(1) as isize),
+                        KeyCode::PageUp => dirty = browser.scroll_detail(text, -(text.height.max(1) as isize)),
                         code => {
                             if let Some(intent) = promote_intent_for_key(code, Some(&row)) {
                                 browser.promote(backend, intent);
+                                dirty = true;
                             }
                         }
                     }
-                    dirty = true;
                     continue;
                 }
                 if key.code == KeyCode::Enter && !browser.search.active {
                     if let Some(row) = browser.selected_row() {
-                        browser.detail = Some(row.name);
+                        browser.detail = browser.detail_for(&row.name);
                         dirty = true;
                     }
                     continue;
@@ -1056,10 +1151,16 @@ where
                 }
                 let area = Rect::from((Position::ORIGIN, terminal.size()?));
                 let body = body_area(area, browser.notice.is_some());
-                if let Some((_, row)) = browser.open_detail() {
+                if let Some(open) = &browser.detail {
+                    let row = open.row.clone();
+                    let text = promote_split(body, Some(&row)).0;
                     if let Some(intent) = promote_intent_for_mouse(body, Some(&row), mouse) {
                         browser.promote(backend, intent);
                         dirty = true;
+                    } else if mouse.kind == MouseEventKind::ScrollDown {
+                        dirty = browser.scroll_detail(text, 1);
+                    } else if mouse.kind == MouseEventKind::ScrollUp {
+                        dirty = browser.scroll_detail(text, -1);
                     }
                     continue;
                 }

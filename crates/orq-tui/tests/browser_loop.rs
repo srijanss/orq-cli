@@ -431,3 +431,90 @@ fn enter_with_nothing_selected_or_during_search_entry_opens_no_detail() {
     );
     assert!(!searching.join("\n").contains("test file:"), "{searching:?}");
 }
+
+fn long_detail() -> BrowserEntry {
+    BrowserEntry {
+        name: "alpha".into(),
+        description: Some(format!("{}TAILWORD", "word ".repeat(30))),
+        status: "pending".into(),
+        depends_on: (0..8).map(|i| format!("dep{i}")).collect(),
+        test_file: None,
+    }
+}
+
+#[test]
+fn a_long_detail_wraps_its_description_and_scrolls_to_its_last_dependency() {
+    let state = shared(vec![long_detail()]);
+
+    let top = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Enter)]);
+    let text = top.join("\n");
+    assert!(text.contains("word word"), "{top:?}");
+    assert!(!text.contains("dep7"), "{top:?}");
+    assert!(top.iter().all(|l| l.chars().count() <= 40), "{top:?}");
+
+    let mut keys = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+    keys.extend((0..30).map(|_| key(KeyCode::Down)));
+    let bottom = last_frame(&state, keys);
+    let text = bottom.join("\n");
+    assert!(text.contains("dep7"), "{bottom:?}");
+
+    // The wheel scrolls too, and Up comes back.
+    let mut events = vec![key(KeyCode::Down), key(KeyCode::Enter)];
+    events.extend((0..30).map(|_| wheel(MouseEventKind::ScrollDown, 3, 3)));
+    events.extend((0..30).map(|_| key(KeyCode::Up)));
+    let back = last_frame(&state, events);
+    assert!(back.join("\n").contains("word word"), "{back:?}");
+}
+
+#[test]
+fn detail_keys_that_change_nothing_cause_no_redraws() {
+    let baseline = work_done(vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Esc), key(KeyCode::Esc)]);
+
+    let with_noise = work_done(vec![
+        key(KeyCode::Down),
+        key(KeyCode::Enter),
+        key(KeyCode::Char('x')),
+        key(KeyCode::Up),
+        key(KeyCode::Left),
+        key(KeyCode::Esc),
+        key(KeyCode::Esc),
+    ]);
+
+    // Only the size queries for keys that are handled count; ignored keys
+    // add none and no flushes.
+    assert_eq!(with_noise.1, baseline.1);
+}
+
+#[test]
+fn a_reload_in_detail_follows_the_data_and_closes_it_when_the_feature_is_gone() {
+    let state = shared(vec![detailed("alpha", "pending")]);
+    state.borrow_mut().on_second_load = Some(vec![BrowserEntry {
+        description: Some("changed text".into()),
+        ..detailed("alpha", "pending")
+    }]);
+    let changed = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('r'))]);
+    assert!(changed.join("\n").contains("changed text"), "{changed:?}");
+
+    let state = shared(vec![detailed("alpha", "pending")]);
+    state.borrow_mut().on_second_load = Some(vec![entry("zeta", "pending")]);
+    let gone = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('r'))]);
+    let text = gone.join("\n");
+    assert!(text.contains("zeta") && !text.contains("test file:"), "{gone:?}");
+}
+
+#[test]
+fn a_failed_promote_from_detail_says_nothing_was_saved_and_shows_fresh_data() {
+    let state = shared(vec![detailed("alpha", "draft")]);
+    {
+        let mut s = state.borrow_mut();
+        s.fail_with = Some("conflict: file changed".into());
+        s.on_failure = Some(vec![BrowserEntry { description: Some("fresh text".into()), ..detailed("alpha", "draft") }]);
+    }
+
+    let lines = last_frame(&state, vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('p'))]);
+
+    let text = lines.join("\n");
+    assert_eq!(state.borrow().promotes, vec!["alpha".to_string()]);
+    assert!(text.contains("nothing was saved"), "{lines:?}");
+    assert!(text.contains("fresh text"), "{lines:?}");
+}
