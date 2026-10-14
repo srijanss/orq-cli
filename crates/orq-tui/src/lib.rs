@@ -418,11 +418,17 @@ pub struct FeatureDetail {
 
 /// Look each dependency up among `rows`, keeping the order given.
 pub fn dependency_statuses(depends_on: &[String], rows: &[FeatureRow]) -> Vec<DependencyStatus> {
+    // Built once so the cost is linear in rows + dependencies; the first row
+    // with a given name wins.
+    let mut by_name: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for row in rows {
+        by_name.entry(row.name.as_str()).or_insert(row.status.as_str());
+    }
     depends_on
         .iter()
         .map(|name| DependencyStatus {
             name: name.clone(),
-            status: rows.iter().find(|row| &row.name == name).map(|row| row.status.clone()),
+            status: by_name.get(name.as_str()).map(|status| (*status).to_string()),
         })
         .collect()
 }
@@ -441,7 +447,7 @@ pub fn render_feature_detail(frame: &mut Frame, area: Rect, detail: &FeatureDeta
         text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
     };
     let mut text = vec![
-        format!("{} [{}]", clean(&detail.name), clean(&detail.status)),
+        name_with_tag("", &clean(&detail.name), &format!("[{}]", clean(&detail.status)), width),
         match &detail.description {
             Some(description) => clean(description),
             None => "(no description)".to_string(),
@@ -457,11 +463,24 @@ pub fn render_feature_detail(frame: &mut Frame, area: Rect, detail: &FeatureDeta
                 Some(status) => clean(status),
                 None => "not in ledger".to_string(),
             };
-            text.push(format!("  {} ({status})", clean(&dependency.name)));
+            text.push(name_with_tag("  ", &clean(&dependency.name), &format!("({status})"), width));
         }
     }
     let lines: Vec<Line> = text.iter().map(|line| Line::from(truncate_right(line, width))).collect();
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// `prefix` + `name`, then `tag`, within `width` columns. The tag is kept
+/// whole when it leaves a few columns for the name; only the name gives way, so a status
+/// or flag is never hidden by a long name, and the name never vanishes.
+fn name_with_tag(prefix: &str, name: &str, tag: &str, width: usize) -> String {
+    let tag = truncate_left(tag, (width / 2).max(width.saturating_sub(5)).max(1));
+    let name_room = width.saturating_sub(display_width(&tag) + 1);
+    if name_room == 0 {
+        return tag;
+    }
+    let head = truncate_right(&format!("{prefix}{name}"), name_room);
+    format!("{head} {tag}")
 }
 
 const MARKER_WIDTH: usize = 2;

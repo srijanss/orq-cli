@@ -95,3 +95,74 @@ fn control_characters_never_reach_the_screen_and_tiny_areas_do_not_panic() {
         let _ = draw(w, h, &detail());
     }
 }
+
+fn draw_in(frame_w: u16, frame_h: u16, area: Rect, detail: &FeatureDetail) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(frame_w, frame_h)).unwrap();
+    terminal.draw(|frame| render_feature_detail(frame, area, detail)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..frame_h)
+        .map(|y| (0..frame_w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_long_name_or_dependency_name_never_hides_the_status_or_the_missing_flag() {
+    let long = "n".repeat(60);
+    let narrow = FeatureDetail {
+        name: long.clone(),
+        dependencies: vec![
+            DependencyStatus { name: long.clone(), status: None },
+            DependencyStatus { name: long, status: Some("completed".into()) },
+        ],
+        ..detail()
+    };
+
+    let lines = draw(30, 10, &narrow);
+
+    assert!(lines[0].contains("pending") && lines[0].contains('…'), "{lines:?}");
+    let missing = lines.iter().find(|l| l.contains("not in ledger")).expect("flag visible");
+    assert!(missing.contains('…'), "{missing}");
+    assert!(lines.iter().any(|l| l.contains("completed")), "{lines:?}");
+    assert!(lines.iter().all(|l| l.chars().count() <= 30), "{lines:?}");
+}
+
+#[test]
+fn duplicate_row_names_resolve_to_the_first_match() {
+    let rows = vec![
+        FeatureRow { name: "a".into(), status: "draft".into() },
+        FeatureRow { name: "a".into(), status: "completed".into() },
+    ];
+
+    let deps = dependency_statuses(&["a".to_string()], &rows);
+
+    assert_eq!(deps[0].status.as_deref(), Some("draft"));
+}
+
+#[test]
+fn an_offset_area_is_drawn_in_place_and_a_disjoint_or_partial_one_is_clipped() {
+    let offset = draw_in(40, 8, Rect::new(10, 3, 20, 5), &detail());
+    assert!(offset[0].is_empty() && offset[2].is_empty(), "{offset:?}");
+    assert!(offset[3].starts_with("          beta"), "{offset:?}");
+    assert!(offset[3..].iter().all(|l| l.chars().count() <= 30), "{offset:?}");
+
+    let disjoint = draw_in(40, 8, Rect::new(100, 100, 20, 5), &detail());
+    assert!(disjoint.iter().all(String::is_empty), "{disjoint:?}");
+
+    let partial = draw_in(40, 8, Rect::new(30, 6, 20, 5), &detail());
+    assert!(partial[6].starts_with(&" ".repeat(30)) && partial[6].contains("beta"), "{partial:?}");
+    assert!(partial.iter().all(|l| l.chars().count() <= 40), "{partial:?}");
+}
+
+#[test]
+fn wide_and_combining_text_is_cut_on_whole_clusters_and_keeps_the_status() {
+    let unicode = FeatureDetail {
+        name: "日本語日本語日本語e\u{301}e\u{301}".into(),
+        ..detail()
+    };
+
+    let lines = draw(14, 6, &unicode);
+
+    assert!(lines[0].contains("pending"), "{lines:?}");
+    assert!(lines[0].contains('…'), "{lines:?}");
+    assert!(!lines[0].starts_with('\u{301}'), "{lines:?}");
+}
