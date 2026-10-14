@@ -45,22 +45,41 @@ fn a_symlinked_ledger_is_written_through_to_its_target() {
 }
 
 #[test]
-fn a_failed_write_leaves_the_original_and_no_temp_file() {
+fn a_failed_rename_leaves_the_blocking_target_intact_and_no_temp_file() {
     let dir = tempfile_dir("failure");
-    let path = dir.join(".tdd-features.json");
-    fs::write(&path, "original").unwrap();
-    // A directory in the way of the rename makes the final step fail.
+    // A non-empty directory in the way of the rename makes the final step fail
+    // after the temp file has been created and filled.
     let blocked = dir.join("blocked.json");
     fs::create_dir(&blocked).unwrap();
     fs::write(blocked.join("inner"), "x").unwrap();
 
     assert!(write_ledger_atomic(&blocked, "new").is_err());
 
+    assert!(blocked.is_dir());
+    assert_eq!(fs::read_to_string(blocked.join("inner")).unwrap(), "x");
+    assert_eq!(names(&dir), vec!["blocked.json".to_string()]);
+}
+
+#[test]
+fn a_failed_write_to_a_regular_ledger_keeps_its_bytes_and_mode() {
+    let dir = tempfile_dir("unwritable-dir");
+    let path = dir.join(".tdd-features.json");
+    fs::write(&path, "original").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    // Read-only directory: the temp file cannot be created at all.
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let writable_anyway = fs::File::create(dir.join("probe")).is_ok();
+
+    let result = write_ledger_atomic(&path, "new");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    if writable_anyway {
+        return; // running as a user that ignores directory permissions
+    }
+    assert!(result.is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), "original");
-    assert_eq!(
-        names(&dir),
-        vec![".tdd-features.json".to_string(), "blocked.json".to_string()]
-    );
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+    assert_eq!(names(&dir), vec![".tdd-features.json".to_string()]);
 }
 
 fn tempfile_dir(label: &str) -> std::path::PathBuf {
