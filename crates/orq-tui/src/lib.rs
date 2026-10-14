@@ -783,15 +783,21 @@ const SECTION_MIN_WIDTH: usize = 8;
 /// One bordered section: a titled top rule, `body` wrapped inside `│ … │`,
 /// and a bottom rule, every line exactly `width` columns.
 fn section_box(title: &str, body: &[String], width: usize) -> Vec<String> {
+    section_rows(title, body, width, false).into_iter().map(|(text, _)| text).collect()
+}
+
+/// `section_box` rows paired with whether each is a status-tag row (`tagged`
+/// marks every body row; rules never are).
+fn section_rows(title: &str, body: &[String], width: usize, tagged: bool) -> Vec<(String, bool)> {
     let inner = width.saturating_sub(4);
     let title = truncate_right(&format!(" {title} "), width.saturating_sub(2));
     let rule = width.saturating_sub(2 + display_width(&title));
-    let mut lines = vec![format!("╭{title}{}╮", "─".repeat(rule))];
+    let mut lines = vec![(format!("╭{title}{}╮", "─".repeat(rule)), false)];
     for text in body {
         let pad = inner.saturating_sub(display_width(text));
-        lines.push(format!("│ {text}{} │", " ".repeat(pad)));
+        lines.push((format!("│ {text}{} │", " ".repeat(pad)), tagged));
     }
-    lines.push(format!("╰{}╯", "─".repeat(width.saturating_sub(2))));
+    lines.push((format!("╰{}╯", "─".repeat(width.saturating_sub(2))), false));
     lines
 }
 
@@ -799,25 +805,33 @@ fn section_box(title: &str, body: &[String], width: usize) -> Vec<String> {
 /// status, Description, Test file (when recorded) and Dependencies. Text is
 /// wrapped, never cut, and control characters are replaced.
 pub fn detail_section_lines(detail: &FeatureDetail, width: usize) -> Vec<String> {
+    detail_section_rows(detail, width).into_iter().map(|(text, _)| text).collect()
+}
+
+/// `detail_section_lines` with a flag per row: true for the rows that end in
+/// a status tag (the Feature and Dependencies bodies), so colouring never has
+/// to infer a section from its (possibly truncated) heading.
+fn detail_section_rows(detail: &FeatureDetail, width: usize) -> Vec<(String, bool)> {
     if width < SECTION_MIN_WIDTH {
-        return feature_detail_lines(detail, width);
+        return feature_detail_lines(detail, width).into_iter().map(|text| (text, false)).collect();
     }
     let inner = width - 4;
     let clean = |text: &str| -> String {
         text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
     };
-    let mut lines = section_box(
+    let mut rows = section_rows(
         "Feature",
         &[name_with_tag("", &clean(&detail.name), &format!("[{}]", clean(&detail.status)), inner)],
         width,
+        true,
     );
     let description = match &detail.description {
         Some(description) => wrap_hard(&clean(description), inner),
         None => vec![truncate_right("(no description)", inner)],
     };
-    lines.extend(section_box("Description", &description, width));
+    rows.extend(section_rows("Description", &description, width, false));
     if let Some(test_file) = &detail.test_file {
-        lines.extend(section_box("Test file", &wrap_hard(&clean(test_file), inner), width));
+        rows.extend(section_rows("Test file", &wrap_hard(&clean(test_file), inner), width, false));
     }
     let dependencies: Vec<String> = if detail.dependencies.is_empty() {
         vec![truncate_right("(none)", inner)]
@@ -834,8 +848,8 @@ pub fn detail_section_lines(detail: &FeatureDetail, width: usize) -> Vec<String>
             })
             .collect()
     };
-    lines.extend(section_box("Dependencies", &dependencies, width));
-    lines
+    rows.extend(section_rows("Dependencies", &dependencies, width, !detail.dependencies.is_empty()));
+    rows
 }
 
 /// Break `text` into lines of at most `width` display columns, at grapheme
@@ -875,26 +889,25 @@ pub fn render_feature_detail_scrolled(frame: &mut Frame, area: Rect, detail: &Fe
         return;
     }
     let lines = feature_detail_lines(detail, usize::from(area.width));
-    render_detail_lines(frame, area, &lines, scroll);
+    render_detail_lines(frame, area, &lines, &[], scroll);
 }
 
 /// Draw only the visible slice of already laid-out `lines`, from `scroll`
-/// (clamped so the last line can reach the bottom and no further). Status
-/// tags in the Feature and Dependencies sections take their list colour; the
+/// (clamped so the last line can reach the bottom and no further). Rows
+/// flagged in `tagged` take their trailing status tag's list colour; the
 /// status text is always drawn, colour only adds to it.
-fn render_detail_lines(frame: &mut Frame, area: Rect, lines: &[String], scroll: usize) {
+fn render_detail_lines(frame: &mut Frame, area: Rect, lines: &[String], tagged: &[bool], scroll: usize) {
     let height = usize::from(area.height);
     let start = scroll.min(lines.len().saturating_sub(height));
-    let mut tagged = false;
-    let mut shown: Vec<Line> = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if line.starts_with('╭') {
-            tagged = line.starts_with("╭ Feature ") || line.starts_with("╭ Dependencies ");
-        }
-        if index >= start && shown.len() < height {
-            shown.push(if tagged { status_line(line) } else { Line::from(line.as_str()) });
-        }
-    }
+    let shown: Vec<Line> = lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(height)
+        .map(|(index, line)| {
+            if tagged.get(index).copied().unwrap_or(false) { status_line(line) } else { Line::from(line.as_str()) }
+        })
+        .collect();
     frame.render_widget(Paragraph::new(shown), area);
 }
 
@@ -1201,17 +1214,21 @@ struct DetailView {
     /// `detail` wrapped for `width` columns; rebuilt only when the width
     /// changes (a reload builds a fresh view, so it starts empty).
     lines: Vec<String>,
+    /// Per row of `lines`: whether it ends in a status tag to colour.
+    tagged: Vec<bool>,
     width: Option<usize>,
 }
 
 impl DetailView {
-    fn layout(&mut self, width: usize) -> &[String] {
+    fn layout(&mut self, width: usize) -> (&[String], &[bool]) {
         if self.width != Some(width) {
-            self.lines = detail_section_lines(&self.detail, width);
+            let (lines, tagged) = detail_section_rows(&self.detail, width).into_iter().unzip();
+            self.lines = lines;
+            self.tagged = tagged;
             self.width = Some(width);
             DETAIL_LAYOUTS.with(|count| count.set(count.get() + 1));
         }
-        &self.lines
+        (&self.lines, &self.tagged)
     }
 }
 
@@ -1242,6 +1259,7 @@ impl Browser {
             row: FeatureRow { name: entry.name.clone(), status: entry.status.clone() },
             scroll: 0,
             lines: Vec::new(),
+            tagged: Vec::new(),
             width: None,
         })
     }
@@ -1266,7 +1284,7 @@ impl Browser {
         let Some(open) = &mut self.detail else {
             return false;
         };
-        let total = open.layout(usize::from(text.width)).len();
+        let total = open.layout(usize::from(text.width)).0.len();
         let max = total.saturating_sub(usize::from(text.height));
         let next = open.scroll.min(max).saturating_add_signed(delta).min(max);
         let moved = next != open.scroll;
@@ -1321,13 +1339,13 @@ impl Browser {
                 let text = detail_viewport(panel);
                 let mut position = None;
                 if !text.is_empty() {
-                    let total = open.layout(usize::from(text.width)).len();
+                    let total = open.layout(usize::from(text.width)).0.len();
                     position = scroll_position(scroll, usize::from(text.height), total);
                 }
                 frame.render_widget(detail_block(&open.detail.name, panel.width, position.as_deref()), panel);
                 if !text.is_empty() {
-                    let lines = open.layout(usize::from(text.width));
-                    render_detail_lines(frame, text, lines, scroll);
+                    let (lines, tagged) = open.layout(usize::from(text.width));
+                    render_detail_lines(frame, text, lines, tagged, scroll);
                 }
             }
             render_promote_button(frame, body, Some(&open.row));

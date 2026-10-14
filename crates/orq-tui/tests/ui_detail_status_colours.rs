@@ -79,8 +79,39 @@ fn the_feature_status_and_each_dependency_status_use_the_list_badge_colours() {
     assert_ne!(status_style("pending").fg, status_style("completed").fg);
 }
 
+/// The foreground colour at the start of `tag` inside the row that contains `row_text`.
+fn colour_in_row(terminal: &Terminal<TestBackend>, row_text: &str, tag: &str) -> Option<Color> {
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let joined: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+        if joined.contains(row_text) {
+            let at = joined.rfind(tag)?;
+            return Some(buffer[(joined[..at].chars().count() as u16, y)].fg);
+        }
+    }
+    None
+}
+
+fn opened_with(width: u16, entries: Vec<BrowserEntry>) -> Terminal<TestBackend> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+    let events = vec![key(KeyCode::Down), key(KeyCode::Enter), key(KeyCode::Char('x'))];
+    let _ = run_browser(&mut terminal, &model, &mut Fixed(entries), &mut Script(events.into()));
+    terminal
+}
+
+fn entry(name: &str, description: Option<&str>, status: &str, depends_on: &[&str]) -> BrowserEntry {
+    BrowserEntry {
+        name: name.into(),
+        description: description.map(Into::into),
+        status: status.into(),
+        depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+        test_file: None,
+    }
+}
+
 #[test]
-fn status_text_is_always_drawn_and_prose_that_looks_like_a_status_is_not_coloured() {
+fn status_text_is_always_drawn() {
     let terminal = opened();
     let buffer = terminal.backend().buffer();
     let text: String = (0..buffer.area.height)
@@ -89,7 +120,27 @@ fn status_text_is_always_drawn_and_prose_that_looks_like_a_status_is_not_coloure
         .collect();
 
     assert!(text.contains("[pending]") && text.contains("(completed)") && text.contains("(not in ledger)"), "{text}");
-    // The description's own "(completed)" is plain text, not a badge.
-    let prose = colour_of(&terminal, "see (completed) note").unwrap();
-    assert_ne!(Some(prose), status_style("completed").fg);
+}
+
+#[test]
+fn a_description_that_ends_in_a_status_like_tag_is_not_coloured() {
+    let terminal = opened_with(60, vec![
+        entry("aaa", Some("blocked by (completed)"), "pending", &["bbb"]),
+        entry("bbb", None, "completed", &[]),
+    ]);
+
+    // The tag at the end of the description row is prose.
+    let prose = colour_in_row(&terminal, "blocked by (completed)", "(completed)");
+    assert_ne!(prose, status_style("completed").fg);
+    // The dependency's identical tag still is a badge.
+    assert_eq!(colour_in_row(&terminal, "bbb", "(completed)"), status_style("completed").fg);
+}
+
+#[test]
+fn colours_survive_a_width_that_truncates_the_section_heading() {
+    // At 14 columns the "Dependencies" heading no longer fits, but "b (ok)" does.
+    let terminal = opened_with(14, vec![entry("aaa", None, "pending", &["b"]), entry("b", None, "ok", &[])]);
+
+    assert_eq!(colour_in_row(&terminal, "b (ok)", "(ok)"), status_style("ok").fg);
+    assert_ne!(status_style("ok").fg, Some(Color::Reset));
 }
