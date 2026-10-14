@@ -77,7 +77,8 @@ fn the_browser_puts_the_project_name_and_path_under_the_title_and_the_list_below
     let lines = browse(Ok(entries));
 
     assert!(lines[4].starts_with("Features"), "{lines:?}");
-    assert_eq!(lines[5], "orq-cli", "{lines:?}");
+    // The status control shares the project row, right-aligned.
+    assert!(lines[5].starts_with("orq-cli"), "{lines:?}");
     assert_eq!(lines[6], "/repo", "{lines:?}");
     assert!(lines[7].starts_with('╭'), "{lines:?}");
 }

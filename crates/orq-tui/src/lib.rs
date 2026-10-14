@@ -649,6 +649,56 @@ impl SearchState {
     }
 }
 
+/// The statuses the browser names; anything else is filed under "other".
+const KNOWN_STATUSES: [&str; 4] = ["draft", "pending", "in_progress", "completed"];
+const FILTER_ALL: &str = "All";
+const FILTER_OTHER: &str = "other";
+
+/// Whether `status` passes the dropdown's filter; `None` is "All".
+fn status_matches(filter: Option<&str>, status: &str) -> bool {
+    match filter {
+        None => true,
+        Some(FILTER_OTHER) => !KNOWN_STATUSES.contains(&status),
+        Some(wanted) => status == wanted,
+    }
+}
+
+/// "All" plus each status present, in lifecycle order, then "other" when a
+/// status outside the known four is present.
+fn status_options(rows: &[FeatureRow]) -> Vec<String> {
+    let mut options = vec![FILTER_ALL.to_string()];
+    options.extend(
+        KNOWN_STATUSES.iter().filter(|s| rows.iter().any(|r| r.status == **s)).map(|s| (*s).to_string()),
+    );
+    if rows.iter().any(|r| !KNOWN_STATUSES.contains(&r.status.as_str())) {
+        options.push(FILTER_OTHER.to_string());
+    }
+    options
+}
+
+fn filter_label(filter: Option<&str>) -> String {
+    format!("Status: {} ▾", filter.unwrap_or(FILTER_ALL))
+}
+
+/// The one-row control on the right of the header's first row.
+fn filter_control_rect(list: Rect, filter: Option<&str>) -> Option<Rect> {
+    let width = u16::try_from(filter_label(filter).chars().count()).ok()?;
+    if list.height == 0 || list.width < width + 16 {
+        return None;
+    }
+    Some(Rect::new(list.right() - width, list.y, width, 1))
+}
+
+/// The bordered option list, hung under the control; option `i` is on row
+/// `y + 1 + i` inside it.
+fn dropdown_rect(list: Rect, control: Rect, options: &[String]) -> Rect {
+    let widest = options.iter().map(|o| display_width(o)).max().unwrap_or(0);
+    let width = u16::try_from(widest + 4).unwrap_or(u16::MAX).min(list.width);
+    let height = u16::try_from(options.len() + 2).unwrap_or(u16::MAX).min(list.bottom().saturating_sub(control.bottom()));
+    let x = control.right().saturating_sub(width).max(list.x);
+    Rect::new(x, control.bottom(), width, height)
+}
+
 /// Indexes of the items whose name or description contains `query`, ignoring
 /// case, in their original order. An empty query matches everything.
 pub fn matching_features(items: &[(String, Option<String>)], query: &str) -> Vec<usize> {
@@ -735,7 +785,7 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_search_in(frame, frame.area(), model, rows, items, search, state, &|_| None, None);
+    render_search_in(frame, frame.area(), model, rows, items, None, search, state, &|_| None, None);
 }
 
 fn render_search_in(
@@ -744,6 +794,7 @@ fn render_search_in(
     model: &PopupModel,
     rows: &[FeatureRow],
     items: &[(String, Option<String>)],
+    status_filter: Option<&str>,
     search: &SearchState,
     state: &FeatureListState,
     depends: &dyn Fn(usize) -> Option<String>,
@@ -786,7 +837,7 @@ fn render_search_in(
     let list = list_area(search_area(area, search));
     let matches: Vec<usize> = matching_rows(rows, items, &search.query)
         .into_iter()
-        .filter(|&index| index < rows.len())
+        .filter(|&index| rows.get(index).is_some_and(|row| status_matches(status_filter, &row.status)))
         .collect();
     let empty = if rows.is_empty() { "no features" } else { "no matches" };
     let matched = &matches;
@@ -1391,6 +1442,10 @@ struct Browser {
     detail: Option<DetailView>,
     /// Names of the rows marked with Space; never written anywhere.
     marked: HashSet<String>,
+    /// The status the dropdown filters to; `None` is "All".
+    status_filter: Option<String>,
+    /// The highlighted option while the dropdown is open.
+    dropdown: Option<usize>,
 }
 
 struct DetailView {
@@ -1462,9 +1517,42 @@ impl Browser {
         &self.items
     }
 
-    /// The row the selection indexes once the search filter is applied.
+    /// Indexes of the rows the name search and the status filter both pass.
+    fn visible(&self) -> Vec<usize> {
+        let filter = self.status_filter.as_deref();
+        matching_rows(&self.rows, &self.items, &self.search.query)
+            .into_iter()
+            .filter(|&i| self.rows.get(i).is_some_and(|row| status_matches(filter, &row.status)))
+            .collect()
+    }
+
+    /// Opens the dropdown on the active option, or closes it.
+    fn toggle_dropdown(&mut self) {
+        self.dropdown = match self.dropdown {
+            Some(_) => None,
+            None => {
+                let options = status_options(&self.rows);
+                let active = self.status_filter.as_deref().unwrap_or(FILTER_ALL);
+                Some(options.iter().position(|o| o == active).unwrap_or(0))
+            }
+        };
+    }
+
+    /// Applies option `index` and closes the dropdown; the selection restarts.
+    fn choose_status(&mut self, index: usize) {
+        let options = status_options(&self.rows);
+        self.status_filter = match options.get(index) {
+            Some(option) if option != FILTER_ALL => Some(option.clone()),
+            _ => None,
+        };
+        self.dropdown = None;
+        self.list.selected = None;
+        self.list.offset = 0;
+    }
+
+    /// The row the selection indexes once the search and status filters apply.
     fn selected_row(&self) -> Option<FeatureRow> {
-        let matches = matching_rows(&self.rows, &self.items, &self.search.query);
+        let matches = self.visible();
         let index = self.list.selected?.min(matches.len().checked_sub(1)?);
         self.rows.get(*matches.get(index)?).cloned()
     }
@@ -1601,7 +1689,40 @@ impl Browser {
         let marks = &self.marked;
         let is_marked = |index: usize| entries.get(index).is_some_and(|e| marks.contains(&e.name));
         let marked: Option<&dyn Fn(usize) -> bool> = if marks.is_empty() { None } else { Some(&is_marked) };
-        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends, marked);
+        render_search_in(
+            frame,
+            list,
+            model,
+            self.rows(),
+            self.items(),
+            self.status_filter.as_deref(),
+            &self.search,
+            &self.list,
+            &depends,
+            marked,
+        );
+        let filter = self.status_filter.as_deref();
+        if let Some(control) = filter_control_rect(list, filter) {
+            frame.render_widget(ratatui::widgets::Clear, control);
+            frame.render_widget(Paragraph::new(filter_label(filter)), control);
+            if let Some(highlight) = self.dropdown {
+                let options = status_options(&self.rows);
+                let rect = dropdown_rect(list, control, &options);
+                frame.render_widget(ratatui::widgets::Clear, rect);
+                let block = Block::bordered().border_type(BorderType::Rounded);
+                let inner = block.inner(rect);
+                frame.render_widget(block, rect);
+                let width = usize::from(inner.width);
+                let active = filter.unwrap_or(FILTER_ALL);
+                for (i, option) in options.iter().take(usize::from(inner.height)).enumerate() {
+                    let marker = if i == highlight { "> " } else { "  " };
+                    let line = truncate_right(&format!("{marker}{option}"), width);
+                    let style = if option == active { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+                    let row = Rect::new(inner.x, inner.y + u16::try_from(i).unwrap_or(0), inner.width, 1);
+                    frame.render_widget(Paragraph::new(Span::styled(line, style)), row);
+                }
+            }
+        }
         match panel {
             Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref(), marks.len(), bulk),
             None if bulk > 0 => render_bulk_button(frame, body, bulk),
@@ -1633,6 +1754,8 @@ where
         list: FeatureListState::default(),
         detail: None,
         marked: HashSet::new(),
+        status_filter: None,
+        dropdown: None,
     };
     browser.apply_load(backend.load());
     let mut dirty = true;
@@ -1685,6 +1808,23 @@ where
                             }
                         }
                     }
+                    continue;
+                }
+                if let Some(highlight) = browser.dropdown {
+                    let last = status_options(&browser.rows).len().saturating_sub(1);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('f') => browser.dropdown = None,
+                        KeyCode::Down => browser.dropdown = Some((highlight + 1).min(last)),
+                        KeyCode::Up => browser.dropdown = Some(highlight.saturating_sub(1)),
+                        KeyCode::Enter => browser.choose_status(highlight),
+                        _ => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('f') && !browser.search.active {
+                    browser.toggle_dropdown();
+                    dirty = true;
                     continue;
                 }
                 if key.code == KeyCode::Char('p') && !browser.search.active && !browser.marked.is_empty() {
@@ -1740,7 +1880,7 @@ where
                 } else {
                     let body = body_area(area, browser.notice.is_some());
                     let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
-                    let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
+                    let len = browser.visible().len();
                     browser.list.handle_key(key.code, search_area(list, &browser.search), len);
                 }
                 dirty = true;
@@ -1771,12 +1911,33 @@ where
                 let selected = browser.selected_row();
                 let bulk = browser.marked_drafts();
                 let (list, promote_area, _) = list_layout(body, selected.as_ref(), bulk);
-                if bulk > 0 && bulk_hit(promote_area, bulk, mouse) {
+                let control = filter_control_rect(list, browser.status_filter.as_deref());
+                let press = Position::new(mouse.column, mouse.row);
+                if let Some(highlight) = browser.dropdown {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        let options = status_options(&browser.rows);
+                        let hit = control.map(|c| dropdown_rect(list, c, &options)).and_then(|rect| {
+                            let inner = Block::bordered().inner(rect);
+                            let row = usize::from(press.y.checked_sub(inner.y)?);
+                            (inner.contains(press) && row < options.len()).then_some(row)
+                        });
+                        match hit {
+                            Some(index) => browser.choose_status(index),
+                            None => browser.dropdown = None,
+                        }
+                    } else {
+                        browser.dropdown = Some(highlight);
+                    }
+                } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && control.is_some_and(|c| c.contains(press))
+                {
+                    browser.toggle_dropdown();
+                } else if bulk > 0 && bulk_hit(promote_area, bulk, mouse) {
                     browser.promote_marked(backend);
                 } else if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);
                 } else {
-                    let len = matching_rows(browser.rows(), browser.items(), &browser.search.query).len();
+                    let len = browser.visible().len();
                     browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
                 }
                 dirty = true;
@@ -1791,7 +1952,7 @@ where
 pub const PANEL_ROWS: u16 = 3;
 const PANEL_MIN_WIDTH: u16 = 30;
 const PANEL_MIN_BODY_HEIGHT: u16 = 14;
-const PANEL_HINT: &str = " ↑↓ move · Enter open · / search · r reload · Esc close ";
+const PANEL_HINT: &str = " ↑↓ move · Enter open · / search · f status · r reload · Esc close ";
 
 /// Splits the browser body into the list and, on a roomy viewport, the
 /// selected-feature panel below it. Without a panel the promote button
