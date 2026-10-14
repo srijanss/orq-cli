@@ -13,7 +13,17 @@ fn render(rows: &[FeatureRow], width: u16, height: u16) -> Vec<String> {
         .unwrap();
     let buffer = terminal.backend().buffer();
     (0..height)
-        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .map(|y| {
+            let mut line = String::new();
+            let mut x = 0;
+            while x < width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                // A wide glyph owns the following continuation cell(s) too.
+                x += u16::try_from(columns(symbol).max(1)).unwrap();
+            }
+            line.trim_end().to_string()
+        })
         .collect()
 }
 
@@ -45,4 +55,34 @@ fn a_narrow_terminal_keeps_the_status_visible_and_every_row_within_the_width() {
     assert!(lines[2].contains("completed"), "{lines:?}");
     assert!(lines[2].contains('…'), "{lines:?}");
     assert!(lines[2].chars().count() <= 16, "{lines:?}");
+}
+
+fn columns(line: &str) -> usize {
+    ratatui::text::Span::raw(line.to_string()).width()
+}
+
+#[test]
+fn wide_and_combining_names_are_cut_on_whole_graphemes_within_the_width() {
+    // Each CJK glyph is two columns; "e" + combining acute is one cluster.
+    let lines = render(&[row("日本語の機能e\u{301}x", "draft")], 12, 4);
+
+    assert!(lines[2].ends_with(" draft"), "{lines:?}");
+    assert!(lines[2].contains('…'), "{lines:?}");
+    assert!(columns(&lines[2]) <= 12, "{lines:?}");
+    assert!(!lines[2].contains('\u{301}') || lines[2].contains("e\u{301}"), "{lines:?}");
+}
+
+#[test]
+fn a_status_as_wide_as_the_viewport_is_cut_and_nothing_overflows() {
+    let lines = render(&[row("name", "completed-and-merged")], 8, 4);
+
+    assert!(columns(&lines[2]) <= 8, "{lines:?}");
+    assert!(lines[2].contains('…'), "{lines:?}");
+}
+
+#[test]
+fn a_viewport_with_no_list_space_renders_without_panicking() {
+    for (width, height) in [(0, 0), (1, 1), (5, 2), (5, 1), (1, 6)] {
+        let _ = render(&[row("alpha", "draft")], width, height);
+    }
 }

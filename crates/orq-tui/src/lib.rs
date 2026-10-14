@@ -239,13 +239,20 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
     render_popup(frame, model);
     let area = frame.area();
     let width = usize::from(area.width);
+    let top = HEADER_ROWS.min(area.height);
+    let list = Rect::new(area.x, area.y + top, area.width, area.height - top);
+    if list.is_empty() {
+        return;
+    }
+    // Only the rows that fit are formatted, however long the ledger is.
     let lines: Vec<Line> = if rows.is_empty() {
         vec![Line::from(truncate_left("no features", width))]
     } else {
-        rows.iter().map(|row| Line::from(feature_row_text(row, width))).collect()
+        rows.iter()
+            .take(usize::from(list.height))
+            .map(|row| Line::from(feature_row_text(row, width)))
+            .collect()
     };
-    let top = HEADER_ROWS.min(area.height);
-    let list = Rect::new(area.x, area.y + top, area.width, area.height - top);
     frame.render_widget(Paragraph::new(lines), list);
 }
 
