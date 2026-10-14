@@ -767,6 +767,15 @@ name = "orq-core"
 version = "0.1.0"
 
 [[package]]
+name = "orq-features"
+version = "0.1.0"
+dependencies = [
+ "orq-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "orq-git"
 version = "0.1.0"
 dependencies = [

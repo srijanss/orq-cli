@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/orq-cli",
     "crates/orq-core",
+    "crates/orq-features",
     "crates/orq-git",
     "crates/orq-herdr",
     "crates/orq-tui",
