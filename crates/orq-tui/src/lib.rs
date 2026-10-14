@@ -240,8 +240,10 @@ pub struct FeatureListState {
 
 impl FeatureListState {
     /// Up and Down move the selection within `len` rows and stop at the ends.
-    /// Nothing else is touched: selecting never starts or edits anything.
+    /// A selection left past the end of a shrunken list is clamped first, and
+    /// cleared when the list is empty. Selecting never starts or edits anything.
     pub fn handle_key(&mut self, code: KeyCode, len: usize) {
+        self.normalize(len);
         if len == 0 {
             return;
         }
@@ -254,6 +256,7 @@ impl FeatureListState {
 
     /// A left press on a listed row selects it; any other place is ignored.
     pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
+        self.normalize(len);
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return;
         }
@@ -261,11 +264,25 @@ impl FeatureListState {
         if !list.contains((mouse.column, mouse.row).into()) {
             return;
         }
-        let index = usize::from(mouse.row - list.y);
+        let index = first_visible(self.selected, usize::from(list.height)) + usize::from(mouse.row - list.y);
         if index < len {
             self.selected = Some(index);
         }
     }
+
+    fn normalize(&mut self, len: usize) {
+        self.selected = match self.selected {
+            Some(_) if len == 0 => None,
+            Some(i) => Some(i.min(len - 1)),
+            None => None,
+        };
+    }
+}
+
+/// The first row shown: the window slides just far enough that the selected
+/// row is always inside it. Mouse hit-testing uses the same offset.
+fn first_visible(selected: Option<usize>, height: usize) -> usize {
+    selected.map_or(0, |i| (i + 1).saturating_sub(height))
 }
 
 fn list_area(area: Rect) -> Rect {
@@ -293,13 +310,22 @@ pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[Featur
     let lines: Vec<Line> = if rows.is_empty() {
         vec![Line::from(truncate_left("no features", width))]
     } else {
+        let height = usize::from(list.height);
         rows.iter()
             .enumerate()
-            .take(usize::from(list.height))
+            .skip(first_visible(state.selected.map(|i| i.min(rows.len() - 1)), height))
+            .take(height)
             .map(|(index, row)| {
-                let marker = if state.selected == Some(index) { "> " } else { "  " };
+                let selected = state.selected.map(|i| i.min(rows.len() - 1)) == Some(index);
+                // The marker has priority over the row text on narrow popups.
+                let marker = match (selected, width) {
+                    (true, 0 | 1) => ">",
+                    (false, 0 | 1) => " ",
+                    (true, _) => "> ",
+                    (false, _) => "  ",
+                };
                 let room = width.saturating_sub(MARKER_WIDTH);
-                Line::from(format!("{}{}", truncate_left(marker, width), feature_row_text(row, room)))
+                Line::from(format!("{marker}{}", feature_row_text(row, room)))
             })
             .collect()
     };
