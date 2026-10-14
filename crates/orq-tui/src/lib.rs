@@ -1,6 +1,11 @@
+use std::error::Error;
+use std::io;
+
+use ratatui::backend::Backend;
+use ratatui::crossterm::event::{Event, KeyCode};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
+use ratatui::{Frame, Terminal};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Everything the popup header needs, as plain data.
@@ -8,6 +13,55 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct PopupModel {
     pub project_name: String,
     pub repo_path: String,
+}
+
+/// Where the popup's input events come from (the real terminal, or a script).
+pub trait EventSource {
+    fn next_event(&mut self) -> io::Result<Event>;
+}
+
+/// Puts the terminal into popup mode and back (raw mode, alternate screen...).
+pub trait TerminalMode {
+    fn enter(&mut self) -> io::Result<()>;
+    fn leave(&mut self) -> io::Result<()>;
+}
+
+/// Run the popup between `enter` and `leave`. The terminal is always left
+/// again once entered, whether the popup closed normally or failed.
+pub fn run_popup_session<B: Backend>(
+    mode: &mut dyn TerminalMode,
+    terminal: &mut Terminal<B>,
+    model: &PopupModel,
+    events: &mut dyn EventSource,
+) -> Result<(), Box<dyn Error>>
+where
+    B::Error: 'static,
+{
+    mode.enter()?;
+    let result = run_popup(terminal, model, events);
+    let restored = mode.leave();
+    result?;
+    restored?;
+    Ok(())
+}
+
+/// Draw the popup and process events until Esc is pressed.
+pub fn run_popup<B: Backend>(
+    terminal: &mut Terminal<B>,
+    model: &PopupModel,
+    events: &mut dyn EventSource,
+) -> Result<(), Box<dyn Error>>
+where
+    B::Error: 'static,
+{
+    loop {
+        terminal.draw(|frame| render_popup(frame, model))?;
+        if let Event::Key(key) = events.next_event()? {
+            if key.code == KeyCode::Esc {
+                return Ok(());
+            }
+        }
+    }
 }
 
 pub fn render_popup(frame: &mut Frame, model: &PopupModel) {
