@@ -69,4 +69,9 @@ fn interactive_ui_draws_the_project_and_exits_cleanly_on_esc() {
 
     assert_eq!(code, 0, "{drawn}");
     assert!(drawn.contains(root.to_str().unwrap()), "{drawn}");
+    // The terminal is put back: mouse capture off and the alternate screen
+    // left, after they were turned on.
+    let position = |needle: &str| drawn.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {drawn:?}"));
+    assert!(position("\x1b[?1049h") < position("\x1b[?1049l"), "{drawn:?}");
+    assert!(position("\x1b[?1000h") < position("\x1b[?1000l"), "{drawn:?}");
 }
