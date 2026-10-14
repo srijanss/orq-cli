@@ -51,9 +51,8 @@ pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
             })
         }
     }
-    let root = rev_parse(path, "--show-toplevel")?;
-    let git_common_dir = rev_parse(path, "--git-common-dir")?;
-    let git_dir = rev_parse(path, "--git-dir")?;
+    let [root, git_common_dir, git_dir] =
+        rev_parse_paths(path, ["--show-toplevel", "--git-common-dir", "--git-dir"])?;
 
     Ok(Project {
         name: project_name(&git_common_dir),
@@ -97,10 +96,43 @@ const REPOSITORY_SELECTION_VARS: [&str; 7] = [
     "GIT_PREFIX",
 ];
 
+/// All three paths from one Git process. Output is line-separated, so it is
+/// only trusted when it is exactly three non-empty lines (no path holds a
+/// newline); otherwise each path is asked for separately, which is
+/// newline-safe.
+fn rev_parse_paths(path: &Path, flags: [&str; 3]) -> Result<[PathBuf; 3], ResolveError> {
+    let mut args = vec!["--path-format=absolute"];
+    args.extend(flags);
+    let bytes = git_rev_parse(path, &args)?;
+    let lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
+    if lines.len() == 3 && lines.iter().all(|line| !line.is_empty()) {
+        let to_path = |line: &[u8]| PathBuf::from(OsString::from_vec(line.to_vec()));
+        return Ok([to_path(lines[0]), to_path(lines[1]), to_path(lines[2])]);
+    }
+    Ok([
+        rev_parse(path, flags[0])?,
+        rev_parse(path, flags[1])?,
+        rev_parse(path, flags[2])?,
+    ])
+}
+
 /// Run `git rev-parse --path-format=absolute <flag>` and return its single
 /// output path byte-for-byte (paths may hold newlines or non-UTF-8 bytes, so
 /// only the one trailing newline git adds is removed).
 fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
+    let bytes = git_rev_parse(path, &["--path-format=absolute", flag])?;
+    if bytes.is_empty() {
+        return Err(ResolveError::GitUnavailable {
+            path: path.to_path_buf(),
+            message: format!("git rev-parse {flag} produced no output"),
+        });
+    }
+    Ok(PathBuf::from(OsString::from_vec(bytes)))
+}
+
+/// Run `git rev-parse <args>` from `path`; returns stdout minus the one
+/// trailing newline git adds.
+fn git_rev_parse(path: &Path, args: &[&str]) -> Result<Vec<u8>, ResolveError> {
     let unavailable = |message: String| ResolveError::GitUnavailable {
         path: path.to_path_buf(),
         message,
@@ -114,7 +146,8 @@ fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
     let output = command
         .arg("-C")
         .arg(path)
-        .args(["rev-parse", "--path-format=absolute", flag])
+        .arg("rev-parse")
+        .args(args)
         // Stable English diagnostics, so "not a git repository" is recognisable.
         .env("LC_ALL", "C")
         .output()
@@ -133,8 +166,5 @@ fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
     }
-    if bytes.is_empty() {
-        return Err(unavailable(format!("git rev-parse {flag} produced no output")));
-    }
-    Ok(PathBuf::from(OsString::from_vec(bytes)))
+    Ok(bytes)
 }
