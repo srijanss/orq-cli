@@ -227,6 +227,9 @@ const HERDR_VARS: [&str; 6] = [
 /// How long the Herdr version probe may run before it is abandoned.
 const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// The most version output that is read; anything longer is not a version.
+const VERSION_PROBE_MAX_BYTES: u64 = 1024;
+
 /// `<bin> --version` stdout, or `None` when it fails, cannot start or does not
 /// finish in time. The child is killed and reaped on every path.
 fn herdr_version(bin: &OsString) -> Option<String> {
@@ -244,10 +247,14 @@ fn herdr_version(bin: &OsString) -> Option<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let _ = stdout.read_to_end(&mut bytes);
+        // One byte past the limit is enough to know the output is too long.
+        let _ = stdout.take(VERSION_PROBE_MAX_BYTES + 1).read_to_end(&mut bytes);
         let _ = tx.send(bytes);
     });
-    let bytes = rx.recv_timeout(VERSION_PROBE_TIMEOUT).ok();
+    let bytes = rx
+        .recv_timeout(VERSION_PROBE_TIMEOUT)
+        .ok()
+        .filter(|bytes| bytes.len() as u64 <= VERSION_PROBE_MAX_BYTES);
     if bytes.is_none() {
         let _ = child.kill();
     }

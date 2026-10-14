@@ -20,7 +20,7 @@ fn a_herdr_that_floods_stdout_is_cut_off_and_reported_unavailable() {
         .unwrap();
 
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
     assert!(text.contains("herdr version: unavailable"), "{text}");
     assert!(!text.contains("flood"), "{text}");
     assert!(text.len() < 4096, "{}", text.len());
