@@ -879,12 +879,47 @@ pub fn render_feature_detail_scrolled(frame: &mut Frame, area: Rect, detail: &Fe
 }
 
 /// Draw only the visible slice of already laid-out `lines`, from `scroll`
-/// (clamped so the last line can reach the bottom and no further).
+/// (clamped so the last line can reach the bottom and no further). Status
+/// tags in the Feature and Dependencies sections take their list colour; the
+/// status text is always drawn, colour only adds to it.
 fn render_detail_lines(frame: &mut Frame, area: Rect, lines: &[String], scroll: usize) {
     let height = usize::from(area.height);
     let start = scroll.min(lines.len().saturating_sub(height));
-    let shown: Vec<Line> = lines.iter().skip(start).take(height).map(|l| Line::from(l.as_str())).collect();
+    let mut tagged = false;
+    let mut shown: Vec<Line> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with('╭') {
+            tagged = line.starts_with("╭ Feature ") || line.starts_with("╭ Dependencies ");
+        }
+        if index >= start && shown.len() < height {
+            shown.push(if tagged { status_line(line) } else { Line::from(line.as_str()) });
+        }
+    }
     frame.render_widget(Paragraph::new(shown), area);
+}
+
+/// `row` with its trailing `[status]` / `(status)` tag styled by the status,
+/// when it has one (the tag sits before the closing border).
+fn status_line(row: &str) -> Line<'_> {
+    let body = row.trim_end_matches('│').trim_end();
+    let close = match body.chars().last() {
+        Some(']') => '[',
+        Some(')') => '(',
+        _ => return Line::from(row),
+    };
+    let Some(open) = body.rfind(close) else {
+        return Line::from(row);
+    };
+    let tag = &body[open..];
+    let status = &tag[1..tag.len() - 1];
+    if status.is_empty() || !row.starts_with('│') {
+        return Line::from(row);
+    }
+    Line::from(vec![
+        Span::raw(&row[..open]),
+        Span::styled(tag, status_style(status)),
+        Span::raw(&row[open + tag.len()..]),
+    ])
 }
 
 thread_local! {
