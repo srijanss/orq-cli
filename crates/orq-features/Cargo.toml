@@ -5,5 +5,9 @@ edition.workspace = true
 
 [dependencies]
 orq-core = { path = "../orq-core" }
+orq-git = { path = "../orq-git" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+orq-test-support = { path = "../orq-test-support" }

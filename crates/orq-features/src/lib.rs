@@ -161,3 +161,19 @@ fn describe_shape_error(bytes: &[u8]) -> Option<String> {
     })?;
     Some(format!("entry {index} has no string featureName"))
 }
+
+const LEDGER_FILE: &str = ".tdd-features.json";
+
+/// The ledger file for a resolved project: the worktree's own when it has
+/// one, otherwise the main checkout's. Derived only from `project`, so an
+/// inherited `TDD_FEATURES_PATH` is never consulted.
+pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
+    let own = project.root.join(LEDGER_FILE);
+    if !project.is_linked_worktree || own.exists() {
+        return own;
+    }
+    match project.git_common_dir.parent() {
+        Some(main_root) => main_root.join(LEDGER_FILE),
+        None => own,
+    }
+}

@@ -771,6 +771,8 @@ name = "orq-features"
 version = "0.1.0"
 dependencies = [
  "orq-core",
+ "orq-git",
+ "orq-test-support",
  "serde",
  "serde_json",
 ]
