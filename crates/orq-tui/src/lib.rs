@@ -4,7 +4,7 @@ use std::io;
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -259,7 +259,7 @@ pub fn render_chrome(frame: &mut Frame, area: Rect) -> Rect {
     let title = truncate_right(HEADER_TITLE, width.saturating_sub(badge_width + 1));
     let gap = width.saturating_sub(display_width(&title) + badge_width);
     let header = Line::from(vec![
-        Span::styled(title, Style::new().add_modifier(ratatui::style::Modifier::BOLD)),
+        Span::styled(title, Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(gap)),
         Span::styled(READY_BADGE, Style::new().fg(Color::Green)),
     ]);
@@ -312,14 +312,15 @@ impl FeatureListState {
     pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
         self.normalize(area, len);
         let list = list_area(area);
-        let height = usize::from(list.height);
+        let card = usize::from(item_height(list));
+        let height = usize::from(list.height) / card;
         // Nothing outside the list rows reacts: not the header, not beyond the area.
         if !list.contains((mouse.column, mouse.row).into()) {
             return;
         }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                let index = self.offset + usize::from(mouse.row - list.y);
+                let index = self.offset + usize::from(mouse.row - list.y) / card;
                 if index < len {
                     self.selected = Some(index);
                 }
@@ -354,7 +355,8 @@ impl FeatureListState {
     /// The first row shown: `offset`, kept within the list and moved just far
     /// enough that the selected row is inside the window.
     fn window(&self, area: Rect, len: usize) -> usize {
-        window(self.selected, self.offset, usize::from(list_area(area).height), len)
+        let list = list_area(area);
+        window(self.selected, self.offset, usize::from(list.height / item_height(list)), len)
     }
 }
 
@@ -369,6 +371,20 @@ fn window(selected: Option<usize>, offset: usize, height: usize, len: usize) -> 
         _ => offset,
     }
 }
+
+/// Rows per feature: a bordered card when the list is wide and tall enough
+/// for at least two of them (and a tall list, so short popups stay compact), otherwise the compact single row.
+fn item_height(list: Rect) -> u16 {
+    if list.width >= CARD_MIN_WIDTH && list.height >= CARD_MIN_HEIGHT {
+        CARD_HEIGHT
+    } else {
+        1
+    }
+}
+
+const CARD_HEIGHT: u16 = 4;
+const CARD_MIN_WIDTH: u16 = 30;
+const CARD_MIN_HEIGHT: u16 = 10;
 
 fn list_area(area: Rect) -> Rect {
     let top = HEADER_ROWS.min(area.height);
@@ -386,7 +402,7 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let list = list_area(frame.area());
-    render_rows(frame, list, rows.len(), |i| &rows[i], state, "no features");
+    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, state, "no features");
 }
 
 /// Rows `0..len` of `row` that fit in `list`, the selected one marked. Only
@@ -396,6 +412,7 @@ fn render_rows<'a>(
     list: Rect,
     len: usize,
     row: impl Fn(usize) -> &'a FeatureRow,
+    depends: &dyn Fn(usize) -> Option<String>,
     state: &FeatureListState,
     empty: &str,
 ) {
@@ -403,6 +420,11 @@ fn render_rows<'a>(
         return;
     }
     let width = usize::from(list.width);
+    let card = item_height(list);
+    if card > 1 && len > 0 {
+        render_cards(frame, list, len, row, depends, state);
+        return;
+    }
     let lines: Vec<Line> = if len == 0 {
         vec![Line::from(truncate_left(empty, width))]
     } else {
@@ -429,6 +451,60 @@ fn render_rows<'a>(
             .collect()
     };
     frame.render_widget(Paragraph::new(lines), list);
+}
+
+/// Cards for the rows that fit whole in `list`, the selected one with a
+/// brighter border and the `> ` marker (so selection does not rely on colour).
+fn render_cards<'a>(
+    frame: &mut Frame,
+    list: Rect,
+    len: usize,
+    row: impl Fn(usize) -> &'a FeatureRow,
+    depends: &dyn Fn(usize) -> Option<String>,
+    state: &FeatureListState,
+) {
+    let visible = usize::from(list.height / CARD_HEIGHT);
+    let first = window(state.selected, state.offset, visible, len);
+    let selected = state.selected.map(|i| i.min(len - 1));
+    for (slot, index) in (first..len.min(first + visible)).enumerate() {
+        let top = list.y + u16::try_from(slot).unwrap_or(0) * CARD_HEIGHT;
+        let area = Rect::new(list.x, top, list.width, CARD_HEIGHT);
+        let border = if selected == Some(index) {
+            Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
+        let block = Block::bordered().border_type(BorderType::Rounded).border_style(border);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let width = usize::from(inner.width);
+        let row = row(index);
+        let summary = depends(index).unwrap_or_else(|| format!("#{}", index + 1));
+        let marker = if selected == Some(index) { "> " } else { "  " };
+        let (name, status) = feature_row_parts(row, width.saturating_sub(MARKER_WIDTH));
+        let used = MARKER_WIDTH + display_width(&name) + display_width(&status);
+        let pad = width.saturating_sub(used);
+        let lines = vec![
+            Line::styled(
+                format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&summary, width.saturating_sub(MARKER_WIDTH))),
+                Style::new().fg(Color::DarkGray),
+            ),
+            Line::from(vec![
+                Span::raw(format!("{marker}{name}")),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(status, status_style(&row.status)),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+fn dependency_summary(depends_on: &[String]) -> String {
+    if depends_on.is_empty() {
+        "no dependencies".to_string()
+    } else {
+        format!("depends on {}", depends_on.join(", "))
+    }
 }
 
 /// What a key did to the search: consumed it, left it for the list, or asked
@@ -522,7 +598,7 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_search_in(frame, frame.area(), model, rows, items, search, state);
+    render_search_in(frame, frame.area(), model, rows, items, search, state, &|_| None);
 }
 
 fn render_search_in(
@@ -533,6 +609,7 @@ fn render_search_in(
     items: &[(String, Option<String>)],
     search: &SearchState,
     state: &FeatureListState,
+    depends: &dyn Fn(usize) -> Option<String>,
 ) {
     render_header(frame, area, model);
     let full = list_area(area);
@@ -550,7 +627,7 @@ fn render_search_in(
         .filter(|&index| index < rows.len())
         .collect();
     let empty = if rows.is_empty() { "no features" } else { "no matches" };
-    render_rows(frame, list, matches.len(), |i| &rows[matches[i]], state, empty);
+    render_rows(frame, list, matches.len(), |i| &rows[matches[i]], &|i| depends(matches[i]), state, empty);
 }
 
 /// Why the ledger could not be shown: where it was looked for and the reason.
@@ -775,11 +852,6 @@ fn feature_row_parts(row: &FeatureRow, width: usize) -> (String, String) {
         return (String::new(), status);
     }
     (format!("{} ", truncate_right(&row.name, name_room)), status)
-}
-
-fn feature_row_text(row: &FeatureRow, width: usize) -> String {
-    let (name, status) = feature_row_parts(row, width);
-    format!("{name}{status}")
 }
 
 /// The badge colour of a status. Colour only reinforces the status text,
@@ -1147,7 +1219,9 @@ impl Browser {
         let body = Rect::new(area.x, area.y, area.width, body_height);
         let selected = self.selected_row();
         let (list, _) = promote_split(body, selected.as_ref());
-        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list);
+        let entries = &self.entries;
+        let depends = |index: usize| entries.get(index).map(|e| dependency_summary(&e.depends_on));
+        render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends);
         render_promote_button(frame, body, selected.as_ref());
         render_notice(frame, area, self.notice.as_deref());
     }
