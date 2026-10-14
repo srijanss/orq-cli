@@ -19,7 +19,7 @@ pub fn set_entry_status(
     status: FeatureStatus,
 ) -> Result<String, EditError> {
     // The scanner below assumes well-formed JSON.
-    serde_json::from_str::<serde_json::Value>(text).map_err(|_| EditError::Malformed)?;
+    serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
     let span = Scanner { bytes: text.as_bytes(), pos: 0 }
         .status_span_of(feature_name)?
         .ok_or(EditError::UnknownFeature)?;
