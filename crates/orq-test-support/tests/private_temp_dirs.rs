@@ -1,4 +1,4 @@
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 
 use orq_test_support::{FakeAgent, GitFixture};
@@ -10,7 +10,9 @@ fn mode(path: &Path) -> u32 {
 #[test]
 fn temp_directories_are_private_and_never_adopt_pre_created_ones() {
     let tmp = std::env::temp_dir().join(format!("orq-private-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
+    // Atomic and private: fails if the path already exists, so a pre-created
+    // directory or symlink is never adopted.
+    std::fs::DirBuilder::new().mode(0o700).create(&tmp).unwrap();
     std::env::set_var("TMPDIR", &tmp);
     // Names an attacker could predict from the pid and a small counter.
     let pid = std::process::id();
