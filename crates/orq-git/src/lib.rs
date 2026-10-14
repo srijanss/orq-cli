@@ -85,6 +85,18 @@ fn project_name(git_common_dir: &Path) -> String {
     }
 }
 
+/// Environment variables that make Git use a repository other than the one
+/// found from the working directory.
+const REPOSITORY_SELECTION_VARS: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
 /// Run `git rev-parse --path-format=absolute <flag>` and return its single
 /// output path byte-for-byte (paths may hold newlines or non-UTF-8 bytes, so
 /// only the one trailing newline git adds is removed).
@@ -93,7 +105,13 @@ fn rev_parse(path: &Path, flag: &str) -> Result<PathBuf, ResolveError> {
         path: path.to_path_buf(),
         message,
     };
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    // Discovery must follow `path`, not repository-selection variables
+    // inherited from the caller (e.g. when launched from a Git hook).
+    for var in REPOSITORY_SELECTION_VARS {
+        command.env_remove(var);
+    }
+    let output = command
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--path-format=absolute", flag])
