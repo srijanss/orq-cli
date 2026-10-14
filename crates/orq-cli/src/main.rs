@@ -35,16 +35,26 @@ fn project_inspect(args: &[OsString]) -> ExitCode {
         _ => return usage_error(),
     };
 
-    let pane_cwd = match std::env::var_os("HERDR_ACTIVE_PANE_CWD") {
-        None => None,
-        Some(value) => match value.into_string() {
-            Ok(value) => Some(value),
-            Err(_) => return fail("HERDR_ACTIVE_PANE_CWD is not valid UTF-8"),
-        },
+    // Fallback sources are only consulted when no higher-priority source is
+    // present, so a broken fallback never defeats a valid explicit choice.
+    let pane_cwd = if explicit.is_none() {
+        match std::env::var_os("HERDR_ACTIVE_PANE_CWD") {
+            None => None,
+            Some(value) => match value.into_string() {
+                Ok(value) => Some(value),
+                Err(_) => return fail("HERDR_ACTIVE_PANE_CWD is not valid UTF-8"),
+            },
+        }
+    } else {
+        None
     };
-    let process_cwd = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(err) => return fail(format!("cannot determine the working directory: {err}")),
+    let process_cwd = if explicit.is_none() && pane_cwd.is_none() {
+        match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(err) => return fail(format!("cannot determine the working directory: {err}")),
+        }
+    } else {
+        PathBuf::new() // never consulted: a higher-priority source is present
     };
 
     let cwd = match orq_herdr::resolve_launch_cwd(explicit.as_deref(), pane_cwd.as_deref(), &process_cwd) {
