@@ -123,6 +123,11 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
         std::io::ErrorKind::NotFound => LedgerError::Missing { path: path.to_path_buf() },
         _ => LedgerError::Unreadable { path: path.to_path_buf(), source },
     })?;
+    parse_ledger_bytes(path, &bytes)
+}
+
+/// Validates ledger `bytes` that were read from `path`.
+fn parse_ledger_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<Vec<FeatureEntry>, LedgerError> {
     let malformed = |reason: String, position| LedgerError::Malformed {
         path: path.to_path_buf(),
         reason,
@@ -130,12 +135,12 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
     };
     // Deserialise straight into `RawEntry`: going through `Value` first would
     // silently keep the last of any repeated key.
-    let raw: Vec<ObjectEntry> = match serde_json::from_slice(&bytes) {
+    let raw: Vec<ObjectEntry> = match serde_json::from_slice(bytes) {
         Ok(raw) => raw,
         Err(e) if e.classify() != serde_json::error::Category::Data => {
             return Err(malformed(e.to_string(), Some((e.line(), e.column()))));
         }
-        Err(e) => return Err(malformed(describe_shape_error(&bytes).unwrap_or_else(|| e.to_string()), None)),
+        Err(e) => return Err(malformed(describe_shape_error(bytes).unwrap_or_else(|| e.to_string()), None)),
     };
     let mut seen = std::collections::HashSet::new();
     for ObjectEntry(entry) in &raw {
@@ -189,3 +194,6 @@ pub use edit::{set_entry_status, EditError};
 
 mod write;
 pub use write::write_ledger_atomic;
+
+mod save;
+pub use save::{LoadedLedger, SaveError};
