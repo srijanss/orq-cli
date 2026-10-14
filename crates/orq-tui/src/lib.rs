@@ -1229,11 +1229,14 @@ impl Browser {
         let body_height = area.height.saturating_sub(u16::from(self.notice.is_some()));
         let body = Rect::new(area.x, area.y, area.width, body_height);
         let selected = self.selected_row();
-        let (list, _) = promote_split(body, selected.as_ref());
+        let (list, promote_area, panel) = list_layout(body, selected.as_ref());
         let entries = &self.entries;
         let depends = |index: usize| entries.get(index).map(|e| dependency_summary(&e.depends_on));
         render_search_in(frame, list, model, self.rows(), self.items(), &self.search, &self.list, &depends);
-        render_promote_button(frame, body, selected.as_ref());
+        match panel {
+            Some(panel) => render_selected_panel(frame, panel, promote_area, selected.as_ref()),
+            None => render_promote_button(frame, body, selected.as_ref()),
+        }
         render_notice(frame, area, self.notice.as_deref());
     }
 }
@@ -1346,7 +1349,7 @@ where
                     browser.apply_load(backend.load());
                 } else {
                     let body = body_area(area, browser.notice.is_some());
-                    let (list, _) = promote_split(body, selected.as_ref());
+                    let (list, _, _) = list_layout(body, selected.as_ref());
                     let len = matching_features(browser.items(), &browser.search.query).len();
                     browser.list.handle_key(key.code, search_area(list, &browser.search), len);
                 }
@@ -1376,10 +1379,10 @@ where
                     continue;
                 }
                 let selected = browser.selected_row();
-                if let Some(intent) = promote_intent_for_mouse(body, selected.as_ref(), mouse) {
+                let (list, promote_area, _) = list_layout(body, selected.as_ref());
+                if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);
                 } else {
-                    let (list, _) = promote_split(body, selected.as_ref());
                     let len = matching_features(browser.items(), &browser.search.query).len();
                     browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
                 }
@@ -1388,6 +1391,59 @@ where
             Event::Resize(..) => dirty = true,
             _ => {}
         }
+    }
+}
+
+/// Rows the selected-feature panel needs (borders included).
+pub const PANEL_ROWS: u16 = 3;
+const PANEL_MIN_WIDTH: u16 = 30;
+const PANEL_MIN_BODY_HEIGHT: u16 = 14;
+const PANEL_HINT: &str = " ↑↓ move · Enter open · / search · r reload · Esc close ";
+
+/// Splits the browser body into the list and, on a roomy viewport, the
+/// selected-feature panel below it. Without a panel the promote button
+/// keeps its place under the list.
+fn list_layout(body: Rect, selected: Option<&FeatureRow>) -> (Rect, Rect, Option<Rect>) {
+    if body.width >= PANEL_MIN_WIDTH && body.height >= PANEL_MIN_BODY_HEIGHT {
+        let list = Rect::new(body.x, body.y, body.width, body.height - PANEL_ROWS);
+        let panel = Rect::new(body.x, list.bottom(), body.width, PANEL_ROWS);
+        let inner = Rect::new(panel.x + 1, panel.y + 1, panel.width - 2, 1);
+        (list, inner, Some(panel))
+    } else {
+        let (list, _) = promote_split(body, selected);
+        (list, body, None)
+    }
+}
+
+fn render_selected_panel(frame: &mut Frame, panel: Rect, inner: Rect, selected: Option<&FeatureRow>) {
+    let title = match selected {
+        Some(row) => format!(" Selected feature · {} ", row.name),
+        None => " Selected feature ".to_string(),
+    };
+    let title: String = title.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
+    let hint: String = PANEL_HINT.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(title)
+        .title_bottom(Line::from(hint).style(Style::default().fg(Color::DarkGray)));
+    frame.render_widget(block, panel);
+    let Some(row) = selected else {
+        frame.render_widget(Paragraph::new("No feature selected").style(Style::default().fg(Color::DarkGray)), inner);
+        return;
+    };
+    if promotable(selected).is_some() {
+        render_promote_button(frame, inner, selected);
+    } else {
+        frame.render_widget(
+            Paragraph::new("Mark pending is only for drafts").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+    }
+    let status_width = u16::try_from(row.status.chars().count()).unwrap_or(u16::MAX);
+    if inner.width > status_width + PROMOTE_LABEL.chars().count() as u16 {
+        let at = Rect::new(inner.right() - status_width, inner.y, status_width, 1);
+        frame.render_widget(Paragraph::new(row.status.clone()).style(status_style(&row.status)), at);
     }
 }
 
