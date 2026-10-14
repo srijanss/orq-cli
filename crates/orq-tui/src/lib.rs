@@ -123,7 +123,12 @@ pub fn run_popup_session<B: Backend>(
 where
     B::Error: 'static,
 {
-    mode.enter()?;
+    if let Err(err) = mode.enter() {
+        // Entry may have got part-way (raw mode on, screen not switched): undo
+        // whatever was done, keeping the original error.
+        let _ = mode.leave();
+        return Err(err.into());
+    }
     let result = run_popup(terminal, model, events);
     let restored = mode.leave();
     let state = result?;
