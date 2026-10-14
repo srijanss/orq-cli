@@ -99,14 +99,13 @@ fn the_control_shows_all_by_default_beside_the_search_area() {
 }
 
 #[test]
-fn f_lists_all_and_each_status_present_but_not_absent_ones() {
+fn f_lists_all_and_every_known_status() {
     let (closed, lines) = run(ledger(), vec![ch('f')]);
 
     assert!(!closed);
-    for option in ["All", "draft", "pending", "in_progress", "other"] {
+    for option in ["All", "draft", "pending", "in_progress", "completed", "other"] {
         assert!(has(&lines, &format!("  {option}")) || has(&lines, &format!("> {option}")), "{option}: {lines:#?}");
     }
-    assert!(!has(&lines, "completed"), "{lines:#?}");
 }
 
 #[test]
@@ -165,7 +164,7 @@ fn selecting_all_again_resets_the_filter() {
 
 #[test]
 fn other_selects_statuses_the_browser_has_no_name_for() {
-    let events = vec![ch('f'), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)];
+    let events = vec![ch('f'), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)];
     let (_, lines) = run(ledger(), events);
 
     assert!(has(&lines, "Status: other ▾"), "{lines:#?}");

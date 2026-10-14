@@ -663,13 +663,11 @@ fn status_matches(filter: Option<&str>, status: &str) -> bool {
     }
 }
 
-/// "All" plus each status present, in lifecycle order, then "other" when a
-/// status outside the known four is present.
+/// "All" plus every known status in lifecycle order (present or not), then
+/// "other" when a status outside the known four is present.
 fn status_options(rows: &[FeatureRow]) -> Vec<String> {
     let mut options = vec![FILTER_ALL.to_string()];
-    options.extend(
-        KNOWN_STATUSES.iter().filter(|s| rows.iter().any(|r| r.status == **s)).map(|s| (*s).to_string()),
-    );
+    options.extend(KNOWN_STATUSES.iter().map(|s| (*s).to_string()));
     if rows.iter().any(|r| !KNOWN_STATUSES.contains(&r.status.as_str())) {
         options.push(FILTER_OTHER.to_string());
     }
