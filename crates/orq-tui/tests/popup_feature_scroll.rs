@@ -104,3 +104,56 @@ fn a_list_that_fits_does_not_scroll() {
 
     assert_eq!(draw(&rows, &state), ["  f0 draft", "  f1 draft", ""]);
 }
+
+fn wheel_at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
+}
+
+#[test]
+fn a_wheel_over_the_header_or_outside_the_popup_is_ignored() {
+    let rows = many_rows(10);
+    let mut state = FeatureListState { selected: Some(1), offset: 1 };
+    let before = state.clone();
+
+    for (column, row) in [(5, 0), (5, 1), (45, 3), (5, 9)] {
+        for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+            state.handle_mouse(AREA, rows.len(), wheel_at(kind, column, row));
+            assert_eq!(state, before, "({column},{row}) {kind:?}");
+        }
+    }
+}
+
+#[test]
+fn a_scrolled_list_that_shrinks_or_empties_stays_valid_and_clickable() {
+    let mut state = FeatureListState { selected: Some(8), offset: 7 };
+
+    // Shrinks to 4 rows: the offset and selection are pulled back in range.
+    let rows = many_rows(4);
+    state.handle_mouse(AREA, rows.len(), wheel(MouseEventKind::ScrollUp));
+    assert!(state.offset <= 1, "{state:?}");
+    assert!(state.selected.unwrap() < 4, "{state:?}");
+    state.handle_mouse(AREA, rows.len(), click(2));
+    let shown = draw(&rows, &state);
+    assert!(shown[state.selected.unwrap() - state.offset].starts_with("> "), "{shown:?}");
+
+    // Empties: nothing is selected and nothing panics.
+    state.handle_mouse(AREA, 0, wheel(MouseEventKind::ScrollDown));
+    assert_eq!(state, FeatureListState::default());
+}
+
+#[test]
+fn tiny_viewports_never_panic_and_keep_the_offset_valid() {
+    let rows = many_rows(10);
+    for height in 0..=3u16 {
+        let area = Rect { x: 0, y: 0, width: 40, height };
+        let mut state = FeatureListState { selected: Some(6), offset: 5 };
+        for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+            state.handle_mouse(area, rows.len(), wheel_at(kind, 5, 2));
+            state.handle_key(KeyCode::Down, area, rows.len());
+            state.handle_key(KeyCode::Up, area, rows.len());
+            assert!(state.offset < rows.len(), "{height}: {state:?}");
+            assert!(state.selected.map_or(true, |i| i < rows.len()), "{height}: {state:?}");
+        }
+        state.handle_mouse(area, rows.len(), click(2));
+    }
+}

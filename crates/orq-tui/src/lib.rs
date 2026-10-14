@@ -257,18 +257,19 @@ impl FeatureListState {
         self.offset = self.window(area, len);
     }
 
-    /// A left press on a listed row selects it; the wheel scrolls one row and
-    /// stops at both ends, pulling the selection into view if it would leave.
-    /// Any other place or event is ignored.
+    /// A left press on a listed row selects it; the wheel over the list scrolls
+    /// one row and stops at both ends, pulling the selection into view if it
+    /// would leave. Any other place or event is ignored.
     pub fn handle_mouse(&mut self, area: Rect, len: usize, mouse: MouseEvent) {
         self.normalize(area, len);
         let list = list_area(area);
         let height = usize::from(list.height);
+        // Nothing outside the list rows reacts: not the header, not beyond the area.
+        if !list.contains((mouse.column, mouse.row).into()) {
+            return;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if !list.contains((mouse.column, mouse.row).into()) {
-                    return;
-                }
                 let index = self.offset + usize::from(mouse.row - list.y);
                 if index < len {
                     self.selected = Some(index);
