@@ -755,6 +755,8 @@ dependencies = [
 name = "orq-cli"
 version = "0.1.0"
 dependencies = [
+ "orq-core",
+ "orq-features",
  "orq-git",
  "orq-herdr",
  "orq-test-support",

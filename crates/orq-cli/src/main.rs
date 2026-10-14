@@ -5,8 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str =
-    "usage: orq --version | orq project inspect [--cwd <path>] | orq ui [--snapshot]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq ui [--snapshot]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -21,6 +20,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
+        (Some("features"), _) => features(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         _ => usage_error(),
     }
@@ -92,6 +92,57 @@ fn project_inspect(args: &[OsString]) -> ExitCode {
     });
     println!("{json}");
     ExitCode::SUCCESS
+}
+
+/// `orq features --repo <path>`: the project's ledger as a JSON list. A ledger
+/// that cannot be loaded prints its typed reason on stderr and no list.
+fn features(args: &[OsString]) -> ExitCode {
+    let repo = match args {
+        [flag, path] if flag == "--repo" => PathBuf::from(path),
+        _ => return usage_error(),
+    };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let entries = match orq_features::load_ledger(&orq_features::ledger_path(&project)) {
+        Ok(entries) => entries,
+        Err(err) => return fail(ledger_error_text(&err)),
+    };
+    let list: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "name": entry.feature_name,
+                "status": status_text(&entry.status),
+                "description": entry.description,
+                "dependsOn": entry.depends_on,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::Value::Array(list));
+    ExitCode::SUCCESS
+}
+
+fn status_text(status: &orq_features::LedgerStatus) -> &str {
+    use orq_core::FeatureStatus::*;
+    match status {
+        orq_features::LedgerStatus::Known(Draft) => "draft",
+        orq_features::LedgerStatus::Known(Pending) => "pending",
+        orq_features::LedgerStatus::Known(InProgress) => "in_progress",
+        orq_features::LedgerStatus::Known(Completed) => "completed",
+        orq_features::LedgerStatus::Known(Abandoned) => "abandoned",
+        orq_features::LedgerStatus::Unrecognised(text) => text,
+    }
+}
+
+fn ledger_error_text(err: &orq_features::LedgerError) -> String {
+    use orq_features::LedgerError::*;
+    match err {
+        Missing { path } => format!("ledger missing: {}", path.display()),
+        Unreadable { path, source } => format!("ledger unreadable: {}: {source}", path.display()),
+        Malformed { path, reason, .. } => format!("ledger malformed: {}: {reason}", path.display()),
+    }
 }
 
 fn ui(args: &[OsString]) -> ExitCode {

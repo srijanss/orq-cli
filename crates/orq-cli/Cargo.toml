@@ -8,6 +8,8 @@ name = "orq"
 path = "src/main.rs"
 
 [dependencies]
+orq-core = { path = "../orq-core" }
+orq-features = { path = "../orq-features" }
 orq-git = { path = "../orq-git" }
 orq-herdr = { path = "../orq-herdr" }
 orq-tui = { path = "../orq-tui" }
