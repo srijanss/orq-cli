@@ -105,24 +105,36 @@ pub fn load_ledger(path: &std::path::Path) -> Result<Vec<FeatureEntry>, LedgerEr
         reason,
         position,
     };
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| malformed(e.to_string(), Some((e.line(), e.column()))))?;
-    let items = value
-        .as_array()
-        .ok_or_else(|| malformed("expected a JSON array of features".to_string(), None))?;
+    // Deserialise straight into `RawEntry`: going through `Value` first would
+    // silently keep the last of any repeated key.
+    let raw: Vec<RawEntry> = match serde_json::from_slice(&bytes) {
+        Ok(raw) => raw,
+        Err(e) if e.classify() != serde_json::error::Category::Data => {
+            return Err(malformed(e.to_string(), Some((e.line(), e.column()))));
+        }
+        Err(e) => return Err(malformed(describe_shape_error(&bytes).unwrap_or_else(|| e.to_string()), None)),
+    };
     let mut seen = std::collections::HashSet::new();
-    for (index, item) in items.iter().enumerate() {
-        let name = item
-            .get("featureName")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                malformed(format!("entry {index} has no string featureName"), None)
-            })?;
-        if !seen.insert(name) {
-            return Err(malformed(format!("featureName \"{name}\" is repeated"), None));
+    for entry in &raw {
+        if !seen.insert(entry.feature_name.as_str()) {
+            return Err(malformed(
+                format!("featureName \"{}\" is repeated", entry.feature_name),
+                None,
+            ));
         }
     }
-    serde_json::from_value::<Vec<RawEntry>>(value)
-        .map(|raw| raw.into_iter().map(FeatureEntry::from).collect())
-        .map_err(|e| malformed(e.to_string(), None))
+    Ok(raw.into_iter().map(FeatureEntry::from).collect())
+}
+
+/// Names what is wrong when the text is valid JSON but not a feature list:
+/// not an array, or an entry without a string `featureName`.
+fn describe_shape_error(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let Some(items) = value.as_array() else {
+        return Some("expected a JSON array of features".to_string());
+    };
+    let index = items.iter().position(|item| {
+        item.get("featureName").and_then(serde_json::Value::as_str).is_none()
+    })?;
+    Some(format!("entry {index} has no string featureName"))
 }
