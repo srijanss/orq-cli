@@ -1811,7 +1811,13 @@ where
                     continue;
                 }
                 if let Some(highlight) = browser.dropdown {
-                    let last = status_options(&browser.rows).len().saturating_sub(1);
+                    let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                    let selected = browser.selected_row();
+                    let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
+                    let options = status_options(&browser.rows);
+                    let shown = filter_control_rect(list, browser.status_filter.as_deref())
+                        .map_or(0, |c| usize::from(Block::bordered().inner(dropdown_rect(list, c, &options)).height));
+                    let last = options.len().min(shown).saturating_sub(1);
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('f') => browser.dropdown = None,
                         KeyCode::Down => browser.dropdown = Some((highlight + 1).min(last)),
@@ -1823,11 +1829,16 @@ where
                     continue;
                 }
                 if key.code == KeyCode::Char('f') && !browser.search.active {
-                    browser.toggle_dropdown();
+                    let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                    let selected = browser.selected_row();
+                    let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
+                    if filter_control_rect(list, browser.status_filter.as_deref()).is_some() {
+                        browser.toggle_dropdown();
+                    }
                     dirty = true;
                     continue;
                 }
-                if key.code == KeyCode::Char('p') && !browser.search.active && !browser.marked.is_empty() {
+                if key.code == KeyCode::Char('p') && !browser.search.active && browser.marked_drafts() > 0 {
                     browser.promote_marked(backend);
                     dirty = true;
                     continue;
@@ -2027,7 +2038,14 @@ fn render_selected_panel(
         .title_bottom(Line::from(hint).style(Style::default().fg(Color::DarkGray)));
     frame.render_widget(block, panel);
     let Some(row) = selected else {
-        frame.render_widget(Paragraph::new("No feature selected").style(Style::default().fg(Color::DarkGray)), inner);
+        if bulk > 0 {
+            render_bulk_button(frame, inner, bulk);
+        } else {
+            frame.render_widget(
+                Paragraph::new("No feature selected").style(Style::default().fg(Color::DarkGray)),
+                inner,
+            );
+        }
         return;
     };
     if bulk > 0 {
