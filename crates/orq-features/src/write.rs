@@ -19,6 +19,17 @@ const NEW_LEDGER_MODE: u32 = 0o600;
 /// through to its target, so the link itself stays a link. On any failure the
 /// original is untouched and this call's temp file is removed.
 pub fn write_ledger_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    // Only Unix permission bits are preserved and applied before writing; on
+    // other platforms refuse rather than silently weaken confidentiality.
+    #[cfg(not(unix))]
+    {
+        let _ = (path, contents);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "atomic ledger writes are only supported on Unix",
+        ));
+    }
+    #[cfg(unix)]
     write_with_hook(path, contents, &|_| Ok(()))
 }
 
