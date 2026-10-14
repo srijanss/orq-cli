@@ -96,3 +96,18 @@ fn control_characters_from_the_ledger_never_reach_stderr_raw() {
     assert!(!out.stderr.contains(&0x1b), "{:?}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("malformed"));
 }
+
+#[test]
+fn an_unreadable_ledger_exits_non_zero_with_the_reason_and_no_list() {
+    let repo = GitFixture::new();
+    // A directory in place of the file cannot be read as a ledger.
+    std::fs::create_dir(repo.root().join(".tdd-features.json")).unwrap();
+
+    let out = features(repo.root());
+
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unreadable"), "{stderr}");
+    assert!(stderr.contains(".tdd-features.json"), "{stderr}");
+}
