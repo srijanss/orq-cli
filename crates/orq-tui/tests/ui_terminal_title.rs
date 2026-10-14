@@ -44,3 +44,61 @@ fn a_session_pops_exactly_once_after_it_pushed() {
 
     assert!(out.is_empty(), "a second leave must not pop again");
 }
+
+/// A writer that fails after `ok_writes` successful `write` calls, or on flush.
+struct Faulty {
+    ok_writes: usize,
+    fail_flush: bool,
+    written: Vec<u8>,
+}
+
+impl std::io::Write for Faulty {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.ok_writes == 0 {
+            return Err(std::io::Error::other("write failed"));
+        }
+        self.ok_writes -= 1;
+        self.written.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.fail_flush {
+            Err(std::io::Error::other("flush failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn pops_after_failed_enter(mut faulty: Faulty) -> usize {
+    let mut state = orq_tui::TitleState::default();
+    assert!(state.enter(&mut faulty).is_err());
+    let mut out = Vec::new();
+    state.leave(&mut out).unwrap();
+    let first = out.len();
+    state.leave(&mut out).unwrap();
+    assert_eq!(out.len(), first, "a second leave must emit nothing");
+    usize::from(first > 0)
+}
+
+#[test]
+fn a_failure_before_the_push_is_written_pops_nothing() {
+    let faulty = Faulty { ok_writes: 0, fail_flush: false, written: Vec::new() };
+
+    assert_eq!(pops_after_failed_enter(faulty), 0);
+}
+
+#[test]
+fn a_failure_setting_the_title_after_the_push_pops_once() {
+    let faulty = Faulty { ok_writes: 1, fail_flush: false, written: Vec::new() };
+
+    assert_eq!(pops_after_failed_enter(faulty), 1);
+}
+
+#[test]
+fn a_flush_failure_after_the_push_pops_once() {
+    let faulty = Faulty { ok_writes: usize::MAX, fail_flush: true, written: Vec::new() };
+
+    assert_eq!(pops_after_failed_enter(faulty), 1);
+}
