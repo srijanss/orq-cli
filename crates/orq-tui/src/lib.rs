@@ -669,3 +669,54 @@ fn truncate_left(text: &str, max: usize) -> String {
     tail.reverse();
     format!("…{}", tail.concat())
 }
+
+const PROMOTE_LABEL: &str = "[ Mark pending (p) ]";
+
+/// A request to promote a draft feature to pending. The popup only raises it;
+/// the caller performs the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromoteIntent {
+    pub feature: String,
+}
+
+fn promotable(selected: Option<&FeatureRow>) -> Option<&FeatureRow> {
+    selected.filter(|row| row.status == "draft")
+}
+
+/// Splits `area` into the list area and, for a selected draft, a one-row
+/// button area at the bottom.
+pub fn promote_split(area: Rect, selected: Option<&FeatureRow>) -> (Rect, Option<Rect>) {
+    if promotable(selected).is_none() || area.height == 0 || area.width == 0 {
+        return (area, None);
+    }
+    let width = (PROMOTE_LABEL.chars().count() as u16).min(area.width);
+    let button = Rect::new(area.x, area.bottom() - 1, width, 1);
+    let list = Rect::new(area.x, area.y, area.width, area.height - 1);
+    (list, Some(button))
+}
+
+pub fn render_promote_button(frame: &mut Frame, area: Rect, selected: Option<&FeatureRow>) {
+    if let (_, Some(button)) = promote_split(area, selected) {
+        let label: String = PROMOTE_LABEL.chars().take(button.width as usize).collect();
+        frame.render_widget(Paragraph::new(label), button);
+    }
+}
+
+pub fn promote_intent_for_key(code: KeyCode, selected: Option<&FeatureRow>) -> Option<PromoteIntent> {
+    match (code, promotable(selected)) {
+        (KeyCode::Char('p'), Some(row)) => Some(PromoteIntent { feature: row.name.clone() }),
+        _ => None,
+    }
+}
+
+pub fn promote_intent_for_mouse(area: Rect, selected: Option<&FeatureRow>, mouse: MouseEvent) -> Option<PromoteIntent> {
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return None;
+    }
+    let (_, button) = promote_split(area, selected);
+    let button = button?;
+    if !button.contains(Position::new(mouse.column, mouse.row)) {
+        return None;
+    }
+    promotable(selected).map(|row| PromoteIntent { feature: row.name.clone() })
+}
