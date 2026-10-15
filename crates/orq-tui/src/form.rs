@@ -67,6 +67,9 @@ pub(crate) struct FormState {
     /// Set when editing: the feature's status, shown read-only. The name is
     /// read-only too, and a parallelizable value that was set stays set.
     edit_status: Option<String>,
+    /// Set when editing: the stored values, handed back for any field the
+    /// user did not change so nothing is trimmed or re-split behind their back.
+    original: Option<FeatureFields>,
     pub(crate) error: Option<String>,
 }
 
@@ -83,6 +86,7 @@ impl FormState {
             chosen: HashSet::new(),
             focus: NAME,
             edit_status: None,
+            original: None,
             error: None,
         }
     }
@@ -106,6 +110,7 @@ impl FormState {
             chosen: current.depends_on.iter().cloned().collect(),
             focus: NAME,
             edit_status: Some(status.to_string()),
+            original: Some(current.clone()),
             error: None,
         }
     }
@@ -128,19 +133,33 @@ impl FormState {
             let value = value.trim();
             (!value.is_empty()).then(|| value.to_string())
         };
+        let original = self.original.as_ref();
         FeatureFields {
-            name: self.name.trim().to_string(),
-            description: text(&self.description),
+            name: original.map_or_else(|| self.name.trim().to_string(), |o| o.name.clone()),
+            description: match original {
+                Some(o) if self.description == o.description.clone().unwrap_or_default() => {
+                    o.description.clone()
+                }
+                _ => text(&self.description),
+            },
             depends_on: self.candidates.iter().filter(|c| self.chosen.contains(*c)).cloned().collect(),
             parallelizable: self.parallelizable,
-            test_file: text(&self.test_file),
-            target_files: self
-                .target_files
-                .split(',')
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .map(str::to_string)
-                .collect(),
+            test_file: match original {
+                Some(o) if self.test_file == o.test_file.clone().unwrap_or_default() => {
+                    o.test_file.clone()
+                }
+                _ => text(&self.test_file),
+            },
+            target_files: match original {
+                Some(o) if self.target_files == o.target_files.join(", ") => o.target_files.clone(),
+                _ => self
+                    .target_files
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            },
         }
     }
 
