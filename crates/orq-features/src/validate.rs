@@ -15,17 +15,25 @@ pub enum ValidationError {
     Cycle { features: Vec<String> },
 }
 
+/// Names come from the ledger file, so control characters are escaped before
+/// a message can reach a terminal.
+fn shown(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] })
+        .collect()
+}
+
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ValidationError::BlankName => write!(f, "featureName must not be blank"),
-            ValidationError::DuplicateName { name } => write!(f, "featureName \"{name}\" is repeated"),
+            ValidationError::DuplicateName { name } => write!(f, "featureName \"{}\" is repeated", shown(name)),
             ValidationError::MissingDependency { feature, missing } => {
-                write!(f, "feature \"{feature}\" depends on \"{missing}\", which does not exist")
+                write!(f, "feature \"{}\" depends on \"{}\", which does not exist", shown(feature), shown(missing))
             }
-            ValidationError::SelfDependency { feature } => write!(f, "feature \"{feature}\" depends on itself"),
+            ValidationError::SelfDependency { feature } => write!(f, "feature \"{}\" depends on itself", shown(feature)),
             ValidationError::Cycle { features } => {
-                write!(f, "dependency cycle among: {}", features.join(", "))
+                write!(f, "dependency cycle among: {}", features.iter().map(|n| shown(n)).collect::<Vec<_>>().join(", "))
             }
         }
     }
