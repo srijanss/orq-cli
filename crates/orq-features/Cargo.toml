@@ -8,6 +8,7 @@ orq-core = { path = "../orq-core" }
 orq-git = { path = "../orq-git" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml_edit = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

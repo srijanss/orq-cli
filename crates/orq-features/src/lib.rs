@@ -198,5 +198,8 @@ pub use write::write_ledger_atomic;
 mod save;
 pub use save::{LoadedLedger, SaveError};
 
+mod settings;
+pub use settings::{settings_path, Settings, SettingsError};
+
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
