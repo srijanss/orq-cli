@@ -18,6 +18,8 @@ pub enum GenerationError {
     Spawn(std::io::Error),
     AgentFailed { code: Option<i32> },
     TimedOut,
+    /// The agent wrote more than Orq keeps; nothing was stored.
+    OutputTooLarge,
     Artifact(std::io::Error),
 }
 
@@ -37,6 +39,11 @@ impl std::fmt::Display for GenerationError {
             }
             GenerationError::AgentFailed { code: None } => f.write_str("the agent was terminated"),
             GenerationError::TimedOut => f.write_str("the agent did not finish in time"),
+            GenerationError::OutputTooLarge => write!(
+                f,
+                "the agent output exceeded the {} MiB limit and was discarded",
+                MAX_OUTPUT_BYTES / (1024 * 1024)
+            ),
             GenerationError::Artifact(err) => write!(f, "could not store the agent output: {err}"),
         }
     }
@@ -103,12 +110,23 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.take(MAX_OUTPUT_BYTES).read_to_end(&mut out);
+        let _ = stdout.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut out);
         let _ = sender.send(out);
     });
 
     let deadline = Instant::now() + request.timeout;
+    let mut output: Option<Vec<u8>> = None;
     let status = loop {
+        if output.is_none() {
+            if let Ok(out) = receiver.try_recv() {
+                if out.len() as u64 > MAX_OUTPUT_BYTES {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(GenerationError::OutputTooLarge);
+                }
+                output = Some(out);
+            }
+        }
         match child.try_wait().map_err(GenerationError::Spawn)? {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
@@ -119,11 +137,16 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let output = match receiver.recv_timeout(remaining) {
-        Ok(output) => output,
-        Err(_) => return Err(GenerationError::TimedOut),
+    let output = match output {
+        Some(output) => output,
+        None => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            receiver.recv_timeout(remaining).map_err(|_| GenerationError::TimedOut)?
+        }
     };
+    if output.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(GenerationError::OutputTooLarge);
+    }
     if !status.success() {
         return Err(GenerationError::AgentFailed { code: status.code() });
     }
