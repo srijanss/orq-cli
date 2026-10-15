@@ -257,3 +257,6 @@ pub use spec_file::{resolve_spec_file, spec_file_candidates, SpecFileError};
 
 mod generation;
 pub use generation::{generation_artifact_dir, run_generation, GenerationError, GenerationRequest};
+
+mod extract;
+pub use extract::{extract_candidates, Candidate, ExtractError};
