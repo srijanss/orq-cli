@@ -2,6 +2,10 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::io;
 
+mod form;
+pub use form::{FeatureFields, FormSaveOutcome};
+use form::{FormAction, FormState};
+
 use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{Event, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -1442,6 +1446,11 @@ pub trait BrowserBackend {
     fn save_settings(&mut self, _implementer: &AgentSetting, _reviewer: &AgentSetting) -> Result<(), String> {
         Err("settings are not available".into())
     }
+
+    /// Appends a draft feature. Backends that cannot write say so.
+    fn add_feature(&mut self, _fields: &FeatureFields) -> FormSaveOutcome {
+        FormSaveOutcome::Failed { reason: "adding features is not available".into() }
+    }
 }
 
 /// A harness and profile name, as typed in the Settings tab. Names only.
@@ -1595,6 +1604,17 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
     rects
 }
 
+const ADD_LABEL: &str = "[ + Add Feature ]";
+
+/// The Add Feature button on the tab bar's middle row, right-aligned; `None`
+/// when the chrome is not drawn or the tabs leave no room for it.
+fn add_button_rect(full: Rect) -> Option<Rect> {
+    let tabs_end = tab_rects(full).iter().map(|(_, rect)| rect.right()).max()?;
+    let width = u16::try_from(ADD_LABEL.len()).ok()?;
+    let x = full.right().checked_sub(width + 1)?;
+    (x > tabs_end).then(|| Rect::new(x, full.y + 2, width, 1))
+}
+
 fn render_settings(frame: &mut Frame, body: Rect, state: &SettingsState) {
     let dim = Style::new().fg(Color::DarkGray);
     let mut put = |row: u16, line: Line<'static>| {
@@ -1682,6 +1702,8 @@ struct Browser {
     dropdown: Option<usize>,
     tab: Tab,
     settings: SettingsState,
+    /// The open Add Feature form; it covers the Features body.
+    form: Option<FormState>,
 }
 
 struct DetailView {
@@ -1899,6 +1921,62 @@ impl Browser {
         self.notice = view.notice;
     }
 
+    fn open_add_form(&mut self) {
+        let candidates = self.entries.iter().map(|e| e.name.clone()).collect();
+        self.form = Some(FormState::new_add(candidates));
+        self.notice = None;
+    }
+
+    /// Saves the open form through `backend`. `area` is the chrome body.
+    fn submit_form(&mut self, backend: &mut dyn BrowserBackend, area: Rect) {
+        let Some(fields) = self.form.as_ref().map(FormState::fields) else {
+            return;
+        };
+        match backend.add_feature(&fields) {
+            FormSaveOutcome::Saved => {
+                self.form = None;
+                self.apply_load(backend.load());
+                self.notice = None;
+                self.reveal(&fields.name, area);
+            }
+            FormSaveOutcome::Invalid { reason } | FormSaveOutcome::Failed { reason } => {
+                if let Some(form) = &mut self.form {
+                    form.error = Some(reason);
+                }
+            }
+            FormSaveOutcome::Conflict { reason } => {
+                self.form = None;
+                self.apply_load(backend.load());
+                let reason = printable(&reason);
+                self.notice = Some(format!("The feature file changed ({reason}); review it and try again"));
+            }
+        }
+    }
+
+    /// Selects `name` and scrolls it into view; when the search or status
+    /// filter hides it, says so instead.
+    fn reveal(&mut self, name: &str, area: Rect) {
+        let Some(index) = self.rows.iter().position(|r| r.name == name) else {
+            return;
+        };
+        let visible = self.visible();
+        match visible.iter().position(|&i| i == index) {
+            Some(position) => {
+                self.list.selected = Some(position);
+                let body = body_area(area, self.notice.is_some());
+                let selected = self.selected_row();
+                let (list, _, _) = list_layout(body, selected.as_ref(), self.marked_drafts());
+                self.list.offset = self.list.window(search_area(list, &self.search), visible.len());
+            }
+            None => {
+                let filter = self.status_filter.as_deref();
+                let by_status = self.rows.get(index).is_some_and(|r| !status_matches(filter, &r.status));
+                let by = if by_status { "the status filter" } else { "the search" };
+                self.notice = Some(format!("Saved \"{}\", hidden by {by}", printable(name)));
+            }
+        }
+    }
+
     fn open_settings(&mut self, backend: &mut dyn BrowserBackend) {
         self.settings = SettingsState {
             view: backend.load_settings(),
@@ -1915,6 +1993,17 @@ impl Browser {
         if self.tab == Tab::Settings {
             render_settings(frame, area, &self.settings);
             return;
+        }
+        if let Some(form) = &self.form {
+            form.render(frame, body_area(area, self.notice.is_some()));
+            render_notice(frame, area, self.notice.as_deref());
+            return;
+        }
+        if self.error.is_none() {
+            if let Some(button) = add_button_rect(full) {
+                let style = Style::new().fg(Color::Green);
+                frame.render_widget(Paragraph::new(Span::styled(ADD_LABEL, style)), button);
+            }
         }
         if let Some(error) = &self.error {
             render_ledger_error_in(frame, area, model, error);
@@ -2030,6 +2119,7 @@ where
             editing: None,
             status: None,
         },
+        form: None,
     };
     browser.apply_load(backend.load());
     let mut dirty = true;
@@ -2040,6 +2130,18 @@ where
         }
         match events.next_event()? {
             Event::Key(key) => {
+                if let Some(form) = browser.form.as_mut() {
+                    match form.handle_key(key) {
+                        FormAction::Cancel => browser.form = None,
+                        FormAction::Save => {
+                            let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                            browser.submit_form(backend, area);
+                        }
+                        FormAction::None => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if browser.tab == Tab::Settings {
                     if browser.settings.handle_key(key.code, backend) {
                         browser.tab = Tab::Features;
@@ -2119,6 +2221,11 @@ where
                     dirty = true;
                     continue;
                 }
+                if key.code == KeyCode::Char('a') && !browser.search.active {
+                    browser.open_add_form();
+                    dirty = true;
+                    continue;
+                }
                 if key.code == KeyCode::Char('f') && !browser.search.active {
                     let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                     if browser.dropdown_shown(area) > 0 {
@@ -2194,8 +2301,28 @@ where
                     continue;
                 }
                 let full = Rect::from((Position::ORIGIN, terminal.size()?));
+                if let Some(form) = browser.form.as_mut() {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        let body = body_area(chrome_body(full), browser.notice.is_some());
+                        match form.click(body, mouse.column, mouse.row) {
+                            FormAction::Cancel => browser.form = None,
+                            FormAction::Save => browser.submit_form(backend, chrome_body(full)),
+                            FormAction::None => {}
+                        }
+                        dirty = true;
+                    }
+                    continue;
+                }
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                     let press = Position::new(mouse.column, mouse.row);
+                    if browser.tab == Tab::Features
+                        && browser.error.is_none()
+                        && add_button_rect(full).is_some_and(|b| b.contains(press))
+                    {
+                        browser.open_add_form();
+                        dirty = true;
+                        continue;
+                    }
                     let target = tab_rects(full).into_iter().find(|(_, rect)| rect.contains(press)).map(|(t, _)| t);
                     match target {
                         Some(Tab::Settings) if browser.tab != Tab::Settings => {

@@ -572,6 +572,44 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         }
     }
 
+    fn add_feature(&mut self, fields: &orq_tui::FeatureFields) -> orq_tui::FormSaveOutcome {
+        use orq_features::{AppendError, SaveError};
+        use orq_tui::FormSaveOutcome;
+        // Appended against the snapshot the popup showed, so a file changed
+        // behind its back is a conflict; an absent file is created.
+        let loaded = match self.loaded.take() {
+            Some(loaded) => loaded,
+            None => match orq_features::LoadedLedger::load_or_new(&self.path) {
+                Ok(loaded) => loaded,
+                Err(err) => return FormSaveOutcome::Failed { reason: ledger_error_text(&err) },
+            },
+        };
+        let draft = orq_features::FeatureDraft {
+            feature_name: fields.name.clone(),
+            description: fields.description.clone(),
+            depends_on: (!fields.depends_on.is_empty()).then(|| fields.depends_on.clone()),
+            parallelizable: fields.parallelizable,
+            test_file: fields.test_file.clone(),
+            target_files: (!fields.target_files.is_empty()).then(|| fields.target_files.clone()),
+        };
+        let outcome = match loaded.append(&draft) {
+            Ok(_) => FormSaveOutcome::Saved,
+            Err(err @ AppendError::Invalid(_)) => FormSaveOutcome::Invalid { reason: err.to_string() },
+            Err(err @ AppendError::Save(SaveError::Conflict)) => {
+                FormSaveOutcome::Conflict { reason: err.to_string() }
+            }
+            Err(err) => FormSaveOutcome::Failed { reason: err.to_string() },
+        };
+        // A refused save wrote nothing, so the snapshot still stands and a
+        // retry is checked against it; after a write or a conflict the
+        // browser reloads, so take a fresh snapshot of the file as it is.
+        self.loaded = match outcome {
+            FormSaveOutcome::Invalid { .. } | FormSaveOutcome::Failed { .. } => Some(loaded),
+            _ => orq_features::LoadedLedger::load(&self.path).ok(),
+        };
+        outcome
+    }
+
     fn load_settings(&mut self) -> orq_tui::SettingsView {
         let failed = |error: String| orq_tui::SettingsView { error: Some(error), ..Default::default() };
         let path = match self.settings_file() {
