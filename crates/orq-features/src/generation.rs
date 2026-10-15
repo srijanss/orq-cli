@@ -38,14 +38,18 @@ struct Captured {
     stdout_head: Arc<Mutex<Vec<u8>>>,
     /// Set by the stderr reader once it reached end of file.
     stderr_done: Arc<AtomicBool>,
+    /// Set by the stdout reader once it reached end of file.
+    stdout_done: Arc<AtomicBool>,
 }
 
 impl Captured {
     /// Copies what was captured into `diagnostics`, once. Waits briefly for the
-    /// stderr reader to finish draining after the agent was stopped.
+    /// stdout and stderr readers to finish draining after the agent was stopped.
     fn snapshot_into(&self, diagnostics: &mut RunDiagnostics) {
         let give_up = Instant::now() + Duration::from_millis(250);
-        while !self.stderr_done.load(Ordering::SeqCst) && Instant::now() < give_up {
+        while !(self.stderr_done.load(Ordering::SeqCst) && self.stdout_done.load(Ordering::SeqCst))
+            && Instant::now() < give_up
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
         let text = |buf: &Mutex<Vec<u8>>| {
@@ -317,6 +321,7 @@ fn run_inner(
         stderr_tail: Arc::default(),
         stdout_head: Arc::default(),
         stderr_done: Arc::default(),
+        stdout_done: Arc::default(),
     };
     spawn_tail_reader(
         child.stderr.take().expect("piped stderr"),
@@ -324,6 +329,7 @@ fn run_inner(
         Arc::clone(&capture.stderr_done),
     );
     let stdout_head = Arc::clone(&capture.stdout_head);
+    let stdout_done = Arc::clone(&capture.stdout_done);
     *captured = Some(capture);
     let stdout = child.stdout.take().expect("piped stdout");
     // The reader reports through a channel so the wait for it can be bounded:
@@ -343,6 +349,7 @@ fn run_inner(
                 head.extend_from_slice(&chunk[..n.min(room)]);
             }
         }
+        stdout_done.store(true, Ordering::SeqCst);
         let _ = sender.send(out);
     });
 

@@ -44,3 +44,35 @@ fn escaped_quotes_inside_a_secret_do_not_end_the_redaction() {
 
     assert!(!out.contains("leakedtail"), "{out}");
 }
+
+#[test]
+fn multibyte_whitespace_before_a_key_does_not_panic() {
+    let out = redact_secrets("prefix\u{2003}password=\"value\" \u{3000}token: \"abc\"");
+
+    assert!(!out.contains("value") && !out.contains("abc"), "{out}");
+}
+
+#[test]
+fn a_truncated_quoted_credential_is_redacted_to_the_end() {
+    let out = redact_secrets(r#"{"client_secret":"s3cr3tvalue"#);
+
+    assert!(!out.contains("s3cr3tvalue"), "{out}");
+    assert!(out.contains("client_secret"), "{out}");
+}
+
+#[test]
+fn a_truncated_multiword_secret_is_redacted_to_the_end() {
+    let out = redact_secrets(r#"password: "hunter2 and more"#);
+
+    assert!(!out.contains("hunter2") && !out.contains("and more"), "{out}");
+}
+
+#[test]
+fn adjacent_quoted_spans_are_scanned_in_linear_time() {
+    let line = "\"a\":".repeat(40_000);
+    let started = std::time::Instant::now();
+
+    let _ = redact_secrets(&line);
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+}

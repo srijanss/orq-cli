@@ -83,9 +83,18 @@ fn quoted_value_is_secret(before: &str) -> bool {
         Some(rest) => (rest.trim_end(), true),
         None => (trimmed, false),
     };
+    // Only the last stretch can hold the key; scanning further back would make
+    // long runs of quoted spans quadratic.
+    let mut window = key_end.len().saturating_sub(128);
+    while !key_end.is_char_boundary(window) {
+        window += 1;
+    }
+    let key_end = &key_end[window..];
     let start = key_end
-        .rfind(|c: char| c.is_whitespace() || ",{[(".contains(c))
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace() || ",{[(".contains(*c))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let key = &key_end[start..];
     if !has_separator && !key.starts_with('-') {
         return false;
@@ -104,16 +113,26 @@ fn redact_quoted_values(line: &str) -> String {
         let opens = (c == '"' || c == '\'')
             && line[..i].chars().next_back().is_none_or(|p| !p.is_alphanumeric());
         if opens {
-            if let Some(close) = closing_quote(line, i) {
-                if quoted_value_is_secret(&line[..i]) {
+            match closing_quote(line, i) {
+                Some(close) => {
+                    if quoted_value_is_secret(&line[..i]) {
+                        out.push(c);
+                        out.push_str(MARKER);
+                        out.push(c);
+                    } else {
+                        out.push_str(&line[i..=close]);
+                    }
+                    i = close + 1;
+                    continue;
+                }
+                // A clipped value: everything after the opening quote is the
+                // secret's fragment.
+                None if quoted_value_is_secret(&line[..i]) => {
                     out.push(c);
                     out.push_str(MARKER);
-                    out.push(c);
-                } else {
-                    out.push_str(&line[i..=close]);
+                    break;
                 }
-                i = close + 1;
-                continue;
+                None => {}
             }
         }
         out.push(c);
@@ -206,12 +225,14 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
     argv.iter()
         .map(|arg| {
             let is_flag = arg.starts_with('-');
-            let out = if hide_next && !is_flag {
+            // Whatever follows a credential flag is its value, even when it
+            // starts with a hyphen.
+            let out = if hide_next {
                 MARKER.to_string()
             } else {
                 redact_secrets(arg)
             };
-            hide_next = is_flag && !arg.contains('=') && is_sensitive_key(arg);
+            hide_next = !hide_next && is_flag && !arg.contains('=') && is_sensitive_key(arg);
             out
         })
         .collect()

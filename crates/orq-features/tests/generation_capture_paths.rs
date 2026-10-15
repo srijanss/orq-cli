@@ -87,3 +87,17 @@ fn the_stdout_head_is_bounded() {
 
     assert_eq!(diagnostics.stdout_head.len(), 16 * 1024);
 }
+
+#[test]
+fn an_overflowing_agent_is_stopped_and_keeps_its_head_and_stderr() {
+    let big = "z".repeat(5 * 1024 * 1024);
+    let agent = FakeAgent::builder().stdout(&big).stderr("overflow note\n").build();
+
+    let started = Instant::now();
+    let (result, diagnostics) = run(&agent, "overflow", Duration::from_secs(30), &AtomicBool::new(false));
+
+    assert!(matches!(result, Err(GenerationError::OutputTooLarge)), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(diagnostics.stdout_head.len(), 16 * 1024);
+    assert!(diagnostics.stderr_tail.contains("overflow note"), "{diagnostics:?}");
+}

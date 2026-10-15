@@ -45,9 +45,9 @@ fn equals_form_flags_and_other_flags_are_handled() {
 }
 
 #[test]
-fn a_flag_value_that_is_itself_a_flag_is_not_swallowed() {
-    let text = written(&["--token", "--model", "sonnet"], "adjacent");
+fn a_hyphen_prefixed_credential_value_is_redacted() {
+    let text = written(&["--password", "-short-secret", "--model", "sonnet"], "hyphen");
 
-    assert!(text.contains("--model"), "{text}");
+    assert!(!text.contains("short-secret"), "{text}");
     assert!(text.contains("sonnet"), "{text}");
 }
