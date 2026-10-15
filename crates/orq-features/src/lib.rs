@@ -248,3 +248,6 @@ pub use draft::FeatureDraft;
 
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
+
+mod validate;
+pub use validate::{validate_entries, ValidationError};
