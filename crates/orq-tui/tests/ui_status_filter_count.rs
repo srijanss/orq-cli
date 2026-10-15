@@ -91,3 +91,35 @@ fn a_status_with_no_features_shows_zero_and_unknown_statuses_count() {
     let lines = choose(sample(), 5);
     assert!(has(&lines, "Status: zeta (1) ▾"), "{lines:#?}");
 }
+
+fn many(n: usize) -> Vec<BrowserEntry> {
+    (0..n).map(|i| entry(&format!("f{i}"), "draft")).collect()
+}
+
+#[test]
+fn the_count_is_dropped_below_the_width_that_keeps_the_control_usable() {
+    // 16 reserved + "Status:  ▾" (10) + "All" (3) + " (2)" (4) = 33.
+    for width in [29u16, 32] {
+        let lines = run_at(width, many(2), vec![]);
+        assert!(has(&lines, "Status: All ▾"), "width {width}: {lines:#?}");
+        assert!(!has(&lines, "(2)"), "width {width}: {lines:#?}");
+    }
+    let lines = run_at(33, many(2), vec![]);
+    assert!(has(&lines, "Status: All (2) ▾"), "{lines:#?}");
+}
+
+#[test]
+fn a_multi_digit_count_moves_the_threshold_by_its_extra_width() {
+    let lines = run_at(33, many(12), vec![]);
+    assert!(has(&lines, "Status: All ▾") && !has(&lines, "(12)"), "{lines:#?}");
+    let lines = run_at(34, many(12), vec![]);
+    assert!(has(&lines, "Status: All (12) ▾"), "{lines:#?}");
+}
+
+#[test]
+fn a_long_status_is_clipped_but_keeps_its_count_and_arrow() {
+    let long = "a-very-long-status-name-that-would-not-fit-in-the-header";
+    let entries = vec![entry("alpha", long), entry("bravo", long), entry("candy", "draft")];
+    let lines = run_at(60, entries, vec![key(KeyCode::Char('f')), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)]);
+    assert!(lines.iter().any(|l| l.contains("Status: a-very-long") && l.contains("(2) ▾")), "{lines:#?}");
+}

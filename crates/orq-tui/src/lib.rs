@@ -734,7 +734,10 @@ fn filter_label(filter: Option<&str>, count: usize, list_width: u16) -> String {
 
 /// Number of rows whose status passes the filter (all rows for "All").
 fn status_count(rows: &[FeatureRow], filter: Option<&str>) -> usize {
-    rows.iter().filter(|r| status_matches(filter, &r.status)).count()
+    match filter {
+        None => rows.len(),
+        Some(_) => rows.iter().filter(|r| status_matches(filter, &r.status)).count(),
+    }
 }
 
 /// Index of the active option. Option 0 is always the unfiltered sentinel, so
@@ -2432,9 +2435,10 @@ impl Browser {
             marked,
         );
         let filter = self.status_filter.as_deref();
-        if let Some(control) = filter_control_rect(list, filter, status_count(&self.rows, filter)) {
+        let count = status_count(&self.rows, filter);
+        if let Some(control) = filter_control_rect(list, filter, count) {
             frame.render_widget(ratatui::widgets::Clear, control);
-            frame.render_widget(Paragraph::new(filter_label(filter, status_count(&self.rows, filter), list.width)), control);
+            frame.render_widget(Paragraph::new(filter_label(filter, count, list.width)), control);
             if let Some(highlight) = self.dropdown {
                 let options = status_options(&self.rows);
                 let rect = dropdown_rect(list, control, &options);
