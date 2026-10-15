@@ -115,11 +115,15 @@ impl LoadedLedger {
     /// malformed) is returned as is and nothing is written.
     pub fn load_or_new(path: &Path) -> Result<Self, LedgerError> {
         match Self::load(path) {
-            Err(LedgerError::Missing { .. }) => {
-                Ok(Self { path: path.to_path_buf(), bytes: Vec::new(), entries: Vec::new(), is_new: true })
-            }
+            Err(LedgerError::Missing { .. }) => Ok(Self::absent(path)),
             other => other,
         }
+    }
+
+    /// The snapshot of a ledger observed as missing, without reading the path
+    /// again: a file that exists by the time of a save is a conflict.
+    pub fn absent(path: &Path) -> Self {
+        Self { path: path.to_path_buf(), bytes: Vec::new(), entries: Vec::new(), is_new: true }
     }
 
     /// Whether the file was absent when loaded.

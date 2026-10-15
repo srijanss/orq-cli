@@ -554,7 +554,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 self.absent = matches!(err, orq_features::LedgerError::Missing { .. });
                 // An absent file is snapshotted as "absent", so a file that
                 // appears before the first add is a conflict, not an append.
-                self.loaded = if self.absent { orq_features::LoadedLedger::load_or_new(&self.path).ok() } else { None };
+                self.loaded = self.absent.then(|| orq_features::LoadedLedger::absent(&self.path));
                 Err(orq_tui::LedgerErrorView {
                     path: self.path.to_string_lossy().into_owned(),
                     reason: ledger_error_text(&err),
@@ -925,6 +925,15 @@ mod ledger_backend_tests {
         backend.load().unwrap();
         let before = std::fs::read_to_string(&path).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root and DAC-override environments can still write into a 0555
+        // directory; the permission fault cannot be injected there.
+        let probe = dir.join(".probe");
+        if std::fs::File::create(&probe).is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(dir);
+            return;
+        }
 
         let first = backend.add_feature(&fields("b"));
 
