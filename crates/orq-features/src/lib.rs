@@ -243,5 +243,8 @@ pub use reviewer_config::{
     TddReviewerConfig,
 };
 
+mod draft;
+pub use draft::FeatureDraft;
+
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
