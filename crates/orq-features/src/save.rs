@@ -42,6 +42,47 @@ impl std::fmt::Display for AppendError {
 
 impl std::error::Error for AppendError {}
 
+/// The fields `edit_fields` may change; `None` leaves a field as it is.
+/// `featureName` and `status` are deliberately not here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FieldEdits {
+    pub description: Option<String>,
+    pub depends_on: Option<Vec<String>>,
+    pub parallelizable: Option<bool>,
+    pub test_file: Option<String>,
+    pub target_files: Option<Vec<String>>,
+}
+
+/// Why fields could not be edited.
+#[derive(Debug)]
+pub enum EditFieldsError {
+    /// No entry carries that featureName.
+    UnknownFeature,
+    /// The ledger text could not be edited safely.
+    Malformed,
+    /// The resulting array would be invalid; nothing was written.
+    Invalid(ValidationError),
+    /// The write did not happen.
+    Save(SaveError),
+}
+
+impl std::fmt::Display for EditFieldsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditFieldsError::UnknownFeature => write!(f, "no feature with that name"),
+            EditFieldsError::Malformed => write!(f, "the ledger could not be edited safely"),
+            EditFieldsError::Invalid(e) => write!(f, "{e}"),
+            EditFieldsError::Save(SaveError::Conflict) => {
+                write!(f, "the ledger changed since it was loaded; reload and review before saving")
+            }
+            EditFieldsError::Save(SaveError::Locked) => write!(f, "the ledger is locked by another process"),
+            EditFieldsError::Save(SaveError::Io(e)) => write!(f, "could not write the ledger: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for EditFieldsError {}
+
 /// Why a save did not happen.
 #[derive(Debug)]
 pub enum SaveError {
@@ -113,6 +154,51 @@ impl LoadedLedger {
         };
         self.save(&contents).map_err(AppendError::Save)?;
         Ok(new_entry)
+    }
+
+    /// Changes the given fields of the feature named `feature_name`, keeping
+    /// every other byte of the ledger (unknown fields, status, other entries).
+    /// The whole resulting array is validated before the atomic save; a file
+    /// changed since load is a conflict. Returns the entry as saved.
+    pub fn edit_fields(&self, feature_name: &str, edits: &FieldEdits) -> Result<FeatureEntry, EditFieldsError> {
+        let current = self
+            .entries
+            .iter()
+            .find(|e| e.feature_name == feature_name)
+            .ok_or(EditFieldsError::UnknownFeature)?;
+        let json = |value: serde_json::Value| value.to_string();
+        let mut members: Vec<(&str, String)> = Vec::new();
+        if let Some(v) = &edits.description {
+            members.push(("description", json(v.as_str().into())));
+        }
+        if let Some(v) = &edits.depends_on {
+            members.push(("dependsOn", json(serde_json::json!(v))));
+        }
+        if let Some(v) = &edits.test_file {
+            members.push(("testFile", json(v.as_str().into())));
+        }
+        if let Some(v) = &edits.target_files {
+            members.push(("targetFiles", json(serde_json::json!(v))));
+        }
+        if let Some(v) = edits.parallelizable {
+            members.push(("parallelizable", json(v.into())));
+        }
+        if members.is_empty() {
+            return Ok(current.clone());
+        }
+        let text = std::str::from_utf8(&self.bytes).map_err(|_| EditFieldsError::Malformed)?;
+        let edited = crate::edit::set_entry_fields(text, feature_name, &members).map_err(|e| match e {
+            crate::EditError::UnknownFeature => EditFieldsError::UnknownFeature,
+            crate::EditError::Malformed => EditFieldsError::Malformed,
+        })?;
+        let entries = parse_ledger_bytes(&self.path, edited.as_bytes()).map_err(|_| EditFieldsError::Malformed)?;
+        validate_entries(&entries).map_err(EditFieldsError::Invalid)?;
+        let saved = entries
+            .into_iter()
+            .find(|e| e.feature_name == feature_name)
+            .ok_or(EditFieldsError::Malformed)?;
+        self.save(&edited).map_err(EditFieldsError::Save)?;
+        Ok(saved)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
