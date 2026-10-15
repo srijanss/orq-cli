@@ -1500,6 +1500,18 @@ pub trait BrowserBackend {
         Err("generating from a spec is not available".into())
     }
 
+    /// Markdown files that may be chosen as the spec, relative to the
+    /// repository. Empty means no choice is offered: generation starts at once.
+    fn spec_files(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Starts generation on the chosen spec, limited to `focus` (a section,
+    /// milestone or MVP name; blank = the whole spec).
+    fn start_generation_for(&mut self, _spec: &str, _focus: &str) -> Result<Box<dyn GenerationJob>, String> {
+        self.start_generation()
+    }
+
     /// Starts generation without blocking the UI. The default runs
     /// `generate_candidates` to completion and returns a finished job.
     fn start_generation(&mut self) -> Result<Box<dyn GenerationJob>, String> {
@@ -1510,6 +1522,96 @@ pub trait BrowserBackend {
     /// is written and the proposal stays available for a retry.
     fn accept_candidates(&mut self, _accepted: &[AcceptedCandidate]) -> FormSaveOutcome {
         FormSaveOutcome::Failed { reason: "adding generated features is not available".into() }
+    }
+}
+
+enum PickerAction {
+    None,
+    Cancel,
+    Start { spec: String, focus: String },
+}
+
+const MAX_FOCUS_INPUT: usize = 120;
+
+/// Chooses the spec file (filtered by typing) and an optional section name.
+struct SpecPicker {
+    files: Vec<String>,
+    query: String,
+    focus: String,
+    selected: usize,
+    /// `true` while typing goes to the section field.
+    in_focus: bool,
+}
+
+impl SpecPicker {
+    fn new(files: Vec<String>) -> Self {
+        SpecPicker { files, query: String::new(), focus: String::new(), selected: 0, in_focus: false }
+    }
+
+    fn matches(&self) -> Vec<&String> {
+        let needle = self.query.to_lowercase();
+        self.files.iter().filter(|f| f.to_lowercase().contains(&needle)).collect()
+    }
+
+    fn handle_key(&mut self, code: KeyCode) -> PickerAction {
+        let count = self.matches().len();
+        match code {
+            KeyCode::Esc => return PickerAction::Cancel,
+            KeyCode::Tab | KeyCode::BackTab => self.in_focus = !self.in_focus,
+            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Down => self.selected = (self.selected + 1).min(count.saturating_sub(1)),
+            KeyCode::Backspace => {
+                if self.in_focus {
+                    self.focus.pop();
+                } else {
+                    self.query.pop();
+                    self.selected = 0;
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if self.in_focus {
+                    if self.focus.chars().count() < MAX_FOCUS_INPUT {
+                        self.focus.push(c);
+                    }
+                } else {
+                    self.query.push(c);
+                    self.selected = 0;
+                }
+            }
+            KeyCode::Enter => {
+                let chosen = self.matches().get(self.selected).map(|f| (*f).clone());
+                if let Some(spec) = chosen {
+                    return PickerAction::Start { spec, focus: self.focus.trim().to_string() };
+                }
+            }
+            _ => {}
+        }
+        PickerAction::None
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect) {
+        let matches = self.matches();
+        let marker = |active: bool| if active { "> " } else { "  " };
+        let mut lines = vec![
+            Line::from(" Spec file (type to filter, ↑↓ choose)"),
+            Line::from(format!("{}{}", marker(!self.in_focus), printable(&self.query))),
+        ];
+        if matches.is_empty() {
+            lines.push(Line::from("   No matching Markdown file"));
+        }
+        let room = usize::from(area.height).saturating_sub(7).max(1);
+        let first = self.selected.saturating_sub(room - 1);
+        for (index, file) in matches.iter().enumerate().skip(first).take(room) {
+            let mark = if index == self.selected { "▸ " } else { "  " };
+            let style = if index == self.selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+            lines.push(Line::from(Span::styled(format!("   {mark}{}", printable(file)), style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(" Section / milestone (optional, e.g. MVP2)"));
+        lines.push(Line::from(format!("{}{}", marker(self.in_focus), printable(&self.focus))));
+        lines.push(Line::from(""));
+        lines.push(Line::from(" Tab switch field · Enter generate · Esc cancel"));
+        frame.render_widget(Paragraph::new(lines), area);
     }
 }
 
@@ -1849,6 +1951,8 @@ struct Browser {
     form: Option<FormState>,
     /// The open generation preview; it covers the Features body.
     preview: Option<PreviewState>,
+    /// The spec file / section chooser shown before generation starts.
+    picker: Option<SpecPicker>,
     /// The ledger file does not exist yet (and nothing else is wrong).
     absent: bool,
     /// A generation running in the background; only Esc is handled meanwhile.
@@ -2163,7 +2267,23 @@ impl Browser {
     /// Runs the generation agent and opens the preview of its proposal.
     fn open_generation(&mut self, backend: &mut dyn BrowserBackend) {
         self.notice = None;
-        match backend.start_generation() {
+        let files = backend.spec_files();
+        if !files.is_empty() {
+            self.picker = Some(SpecPicker::new(files));
+            return;
+        }
+        self.start_generation_job(backend.start_generation());
+    }
+
+    /// Starts generation on the chosen file and section.
+    fn start_picked(&mut self, backend: &mut dyn BrowserBackend, spec: &str, focus: &str) {
+        self.picker = None;
+        self.notice = None;
+        self.start_generation_job(backend.start_generation_for(spec, focus));
+    }
+
+    fn start_generation_job(&mut self, started: Result<Box<dyn GenerationJob>, String>) {
+        match started {
             Ok(job) => {
                 self.generating = Some(job);
                 self.notice = Some("Generating… (Esc to cancel)".to_string());
@@ -2227,6 +2347,11 @@ impl Browser {
         let area = render_chrome_tabs(frame, full, self.tab);
         if self.tab == Tab::Settings {
             render_settings(frame, area, &self.settings);
+            return;
+        }
+        if let Some(picker) = &self.picker {
+            picker.render(frame, body_area(area, self.notice.is_some()));
+            render_notice(frame, area, self.notice.as_deref());
             return;
         }
         if let Some(preview) = &self.preview {
@@ -2367,6 +2492,7 @@ where
         },
         form: None,
         preview: None,
+        picker: None,
         absent: false,
         generating: None,
     };
@@ -2401,6 +2527,15 @@ where
         };
         match event {
             Event::Key(key) => {
+                if let Some(picker) = browser.picker.as_mut() {
+                    match picker.handle_key(key.code) {
+                        PickerAction::Cancel => browser.picker = None,
+                        PickerAction::Start { spec, focus } => browser.start_picked(backend, &spec, &focus),
+                        PickerAction::None => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if let Some(preview) = browser.preview.as_mut() {
                     match preview.handle_key(key.code) {
                         PreviewAction::Cancel => browser.preview = None,
@@ -2606,6 +2741,9 @@ where
                     continue;
                 }
                 let full = Rect::from((Position::ORIGIN, terminal.size()?));
+                if browser.picker.is_some() {
+                    continue;
+                }
                 if let Some(preview) = browser.preview.as_mut() {
                     let body = body_area(chrome_body(full), browser.notice.is_some());
                     preview.handle_mouse(body, mouse);

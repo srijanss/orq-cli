@@ -604,12 +604,22 @@ fn generate_reviewed(
     settings_file: Result<PathBuf, String>,
     program_override: Option<PathBuf>,
     cancel: &std::sync::atomic::AtomicBool,
+    choice: Option<(&str, &str)>,
 ) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
         let repo_root = ledger_path.parent().ok_or("the feature file has no directory")?.to_path_buf();
-        let spec = orq_features::spec_file_candidates(&repo_root)
-            .into_iter()
-            .next()
-            .ok_or("no Markdown spec file was found at the repository root")?;
+        let (spec, focus) = match choice {
+            Some((spec, focus)) => (
+                orq_features::resolve_spec_file(&repo_root, spec).map_err(|e| e.to_string())?,
+                Some(focus).filter(|f| !f.trim().is_empty()),
+            ),
+            None => (
+                orq_features::spec_file_candidates(&repo_root)
+                    .into_iter()
+                    .next()
+                    .ok_or("no Markdown spec file was found at the repository root")?,
+                None,
+            ),
+        };
         let settings = orq_features::Settings::load(&settings_file?).map_err(|e| e.to_string())?;
         let model = settings
             .generation_agent()
@@ -633,7 +643,7 @@ fn generate_reviewed(
             spec: &spec,
             artifact_dir: &artifact_dir,
             timeout: std::time::Duration::from_secs(600),
-            focus: None,
+            focus,
         };
         let artifact = orq_features::run_generation_cancellable(&request, cancel).map_err(|e| e.to_string())?;
         let text = std::fs::read_to_string(&artifact)
@@ -751,6 +761,34 @@ impl LedgerBackend {
         self.settings_path
             .as_deref()
             .ok_or_else(|| "no settings location: set XDG_CONFIG_HOME or HOME to an absolute path".to_string())
+    }
+
+    fn spawn_generation(&mut self, choice: Option<(String, String)>) -> Result<Box<dyn orq_tui::GenerationJob>, String> {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{mpsc, Arc};
+        self.staged.lock().unwrap().clear();
+        let path = self.path.clone();
+        let settings_file = self.settings_file().map(Path::to_path_buf);
+        let program_override = self.program_override.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let (sender, receiver) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = sender.send(generate_reviewed(
+                &path,
+                settings_file,
+                program_override,
+                &flag,
+                choice.as_ref().map(|(spec, focus)| (spec.as_str(), focus.as_str())),
+            ));
+        });
+        Ok(Box::new(WorkerJob {
+            receiver,
+            cancel,
+            staged: Arc::clone(&self.staged),
+            handle: Some(handle),
+            done: false,
+        }))
     }
 }
 
@@ -911,32 +949,26 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             self.settings_file().map(Path::to_path_buf),
             self.program_override.clone(),
             &std::sync::atomic::AtomicBool::new(false),
+            None,
         )?;
         let views = candidate_views(&reviewed);
         *self.staged.lock().unwrap() = reviewed;
         Ok(views)
     }
 
+    fn spec_files(&mut self) -> Vec<String> {
+        match self.path.parent() {
+            Some(root) => orq_features::spec_file_choices(root),
+            None => Vec::new(),
+        }
+    }
+
+    fn start_generation_for(&mut self, spec: &str, focus: &str) -> Result<Box<dyn orq_tui::GenerationJob>, String> {
+        self.spawn_generation(Some((spec.to_string(), focus.to_string())))
+    }
+
     fn start_generation(&mut self) -> Result<Box<dyn orq_tui::GenerationJob>, String> {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::{mpsc, Arc};
-        self.staged.lock().unwrap().clear();
-        let path = self.path.clone();
-        let settings_file = self.settings_file().map(Path::to_path_buf);
-        let program_override = self.program_override.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&cancel);
-        let (sender, receiver) = mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let _ = sender.send(generate_reviewed(&path, settings_file, program_override, &flag));
-        });
-        Ok(Box::new(WorkerJob {
-            receiver,
-            cancel,
-            staged: Arc::clone(&self.staged),
-            handle: Some(handle),
-            done: false,
-        }))
+        self.spawn_generation(None)
     }
 
     fn accept_candidates(&mut self, accepted: &[orq_tui::AcceptedCandidate]) -> orq_tui::FormSaveOutcome {
@@ -1238,6 +1270,42 @@ mod ledger_backend_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""featureName":"a""#) && text.contains(r#""parallelizable":true"#));
         assert_eq!(orq_features::load_ledger(&path).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_chosen_spec_and_section_reach_the_agent_and_outside_paths_are_refused() {
+        let (dir, path) = ledger(&["spec-choice"]);
+        std::fs::write(dir.join("SPEC.md"), "# spec\n").unwrap();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/mvp2.md"), "# mvp2\n").unwrap();
+        let agent = orq_test_support::FakeAgent::builder().stdout("[]").build();
+        let mut backend = LedgerBackend::new(path.clone());
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.program_override = Some(agent.path().to_path_buf());
+        let none = orq_tui::AgentSetting::default();
+        let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
+        backend.save_settings(&writer, &none).unwrap();
+
+        assert_eq!(backend.spec_files(), ["SPEC.md", "docs/mvp2.md"]);
+        let mut job = backend.start_generation_for("docs/mvp2.md", "MVP2").unwrap();
+        let result = loop {
+            if let Some(result) = job.poll() {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(result.is_ok(), "{result:?}");
+        let run = agent.last_run().unwrap();
+        assert!(run.args.iter().any(|a| a.contains("docs/mvp2.md") && a.contains("\"MVP2\"")), "{:?}", run.args);
+
+        let mut refused = backend.start_generation_for("../outside.md", "").unwrap();
+        let result = loop {
+            if let Some(result) = refused.poll() {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(result.is_err());
     }
 
     fn worker(
