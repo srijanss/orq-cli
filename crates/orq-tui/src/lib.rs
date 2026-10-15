@@ -717,12 +717,24 @@ const FILTER_HEADER_RESERVE: usize = 16;
 /// The control's text for a header `list_width` cells wide. The status name
 /// is clipped to what the header can spare, but never below "All"'s width, so
 /// the control stays usable whenever the initial "Status: All ▾" fits.
-fn filter_label(filter: Option<&str>, list_width: u16) -> String {
+fn filter_label(filter: Option<&str>, count: usize, list_width: u16) -> String {
     let frame = display_width("Status:  ▾");
-    let spare = usize::from(list_width).saturating_sub(FILTER_HEADER_RESERVE + frame);
+    let suffix = format!(" ({count})");
+    // The count is dropped first when the header is too narrow to keep the
+    // control usable with it.
+    let show_count = usize::from(list_width)
+        >= FILTER_HEADER_RESERVE + frame + display_width(FILTER_ALL) + display_width(&suffix);
+    let extra = if show_count { display_width(&suffix) } else { 0 };
+    let spare = usize::from(list_width).saturating_sub(FILTER_HEADER_RESERVE + frame + extra);
     let budget = spare.clamp(display_width(FILTER_ALL), MAX_STATUS_CELLS);
     let name = truncate_right(filter.unwrap_or(FILTER_ALL), budget);
-    format!("Status: {name} ▾")
+    let suffix = if show_count { suffix } else { String::new() };
+    format!("Status: {name}{suffix} ▾")
+}
+
+/// Number of rows whose status passes the filter (all rows for "All").
+fn status_count(rows: &[FeatureRow], filter: Option<&str>) -> usize {
+    rows.iter().filter(|r| status_matches(filter, &r.status)).count()
 }
 
 /// Index of the active option. Option 0 is always the unfiltered sentinel, so
@@ -732,8 +744,8 @@ fn active_option(options: &[String], filter: Option<&str>) -> usize {
 }
 
 /// The one-row control on the right of the header's first row.
-fn filter_control_rect(list: Rect, filter: Option<&str>) -> Option<Rect> {
-    let width = u16::try_from(display_width(&filter_label(filter, list.width))).ok()?;
+fn filter_control_rect(list: Rect, filter: Option<&str>, count: usize) -> Option<Rect> {
+    let width = u16::try_from(display_width(&filter_label(filter, count, list.width))).ok()?;
     if list.height == 0 || list.width < width + 16 {
         return None;
     }
@@ -2046,7 +2058,7 @@ impl Browser {
         let selected = self.selected_row();
         let (list, _, _) = list_layout(body, selected.as_ref(), self.marked_drafts());
         let options = status_options(&self.rows);
-        filter_control_rect(list, self.status_filter.as_deref())
+        filter_control_rect(list, self.status_filter.as_deref(), status_count(&self.rows, self.status_filter.as_deref()))
             .map_or(0, |c| usize::from(Block::bordered().inner(dropdown_rect(list, c, &options)).height))
     }
 
@@ -2420,9 +2432,9 @@ impl Browser {
             marked,
         );
         let filter = self.status_filter.as_deref();
-        if let Some(control) = filter_control_rect(list, filter) {
+        if let Some(control) = filter_control_rect(list, filter, status_count(&self.rows, filter)) {
             frame.render_widget(ratatui::widgets::Clear, control);
-            frame.render_widget(Paragraph::new(filter_label(filter, list.width)), control);
+            frame.render_widget(Paragraph::new(filter_label(filter, status_count(&self.rows, filter), list.width)), control);
             if let Some(highlight) = self.dropdown {
                 let options = status_options(&self.rows);
                 let rect = dropdown_rect(list, control, &options);
@@ -2808,7 +2820,7 @@ where
                 let selected = browser.selected_row();
                 let bulk = browser.marked_drafts();
                 let (list, promote_area, _) = list_layout(body, selected.as_ref(), bulk);
-                let control = filter_control_rect(list, browser.status_filter.as_deref());
+                let control = filter_control_rect(list, browser.status_filter.as_deref(), status_count(&browser.rows, browser.status_filter.as_deref()));
                 let press = Position::new(mouse.column, mouse.row);
                 if browser.dropdown.is_some() && browser.dropdown_shown(area) == 0 {
                     browser.dropdown = None;

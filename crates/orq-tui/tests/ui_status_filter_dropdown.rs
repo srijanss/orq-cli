@@ -95,7 +95,7 @@ fn find(lines: &[String], needle: &str) -> (usize, usize) {
 fn the_control_shows_all_by_default_beside_the_search_area() {
     let (_, lines) = run(ledger(), vec![]);
 
-    assert!(has(&lines, "Status: All ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: All ("), "{lines:#?}");
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn f_lists_all_and_every_known_status() {
 fn down_and_enter_filter_the_list_and_the_control_names_the_status() {
     let (_, lines) = run(ledger(), vec![ch('f'), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)]);
 
-    assert!(has(&lines, "Status: pending ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: pending ("), "{lines:#?}");
     assert!(has(&lines, "bravo") && has(&lines, "candy"), "{lines:#?}");
     assert!(!has(&lines, "alpha") && !has(&lines, "delta") && !has(&lines, "zulu"), "{lines:#?}");
     assert!(!has(&lines, "> All"), "the dropdown closes on selection: {lines:#?}");
@@ -124,7 +124,7 @@ fn escape_closes_the_dropdown_only_and_keeps_the_filter() {
         run(ledger(), vec![ch('f'), key(KeyCode::Down), key(KeyCode::Esc)]);
 
     assert!(!closed, "Esc closes the dropdown, not the popup");
-    assert!(has(&lines, "Status: All ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: All ("), "{lines:#?}");
     assert!(has(&lines, "alpha") && has(&lines, "candy"), "{lines:#?}");
 }
 
@@ -158,7 +158,7 @@ fn selecting_all_again_resets_the_filter() {
     ];
     let (_, lines) = run(ledger(), events);
 
-    assert!(has(&lines, "Status: All ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: All ("), "{lines:#?}");
     assert!(has(&lines, "alpha") && has(&lines, "bravo") && has(&lines, "candy"), "{lines:#?}");
 }
 
@@ -167,7 +167,7 @@ fn an_unknown_status_is_selectable_by_its_own_name() {
     let events = vec![ch('f'), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Enter)];
     let (_, lines) = run(ledger(), events);
 
-    assert!(has(&lines, "Status: mystery ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: mystery ("), "{lines:#?}");
     assert!(has(&lines, "zulu") && !has(&lines, "alpha") && !has(&lines, "delta"), "{lines:#?}");
 }
 
@@ -193,9 +193,9 @@ fn clicking_the_control_then_an_option_filters() {
     let (x, y) = find(&screen, "Status: All");
 
     // Options sit under the control inside a border: All, draft, pending, ...
-    let (_, lines) = run(ledger(), vec![click(x + 2, y), click(x + 2, y + 2 + 2)]);
+    let (_, lines) = run(ledger(), vec![click(x + 2, y), click(x + 12, y + 2 + 2)]);
 
-    assert!(has(&lines, "Status: pending ▾"), "{lines:#?}");
+    assert!(has(&lines, "Status: pending ("), "{lines:#?}");
     assert!(has(&lines, "bravo") && !has(&lines, "alpha"), "{lines:#?}");
 }
 
@@ -207,7 +207,7 @@ fn a_click_elsewhere_closes_the_dropdown_without_filtering() {
     let (closed, lines) = run(ledger(), vec![click(x + 2, y), click(0, 22)]);
 
     assert!(!closed);
-    assert!(has(&lines, "Status: All ▾") && has(&lines, "alpha"), "{lines:#?}");
+    assert!(has(&lines, "Status: All (") && has(&lines, "alpha"), "{lines:#?}");
     assert!(!has(&lines, "> All"), "{lines:#?}");
 }
 

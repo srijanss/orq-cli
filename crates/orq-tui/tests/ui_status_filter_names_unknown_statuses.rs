@@ -157,7 +157,7 @@ fn a_long_status_keeps_the_control_at_narrow_widths_and_can_be_left() {
         events.push(key(KeyCode::Enter));
         let lines = run_at(width, entries.clone(), events);
 
-        assert!(has(&lines, "Status: All ▾"), "width {width}: reopening and leaving must work: {lines:#?}");
+        assert!(has(&lines, "Status: All"), "width {width}: reopening and leaving must work: {lines:#?}");
         assert!(has(&lines, "bravo"), "width {width}: {lines:#?}");
     }
 }
