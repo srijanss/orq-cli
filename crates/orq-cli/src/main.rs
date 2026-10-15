@@ -1510,6 +1510,59 @@ mod ledger_backend_tests {
         assert!(text.contains("I could not read the file"), "{text}");
     }
 
+    fn failing_settings(
+        label: &str,
+        log_dir: Option<std::path::PathBuf>,
+        cancelled: bool,
+    ) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
+        let (_dir, path) = ledger(&[label]);
+        let cancel = std::sync::atomic::AtomicBool::new(cancelled);
+        super::generate_reviewed(
+            &path,
+            None,
+            Err("settings are unreadable".to_string()),
+            None,
+            log_dir,
+            &cancel,
+            Some(("SPEC.md", "")),
+        )
+    }
+
+    #[test]
+    fn a_failure_without_a_log_location_keeps_the_error_and_says_so() {
+        let message = failing_settings("report-no-dir", None, false).unwrap_err();
+
+        assert!(message.contains("no report location"), "{message}");
+        assert!(!message.starts_with(" ("), "the original error must lead: {message}");
+        assert!(!message.contains("details:"), "{message}");
+    }
+
+    #[test]
+    fn an_unwritable_report_location_keeps_the_original_error() {
+        let (dir, _) = ledger(&["report-occupied"]);
+        let occupied = dir.join("logs");
+        std::fs::write(&occupied, "a regular file, not a directory").unwrap();
+
+        let message = failing_settings("report-occupied-run", Some(occupied.clone()), false).unwrap_err();
+
+        let original = failing_settings("report-original", None, false).unwrap_err();
+        let original = original.split(" (no report location").next().unwrap();
+        assert!(message.starts_with(original), "{message} vs {original}");
+        assert!(message.contains("could not write a report"), "{message}");
+        assert!(occupied.is_file());
+    }
+
+    #[test]
+    fn a_cancelled_generation_writes_no_report() {
+        let (dir, _) = ledger(&["report-cancelled"]);
+        let logs = dir.join("logs");
+
+        let message = failing_settings("report-cancelled-run", Some(logs.clone()), true).unwrap_err();
+
+        assert!(!message.contains("details:"), "{message}");
+        assert!(!logs.exists(), "a cancelled run must not create the report directory");
+    }
+
     fn worker(
         receiver: std::sync::mpsc::Receiver<Result<Vec<orq_features::ReviewedCandidate>, String>>,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,

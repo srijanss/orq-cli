@@ -29,10 +29,35 @@ pub struct RunDiagnostics {
     pub argv: Vec<String>,
 }
 
-/// Keeps only the last `DIAGNOSTIC_BYTES` of everything written to it.
-fn spawn_tail_reader(stderr: std::process::ChildStderr) -> Arc<Mutex<Vec<u8>>> {
-    let tail = Arc::new(Mutex::new(Vec::new()));
-    let shared = Arc::clone(&tail);
+/// What the agent printed so far, filled by reader threads while it runs so a
+/// timeout, cancel or overflow still has its output to report.
+struct Captured {
+    /// Last `DIAGNOSTIC_BYTES` of stderr.
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
+    /// First `DIAGNOSTIC_BYTES` of stdout.
+    stdout_head: Arc<Mutex<Vec<u8>>>,
+    /// Set by the stderr reader once it reached end of file.
+    stderr_done: Arc<AtomicBool>,
+}
+
+impl Captured {
+    /// Copies what was captured into `diagnostics`, once. Waits briefly for the
+    /// stderr reader to finish draining after the agent was stopped.
+    fn snapshot_into(&self, diagnostics: &mut RunDiagnostics) {
+        let give_up = Instant::now() + Duration::from_millis(250);
+        while !self.stderr_done.load(Ordering::SeqCst) && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let text = |buf: &Mutex<Vec<u8>>| {
+            buf.lock().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+        };
+        diagnostics.stderr_tail = text(&self.stderr_tail);
+        diagnostics.stdout_head = text(&self.stdout_head);
+    }
+}
+
+/// Reads stderr to its end, keeping only the last `DIAGNOSTIC_BYTES`.
+fn spawn_tail_reader(stderr: std::process::ChildStderr, tail: Arc<Mutex<Vec<u8>>>, done: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut stderr = stderr;
         let mut chunk = [0u8; 4096];
@@ -40,23 +65,15 @@ fn spawn_tail_reader(stderr: std::process::ChildStderr) -> Arc<Mutex<Vec<u8>>> {
             if n == 0 {
                 break;
             }
-            let Ok(mut buf) = shared.lock() else { break };
+            let Ok(mut buf) = tail.lock() else { break };
             buf.extend_from_slice(&chunk[..n]);
             if buf.len() > DIAGNOSTIC_BYTES {
                 let excess = buf.len() - DIAGNOSTIC_BYTES;
                 buf.drain(..excess);
             }
         }
+        done.store(true, Ordering::SeqCst);
     });
-    tail
-}
-
-fn head_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(DIAGNOSTIC_BYTES)]).into_owned()
-}
-
-fn tail_text(tail: &Mutex<Vec<u8>>) -> String {
-    tail.lock().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -205,7 +222,11 @@ pub fn run_generation_diagnosed(
 ) -> (Result<PathBuf, GenerationError>, RunDiagnostics) {
     let started = Instant::now();
     let mut diagnostics = RunDiagnostics::default();
-    let result = run_inner(request, cancel, &mut diagnostics);
+    let mut captured = None;
+    let result = run_inner(request, cancel, &mut diagnostics, &mut captured);
+    if let Some(captured) = &captured {
+        captured.snapshot_into(&mut diagnostics);
+    }
     diagnostics.duration = started.elapsed();
     if diagnostics.exit.is_empty() {
         diagnostics.exit = match &result {
@@ -232,6 +253,7 @@ fn run_inner(
     request: &GenerationRequest<'_>,
     cancel: &AtomicBool,
     diagnostics: &mut RunDiagnostics,
+    captured: &mut Option<Captured>,
 ) -> Result<PathBuf, GenerationError> {
     let mut command = Command::new(request.program);
     // The Settings model is passed with `--model`.
@@ -291,28 +313,48 @@ fn run_inner(
             _ => GenerationError::Spawn(err),
         })?;
 
-    let stderr_tail = spawn_tail_reader(child.stderr.take().expect("piped stderr"));
+    let capture = Captured {
+        stderr_tail: Arc::default(),
+        stdout_head: Arc::default(),
+        stderr_done: Arc::default(),
+    };
+    spawn_tail_reader(
+        child.stderr.take().expect("piped stderr"),
+        Arc::clone(&capture.stderr_tail),
+        Arc::clone(&capture.stderr_done),
+    );
+    let stdout_head = Arc::clone(&capture.stdout_head);
+    *captured = Some(capture);
     let stdout = child.stdout.take().expect("piped stdout");
     // The reader reports through a channel so the wait for it can be bounded:
     // a descendant that inherited stdout keeps the pipe open past the agent.
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut out = Vec::new();
-        let _ = stdout.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut out);
+        let mut stdout = stdout.take(MAX_OUTPUT_BYTES + 1);
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = stdout.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&chunk[..n]);
+            if let Ok(mut head) = stdout_head.lock() {
+                let room = DIAGNOSTIC_BYTES.saturating_sub(head.len());
+                head.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
         let _ = sender.send(out);
     });
 
     let deadline = Instant::now() + request.timeout;
     let mut output: Option<Vec<u8>> = None;
     let status = loop {
-        diagnostics.stderr_tail = tail_text(&stderr_tail);
         if cancel.load(Ordering::SeqCst) {
             stop(&mut child);
             return Err(GenerationError::Cancelled);
         }
         if output.is_none() {
             if let Ok(out) = receiver.try_recv() {
-                diagnostics.stdout_head = head_text(&out);
                 if out.len() as u64 > MAX_OUTPUT_BYTES {
                     stop(&mut child);
                     return Err(GenerationError::OutputTooLarge);
@@ -342,7 +384,6 @@ fn run_inner(
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
                     Ok(output) => {
-                        diagnostics.stdout_head = head_text(&output);
                         break output;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !remaining.is_zero() => {}
@@ -354,11 +395,9 @@ fn run_inner(
             }
         }
     };
-    // The agent is done; nothing it started may linger. Give the stderr
-    // reader a moment to drain what the agent wrote last.
+    // The agent is done; nothing it started may linger. Its captured output
+    // is read once, by the caller, after the readers have drained.
     kill_group(&child);
-    std::thread::sleep(Duration::from_millis(30));
-    diagnostics.stderr_tail = tail_text(&stderr_tail);
     if output.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(GenerationError::OutputTooLarge);
     }

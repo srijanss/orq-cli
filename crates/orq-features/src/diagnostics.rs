@@ -58,7 +58,73 @@ fn looks_like_token(word: &str) -> bool {
         && word.chars().any(|c| c.is_ascii_alphabetic())
 }
 
+/// Byte index just past the quote that closes the one opening at `open`,
+/// honouring backslash escapes; `None` when the quote never closes.
+fn closing_quote(line: &str, open: usize) -> Option<usize> {
+    let quote = line[open..].chars().next()?;
+    let mut escaped = false;
+    for (i, c) in line[open + 1..].char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == quote {
+            return Some(open + 1 + i);
+        }
+    }
+    None
+}
+
+/// Whether the quoted span starting at `open` is the value of a credential:
+/// `key: "v"`, `key="v"`, `"key":"v"` or `--key "v"`.
+fn quoted_value_is_secret(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let (key_end, has_separator) = match trimmed.strip_suffix(['=', ':']) {
+        Some(rest) => (rest.trim_end(), true),
+        None => (trimmed, false),
+    };
+    let start = key_end
+        .rfind(|c: char| c.is_whitespace() || ",{[(".contains(c))
+        .map_or(0, |i| i + 1);
+    let key = &key_end[start..];
+    if !has_separator && !key.starts_with('-') {
+        return false;
+    }
+    is_sensitive_key(key)
+}
+
+/// Replaces quoted values that belong to a credential key, whole, so JSON
+/// objects without spaces and multi-word quoted secrets cannot slip through
+/// the word-based pass.
+fn redact_quoted_values(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < line.len() {
+        let c = line[i..].chars().next().unwrap_or(' ');
+        let opens = (c == '"' || c == '\'')
+            && line[..i].chars().next_back().is_none_or(|p| !p.is_alphanumeric());
+        if opens {
+            if let Some(close) = closing_quote(line, i) {
+                if quoted_value_is_secret(&line[..i]) {
+                    out.push(c);
+                    out.push_str(MARKER);
+                    out.push(c);
+                } else {
+                    out.push_str(&line[i..=close]);
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
 fn redact_line(line: &str) -> String {
+    let line = redact_quoted_values(line);
+    let line = line.as_str();
     let mut out = String::with_capacity(line.len());
     // The next word is a secret value (after `Bearer`, `password:` or `--api-key`).
     let mut redact_next = false;
@@ -130,6 +196,25 @@ pub fn redact_secrets(input: &str) -> String {
         out.push_str(&redact_line(line));
     }
     out
+}
+
+/// Redacts an argument vector, carrying context across elements so the value
+/// that follows a credential flag (`--api-key VALUE`) is hidden even when it
+/// looks innocuous on its own.
+fn redact_argv(argv: &[String]) -> Vec<String> {
+    let mut hide_next = false;
+    argv.iter()
+        .map(|arg| {
+            let is_flag = arg.starts_with('-');
+            let out = if hide_next && !is_flag {
+                MARKER.to_string()
+            } else {
+                redact_secrets(arg)
+            };
+            hide_next = is_flag && !arg.contains('=') && is_sensitive_key(arg);
+            out
+        })
+        .collect()
 }
 
 // ---- generation failure report ------------------------------------------
@@ -215,7 +300,7 @@ fn clip_tail(text: &str) -> String {
 pub fn write_generation_report(dir: &Path, report: &GenerationReport) -> std::io::Result<PathBuf> {
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let argv = report.argv.iter().map(|a| redact_secrets(a)).collect::<Vec<_>>().join(" ");
+    let argv = redact_argv(&report.argv).join(" ");
     let body = format!(
         "Orq generation report\n\
 time: {time}\n\
