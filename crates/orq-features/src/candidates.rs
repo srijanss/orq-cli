@@ -71,6 +71,35 @@ pub fn review_candidates(existing: &[FeatureEntry], candidates: Vec<Candidate>) 
         }
     }
 
+    // A candidate that depends on one that is itself invalid cannot be added
+    // either: propagate until nothing changes.
+    let by_name: HashMap<&str, usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| verdicts[*i] == Verdict::New)
+        .map(|(i, c)| (c.draft.feature_name.as_str(), i))
+        .collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (i, candidate) in candidates.iter().enumerate() {
+            if verdicts[i] != Verdict::New {
+                continue;
+            }
+            for dep in candidate.draft.depends_on.iter().flatten() {
+                let Some(&j) = by_name.get(dep.as_str()) else { continue };
+                if j == i || problems[j].is_empty() {
+                    continue;
+                }
+                let problem = CandidateProblem::UnknownDependency(dep.clone());
+                if !problems[i].contains(&problem) {
+                    problems[i].push(problem);
+                    changed = true;
+                }
+            }
+        }
+    }
+
     // Cycles among new candidates (existing entries are already acyclic and
     // never depend on candidates): peel off nodes whose new-candidate
     // dependencies are all resolved; what remains is in or behind a cycle.
