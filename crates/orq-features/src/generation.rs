@@ -125,7 +125,8 @@ pub fn run_generation_cancellable(
     cancel: &AtomicBool,
 ) -> Result<PathBuf, GenerationError> {
     let mut command = Command::new(request.program);
-    command.arg("--profile").arg(&request.profile.profile);
+    // The Settings profile names the model; neither harness has a profile flag.
+    command.arg("--model").arg(&request.profile.profile);
     // Built-in read-only argv; unknown harnesses fail closed.
     let restrictions: &[&str] = match request.profile.harness.as_str() {
         "claude" => &[

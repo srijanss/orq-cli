@@ -11,7 +11,7 @@ fn help(program: &str) -> Option<String> {
 #[test]
 fn the_installed_claude_documents_every_read_only_flag_and_the_plan_mode() {
     let Some(help) = help("claude") else { return };
-    for needle in ["--tools", "--permission-mode", "--strict-mcp-config", "--bare", "--disallowedTools", "\"plan\""] {
+    for needle in ["--model", "--tools", "--permission-mode", "--strict-mcp-config", "--bare", "--disallowedTools", "\"plan\""] {
         assert!(help.contains(needle), "claude --help no longer mentions {needle}");
     }
 }
@@ -19,7 +19,7 @@ fn the_installed_claude_documents_every_read_only_flag_and_the_plan_mode() {
 #[test]
 fn the_installed_pi_documents_every_read_only_flag() {
     let Some(help) = help("pi") else { return };
-    for needle in ["--tools", "--no-mcp", "--no-extensions", "--no-context-files", "--no-session"] {
+    for needle in ["--model", "--tools", "--no-mcp", "--no-extensions", "--no-context-files", "--no-session"] {
         assert!(help.contains(needle), "pi --help no longer mentions {needle}");
     }
 }
