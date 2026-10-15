@@ -24,7 +24,7 @@ fn running(pid: &str) -> bool {
     }
 }
 
-fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, GenerationError>, String) {
+fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, GenerationError>, Descendant) {
     let root = dir(label);
     let pid_file = root.join("descendant.pid");
     let script = root.join("agent");
@@ -44,18 +44,25 @@ fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, Gene
         timeout,
     });
     let pid = fs::read_to_string(&pid_file).expect("the agent recorded its descendant").trim().to_string();
-    (result, pid)
+    (result, Descendant(pid))
 }
 
-fn assert_descendant_stops(pid: &str) {
+/// Kills the descendant on drop, so a failing assertion cannot leave it running.
+struct Descendant(String);
+
+impl Drop for Descendant {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").arg(&self.0).status();
+    }
+}
+
+fn assert_descendant_stops(descendant: &Descendant) {
+    let pid = descendant.0.as_str();
     let deadline = Instant::now() + Duration::from_secs(3);
     while running(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     let survived = running(pid);
-    if survived {
-        let _ = std::process::Command::new("kill").arg(pid).status();
-    }
     assert!(!survived, "descendant {pid} outlived the generation");
 }
 
@@ -93,5 +100,15 @@ fn a_successful_generation_terminates_a_descendant_that_redirected_stdout() {
     let (result, pid) = generate("success", body, Duration::from_secs(20));
 
     assert!(result.is_ok(), "{result:?}");
+    assert_descendant_stops(&pid);
+}
+
+#[test]
+fn a_failing_agent_exit_terminates_a_redirected_descendant() {
+    let body = "sleep 60 >/dev/null 2>&1 &\necho $! > PIDFILE\nexit 3";
+
+    let (result, pid) = generate("nonzero", body, Duration::from_secs(20));
+
+    assert!(matches!(result, Err(GenerationError::AgentFailed { code: Some(3) })), "{result:?}");
     assert_descendant_stops(&pid);
 }
