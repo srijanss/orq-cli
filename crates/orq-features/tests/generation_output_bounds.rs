@@ -41,3 +41,32 @@ fn output_over_the_limit_is_an_error_and_no_truncated_artifact_is_kept() {
     assert!(err.to_string().contains("limit"), "{err}");
     assert!(!artifacts.exists() || fs::read_dir(&artifacts).unwrap().next().is_none());
 }
+
+fn output_of(len: usize) -> String {
+    format!("[{}]", " ".repeat(len - 2))
+}
+
+#[test]
+fn output_at_or_just_under_the_limit_is_kept_byte_for_byte() {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    for (label, len) in [("at-limit", LIMIT), ("under-limit", LIMIT - 1)] {
+        let text = output_of(len);
+        let agent = FakeAgent::builder().stdout(&text).build();
+
+        let (result, _) = run(agent.path(), label, Duration::from_secs(30));
+
+        let path = result.unwrap_or_else(|e| panic!("{label}: {e}"));
+        let stored = fs::read(&path).unwrap();
+        assert!(stored == text.as_bytes(), "{label}: stored {} bytes, expected {}", stored.len(), len);
+    }
+}
+
+#[test]
+fn output_one_byte_over_the_limit_is_rejected() {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    let agent = FakeAgent::builder().stdout(&output_of(LIMIT + 1)).build();
+
+    let (result, _) = run(agent.path(), "one-over", Duration::from_secs(30));
+
+    assert!(matches!(result, Err(GenerationError::OutputTooLarge)), "{result:?}");
+}
