@@ -26,6 +26,10 @@ const TOKEN_PREFIXES: &[&str] = &[
 
 const EDGE: &[char] = &['"', '\'', ',', ';', '(', ')', '[', ']', '{', '}'];
 
+/// Longest quoted key (bytes) inspected whole before the value is redacted
+/// without looking.
+const QUOTED_KEY_CAP: usize = 1024;
+
 fn is_sensitive_key(key: &str) -> bool {
     let key = key.trim_matches(|c: char| EDGE.contains(&c) || c == '-' || c == ':').to_ascii_lowercase();
     !key.is_empty() && SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
@@ -83,6 +87,23 @@ fn quoted_value_is_secret(before: &str) -> bool {
         Some(rest) => (rest.trim_end(), true),
         None => (trimmed, false),
     };
+    // A quoted key (`"key": "v"`) is inspected whole between its quotes, so a
+    // delimiter or space inside it cannot hide the credential word.
+    if has_separator {
+        if let Some(&quote) = key_end.as_bytes().last().filter(|b| **b == b'"' || **b == b'\'') {
+            let bytes = key_end.as_bytes();
+            let end = bytes.len() - 1;
+            let open = (0..end)
+                .rev()
+                .take(QUOTED_KEY_CAP)
+                .find(|&i| bytes[i] == quote && (i == 0 || bytes[i - 1] != b'\\'));
+            return match open {
+                Some(open) => is_sensitive_key(&key_end[open + 1..end]),
+                // Too long to inspect: redact rather than risk a leak.
+                None => true,
+            };
+        }
+    }
     // Only the last stretch can hold the key; scanning further back would make
     // long runs of quoted spans quadratic.
     let mut window = key_end.len().saturating_sub(128);
