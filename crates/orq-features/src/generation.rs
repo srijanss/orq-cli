@@ -152,6 +152,10 @@ pub fn run_generation_cancellable(
             return Err(GenerationError::UnsupportedHarness { harness: other.to_string() });
         }
     };
+    // Work cancelled before it began never starts an agent.
+    if cancel.load(Ordering::SeqCst) {
+        return Err(GenerationError::Cancelled);
+    }
     let mut child = command
         .args(restrictions)
         .arg("-p")

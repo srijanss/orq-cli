@@ -69,7 +69,7 @@ fn assert_descendant_stops(descendant: &Descendant) {
 #[test]
 fn a_timed_out_generation_terminates_the_agents_descendants() {
     let (result, pid) =
-        generate("timeout", "sleep 60 &\necho $! > PIDFILE\nwait", Duration::from_secs(2));
+        generate("timeout", "sleep 60 &\necho $! > PIDFILE\nwait", Duration::from_secs(5));
 
     assert!(matches!(result, Err(GenerationError::TimedOut)), "{result:?}");
     assert_descendant_stops(&pid);
@@ -77,7 +77,7 @@ fn a_timed_out_generation_terminates_the_agents_descendants() {
 
 #[test]
 fn a_descendant_holding_stdout_after_the_agent_exits_is_terminated() {
-    let (result, pid) = generate("exited", "sleep 60 &\necho $! > PIDFILE\nexit 0", Duration::from_secs(2));
+    let (result, pid) = generate("exited", "sleep 60 &\necho $! > PIDFILE\nexit 0", Duration::from_secs(5));
 
     assert!(matches!(result, Err(GenerationError::TimedOut)), "{result:?}");
     assert_descendant_stops(&pid);

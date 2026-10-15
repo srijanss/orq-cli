@@ -612,25 +612,44 @@ struct WorkerJob {
     receiver: std::sync::mpsc::Receiver<Result<Vec<orq_features::ReviewedCandidate>, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
+    /// Joined on drop so the agent's process group is gone before Orq exits.
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// A terminal result was already delivered; later polls yield nothing.
+    done: bool,
 }
 
 impl orq_tui::GenerationJob for WorkerJob {
     fn poll(&mut self) -> Option<Result<Vec<orq_tui::CandidateView>, String>> {
         use std::sync::mpsc::TryRecvError;
-        match self.receiver.try_recv() {
+        if self.done {
+            return None;
+        }
+        let result = match self.receiver.try_recv() {
             Ok(Ok(reviewed)) => {
                 let views = candidate_views(&reviewed);
                 *self.staged.lock().unwrap() = reviewed;
-                Some(Ok(views))
+                Ok(views)
             }
-            Ok(Err(reason)) => Some(Err(reason)),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("the generation worker stopped unexpectedly".into())),
-        }
+            Ok(Err(reason)) => Err(reason),
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err("the generation worker stopped unexpectedly".into()),
+        };
+        self.done = true;
+        Some(result)
     }
 
     fn cancel(&mut self) {
         self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for WorkerJob {
+    fn drop(&mut self) {
+        // Cancelling makes the worker stop the agent promptly, so the join is short.
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -831,10 +850,16 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
         let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = sender.send(generate_reviewed(&path, settings_file, program_override, &flag));
         });
-        Ok(Box::new(WorkerJob { receiver, cancel, staged: Arc::clone(&self.staged) }))
+        Ok(Box::new(WorkerJob {
+            receiver,
+            cancel,
+            staged: Arc::clone(&self.staged),
+            handle: Some(handle),
+            done: false,
+        }))
     }
 
     fn accept_candidates(&mut self, accepted: &[orq_tui::AcceptedCandidate]) -> orq_tui::FormSaveOutcome {
@@ -1034,6 +1059,48 @@ mod ledger_backend_tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""featureName":"a""#) && text.contains(r#""parallelizable":true"#));
         assert_eq!(orq_features::load_ledger(&path).unwrap().len(), 3);
+    }
+
+    fn worker(
+        receiver: std::sync::mpsc::Receiver<Result<Vec<orq_features::ReviewedCandidate>, String>>,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    ) -> super::WorkerJob {
+        super::WorkerJob { receiver, cancel, staged: Default::default(), handle, done: false }
+    }
+
+    #[test]
+    fn a_finished_worker_job_yields_its_result_once() {
+        use orq_tui::GenerationJob;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut job = worker(receiver, Default::default(), None);
+        sender.send(Err("agent failed".to_string())).unwrap();
+        drop(sender);
+
+        assert!(matches!(job.poll(), Some(Err(reason)) if reason == "agent failed"));
+        assert!(job.poll().is_none());
+    }
+
+    #[test]
+    fn dropping_a_worker_job_cancels_and_waits_for_the_worker() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (flag, done) = (Arc::clone(&cancel), Arc::clone(&finished));
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            // Stands in for the agent's process group being killed.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            done.store(true, Ordering::SeqCst);
+        });
+        let (_sender, receiver) = std::sync::mpsc::channel();
+
+        drop(worker(receiver, cancel, Some(handle)));
+
+        assert!(finished.load(Ordering::SeqCst), "the worker was still running after the job was dropped");
     }
 
     #[test]
