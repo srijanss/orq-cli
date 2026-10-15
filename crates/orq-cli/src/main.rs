@@ -450,13 +450,34 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             Ok(settings) => settings,
             Err(error) => return failed(error.to_string()),
         };
-        let role = |role| settings.agent(role).map(agent_setting);
-        match (role(orq_features::AgentRole::Implementer), role(orq_features::AgentRole::Reviewer)) {
-            (Ok(implementer), Ok(reviewer)) => {
-                orq_tui::SettingsView { implementer, reviewer, ..Default::default() }
+        let roles = (
+            settings.agent(orq_features::AgentRole::Implementer),
+            settings.agent(orq_features::AgentRole::Reviewer),
+        );
+        let (implementer, reviewer) = match roles {
+            (Ok(implementer), Ok(reviewer)) => (implementer, reviewer),
+            (Err(error), _) | (_, Err(error)) => return failed(error.to_string()),
+        };
+        let mut view = orq_tui::SettingsView {
+            implementer: agent_setting(implementer),
+            reviewer: agent_setting(reviewer.clone()),
+            ..Default::default()
+        };
+        // .tdd-config.json stays authoritative for the reviewer; it is only read.
+        let config_path = self.path.with_file_name(".tdd-config.json");
+        match orq_features::load_reviewer_config(&config_path) {
+            Ok(config) => {
+                let resolved = orq_features::resolve_reviewer(reviewer.as_ref(), &config);
+                if let (true, orq_features::EffectiveReviewer::Config(p)) =
+                    (resolved.overrides_settings, &resolved.effective)
+                {
+                    view.reviewer_override = Some(format!("{} / {}", p.harness, p.profile));
+                }
+                view.error = resolved.invalid;
             }
-            (Err(error), _) | (_, Err(error)) => failed(error.to_string()),
+            Err(error) => view.error = Some(error.to_string()),
         }
+        view
     }
 
     fn save_settings(
@@ -532,6 +553,25 @@ mod ledger_backend_tests {
 
         let half = orq_tui::AgentSetting { harness: "pi".into(), profile: String::new() };
         assert!(backend.save_settings(&implementer, &half).is_err());
+    }
+
+    #[test]
+    fn tdd_config_overrides_the_settings_reviewer_and_is_never_written() {
+        let (dir, path) = ledger(&["override"]);
+        let config = dir.join(".tdd-config.json");
+        let text = r#"{"reviewers":{"default":{"reviewer":"pi","model":"gpt-6"},"allowedModels":["gpt-6"]}}"#;
+        std::fs::write(&config, text).unwrap();
+        let mut backend = LedgerBackend::new(path);
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        let none = orq_tui::AgentSetting::default();
+        let reviewer = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        backend.save_settings(&none, &reviewer).unwrap();
+
+        let view = backend.load_settings();
+
+        assert_eq!(view.reviewer_override.as_deref(), Some("pi / gpt-6"));
+        assert_eq!(view.error, None);
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
     }
 
     #[test]

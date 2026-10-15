@@ -204,5 +204,11 @@ pub use settings::{settings_path, Settings, SettingsError};
 mod profiles;
 pub use profiles::{AgentProfile, AgentRole, ProfileError};
 
+mod reviewer_config;
+pub use reviewer_config::{
+    load_reviewer_config, resolve_reviewer, EffectiveReviewer, ReviewerConfigError, ReviewerResolution,
+    TddReviewerConfig,
+};
+
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
