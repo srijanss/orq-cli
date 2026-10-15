@@ -4,6 +4,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::AgentProfile;
@@ -21,6 +22,8 @@ pub enum GenerationError {
     Spawn(std::io::Error),
     AgentFailed { code: Option<i32> },
     TimedOut,
+    /// The caller asked to stop; nothing was stored.
+    Cancelled,
     /// The agent wrote more than Orq keeps; nothing was stored.
     OutputTooLarge,
     Artifact(std::io::Error),
@@ -46,6 +49,7 @@ impl std::fmt::Display for GenerationError {
             }
             GenerationError::AgentFailed { code: None } => f.write_str("the agent was terminated"),
             GenerationError::TimedOut => f.write_str("the agent did not finish in time"),
+            GenerationError::Cancelled => f.write_str("generation was cancelled"),
             GenerationError::OutputTooLarge => write!(
                 f,
                 "the agent output exceeded the {} MiB limit and was discarded",
@@ -111,6 +115,15 @@ fn stop(child: &mut std::process::Child) {
 /// directory the repository root, stdout stored in an owner-only artifact in
 /// `artifact_dir`. The agent is never given the artifact path to write to.
 pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, GenerationError> {
+    run_generation_cancellable(request, &AtomicBool::new(false))
+}
+
+/// As `run_generation`, but setting `cancel` ends the agent's process group
+/// promptly and returns `GenerationError::Cancelled`.
+pub fn run_generation_cancellable(
+    request: &GenerationRequest<'_>,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, GenerationError> {
     let mut command = Command::new(request.program);
     command.arg("--profile").arg(&request.profile.profile);
     // Built-in read-only argv; unknown harnesses fail closed.
@@ -170,6 +183,10 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
     let deadline = Instant::now() + request.timeout;
     let mut output: Option<Vec<u8>> = None;
     let status = loop {
+        if cancel.load(Ordering::SeqCst) {
+            stop(&mut child);
+            return Err(GenerationError::Cancelled);
+        }
         if output.is_none() {
             if let Ok(out) = receiver.try_recv() {
                 if out.len() as u64 > MAX_OUTPUT_BYTES {
@@ -191,12 +208,20 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
     let output = match output {
         Some(output) => output,
         None => {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match receiver.recv_timeout(remaining) {
-                Ok(output) => output,
-                Err(_) => {
+            // Waited for in short slices so a cancel is noticed promptly.
+            loop {
+                if cancel.load(Ordering::SeqCst) {
                     stop(&mut child);
-                    return Err(GenerationError::TimedOut);
+                    return Err(GenerationError::Cancelled);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                    Ok(output) => break output,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !remaining.is_zero() => {}
+                    Err(_) => {
+                        stop(&mut child);
+                        return Err(GenerationError::TimedOut);
+                    }
                 }
             }
         }
