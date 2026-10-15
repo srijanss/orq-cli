@@ -11,6 +11,8 @@ pub struct LoadedLedger {
     path: PathBuf,
     bytes: Vec<u8>,
     entries: Vec<FeatureEntry>,
+    /// The file did not exist when loaded, so a save must find it still absent.
+    is_new: bool,
 }
 
 /// Why a save did not happen.
@@ -37,7 +39,24 @@ impl LoadedLedger {
             _ => LedgerError::Unreadable { path: path.to_path_buf(), source },
         })?;
         let entries = parse_ledger_bytes(path, &bytes)?;
-        Ok(Self { path: path.to_path_buf(), bytes, entries })
+        Ok(Self { path: path.to_path_buf(), bytes, entries, is_new: false })
+    }
+
+    /// Like [`load`](Self::load), but a missing file is a valid empty ledger
+    /// that a later save creates. Any other failure (unreadable, not an array,
+    /// malformed) is returned as is and nothing is written.
+    pub fn load_or_new(path: &Path) -> Result<Self, LedgerError> {
+        match Self::load(path) {
+            Err(LedgerError::Missing { .. }) => {
+                Ok(Self { path: path.to_path_buf(), bytes: Vec::new(), entries: Vec::new(), is_new: true })
+            }
+            other => other,
+        }
+    }
+
+    /// Whether the file was absent when loaded.
+    pub fn is_new(&self) -> bool {
+        self.is_new
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -82,9 +101,13 @@ impl LoadedLedger {
         // Dropping the handle releases the lock, so every return below does.
         let _lock = self.lock(wait)?;
         match std::fs::read(&self.path) {
-            Ok(current) if current == self.bytes => {}
+            Ok(current) if !self.is_new && current == self.bytes => {}
             Ok(_) => return Err(SaveError::Conflict),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(SaveError::Conflict),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if !self.is_new {
+                    return Err(SaveError::Conflict);
+                }
+            }
             Err(e) => return Err(SaveError::Io(e)),
         }
         write(&self.path, contents).map_err(SaveError::Io)
