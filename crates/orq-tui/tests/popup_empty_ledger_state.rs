@@ -139,14 +139,16 @@ fn the_add_button_in_the_empty_state_opens_the_form() {
 }
 
 #[test]
-fn generate_from_spec_says_it_is_not_available_yet_and_does_nothing() {
+fn generate_from_spec_without_a_generating_backend_reports_it_and_keeps_manual_creation() {
     let lines = run(&mut Fake::absent(), vec![]);
     let (column, row) = position_of(&lines, "Generate from Spec", 5);
 
     let after = run(&mut Fake::absent(), vec![click(column, row)]);
 
-    assert!(has(&lines, "not available yet"), "{lines:?}");
+    assert!(!has(&lines, "not available yet"), "{lines:?}");
+    assert!(has(&after, "Generation failed"), "{after:?}");
     assert!(has(&after, "No feature file yet"), "{after:?}");
+    assert!(has(&after, "Add Feature"), "{after:?}");
     assert!(!has(&after, "Depends on"), "{after:?}");
 }
 

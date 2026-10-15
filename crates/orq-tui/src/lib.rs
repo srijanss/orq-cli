@@ -4,6 +4,10 @@ use std::io;
 
 mod form;
 pub use form::{FeatureFields, FormSaveOutcome};
+
+mod preview;
+pub use preview::{AcceptedCandidate, CandidateKind, CandidateView};
+use preview::{PreviewAction, PreviewState};
 use form::{FormAction, FormState};
 
 use ratatui::backend::{Backend, TestBackend};
@@ -1468,6 +1472,19 @@ pub trait BrowserBackend {
     fn add_feature(&mut self, _fields: &FeatureFields) -> FormSaveOutcome {
         FormSaveOutcome::Failed { reason: "adding features is not available".into() }
     }
+
+    /// Runs the generation agent on the chosen spec and returns what it
+    /// proposed, checked against the current ledger. The reason is shown as a
+    /// notice; manual creation stays available.
+    fn generate_candidates(&mut self) -> Result<Vec<CandidateView>, String> {
+        Err("generating from a spec is not available".into())
+    }
+
+    /// Appends the accepted candidates in one atomic save. On failure nothing
+    /// is written and the proposal stays available for a retry.
+    fn accept_candidates(&mut self, _accepted: &[AcceptedCandidate]) -> FormSaveOutcome {
+        FormSaveOutcome::Failed { reason: "adding generated features is not available".into() }
+    }
 }
 
 /// A harness and profile name, as typed in the Settings tab. Names only.
@@ -1623,7 +1640,6 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
 
 const EMPTY_TITLE: &str = "No feature file yet";
 const GENERATE_LABEL: &str = "[ Generate from Spec ]";
-const GENERATE_NOTE: &str = " not available yet";
 
 /// The Add and Generate buttons of the empty state, in `area` (the body).
 fn empty_state_rects(area: Rect) -> (Rect, Rect) {
@@ -1635,7 +1651,6 @@ fn empty_state_rects(area: Rect) -> (Rect, Rect) {
 }
 
 /// The absent-file state: where the file will go and the two ways to start.
-/// Generating is a later step, so that button says so and does nothing.
 fn render_empty_state(frame: &mut Frame, area: Rect, error: &LedgerErrorView) {
     let width = usize::from(area.width);
     let dim = Style::new().fg(Color::DarkGray);
@@ -1650,8 +1665,8 @@ fn render_empty_state(frame: &mut Frame, area: Rect, error: &LedgerErrorView) {
     let path = truncate_left(&printable(&error.path), width);
     put(Rect::new(area.x, area.y + 1, 0, 1), Line::from(Span::styled(path, dim)));
     put(add, Line::from(Span::styled(ADD_LABEL, Style::new().fg(Color::Green))));
-    let note = truncate_right(&format!("{GENERATE_LABEL}{GENERATE_NOTE}"), width);
-    put(generate, Line::from(Span::styled(note, dim)));
+    let label = truncate_right(GENERATE_LABEL, width);
+    put(generate, Line::from(Span::styled(label, Style::new().fg(Color::Green))));
 }
 
 const ADD_LABEL: &str = "[ + Add Feature ]";
@@ -1754,6 +1769,8 @@ struct Browser {
     settings: SettingsState,
     /// The open Add Feature form; it covers the Features body.
     form: Option<FormState>,
+    /// The open generation preview; it covers the Features body.
+    preview: Option<PreviewState>,
     /// The ledger file does not exist yet (and nothing else is wrong).
     absent: bool,
 }
@@ -2055,6 +2072,44 @@ impl Browser {
         }
     }
 
+    /// Runs the generation agent and opens the preview of its proposal.
+    fn open_generation(&mut self, backend: &mut dyn BrowserBackend) {
+        self.notice = None;
+        match backend.generate_candidates() {
+            Ok(candidates) if candidates.is_empty() => {
+                self.notice = Some("The agent proposed no features".to_string());
+            }
+            Ok(candidates) => self.preview = Some(PreviewState::new(candidates)),
+            Err(reason) => self.notice = Some(format!("Generation failed: {}", printable(&reason))),
+        }
+    }
+
+    /// Adds the accepted candidates; `area` is the chrome body.
+    fn accept_preview(&mut self, backend: &mut dyn BrowserBackend, accepted: Vec<AcceptedCandidate>, area: Rect) {
+        match backend.accept_candidates(&accepted) {
+            FormSaveOutcome::Saved => {
+                self.preview = None;
+                self.reload(backend);
+                self.notice = None;
+                if let Some(first) = accepted.first() {
+                    self.reveal(&first.name, area);
+                }
+                self.notice.get_or_insert_with(|| format!("Added {} generated feature(s)", accepted.len()));
+            }
+            FormSaveOutcome::Invalid { reason } | FormSaveOutcome::Failed { reason } => {
+                if let Some(preview) = &mut self.preview {
+                    preview.error = Some(format!("Not saved: {reason}"));
+                }
+            }
+            FormSaveOutcome::Conflict { reason } => {
+                self.preview = None;
+                self.reload(backend);
+                let reason = printable(&reason);
+                self.notice = Some(format!("The feature file changed ({reason}); generate again"));
+            }
+        }
+    }
+
     fn open_settings(&mut self, backend: &mut dyn BrowserBackend) {
         self.settings = SettingsState {
             view: backend.load_settings(),
@@ -2070,6 +2125,11 @@ impl Browser {
         let area = render_chrome_tabs(frame, full, self.tab);
         if self.tab == Tab::Settings {
             render_settings(frame, area, &self.settings);
+            return;
+        }
+        if let Some(preview) = &self.preview {
+            preview.render(frame, body_area(area, self.notice.is_some()));
+            render_notice(frame, area, self.notice.as_deref());
             return;
         }
         if let Some(form) = &self.form {
@@ -2203,6 +2263,7 @@ where
             status: None,
         },
         form: None,
+        preview: None,
         absent: false,
     };
     browser.reload(backend);
@@ -2214,6 +2275,18 @@ where
         }
         match events.next_event()? {
             Event::Key(key) => {
+                if let Some(preview) = browser.preview.as_mut() {
+                    match preview.handle_key(key.code) {
+                        PreviewAction::Cancel => browser.preview = None,
+                        PreviewAction::Accept(accepted) => {
+                            let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                            browser.accept_preview(backend, accepted, area);
+                        }
+                        PreviewAction::None => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if let Some(form) = browser.form.as_mut() {
                     match form.handle_key(key) {
                         FormAction::Cancel => browser.form = None,
@@ -2247,6 +2320,10 @@ where
                         KeyCode::Esc => return Ok(()),
                         KeyCode::Char('a') if browser.absent => {
                             browser.open_add_form();
+                            dirty = true;
+                        }
+                        KeyCode::Char('g') if browser.absent => {
+                            browser.open_generation(backend);
                             dirty = true;
                         }
                         code if reload_requested(code) => {
@@ -2320,6 +2397,11 @@ where
                 }
                 if key.code == KeyCode::Char('a') && !browser.search.active {
                     browser.open_add_form();
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('g') && !browser.search.active {
+                    browser.open_generation(backend);
                     dirty = true;
                     continue;
                 }
@@ -2398,6 +2480,12 @@ where
                     continue;
                 }
                 let full = Rect::from((Position::ORIGIN, terminal.size()?));
+                if let Some(preview) = browser.preview.as_mut() {
+                    let body = body_area(chrome_body(full), browser.notice.is_some());
+                    preview.handle_mouse(body, mouse);
+                    dirty = true;
+                    continue;
+                }
                 if let Some(form) = browser.form.as_mut() {
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                         let body = body_area(chrome_body(full), browser.notice.is_some());
@@ -2442,13 +2530,15 @@ where
                 }
                 if browser.error.is_some() {
                     let press = Position::new(mouse.column, mouse.row);
-                    let (add, _) = empty_state_rects(chrome_body(full));
-                    if browser.absent
-                        && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                        && add.contains(press)
-                    {
-                        browser.open_add_form();
-                        dirty = true;
+                    let (add, generate) = empty_state_rects(chrome_body(full));
+                    if browser.absent && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        if add.contains(press) {
+                            browser.open_add_form();
+                            dirty = true;
+                        } else if generate.contains(press) {
+                            browser.open_generation(backend);
+                            dirty = true;
+                        }
                     }
                     continue;
                 }
