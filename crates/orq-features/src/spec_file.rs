@@ -79,41 +79,60 @@ pub fn spec_file_candidates(repo_root: &Path) -> Vec<PathBuf> {
 
 const CHOICE_MAX_DEPTH: usize = 4;
 const CHOICE_MAX_FILES: usize = 500;
+/// Directory entries examined in one listing; bounds the scan of a huge tree.
+const CHOICE_MAX_VISITS: usize = 10_000;
 
 /// Markdown files anywhere in the repository (a few levels deep) that may be
 /// offered as a spec, as paths relative to `repo_root`: `SPEC.md` first, the
 /// rest sorted. Hidden directories, `target` and `node_modules` are skipped,
 /// directory symlinks are never followed and files that resolve outside the
-/// repository are not offered.
+/// repository are not offered. The walk is in name order and bounded, so a
+/// very large tree yields the same, partial listing every time.
 pub fn spec_file_choices(repo_root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    collect_choices(repo_root, repo_root, 0, &mut found);
+    if resolve_spec_file(repo_root, "SPEC.md").is_ok() {
+        found.push("SPEC.md".to_string());
+    }
+    let mut visits = 0;
+    collect_choices(repo_root, repo_root, 0, &mut visits, &mut found);
     found.sort_by(|a, b| ((a != "SPEC.md"), a).cmp(&((b != "SPEC.md"), b)));
     found
 }
 
-fn collect_choices(root: &Path, dir: &Path, depth: usize, found: &mut Vec<String>) {
+fn collect_choices(root: &Path, dir: &Path, depth: usize, visits: &mut usize, found: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.filter_map(Result::ok) {
-        if found.len() >= CHOICE_MAX_FILES {
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if found.len() >= CHOICE_MAX_FILES || *visits >= CHOICE_MAX_VISITS {
             return;
         }
+        *visits += 1;
         let Ok(kind) = entry.file_type() else { continue };
         let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
         let path = entry.path();
         if kind.is_dir() {
             let skipped = name.starts_with('.') || name == "target" || name == "node_modules";
             if !skipped && depth + 1 < CHOICE_MAX_DEPTH {
-                collect_choices(root, &path, depth + 1, found);
+                collect_choices(root, &path, depth + 1, visits, found);
             }
-        } else if let Ok(relative) = path.strip_prefix(root) {
-            if let Some(text) = relative.to_str() {
-                if resolve_spec_file(root, text).is_ok() {
-                    found.push(text.to_string());
+        } else if is_markdown_name(&name) {
+            if let Ok(relative) = path.strip_prefix(root) {
+                if let Some(text) = relative.to_str() {
+                    if text != "SPEC.md" && resolve_spec_file(root, text).is_ok() {
+                        found.push(text.to_string());
+                    }
                 }
             }
         }
     }
+}
+
+fn is_markdown_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
 }

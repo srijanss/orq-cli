@@ -145,3 +145,71 @@ fn no_matching_file_starts_nothing() {
     assert!(backend.started.lock().unwrap().is_empty());
     assert!(has(&lines, "No matching"), "{lines:?}");
 }
+
+struct Failing(Option<String>);
+
+impl GenerationJob for Failing {
+    fn poll(&mut self) -> Option<Result<Vec<CandidateView>, String>> {
+        self.0.take().map(Err)
+    }
+    fn cancel(&mut self) {}
+}
+
+struct Flaky {
+    files: Vec<String>,
+    attempts: Arc<Mutex<u32>>,
+}
+
+impl BrowserBackend for Flaky {
+    fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
+        Err(LedgerErrorView { path: "/repo/.tdd-features.json".into(), reason: "file not found".into() })
+    }
+    fn promote(&mut self, _feature: &str) -> PromoteOutcome {
+        PromoteOutcome::Saved
+    }
+    fn ledger_absent(&self) -> bool {
+        true
+    }
+    fn spec_files(&mut self) -> Vec<String> {
+        self.files.clone()
+    }
+    fn start_generation_for(&mut self, _spec: &str, _focus: &str) -> Result<Box<dyn GenerationJob>, String> {
+        let mut attempts = self.attempts.lock().unwrap();
+        *attempts += 1;
+        match *attempts {
+            1 => Err("the spec file vanished".into()),
+            2 => Ok(Box::new(Failing(Some("agent exited 1".into())))),
+            _ => Ok(Box::new(Idle)),
+        }
+    }
+}
+
+fn flaky_screen(backend: &mut Flaky, events: Vec<Event>) -> Vec<String> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let (width, height) = (100u16, 24u16);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let mut script = Script(events.into());
+    let _ = run_browser(&mut terminal, &model, backend, &mut script);
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn a_startup_failure_closes_the_picker_shows_the_error_and_can_be_retried() {
+    let attempts = Arc::new(Mutex::new(0));
+    let mut backend = Flaky { files: vec!["SPEC.md".into()], attempts: Arc::clone(&attempts) };
+
+    let lines = flaky_screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Enter)]);
+
+    assert!(has(&lines, "the spec file vanished"), "{lines:?}");
+    assert!(!has(&lines, "Section"), "{lines:?}");
+
+    let lines = flaky_screen(
+        &mut backend,
+        vec![key(KeyCode::Char('g')), key(KeyCode::Enter), key(KeyCode::Char('g')), key(KeyCode::Enter)],
+    );
+    assert_eq!(*attempts.lock().unwrap(), 3);
+    assert!(has(&lines, "Generating"), "{lines:?}");
+}
