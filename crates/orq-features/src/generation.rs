@@ -16,6 +16,8 @@ pub enum GenerationError {
     /// Settings name no implementer harness/profile.
     NotConfigured,
     AgentNotFound { harness: String },
+    /// No built-in read-only argv exists for this harness; it is never started.
+    UnsupportedHarness { harness: String },
     Spawn(std::io::Error),
     AgentFailed { code: Option<i32> },
     TimedOut,
@@ -33,6 +35,10 @@ impl std::fmt::Display for GenerationError {
             GenerationError::AgentNotFound { harness } => write!(
                 f,
                 "agent harness `{harness}` was not found: install it or choose another harness in the Settings tab"
+            ),
+            GenerationError::UnsupportedHarness { harness } => write!(
+                f,
+                "agent harness `{harness}` has no read-only profile for spec generation; use claude or pi"
             ),
             GenerationError::Spawn(err) => write!(f, "could not start the agent: {err}"),
             GenerationError::AgentFailed { code: Some(code) } => {
@@ -105,9 +111,33 @@ fn stop(child: &mut std::process::Child) {
 /// directory the repository root, stdout stored in an owner-only artifact in
 /// `artifact_dir`. The agent is never given the artifact path to write to.
 pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, GenerationError> {
-    let mut child = Command::new(request.program)
-        .arg("--profile")
-        .arg(&request.profile.profile)
+    let mut command = Command::new(request.program);
+    command.arg("--profile").arg(&request.profile.profile);
+    // Built-in read-only argv; unknown harnesses fail closed.
+    let restrictions: &[&str] = match request.profile.harness.as_str() {
+        "claude" => &[
+            "--bare",
+            "--permission-mode",
+            "default",
+            "--allowedTools",
+            "Read Grep Glob",
+            "--disallowedTools",
+            "Bash Edit Write WebFetch",
+        ],
+        "pi" => &[
+            "--tools",
+            "read,grep,find,ls",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-context-files",
+            "--no-session",
+        ],
+        other => {
+            return Err(GenerationError::UnsupportedHarness { harness: other.to_string() });
+        }
+    };
+    let mut child = command
+        .args(restrictions)
         .arg("-p")
         .arg(prompt(request.spec))
         .current_dir(request.repo_root)
