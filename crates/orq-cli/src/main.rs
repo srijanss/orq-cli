@@ -531,11 +531,19 @@ fn parse_pi_models(table: &str) -> Vec<String> {
         .collect()
 }
 
+/// Reads at most `cap + 1` bytes; `None` when the read fails, so partial
+/// output is never mistaken for a whole listing.
+fn read_capped(reader: impl std::io::Read, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    reader.take(cap + 1).read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
 /// Runs `pi --list-models` (argv only). One deadline covers the output and the
 /// process's end; whatever is still running then is killed. Empty when it
 /// cannot be listed, in which case the picker falls back to free text.
 fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
-    use std::io::Read;
     const CAP: u64 = 256 * 1024;
     let Ok(mut child) = std::process::Command::new(program)
         .arg("--list-models")
@@ -551,12 +559,10 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
     };
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.take(CAP + 1).read_to_end(&mut out);
-        let _ = sender.send(out);
+        let _ = sender.send(read_capped(stdout, CAP));
     });
     let deadline = std::time::Instant::now() + timeout;
-    let mut output = None;
+    let mut output: Option<Option<Vec<u8>>> = None;
     let status = loop {
         if output.is_none() {
             output = receiver.try_recv().ok();
@@ -572,7 +578,9 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    let output = output.unwrap_or_default();
+    let Some(output) = output.flatten() else {
+        return Vec::new();
+    };
     if !status.success() || output.len() as u64 > CAP {
         return Vec::new();
     }
@@ -1150,6 +1158,24 @@ mod ledger_backend_tests {
     }
 
     #[test]
+    fn a_read_error_discards_the_partial_listing() {
+        struct Broken(bool);
+        impl std::io::Read for Broken {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::other("pipe broke"));
+                }
+                self.0 = true;
+                let chunk = &TABLE.as_bytes()[..buf.len().min(TABLE.len())];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        assert_eq!(super::read_capped(Broken(false), 1024), None);
+    }
+
+    #[test]
     fn a_successful_model_listing_is_returned() {
         let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
 
@@ -1160,7 +1186,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn harness_options_are_discovered_once_per_backend() {
-        let (_dir, path) = ledger(&["base"]);
+        let (_dir, path) = ledger(&["discovery"]);
         let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
         let mut backend = LedgerBackend::new(path);
         backend.harness_programs = Some(vec![("pi".into(), agent.path().to_path_buf())]);
