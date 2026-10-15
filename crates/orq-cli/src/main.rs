@@ -580,6 +580,61 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         }
     }
 
+    fn feature_fields(&mut self, name: &str) -> Option<orq_tui::FeatureFields> {
+        let entry = self.loaded.as_ref()?.entries().iter().find(|e| e.feature_name == name)?;
+        Some(orq_tui::FeatureFields {
+            name: entry.feature_name.clone(),
+            description: entry.description.clone(),
+            depends_on: entry.depends_on.clone(),
+            parallelizable: entry.parallelizable,
+            test_file: entry.test_file.clone(),
+            target_files: entry.target_files.clone(),
+        })
+    }
+
+    fn edit_feature(&mut self, fields: &orq_tui::FeatureFields) -> orq_tui::FormSaveOutcome {
+        use orq_features::{EditFieldsError, SaveError};
+        use orq_tui::FormSaveOutcome;
+        let Some(loaded) = self.loaded.take() else {
+            return FormSaveOutcome::Failed { reason: "ledger is not loaded".to_string() };
+        };
+        let Some(current) = loaded.entries().iter().find(|e| e.feature_name == fields.name).cloned() else {
+            self.loaded = Some(loaded);
+            return FormSaveOutcome::Failed { reason: format!("no feature named {}", fields.name) };
+        };
+        // Only what differs is sent; blank text leaves a field as it is.
+        let changed_text = |new: &Option<String>, old: &Option<String>| match new {
+            Some(value) if new != old => Some(value.clone()),
+            _ => None,
+        };
+        let edits = orq_features::FieldEdits {
+            description: changed_text(&fields.description, &current.description),
+            depends_on: (fields.depends_on != current.depends_on).then(|| fields.depends_on.clone()),
+            parallelizable: match fields.parallelizable {
+                Some(value) if Some(value) != current.parallelizable => Some(value),
+                _ => None,
+            },
+            test_file: changed_text(&fields.test_file, &current.test_file),
+            target_files: (!fields.target_files.is_empty() && fields.target_files != current.target_files)
+                .then(|| fields.target_files.clone()),
+        };
+        let outcome = match loaded.edit_fields(&fields.name, &edits) {
+            Ok(_) => FormSaveOutcome::Saved,
+            Err(err @ EditFieldsError::Invalid(_)) => FormSaveOutcome::Invalid { reason: err.to_string() },
+            Err(err @ EditFieldsError::Save(SaveError::Conflict)) => {
+                FormSaveOutcome::Conflict { reason: err.to_string() }
+            }
+            Err(err) => FormSaveOutcome::Failed { reason: err.to_string() },
+        };
+        // As for add: a refused save keeps its snapshot, anything else
+        // reloads against the file as it now is.
+        self.loaded = match outcome {
+            FormSaveOutcome::Invalid { .. } | FormSaveOutcome::Failed { .. } => Some(loaded),
+            _ => orq_features::LoadedLedger::load(&self.path).ok(),
+        };
+        outcome
+    }
+
     fn add_feature(&mut self, fields: &orq_tui::FeatureFields) -> orq_tui::FormSaveOutcome {
         use orq_features::{AppendError, SaveError};
         use orq_tui::FormSaveOutcome;

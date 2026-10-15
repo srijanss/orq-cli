@@ -1453,6 +1453,17 @@ pub trait BrowserBackend {
         false
     }
 
+    /// The editable fields of `name` as stored, or `None` when it cannot be
+    /// read (the edit form is then not opened).
+    fn feature_fields(&mut self, _name: &str) -> Option<FeatureFields> {
+        None
+    }
+
+    /// Changes the fields of an existing feature (`fields.name` picks it).
+    fn edit_feature(&mut self, _fields: &FeatureFields) -> FormSaveOutcome {
+        FormSaveOutcome::Failed { reason: "editing features is not available".into() }
+    }
+
     /// Appends a draft feature. Backends that cannot write say so.
     fn add_feature(&mut self, _fields: &FeatureFields) -> FormSaveOutcome {
         FormSaveOutcome::Failed { reason: "adding features is not available".into() }
@@ -1974,12 +1985,32 @@ impl Browser {
         self.notice = None;
     }
 
+    /// Opens the form on `name` (the open detail's feature, else the selected
+    /// row). Does nothing when the backend cannot supply its fields.
+    fn open_edit_form(&mut self, backend: &mut dyn BrowserBackend) {
+        let target = match &self.detail {
+            Some(open) => Some(open.row.clone()),
+            None => self.selected_row(),
+        };
+        let Some(row) = target else {
+            return;
+        };
+        let Some(current) = backend.feature_fields(&row.name) else {
+            return;
+        };
+        let candidates = self.entries.iter().map(|e| e.name.clone()).collect();
+        self.form = Some(FormState::new_edit(candidates, &current, &row.status));
+        self.notice = None;
+    }
+
     /// Saves the open form through `backend`. `area` is the chrome body.
     fn submit_form(&mut self, backend: &mut dyn BrowserBackend, area: Rect) {
         let Some(fields) = self.form.as_ref().map(FormState::fields) else {
             return;
         };
-        match backend.add_feature(&fields) {
+        let editing = self.form.as_ref().is_some_and(FormState::is_edit);
+        let outcome = if editing { backend.edit_feature(&fields) } else { backend.add_feature(&fields) };
+        match outcome {
             FormSaveOutcome::Saved => {
                 self.form = None;
                 self.reload(backend);
@@ -2246,6 +2277,10 @@ where
                             browser.reload(backend);
                             dirty = true;
                         }
+                        KeyCode::Char('e') => {
+                            browser.open_edit_form(backend);
+                            dirty = true;
+                        }
                         KeyCode::Down => dirty = browser.scroll_detail(text, 1),
                         KeyCode::Up => dirty = browser.scroll_detail(text, -1),
                         KeyCode::PageDown => dirty = browser.scroll_detail(text, text.height.max(1) as isize),
@@ -2275,6 +2310,11 @@ where
                         KeyCode::Enter => browser.choose_status(highlight),
                         _ => {}
                     }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('e') && !browser.search.active {
+                    browser.open_edit_form(backend);
                     dirty = true;
                     continue;
                 }

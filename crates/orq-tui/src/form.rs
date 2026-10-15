@@ -64,6 +64,9 @@ pub(crate) struct FormState {
     candidates: Vec<String>,
     chosen: HashSet<String>,
     focus: usize,
+    /// Set when editing: the feature's status, shown read-only. The name is
+    /// read-only too, and a parallelizable value that was set stays set.
+    edit_status: Option<String>,
     pub(crate) error: Option<String>,
 }
 
@@ -79,8 +82,36 @@ impl FormState {
             candidates,
             chosen: HashSet::new(),
             focus: NAME,
+            edit_status: None,
             error: None,
         }
+    }
+
+    /// A form for an existing feature: `current` prefills it and the feature
+    /// itself is not offered as its own dependency.
+    pub(crate) fn new_edit(candidates: Vec<String>, current: &FeatureFields, status: &str) -> FormState {
+        let mut candidates: Vec<String> = candidates.into_iter().filter(|c| *c != current.name).collect();
+        for dependency in &current.depends_on {
+            if !candidates.contains(dependency) {
+                candidates.push(dependency.clone());
+            }
+        }
+        FormState {
+            name: current.name.clone(),
+            description: current.description.clone().unwrap_or_default(),
+            parallelizable: current.parallelizable,
+            test_file: current.test_file.clone().unwrap_or_default(),
+            target_files: current.target_files.join(", "),
+            candidates,
+            chosen: current.depends_on.iter().cloned().collect(),
+            focus: NAME,
+            edit_status: Some(status.to_string()),
+            error: None,
+        }
+    }
+
+    pub(crate) fn is_edit(&self) -> bool {
+        self.edit_status.is_some()
     }
 
     fn save_row(&self) -> usize {
@@ -125,11 +156,16 @@ impl FormState {
 
     /// Default → Yes → No → Default.
     fn cycle(&mut self, forward: bool) {
+        let was_set = self.parallelizable.is_some();
         self.parallelizable = match (self.parallelizable, forward) {
             (None, true) | (Some(false), false) => Some(true),
             (Some(true), true) | (None, false) => Some(false),
             (Some(false), true) | (Some(true), false) => None,
         };
+        // An existing value can be flipped but not removed from the file.
+        if self.is_edit() && was_set && self.parallelizable.is_none() {
+            self.cycle(forward);
+        }
     }
 
     fn toggle_dependency(&mut self) {
@@ -175,6 +211,7 @@ impl FormState {
                 }
             }
             KeyCode::Char(' ') if self.text_mut().is_none() => return self.activate(),
+            KeyCode::Char(_) | KeyCode::Backspace if self.focus == NAME && self.is_edit() => {}
             KeyCode::Char(c) if !control && !c.is_control() => {
                 if let Some(text) = self.text_mut() {
                     text.push(c);
@@ -244,9 +281,13 @@ impl FormState {
             let marker = if focused { "> " } else { "  " };
             (format!("{marker}{label:<15}{}{cursor}", printable(value)), focused)
         };
+        let (title, status) = match &self.edit_status {
+            Some(status) => ("Edit Feature", format!("  Status: {} (read-only)", printable(status))),
+            None => ("Add Feature", "  Status: draft (fixed)".to_string()),
+        };
         let mut lines = vec![
-            ("Add Feature".to_string(), false),
-            ("  Status: draft (fixed)".to_string(), false),
+            (title.to_string(), false),
+            (status, false),
             field(NAME, "Name:", &self.name),
             field(DESCRIPTION, "Description:", &self.description),
         ];
