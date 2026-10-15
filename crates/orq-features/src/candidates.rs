@@ -57,15 +57,16 @@ pub fn review_candidates(existing: &[FeatureEntry], candidates: Vec<Candidate>) 
 
     // Unknown dependencies.
     let mut problems: Vec<Vec<CandidateProblem>> = vec![Vec::new(); candidates.len()];
+    // Dependency names already reported per candidate, so repeats stay O(1).
+    let mut reported: Vec<HashSet<&str>> = vec![HashSet::new(); candidates.len()];
     for (i, candidate) in candidates.iter().enumerate() {
         if verdicts[i] != Verdict::New {
             continue;
         }
         for dep in candidate.draft.depends_on.iter().flatten() {
             if !existing_names.contains(dep.as_str()) && !new_names.contains(dep.as_str()) {
-                let problem = CandidateProblem::UnknownDependency(dep.clone());
-                if !problems[i].contains(&problem) {
-                    problems[i].push(problem);
+                if reported[i].insert(dep.as_str()) {
+                    problems[i].push(CandidateProblem::UnknownDependency(dep.clone()));
                 }
             }
         }
@@ -91,9 +92,8 @@ pub fn review_candidates(existing: &[FeatureEntry], candidates: Vec<Candidate>) 
                 if j == i || problems[j].is_empty() {
                     continue;
                 }
-                let problem = CandidateProblem::UnknownDependency(dep.clone());
-                if !problems[i].contains(&problem) {
-                    problems[i].push(problem);
+                if reported[i].insert(dep.as_str()) {
+                    problems[i].push(CandidateProblem::UnknownDependency(dep.clone()));
                     changed = true;
                 }
             }
