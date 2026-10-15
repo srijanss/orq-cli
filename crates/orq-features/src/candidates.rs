@@ -80,21 +80,29 @@ pub fn review_candidates(existing: &[FeatureEntry], candidates: Vec<Candidate>) 
         .filter(|(i, _)| verdicts[*i] == Verdict::New)
         .map(|(i, c)| (c.draft.feature_name.as_str(), i))
         .collect();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (i, candidate) in candidates.iter().enumerate() {
-            if verdicts[i] != Verdict::New {
-                continue;
-            }
-            for dep in candidate.draft.depends_on.iter().flatten() {
-                let Some(&j) = by_name.get(dep.as_str()) else { continue };
-                if j == i || problems[j].is_empty() {
-                    continue;
+    // Reverse edges, so each node and edge is visited once.
+    let mut reverse: Vec<Vec<(usize, &str)>> = vec![Vec::new(); candidates.len()];
+    for (i, candidate) in candidates.iter().enumerate() {
+        if verdicts[i] != Verdict::New {
+            continue;
+        }
+        for dep in candidate.draft.depends_on.iter().flatten() {
+            if let Some(&j) = by_name.get(dep.as_str()) {
+                if j != i {
+                    reverse[j].push((i, dep.as_str()));
                 }
-                if reported[i].insert(dep.as_str()) {
-                    problems[i].push(CandidateProblem::UnknownDependency(dep.clone()));
-                    changed = true;
+            }
+        }
+    }
+    let mut queued: Vec<bool> = problems.iter().map(|p| !p.is_empty()).collect();
+    let mut work: Vec<usize> = (0..candidates.len()).filter(|&i| queued[i]).collect();
+    while let Some(j) = work.pop() {
+        for &(i, dep) in &reverse[j] {
+            if reported[i].insert(dep) {
+                problems[i].push(CandidateProblem::UnknownDependency(dep.to_string()));
+                if !queued[i] {
+                    queued[i] = true;
+                    work.push(i);
                 }
             }
         }
