@@ -551,8 +551,10 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 Ok(entries)
             }
             Err(err) => {
-                self.loaded = None;
                 self.absent = matches!(err, orq_features::LedgerError::Missing { .. });
+                // An absent file is snapshotted as "absent", so a file that
+                // appears before the first add is a conflict, not an append.
+                self.loaded = if self.absent { orq_features::LoadedLedger::load_or_new(&self.path).ok() } else { None };
                 Err(orq_tui::LedgerErrorView {
                     path: self.path.to_string_lossy().into_owned(),
                     reason: ledger_error_text(&err),
@@ -892,6 +894,46 @@ mod ledger_backend_tests {
         let outcome = backend.promote("a");
 
         assert!(matches!(outcome, PromoteOutcome::Failed { .. }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn fields(name: &str) -> orq_tui::FeatureFields {
+        orq_tui::FeatureFields { name: name.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_file_created_after_an_absent_load_is_a_conflict_not_an_append() {
+        let (dir, path) = ledger(&["x"]);
+        std::fs::remove_file(&path).unwrap();
+        let mut backend = LedgerBackend::new(path.clone());
+        assert!(backend.load().is_err());
+        let outside = r#"[{"featureName":"theirs","status":"draft"}]"#;
+        std::fs::write(&path, outside).unwrap();
+
+        let outcome = backend.add_feature(&fields("mine"));
+
+        assert!(matches!(outcome, orq_tui::FormSaveOutcome::Conflict { .. }), "{outcome:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), outside);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_bytes_alone_and_a_retry_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path.clone());
+        backend.load().unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let first = backend.add_feature(&fields("b"));
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(first, orq_tui::FormSaveOutcome::Failed { .. }), "{first:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let retry = backend.add_feature(&fields("b"));
+        assert!(matches!(retry, orq_tui::FormSaveOutcome::Saved), "{retry:?}");
+        assert!(std::fs::read_to_string(&path).unwrap().contains(r#""b""#));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
