@@ -155,8 +155,9 @@ impl GenerationJob for Failing {
     fn cancel(&mut self) {}
 }
 
+/// Attempt 1 fails to start, attempt 2 starts and then reports an error,
+/// every later attempt starts and keeps running.
 struct Flaky {
-    files: Vec<String>,
     attempts: Arc<Mutex<u32>>,
 }
 
@@ -171,7 +172,7 @@ impl BrowserBackend for Flaky {
         true
     }
     fn spec_files(&mut self) -> Vec<String> {
-        self.files.clone()
+        vec!["SPEC.md".into()]
     }
     fn start_generation_for(&mut self, _spec: &str, _focus: &str) -> Result<Box<dyn GenerationJob>, String> {
         let mut attempts = self.attempts.lock().unwrap();
@@ -184,32 +185,63 @@ impl BrowserBackend for Flaky {
     }
 }
 
-fn flaky_screen(backend: &mut Flaky, events: Vec<Event>) -> Vec<String> {
+fn flaky_screen(events: Vec<Event>) -> (Vec<String>, u32) {
+    let attempts = Arc::new(Mutex::new(0));
+    let mut backend = Flaky { attempts: Arc::clone(&attempts) };
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let (width, height) = (100u16, 24u16);
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut script = Script(events.into());
-    let _ = run_browser(&mut terminal, &model, backend, &mut script);
+    let _ = run_browser(&mut terminal, &model, &mut backend, &mut script);
     let buffer = terminal.backend().buffer();
-    (0..height)
+    let lines = (0..height)
         .map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
-        .collect()
+        .collect();
+    let count = *attempts.lock().unwrap();
+    (lines, count)
+}
+
+fn generate() -> Vec<Event> {
+    vec![key(KeyCode::Char('g')), key(KeyCode::Enter)]
 }
 
 #[test]
-fn a_startup_failure_closes_the_picker_shows_the_error_and_can_be_retried() {
-    let attempts = Arc::new(Mutex::new(0));
-    let mut backend = Flaky { files: vec!["SPEC.md".into()], attempts: Arc::clone(&attempts) };
+fn a_startup_failure_closes_the_picker_and_shows_the_error() {
+    let (lines, attempts) = flaky_screen(generate());
 
-    let lines = flaky_screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Enter)]);
-
+    assert_eq!(attempts, 1);
     assert!(has(&lines, "the spec file vanished"), "{lines:?}");
     assert!(!has(&lines, "Section"), "{lines:?}");
+}
 
-    let lines = flaky_screen(
-        &mut backend,
-        vec![key(KeyCode::Char('g')), key(KeyCode::Enter), key(KeyCode::Char('g')), key(KeyCode::Enter)],
-    );
-    assert_eq!(*attempts.lock().unwrap(), 3);
+#[test]
+fn a_startup_failure_can_be_retried_in_the_same_session() {
+    let mut events = generate();
+    events.extend(generate());
+    let (lines, attempts) = flaky_screen(events);
+
+    assert_eq!(attempts, 2);
+    assert!(!has(&lines, "the spec file vanished"), "{lines:?}");
+}
+
+#[test]
+fn a_job_that_reports_an_error_shows_it_with_the_picker_closed() {
+    let mut events = generate();
+    events.extend(generate());
+    let (lines, attempts) = flaky_screen(events);
+
+    assert_eq!(attempts, 2);
+    assert!(has(&lines, "agent exited 1"), "{lines:?}");
+    assert!(!has(&lines, "Section"), "{lines:?}");
+}
+
+#[test]
+fn after_a_failed_job_generation_can_be_started_again() {
+    let mut events = generate();
+    events.extend(generate());
+    events.extend(generate());
+    let (lines, attempts) = flaky_screen(events);
+
+    assert_eq!(attempts, 3);
     assert!(has(&lines, "Generating"), "{lines:?}");
 }

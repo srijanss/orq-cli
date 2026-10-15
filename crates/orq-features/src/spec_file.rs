@@ -86,8 +86,9 @@ const CHOICE_MAX_VISITS: usize = 10_000;
 /// offered as a spec, as paths relative to `repo_root`: `SPEC.md` first, the
 /// rest sorted. Hidden directories, `target` and `node_modules` are skipped,
 /// directory symlinks are never followed and files that resolve outside the
-/// repository are not offered. The walk is in name order and bounded, so a
-/// very large tree yields the same, partial listing every time.
+/// repository are not offered. The walk is in name order and bounded (at
+/// most `CHOICE_MAX_VISITS` entries per directory and overall), so a very
+/// large tree yields a partial listing rather than a long stall.
 pub fn spec_file_choices(repo_root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     if resolve_spec_file(repo_root, "SPEC.md").is_ok() {
@@ -103,7 +104,9 @@ fn collect_choices(root: &Path, dir: &Path, depth: usize, visits: &mut usize, fo
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    // At most the visit budget is read from one directory, so a directory
+    // of millions of entries is neither listed nor sorted in full.
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).take(CHOICE_MAX_VISITS).collect();
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         if found.len() >= CHOICE_MAX_FILES || *visits >= CHOICE_MAX_VISITS {
