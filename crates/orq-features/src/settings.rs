@@ -98,7 +98,8 @@ impl Settings {
         let io = |source| SettingsError::Io { path: self.path.clone(), source };
         // Serialise the compare and the write across processes by locking the
         // directory itself (no lock file); released when `_guard` drops.
-        let parent = self.path.parent().filter(|p| !p.as_os_str().is_empty());
+        // A bare relative path has an empty parent: that is the current directory.
+        let parent = self.path.parent().map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p });
         if let Some(parent) = parent {
             std::fs::create_dir_all(parent).map_err(io)?;
         }

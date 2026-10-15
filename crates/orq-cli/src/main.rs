@@ -492,13 +492,14 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         implementer: &orq_tui::AgentSetting,
         reviewer: &orq_tui::AgentSetting,
     ) -> Result<(), String> {
-        let mut settings = match self.settings_snapshot.take() {
-            Some(snapshot) => snapshot,
-            None => {
-                let path = self.settings_file()?;
-                orq_features::Settings::load(path).map_err(|e| e.to_string())?
-            }
-        };
+        // Work on the stored snapshot in place so no error path drops it: the
+        // baseline it was loaded against stays, and an outside edit is still
+        // a conflict on the next save.
+        if self.settings_snapshot.is_none() {
+            let path = self.settings_file()?;
+            self.settings_snapshot = Some(orq_features::Settings::load(path).map_err(|e| e.to_string())?);
+        }
+        let settings = self.settings_snapshot.as_mut().expect("snapshot was just ensured");
         let roles = [
             (orq_features::AgentRole::Implementer, implementer),
             (orq_features::AgentRole::Reviewer, reviewer),
@@ -510,11 +511,9 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             }
             settings.set_agent(role, &value.harness, &value.profile).map_err(|e| e.to_string())?;
         }
-        let saved = settings.save();
-        // Keep the snapshot even after a conflict: it stays stale until the
+        // The snapshot is kept even after a conflict: it stays stale until the
         // tab reloads, so the same stale values are never written later.
-        self.settings_snapshot = Some(settings);
-        saved.map_err(|error| match error {
+        settings.save().map_err(|error| match error {
             orq_features::SettingsError::Conflict { .. } => {
                 "settings.toml changed since the Settings tab was loaded; nothing was written, reopen the tab to reload"
                     .to_string()
@@ -607,6 +606,28 @@ mod ledger_backend_tests {
         backend.save_settings(&opus, &none).unwrap();
         backend.load_settings();
         let outside = "[implementer]\nharness = \"claude\"\nprofile = \"opus\"\n[reviewer]\nharness = \"pi\"\nprofile = \"gpt\"\n";
+        std::fs::write(&settings, outside).unwrap();
+
+        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), profile: "sonnet".into() };
+        let result = backend.save_settings(&sonnet, &none);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), outside);
+    }
+
+    #[test]
+    fn a_rejected_value_does_not_let_a_later_save_overwrite_an_outside_edit() {
+        let (dir, path) = ledger(&["rejected-then-stale"]);
+        let mut backend = LedgerBackend::new(path);
+        let settings = dir.join("cfg").join("orq").join("settings.toml");
+        backend.settings_path = Some(settings.clone());
+        let none = orq_tui::AgentSetting::default();
+        let opus = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        backend.save_settings(&opus, &none).unwrap();
+        backend.load_settings();
+        let bad = orq_tui::AgentSetting { harness: "bad\nname".into(), profile: "x".into() };
+        assert!(backend.save_settings(&bad, &none).is_err());
+        let outside = "[implementer]\nharness = \"pi\"\nprofile = \"gpt\"\n";
         std::fs::write(&settings, outside).unwrap();
 
         let sonnet = orq_tui::AgentSetting { harness: "claude".into(), profile: "sonnet".into() };
