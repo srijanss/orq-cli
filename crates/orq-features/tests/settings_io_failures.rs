@@ -12,7 +12,7 @@ fn dir(label: &str) -> std::path::PathBuf {
 #[test]
 fn a_path_that_is_a_directory_fails_to_load_with_io() {
     let root = dir("is-dir");
-    let path = root.join("settings.toml");
+    let path = root.join("config.toml");
     fs::create_dir(&path).unwrap();
 
     let error = Settings::load(&path).unwrap_err();
@@ -25,7 +25,7 @@ fn a_parent_replaced_by_a_file_after_load_fails_the_save() {
     let root = dir("parent-file");
     let parent = root.join("orq");
     fs::create_dir(&parent).unwrap();
-    let path = parent.join("settings.toml");
+    let path = parent.join("config.toml");
     let mut settings = Settings::load(&path).unwrap();
     settings.set("implementer", "harness", "claude");
     fs::remove_dir(&parent).unwrap();
@@ -42,7 +42,7 @@ fn a_parent_replaced_by_a_file_after_load_fails_the_save() {
 fn a_read_only_directory_fails_the_save_and_keeps_the_existing_file() {
     use std::os::unix::fs::PermissionsExt;
     let root = dir("read-only");
-    let path = root.join("settings.toml");
+    let path = root.join("config.toml");
     let original = "[implementer]\nharness = \"a\"\nprofile = \"b\"\n";
     fs::write(&path, original).unwrap();
     let mut settings = Settings::load(&path).unwrap();

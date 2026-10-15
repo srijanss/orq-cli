@@ -9,7 +9,7 @@ fn a_bare_relative_path_is_serialised_like_any_other() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::env::set_current_dir(&dir).unwrap();
-    std::fs::write("settings.toml", "[implementer]\nharness = \"base\"\nprofile = \"base\"\n").unwrap();
+    std::fs::write("config.toml", "[implementer]\nharness = \"base\"\nprofile = \"base\"\n").unwrap();
     let writers = 6;
     let barrier = Arc::new(Barrier::new(writers));
 
@@ -17,7 +17,7 @@ fn a_bare_relative_path_is_serialised_like_any_other() {
         .map(|n| {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let mut settings = Settings::load(std::path::Path::new("settings.toml")).unwrap();
+                let mut settings = Settings::load(std::path::Path::new("config.toml")).unwrap();
                 settings.set("implementer", "model", &format!("writer-{n}"));
                 barrier.wait();
                 settings.save()

@@ -7,7 +7,7 @@ fn path(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("orq-models-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir.join("settings.toml")
+    dir.join("config.toml")
 }
 
 fn model(harness: &str, name: &str) -> AgentProfile {

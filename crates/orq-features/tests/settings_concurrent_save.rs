@@ -8,7 +8,7 @@ fn of_several_writers_from_one_baseline_exactly_one_wins() {
         let dir = std::env::temp_dir().join(format!("orq-conc-{}-{round}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("settings.toml");
+        let path = dir.join("config.toml");
         std::fs::write(&path, "[implementer]\nharness = \"base\"\nprofile = \"base\"\n").unwrap();
         let writers = 6;
         let barrier = Arc::new(Barrier::new(writers));

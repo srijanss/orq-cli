@@ -197,7 +197,7 @@ fn esc_cancels_an_edit_without_saving() {
 #[test]
 fn a_failed_save_is_reported_inline_and_keeps_the_edit() {
     let mut backend = Fake::new();
-    backend.save_error = Some("settings.toml changed while it was being edited".into());
+    backend.save_error = Some("config.toml changed while it was being edited".into());
     let mut events = vec![key(KeyCode::Tab), key(KeyCode::Enter)];
     events.extend(typed("2"));
     events.push(key(KeyCode::Enter));
@@ -223,7 +223,7 @@ fn a_reviewer_overridden_by_tdd_config_is_flagged() {
 #[test]
 fn a_settings_file_problem_is_shown_and_not_hidden() {
     let mut backend = Fake::new();
-    backend.view.error = Some("settings.toml is not valid TOML".into());
+    backend.view.error = Some("config.toml is not valid TOML".into());
 
     let (_, lines) = run(&mut backend, vec![key(KeyCode::Tab)]);
 

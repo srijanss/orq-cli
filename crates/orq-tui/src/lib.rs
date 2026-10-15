@@ -1666,7 +1666,7 @@ pub enum Tab {
 }
 
 const SETTINGS_TAB: &str = "Settings";
-const SETTINGS_FILE: &str = "settings.toml";
+const SETTINGS_FILE: &str = "config.toml";
 const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · Esc cancel/back · Tab features ";
 /// Settings fields in display order: (role, field name).
 const SETTINGS_FIELDS: [(&str, &str); 4] =

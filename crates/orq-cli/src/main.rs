@@ -1112,7 +1112,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         // tab reloads, so the same stale values are never written later.
         settings.save().map_err(|error| match error {
             orq_features::SettingsError::Conflict { .. } => {
-                "settings.toml changed since the Settings tab was loaded; nothing was written, reopen the tab to reload"
+                "config.toml changed since the Settings tab was loaded; nothing was written, reopen the tab to reload"
                     .to_string()
             }
             other => other.to_string(),
@@ -1240,7 +1240,7 @@ mod ledger_backend_tests {
         let output = r#"[{"featureName":"base"},{"featureName":"a","parallelizable":true},{"featureName":"b","dependsOn":["a"]},{"featureName":"c","dependsOn":["ghost"]}]"#;
         let agent = orq_test_support::FakeAgent::builder().stdout(output).build();
         let mut backend = LedgerBackend::new(path.clone());
-        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         backend.program_override = Some(agent.path().to_path_buf());
         let none = orq_tui::AgentSetting::default();
         let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
@@ -1280,7 +1280,7 @@ mod ledger_backend_tests {
         std::fs::write(dir.join("docs/mvp2.md"), "# mvp2\n").unwrap();
         let agent = orq_test_support::FakeAgent::builder().stdout("[]").build();
         let mut backend = LedgerBackend::new(path.clone());
-        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         backend.program_override = Some(agent.path().to_path_buf());
         let none = orq_tui::AgentSetting::default();
         let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
@@ -1354,7 +1354,7 @@ mod ledger_backend_tests {
     fn settings_round_trip_through_the_backend_and_a_half_filled_role_is_refused() {
         let (dir, path) = ledger(&["s"]);
         let mut backend = LedgerBackend::new(path);
-        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         let implementer = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         let none = orq_tui::AgentSetting::default();
 
@@ -1375,7 +1375,7 @@ mod ledger_backend_tests {
         let text = r#"{"reviewers":{"default":{"reviewer":"pi","model":"gpt-6"},"allowedModels":["gpt-6"]}}"#;
         std::fs::write(&config, text).unwrap();
         let mut backend = LedgerBackend::new(path);
-        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         let none = orq_tui::AgentSetting::default();
         let reviewer = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         backend.save_settings(&none, &reviewer).unwrap();
@@ -1391,7 +1391,7 @@ mod ledger_backend_tests {
     fn saving_after_an_outside_edit_is_a_conflict_not_an_overwrite() {
         let (dir, path) = ledger(&["stale"]);
         let mut backend = LedgerBackend::new(path);
-        let settings = dir.join("cfg").join("orq").join("settings.toml");
+        let settings = dir.join("cfg").join("orq").join("config.toml");
         backend.settings_path = Some(settings.clone());
         let none = orq_tui::AgentSetting::default();
         let opus = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
@@ -1411,7 +1411,7 @@ mod ledger_backend_tests {
     fn a_rejected_value_does_not_let_a_later_save_overwrite_an_outside_edit() {
         let (dir, path) = ledger(&["rejected-then-stale"]);
         let mut backend = LedgerBackend::new(path);
-        let settings = dir.join("cfg").join("orq").join("settings.toml");
+        let settings = dir.join("cfg").join("orq").join("config.toml");
         backend.settings_path = Some(settings.clone());
         let none = orq_tui::AgentSetting::default();
         let opus = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };

@@ -5,15 +5,15 @@ use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::write_ledger_atomic;
 
-/// Where the user-level settings live: `$XDG_CONFIG_HOME/orq/settings.toml`,
-/// else `$HOME/.config/orq/settings.toml`. As the XDG spec requires, an empty
+/// Where the user-level settings live: `$XDG_CONFIG_HOME/orq/config.toml`,
+/// else `$HOME/.config/orq/config.toml`. As the XDG spec requires, an empty
 /// or relative `XDG_CONFIG_HOME` is ignored, and a relative `HOME` is no home.
 pub fn settings_path(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     let base = match absolute(xdg_config_home) {
         Some(xdg) => xdg.to_path_buf(),
         None => absolute(home)?.join(".config"),
     };
-    Some(base.join("orq").join("settings.toml"))
+    Some(base.join("orq").join("config.toml"))
 }
 
 fn absolute(value: Option<&OsStr>) -> Option<&Path> {
