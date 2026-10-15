@@ -12,6 +12,8 @@ pub struct FeatureEntry {
     pub target_files: Vec<String>,
     pub recorded_at: Option<String>,
     pub cycles_completed: Option<u64>,
+    /// Optional scheduling hint; absent (`None`) means exclusive to consumers.
+    pub parallelizable: Option<bool>,
 }
 
 /// A ledger status: one Orq knows, or the verbatim text of one it does not.
@@ -55,6 +57,13 @@ struct RawEntry {
     target_files: Vec<String>,
     recorded_at: Option<String>,
     cycles_completed: Option<u64>,
+    /// Kept as a raw value so `null` and wrong types can be told from absence.
+    #[serde(default, deserialize_with = "present_value")]
+    parallelizable: Option<serde_json::Value>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
 }
 
 /// A `RawEntry` that only accepts a JSON object: serde's derived struct
@@ -80,9 +89,29 @@ impl<'de> Deserialize<'de> for ObjectEntry {
     }
 }
 
+impl RawEntry {
+    /// The checked entry; the error names the feature and the offending field.
+    fn into_entry(self) -> Result<FeatureEntry, String> {
+        let parallelizable = match &self.parallelizable {
+            None => None,
+            Some(serde_json::Value::Bool(flag)) => Some(*flag),
+            Some(_) => {
+                return Err(format!(
+                    "feature \"{}\": parallelizable must be true or false when present",
+                    self.feature_name
+                ));
+            }
+        };
+        let mut entry = FeatureEntry::from(self);
+        entry.parallelizable = parallelizable;
+        Ok(entry)
+    }
+}
+
 impl From<RawEntry> for FeatureEntry {
     fn from(raw: RawEntry) -> Self {
         FeatureEntry {
+            parallelizable: None,
             feature_name: raw.feature_name,
             description: raw.description,
             depends_on: raw.depends_on,
@@ -98,7 +127,9 @@ impl From<RawEntry> for FeatureEntry {
 /// Parses the text of a `.tdd-features.json`, keeping entry order.
 pub fn parse_ledger(text: &str) -> Result<Vec<FeatureEntry>, serde_json::Error> {
     let raw: Vec<RawEntry> = serde_json::from_str(text)?;
-    Ok(raw.into_iter().map(FeatureEntry::from).collect())
+    raw.into_iter()
+        .map(|entry| entry.into_entry().map_err(<serde_json::Error as serde::de::Error>::custom))
+        .collect()
 }
 
 /// Why a ledger could not be loaded.
@@ -151,7 +182,9 @@ fn parse_ledger_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<Vec<Featur
             ));
         }
     }
-    Ok(raw.into_iter().map(|ObjectEntry(entry)| FeatureEntry::from(entry)).collect())
+    raw.into_iter()
+        .map(|ObjectEntry(entry)| entry.into_entry().map_err(|reason| malformed(reason, None)))
+        .collect()
 }
 
 /// Names what is wrong when the text is valid JSON but not a feature list:
