@@ -1447,6 +1447,12 @@ pub trait BrowserBackend {
         Err("settings are not available".into())
     }
 
+    /// Whether the last `load` failed only because the file does not exist
+    /// yet, which a first save creates. Any other failure is not writable.
+    fn ledger_absent(&self) -> bool {
+        false
+    }
+
     /// Appends a draft feature. Backends that cannot write say so.
     fn add_feature(&mut self, _fields: &FeatureFields) -> FormSaveOutcome {
         FormSaveOutcome::Failed { reason: "adding features is not available".into() }
@@ -1604,6 +1610,39 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
     rects
 }
 
+const EMPTY_TITLE: &str = "No feature file yet";
+const GENERATE_LABEL: &str = "[ Generate from Spec ]";
+const GENERATE_NOTE: &str = " not available yet";
+
+/// The Add and Generate buttons of the empty state, in `area` (the body).
+fn empty_state_rects(area: Rect) -> (Rect, Rect) {
+    let button = |row: u16, label: &str| {
+        let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX).min(area.width);
+        Rect::new(area.x, area.y.saturating_add(row).min(area.bottom()), width, 1)
+    };
+    (button(3, ADD_LABEL), button(5, GENERATE_LABEL))
+}
+
+/// The absent-file state: where the file will go and the two ways to start.
+/// Generating is a later step, so that button says so and does nothing.
+fn render_empty_state(frame: &mut Frame, area: Rect, error: &LedgerErrorView) {
+    let width = usize::from(area.width);
+    let dim = Style::new().fg(Color::DarkGray);
+    let (add, generate) = empty_state_rects(area);
+    let mut put = |rect: Rect, line: Line<'static>| {
+        if rect.y < area.bottom() {
+            frame.render_widget(Paragraph::new(line), Rect::new(area.x, rect.y, area.width, 1));
+        }
+    };
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    put(Rect::new(area.x, area.y, 0, 1), Line::from(Span::styled(EMPTY_TITLE, bold)));
+    let path = truncate_left(&printable(&error.path), width);
+    put(Rect::new(area.x, area.y + 1, 0, 1), Line::from(Span::styled(path, dim)));
+    put(add, Line::from(Span::styled(ADD_LABEL, Style::new().fg(Color::Green))));
+    let note = truncate_right(&format!("{GENERATE_LABEL}{GENERATE_NOTE}"), width);
+    put(generate, Line::from(Span::styled(note, dim)));
+}
+
 const ADD_LABEL: &str = "[ + Add Feature ]";
 
 /// The Add Feature button on the tab bar's middle row, right-aligned; `None`
@@ -1704,6 +1743,8 @@ struct Browser {
     settings: SettingsState,
     /// The open Add Feature form; it covers the Features body.
     form: Option<FormState>,
+    /// The ledger file does not exist yet (and nothing else is wrong).
+    absent: bool,
 }
 
 struct DetailView {
@@ -1838,6 +1879,12 @@ impl Browser {
         moved
     }
 
+    /// Reads the ledger again and notes whether it is merely absent.
+    fn reload(&mut self, backend: &mut dyn BrowserBackend) {
+        self.apply_load(backend.load());
+        self.absent = self.error.is_some() && backend.ledger_absent();
+    }
+
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
         match loaded {
             Ok(entries) => {
@@ -1892,7 +1939,7 @@ impl Browser {
                 }
             }
         }
-        self.apply_load(backend.load());
+        self.reload(backend);
         let mut parts = vec![format!("saved {saved}")];
         if !failed.is_empty() {
             let detail: Vec<String> = failed.iter().map(|(n, r)| format!("{n}: {r}")).collect();
@@ -1935,7 +1982,7 @@ impl Browser {
         match backend.add_feature(&fields) {
             FormSaveOutcome::Saved => {
                 self.form = None;
-                self.apply_load(backend.load());
+                self.reload(backend);
                 self.notice = None;
                 self.reveal(&fields.name, area);
             }
@@ -1946,7 +1993,7 @@ impl Browser {
             }
             FormSaveOutcome::Conflict { reason } => {
                 self.form = None;
-                self.apply_load(backend.load());
+                self.reload(backend);
                 let reason = printable(&reason);
                 self.notice = Some(format!("The feature file changed ({reason}); review it and try again"));
             }
@@ -2004,6 +2051,11 @@ impl Browser {
                 let style = Style::new().fg(Color::Green);
                 frame.render_widget(Paragraph::new(Span::styled(ADD_LABEL, style)), button);
             }
+        }
+        if let (Some(error), true) = (&self.error, self.absent) {
+            render_empty_state(frame, area, error);
+            render_notice(frame, area, self.notice.as_deref());
+            return;
         }
         if let Some(error) = &self.error {
             render_ledger_error_in(frame, area, model, error);
@@ -2120,8 +2172,9 @@ where
             status: None,
         },
         form: None,
+        absent: false,
     };
-    browser.apply_load(backend.load());
+    browser.reload(backend);
     let mut dirty = true;
     loop {
         if dirty {
@@ -2161,8 +2214,12 @@ where
                 if browser.error.is_some() {
                     match key.code {
                         KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('a') if browser.absent => {
+                            browser.open_add_form();
+                            dirty = true;
+                        }
                         code if reload_requested(code) => {
-                            browser.apply_load(backend.load());
+                            browser.reload(backend);
                             dirty = true;
                         }
                         _ => {}
@@ -2186,7 +2243,7 @@ where
                         }
                         code if reload_requested(code) => {
                             browser.notice = None;
-                            browser.apply_load(backend.load());
+                            browser.reload(backend);
                             dirty = true;
                         }
                         KeyCode::Down => dirty = browser.scroll_detail(text, 1),
@@ -2283,7 +2340,7 @@ where
                     browser.promote(backend, intent);
                 } else if reload_requested(key.code) && !browser.search.active {
                     browser.notice = None;
-                    browser.apply_load(backend.load());
+                    browser.reload(backend);
                 } else {
                     let body = body_area(area, browser.notice.is_some());
                     let (list, _, _) = list_layout(body, selected.as_ref(), browser.marked_drafts());
@@ -2344,6 +2401,15 @@ where
                     continue;
                 }
                 if browser.error.is_some() {
+                    let press = Position::new(mouse.column, mouse.row);
+                    let (add, _) = empty_state_rects(chrome_body(full));
+                    if browser.absent
+                        && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                        && add.contains(press)
+                    {
+                        browser.open_add_form();
+                        dirty = true;
+                    }
                     continue;
                 }
                 let area = chrome_body(full);

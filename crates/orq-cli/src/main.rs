@@ -500,6 +500,8 @@ fn ui(args: &[OsString]) -> ExitCode {
 struct LedgerBackend {
     path: PathBuf,
     loaded: Option<orq_features::LoadedLedger>,
+    /// The last load failed only because the file does not exist yet.
+    absent: bool,
     /// The user-level settings file, when `XDG_CONFIG_HOME` or `HOME` give one.
     settings_path: Option<PathBuf>,
     /// The settings as last loaded for the tab: saves are checked against
@@ -513,7 +515,7 @@ impl LedgerBackend {
             std::env::var_os("XDG_CONFIG_HOME").as_deref(),
             std::env::var_os("HOME").as_deref(),
         );
-        Self { path, loaded: None, settings_path, settings_snapshot: None }
+        Self { path, loaded: None, absent: false, settings_path, settings_snapshot: None }
     }
 
     fn settings_file(&self) -> Result<&Path, String> {
@@ -545,16 +547,22 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                     })
                     .collect();
                 self.loaded = Some(loaded);
+                self.absent = false;
                 Ok(entries)
             }
             Err(err) => {
                 self.loaded = None;
+                self.absent = matches!(err, orq_features::LedgerError::Missing { .. });
                 Err(orq_tui::LedgerErrorView {
                     path: self.path.to_string_lossy().into_owned(),
                     reason: ledger_error_text(&err),
                 })
             }
         }
+    }
+
+    fn ledger_absent(&self) -> bool {
+        self.absent
     }
 
     fn promote(&mut self, feature: &str) -> orq_tui::PromoteOutcome {
