@@ -89,12 +89,18 @@ fn quoted_value_is_secret(before: &str) -> bool {
     while !key_end.is_char_boundary(window) {
         window += 1;
     }
+    let clipped = window > 0;
     let key_end = &key_end[window..];
-    let start = key_end
+    let boundary = key_end
         .char_indices()
         .rev()
-        .find(|(_, c)| c.is_whitespace() || ",{[(".contains(*c))
-        .map_or(0, |(i, c)| i + c.len_utf8());
+        .find(|(_, c)| c.is_whitespace() || ",{[(".contains(*c));
+    // A key longer than the window cannot be inspected whole, so a quoted
+    // value after it is redacted rather than risk leaking a credential.
+    if clipped && boundary.is_none() {
+        return true;
+    }
+    let start = boundary.map_or(0, |(i, c)| i + c.len_utf8());
     let key = &key_end[start..];
     if !has_separator && !key.starts_with('-') {
         return false;
