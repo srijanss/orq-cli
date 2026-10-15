@@ -298,9 +298,14 @@ pub fn chrome_body(area: Rect) -> Rect {
 }
 
 /// The product header (title, static "ready" badge on the right) and the
-/// tab bar with only the Features tab, active in a rounded blue border.
-/// Returns the area left for the body.
+/// tab bar with the Features tab active. Returns the area left for the body.
 pub fn render_chrome(frame: &mut Frame, area: Rect) -> Rect {
+    render_chrome_tabs(frame, area, Tab::Features)
+}
+
+/// As `render_chrome`, with `active` drawn in the blue border and the other
+/// tab dimmed.
+pub fn render_chrome_tabs(frame: &mut Frame, area: Rect, active: Tab) -> Rect {
     let body = chrome_body(area);
     if body == area {
         return area;
@@ -316,17 +321,24 @@ pub fn render_chrome(frame: &mut Frame, area: Rect) -> Rect {
     ]);
     frame.render_widget(Paragraph::new(header), Rect::new(area.x, area.y, area.width, 1));
 
-    let tab_width = u16::try_from(FEATURES_TAB.len() + 4).unwrap_or(u16::MAX).min(area.width);
-    let tab = Rect::new(area.x, area.y + 1, tab_width, 3);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Blue));
-    frame.render_widget(Paragraph::new(format!(" {FEATURES_TAB} ")).block(block), tab);
+    for (tab, rect) in tab_rects(area) {
+        let (label, colour) = match tab {
+            Tab::Features => (FEATURES_TAB, Color::Blue),
+            Tab::Settings => (SETTINGS_TAB, Color::Blue),
+        };
+        let colour = if tab == active { colour } else { Color::DarkGray };
+        let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(colour));
+        frame.render_widget(Paragraph::new(format!(" {label} ")).block(block), rect);
+    }
 
-    let file = truncate_left(LEDGER_FILE, width.saturating_sub(FEATURES_TAB.len() + 1));
-    let gap = width.saturating_sub(FEATURES_TAB.len() + display_width(&file));
+    let (name, file) = match active {
+        Tab::Features => (FEATURES_TAB, LEDGER_FILE),
+        Tab::Settings => (SETTINGS_TAB, SETTINGS_FILE),
+    };
+    let file = truncate_left(file, width.saturating_sub(name.len() + 1));
+    let gap = width.saturating_sub(name.len() + display_width(&file));
     let title = Line::from(vec![
-        Span::styled(FEATURES_TAB, Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(name, Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(gap)),
         Span::styled(file, Style::new().fg(Color::DarkGray)),
     ]);
@@ -1419,6 +1431,194 @@ pub struct BrowserEntry {
 pub trait BrowserBackend {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView>;
     fn promote(&mut self, feature: &str) -> PromoteOutcome;
+
+    /// The user-level settings the Settings tab shows. Backends without
+    /// settings keep this default, which says so.
+    fn load_settings(&mut self) -> SettingsView {
+        SettingsView { error: Some("settings are not available".into()), ..SettingsView::default() }
+    }
+
+    /// Persists both roles; the reason is shown inline when it fails.
+    fn save_settings(&mut self, _implementer: &AgentSetting, _reviewer: &AgentSetting) -> Result<(), String> {
+        Err("settings are not available".into())
+    }
+}
+
+/// A harness and profile name, as typed in the Settings tab. Names only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentSetting {
+    pub harness: String,
+    pub profile: String,
+}
+
+/// What the Settings tab shows: the saved values and what the project's
+/// `.tdd-config.json` says over them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsView {
+    pub implementer: AgentSetting,
+    pub reviewer: AgentSetting,
+    /// The reviewer `.tdd-config.json` names, when it overrides the saved one.
+    pub reviewer_override: Option<String>,
+    /// Why the settings file could not be used, if it could not.
+    pub error: Option<String>,
+}
+
+/// The tabs of the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Features,
+    Settings,
+}
+
+const SETTINGS_TAB: &str = "Settings";
+const SETTINGS_FILE: &str = "settings.toml";
+const SETTINGS_HINT: &str = " ↑↓ move · Enter edit/save · Esc cancel/back · Tab features ";
+/// Settings fields in display order: (role, field name).
+const SETTINGS_FIELDS: [(&str, &str); 4] =
+    [("Implementer", "harness"), ("Implementer", "profile"), ("Reviewer", "harness"), ("Reviewer", "profile")];
+/// Body row of each field, relative to the top of the body.
+const SETTINGS_FIELD_ROWS: [u16; 4] = [1, 2, 4, 5];
+
+/// Strips what a terminal would interpret from text that came from a file.
+fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+struct SettingsState {
+    view: SettingsView,
+    selected: usize,
+    /// The text being typed into the selected field.
+    editing: Option<String>,
+    status: Option<String>,
+}
+
+impl SettingsState {
+    fn value(&self, field: usize) -> &str {
+        match field {
+            0 => &self.view.implementer.harness,
+            1 => &self.view.implementer.profile,
+            2 => &self.view.reviewer.harness,
+            _ => &self.view.reviewer.profile,
+        }
+    }
+
+    fn begin_edit(&mut self, field: usize) {
+        self.selected = field.min(SETTINGS_FIELDS.len() - 1);
+        self.editing = Some(self.value(self.selected).to_string());
+        self.status = None;
+    }
+
+    /// Saves the typed value; on failure the edit stays open with the reason.
+    fn commit(&mut self, backend: &mut dyn BrowserBackend) {
+        let Some(text) = self.editing.clone() else {
+            return;
+        };
+        let (mut implementer, mut reviewer) = (self.view.implementer.clone(), self.view.reviewer.clone());
+        match self.selected {
+            0 => implementer.harness = text,
+            1 => implementer.profile = text,
+            2 => reviewer.harness = text,
+            _ => reviewer.profile = text,
+        }
+        match backend.save_settings(&implementer, &reviewer) {
+            Ok(()) => {
+                self.view.implementer = implementer;
+                self.view.reviewer = reviewer;
+                self.editing = None;
+                self.status = Some("Saved".to_string());
+            }
+            Err(reason) => self.status = Some(format!("Not saved: {}", printable(&reason))),
+        }
+    }
+
+    /// Returns true when the key leaves the tab.
+    fn handle_key(&mut self, code: KeyCode, backend: &mut dyn BrowserBackend) -> bool {
+        match (&mut self.editing, code) {
+            (Some(_), KeyCode::Esc) => {
+                self.editing = None;
+                self.status = None;
+            }
+            (Some(_), KeyCode::Enter) => self.commit(backend),
+            (Some(text), KeyCode::Backspace) => {
+                text.pop();
+            }
+            (Some(text), KeyCode::Char(c)) if !c.is_control() => text.push(c),
+            (Some(_), _) => {}
+            (None, KeyCode::Esc | KeyCode::Tab) => return true,
+            (None, KeyCode::Down) => self.selected = (self.selected + 1).min(SETTINGS_FIELDS.len() - 1),
+            (None, KeyCode::Up) => self.selected = self.selected.saturating_sub(1),
+            (None, KeyCode::Enter) => self.begin_edit(self.selected),
+            (None, _) => {}
+        }
+        false
+    }
+
+    fn handle_mouse(&mut self, body: Rect, mouse: MouseEvent) {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        let hit = SETTINGS_FIELD_ROWS.iter().position(|&row| {
+            let rect = Rect::new(body.x, body.y.saturating_add(row), body.width, 1).intersection(body);
+            rect.contains((mouse.column, mouse.row).into())
+        });
+        if let Some(field) = hit {
+            self.begin_edit(field);
+        }
+    }
+}
+
+/// The rectangle of each tab in the tab bar of `area`; the Settings tab is
+/// left out when it does not fit. Empty when the chrome is not drawn.
+fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
+    if chrome_body(area) == area {
+        return Vec::new();
+    }
+    let width = |label: &str| u16::try_from(label.len() + 4).unwrap_or(u16::MAX);
+    let features = Rect::new(area.x, area.y + 1, width(FEATURES_TAB).min(area.width), 3);
+    let mut rects = vec![(Tab::Features, features)];
+    let settings_width = width(SETTINGS_TAB);
+    if features.right() + settings_width <= area.right() {
+        rects.push((Tab::Settings, Rect::new(features.right(), area.y + 1, settings_width, 3)));
+    }
+    rects
+}
+
+fn render_settings(frame: &mut Frame, body: Rect, state: &SettingsState) {
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut put = |row: u16, line: Line<'static>| {
+        if row < body.height {
+            let rect = Rect::new(body.x, body.y + row, body.width, 1);
+            frame.render_widget(Paragraph::new(line), rect);
+        }
+    };
+    let width = usize::from(body.width);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    put(0, Line::from(Span::styled(truncate_right(" Implementer", width), bold)));
+    put(3, Line::from(Span::styled(truncate_right(" Reviewer", width), bold)));
+    for (field, ((_, name), row)) in SETTINGS_FIELDS.iter().zip(SETTINGS_FIELD_ROWS).enumerate() {
+        let marker = if field == state.selected { ">" } else { " " };
+        let value = match (&state.editing, field == state.selected) {
+            (Some(text), true) => format!("{text}▏"),
+            _ => printable(state.value(field)),
+        };
+        let style = if field == state.selected { Style::new().fg(Color::White) } else { Style::new() };
+        let text = format!(" {marker} {name:<8} {value}");
+        put(row, Line::from(Span::styled(truncate_right(&text, width), style)));
+    }
+    if let Some(reviewer) = &state.view.reviewer_override {
+        let note = format!("   overridden by .tdd-config.json: {}", printable(reviewer));
+        put(6, Line::from(Span::styled(truncate_right(&note, width), Style::new().fg(Color::Yellow))));
+    }
+    if let Some(error) = &state.view.error {
+        let text = format!(" {}", printable(error));
+        put(7, Line::from(Span::styled(truncate_right(&text, width), Style::new().fg(Color::Red))));
+    }
+    if let Some(status) = &state.status {
+        put(8, Line::from(truncate_right(&format!(" {status}"), width)));
+    }
+    if body.height > 0 {
+        put(body.height - 1, Line::from(Span::styled(truncate_right(SETTINGS_HINT, width), dim)));
+    }
 }
 
 /// `orq ui`'s popup on the real terminal: the feature browser between `enter`
@@ -1468,6 +1668,8 @@ struct Browser {
     status_filter: Option<String>,
     /// The highlighted option while the dropdown is open.
     dropdown: Option<usize>,
+    tab: Tab,
+    settings: SettingsState,
 }
 
 struct DetailView {
@@ -1685,9 +1887,23 @@ impl Browser {
         self.notice = view.notice;
     }
 
+    fn open_settings(&mut self, backend: &mut dyn BrowserBackend) {
+        self.settings = SettingsState {
+            view: backend.load_settings(),
+            selected: 0,
+            editing: None,
+            status: None,
+        };
+        self.tab = Tab::Settings;
+    }
+
     fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
         let full = frame.area();
-        let area = render_chrome(frame, full);
+        let area = render_chrome_tabs(frame, full, self.tab);
+        if self.tab == Tab::Settings {
+            render_settings(frame, area, &self.settings);
+            return;
+        }
         if let Some(error) = &self.error {
             render_ledger_error_in(frame, area, model, error);
             render_notice(frame, area, self.notice.as_deref());
@@ -1795,6 +2011,13 @@ where
         marked: HashSet::new(),
         status_filter: None,
         dropdown: None,
+        tab: Tab::Features,
+        settings: SettingsState {
+            view: SettingsView::default(),
+            selected: 0,
+            editing: None,
+            status: None,
+        },
     };
     browser.apply_load(backend.load());
     let mut dirty = true;
@@ -1805,6 +2028,22 @@ where
         }
         match events.next_event()? {
             Event::Key(key) => {
+                if browser.tab == Tab::Settings {
+                    if browser.settings.handle_key(key.code, backend) {
+                        browser.tab = Tab::Features;
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Tab
+                    && !browser.search.active
+                    && browser.detail.is_none()
+                    && browser.dropdown.is_none()
+                {
+                    browser.open_settings(backend);
+                    dirty = true;
+                    continue;
+                }
                 if browser.error.is_some() {
                     match key.code {
                         KeyCode::Esc => return Ok(()),
@@ -1939,10 +2178,36 @@ where
                     mouse.kind,
                     MouseEventKind::Down(MouseButton::Left) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
                 );
-                if browser.error.is_some() || !acted_on {
+                if !acted_on {
                     continue;
                 }
-                let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                let full = Rect::from((Position::ORIGIN, terminal.size()?));
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let press = Position::new(mouse.column, mouse.row);
+                    let target = tab_rects(full).into_iter().find(|(_, rect)| rect.contains(press)).map(|(t, _)| t);
+                    match target {
+                        Some(Tab::Settings) if browser.tab != Tab::Settings => {
+                            browser.open_settings(backend);
+                            dirty = true;
+                            continue;
+                        }
+                        Some(Tab::Features) if browser.tab != Tab::Features => {
+                            browser.tab = Tab::Features;
+                            dirty = true;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if browser.tab == Tab::Settings {
+                    browser.settings.handle_mouse(chrome_body(full), mouse);
+                    dirty = true;
+                    continue;
+                }
+                if browser.error.is_some() {
+                    continue;
+                }
+                let area = chrome_body(full);
                 let body = body_area(area, browser.notice.is_some());
                 if let Some(open) = &browser.detail {
                     let row = open.row.clone();

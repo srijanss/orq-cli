@@ -371,12 +371,30 @@ fn ui(args: &[OsString]) -> ExitCode {
 struct LedgerBackend {
     path: PathBuf,
     loaded: Option<orq_features::LoadedLedger>,
+    /// The user-level settings file, when `XDG_CONFIG_HOME` or `HOME` give one.
+    settings_path: Option<PathBuf>,
 }
 
 impl LedgerBackend {
     fn new(path: PathBuf) -> Self {
-        Self { path, loaded: None }
+        let settings_path = orq_features::settings_path(
+            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        );
+        Self { path, loaded: None, settings_path }
     }
+
+    fn settings_file(&self) -> Result<&Path, String> {
+        self.settings_path
+            .as_deref()
+            .ok_or_else(|| "no settings location: set XDG_CONFIG_HOME or HOME to an absolute path".to_string())
+    }
+}
+
+fn agent_setting(profile: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
+    profile
+        .map(|p| orq_tui::AgentSetting { harness: p.harness, profile: p.profile })
+        .unwrap_or_default()
 }
 
 impl orq_tui::BrowserBackend for LedgerBackend {
@@ -421,6 +439,46 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             Err(err) => orq_tui::PromoteOutcome::Failed { reason: promote_error_text(&err, feature) },
         }
     }
+
+    fn load_settings(&mut self) -> orq_tui::SettingsView {
+        let failed = |error: String| orq_tui::SettingsView { error: Some(error), ..Default::default() };
+        let path = match self.settings_file() {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let settings = match orq_features::Settings::load(path) {
+            Ok(settings) => settings,
+            Err(error) => return failed(error.to_string()),
+        };
+        let role = |role| settings.agent(role).map(agent_setting);
+        match (role(orq_features::AgentRole::Implementer), role(orq_features::AgentRole::Reviewer)) {
+            (Ok(implementer), Ok(reviewer)) => {
+                orq_tui::SettingsView { implementer, reviewer, ..Default::default() }
+            }
+            (Err(error), _) | (_, Err(error)) => failed(error.to_string()),
+        }
+    }
+
+    fn save_settings(
+        &mut self,
+        implementer: &orq_tui::AgentSetting,
+        reviewer: &orq_tui::AgentSetting,
+    ) -> Result<(), String> {
+        let path = self.settings_file()?;
+        let mut settings = orq_features::Settings::load(path).map_err(|e| e.to_string())?;
+        let roles = [
+            (orq_features::AgentRole::Implementer, implementer),
+            (orq_features::AgentRole::Reviewer, reviewer),
+        ];
+        for (role, value) in roles {
+            // A role left empty stays unset rather than being written blank.
+            if value.harness.trim().is_empty() && value.profile.trim().is_empty() {
+                continue;
+            }
+            settings.set_agent(role, &value.harness, &value.profile).map_err(|e| e.to_string())?;
+        }
+        settings.save().map_err(|e| e.to_string())
+    }
 }
 
 /// What the popup should show for `cwd`: its project, or why there is none.
@@ -456,6 +514,24 @@ mod ledger_backend_tests {
             names.iter().map(|n| format!(r#"{{"featureName":"{n}","status":"draft"}}"#)).collect();
         std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn settings_round_trip_through_the_backend_and_a_half_filled_role_is_refused() {
+        let (dir, path) = ledger(&["s"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        let implementer = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        let none = orq_tui::AgentSetting::default();
+
+        backend.save_settings(&implementer, &none).unwrap();
+        let view = backend.load_settings();
+        assert_eq!(view.implementer, implementer);
+        assert_eq!(view.reviewer, none);
+        assert_eq!(view.error, None);
+
+        let half = orq_tui::AgentSetting { harness: "pi".into(), profile: String::new() };
+        assert!(backend.save_settings(&implementer, &half).is_err());
     }
 
     #[test]
