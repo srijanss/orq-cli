@@ -49,9 +49,9 @@ fn the_agent_gets_an_argument_vector_with_spec_profile_and_schema() {
 
     let run = agent.last_run().unwrap();
     assert_eq!(run.cwd.canonicalize().unwrap(), root.canonicalize().unwrap());
-    // The profile is a discrete argument, and the spec path (with shell
+    // The profile (the model) is a discrete argument, and the spec path (with shell
     // metacharacters) appears intact inside exactly one argument.
-    assert!(run.args.windows(2).any(|w| w == ["--profile", "writer"]), "{:?}", run.args);
+    assert!(run.args.windows(2).any(|w| w == ["--model", "writer"]), "{:?}", run.args);
     let prompt = run.args.iter().find(|a| a.contains("featureName")).expect("schema in prompt");
     assert!(prompt.contains(spec.to_str().unwrap()));
     assert!(prompt.contains("dependsOn"));
