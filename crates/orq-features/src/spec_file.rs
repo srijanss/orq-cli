@@ -76,3 +76,44 @@ pub fn spec_file_candidates(repo_root: &Path) -> Vec<PathBuf> {
     });
     found
 }
+
+const CHOICE_MAX_DEPTH: usize = 4;
+const CHOICE_MAX_FILES: usize = 500;
+
+/// Markdown files anywhere in the repository (a few levels deep) that may be
+/// offered as a spec, as paths relative to `repo_root`: `SPEC.md` first, the
+/// rest sorted. Hidden directories, `target` and `node_modules` are skipped,
+/// directory symlinks are never followed and files that resolve outside the
+/// repository are not offered.
+pub fn spec_file_choices(repo_root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    collect_choices(repo_root, repo_root, 0, &mut found);
+    found.sort_by(|a, b| ((a != "SPEC.md"), a).cmp(&((b != "SPEC.md"), b)));
+    found
+}
+
+fn collect_choices(root: &Path, dir: &Path, depth: usize, found: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if found.len() >= CHOICE_MAX_FILES {
+            return;
+        }
+        let Ok(kind) = entry.file_type() else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let path = entry.path();
+        if kind.is_dir() {
+            let skipped = name.starts_with('.') || name == "target" || name == "node_modules";
+            if !skipped && depth + 1 < CHOICE_MAX_DEPTH {
+                collect_choices(root, &path, depth + 1, found);
+            }
+        } else if let Ok(relative) = path.strip_prefix(root) {
+            if let Some(text) = relative.to_str() {
+                if resolve_spec_file(root, text).is_ok() {
+                    found.push(text.to_string());
+                }
+            }
+        }
+    }
+}

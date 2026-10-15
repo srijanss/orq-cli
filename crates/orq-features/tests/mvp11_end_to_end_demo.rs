@@ -64,6 +64,7 @@ fn a_feature_is_created_manually_and_from_a_spec_then_promoted_and_read_by_the_m
         spec: &repo.join("SPEC.md"),
         artifact_dir: &artifacts,
         timeout: Duration::from_secs(10),
+        focus: None,
     })
     .unwrap();
     let candidates = extract_candidates(&fs::read_to_string(artifact).unwrap()).unwrap();

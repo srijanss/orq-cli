@@ -24,6 +24,7 @@ fn a_flag_already_set_never_starts_the_agent() {
             spec: &spec,
             artifact_dir: &root.join("out"),
             timeout: Duration::from_secs(10),
+            focus: None,
         },
         &AtomicBool::new(true),
     );

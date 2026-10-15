@@ -66,6 +66,7 @@ fn cancel_run(label: &str, body: &str) -> (Result<PathBuf, GenerationError>, Des
             spec: &spec,
             artifact_dir: &artifacts,
             timeout: Duration::from_secs(60),
+            focus: None,
         },
         &cancel,
     );

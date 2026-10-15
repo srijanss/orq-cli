@@ -33,6 +33,7 @@ fn request<'a>(
         spec,
         artifact_dir: artifacts,
         timeout: Duration::from_secs(10),
+        focus: None,
     }
 }
 

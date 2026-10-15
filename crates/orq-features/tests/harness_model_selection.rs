@@ -22,6 +22,7 @@ fn args_for(harness: &str, model: &str) -> Vec<String> {
         spec: &spec,
         artifact_dir: &root.join("out"),
         timeout: Duration::from_secs(10),
+        focus: None,
     })
     .unwrap();
     agent.last_run().unwrap().args

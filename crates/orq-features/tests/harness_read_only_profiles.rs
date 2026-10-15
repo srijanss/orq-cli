@@ -26,6 +26,7 @@ fn run(harness: &str, label: &str) -> (Result<PathBuf, GenerationError>, FakeAge
         spec: &spec,
         artifact_dir: &artifacts,
         timeout: Duration::from_secs(10),
+        focus: None,
     });
     (result, agent)
 }

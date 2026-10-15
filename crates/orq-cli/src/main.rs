@@ -633,6 +633,7 @@ fn generate_reviewed(
             spec: &spec,
             artifact_dir: &artifact_dir,
             timeout: std::time::Duration::from_secs(600),
+            focus: None,
         };
         let artifact = orq_features::run_generation_cancellable(&request, cancel).map_err(|e| e.to_string())?;
         let text = std::fs::read_to_string(&artifact)

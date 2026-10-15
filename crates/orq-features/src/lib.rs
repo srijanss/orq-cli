@@ -253,7 +253,7 @@ mod validate;
 pub use validate::{validate_entries, ValidationError};
 
 mod spec_file;
-pub use spec_file::{resolve_spec_file, spec_file_candidates, SpecFileError};
+pub use spec_file::{resolve_spec_file, spec_file_candidates, spec_file_choices, SpecFileError};
 
 mod generation;
 pub use generation::{

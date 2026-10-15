@@ -25,6 +25,7 @@ fn run(program: &std::path::Path, label: &str, timeout: Duration) -> (Result<Pat
         spec: &spec,
         artifact_dir: &artifacts,
         timeout,
+        focus: None,
     });
     (result, artifacts)
 }

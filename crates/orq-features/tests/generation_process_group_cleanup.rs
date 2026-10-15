@@ -42,6 +42,7 @@ fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, Gene
         spec: &spec,
         artifact_dir: &root.join("out"),
         timeout,
+        focus: None,
     });
     let pid = fs::read_to_string(&pid_file).expect("the agent recorded its descendant").trim().to_string();
     (result, Descendant(pid))

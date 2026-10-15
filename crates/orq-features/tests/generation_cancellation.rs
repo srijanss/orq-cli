@@ -38,6 +38,7 @@ fn a_cancelled_generation_stops_the_agent_promptly_and_reports_it() {
             spec: &spec,
             artifact_dir: &artifacts,
             timeout: Duration::from_secs(60),
+            focus: None,
         },
         &cancel,
     );
@@ -63,6 +64,7 @@ fn an_unset_flag_does_not_disturb_a_normal_run() {
             spec: &spec,
             artifact_dir: &root.join("out"),
             timeout: Duration::from_secs(10),
+            focus: None,
         },
         &AtomicBool::new(false),
     );
