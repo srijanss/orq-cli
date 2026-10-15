@@ -117,12 +117,15 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
     let restrictions: &[&str] = match request.profile.harness.as_str() {
         "claude" => &[
             "--bare",
+            // `--tools` limits which tools exist at all; `--allowedTools`
+            // would only skip permission prompts, so it is not used.
+            "--tools",
+            "Read,Grep,Glob",
             "--permission-mode",
-            "default",
-            "--allowedTools",
-            "Read Grep Glob",
+            "plan",
+            "--strict-mcp-config",
             "--disallowedTools",
-            "Bash Edit Write WebFetch",
+            "Bash Edit Write WebFetch NotebookEdit Agent",
         ],
         "pi" => &[
             "--tools",

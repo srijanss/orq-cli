@@ -35,15 +35,18 @@ fn has_pair(args: &[String], flag: &str, value: &str) -> bool {
 }
 
 #[test]
-fn claude_runs_with_a_read_only_tool_allowlist_and_no_bypass() {
+fn claude_runs_with_only_read_tools_available_and_in_plan_mode() {
     let (result, agent) = run("claude", "claude");
     result.unwrap();
     let args = agent.last_run().unwrap().args;
 
-    assert!(has_pair(&args, "--allowedTools", "Read Grep Glob"), "{args:?}");
-    assert!(has_pair(&args, "--disallowedTools", "Bash Edit Write WebFetch"), "{args:?}");
+    // `--tools` limits what exists; `--allowedTools` only skips prompts.
+    assert!(has_pair(&args, "--tools", "Read,Grep,Glob"), "{args:?}");
+    assert!(has_pair(&args, "--permission-mode", "plan"), "{args:?}");
+    assert!(args.iter().any(|a| a == "--strict-mcp-config"), "{args:?}");
     assert!(args.iter().any(|a| a == "--bare"), "{args:?}");
-    assert!(args.iter().any(|a| a == "--permission-mode"), "{args:?}");
+    assert!(has_pair(&args, "--disallowedTools", "Bash Edit Write WebFetch NotebookEdit Agent"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--allowedTools"), "{args:?}");
     assert!(!args.iter().any(|a| a.contains("dangerously") || a == "bypassPermissions"), "{args:?}");
 }
 
