@@ -255,9 +255,13 @@ pub use validate::{validate_entries, ValidationError};
 mod spec_file;
 pub use spec_file::{resolve_spec_file, spec_file_candidates, spec_file_choices, SpecFileError};
 
+mod diagnostics;
+pub use diagnostics::{generation_log_dir, redact_secrets, write_generation_report, GenerationReport};
+
 mod generation;
 pub use generation::{
-    generation_artifact_dir, run_generation, run_generation_cancellable, GenerationError, GenerationRequest,
+    generation_artifact_dir, run_generation, run_generation_cancellable, run_generation_diagnosed, GenerationError,
+    GenerationRequest, RunDiagnostics, DIAGNOSTIC_BYTES,
 };
 
 mod extract;

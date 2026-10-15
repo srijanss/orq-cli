@@ -17,6 +17,7 @@ pub struct FakeAgent {
 
 pub struct FakeAgentBuilder {
     stdout: String,
+    stderr: String,
     exit_code: i32,
     hang: bool,
 }
@@ -25,6 +26,7 @@ impl FakeAgent {
     pub fn builder() -> FakeAgentBuilder {
         FakeAgentBuilder {
             stdout: String::new(),
+            stderr: String::new(),
             exit_code: 0,
             hang: false,
         }
@@ -57,6 +59,12 @@ impl FakeAgentBuilder {
         self
     }
 
+    /// Text written to standard error before the agent finishes.
+    pub fn stderr(mut self, text: &str) -> Self {
+        self.stderr = text.to_string();
+        self
+    }
+
     pub fn exit_code(mut self, code: i32) -> Self {
         self.exit_code = code;
         self
@@ -71,6 +79,7 @@ impl FakeAgentBuilder {
     pub fn build(self) -> FakeAgent {
         let dir = crate::private_dir("orq-fake-agent");
         fs::write(dir.join("stdout"), &self.stdout).expect("write stdout file");
+        fs::write(dir.join("stderr"), &self.stderr).expect("write stderr file");
 
         let script = dir.join("agent");
         let finish = if self.hang {
@@ -81,7 +90,7 @@ impl FakeAgentBuilder {
         // The script locates its own directory via $0, so no path is embedded
         // in shell source and nothing needs quoting.
         let body = format!(
-            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\ncat \"$dir/stdout\"\n{finish}\n",
+            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\ncat \"$dir/stdout\"\ncat \"$dir/stderr\" >&2\n{finish}\n",
         );
         fs::write(&script, body).expect("write fake agent script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake agent");

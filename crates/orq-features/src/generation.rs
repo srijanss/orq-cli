@@ -5,12 +5,59 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AgentProfile;
 
 /// Upper bound on what Orq keeps of an agent's output.
 const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How much of the agent's stderr tail and stdout head are kept for a report.
+pub const DIAGNOSTIC_BYTES: usize = 16 * 1024;
+
+/// What a run left behind, kept whether or not it succeeded. Raw text: it is
+/// redacted when it is written to a report.
+#[derive(Debug, Default, Clone)]
+pub struct RunDiagnostics {
+    pub stderr_tail: String,
+    pub stdout_head: String,
+    /// `exit status 3`, `terminated by signal 9`, `timed out`, ...
+    pub exit: String,
+    pub duration: Duration,
+    /// The agent's argument vector with the long prompt elided.
+    pub argv: Vec<String>,
+}
+
+/// Keeps only the last `DIAGNOSTIC_BYTES` of everything written to it.
+fn spawn_tail_reader(stderr: std::process::ChildStderr) -> Arc<Mutex<Vec<u8>>> {
+    let tail = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::clone(&tail);
+    std::thread::spawn(move || {
+        let mut stderr = stderr;
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let Ok(mut buf) = shared.lock() else { break };
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.len() > DIAGNOSTIC_BYTES {
+                let excess = buf.len() - DIAGNOSTIC_BYTES;
+                buf.drain(..excess);
+            }
+        }
+    });
+    tail
+}
+
+fn head_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(DIAGNOSTIC_BYTES)]).into_owned()
+}
+
+fn tail_text(tail: &Mutex<Vec<u8>>) -> String {
+    tail.lock().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+}
 
 #[derive(Debug)]
 pub enum GenerationError {
@@ -147,6 +194,45 @@ pub fn run_generation_cancellable(
     request: &GenerationRequest<'_>,
     cancel: &AtomicBool,
 ) -> Result<PathBuf, GenerationError> {
+    run_generation_diagnosed(request, cancel).0
+}
+
+/// As `run_generation_cancellable`, also returning what the agent printed and
+/// how it ended, for a failure report.
+pub fn run_generation_diagnosed(
+    request: &GenerationRequest<'_>,
+    cancel: &AtomicBool,
+) -> (Result<PathBuf, GenerationError>, RunDiagnostics) {
+    let started = Instant::now();
+    let mut diagnostics = RunDiagnostics::default();
+    let result = run_inner(request, cancel, &mut diagnostics);
+    diagnostics.duration = started.elapsed();
+    if diagnostics.exit.is_empty() {
+        diagnostics.exit = match &result {
+            Err(GenerationError::TimedOut) => "timed out; process group killed".to_string(),
+            Err(GenerationError::Cancelled) => "cancelled; process group killed".to_string(),
+            Err(GenerationError::OutputTooLarge) => "output too large; process group killed".to_string(),
+            Err(_) => "agent not run to completion".to_string(),
+            Ok(_) => "exit status 0".to_string(),
+        };
+    }
+    (result, diagnostics)
+}
+
+fn exit_text(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => format!("exit status {code}"),
+        (None, Some(signal)) => format!("terminated by signal {signal}"),
+        _ => "unknown exit".to_string(),
+    }
+}
+
+fn run_inner(
+    request: &GenerationRequest<'_>,
+    cancel: &AtomicBool,
+    diagnostics: &mut RunDiagnostics,
+) -> Result<PathBuf, GenerationError> {
     let mut command = Command::new(request.program);
     // The Settings model is passed with `--model`.
     command.arg("--model").arg(&request.model.model);
@@ -181,6 +267,12 @@ pub fn run_generation_cancellable(
     if cancel.load(Ordering::SeqCst) {
         return Err(GenerationError::Cancelled);
     }
+    diagnostics.argv = ["--model", request.model.model.as_str()]
+        .into_iter()
+        .chain(restrictions.iter().copied())
+        .chain(["-p", "<prompt elided>"])
+        .map(str::to_string)
+        .collect();
     let mut child = command
         .args(restrictions)
         .arg("-p")
@@ -188,7 +280,7 @@ pub fn run_generation_cancellable(
         .current_dir(request.repo_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         // Its own process group, so a timeout or overflow can end descendants too.
         .process_group(0)
         .spawn()
@@ -199,6 +291,7 @@ pub fn run_generation_cancellable(
             _ => GenerationError::Spawn(err),
         })?;
 
+    let stderr_tail = spawn_tail_reader(child.stderr.take().expect("piped stderr"));
     let stdout = child.stdout.take().expect("piped stdout");
     // The reader reports through a channel so the wait for it can be bounded:
     // a descendant that inherited stdout keeps the pipe open past the agent.
@@ -212,12 +305,14 @@ pub fn run_generation_cancellable(
     let deadline = Instant::now() + request.timeout;
     let mut output: Option<Vec<u8>> = None;
     let status = loop {
+        diagnostics.stderr_tail = tail_text(&stderr_tail);
         if cancel.load(Ordering::SeqCst) {
             stop(&mut child);
             return Err(GenerationError::Cancelled);
         }
         if output.is_none() {
             if let Ok(out) = receiver.try_recv() {
+                diagnostics.stdout_head = head_text(&out);
                 if out.len() as u64 > MAX_OUTPUT_BYTES {
                     stop(&mut child);
                     return Err(GenerationError::OutputTooLarge);
@@ -234,6 +329,7 @@ pub fn run_generation_cancellable(
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
+    diagnostics.exit = exit_text(&status);
     let output = match output {
         Some(output) => output,
         None => {
@@ -245,7 +341,10 @@ pub fn run_generation_cancellable(
                 }
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
-                    Ok(output) => break output,
+                    Ok(output) => {
+                        diagnostics.stdout_head = head_text(&output);
+                        break output;
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !remaining.is_zero() => {}
                     Err(_) => {
                         stop(&mut child);
@@ -255,8 +354,11 @@ pub fn run_generation_cancellable(
             }
         }
     };
-    // The agent is done; nothing it started may linger.
+    // The agent is done; nothing it started may linger. Give the stderr
+    // reader a moment to drain what the agent wrote last.
     kill_group(&child);
+    std::thread::sleep(Duration::from_millis(30));
+    diagnostics.stderr_tail = tail_text(&stderr_tail);
     if output.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(GenerationError::OutputTooLarge);
     }

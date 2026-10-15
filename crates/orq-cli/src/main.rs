@@ -515,6 +515,8 @@ struct LedgerBackend {
     staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
     /// Replaces the PATH lookup of the harness program (tests).
     program_override: Option<PathBuf>,
+    /// Replaces the XDG state lookup of the generation report directory (tests).
+    log_dir_override: Option<PathBuf>,
     /// Harness name and program pairs replacing the PATH lookup of the
     /// picker's discovery (tests).
     harness_programs: Option<Vec<(String, PathBuf)>>,
@@ -603,66 +605,133 @@ fn find_program(harness: &str) -> Option<PathBuf> {
     })
 }
 
+/// What a generation attempt knew, for the failure report.
+#[derive(Default)]
+struct ReportContext {
+    harness: String,
+    model: String,
+    spec: String,
+    focus: String,
+    program: String,
+    cwd: String,
+    diagnostics: orq_features::RunDiagnostics,
+}
+
 fn generate_reviewed(
+    ledger_path: &Path,
+    repo_root: Option<PathBuf>,
+    settings_file: Result<PathBuf, String>,
+    program_override: Option<PathBuf>,
+    log_dir: Option<PathBuf>,
+    cancel: &std::sync::atomic::AtomicBool,
+    choice: Option<(&str, &str)>,
+) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
+    let mut context = ReportContext::default();
+    let outcome = generate_inner(ledger_path, repo_root, settings_file, program_override, cancel, choice, &mut context);
+    let message = match outcome {
+        Ok(candidates) if !candidates.is_empty() => return Ok(candidates),
+        Ok(_) => "the agent returned 0 features".to_string(),
+        Err(message) => message,
+    };
+    // A cancel is the user's own doing; there is nothing to debug.
+    if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(message);
+    }
+    let Some(dir) = log_dir else {
+        return Err(format!("{message} (no report location: set XDG_STATE_HOME or HOME)"));
+    };
+    let report = orq_features::GenerationReport {
+        harness: context.harness,
+        model: context.model,
+        spec: context.spec,
+        focus: context.focus,
+        program: context.program,
+        argv: context.diagnostics.argv,
+        cwd: context.cwd,
+        exit: context.diagnostics.exit,
+        duration: context.diagnostics.duration,
+        stderr_tail: context.diagnostics.stderr_tail,
+        stdout_head: context.diagnostics.stdout_head,
+        error: message.clone(),
+    };
+    match orq_features::write_generation_report(&dir, &report) {
+        Ok(path) => Err(format!("{message} (details: {})", path.display())),
+        Err(err) => Err(format!("{message} (could not write a report: {err})")),
+    }
+}
+
+fn generate_inner(
     ledger_path: &Path,
     repo_root: Option<PathBuf>,
     settings_file: Result<PathBuf, String>,
     program_override: Option<PathBuf>,
     cancel: &std::sync::atomic::AtomicBool,
     choice: Option<(&str, &str)>,
+    context: &mut ReportContext,
 ) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
-        let repo_root = match repo_root.or_else(|| ledger_path.parent().map(Path::to_path_buf)) {
-            Some(root) => root,
-            None => return Err("the feature file has no directory".to_string()),
-        };
-        let (spec, focus) = match choice {
-            Some((spec, focus)) => (
-                orq_features::resolve_spec_file(&repo_root, spec).map_err(|e| e.to_string())?,
-                Some(focus).filter(|f| !f.trim().is_empty()),
-            ),
-            None => (
-                orq_features::spec_file_candidates(&repo_root)
-                    .into_iter()
-                    .next()
-                    .ok_or("no Markdown spec file was found at the repository root")?,
-                None,
-            ),
-        };
-        let settings = orq_features::Settings::load(&settings_file?).map_err(|e| e.to_string())?;
-        let model = settings
-            .generation_agent()
-            .map_err(|e| e.to_string())?
-            .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
-        let program = match &program_override {
-            Some(program) => program.clone(),
-            None => find_program(&model.harness).ok_or_else(|| {
-                orq_features::GenerationError::AgentNotFound { harness: model.harness.clone() }.to_string()
-            })?,
-        };
-        let artifact_dir = orq_features::generation_artifact_dir(
-            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
-            std::env::var_os("HOME").map(PathBuf::from),
-        )
-        .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
-        let request = orq_features::GenerationRequest {
-            program: &program,
-            model: &model,
-            repo_root: &repo_root,
-            spec: &spec,
-            artifact_dir: &artifact_dir,
-            timeout: std::time::Duration::from_secs(600),
-            focus,
-        };
-        let artifact = orq_features::run_generation_cancellable(&request, cancel).map_err(|e| e.to_string())?;
-        let text = std::fs::read_to_string(&artifact)
-            .map_err(|e| format!("could not read the agent output {}: {e}", artifact.display()))?;
-        let candidates = orq_features::extract_candidates(&text)
-            .map_err(|e| format!("{e} (agent output kept at {})", artifact.display()))?;
-        let existing = match orq_features::LoadedLedger::load_or_new(ledger_path) {
-            Ok(loaded) => loaded.entries().to_vec(),
-            Err(err) => return Err(ledger_error_text(&err)),
-        };
-        Ok(orq_features::review_candidates(&existing, candidates))
+    let repo_root = match repo_root.or_else(|| ledger_path.parent().map(Path::to_path_buf)) {
+        Some(root) => root,
+        None => return Err("the feature file has no directory".to_string()),
+    };
+    context.cwd = repo_root.display().to_string();
+    if let Some((spec, focus)) = choice {
+        context.spec = spec.to_string();
+        context.focus = focus.to_string();
+    }
+    let (spec, focus) = match choice {
+        Some((spec, focus)) => (
+            orq_features::resolve_spec_file(&repo_root, spec).map_err(|e| e.to_string())?,
+            Some(focus).filter(|f| !f.trim().is_empty()),
+        ),
+        None => (
+            orq_features::spec_file_candidates(&repo_root)
+                .into_iter()
+                .next()
+                .ok_or("no Markdown spec file was found at the repository root")?,
+            None,
+        ),
+    };
+    context.spec = spec.display().to_string();
+    let settings = orq_features::Settings::load(&settings_file?).map_err(|e| e.to_string())?;
+    let model = settings
+        .generation_agent()
+        .map_err(|e| e.to_string())?
+        .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
+    context.harness = model.harness.clone();
+    context.model = model.model.clone();
+    let program = match &program_override {
+        Some(program) => program.clone(),
+        None => find_program(&model.harness).ok_or_else(|| {
+            orq_features::GenerationError::AgentNotFound { harness: model.harness.clone() }.to_string()
+        })?,
+    };
+    context.program = program.display().to_string();
+    let artifact_dir = orq_features::generation_artifact_dir(
+        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+    .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
+    let request = orq_features::GenerationRequest {
+        program: &program,
+        model: &model,
+        repo_root: &repo_root,
+        spec: &spec,
+        artifact_dir: &artifact_dir,
+        timeout: std::time::Duration::from_secs(600),
+        focus,
+    };
+    let (result, diagnostics) = orq_features::run_generation_diagnosed(&request, cancel);
+    context.diagnostics = diagnostics;
+    let artifact = result.map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&artifact)
+        .map_err(|e| format!("could not read the agent output {}: {e}", artifact.display()))?;
+    let candidates = orq_features::extract_candidates(&text)
+        .map_err(|e| format!("{e} (agent output kept at {})", artifact.display()))?;
+    let existing = match orq_features::LoadedLedger::load_or_new(ledger_path) {
+        Ok(loaded) => loaded.entries().to_vec(),
+        Err(err) => return Err(ledger_error_text(&err)),
+    };
+    Ok(orq_features::review_candidates(&existing, candidates))
 }
 
         fn candidate_views(reviewed: &[orq_features::ReviewedCandidate]) -> Vec<orq_tui::CandidateView> {
@@ -761,6 +830,7 @@ impl LedgerBackend {
             settings_snapshot: None,
             staged: Default::default(),
             program_override: None,
+            log_dir_override: None,
             harness_programs: None,
             harness_cache: None,
         }
@@ -768,6 +838,16 @@ impl LedgerBackend {
 
     fn spec_root(&self) -> Option<PathBuf> {
         self.repo_root.clone().or_else(|| self.path.parent().map(Path::to_path_buf))
+    }
+
+    /// Where failure reports go: the XDG state directory unless overridden.
+    fn log_dir(&self) -> Option<PathBuf> {
+        self.log_dir_override.clone().or_else(|| {
+            orq_features::generation_log_dir(
+                std::env::var_os("XDG_STATE_HOME").map(PathBuf::from),
+                std::env::var_os("HOME").map(PathBuf::from),
+            )
+        })
     }
 
     fn settings_file(&self) -> Result<&Path, String> {
@@ -784,6 +864,7 @@ impl LedgerBackend {
         let repo_root = self.spec_root();
         let settings_file = self.settings_file().map(Path::to_path_buf);
         let program_override = self.program_override.clone();
+        let log_dir = self.log_dir();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
         let (sender, receiver) = mpsc::channel();
@@ -793,6 +874,7 @@ impl LedgerBackend {
                 repo_root,
                 settings_file,
                 program_override,
+                log_dir,
                 &flag,
                 choice.as_ref().map(|(spec, focus)| (spec.as_str(), focus.as_str())),
             ));
@@ -964,6 +1046,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             self.spec_root(),
             self.settings_file().map(Path::to_path_buf),
             self.program_override.clone(),
+            self.log_dir(),
             &std::sync::atomic::AtomicBool::new(false),
             None,
         )?;
@@ -1294,10 +1377,11 @@ mod ledger_backend_tests {
         std::fs::write(dir.join("SPEC.md"), "# spec\n").unwrap();
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         std::fs::write(dir.join("docs/mvp2.md"), "# mvp2\n").unwrap();
-        let agent = orq_test_support::FakeAgent::builder().stdout("[]").build();
+        let agent = orq_test_support::FakeAgent::builder().stdout(r#"[{"featureName":"one"}]"#).build();
         let mut backend = LedgerBackend::new(path.clone());
         backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         backend.program_override = Some(agent.path().to_path_buf());
+        backend.log_dir_override = Some(dir.join("logs"));
         let none = orq_tui::AgentSetting::default();
         let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
         backend.save_settings(&writer, &none).unwrap();
@@ -1330,11 +1414,12 @@ mod ledger_backend_tests {
         let work = dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("SPEC.md"), "# spec\n").unwrap();
-        let agent = orq_test_support::FakeAgent::builder().stdout("[]").build();
+        let agent = orq_test_support::FakeAgent::builder().stdout(r#"[{"featureName":"one"}]"#).build();
         let mut backend = LedgerBackend::new(path);
         backend.repo_root = Some(work.clone());
         backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
         backend.program_override = Some(agent.path().to_path_buf());
+        backend.log_dir_override = Some(dir.join("logs"));
         let none = orq_tui::AgentSetting::default();
         let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
         backend.save_settings(&writer, &none).unwrap();
@@ -1349,6 +1434,80 @@ mod ledger_backend_tests {
         };
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(agent.last_run().unwrap().cwd, work.canonicalize().unwrap_or(work));
+    }
+
+    fn run_to_end(backend: &mut LedgerBackend) -> Result<Vec<orq_tui::CandidateView>, String> {
+        let mut job = backend.start_generation_for("SPEC.md", "MVP2").unwrap();
+        loop {
+            if let Some(result) = job.poll() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn report_backend(
+        label: &str,
+        agent: &orq_test_support::FakeAgent,
+    ) -> (LedgerBackend, std::path::PathBuf) {
+        let (dir, path) = ledger(&[label]);
+        std::fs::write(dir.join("SPEC.md"), "# spec\n").unwrap();
+        let logs = dir.join("logs");
+        let mut backend = LedgerBackend::new(path);
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
+        backend.program_override = Some(agent.path().to_path_buf());
+        backend.log_dir_override = Some(logs.clone());
+        let none = orq_tui::AgentSetting::default();
+        let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
+        backend.save_settings(&writer, &none).unwrap();
+        (backend, logs)
+    }
+
+    fn reported_path(message: &str) -> std::path::PathBuf {
+        let (_, tail) = message.split_once("details: ").unwrap_or_else(|| panic!("no details in {message}"));
+        std::path::PathBuf::from(tail.trim_end_matches(')').trim())
+    }
+
+    #[test]
+    fn generation_report_is_written_and_named_when_the_agent_fails() {
+        let agent = orq_test_support::FakeAgent::builder()
+            .stderr("Not logged in\nANTHROPIC_API_KEY=sk-ant-abc123def456ghi789\n")
+            .exit_code(1)
+            .build();
+        let (mut backend, logs) = report_backend("report-fail", &agent);
+
+        let message = run_to_end(&mut backend).unwrap_err();
+
+        assert!(message.contains("the agent exited with status 1"), "{message}");
+        let path = reported_path(&message);
+        assert!(path.starts_with(&logs), "{path:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Not logged in"), "{text}");
+        assert!(text.contains("MVP2"), "{text}");
+        assert!(!text.contains("sk-ant-abc123def456ghi789"), "{text}");
+    }
+
+    #[test]
+    fn generation_report_explains_zero_features() {
+        let agent = orq_test_support::FakeAgent::builder().stdout("[]").stderr("model said nothing\n").build();
+        let (mut backend, _logs) = report_backend("report-zero", &agent);
+
+        let message = run_to_end(&mut backend).unwrap_err();
+
+        assert!(message.contains("the agent returned 0 features"), "{message}");
+        let text = std::fs::read_to_string(reported_path(&message)).unwrap();
+        assert!(text.contains("model said nothing"), "{text}");
+    }
+
+    #[test]
+    fn generation_report_is_written_when_the_output_is_not_json() {
+        let agent = orq_test_support::FakeAgent::builder().stdout("I could not read the file").build();
+        let (mut backend, _logs) = report_backend("report-garbled", &agent);
+
+        let message = run_to_end(&mut backend).unwrap_err();
+
+        let text = std::fs::read_to_string(reported_path(&message)).unwrap();
+        assert!(text.contains("I could not read the file"), "{text}");
     }
 
     fn worker(
