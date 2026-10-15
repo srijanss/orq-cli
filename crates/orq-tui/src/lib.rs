@@ -1460,6 +1460,12 @@ pub trait BrowserBackend {
         SettingsView { error: Some("settings are not available".into()), ..SettingsView::default() }
     }
 
+    /// Installed harnesses with their profile suggestions, for the Settings
+    /// tab's picker. Free text stays possible, so empty is acceptable.
+    fn harness_options(&mut self) -> Vec<HarnessOption> {
+        Vec::new()
+    }
+
     /// Persists both roles; the reason is shown inline when it fails.
     fn save_settings(&mut self, _implementer: &AgentSetting, _reviewer: &AgentSetting) -> Result<(), String> {
         Err("settings are not available".into())
@@ -1531,6 +1537,13 @@ pub struct AgentSetting {
     pub profile: String,
 }
 
+/// An installed harness and the profile names it can be offered with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarnessOption {
+    pub harness: String,
+    pub profiles: Vec<String>,
+}
+
 /// What the Settings tab shows: the saved values and what the project's
 /// `.tdd-config.json` says over them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1552,7 +1565,7 @@ pub enum Tab {
 
 const SETTINGS_TAB: &str = "Settings";
 const SETTINGS_FILE: &str = "settings.toml";
-const SETTINGS_HINT: &str = " ↑↓ move · Enter edit/save · Esc cancel/back · Tab features ";
+const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · Esc cancel/back · Tab features ";
 /// Settings fields in display order: (role, field name).
 const SETTINGS_FIELDS: [(&str, &str); 4] =
     [("Implementer", "harness"), ("Implementer", "profile"), ("Reviewer", "harness"), ("Reviewer", "profile")];
@@ -1567,6 +1580,8 @@ fn printable(text: &str) -> String {
 struct SettingsState {
     view: SettingsView,
     selected: usize,
+    /// Installed harnesses and profile suggestions; the picker's choices.
+    options: Vec<HarnessOption>,
     /// The text being typed into the selected field.
     editing: Option<String>,
     status: Option<String>,
@@ -1580,6 +1595,30 @@ impl SettingsState {
             2 => &self.view.reviewer.harness,
             _ => &self.view.reviewer.profile,
         }
+    }
+
+    /// Replaces the edited text with the next (or previous) suggestion.
+    fn pick(&mut self, forward: bool) {
+        let Some(current) = self.editing.clone() else {
+            return;
+        };
+        let choices: Vec<String> = if self.selected % 2 == 0 {
+            self.options.iter().map(|o| o.harness.clone()).collect()
+        } else {
+            let harness = if self.selected == 1 { &self.view.implementer.harness } else { &self.view.reviewer.harness };
+            self.options.iter().find(|o| &o.harness == harness).map(|o| o.profiles.clone()).unwrap_or_default()
+        };
+        if choices.is_empty() {
+            return;
+        }
+        let len = choices.len();
+        let next = match (choices.iter().position(|c| *c == current), forward) {
+            (Some(i), true) => (i + 1) % len,
+            (Some(i), false) => (i + len - 1) % len,
+            (None, true) => 0,
+            (None, false) => len - 1,
+        };
+        self.editing = Some(choices[next].clone());
     }
 
     fn begin_edit(&mut self, field: usize) {
@@ -1631,6 +1670,8 @@ impl SettingsState {
                 self.status = None;
             }
             (Some(_), KeyCode::Enter) => self.commit(backend),
+            (Some(_), KeyCode::Down) => self.pick(true),
+            (Some(_), KeyCode::Up) => self.pick(false),
             (Some(text), KeyCode::Backspace) => {
                 text.pop();
             }
@@ -2173,6 +2214,7 @@ impl Browser {
     fn open_settings(&mut self, backend: &mut dyn BrowserBackend) {
         self.settings = SettingsState {
             view: backend.load_settings(),
+            options: backend.harness_options(),
             selected: 0,
             editing: None,
             status: None,
@@ -2318,6 +2360,7 @@ where
         tab: Tab::Features,
         settings: SettingsState {
             view: SettingsView::default(),
+            options: Vec::new(),
             selected: 0,
             editing: None,
             status: None,

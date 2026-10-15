@@ -513,6 +513,54 @@ struct LedgerBackend {
     program_override: Option<PathBuf>,
 }
 
+/// `provider/model` names from `pi --list-models` output: a header row, then
+/// whitespace-separated rows whose first two columns are provider and model.
+fn parse_pi_models(table: &str) -> Vec<String> {
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            Some(format!("{}/{}", columns.next()?, columns.next()?))
+        })
+        .collect()
+}
+
+/// Runs `pi --list-models` (argv only, bounded in time and size); empty when
+/// it cannot be listed, in which case the picker falls back to free text.
+fn list_pi_models(program: &Path) -> Vec<String> {
+    use std::io::Read;
+    let Ok(mut child) = std::process::Command::new(program)
+        .arg("--list-models")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return Vec::new();
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.take(256 * 1024).read_to_string(&mut out);
+        let _ = sender.send(out);
+    });
+    match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(out) => {
+            let _ = child.wait();
+            parse_pi_models(&out)
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Vec::new()
+        }
+    }
+}
+
 /// The executable for `harness`: a bare name found on PATH, never a path.
 fn find_program(harness: &str) -> Option<PathBuf> {
     if harness.is_empty() || harness.contains('/') {
@@ -906,6 +954,21 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         outcome
     }
 
+    fn harness_options(&mut self) -> Vec<orq_tui::HarnessOption> {
+        let mut options = Vec::new();
+        if find_program("claude").is_some() {
+            // claude lists no models; these two aliases are offered, free text stays.
+            options.push(orq_tui::HarnessOption {
+                harness: "claude".into(),
+                profiles: vec!["opus".into(), "sonnet".into()],
+            });
+        }
+        if let Some(program) = find_program("pi") {
+            options.push(orq_tui::HarnessOption { harness: "pi".into(), profiles: list_pi_models(&program) });
+        }
+        options
+    }
+
     fn load_settings(&mut self) -> orq_tui::SettingsView {
         let failed = |error: String| orq_tui::SettingsView { error: Some(error), ..Default::default() };
         let path = match self.settings_file() {
@@ -1019,6 +1082,19 @@ mod ledger_backend_tests {
             names.iter().map(|n| format!(r#"{{"featureName":"{n}","status":"draft"}}"#)).collect();
         std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn pi_models_table_becomes_provider_slash_model_profiles() {
+        let table = "provider  model  context  max-out  thinking  images\n\
+                     claude-bridge  claude-fable-5  1M  64k  yes  yes\n\
+                     openai  gpt-6-astra  400k  128k  yes  no\n\
+                     broken\n";
+
+        assert_eq!(
+            super::parse_pi_models(table),
+            vec!["claude-bridge/claude-fable-5".to_string(), "openai/gpt-6-astra".to_string()]
+        );
     }
 
     #[test]
