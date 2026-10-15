@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -83,6 +84,23 @@ not read files outside the repository.",
     )
 }
 
+/// Sends SIGKILL to the agent's whole process group.
+fn kill_group(child: &std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: plain syscall on a pid we spawned as its own group leader.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+/// Ends the agent and its descendants, then reaps the agent.
+fn stop(child: &mut std::process::Child) {
+    kill_group(child);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Runs the configured agent non-interactively: argv only (no shell), working
 /// directory the repository root, stdout stored in an owner-only artifact in
 /// `artifact_dir`. The agent is never given the artifact path to write to.
@@ -96,6 +114,8 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // Its own process group, so a timeout or overflow can end descendants too.
+        .process_group(0)
         .spawn()
         .map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => GenerationError::AgentNotFound {
@@ -120,8 +140,7 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
         if output.is_none() {
             if let Ok(out) = receiver.try_recv() {
                 if out.len() as u64 > MAX_OUTPUT_BYTES {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop(&mut child);
                     return Err(GenerationError::OutputTooLarge);
                 }
                 output = Some(out);
@@ -130,8 +149,7 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
         match child.try_wait().map_err(GenerationError::Spawn)? {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(GenerationError::TimedOut);
             }
             None => std::thread::sleep(Duration::from_millis(20)),
@@ -141,9 +159,17 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
         Some(output) => output,
         None => {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            receiver.recv_timeout(remaining).map_err(|_| GenerationError::TimedOut)?
+            match receiver.recv_timeout(remaining) {
+                Ok(output) => output,
+                Err(_) => {
+                    stop(&mut child);
+                    return Err(GenerationError::TimedOut);
+                }
+            }
         }
     };
+    // The agent is done; nothing it started may linger.
+    kill_group(&child);
     if output.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(GenerationError::OutputTooLarge);
     }
