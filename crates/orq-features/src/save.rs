@@ -2,7 +2,10 @@ use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::{parse_ledger_bytes, write_ledger_atomic, FeatureEntry, LedgerError};
+use crate::{
+    parse_ledger, parse_ledger_bytes, validate_entries, write_ledger_atomic, FeatureDraft, FeatureEntry,
+    LedgerError, ValidationError,
+};
 
 /// A ledger together with the exact bytes it was read from, so a later save can
 /// tell whether anyone else changed the file in between.
@@ -14,6 +17,30 @@ pub struct LoadedLedger {
     /// The file did not exist when loaded, so a save must find it still absent.
     is_new: bool,
 }
+
+/// Why a feature could not be appended.
+#[derive(Debug)]
+pub enum AppendError {
+    /// The resulting array would be invalid; nothing was written.
+    Invalid(ValidationError),
+    /// The write did not happen.
+    Save(SaveError),
+}
+
+impl std::fmt::Display for AppendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppendError::Invalid(e) => write!(f, "{e}"),
+            AppendError::Save(SaveError::Conflict) => {
+                write!(f, "the ledger changed since it was loaded; reload and review before saving")
+            }
+            AppendError::Save(SaveError::Locked) => write!(f, "the ledger is locked by another process"),
+            AppendError::Save(SaveError::Io(e)) => write!(f, "could not write the ledger: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AppendError {}
 
 /// Why a save did not happen.
 #[derive(Debug)]
@@ -57,6 +84,35 @@ impl LoadedLedger {
     /// Whether the file was absent when loaded.
     pub fn is_new(&self) -> bool {
         self.is_new
+    }
+
+    /// Appends `draft` as a new last entry, after validating the whole
+    /// resulting array. Only the new entry's text is added: every byte of the
+    /// existing entries is kept, and an absent file is created as a one-entry
+    /// array. Returns the entry as saved.
+    pub fn append(&self, draft: &FeatureDraft) -> Result<FeatureEntry, AppendError> {
+        let entry_json = draft.to_json();
+        let new_entry = parse_ledger(&format!("[{entry_json}]"))
+            .ok()
+            .and_then(|mut v| v.pop())
+            .expect("a FeatureDraft always serialises to a valid entry");
+        let mut candidate = self.entries.clone();
+        candidate.push(new_entry.clone());
+        validate_entries(&candidate).map_err(AppendError::Invalid)?;
+
+        let text = std::str::from_utf8(&self.bytes).expect("a parsed ledger is UTF-8");
+        let contents = if self.is_new {
+            format!("[\n  {entry_json}\n]\n")
+        } else {
+            let close = text.rfind(']').expect("a parsed ledger ends with ]");
+            let last = text[..close].trim_end_matches(|c: char| c.is_whitespace()).len();
+            let separator = if text[..last].ends_with('[') { "\n  " } else { ",\n  " };
+            let tail = &text[last..];
+            // A one-line array keeps `]` where it was; a multi-line one keeps its own layout.
+            format!("{}{separator}{entry_json}{}", &text[..last], if tail.starts_with('\n') || tail.starts_with("\r") { tail } else { "\n]\n" })
+        };
+        self.save(&contents).map_err(AppendError::Save)?;
+        Ok(new_entry)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {

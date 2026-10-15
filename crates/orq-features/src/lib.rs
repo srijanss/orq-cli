@@ -229,7 +229,7 @@ mod write;
 pub use write::write_ledger_atomic;
 
 mod save;
-pub use save::{LoadedLedger, SaveError};
+pub use save::{AppendError, LoadedLedger, SaveError};
 
 mod settings;
 pub use settings::{settings_path, Settings, SettingsError};

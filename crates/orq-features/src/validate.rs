@@ -6,6 +6,8 @@ use crate::FeatureEntry;
 /// features involved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
+    /// A featureName that is empty or only whitespace.
+    BlankName,
     DuplicateName { name: String },
     MissingDependency { feature: String, missing: String },
     SelfDependency { feature: String },
@@ -16,6 +18,7 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ValidationError::BlankName => write!(f, "featureName must not be blank"),
             ValidationError::DuplicateName { name } => write!(f, "featureName \"{name}\" is repeated"),
             ValidationError::MissingDependency { feature, missing } => {
                 write!(f, "feature \"{feature}\" depends on \"{missing}\", which does not exist")
@@ -35,6 +38,9 @@ impl std::error::Error for ValidationError {}
 pub fn validate_entries(entries: &[FeatureEntry]) -> Result<(), ValidationError> {
     let mut seen = HashSet::new();
     for entry in entries {
+        if entry.feature_name.trim().is_empty() {
+            return Err(ValidationError::BlankName);
+        }
         if !seen.insert(entry.feature_name.as_str()) {
             return Err(ValidationError::DuplicateName { name: entry.feature_name.clone() });
         }
