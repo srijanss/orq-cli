@@ -507,6 +507,22 @@ struct LedgerBackend {
     /// The settings as last loaded for the tab: saves are checked against
     /// this snapshot, so an outside edit is a conflict, not an overwrite.
     settings_snapshot: Option<orq_features::Settings>,
+    /// The last generated proposal, kept so accepting names what was reviewed.
+    staged: Vec<orq_features::ReviewedCandidate>,
+    /// Replaces the PATH lookup of the harness program (tests).
+    program_override: Option<PathBuf>,
+}
+
+/// The executable for `harness`: a bare name found on PATH, never a path.
+fn find_program(harness: &str) -> Option<PathBuf> {
+    if harness.is_empty() || harness.contains('/') {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(harness)).find(|candidate| {
+        use std::os::unix::fs::PermissionsExt;
+        candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
 }
 
 impl LedgerBackend {
@@ -515,7 +531,15 @@ impl LedgerBackend {
             std::env::var_os("XDG_CONFIG_HOME").as_deref(),
             std::env::var_os("HOME").as_deref(),
         );
-        Self { path, loaded: None, absent: false, settings_path, settings_snapshot: None }
+        Self {
+            path,
+            loaded: None,
+            absent: false,
+            settings_path,
+            settings_snapshot: None,
+            staged: Vec::new(),
+            program_override: None,
+        }
     }
 
     fn settings_file(&self) -> Result<&Path, String> {
@@ -675,6 +699,124 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         outcome
     }
 
+    fn generate_candidates(&mut self) -> Result<Vec<orq_tui::CandidateView>, String> {
+        use orq_features::{CandidateProblem, Verdict};
+        use orq_tui::{CandidateKind, CandidateView};
+        self.staged.clear();
+        let repo_root = self.path.parent().ok_or("the feature file has no directory")?.to_path_buf();
+        let spec = orq_features::spec_file_candidates(&repo_root)
+            .into_iter()
+            .next()
+            .ok_or("no Markdown spec file was found at the repository root")?;
+        let settings = orq_features::Settings::load(self.settings_file()?).map_err(|e| e.to_string())?;
+        let profile = settings
+            .generation_agent()
+            .map_err(|e| e.to_string())?
+            .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
+        let program = match &self.program_override {
+            Some(program) => program.clone(),
+            None => find_program(&profile.harness).ok_or_else(|| {
+                orq_features::GenerationError::AgentNotFound { harness: profile.harness.clone() }.to_string()
+            })?,
+        };
+        let artifact_dir = orq_features::generation_artifact_dir(
+            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        )
+        .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
+        let request = orq_features::GenerationRequest {
+            program: &program,
+            profile: &profile,
+            repo_root: &repo_root,
+            spec: &spec,
+            artifact_dir: &artifact_dir,
+            timeout: std::time::Duration::from_secs(600),
+        };
+        let artifact = orq_features::run_generation(&request).map_err(|e| e.to_string())?;
+        let text = std::fs::read_to_string(&artifact)
+            .map_err(|e| format!("could not read the agent output {}: {e}", artifact.display()))?;
+        let candidates = orq_features::extract_candidates(&text)
+            .map_err(|e| format!("{e} (agent output kept at {})", artifact.display()))?;
+        let existing = match orq_features::LoadedLedger::load_or_new(&self.path) {
+            Ok(loaded) => loaded.entries().to_vec(),
+            Err(err) => return Err(ledger_error_text(&err)),
+        };
+        let reviewed = orq_features::review_candidates(&existing, candidates);
+        let views = reviewed
+            .iter()
+            .map(|r| {
+                let draft = &r.candidate.draft;
+                let kind = match &r.verdict {
+                    Verdict::New => CandidateKind::New,
+                    Verdict::DuplicateOfExisting => CandidateKind::Duplicate("already in the feature file".into()),
+                    Verdict::DuplicateInBatch => CandidateKind::Duplicate("repeated in this output".into()),
+                    Verdict::Invalid(problems) => CandidateKind::Invalid(
+                        problems
+                            .iter()
+                            .map(|p| match p {
+                                CandidateProblem::UnknownDependency(dep) => format!("depends on unknown \"{dep}\""),
+                                CandidateProblem::Cycle => "dependency cycle".to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                };
+                CandidateView {
+                    name: draft.feature_name.clone(),
+                    description: draft.description.clone(),
+                    depends_on: draft.depends_on.clone().unwrap_or_default(),
+                    kind,
+                    suggests_parallel: r.suggests_parallel,
+                    ignored_fields: r.candidate.ignored_fields.clone(),
+                }
+            })
+            .collect();
+        self.staged = reviewed;
+        Ok(views)
+    }
+
+    fn accept_candidates(&mut self, accepted: &[orq_tui::AcceptedCandidate]) -> orq_tui::FormSaveOutcome {
+        use orq_features::{AppendError, SaveError, Verdict};
+        use orq_tui::FormSaveOutcome;
+        let mut drafts = Vec::new();
+        for pick in accepted {
+            let staged = self
+                .staged
+                .iter()
+                .find(|r| r.verdict == Verdict::New && r.candidate.draft.feature_name == pick.name);
+            let Some(staged) = staged else {
+                return FormSaveOutcome::Failed { reason: format!("{} is not a new generated candidate", pick.name) };
+            };
+            let mut draft = staged.candidate.draft.clone();
+            // Only a kept suggestion is written; anything else stays absent.
+            draft.parallelizable = pick.parallelizable.filter(|_| staged.suggests_parallel);
+            drafts.push(draft);
+        }
+        let loaded = match self.loaded.take() {
+            Some(loaded) => loaded,
+            None => match orq_features::LoadedLedger::load_or_new(&self.path) {
+                Ok(loaded) => loaded,
+                Err(err) => return FormSaveOutcome::Failed { reason: ledger_error_text(&err) },
+            },
+        };
+        let outcome = match loaded.append_many(&drafts) {
+            Ok(_) => FormSaveOutcome::Saved,
+            Err(err @ AppendError::Invalid(_)) => FormSaveOutcome::Invalid { reason: err.to_string() },
+            Err(err @ AppendError::Save(SaveError::Conflict)) => {
+                FormSaveOutcome::Conflict { reason: err.to_string() }
+            }
+            Err(err) => FormSaveOutcome::Failed { reason: err.to_string() },
+        };
+        self.loaded = match outcome {
+            FormSaveOutcome::Invalid { .. } | FormSaveOutcome::Failed { .. } => Some(loaded),
+            _ => {
+                self.staged.clear();
+                orq_features::LoadedLedger::load(&self.path).ok()
+            }
+        };
+        outcome
+    }
+
     fn load_settings(&mut self) -> orq_tui::SettingsView {
         let failed = |error: String| orq_tui::SettingsView { error: Some(error), ..Default::default() };
         let path = match self.settings_file() {
@@ -788,6 +930,46 @@ mod ledger_backend_tests {
             names.iter().map(|n| format!(r#"{{"featureName":"{n}","status":"draft"}}"#)).collect();
         std::fs::write(&path, format!("[{}]", entries.join(","))).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn generated_candidates_are_reviewed_and_accepted_in_one_save() {
+        use orq_tui::{AcceptedCandidate, CandidateKind, FormSaveOutcome};
+        let (dir, path) = ledger(&["base"]);
+        std::fs::write(dir.join("SPEC.md"), "# spec\n").unwrap();
+        let output = r#"[{"featureName":"base"},{"featureName":"a","parallelizable":true},{"featureName":"b","dependsOn":["a"]},{"featureName":"c","dependsOn":["ghost"]}]"#;
+        let agent = orq_test_support::FakeAgent::builder().stdout(output).build();
+        let mut backend = LedgerBackend::new(path.clone());
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
+        backend.program_override = Some(agent.path().to_path_buf());
+        let none = orq_tui::AgentSetting::default();
+        let writer = orq_tui::AgentSetting { harness: "claude".into(), profile: "writer".into() };
+        backend.save_settings(&writer, &none).unwrap();
+        // The cache is chosen from XDG_CACHE_HOME or HOME; the test only
+        // needs the agent to run, so it relies on whichever is set.
+        let views = match backend.generate_candidates() {
+            Ok(views) => views,
+            Err(reason) => panic!("generation failed: {reason}"),
+        };
+        assert_eq!(views.len(), 4);
+        assert!(matches!(views[0].kind, CandidateKind::Duplicate(_)));
+        assert_eq!(views[1].kind, CandidateKind::New);
+        assert!(views[1].suggests_parallel);
+        assert!(matches!(views[3].kind, CandidateKind::Invalid(_)));
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let refused = backend.accept_candidates(&[AcceptedCandidate { name: "c".into(), parallelizable: None }]);
+        assert!(matches!(refused, FormSaveOutcome::Failed { .. }));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        let saved = backend.accept_candidates(&[
+            AcceptedCandidate { name: "a".into(), parallelizable: Some(true) },
+            AcceptedCandidate { name: "b".into(), parallelizable: None },
+        ]);
+        assert!(matches!(saved, FormSaveOutcome::Saved));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""featureName":"a""#) && text.contains(r#""parallelizable":true"#));
+        assert_eq!(orq_features::load_ledger(&path).unwrap().len(), 3);
     }
 
     #[test]

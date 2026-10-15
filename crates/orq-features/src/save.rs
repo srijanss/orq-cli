@@ -136,28 +136,48 @@ impl LoadedLedger {
     /// existing entries is kept, and an absent file is created as a one-entry
     /// array. Returns the entry as saved.
     pub fn append(&self, draft: &FeatureDraft) -> Result<FeatureEntry, AppendError> {
-        let entry_json = draft.to_json();
-        let new_entry = parse_ledger(&format!("[{entry_json}]"))
-            .ok()
-            .and_then(|mut v| v.pop())
-            .expect("a FeatureDraft always serialises to a valid entry");
+        let mut saved = self.append_many(std::slice::from_ref(draft))?;
+        Ok(saved.pop().expect("one draft appended"))
+    }
+
+    /// Appends every draft, in order, in a single atomic save. The whole
+    /// resulting array is validated first; one invalid draft (or a name
+    /// repeated within the batch) rejects the batch and writes nothing, as
+    /// does a ledger changed since it was loaded. Returns the entries as saved.
+    pub fn append_many(&self, drafts: &[FeatureDraft]) -> Result<Vec<FeatureEntry>, AppendError> {
         let mut candidate = self.entries.clone();
-        candidate.push(new_entry.clone());
+        let mut new_entries = Vec::with_capacity(drafts.len());
+        let mut entry_jsons = Vec::with_capacity(drafts.len());
+        for draft in drafts {
+            let entry_json = draft.to_json();
+            let entry = parse_ledger(&format!("[{entry_json}]"))
+                .ok()
+                .and_then(|mut v| v.pop())
+                .expect("a FeatureDraft always serialises to a valid entry");
+            candidate.push(entry.clone());
+            new_entries.push(entry);
+            entry_jsons.push(entry_json);
+        }
+        if new_entries.is_empty() {
+            return Ok(new_entries);
+        }
         validate_entries(&candidate).map_err(AppendError::Invalid)?;
 
         let text = std::str::from_utf8(&self.bytes).expect("a parsed ledger is UTF-8");
         let contents = if self.is_new {
-            format!("[\n  {entry_json}\n]\n")
+            format!("[\n  {}\n]\n", entry_jsons.join(",\n  "))
         } else {
             let close = text.rfind(']').expect("a parsed ledger ends with ]");
             let last = text[..close].trim_end_matches(|c: char| c.is_whitespace()).len();
             let separator = if text[..last].ends_with('[') { "\n  " } else { ",\n  " };
             let tail = &text[last..];
+            let added = entry_jsons.join(",\n  ");
             // A one-line array keeps `]` where it was; a multi-line one keeps its own layout.
-            format!("{}{separator}{entry_json}{}", &text[..last], if tail.starts_with('\n') || tail.starts_with("\r") { tail } else { "\n]\n" })
+            let tail = if tail.starts_with('\n') || tail.starts_with('\r') { tail } else { "\n]\n" };
+            format!("{}{separator}{added}{tail}", &text[..last])
         };
         self.save(&contents).map_err(AppendError::Save)?;
-        Ok(new_entry)
+        Ok(new_entries)
     }
 
     /// Changes the given fields of the feature named `feature_name`, keeping
