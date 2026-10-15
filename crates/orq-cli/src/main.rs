@@ -511,6 +511,11 @@ struct LedgerBackend {
     staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
     /// Replaces the PATH lookup of the harness program (tests).
     program_override: Option<PathBuf>,
+    /// Harness name and program pairs replacing the PATH lookup of the
+    /// picker's discovery (tests).
+    harness_programs: Option<Vec<(String, PathBuf)>>,
+    /// What discovery found, kept for the rest of the session.
+    harness_cache: Option<Vec<orq_tui::HarnessOption>>,
 }
 
 /// `provider/model` names from `pi --list-models` output: a header row, then
@@ -526,10 +531,12 @@ fn parse_pi_models(table: &str) -> Vec<String> {
         .collect()
 }
 
-/// Runs `pi --list-models` (argv only, bounded in time and size); empty when
-/// it cannot be listed, in which case the picker falls back to free text.
-fn list_pi_models(program: &Path) -> Vec<String> {
+/// Runs `pi --list-models` (argv only). One deadline covers the output and the
+/// process's end; whatever is still running then is killed. Empty when it
+/// cannot be listed, in which case the picker falls back to free text.
+fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
     use std::io::Read;
+    const CAP: u64 = 256 * 1024;
     let Ok(mut child) = std::process::Command::new(program)
         .arg("--list-models")
         .stdin(std::process::Stdio::null())
@@ -544,21 +551,32 @@ fn list_pi_models(program: &Path) -> Vec<String> {
     };
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut out = String::new();
-        let _ = stdout.take(256 * 1024).read_to_string(&mut out);
+        let mut out = Vec::new();
+        let _ = stdout.take(CAP + 1).read_to_end(&mut out);
         let _ = sender.send(out);
     });
-    match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(out) => {
-            let _ = child.wait();
-            parse_pi_models(&out)
+    let deadline = std::time::Instant::now() + timeout;
+    let mut output = None;
+    let status = loop {
+        if output.is_none() {
+            output = receiver.try_recv().ok();
         }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Vec::new()
+        match child.try_wait() {
+            Ok(Some(status)) if output.is_some() => break status,
+            Ok(None | Some(_)) if std::time::Instant::now() < deadline => {}
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
         }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let output = output.unwrap_or_default();
+    if !status.success() || output.len() as u64 > CAP {
+        return Vec::new();
     }
+    parse_pi_models(&String::from_utf8_lossy(&output))
 }
 
 /// The executable for `harness`: a bare name found on PATH, never a path.
@@ -715,6 +733,8 @@ impl LedgerBackend {
             settings_snapshot: None,
             staged: Default::default(),
             program_override: None,
+            harness_programs: None,
+            harness_cache: None,
         }
     }
 
@@ -955,17 +975,27 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     }
 
     fn harness_options(&mut self) -> Vec<orq_tui::HarnessOption> {
+        // Discovery can start a process, so it runs once per backend.
+        if let Some(cached) = &self.harness_cache {
+            return cached.clone();
+        }
+        let find = |name: &str| match &self.harness_programs {
+            Some(programs) => programs.iter().find(|(n, _)| n == name).map(|(_, p)| p.clone()),
+            None => find_program(name),
+        };
         let mut options = Vec::new();
-        if find_program("claude").is_some() {
+        if find("claude").is_some() {
             // claude lists no models; these two aliases are offered, free text stays.
             options.push(orq_tui::HarnessOption {
                 harness: "claude".into(),
                 profiles: vec!["opus".into(), "sonnet".into()],
             });
         }
-        if let Some(program) = find_program("pi") {
-            options.push(orq_tui::HarnessOption { harness: "pi".into(), profiles: list_pi_models(&program) });
+        if let Some(program) = find("pi") {
+            let profiles = list_pi_models(&program, std::time::Duration::from_secs(5));
+            options.push(orq_tui::HarnessOption { harness: "pi".into(), profiles });
         }
+        self.harness_cache = Some(options.clone());
         options
     }
 
@@ -1095,6 +1125,52 @@ mod ledger_backend_tests {
             super::parse_pi_models(table),
             vec!["claude-bridge/claude-fable-5".to_string(), "openai/gpt-6-astra".to_string()]
         );
+    }
+
+    const TABLE: &str = "provider model\nopenai gpt-6-astra\n";
+
+    #[test]
+    fn a_hanging_model_listing_is_bounded_and_yields_no_models() {
+        let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).hang().build();
+        let started = std::time::Instant::now();
+
+        let models = super::list_pi_models(agent.path(), std::time::Duration::from_millis(300));
+
+        assert!(models.is_empty(), "{models:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_failed_model_listing_offers_no_models() {
+        let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).exit_code(2).build();
+
+        let models = super::list_pi_models(agent.path(), std::time::Duration::from_secs(5));
+
+        assert!(models.is_empty(), "{models:?}");
+    }
+
+    #[test]
+    fn a_successful_model_listing_is_returned() {
+        let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
+
+        let models = super::list_pi_models(agent.path(), std::time::Duration::from_secs(5));
+
+        assert_eq!(models, vec!["openai/gpt-6-astra".to_string()]);
+    }
+
+    #[test]
+    fn harness_options_are_discovered_once_per_backend() {
+        let (_dir, path) = ledger(&["base"]);
+        let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
+        let mut backend = LedgerBackend::new(path);
+        backend.harness_programs = Some(vec![("pi".into(), agent.path().to_path_buf())]);
+        let first = backend.harness_options();
+
+        backend.harness_programs = Some(vec![]);
+        let second = backend.harness_options();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first, second);
     }
 
     #[test]
