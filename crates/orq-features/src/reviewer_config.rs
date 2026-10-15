@@ -5,7 +5,7 @@ use crate::AgentProfile;
 /// What `.tdd-config.json` says about reviewers. Read-only: Orq never writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TddReviewerConfig {
-    /// `reviewers.default`: `reviewer` is the harness, `model` the profile.
+    /// `reviewers.default`: `reviewer` is the harness, `model` the model.
     pub default_reviewer: Option<AgentProfile>,
     /// `reviewers.allowedModels`; `None` when the list is absent.
     pub allowed_models: Option<Vec<String>>,
@@ -61,7 +61,7 @@ pub fn load_reviewer_config(path: &Path) -> Result<TddReviewerConfig, ReviewerCo
         None => None,
         Some(serde_json::Value::Object(map)) => Some(AgentProfile {
             harness: name(map.get("reviewer"), "reviewers.default.reviewer")?,
-            profile: name(map.get("model"), "reviewers.default.model")?,
+            model: name(map.get("model"), "reviewers.default.model")?,
         }),
         Some(_) => return Err(malformed("reviewers.default must be an object".into())),
     };
@@ -105,9 +105,9 @@ pub fn resolve_reviewer(settings: Option<&AgentProfile>, config: &TddReviewerCon
     };
     let invalid = match (&effective, &config.allowed_models) {
         (EffectiveReviewer::Config(p) | EffectiveReviewer::Settings(p), Some(allowed))
-            if !allowed.contains(&p.profile) =>
+            if !allowed.contains(&p.model) =>
         {
-            Some(format!("model \"{}\" is not in .tdd-config.json reviewers.allowedModels", p.profile))
+            Some(format!("model \"{}\" is not in .tdd-config.json reviewers.allowedModels", p.model))
         }
         _ => None,
     };

@@ -54,12 +54,12 @@ fn a_feature_is_created_manually_and_from_a_spec_then_promoted_and_read_by_the_m
     let output = r#"[{"featureName":"logout","dependsOn":["login"],"parallelizable":true,"status":"completed"},
                      {"featureName":"login"},{"featureName":"orphan","dependsOn":["ghost"]}]"#;
     let agent = FakeAgent::builder().stdout(output).build();
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
     let artifacts = repo.join("artifacts");
     fs::create_dir_all(&artifacts).unwrap();
     let artifact = run_generation(&GenerationRequest {
         program: agent.path(),
-        profile: &profile,
+        model: &model,
         repo_root: &repo,
         spec: &repo.join("SPEC.md"),
         artifact_dir: &artifacts,

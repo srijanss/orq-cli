@@ -42,15 +42,15 @@ impl BrowserBackend for Fake {
     }
     fn save_settings(&mut self, implementer: &AgentSetting, reviewer: &AgentSetting) -> Result<(), String> {
         for role in [implementer, reviewer] {
-            if role.harness.is_empty() != role.profile.is_empty() {
-                return Err("both harness and profile are required".into());
+            if role.harness.is_empty() != role.model.is_empty() {
+                return Err("both harness and model are required".into());
             }
         }
         self.saved.push((implementer.clone(), reviewer.clone()));
         self.view.implementer = implementer.clone();
         self.view.reviewer = reviewer.clone();
         self.view.error = match &self.reject_reviewer {
-            Some(model) if &reviewer.profile == model => Some(format!("model {model} is not in allowedModels")),
+            Some(model) if &reviewer.model == model => Some(format!("model {model} is not in allowedModels")),
             _ => None,
         };
         Ok(())
@@ -63,8 +63,8 @@ impl Fake {
     }
 }
 
-fn setting(harness: &str, profile: &str) -> AgentSetting {
-    AgentSetting { harness: harness.into(), profile: profile.into() }
+fn setting(harness: &str, model: &str) -> AgentSetting {
+    AgentSetting { harness: harness.into(), model: model.into() }
 }
 
 fn key(code: KeyCode) -> Event {
@@ -129,6 +129,6 @@ fn a_half_filled_role_keeps_the_draft_and_says_what_is_missing() {
     assert!(!closed);
     assert!(backend.saved.is_empty());
     assert!(has(&lines, "claude"), "{lines:?}");
-    assert!(has(&lines, "profile"), "{lines:?}");
+    assert!(has(&lines, "model"), "{lines:?}");
     assert!(!has(&lines, "Not saved"), "{lines:?}");
 }

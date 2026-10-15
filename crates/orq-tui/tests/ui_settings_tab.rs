@@ -65,8 +65,8 @@ impl BrowserBackend for Fake {
     }
 }
 
-fn setting(harness: &str, profile: &str) -> AgentSetting {
-    AgentSetting { harness: harness.into(), profile: profile.into() }
+fn setting(harness: &str, model: &str) -> AgentSetting {
+    AgentSetting { harness: harness.into(), model: model.into() }
 }
 
 fn key(code: KeyCode) -> Event {
@@ -169,7 +169,7 @@ fn arrow_keys_move_between_fields() {
 #[test]
 fn the_mouse_picks_a_field_to_edit() {
     let mut backend = Fake::new();
-    // Row 7 is the implementer's profile line (body starts at row 5).
+    // Row 7 is the implementer's model line (body starts at row 5).
     let mut events = vec![key(KeyCode::Tab), click(10, 7)];
     events.extend((0..4).map(|_| key(KeyCode::Backspace)));
     events.extend(typed("haiku"));

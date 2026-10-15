@@ -15,20 +15,20 @@ fn dir(label: &str) -> PathBuf {
     dir
 }
 
-fn profile() -> AgentProfile {
-    AgentProfile { harness: "claude".into(), profile: "writer".into() }
+fn model() -> AgentProfile {
+    AgentProfile { harness: "claude".into(), model: "writer".into() }
 }
 
 fn request<'a>(
     program: &'a std::path::Path,
-    profile: &'a AgentProfile,
+    model: &'a AgentProfile,
     root: &'a std::path::Path,
     spec: &'a std::path::Path,
     artifacts: &'a std::path::Path,
 ) -> GenerationRequest<'a> {
     GenerationRequest {
         program,
-        profile,
+        model,
         repo_root: root,
         spec,
         artifact_dir: artifacts,
@@ -42,14 +42,14 @@ fn the_agent_gets_an_argument_vector_with_spec_profile_and_schema() {
     let spec = root.join("my spec; rm -rf x.md");
     fs::write(&spec, "# spec").unwrap();
     let agent = FakeAgent::builder().stdout("[]").build();
-    let profile = profile();
+    let model = model();
     let artifacts = dir("argv-art");
 
-    run_generation(&request(agent.path(), &profile, &root, &spec, &artifacts)).unwrap();
+    run_generation(&request(agent.path(), &model, &root, &spec, &artifacts)).unwrap();
 
     let run = agent.last_run().unwrap();
     assert_eq!(run.cwd.canonicalize().unwrap(), root.canonicalize().unwrap());
-    // The profile (the model) is a discrete argument, and the spec path (with shell
+    // The model is a discrete argument, and the spec path (with shell
     // metacharacters) appears intact inside exactly one argument.
     assert!(run.args.windows(2).any(|w| w == ["--model", "writer"]), "{:?}", run.args);
     let prompt = run.args.iter().find(|a| a.contains("featureName")).expect("schema in prompt");
@@ -65,10 +65,10 @@ fn stdout_is_stored_in_an_owner_only_artifact() {
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
     let agent = FakeAgent::builder().stdout(r#"[{"featureName":"a","status":"draft"}]"#).build();
-    let profile = profile();
+    let model = model();
     let artifacts = dir("art-out");
 
-    let artifact = run_generation(&request(agent.path(), &profile, &root, &spec, &artifacts)).unwrap();
+    let artifact = run_generation(&request(agent.path(), &model, &root, &spec, &artifacts)).unwrap();
 
     assert!(artifact.starts_with(&artifacts));
     assert_eq!(fs::read_to_string(&artifact).unwrap(), r#"[{"featureName":"a","status":"draft"}]"#);
@@ -81,11 +81,11 @@ fn a_missing_agent_is_an_actionable_error() {
     let root = dir("missing");
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
-    let profile = profile();
+    let model = model();
     let artifacts = dir("missing-art");
     let program = root.join("no-such-agent");
 
-    let err = run_generation(&request(&program, &profile, &root, &spec, &artifacts)).unwrap_err();
+    let err = run_generation(&request(&program, &model, &root, &spec, &artifacts)).unwrap_err();
 
     assert!(matches!(err, GenerationError::AgentNotFound { .. }), "{err:?}");
     let message = err.to_string();
@@ -97,15 +97,15 @@ fn a_failing_or_hanging_agent_is_reported_and_leaves_no_artifact() {
     let root = dir("fail");
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
-    let profile = profile();
+    let model = model();
     let artifacts = dir("fail-art");
 
     let failing = FakeAgent::builder().stdout("partial").exit_code(3).build();
-    let err = run_generation(&request(failing.path(), &profile, &root, &spec, &artifacts)).unwrap_err();
+    let err = run_generation(&request(failing.path(), &model, &root, &spec, &artifacts)).unwrap_err();
     assert!(matches!(err, GenerationError::AgentFailed { code: Some(3) }), "{err:?}");
 
     let hanging = FakeAgent::builder().hang().build();
-    let mut req = request(hanging.path(), &profile, &root, &spec, &artifacts);
+    let mut req = request(hanging.path(), &model, &root, &spec, &artifacts);
     req.timeout = Duration::from_millis(300);
     let err = run_generation(&req).unwrap_err();
     assert!(matches!(err, GenerationError::TimedOut), "{err:?}");

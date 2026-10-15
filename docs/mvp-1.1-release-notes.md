@@ -4,7 +4,7 @@
 
 - Create and edit features from the popup; rename is disabled.
 - Generate candidate features from a spec with the implementation agent
-  (Settings tab: harness + profile name; names only, never secrets).
+  (Settings tab: harness + model name; names only, never secrets).
 - Preview generated candidates (new / duplicate / invalid) before adding any;
   accepted candidates are appended in one atomic save with conflict detection.
 - New features are always written as `draft`; Orq never invents `recordedAt`

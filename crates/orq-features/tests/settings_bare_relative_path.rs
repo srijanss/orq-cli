@@ -18,7 +18,7 @@ fn a_bare_relative_path_is_serialised_like_any_other() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 let mut settings = Settings::load(std::path::Path::new("settings.toml")).unwrap();
-                settings.set("implementer", "profile", &format!("writer-{n}"));
+                settings.set("implementer", "model", &format!("writer-{n}"));
                 barrier.wait();
                 settings.save()
             })

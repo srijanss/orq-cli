@@ -611,14 +611,14 @@ fn generate_reviewed(
             .next()
             .ok_or("no Markdown spec file was found at the repository root")?;
         let settings = orq_features::Settings::load(&settings_file?).map_err(|e| e.to_string())?;
-        let profile = settings
+        let model = settings
             .generation_agent()
             .map_err(|e| e.to_string())?
             .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
         let program = match &program_override {
             Some(program) => program.clone(),
-            None => find_program(&profile.harness).ok_or_else(|| {
-                orq_features::GenerationError::AgentNotFound { harness: profile.harness.clone() }.to_string()
+            None => find_program(&model.harness).ok_or_else(|| {
+                orq_features::GenerationError::AgentNotFound { harness: model.harness.clone() }.to_string()
             })?,
         };
         let artifact_dir = orq_features::generation_artifact_dir(
@@ -628,7 +628,7 @@ fn generate_reviewed(
         .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
         let request = orq_features::GenerationRequest {
             program: &program,
-            profile: &profile,
+            model: &model,
             repo_root: &repo_root,
             spec: &spec,
             artifact_dir: &artifact_dir,
@@ -753,9 +753,9 @@ impl LedgerBackend {
     }
 }
 
-fn agent_setting(profile: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
-    profile
-        .map(|p| orq_tui::AgentSetting { harness: p.harness, profile: p.profile })
+fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
+    model
+        .map(|p| orq_tui::AgentSetting { harness: p.harness, model: p.model })
         .unwrap_or_default()
 }
 
@@ -996,12 +996,12 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             // claude lists no models; these two aliases are offered, free text stays.
             options.push(orq_tui::HarnessOption {
                 harness: "claude".into(),
-                profiles: vec!["opus".into(), "sonnet".into()],
+                models: vec!["opus".into(), "sonnet".into()],
             });
         }
         if let Some(program) = find("pi") {
-            let profiles = list_pi_models(&program, std::time::Duration::from_secs(5));
-            options.push(orq_tui::HarnessOption { harness: "pi".into(), profiles });
+            let models = list_pi_models(&program, std::time::Duration::from_secs(5));
+            options.push(orq_tui::HarnessOption { harness: "pi".into(), models });
         }
         self.harness_cache = Some(options.clone());
         options
@@ -1042,7 +1042,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 if let (true, orq_features::EffectiveReviewer::Config(p)) =
                     (resolved.overrides_settings, &resolved.effective)
                 {
-                    view.reviewer_override = Some(format!("{} / {}", p.harness, p.profile));
+                    view.reviewer_override = Some(format!("{} / {}", p.harness, p.model));
                 }
                 view.error = resolved.invalid;
             }
@@ -1070,10 +1070,10 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         ];
         for (role, value) in roles {
             // A role left empty stays unset rather than being written blank.
-            if value.harness.trim().is_empty() && value.profile.trim().is_empty() {
+            if value.harness.trim().is_empty() && value.model.trim().is_empty() {
                 continue;
             }
-            settings.set_agent(role, &value.harness, &value.profile).map_err(|e| e.to_string())?;
+            settings.set_agent(role, &value.harness, &value.model).map_err(|e| e.to_string())?;
         }
         // The snapshot is kept even after a conflict: it stays stale until the
         // tab reloads, so the same stale values are never written later.
@@ -1210,7 +1210,7 @@ mod ledger_backend_tests {
         backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
         backend.program_override = Some(agent.path().to_path_buf());
         let none = orq_tui::AgentSetting::default();
-        let writer = orq_tui::AgentSetting { harness: "claude".into(), profile: "writer".into() };
+        let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
         backend.save_settings(&writer, &none).unwrap();
         // The cache is chosen from XDG_CACHE_HOME or HOME; the test only
         // needs the agent to run, so it relies on whichever is set.
@@ -1286,7 +1286,7 @@ mod ledger_backend_tests {
         let (dir, path) = ledger(&["s"]);
         let mut backend = LedgerBackend::new(path);
         backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
-        let implementer = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        let implementer = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         let none = orq_tui::AgentSetting::default();
 
         backend.save_settings(&implementer, &none).unwrap();
@@ -1295,7 +1295,7 @@ mod ledger_backend_tests {
         assert_eq!(view.reviewer, none);
         assert_eq!(view.error, None);
 
-        let half = orq_tui::AgentSetting { harness: "pi".into(), profile: String::new() };
+        let half = orq_tui::AgentSetting { harness: "pi".into(), model: String::new() };
         assert!(backend.save_settings(&implementer, &half).is_err());
     }
 
@@ -1308,7 +1308,7 @@ mod ledger_backend_tests {
         let mut backend = LedgerBackend::new(path);
         backend.settings_path = Some(dir.join("cfg").join("orq").join("settings.toml"));
         let none = orq_tui::AgentSetting::default();
-        let reviewer = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        let reviewer = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         backend.save_settings(&none, &reviewer).unwrap();
 
         let view = backend.load_settings();
@@ -1325,13 +1325,13 @@ mod ledger_backend_tests {
         let settings = dir.join("cfg").join("orq").join("settings.toml");
         backend.settings_path = Some(settings.clone());
         let none = orq_tui::AgentSetting::default();
-        let opus = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        let opus = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         backend.save_settings(&opus, &none).unwrap();
         backend.load_settings();
         let outside = "[implementer]\nharness = \"claude\"\nprofile = \"opus\"\n[reviewer]\nharness = \"pi\"\nprofile = \"gpt\"\n";
         std::fs::write(&settings, outside).unwrap();
 
-        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), profile: "sonnet".into() };
+        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), model: "sonnet".into() };
         let result = backend.save_settings(&sonnet, &none);
 
         assert!(result.is_err());
@@ -1345,15 +1345,15 @@ mod ledger_backend_tests {
         let settings = dir.join("cfg").join("orq").join("settings.toml");
         backend.settings_path = Some(settings.clone());
         let none = orq_tui::AgentSetting::default();
-        let opus = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        let opus = orq_tui::AgentSetting { harness: "claude".into(), model: "opus".into() };
         backend.save_settings(&opus, &none).unwrap();
         backend.load_settings();
-        let bad = orq_tui::AgentSetting { harness: "bad\nname".into(), profile: "x".into() };
+        let bad = orq_tui::AgentSetting { harness: "bad\nname".into(), model: "x".into() };
         assert!(backend.save_settings(&bad, &none).is_err());
         let outside = "[implementer]\nharness = \"pi\"\nprofile = \"gpt\"\n";
         std::fs::write(&settings, outside).unwrap();
 
-        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), profile: "sonnet".into() };
+        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), model: "sonnet".into() };
         let result = backend.save_settings(&sonnet, &none);
 
         assert!(result.is_err());

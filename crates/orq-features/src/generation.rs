@@ -14,7 +14,7 @@ const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum GenerationError {
-    /// Settings name no implementer harness/profile.
+    /// Settings name no implementer harness/model.
     NotConfigured,
     AgentNotFound { harness: String },
     /// No built-in read-only argv exists for this harness; it is never started.
@@ -33,7 +33,7 @@ impl std::fmt::Display for GenerationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GenerationError::NotConfigured => f.write_str(
-                "no implementation agent configured: set a harness and profile in the Settings tab",
+                "no implementation agent configured: set a harness and model in the Settings tab",
             ),
             GenerationError::AgentNotFound { harness } => write!(
                 f,
@@ -41,7 +41,7 @@ impl std::fmt::Display for GenerationError {
             ),
             GenerationError::UnsupportedHarness { harness } => write!(
                 f,
-                "agent harness `{harness}` has no read-only profile for spec generation; use claude or pi"
+                "agent harness `{harness}` has no read-only mode for spec generation; use claude or pi"
             ),
             GenerationError::Spawn(err) => write!(f, "could not start the agent: {err}"),
             GenerationError::AgentFailed { code: Some(code) } => {
@@ -65,7 +65,7 @@ impl std::error::Error for GenerationError {}
 pub struct GenerationRequest<'a> {
     /// The harness executable, resolved by the caller from the harness name.
     pub program: &'a Path,
-    pub profile: &'a AgentProfile,
+    pub model: &'a AgentProfile,
     pub repo_root: &'a Path,
     pub spec: &'a Path,
     pub artifact_dir: &'a Path,
@@ -125,10 +125,10 @@ pub fn run_generation_cancellable(
     cancel: &AtomicBool,
 ) -> Result<PathBuf, GenerationError> {
     let mut command = Command::new(request.program);
-    // The Settings profile names the model; neither harness has a profile flag.
-    command.arg("--model").arg(&request.profile.profile);
+    // The Settings model is passed with `--model`.
+    command.arg("--model").arg(&request.model.model);
     // Built-in read-only argv; unknown harnesses fail closed.
-    let restrictions: &[&str] = match request.profile.harness.as_str() {
+    let restrictions: &[&str] = match request.model.harness.as_str() {
         "claude" => &[
             "--bare",
             // `--tools` limits which tools exist at all; `--allowedTools`
@@ -170,7 +170,7 @@ pub fn run_generation_cancellable(
         .spawn()
         .map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => GenerationError::AgentNotFound {
-                harness: request.profile.harness.clone(),
+                harness: request.model.harness.clone(),
             },
             _ => GenerationError::Spawn(err),
         })?;

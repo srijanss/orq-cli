@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use orq_features::{AgentProfile, AgentRole, ProfileError, Settings};
 
 fn path(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-profiles-{}-{label}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("orq-models-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir.join("settings.toml")
 }
 
-fn profile(harness: &str, name: &str) -> AgentProfile {
-    AgentProfile { harness: harness.into(), profile: name.into() }
+fn model(harness: &str, name: &str) -> AgentProfile {
+    AgentProfile { harness: harness.into(), model: name.into() }
 }
 
 #[test]
@@ -33,8 +33,8 @@ fn roles_round_trip_independently_through_a_save() {
 
     let reloaded = Settings::load(&path).unwrap();
 
-    assert_eq!(reloaded.agent(AgentRole::Implementer).unwrap(), Some(profile("claude", "opus")));
-    assert_eq!(reloaded.agent(AgentRole::Reviewer).unwrap(), Some(profile("pi", "gpt-6-astra")));
+    assert_eq!(reloaded.agent(AgentRole::Implementer).unwrap(), Some(model("claude", "opus")));
+    assert_eq!(reloaded.agent(AgentRole::Reviewer).unwrap(), Some(model("pi", "gpt-6-astra")));
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn feature_generation_uses_the_implementer_entry() {
     settings.set_agent(AgentRole::Implementer, "claude", "opus").unwrap();
     settings.set_agent(AgentRole::Reviewer, "pi", "gpt").unwrap();
 
-    assert_eq!(settings.generation_agent().unwrap(), Some(profile("claude", "opus")));
+    assert_eq!(settings.generation_agent().unwrap(), Some(model("claude", "opus")));
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn blank_values_are_rejected_and_change_nothing() {
         let error = settings.set_agent(AgentRole::Implementer, harness, name).unwrap_err();
         assert!(matches!(error, ProfileError::Blank { .. }), "{error:?}");
     }
-    assert_eq!(settings.agent(AgentRole::Implementer).unwrap(), Some(profile("claude", "opus")));
+    assert_eq!(settings.agent(AgentRole::Implementer).unwrap(), Some(model("claude", "opus")));
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn surrounding_whitespace_is_trimmed_when_saving() {
 
     settings.set_agent(AgentRole::Implementer, " claude ", " opus\t").unwrap();
 
-    assert_eq!(settings.agent(AgentRole::Implementer).unwrap(), Some(profile("claude", "opus")));
+    assert_eq!(settings.agent(AgentRole::Implementer).unwrap(), Some(model("claude", "opus")));
 }
 
 #[test]
@@ -108,5 +108,19 @@ fn saving_a_role_keeps_other_keys_and_the_other_role() {
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("note = \"x\""), "{text}");
     assert!(text.contains("[other]\nk = 1"), "{text}");
-    assert!(text.contains("profile = \"gpt-6\""), "{text}");
+    assert!(text.contains("model = \"gpt-6\""), "{text}");
+}
+
+#[test]
+fn a_legacy_profile_key_is_read_as_the_model_and_replaced_on_save() {
+    let path = path("legacy");
+    fs::write(&path, "[implementer]\nharness = \"claude\"\nprofile = \"opus\"\n").unwrap();
+    let mut settings = Settings::load(&path).unwrap();
+
+    assert_eq!(settings.agent(AgentRole::Implementer).unwrap(), Some(model("claude", "opus")));
+
+    settings.set_agent(AgentRole::Implementer, "claude", "sonnet").unwrap();
+    settings.save().unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("model = \"sonnet\"") && !text.contains("profile"), "{text}");
 }

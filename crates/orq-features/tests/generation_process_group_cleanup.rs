@@ -33,11 +33,11 @@ fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, Gene
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
 
     let result = run_generation(&GenerationRequest {
         program: &script,
-        profile: &profile,
+        model: &model,
         repo_root: &root,
         spec: &spec,
         artifact_dir: &root.join("out"),

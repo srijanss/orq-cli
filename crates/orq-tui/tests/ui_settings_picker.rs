@@ -34,8 +34,8 @@ impl BrowserBackend for Fake {
     }
     fn harness_options(&mut self) -> Vec<HarnessOption> {
         vec![
-            HarnessOption { harness: "claude".into(), profiles: vec!["opus".into(), "sonnet".into()] },
-            HarnessOption { harness: "pi".into(), profiles: vec!["gpt-6".into()] },
+            HarnessOption { harness: "claude".into(), models: vec!["opus".into(), "sonnet".into()] },
+            HarnessOption { harness: "pi".into(), models: vec!["gpt-6".into()] },
         ]
     }
     fn save_settings(&mut self, implementer: &AgentSetting, reviewer: &AgentSetting) -> Result<(), String> {
@@ -46,8 +46,8 @@ impl BrowserBackend for Fake {
     }
 }
 
-fn setting(harness: &str, profile: &str) -> AgentSetting {
-    AgentSetting { harness: harness.into(), profile: profile.into() }
+fn setting(harness: &str, model: &str) -> AgentSetting {
+    AgentSetting { harness: harness.into(), model: model.into() }
 }
 
 fn key(code: KeyCode) -> Event {

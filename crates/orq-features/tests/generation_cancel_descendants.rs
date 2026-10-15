@@ -43,7 +43,7 @@ fn cancel_run(label: &str, body: &str) -> (Result<PathBuf, GenerationError>, Des
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
     let artifacts = root.join("out");
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -61,7 +61,7 @@ fn cancel_run(label: &str, body: &str) -> (Result<PathBuf, GenerationError>, Des
     let result = run_generation_cancellable(
         &GenerationRequest {
             program: &script,
-            profile: &profile,
+            model: &model,
             repo_root: &root,
             spec: &spec,
             artifact_dir: &artifacts,

@@ -14,12 +14,12 @@ fn a_flag_already_set_never_starts_the_agent() {
     // A program that cannot start: spawning it would report AgentNotFound, so
     // `Cancelled` can only come from checking the flag before the spawn.
     let missing = root.join("no-such-harness");
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
 
     let result = run_generation_cancellable(
         &GenerationRequest {
             program: &missing,
-            profile: &profile,
+            model: &model,
             repo_root: &root,
             spec: &spec,
             artifact_dir: &root.join("out"),

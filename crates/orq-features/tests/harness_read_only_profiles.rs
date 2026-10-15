@@ -17,11 +17,11 @@ fn run(harness: &str, label: &str) -> (Result<PathBuf, GenerationError>, FakeAge
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
     let agent = FakeAgent::builder().stdout("[]").build();
-    let profile = AgentProfile { harness: harness.into(), profile: "writer".into() };
+    let model = AgentProfile { harness: harness.into(), model: "writer".into() };
     let artifacts = root.join("out");
     let result = run_generation(&GenerationRequest {
         program: agent.path(),
-        profile: &profile,
+        model: &model,
         repo_root: &root,
         spec: &spec,
         artifact_dir: &artifacts,

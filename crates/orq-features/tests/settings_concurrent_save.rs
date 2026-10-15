@@ -18,7 +18,7 @@ fn of_several_writers_from_one_baseline_exactly_one_wins() {
                 let (path, barrier) = (path.clone(), barrier.clone());
                 std::thread::spawn(move || {
                     let mut settings = Settings::load(&path).unwrap();
-                    settings.set("implementer", "profile", &format!("writer-{n}"));
+                    settings.set("implementer", "model", &format!("writer-{n}"));
                     barrier.wait();
                     settings.save()
                 })

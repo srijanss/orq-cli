@@ -2,7 +2,7 @@ use toml_edit::{value, Item, Table};
 
 use crate::Settings;
 
-/// The two roles Settings can name a harness and profile for.
+/// The two roles Settings can name a harness and model for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRole {
     Implementer,
@@ -18,12 +18,12 @@ impl AgentRole {
     }
 }
 
-/// A harness (`claude`, `pi`, ...) and the profile name run on it. Names
+/// A harness (`claude`, `pi`, ...) and the model name run on it. Names
 /// only: Settings never holds credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentProfile {
     pub harness: String,
-    pub profile: String,
+    pub model: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,7 +58,7 @@ fn clean(role: AgentRole, field: &'static str, text: &str) -> Result<String, Pro
 }
 
 impl Settings {
-    /// The role's configured harness and profile; `None` when the role has no
+    /// The role's configured harness and model; `None` when the role has no
     /// entry at all. A half-filled or wrongly typed entry is an error, never
     /// a silent default.
     pub fn agent(&self, role: AgentRole) -> Result<Option<AgentProfile>, ProfileError> {
@@ -67,7 +67,9 @@ impl Settings {
         };
         let table = item.as_table().ok_or(ProfileError::Invalid { role, field: "harness" })?;
         let read = |field: &'static str| -> Result<String, ProfileError> {
-            match table.get(field) {
+            // Settings written before the rename keep the model under `profile`.
+            let found = table.get(field).or_else(|| if field == "model" { table.get("profile") } else { None });
+            match found {
                 None => Err(ProfileError::Blank { role, field }),
                 Some(item) => {
                     let text = item.as_str().ok_or(ProfileError::Invalid { role, field })?;
@@ -75,23 +77,24 @@ impl Settings {
                 }
             }
         };
-        Ok(Some(AgentProfile { harness: read("harness")?, profile: read("profile")? }))
+        Ok(Some(AgentProfile { harness: read("harness")?, model: read("model")? }))
     }
 
-    /// Feature generation runs on the implementer's harness and profile.
+    /// Feature generation runs on the implementer's harness and model.
     pub fn generation_agent(&self) -> Result<Option<AgentProfile>, ProfileError> {
         self.agent(AgentRole::Implementer)
     }
 
-    /// Sets a role's harness and profile (trimmed). Nothing changes when
+    /// Sets a role's harness and model (trimmed). Nothing changes when
     /// either value is rejected.
-    pub fn set_agent(&mut self, role: AgentRole, harness: &str, profile: &str) -> Result<(), ProfileError> {
+    pub fn set_agent(&mut self, role: AgentRole, harness: &str, model: &str) -> Result<(), ProfileError> {
         let harness = clean(role, "harness", harness)?;
-        let profile = clean(role, "profile", profile)?;
+        let model = clean(role, "model", model)?;
         let item = self.document_mut().entry(role.table()).or_insert_with(|| Item::Table(Table::new()));
         let table = item.as_table_mut().ok_or(ProfileError::Invalid { role, field: "harness" })?;
         table.insert("harness", value(harness));
-        table.insert("profile", value(profile));
+        table.remove("profile");
+        table.insert("model", value(model));
         Ok(())
     }
 }

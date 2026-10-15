@@ -20,7 +20,7 @@ fn a_cancelled_generation_stops_the_agent_promptly_and_reports_it() {
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
     let agent = FakeAgent::builder().hang().build();
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
     let artifacts = root.join("out");
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&cancel);
@@ -33,7 +33,7 @@ fn a_cancelled_generation_stops_the_agent_promptly_and_reports_it() {
     let result = run_generation_cancellable(
         &GenerationRequest {
             program: agent.path(),
-            profile: &profile,
+            model: &model,
             repo_root: &root,
             spec: &spec,
             artifact_dir: &artifacts,
@@ -53,12 +53,12 @@ fn an_unset_flag_does_not_disturb_a_normal_run() {
     let spec = root.join("SPEC.md");
     fs::write(&spec, "x").unwrap();
     let agent = FakeAgent::builder().stdout("[]").build();
-    let profile = AgentProfile { harness: "claude".into(), profile: "writer".into() };
+    let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
 
     let result = run_generation_cancellable(
         &GenerationRequest {
             program: agent.path(),
-            profile: &profile,
+            model: &model,
             repo_root: &root,
             spec: &spec,
             artifact_dir: &root.join("out"),

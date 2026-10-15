@@ -1460,7 +1460,7 @@ pub trait BrowserBackend {
         SettingsView { error: Some("settings are not available".into()), ..SettingsView::default() }
     }
 
-    /// Installed harnesses with their profile suggestions, for the Settings
+    /// Installed harnesses with their model suggestions, for the Settings
     /// tab's picker. Free text stays possible, so empty is acceptable.
     fn harness_options(&mut self) -> Vec<HarnessOption> {
         Vec::new()
@@ -1530,18 +1530,18 @@ impl GenerationJob for FinishedJob {
     fn cancel(&mut self) {}
 }
 
-/// A harness and profile name, as typed in the Settings tab. Names only.
+/// A harness and model name, as typed in the Settings tab. Names only.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentSetting {
     pub harness: String,
-    pub profile: String,
+    pub model: String,
 }
 
-/// An installed harness and the profile names it can be offered with.
+/// An installed harness and the model names it can be offered with.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HarnessOption {
     pub harness: String,
-    pub profiles: Vec<String>,
+    pub models: Vec<String>,
 }
 
 /// What the Settings tab shows: the saved values and what the project's
@@ -1568,7 +1568,7 @@ const SETTINGS_FILE: &str = "settings.toml";
 const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · Esc cancel/back · Tab features ";
 /// Settings fields in display order: (role, field name).
 const SETTINGS_FIELDS: [(&str, &str); 4] =
-    [("Implementer", "harness"), ("Implementer", "profile"), ("Reviewer", "harness"), ("Reviewer", "profile")];
+    [("Implementer", "harness"), ("Implementer", "model"), ("Reviewer", "harness"), ("Reviewer", "model")];
 /// Body row of each field, relative to the top of the body.
 const SETTINGS_FIELD_ROWS: [u16; 4] = [1, 2, 4, 5];
 
@@ -1580,7 +1580,7 @@ fn printable(text: &str) -> String {
 struct SettingsState {
     view: SettingsView,
     selected: usize,
-    /// Installed harnesses and profile suggestions; the picker's choices.
+    /// Installed harnesses and model suggestions; the picker's choices.
     options: Vec<HarnessOption>,
     /// The text being typed into the selected field.
     editing: Option<String>,
@@ -1591,9 +1591,9 @@ impl SettingsState {
     fn value(&self, field: usize) -> &str {
         match field {
             0 => &self.view.implementer.harness,
-            1 => &self.view.implementer.profile,
+            1 => &self.view.implementer.model,
             2 => &self.view.reviewer.harness,
-            _ => &self.view.reviewer.profile,
+            _ => &self.view.reviewer.model,
         }
     }
 
@@ -1606,7 +1606,7 @@ impl SettingsState {
             self.options.iter().map(|o| o.harness.clone()).collect()
         } else {
             let harness = if self.selected == 1 { &self.view.implementer.harness } else { &self.view.reviewer.harness };
-            self.options.iter().find(|o| &o.harness == harness).map(|o| o.profiles.clone()).unwrap_or_default()
+            self.options.iter().find(|o| &o.harness == harness).map(|o| o.models.clone()).unwrap_or_default()
         };
         if choices.is_empty() {
             return;
@@ -1635,20 +1635,20 @@ impl SettingsState {
         let (mut implementer, mut reviewer) = (self.view.implementer.clone(), self.view.reviewer.clone());
         match self.selected {
             0 => implementer.harness = text,
-            1 => implementer.profile = text,
+            1 => implementer.model = text,
             2 => reviewer.harness = text,
-            _ => reviewer.profile = text,
+            _ => reviewer.model = text,
         }
         // A role is saved whole: while one of its fields is still empty the
         // typed text stays as an unsaved draft instead of being rejected.
         let half_filled = [("Implementer", &implementer), ("Reviewer", &reviewer)]
             .into_iter()
-            .find(|(_, role)| role.harness.trim().is_empty() != role.profile.trim().is_empty());
+            .find(|(_, role)| role.harness.trim().is_empty() != role.model.trim().is_empty());
         if let Some((name, _)) = half_filled {
             self.view.implementer = implementer;
             self.view.reviewer = reviewer;
             self.editing = None;
-            self.status = Some(format!("{name}: fill both harness and profile to save"));
+            self.status = Some(format!("{name}: fill both harness and model to save"));
             return;
         }
         match backend.save_settings(&implementer, &reviewer) {
