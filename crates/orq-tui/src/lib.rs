@@ -76,6 +76,12 @@ pub fn hit_test(area: Rect, model: &PopupModel, column: u16, row: u16) -> Option
 /// Where the popup's input events come from (the real terminal, or a script).
 pub trait EventSource {
     fn next_event(&mut self) -> io::Result<Event>;
+
+    /// Waits up to `timeout` for an event. Sources that cannot time out block
+    /// like `next_event`, which is right for scripted input.
+    fn poll_event(&mut self, _timeout: std::time::Duration) -> io::Result<Option<Event>> {
+        self.next_event().map(Some)
+    }
 }
 
 /// Puts the terminal into popup mode and back (raw mode, alternate screen...).
@@ -159,6 +165,14 @@ pub struct CrosstermEvents;
 impl EventSource for CrosstermEvents {
     fn next_event(&mut self) -> io::Result<Event> {
         ratatui::crossterm::event::read()
+    }
+
+    fn poll_event(&mut self, timeout: std::time::Duration) -> io::Result<Option<Event>> {
+        if ratatui::crossterm::event::poll(timeout)? {
+            ratatui::crossterm::event::read().map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -1480,11 +1494,34 @@ pub trait BrowserBackend {
         Err("generating from a spec is not available".into())
     }
 
+    /// Starts generation without blocking the UI. The default runs
+    /// `generate_candidates` to completion and returns a finished job.
+    fn start_generation(&mut self) -> Result<Box<dyn GenerationJob>, String> {
+        Ok(Box::new(FinishedJob(Some(self.generate_candidates()))))
+    }
+
     /// Appends the accepted candidates in one atomic save. On failure nothing
     /// is written and the proposal stays available for a retry.
     fn accept_candidates(&mut self, _accepted: &[AcceptedCandidate]) -> FormSaveOutcome {
         FormSaveOutcome::Failed { reason: "adding generated features is not available".into() }
     }
+}
+
+/// A generation running off the UI thread.
+pub trait GenerationJob {
+    /// `Some` once, when the run has finished.
+    fn poll(&mut self) -> Option<Result<Vec<CandidateView>, String>>;
+    /// Stops the run; its result is discarded.
+    fn cancel(&mut self);
+}
+
+struct FinishedJob(Option<Result<Vec<CandidateView>, String>>);
+
+impl GenerationJob for FinishedJob {
+    fn poll(&mut self) -> Option<Result<Vec<CandidateView>, String>> {
+        self.0.take()
+    }
+    fn cancel(&mut self) {}
 }
 
 /// A harness and profile name, as typed in the Settings tab. Names only.
@@ -1773,6 +1810,16 @@ struct Browser {
     preview: Option<PreviewState>,
     /// The ledger file does not exist yet (and nothing else is wrong).
     absent: bool,
+    /// A generation running in the background; only Esc is handled meanwhile.
+    generating: Option<Box<dyn GenerationJob>>,
+}
+
+impl Drop for Browser {
+    fn drop(&mut self) {
+        if let Some(job) = self.generating.as_mut() {
+            job.cancel();
+        }
+    }
 }
 
 struct DetailView {
@@ -2075,7 +2122,20 @@ impl Browser {
     /// Runs the generation agent and opens the preview of its proposal.
     fn open_generation(&mut self, backend: &mut dyn BrowserBackend) {
         self.notice = None;
-        match backend.generate_candidates() {
+        match backend.start_generation() {
+            Ok(job) => {
+                self.generating = Some(job);
+                self.notice = Some("Generating… (Esc to cancel)".to_string());
+            }
+            Err(reason) => self.notice = Some(format!("Generation failed: {}", printable(&reason))),
+        }
+    }
+
+    /// Opens the preview of a finished generation, or reports its failure.
+    fn finish_generation(&mut self, result: Result<Vec<CandidateView>, String>) {
+        self.generating = None;
+        self.notice = None;
+        match result {
             Ok(candidates) if candidates.is_empty() => {
                 self.notice = Some("The agent proposed no features".to_string());
             }
@@ -2265,6 +2325,7 @@ where
         form: None,
         preview: None,
         absent: false,
+        generating: None,
     };
     browser.reload(backend);
     let mut dirty = true;
@@ -2273,7 +2334,29 @@ where
             terminal.draw(|frame| browser.draw(frame, model))?;
             dirty = false;
         }
-        match events.next_event()? {
+        let event = if browser.generating.is_some() {
+            let finished = browser.generating.as_mut().and_then(|job| job.poll());
+            if let Some(result) = finished {
+                browser.finish_generation(result);
+                dirty = true;
+                continue;
+            }
+            match events.poll_event(std::time::Duration::from_millis(50))? {
+                Some(Event::Key(key)) if key.code == KeyCode::Esc => {
+                    if let Some(mut job) = browser.generating.take() {
+                        job.cancel();
+                    }
+                    browser.notice = Some("Generation cancelled".to_string());
+                    dirty = true;
+                }
+                Some(Event::Resize(..)) => dirty = true,
+                _ => {}
+            }
+            continue;
+        } else {
+            events.next_event()?
+        };
+        match event {
             Event::Key(key) => {
                 if let Some(preview) = browser.preview.as_mut() {
                     match preview.handle_key(key.code) {

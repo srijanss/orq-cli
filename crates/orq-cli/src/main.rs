@@ -508,7 +508,7 @@ struct LedgerBackend {
     /// this snapshot, so an outside edit is a conflict, not an overwrite.
     settings_snapshot: Option<orq_features::Settings>,
     /// The last generated proposal, kept so accepting names what was reviewed.
-    staged: Vec<orq_features::ReviewedCandidate>,
+    staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
     /// Replaces the PATH lookup of the harness program (tests).
     program_override: Option<PathBuf>,
 }
@@ -525,6 +525,115 @@ fn find_program(harness: &str) -> Option<PathBuf> {
     })
 }
 
+fn generate_reviewed(
+    ledger_path: &Path,
+    settings_file: Result<PathBuf, String>,
+    program_override: Option<PathBuf>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
+        let repo_root = ledger_path.parent().ok_or("the feature file has no directory")?.to_path_buf();
+        let spec = orq_features::spec_file_candidates(&repo_root)
+            .into_iter()
+            .next()
+            .ok_or("no Markdown spec file was found at the repository root")?;
+        let settings = orq_features::Settings::load(&settings_file?).map_err(|e| e.to_string())?;
+        let profile = settings
+            .generation_agent()
+            .map_err(|e| e.to_string())?
+            .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
+        let program = match &program_override {
+            Some(program) => program.clone(),
+            None => find_program(&profile.harness).ok_or_else(|| {
+                orq_features::GenerationError::AgentNotFound { harness: profile.harness.clone() }.to_string()
+            })?,
+        };
+        let artifact_dir = orq_features::generation_artifact_dir(
+            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        )
+        .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
+        let request = orq_features::GenerationRequest {
+            program: &program,
+            profile: &profile,
+            repo_root: &repo_root,
+            spec: &spec,
+            artifact_dir: &artifact_dir,
+            timeout: std::time::Duration::from_secs(600),
+        };
+        let artifact = orq_features::run_generation_cancellable(&request, cancel).map_err(|e| e.to_string())?;
+        let text = std::fs::read_to_string(&artifact)
+            .map_err(|e| format!("could not read the agent output {}: {e}", artifact.display()))?;
+        let candidates = orq_features::extract_candidates(&text)
+            .map_err(|e| format!("{e} (agent output kept at {})", artifact.display()))?;
+        let existing = match orq_features::LoadedLedger::load_or_new(ledger_path) {
+            Ok(loaded) => loaded.entries().to_vec(),
+            Err(err) => return Err(ledger_error_text(&err)),
+        };
+        Ok(orq_features::review_candidates(&existing, candidates))
+}
+
+        fn candidate_views(reviewed: &[orq_features::ReviewedCandidate]) -> Vec<orq_tui::CandidateView> {
+    use orq_features::{CandidateProblem, Verdict};
+    use orq_tui::{CandidateKind, CandidateView};
+    reviewed
+            .iter()
+            .map(|r| {
+                let draft = &r.candidate.draft;
+                let kind = match &r.verdict {
+                    Verdict::New => CandidateKind::New,
+                    Verdict::DuplicateOfExisting => CandidateKind::Duplicate("already in the feature file".into()),
+                    Verdict::DuplicateInBatch => CandidateKind::Duplicate("repeated in this output".into()),
+                    Verdict::Invalid(problems) => CandidateKind::Invalid(
+                        problems
+                            .iter()
+                            .map(|p| match p {
+                                CandidateProblem::UnknownDependency(dep) => format!("depends on unknown \"{dep}\""),
+                                CandidateProblem::Cycle => "dependency cycle".to_string(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                };
+                CandidateView {
+                    name: draft.feature_name.clone(),
+                    description: draft.description.clone(),
+                    depends_on: draft.depends_on.clone().unwrap_or_default(),
+                    kind,
+                    suggests_parallel: r.suggests_parallel,
+                    ignored_fields: r.candidate.ignored_fields.clone(),
+                }
+            })
+            .collect()
+}
+
+/// Generation running on its own thread; staging the result on completion
+/// keeps `accept_candidates` working exactly as for a synchronous run.
+struct WorkerJob {
+    receiver: std::sync::mpsc::Receiver<Result<Vec<orq_features::ReviewedCandidate>, String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
+}
+
+impl orq_tui::GenerationJob for WorkerJob {
+    fn poll(&mut self) -> Option<Result<Vec<orq_tui::CandidateView>, String>> {
+        use std::sync::mpsc::TryRecvError;
+        match self.receiver.try_recv() {
+            Ok(Ok(reviewed)) => {
+                let views = candidate_views(&reviewed);
+                *self.staged.lock().unwrap() = reviewed;
+                Some(Ok(views))
+            }
+            Ok(Err(reason)) => Some(Err(reason)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err("the generation worker stopped unexpectedly".into())),
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl LedgerBackend {
     fn new(path: PathBuf) -> Self {
         let settings_path = orq_features::settings_path(
@@ -537,7 +646,7 @@ impl LedgerBackend {
             absent: false,
             settings_path,
             settings_snapshot: None,
-            staged: Vec::new(),
+            staged: Default::default(),
             program_override: None,
         }
     }
@@ -700,79 +809,32 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     }
 
     fn generate_candidates(&mut self) -> Result<Vec<orq_tui::CandidateView>, String> {
-        use orq_features::{CandidateProblem, Verdict};
-        use orq_tui::{CandidateKind, CandidateView};
-        self.staged.clear();
-        let repo_root = self.path.parent().ok_or("the feature file has no directory")?.to_path_buf();
-        let spec = orq_features::spec_file_candidates(&repo_root)
-            .into_iter()
-            .next()
-            .ok_or("no Markdown spec file was found at the repository root")?;
-        let settings = orq_features::Settings::load(self.settings_file()?).map_err(|e| e.to_string())?;
-        let profile = settings
-            .generation_agent()
-            .map_err(|e| e.to_string())?
-            .ok_or(orq_features::GenerationError::NotConfigured.to_string())?;
-        let program = match &self.program_override {
-            Some(program) => program.clone(),
-            None => find_program(&profile.harness).ok_or_else(|| {
-                orq_features::GenerationError::AgentNotFound { harness: profile.harness.clone() }.to_string()
-            })?,
-        };
-        let artifact_dir = orq_features::generation_artifact_dir(
-            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
-            std::env::var_os("HOME").map(PathBuf::from),
-        )
-        .ok_or("no cache location: set XDG_CACHE_HOME or HOME")?;
-        let request = orq_features::GenerationRequest {
-            program: &program,
-            profile: &profile,
-            repo_root: &repo_root,
-            spec: &spec,
-            artifact_dir: &artifact_dir,
-            timeout: std::time::Duration::from_secs(600),
-        };
-        let artifact = orq_features::run_generation(&request).map_err(|e| e.to_string())?;
-        let text = std::fs::read_to_string(&artifact)
-            .map_err(|e| format!("could not read the agent output {}: {e}", artifact.display()))?;
-        let candidates = orq_features::extract_candidates(&text)
-            .map_err(|e| format!("{e} (agent output kept at {})", artifact.display()))?;
-        let existing = match orq_features::LoadedLedger::load_or_new(&self.path) {
-            Ok(loaded) => loaded.entries().to_vec(),
-            Err(err) => return Err(ledger_error_text(&err)),
-        };
-        let reviewed = orq_features::review_candidates(&existing, candidates);
-        let views = reviewed
-            .iter()
-            .map(|r| {
-                let draft = &r.candidate.draft;
-                let kind = match &r.verdict {
-                    Verdict::New => CandidateKind::New,
-                    Verdict::DuplicateOfExisting => CandidateKind::Duplicate("already in the feature file".into()),
-                    Verdict::DuplicateInBatch => CandidateKind::Duplicate("repeated in this output".into()),
-                    Verdict::Invalid(problems) => CandidateKind::Invalid(
-                        problems
-                            .iter()
-                            .map(|p| match p {
-                                CandidateProblem::UnknownDependency(dep) => format!("depends on unknown \"{dep}\""),
-                                CandidateProblem::Cycle => "dependency cycle".to_string(),
-                            })
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    ),
-                };
-                CandidateView {
-                    name: draft.feature_name.clone(),
-                    description: draft.description.clone(),
-                    depends_on: draft.depends_on.clone().unwrap_or_default(),
-                    kind,
-                    suggests_parallel: r.suggests_parallel,
-                    ignored_fields: r.candidate.ignored_fields.clone(),
-                }
-            })
-            .collect();
-        self.staged = reviewed;
+        self.staged.lock().unwrap().clear();
+        let reviewed = generate_reviewed(
+            &self.path,
+            self.settings_file().map(Path::to_path_buf),
+            self.program_override.clone(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        let views = candidate_views(&reviewed);
+        *self.staged.lock().unwrap() = reviewed;
         Ok(views)
+    }
+
+    fn start_generation(&mut self) -> Result<Box<dyn orq_tui::GenerationJob>, String> {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::{mpsc, Arc};
+        self.staged.lock().unwrap().clear();
+        let path = self.path.clone();
+        let settings_file = self.settings_file().map(Path::to_path_buf);
+        let program_override = self.program_override.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(generate_reviewed(&path, settings_file, program_override, &flag));
+        });
+        Ok(Box::new(WorkerJob { receiver, cancel, staged: Arc::clone(&self.staged) }))
     }
 
     fn accept_candidates(&mut self, accepted: &[orq_tui::AcceptedCandidate]) -> orq_tui::FormSaveOutcome {
@@ -780,16 +842,18 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         use orq_tui::FormSaveOutcome;
         let mut drafts = Vec::new();
         for pick in accepted {
-            let staged = self
-                .staged
+            let staged_all = self.staged.lock().unwrap();
+            let staged = staged_all
                 .iter()
                 .find(|r| r.verdict == Verdict::New && r.candidate.draft.feature_name == pick.name);
             let Some(staged) = staged else {
                 return FormSaveOutcome::Failed { reason: format!("{} is not a new generated candidate", pick.name) };
             };
             let mut draft = staged.candidate.draft.clone();
+            let suggests = staged.suggests_parallel;
+            drop(staged_all);
             // Only a kept suggestion is written; anything else stays absent.
-            draft.parallelizable = pick.parallelizable.filter(|_| staged.suggests_parallel);
+            draft.parallelizable = pick.parallelizable.filter(|_| suggests);
             drafts.push(draft);
         }
         let loaded = match self.loaded.take() {
@@ -810,7 +874,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         self.loaded = match outcome {
             FormSaveOutcome::Invalid { .. } | FormSaveOutcome::Failed { .. } => Some(loaded),
             _ => {
-                self.staged.clear();
+                self.staged.lock().unwrap().clear();
                 orq_features::LoadedLedger::load(&self.path).ok()
             }
         };
