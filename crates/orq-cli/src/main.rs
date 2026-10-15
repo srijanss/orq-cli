@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         (Some("features"), _) => features(&args[1..]),
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
+        (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
         _ => usage_error(),
@@ -238,6 +239,40 @@ fn feature_add(args: &[OsString]) -> ExitCode {
             println!("{}", saved_entry_json(&entry));
             ExitCode::SUCCESS
         }
+        Err(err) => fail(err),
+    }
+}
+
+/// `orq feature edit --repo <path> --name <name> [...]`: changes only the
+/// given fields of an existing feature. There is no rename or status flag.
+fn feature_edit(args: &[OsString]) -> ExitCode {
+    let flags = match parse_field_flags(args) {
+        Ok(flags) => flags,
+        Err(message) => return fail(message),
+    };
+    let Some(repo) = flags.repo else { return fail("--repo is required") };
+    let Some(name) = flags.name else { return fail("--name is required") };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let loaded = match orq_features::LoadedLedger::load(&orq_features::ledger_path(&project)) {
+        Ok(loaded) => loaded,
+        Err(err) => return fail(ledger_error_text(&err)),
+    };
+    let edits = orq_features::FieldEdits {
+        description: flags.description,
+        depends_on: flags.depends_on,
+        parallelizable: flags.parallelizable,
+        test_file: flags.test_file,
+        target_files: flags.target_files,
+    };
+    match loaded.edit_fields(&name, &edits) {
+        Ok(entry) => {
+            println!("{}", saved_entry_json(&entry));
+            ExitCode::SUCCESS
+        }
+        Err(orq_features::EditFieldsError::UnknownFeature) => fail(format!("no feature named {name:?}")),
         Err(err) => fail(err),
     }
 }
