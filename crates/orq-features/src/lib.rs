@@ -201,5 +201,8 @@ pub use save::{LoadedLedger, SaveError};
 mod settings;
 pub use settings::{settings_path, Settings, SettingsError};
 
+mod profiles;
+pub use profiles::{AgentProfile, AgentRole, ProfileError};
+
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};

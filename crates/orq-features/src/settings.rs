@@ -72,6 +72,14 @@ impl Settings {
         Ok(Settings { path: path.to_path_buf(), doc, loaded })
     }
 
+    pub(crate) fn document(&self) -> &DocumentMut {
+        &self.doc
+    }
+
+    pub(crate) fn document_mut(&mut self) -> &mut DocumentMut {
+        &mut self.doc
+    }
+
     /// A string value at `[section] key`; `None` when absent or not a string.
     pub fn get(&self, section: &str, key: &str) -> Option<String> {
         self.doc.get(section)?.as_table()?.get(key)?.as_str().map(str::to_string)
