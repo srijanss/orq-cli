@@ -152,4 +152,5 @@ fn ctrl_g_in_the_edit_form_does_nothing() {
 
     assert!(has(&lines, "Edit Feature"), "{lines:?}");
     assert!(!has(&lines, "Section"), "{lines:?}");
+    assert!(!has(&lines, "Ctrl+G"), "{lines:?}");
 }

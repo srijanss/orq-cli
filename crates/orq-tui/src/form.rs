@@ -55,7 +55,8 @@ const FIRST_DEPENDENCY: usize = 5;
 /// Lines above the first field: the title and the fixed status.
 const FIELD_LINES_FROM: usize = 2;
 const DEPENDS_HEADER_LINE: usize = FIELD_LINES_FROM + FIRST_DEPENDENCY;
-const HINT: &str = " ↑↓ move · Space toggle · Ctrl+S save · Ctrl+G generate from spec · Esc cancel ";
+const HINT: &str = " ↑↓ move · Space toggle · Ctrl+S save · Esc cancel ";
+const ADD_HINT: &str = " ↑↓ move · Space toggle · Ctrl+S save · Ctrl+G generate from spec · Esc cancel ";
 
 pub(crate) struct FormState {
     name: String,
@@ -360,7 +361,7 @@ impl FormState {
             }
         }
         let rect = Rect::new(area.x, area.bottom() - 1, area.width, 1);
-        let hint = Line::from(truncate_right(HINT, width)).style(Style::new().fg(Color::DarkGray));
+        let hint = Line::from(truncate_right(if self.is_edit() { HINT } else { ADD_HINT }, width)).style(Style::new().fg(Color::DarkGray));
         frame.render_widget(Paragraph::new(hint), rect);
     }
 }
