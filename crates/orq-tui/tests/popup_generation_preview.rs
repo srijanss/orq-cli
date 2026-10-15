@@ -210,3 +210,24 @@ fn nothing_selected_is_not_sent_to_the_backend() {
     assert!(backend.accepted.is_empty());
     assert!(has(&lines, "Select at least one"), "{lines:?}");
 }
+
+#[test]
+fn the_focused_candidate_shows_its_description_and_dependencies() {
+    let mut backend = fake();
+    backend.generated = Ok(vec![
+        CandidateView {
+            name: "alpha".into(),
+            description: Some("Read the spec file and list its sections".into()),
+            depends_on: vec!["base".into(), "other".into()],
+            kind: CandidateKind::New,
+            suggests_parallel: false,
+            ignored_fields: vec![],
+        },
+        view("beta", CandidateKind::New, false),
+    ]);
+
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('g'))]);
+
+    assert!(has(&lines, "Read the spec file and list its sections"), "{lines:?}");
+    assert!(has(&lines, "depends on: base, other"), "{lines:?}");
+}

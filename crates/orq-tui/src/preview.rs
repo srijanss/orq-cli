@@ -118,9 +118,10 @@ impl PreviewState {
         PreviewAction::None
     }
 
-    /// The row of the list region, below the two header lines.
+    /// The rows of the list region: below the two header lines, above the two
+    /// detail lines, the error line and the hint.
     fn list_rows(body: Rect) -> usize {
-        usize::from(body.height.saturating_sub(4))
+        usize::from(body.height.saturating_sub(6))
     }
 
     fn top(&self, rows: usize) -> usize {
@@ -187,6 +188,17 @@ impl PreviewState {
             let line = format!(" {marker} {box_} {name}{detail}");
             let row = u16::try_from(2 + offset - top).unwrap_or(u16::MAX);
             put(row, Line::from(Span::styled(truncate_right(&line, width), style)));
+        }
+        if let Some(item) = self.items.get(self.cursor) {
+            let description = item.view.description.as_deref().map(printable).unwrap_or_default();
+            let depends = if item.view.depends_on.is_empty() {
+                String::new()
+            } else {
+                format!(" depends on: {}", printable(&item.view.depends_on.join(", ")))
+            };
+            let base = body.height.saturating_sub(4);
+            put(base, Line::from(Span::styled(truncate_right(&format!(" {description}"), width), dim)));
+            put(base + 1, Line::from(Span::styled(truncate_right(&depends, width), dim)));
         }
         if let Some(error) = &self.error {
             let text = format!(" {}", printable(error));
