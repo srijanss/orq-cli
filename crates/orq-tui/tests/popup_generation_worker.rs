@@ -126,7 +126,7 @@ fn escape_cancels_a_running_generation_and_the_browser_stays_usable() {
 
     // After Esc the script is exhausted, which ends the session; the browser
     // must have left the generating state by then.
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Esc)]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Esc)]);
 
     assert!(backend.cancelled.load(Ordering::SeqCst));
     assert!(has(&lines, "Generation cancelled"), "{lines:?}");
@@ -137,7 +137,7 @@ fn escape_cancels_a_running_generation_and_the_browser_stays_usable() {
 fn a_running_generation_shows_progress_and_a_finished_one_opens_the_preview() {
     let mut backend = backend(3);
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g'))]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g()]);
 
     assert!(has(&lines, "Generated candidates"), "{lines:?}");
     assert!(has(&lines, "alpha"), "{lines:?}");
@@ -149,7 +149,11 @@ fn a_failed_background_generation_is_reported() {
     let mut backend = backend(1);
     backend.result = Err("the agent exited with status 3".into());
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g'))]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g()]);
 
     assert!(has(&lines, "Generation failed: the agent exited with status 3"), "{lines:?}");
+}
+
+fn ctrl_g() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
 }

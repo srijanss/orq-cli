@@ -42,6 +42,8 @@ pub(crate) enum FormAction {
     None,
     Cancel,
     Save,
+    /// Leave the form and generate features from a spec file instead.
+    Generate,
 }
 
 const NAME: usize = 0;
@@ -53,7 +55,7 @@ const FIRST_DEPENDENCY: usize = 5;
 /// Lines above the first field: the title and the fixed status.
 const FIELD_LINES_FROM: usize = 2;
 const DEPENDS_HEADER_LINE: usize = FIELD_LINES_FROM + FIRST_DEPENDENCY;
-const HINT: &str = " ↑↓ move · Space toggle · Ctrl+S save · Esc cancel ";
+const HINT: &str = " ↑↓ move · Space toggle · Ctrl+S save · Ctrl+G generate from spec · Esc cancel ";
 
 pub(crate) struct FormState {
     name: String,
@@ -218,6 +220,7 @@ impl FormState {
         match key.code {
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Char('s') if control => return FormAction::Save,
+            KeyCode::Char('g') if control && !self.is_edit() => return FormAction::Generate,
             KeyCode::Down | KeyCode::Tab => self.focus = (self.focus + 1).min(last),
             KeyCode::Up | KeyCode::BackTab => self.focus = self.focus.saturating_sub(1),
             KeyCode::Right if self.focus == PARALLELIZABLE => self.cycle(true),

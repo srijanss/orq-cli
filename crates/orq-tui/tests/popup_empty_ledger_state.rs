@@ -103,13 +103,12 @@ fn position_of(lines: &[String], needle: &str, from_row: usize) -> (u16, u16) {
 }
 
 #[test]
-fn an_absent_file_shows_an_empty_state_with_both_actions() {
+fn an_absent_file_shows_an_empty_state_with_the_add_action() {
     let lines = run(&mut Fake::absent(), vec![]);
 
     assert!(has(&lines, "No feature file yet"), "{lines:?}");
     assert!(has(&lines, PATH), "{lines:?}");
     assert!(has(&lines, "Add Feature"), "{lines:?}");
-    assert!(has(&lines, "Generate from Spec"), "{lines:?}");
     assert!(!has(&lines, "ledger error"), "{lines:?}");
 }
 
@@ -139,17 +138,12 @@ fn the_add_button_in_the_empty_state_opens_the_form() {
 }
 
 #[test]
-fn generate_from_spec_without_a_generating_backend_reports_it_and_keeps_manual_creation() {
+fn generate_from_spec_is_only_offered_from_the_add_form() {
     let lines = run(&mut Fake::absent(), vec![]);
-    let (column, row) = position_of(&lines, "Generate from Spec", 5);
+    let form = run(&mut Fake::absent(), vec![key(KeyCode::Char('a'))]);
 
-    let after = run(&mut Fake::absent(), vec![click(column, row)]);
-
-    assert!(!has(&lines, "not available yet"), "{lines:?}");
-    assert!(has(&after, "Generation failed"), "{after:?}");
-    assert!(has(&after, "No feature file yet"), "{after:?}");
-    assert!(has(&after, "Add Feature"), "{after:?}");
-    assert!(!has(&after, "Depends on"), "{after:?}");
+    assert!(!has(&lines, "Generate from Spec"), "{lines:?}");
+    assert!(has(&form, "Ctrl+G generate"), "{form:?}");
 }
 
 #[test]

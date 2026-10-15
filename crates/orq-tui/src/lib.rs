@@ -1819,22 +1819,18 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
 }
 
 const EMPTY_TITLE: &str = "No feature file yet";
-const GENERATE_LABEL: &str = "[ Generate from Spec ]";
 
-/// The Add and Generate buttons of the empty state, in `area` (the body).
-fn empty_state_rects(area: Rect) -> (Rect, Rect) {
-    let button = |row: u16, label: &str| {
-        let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX).min(area.width);
-        Rect::new(area.x, area.y.saturating_add(row).min(area.bottom()), width, 1)
-    };
-    (button(3, ADD_LABEL), button(5, GENERATE_LABEL))
+/// The Add button of the empty state, in `area` (the body).
+fn empty_state_add_rect(area: Rect) -> Rect {
+    let width = u16::try_from(ADD_LABEL.chars().count()).unwrap_or(u16::MAX).min(area.width);
+    Rect::new(area.x, area.y.saturating_add(3).min(area.bottom()), width, 1)
 }
 
-/// The absent-file state: where the file will go and the two ways to start.
+/// The absent-file state: where the file will go and the way to start.
 fn render_empty_state(frame: &mut Frame, area: Rect, error: &LedgerErrorView) {
     let width = usize::from(area.width);
     let dim = Style::new().fg(Color::DarkGray);
-    let (add, generate) = empty_state_rects(area);
+    let add = empty_state_add_rect(area);
     let mut put = |rect: Rect, line: Line<'static>| {
         if rect.y < area.bottom() {
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, rect.y, area.width, 1));
@@ -1845,8 +1841,6 @@ fn render_empty_state(frame: &mut Frame, area: Rect, error: &LedgerErrorView) {
     let path = truncate_left(&printable(&error.path), width);
     put(Rect::new(area.x, area.y + 1, 0, 1), Line::from(Span::styled(path, dim)));
     put(add, Line::from(Span::styled(ADD_LABEL, Style::new().fg(Color::Green))));
-    let label = truncate_right(GENERATE_LABEL, width);
-    put(generate, Line::from(Span::styled(label, Style::new().fg(Color::Green))));
 }
 
 const ADD_LABEL: &str = "[ + Add Feature ]";
@@ -2555,6 +2549,10 @@ where
                             let area = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                             browser.submit_form(backend, area);
                         }
+                        FormAction::Generate => {
+                            browser.form = None;
+                            browser.open_generation(backend);
+                        }
                         FormAction::None => {}
                     }
                     dirty = true;
@@ -2581,10 +2579,6 @@ where
                         KeyCode::Esc => return Ok(()),
                         KeyCode::Char('a') if browser.absent => {
                             browser.open_add_form();
-                            dirty = true;
-                        }
-                        KeyCode::Char('g') if browser.absent => {
-                            browser.open_generation(backend);
                             dirty = true;
                         }
                         code if reload_requested(code) => {
@@ -2658,11 +2652,6 @@ where
                 }
                 if key.code == KeyCode::Char('a') && !browser.search.active {
                     browser.open_add_form();
-                    dirty = true;
-                    continue;
-                }
-                if key.code == KeyCode::Char('g') && !browser.search.active {
-                    browser.open_generation(backend);
                     dirty = true;
                     continue;
                 }
@@ -2756,7 +2745,7 @@ where
                         match form.click(body, mouse.column, mouse.row) {
                             FormAction::Cancel => browser.form = None,
                             FormAction::Save => browser.submit_form(backend, chrome_body(full)),
-                            FormAction::None => {}
+                            FormAction::None | FormAction::Generate => {}
                         }
                         dirty = true;
                     }
@@ -2794,15 +2783,10 @@ where
                 }
                 if browser.error.is_some() {
                     let press = Position::new(mouse.column, mouse.row);
-                    let (add, generate) = empty_state_rects(chrome_body(full));
-                    if browser.absent && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        if add.contains(press) {
-                            browser.open_add_form();
-                            dirty = true;
-                        } else if generate.contains(press) {
-                            browser.open_generation(backend);
-                            dirty = true;
-                        }
+                    let add = empty_state_add_rect(chrome_body(full));
+                    if browser.absent && mouse.kind == MouseEventKind::Down(MouseButton::Left) && add.contains(press) {
+                        browser.open_add_form();
+                        dirty = true;
                     }
                     continue;
                 }

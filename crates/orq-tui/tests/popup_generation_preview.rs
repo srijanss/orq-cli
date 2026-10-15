@@ -6,7 +6,7 @@ use orq_tui::{
     FormSaveOutcome, LedgerErrorView, PopupModel, PromoteOutcome,
 };
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 
 struct Script(VecDeque<Event>);
@@ -91,15 +91,6 @@ fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
-fn click(column: u16, row: u16) -> Event {
-    Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    })
-}
-
 fn screen(backend: &mut Fake, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let (width, height) = (100u16, 24u16);
@@ -116,12 +107,8 @@ fn has(lines: &[String], needle: &str) -> bool {
 }
 
 #[test]
-fn the_generate_button_opens_a_preview_of_new_duplicate_and_invalid_candidates() {
-    let lines = screen(&mut fake(), vec![]);
-    let row = lines.iter().position(|l| l.contains("Generate from Spec")).unwrap();
-    let column = lines[row].find("Generate from Spec").unwrap();
-
-    let lines = screen(&mut fake(), vec![click(column as u16, row as u16)]);
+fn ctrl_g_in_the_add_form_opens_a_preview_of_new_duplicate_and_invalid_candidates() {
+    let lines = screen(&mut fake(), vec![key(KeyCode::Char('a')), ctrl_g()]);
 
     assert!(has(&lines, "2 new, 1 duplicate, 1 invalid"), "{lines:?}");
     assert!(has(&lines, "alpha · parallel"), "{lines:?}");
@@ -136,7 +123,7 @@ fn enter_adds_only_the_selected_new_candidates_with_the_kept_suggestion() {
 
     let lines = screen(
         &mut backend,
-        vec![key(KeyCode::Char('g')), key(KeyCode::Down), key(KeyCode::Char(' ')), key(KeyCode::Enter)],
+        vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Down), key(KeyCode::Char(' ')), key(KeyCode::Enter)],
     );
 
     assert_eq!(
@@ -151,7 +138,7 @@ fn enter_adds_only_the_selected_new_candidates_with_the_kept_suggestion() {
 fn the_parallel_suggestion_can_be_removed_before_adding() {
     let mut backend = fake();
 
-    let _ = screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Char('p')), key(KeyCode::Enter)]);
+    let _ = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Char('p')), key(KeyCode::Enter)]);
 
     assert_eq!(backend.accepted[0][0], AcceptedCandidate { name: "alpha".into(), parallelizable: None });
     assert_eq!(backend.accepted[0][1], AcceptedCandidate { name: "beta".into(), parallelizable: None });
@@ -162,7 +149,7 @@ fn reject_all_and_cancel_add_nothing() {
     for close in [KeyCode::Char('x'), KeyCode::Esc] {
         let mut backend = fake();
 
-        let lines = screen(&mut backend, vec![key(KeyCode::Char('g')), key(close)]);
+        let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g(), key(close)]);
 
         assert!(backend.accepted.is_empty());
         assert!(has(&lines, "No feature file yet"), "{lines:?}");
@@ -174,7 +161,7 @@ fn a_failed_generation_is_reported_and_manual_creation_stays_usable() {
     let mut backend = fake();
     backend.generated = Err("harness \"pi\" was not found; set one in the Settings tab".into());
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g'))]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g()]);
 
     assert!(has(&lines, "Generation failed"), "{lines:?}");
     assert!(has(&lines, "Settings tab"), "{lines:?}");
@@ -186,7 +173,7 @@ fn a_failed_save_keeps_the_preview_open_for_a_retry() {
     let mut backend = fake();
     backend.accept_outcome = Some(FormSaveOutcome::Failed { reason: "disk full".into() });
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Enter)]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Enter)]);
 
     assert!(has(&lines, "disk full"), "{lines:?}");
     assert!(has(&lines, "Generated candidates"), "{lines:?}");
@@ -199,7 +186,7 @@ fn nothing_selected_is_not_sent_to_the_backend() {
     let lines = screen(
         &mut backend,
         vec![
-            key(KeyCode::Char('g')),
+            key(KeyCode::Char('a')), ctrl_g(),
             key(KeyCode::Char(' ')),
             key(KeyCode::Down),
             key(KeyCode::Char(' ')),
@@ -226,8 +213,12 @@ fn the_focused_candidate_shows_its_description_and_dependencies() {
         view("beta", CandidateKind::New, false),
     ]);
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g'))]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g()]);
 
     assert!(has(&lines, "Read the spec file and list its sections"), "{lines:?}");
     assert!(has(&lines, "depends on: base, other"), "{lines:?}");
+}
+
+fn ctrl_g() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
 }

@@ -87,7 +87,7 @@ fn has(lines: &[String], needle: &str) -> bool {
 fn generate_lists_the_markdown_files_and_filters_them_as_you_type() {
     let mut backend = backend(&["SPEC.md", "docs/mvp2.md", "notes.md"]);
 
-    let mut events = vec![key(KeyCode::Char('g'))];
+    let mut events = vec![key(KeyCode::Char('a')), ctrl_g()];
     events.extend(typed("mvp"));
     let lines = screen(&mut backend, events);
 
@@ -102,7 +102,7 @@ fn generate_lists_the_markdown_files_and_filters_them_as_you_type() {
 fn enter_starts_generation_with_the_chosen_file_and_the_section_text() {
     let mut backend = backend(&["SPEC.md", "docs/mvp2.md", "notes.md"]);
 
-    let mut events = vec![key(KeyCode::Char('g'))];
+    let mut events = vec![key(KeyCode::Char('a')), ctrl_g()];
     events.extend(typed("notes"));
     events.push(key(KeyCode::Tab));
     events.extend(typed("MVP2"));
@@ -117,7 +117,7 @@ fn enter_starts_generation_with_the_chosen_file_and_the_section_text() {
 fn arrow_keys_choose_a_file_and_a_blank_section_means_the_whole_spec() {
     let mut backend = backend(&["SPEC.md", "notes.md"]);
 
-    let events = vec![key(KeyCode::Char('g')), key(KeyCode::Down), key(KeyCode::Enter)];
+    let events = vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Down), key(KeyCode::Enter)];
     let _ = screen(&mut backend, events);
 
     assert_eq!(*backend.started.lock().unwrap(), [("notes.md".to_string(), String::new())]);
@@ -127,7 +127,7 @@ fn arrow_keys_choose_a_file_and_a_blank_section_means_the_whole_spec() {
 fn escape_closes_the_picker_without_starting_anything() {
     let mut backend = backend(&["SPEC.md"]);
 
-    let lines = screen(&mut backend, vec![key(KeyCode::Char('g')), key(KeyCode::Esc)]);
+    let lines = screen(&mut backend, vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Esc)]);
 
     assert!(backend.started.lock().unwrap().is_empty());
     assert!(!has(&lines, "Section"), "{lines:?}");
@@ -137,7 +137,7 @@ fn escape_closes_the_picker_without_starting_anything() {
 fn no_matching_file_starts_nothing() {
     let mut backend = backend(&["SPEC.md"]);
 
-    let mut events = vec![key(KeyCode::Char('g'))];
+    let mut events = vec![key(KeyCode::Char('a')), ctrl_g()];
     events.extend(typed("zzz"));
     events.push(key(KeyCode::Enter));
     let lines = screen(&mut backend, events);
@@ -202,7 +202,7 @@ fn flaky_screen(events: Vec<Event>) -> (Vec<String>, u32) {
 }
 
 fn generate() -> Vec<Event> {
-    vec![key(KeyCode::Char('g')), key(KeyCode::Enter)]
+    vec![key(KeyCode::Char('a')), ctrl_g(), key(KeyCode::Enter)]
 }
 
 #[test]
@@ -244,4 +244,8 @@ fn after_a_failed_job_generation_can_be_started_again() {
 
     assert_eq!(attempts, 3);
     assert!(has(&lines, "Generating"), "{lines:?}");
+}
+
+fn ctrl_g() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
 }
