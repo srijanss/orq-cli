@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
         (Some("features"), _) => features(&args[1..]),
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
+        (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
         _ => usage_error(),
@@ -146,6 +147,99 @@ fn entry_json(entry: &orq_features::FeatureEntry) -> serde_json::Value {
         "description": entry.description,
         "dependsOn": entry.depends_on,
     })
+}
+
+/// The flags `feature add` takes; a flag that is not given stays `None`, so
+/// the field is left out of the ledger.
+#[derive(Default)]
+struct FieldFlags {
+    repo: Option<PathBuf>,
+    name: Option<String>,
+    description: Option<String>,
+    depends_on: Option<Vec<String>>,
+    parallelizable: Option<bool>,
+    test_file: Option<String>,
+    target_files: Option<Vec<String>>,
+}
+
+/// Parses `--flag value` pairs.
+/// Errors are the message to show.
+fn parse_field_flags(args: &[OsString]) -> Result<FieldFlags, String> {
+    let mut flags = FieldFlags::default();
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        let flag = flag.to_str().ok_or("arguments must be valid UTF-8")?;
+        let value = iter.next().ok_or(format!("{flag} needs a value"))?;
+        let text = || value.to_str().map(str::to_string).ok_or("arguments must be valid UTF-8".to_string());
+        match flag {
+            "--repo" => flags.repo = Some(PathBuf::from(value)),
+            "--name" => flags.name = Some(text()?),
+            "--description" => flags.description = Some(text()?),
+            "--depends-on" => flags.depends_on.get_or_insert_with(Vec::new).push(text()?),
+            "--test-file" => flags.test_file = Some(text()?),
+            "--target-file" => flags.target_files.get_or_insert_with(Vec::new).push(text()?),
+            "--parallelizable" => {
+                flags.parallelizable = Some(match text()?.as_str() {
+                    "yes" => true,
+                    "no" => false,
+                    other => return Err(format!("--parallelizable must be yes or no, not {other:?}")),
+                })
+            }
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+    Ok(flags)
+}
+
+/// The saved entry as printed: the list fields plus the optional ones that are present.
+fn saved_entry_json(entry: &orq_features::FeatureEntry) -> serde_json::Value {
+    let mut json = entry_json(entry);
+    let map = json.as_object_mut().expect("entry_json is an object");
+    if let Some(flag) = entry.parallelizable {
+        map.insert("parallelizable".into(), flag.into());
+    }
+    if let Some(test_file) = &entry.test_file {
+        map.insert("testFile".into(), test_file.clone().into());
+    }
+    if !entry.target_files.is_empty() {
+        map.insert("targetFiles".into(), entry.target_files.clone().into());
+    }
+    json
+}
+
+/// `orq feature add --repo <path> --name <name> [...]`: appends a draft and
+/// prints it. Never starts an agent, worktree or run.
+fn feature_add(args: &[OsString]) -> ExitCode {
+    let flags = match parse_field_flags(args) {
+        Ok(flags) => flags,
+        Err(message) => return fail(message),
+    };
+    let Some(repo) = flags.repo else { return fail("--repo is required") };
+    let Some(name) = flags.name else { return fail("--name is required") };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let path = orq_features::ledger_path(&project);
+    let loaded = match orq_features::LoadedLedger::load_or_new(&path) {
+        Ok(loaded) => loaded,
+        Err(err) => return fail(ledger_error_text(&err)),
+    };
+    let draft = orq_features::FeatureDraft {
+        feature_name: name,
+        description: flags.description,
+        depends_on: flags.depends_on,
+        parallelizable: flags.parallelizable,
+        test_file: flags.test_file,
+        target_files: flags.target_files,
+    };
+    match loaded.append(&draft) {
+        Ok(entry) => {
+            println!("{}", saved_entry_json(&entry));
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
+    }
 }
 
 /// `orq feature set-status --repo <path> --id <name> --status pending`:
