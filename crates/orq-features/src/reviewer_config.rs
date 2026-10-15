@@ -41,34 +41,38 @@ pub fn load_reviewer_config(path: &Path) -> Result<TddReviewerConfig, ReviewerCo
     };
     let malformed = |message: String| ReviewerConfigError::Malformed { path: path.to_path_buf(), message };
     let root: serde_json::Value = serde_json::from_str(&text).map_err(|e| malformed(e.to_string()))?;
+    let Some(root) = root.as_object() else {
+        return Err(malformed("the file must hold a JSON object".into()));
+    };
     let Some(reviewers) = root.get("reviewers") else {
         return Ok(TddReviewerConfig::default());
     };
+    let Some(reviewers) = reviewers.as_object() else {
+        return Err(malformed("reviewers must be an object".into()));
+    };
+    // A name must be a non-blank single-line string.
+    let name = |value: Option<&serde_json::Value>, what: &str| -> Result<String, ReviewerConfigError> {
+        match value.and_then(serde_json::Value::as_str).map(str::trim) {
+            Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => Ok(text.to_string()),
+            _ => Err(malformed(format!("{what} must be a non-blank single-line string"))),
+        }
+    };
     let default_reviewer = match reviewers.get("default") {
         None => None,
-        Some(serde_json::Value::Object(map)) => {
-            let text = |key: &str| map.get(key).and_then(serde_json::Value::as_str);
-            match (text("reviewer"), text("model")) {
-                (Some(harness), Some(model)) => {
-                    Some(AgentProfile { harness: harness.to_string(), profile: model.to_string() })
-                }
-                _ => None,
-            }
-        }
+        Some(serde_json::Value::Object(map)) => Some(AgentProfile {
+            harness: name(map.get("reviewer"), "reviewers.default.reviewer")?,
+            profile: name(map.get("model"), "reviewers.default.model")?,
+        }),
         Some(_) => return Err(malformed("reviewers.default must be an object".into())),
     };
     let allowed_models = match reviewers.get("allowedModels") {
         None => None,
-        Some(serde_json::Value::Array(items)) => {
-            let mut models = Vec::new();
-            for item in items {
-                match item.as_str() {
-                    Some(model) => models.push(model.to_string()),
-                    None => return Err(malformed("reviewers.allowedModels must hold strings".into())),
-                }
-            }
-            Some(models)
-        }
+        Some(serde_json::Value::Array(items)) => Some(
+            items
+                .iter()
+                .map(|item| name(Some(item), "reviewers.allowedModels entries"))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         Some(_) => return Err(malformed("reviewers.allowedModels must be an array".into())),
     };
     Ok(TddReviewerConfig { default_reviewer, allowed_models })

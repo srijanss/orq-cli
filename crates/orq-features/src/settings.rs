@@ -96,6 +96,20 @@ impl Settings {
     /// Refuses when the file differs from what was loaded.
     pub fn save(&mut self) -> Result<(), SettingsError> {
         let io = |source| SettingsError::Io { path: self.path.clone(), source };
+        // Serialise the compare and the write across processes by locking the
+        // directory itself (no lock file); released when `_guard` drops.
+        let parent = self.path.parent().filter(|p| !p.as_os_str().is_empty());
+        if let Some(parent) = parent {
+            std::fs::create_dir_all(parent).map_err(io)?;
+        }
+        let _guard = match parent {
+            Some(parent) => {
+                let dir = std::fs::File::open(parent).map_err(io)?;
+                dir.lock().map_err(io)?;
+                Some(dir)
+            }
+            None => None,
+        };
         let current = match std::fs::read_to_string(&self.path) {
             Ok(text) => Some(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -103,9 +117,6 @@ impl Settings {
         };
         if current != self.loaded {
             return Err(SettingsError::Conflict { path: self.path.clone() });
-        }
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(io)?;
         }
         let text = self.doc.to_string();
         write_ledger_atomic(&self.path, &text).map_err(io)?;

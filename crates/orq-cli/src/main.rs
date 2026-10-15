@@ -373,6 +373,9 @@ struct LedgerBackend {
     loaded: Option<orq_features::LoadedLedger>,
     /// The user-level settings file, when `XDG_CONFIG_HOME` or `HOME` give one.
     settings_path: Option<PathBuf>,
+    /// The settings as last loaded for the tab: saves are checked against
+    /// this snapshot, so an outside edit is a conflict, not an overwrite.
+    settings_snapshot: Option<orq_features::Settings>,
 }
 
 impl LedgerBackend {
@@ -381,7 +384,7 @@ impl LedgerBackend {
             std::env::var_os("XDG_CONFIG_HOME").as_deref(),
             std::env::var_os("HOME").as_deref(),
         );
-        Self { path, loaded: None, settings_path }
+        Self { path, loaded: None, settings_path, settings_snapshot: None }
     }
 
     fn settings_file(&self) -> Result<&Path, String> {
@@ -448,12 +451,16 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         };
         let settings = match orq_features::Settings::load(path) {
             Ok(settings) => settings,
-            Err(error) => return failed(error.to_string()),
+            Err(error) => {
+                self.settings_snapshot = None;
+                return failed(error.to_string());
+            }
         };
         let roles = (
             settings.agent(orq_features::AgentRole::Implementer),
             settings.agent(orq_features::AgentRole::Reviewer),
         );
+        self.settings_snapshot = Some(settings);
         let (implementer, reviewer) = match roles {
             (Ok(implementer), Ok(reviewer)) => (implementer, reviewer),
             (Err(error), _) | (_, Err(error)) => return failed(error.to_string()),
@@ -485,8 +492,13 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         implementer: &orq_tui::AgentSetting,
         reviewer: &orq_tui::AgentSetting,
     ) -> Result<(), String> {
-        let path = self.settings_file()?;
-        let mut settings = orq_features::Settings::load(path).map_err(|e| e.to_string())?;
+        let mut settings = match self.settings_snapshot.take() {
+            Some(snapshot) => snapshot,
+            None => {
+                let path = self.settings_file()?;
+                orq_features::Settings::load(path).map_err(|e| e.to_string())?
+            }
+        };
         let roles = [
             (orq_features::AgentRole::Implementer, implementer),
             (orq_features::AgentRole::Reviewer, reviewer),
@@ -498,7 +510,17 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             }
             settings.set_agent(role, &value.harness, &value.profile).map_err(|e| e.to_string())?;
         }
-        settings.save().map_err(|e| e.to_string())
+        let saved = settings.save();
+        // Keep the snapshot even after a conflict: it stays stale until the
+        // tab reloads, so the same stale values are never written later.
+        self.settings_snapshot = Some(settings);
+        saved.map_err(|error| match error {
+            orq_features::SettingsError::Conflict { .. } => {
+                "settings.toml changed since the Settings tab was loaded; nothing was written, reopen the tab to reload"
+                    .to_string()
+            }
+            other => other.to_string(),
+        })
     }
 }
 
@@ -572,6 +594,26 @@ mod ledger_backend_tests {
         assert_eq!(view.reviewer_override.as_deref(), Some("pi / gpt-6"));
         assert_eq!(view.error, None);
         assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+    }
+
+    #[test]
+    fn saving_after_an_outside_edit_is_a_conflict_not_an_overwrite() {
+        let (dir, path) = ledger(&["stale"]);
+        let mut backend = LedgerBackend::new(path);
+        let settings = dir.join("cfg").join("orq").join("settings.toml");
+        backend.settings_path = Some(settings.clone());
+        let none = orq_tui::AgentSetting::default();
+        let opus = orq_tui::AgentSetting { harness: "claude".into(), profile: "opus".into() };
+        backend.save_settings(&opus, &none).unwrap();
+        backend.load_settings();
+        let outside = "[implementer]\nharness = \"claude\"\nprofile = \"opus\"\n[reviewer]\nharness = \"pi\"\nprofile = \"gpt\"\n";
+        std::fs::write(&settings, outside).unwrap();
+
+        let sonnet = orq_tui::AgentSetting { harness: "claude".into(), profile: "sonnet".into() };
+        let result = backend.save_settings(&sonnet, &none);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), outside);
     }
 
     #[test]

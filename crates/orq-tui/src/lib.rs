@@ -1520,10 +1520,22 @@ impl SettingsState {
             2 => reviewer.harness = text,
             _ => reviewer.profile = text,
         }
+        // A role is saved whole: while one of its fields is still empty the
+        // typed text stays as an unsaved draft instead of being rejected.
+        let half_filled = [("Implementer", &implementer), ("Reviewer", &reviewer)]
+            .into_iter()
+            .find(|(_, role)| role.harness.trim().is_empty() != role.profile.trim().is_empty());
+        if let Some((name, _)) = half_filled {
+            self.view.implementer = implementer;
+            self.view.reviewer = reviewer;
+            self.editing = None;
+            self.status = Some(format!("{name}: fill both harness and profile to save"));
+            return;
+        }
         match backend.save_settings(&implementer, &reviewer) {
             Ok(()) => {
-                self.view.implementer = implementer;
-                self.view.reviewer = reviewer;
+                // Reload so overrides and validation reflect what was persisted.
+                self.view = backend.load_settings();
                 self.editing = None;
                 self.status = Some("Saved".to_string());
             }
