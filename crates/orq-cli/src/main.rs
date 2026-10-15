@@ -480,6 +480,7 @@ fn ui(args: &[OsString]) -> ExitCode {
         let result = match orq_git::resolve_project(&cwd) {
             Ok(project) => {
                 let mut backend = LedgerBackend::new(orq_features::ledger_path(&project));
+                backend.repo_root = Some(project.root.clone());
                 orq_tui::run_browser_on_terminal(&model, &mut backend)
             }
             Err(_) => orq_tui::run_on_terminal(&model).map(|_| ()),
@@ -499,6 +500,9 @@ fn ui(args: &[OsString]) -> ExitCode {
 /// file changed behind the popup's back is a conflict rather than overwritten.
 struct LedgerBackend {
     path: PathBuf,
+    /// The working tree specs are read from; the ledger may live in another
+    /// checkout, so this is not always the ledger's directory.
+    repo_root: Option<PathBuf>,
     loaded: Option<orq_features::LoadedLedger>,
     /// The last load failed only because the file does not exist yet.
     absent: bool,
@@ -601,12 +605,16 @@ fn find_program(harness: &str) -> Option<PathBuf> {
 
 fn generate_reviewed(
     ledger_path: &Path,
+    repo_root: Option<PathBuf>,
     settings_file: Result<PathBuf, String>,
     program_override: Option<PathBuf>,
     cancel: &std::sync::atomic::AtomicBool,
     choice: Option<(&str, &str)>,
 ) -> Result<Vec<orq_features::ReviewedCandidate>, String> {
-        let repo_root = ledger_path.parent().ok_or("the feature file has no directory")?.to_path_buf();
+        let repo_root = match repo_root.or_else(|| ledger_path.parent().map(Path::to_path_buf)) {
+            Some(root) => root,
+            None => return Err("the feature file has no directory".to_string()),
+        };
         let (spec, focus) = match choice {
             Some((spec, focus)) => (
                 orq_features::resolve_spec_file(&repo_root, spec).map_err(|e| e.to_string())?,
@@ -746,6 +754,7 @@ impl LedgerBackend {
         );
         Self {
             path,
+            repo_root: None,
             loaded: None,
             absent: false,
             settings_path,
@@ -755,6 +764,10 @@ impl LedgerBackend {
             harness_programs: None,
             harness_cache: None,
         }
+    }
+
+    fn spec_root(&self) -> Option<PathBuf> {
+        self.repo_root.clone().or_else(|| self.path.parent().map(Path::to_path_buf))
     }
 
     fn settings_file(&self) -> Result<&Path, String> {
@@ -768,6 +781,7 @@ impl LedgerBackend {
         use std::sync::{mpsc, Arc};
         self.staged.lock().unwrap().clear();
         let path = self.path.clone();
+        let repo_root = self.spec_root();
         let settings_file = self.settings_file().map(Path::to_path_buf);
         let program_override = self.program_override.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -776,6 +790,7 @@ impl LedgerBackend {
         let handle = std::thread::spawn(move || {
             let _ = sender.send(generate_reviewed(
                 &path,
+                repo_root,
                 settings_file,
                 program_override,
                 &flag,
@@ -946,6 +961,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         self.staged.lock().unwrap().clear();
         let reviewed = generate_reviewed(
             &self.path,
+            self.spec_root(),
             self.settings_file().map(Path::to_path_buf),
             self.program_override.clone(),
             &std::sync::atomic::AtomicBool::new(false),
@@ -957,8 +973,8 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     }
 
     fn spec_files(&mut self) -> Vec<String> {
-        match self.path.parent() {
-            Some(root) => orq_features::spec_file_choices(root),
+        match self.spec_root() {
+            Some(root) => orq_features::spec_file_choices(&root),
             None => Vec::new(),
         }
     }
@@ -1306,6 +1322,33 @@ mod ledger_backend_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn specs_come_from_the_working_tree_when_the_ledger_lives_elsewhere() {
+        let (dir, path) = ledger(&["elsewhere"]);
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("SPEC.md"), "# spec\n").unwrap();
+        let agent = orq_test_support::FakeAgent::builder().stdout("[]").build();
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(work.clone());
+        backend.settings_path = Some(dir.join("cfg").join("orq").join("config.toml"));
+        backend.program_override = Some(agent.path().to_path_buf());
+        let none = orq_tui::AgentSetting::default();
+        let writer = orq_tui::AgentSetting { harness: "claude".into(), model: "writer".into() };
+        backend.save_settings(&writer, &none).unwrap();
+
+        assert_eq!(backend.spec_files(), ["SPEC.md"]);
+        let mut job = backend.start_generation_for("SPEC.md", "").unwrap();
+        let result = loop {
+            if let Some(result) = job.poll() {
+                break result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(agent.last_run().unwrap().cwd, work.canonicalize().unwrap_or(work));
     }
 
     fn worker(
