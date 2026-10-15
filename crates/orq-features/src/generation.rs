@@ -153,7 +153,8 @@ pub fn run_generation_cancellable(
     // Built-in read-only argv; unknown harnesses fail closed.
     let restrictions: &[&str] = match request.model.harness.as_str() {
         "claude" => &[
-            "--bare",
+            // No `--bare`: it never reads OAuth/keychain logins, so a
+            // subscription-signed-in `claude` would exit "Not logged in".
             // `--tools` limits which tools exist at all; `--allowedTools`
             // would only skip permission prompts, so it is not used.
             "--tools",

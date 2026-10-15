@@ -11,7 +11,7 @@ fn help(program: &str) -> Option<String> {
 #[test]
 fn the_installed_claude_documents_every_read_only_flag_and_the_plan_mode() {
     let Some(help) = help("claude") else { return };
-    for needle in ["--model", "--tools", "--permission-mode", "--strict-mcp-config", "--bare", "--disallowedTools", "\"plan\""] {
+    for needle in ["--model", "--tools", "--permission-mode", "--strict-mcp-config", "--disallowedTools", "\"plan\""] {
         assert!(help.contains(needle), "claude --help no longer mentions {needle}");
     }
 }
