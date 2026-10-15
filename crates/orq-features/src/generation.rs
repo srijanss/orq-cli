@@ -98,10 +98,13 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
         })?;
 
     let stdout = child.stdout.take().expect("piped stdout");
-    let reader = std::thread::spawn(move || {
+    // The reader reports through a channel so the wait for it can be bounded:
+    // a descendant that inherited stdout keeps the pipe open past the agent.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stdout.take(MAX_OUTPUT_BYTES).read_to_end(&mut out);
-        out
+        let _ = sender.send(out);
     });
 
     let deadline = Instant::now() + request.timeout;
@@ -116,7 +119,11 @@ pub fn run_generation(request: &GenerationRequest<'_>) -> Result<PathBuf, Genera
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
-    let output = reader.join().unwrap_or_default();
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let output = match receiver.recv_timeout(remaining) {
+        Ok(output) => output,
+        Err(_) => return Err(GenerationError::TimedOut),
+    };
     if !status.success() {
         return Err(GenerationError::AgentFailed { code: status.code() });
     }
