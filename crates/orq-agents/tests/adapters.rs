@@ -90,3 +90,17 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
     let bad = ImplementRequest { implementer: spec("claude", "sonnet", Some("--x y")), ..request };
     assert!(matches!(claude.implement_argv(&bad), Err(AdapterError::InvalidValue { .. })));
 }
+
+#[test]
+fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built() {
+    let claude = adapter_for("claude").unwrap();
+    let request = ImplementRequest {
+        feature: "COM-02",
+        implementer: spec("claude", "opus", None),
+        reviewer: spec("gemini", "flash", None),
+    };
+    assert!(matches!(
+        claude.implement_argv(&request),
+        Err(AdapterError::UnknownHarness(name)) if name == "gemini"
+    ));
+}

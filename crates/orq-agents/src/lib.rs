@@ -115,7 +115,7 @@ impl HarnessAdapter for Claude {
         }
         plain("feature", request.feature)?;
         plain("implementer model", &request.implementer.model)?;
-        plain("reviewer harness", &request.reviewer.harness)?;
+        adapter_for(&request.reviewer.harness)?;
         plain("reviewer model", &request.reviewer.model)?;
         let mut prompt = format!(
             "/implement-and-review {} --reviewer {} --model {}",
