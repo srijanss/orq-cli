@@ -93,6 +93,19 @@ fn a_finished_session_records_start_and_completion_with_its_session_log_and_exit
     assert!(log.contains("out-ok\n") && log.contains("err-ok\n"), "{log}");
 }
 
+#[cfg(unix)]
+#[test]
+fn the_session_log_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("private-log");
+    let args = argv(&["-c", "exit 0"]);
+
+    run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+
+    let mode = fs::metadata(&s.log).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "log mode is {mode:o}");
+}
+
 #[test]
 fn a_failing_session_is_recorded_as_failed_with_its_exit_code() {
     let s = setup("fail");

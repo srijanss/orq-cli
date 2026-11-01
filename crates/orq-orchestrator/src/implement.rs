@@ -39,7 +39,12 @@ pub fn run_implement_stage(
     session: &ImplementSession<'_>,
 ) -> Result<ImplementOutcome, StoreError> {
     let record = store.load(run_id)?;
-    let log = fs::OpenOptions::new().create(true).append(true).open(session.log)?;
+    // Harness output can hold source and credentials: owner-only on creation.
+    let mut open = fs::OpenOptions::new();
+    open.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    let log = open.open(session.log)?;
     let event = |kind: &str, extra: serde_json::Value| {
         let mut payload = serde_json::json!({
             "session_id": session.session_id,
