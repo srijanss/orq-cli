@@ -6,6 +6,9 @@ use std::process::Command;
 mod fetch;
 pub use fetch::{fetch_target_base, redact_urls, FetchError};
 
+mod worktree;
+pub use worktree::{create_run_worktree, WorktreeError};
+
 mod provider;
 pub use provider::{detect_provider, parse_forge, remote_host, Provider, ProviderError, ProviderHosts};
 

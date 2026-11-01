@@ -1,0 +1,130 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use orq_git::{create_run_worktree, WorktreeError};
+use orq_test_support::GitFixture;
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "T")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "T")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// A repository whose HEAD has moved on from the recorded base commit, with an
+/// uncommitted change in the source checkout.
+fn moved_on() -> (GitFixture, String) {
+    let fixture = GitFixture::new();
+    let root = fixture.root();
+    let base = git(root, &["rev-parse", "HEAD"]);
+    std::fs::write(root.join("later.txt"), "later\n").unwrap();
+    git(root, &["add", "later.txt"]);
+    git(root, &["commit", "--quiet", "-m", "later"]);
+    std::fs::write(root.join("README.md"), "dirty\n").unwrap();
+    (fixture, base)
+}
+
+#[test]
+fn the_worktree_and_branch_start_at_the_base_sha_and_leave_the_source_checkout_alone() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let head_before = git(root, &["rev-parse", "HEAD"]);
+    let branch_before = git(root, &["symbolic-ref", "HEAD"]);
+
+    let dir = Path::new(".claude/worktrees/fix--a");
+    let path = create_run_worktree(root, dir, "fix--a", &base).unwrap();
+
+    assert_eq!(path, root.join(dir));
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), base);
+    assert_eq!(git(&path, &["symbolic-ref", "--short", "HEAD"]), "fix--a");
+    assert!(!path.join("later.txt").exists(), "the worktree is at the base, not the current HEAD");
+    // No upstream is configured for the new branch.
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args(["rev-parse", "--abbrev-ref", "fix--a@{upstream}"])
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap());
+
+    // The source checkout keeps its HEAD, branch and uncommitted change.
+    assert_eq!(git(root, &["rev-parse", "HEAD"]), head_before);
+    assert_eq!(git(root, &["symbolic-ref", "HEAD"]), branch_before);
+    assert_eq!(std::fs::read_to_string(root.join("README.md")).unwrap(), "dirty\n");
+    assert_eq!(git(root, &["status", "--porcelain", "--untracked-files=no"]), "M README.md");
+}
+
+#[test]
+fn a_taken_branch_or_path_is_refused_without_changing_anything() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    git(root, &["branch", "fix--taken", &base]);
+    let branches = git(root, &["branch", "--list"]);
+
+    let err = create_run_worktree(root, Path::new(".claude/worktrees/fix--taken"), "fix--taken", &base).unwrap_err();
+    assert!(matches!(err, WorktreeError::BranchExists { ref branch } if branch == "fix--taken"), "{err:?}");
+    assert!(!root.join(".claude/worktrees/fix--taken").exists());
+
+    // An existing directory (even an empty one) is never adopted.
+    std::fs::create_dir_all(root.join(".claude/worktrees/fix--b")).unwrap();
+    let err = create_run_worktree(root, Path::new(".claude/worktrees/fix--b"), "fix--b", &base).unwrap_err();
+    assert!(matches!(err, WorktreeError::PathExists { .. }), "{err:?}");
+    assert_eq!(git(root, &["branch", "--list"]), branches, "no branch was created");
+
+    // A second run on the same name collides on both.
+    create_run_worktree(root, Path::new(".claude/worktrees/fix--c"), "fix--c", &base).unwrap();
+    assert!(create_run_worktree(root, Path::new(".claude/worktrees/fix--c"), "fix--c", &base).is_err());
+}
+
+#[test]
+fn unsafe_inputs_are_refused_before_git_is_run() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let ok_dir = Path::new(".claude/worktrees/fix--x");
+
+    for bad in ["", "-x", "a b", "a..b", "a:b", "x.lock", "--detach"] {
+        assert!(
+            matches!(create_run_worktree(root, ok_dir, bad, &base), Err(WorktreeError::InvalidName { .. })),
+            "branch {bad:?}"
+        );
+    }
+    for bad in ["", "zz", "-1", "HEAD", "main", &"g".repeat(40)] {
+        assert!(
+            matches!(create_run_worktree(root, ok_dir, "fix--x", bad), Err(WorktreeError::InvalidName { .. })),
+            "sha {bad:?}"
+        );
+    }
+    for bad in ["", "/tmp/escape", "../escape", ".claude/../../escape", "a/../../b"] {
+        assert!(
+            matches!(
+                create_run_worktree(root, &PathBuf::from(bad), "fix--x", &base),
+                Err(WorktreeError::InvalidName { .. })
+            ),
+            "dir {bad:?}"
+        );
+    }
+    assert!(!root.join(".claude").exists());
+    assert!(!git(root, &["branch", "--list"]).contains("fix--x"));
+}
+
+#[test]
+fn an_unknown_base_commit_is_reported_and_leaves_no_branch_behind() {
+    let (fixture, _) = moved_on();
+    let root = fixture.root();
+    let missing = "0123456789abcdef0123456789abcdef01234567";
+
+    let err = create_run_worktree(root, Path::new(".claude/worktrees/fix--y"), "fix--y", missing).unwrap_err();
+    assert!(matches!(err, WorktreeError::Git { .. }), "{err:?}");
+    assert!(!git(root, &["branch", "--list"]).contains("fix--y"));
+    assert!(!root.join(".claude/worktrees/fix--y").exists());
+}
