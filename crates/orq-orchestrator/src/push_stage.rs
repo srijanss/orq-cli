@@ -41,7 +41,8 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
 
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
-    let refspec = format!("refs/heads/{0}:refs/heads/{0}", record.branch);
+    // The source is the commit that was recorded, so a branch moved meanwhile cannot change what is published.
+    let refspec = format!("{head_sha}:refs/heads/{}", record.branch);
     writeln!(log, "$ {}", redact_credentials(&format!("git push --no-follow-tags -- {} {refspec}", record.remote)))?;
     // No force option: a remote branch that diverged is reported, not overwritten.
     // `push.followTags` in the user's config must not publish tags with it.

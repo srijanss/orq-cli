@@ -169,3 +169,14 @@ fn an_annotated_tag_is_not_published_even_when_push_follow_tags_is_configured() 
     assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
     assert_eq!(git(&w.remote, &["tag", "--list"]), "", "only the branch is published");
 }
+
+#[test]
+fn the_push_names_the_recorded_commit_not_the_branch_that_could_move() {
+    let w = world("pinned", "fix--COM-02", "main", None);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    push_run_branch(&w.store, "run-1", &w.log).unwrap();
+
+    let logged = fs::read_to_string(&w.log).unwrap();
+    assert!(logged.contains(&format!("{head}:refs/heads/fix--COM-02")), "the source is the commit: {logged}");
+}
