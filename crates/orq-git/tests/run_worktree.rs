@@ -261,3 +261,26 @@ fn a_post_checkout_hook_failure_removes_the_populated_worktree_and_its_branch_an
     std::fs::remove_file(&hook).unwrap();
     create_run_worktree(root, dir, "fix--hook", &base).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn a_late_failure_does_not_touch_the_source_checkout_or_another_runs_worktree() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let other = create_run_worktree(root, Path::new(".claude/worktrees/fix--other"), "fix--other", &base).unwrap();
+    let head = git(root, &["rev-parse", "HEAD"]);
+    let hook = root.join(".git/hooks/post-checkout");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(create_run_worktree(root, Path::new(".claude/worktrees/fix--late"), "fix--late", &base).is_err());
+
+    assert_eq!(git(root, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(root.join("README.md")).unwrap(), "dirty\n");
+    assert_eq!(git(&other, &["symbolic-ref", "--short", "HEAD"]), "fix--other", "the other run's worktree is intact");
+    assert!(git(root, &["worktree", "list", "--porcelain"]).contains("fix--other"));
+    assert!(!git(root, &["worktree", "list", "--porcelain"]).contains("fix--late"));
+}
