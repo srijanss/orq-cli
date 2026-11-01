@@ -65,6 +65,25 @@ pub fn create_run_worktree(
     if std::fs::symlink_metadata(&path).is_ok() {
         return Err(WorktreeError::PathExists { path });
     }
+    // Plain components are not enough: an existing parent may be a symlink
+    // that leads out of the repository. Resolve the deepest parent that
+    // exists and require it to stay inside the resolved repository.
+    let inside = (|| -> std::io::Result<bool> {
+        let canonical_repo = std::fs::canonicalize(repo)?;
+        let mut parent = path.parent();
+        while let Some(dir) = parent {
+            match std::fs::canonicalize(dir) {
+                Ok(resolved) => return Ok(resolved.starts_with(&canonical_repo)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => parent = dir.parent(),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(false)
+    })()
+    .map_err(|err| WorktreeError::Git { message: err.to_string() })?;
+    if !inside {
+        return Err(invalid("worktree directory", &worktree_dir.to_string_lossy()));
+    }
     let existing = git(repo, &["show-ref", "--verify", "--quiet", &head_ref])?;
     match existing.status.code() {
         Some(0) => return Err(WorktreeError::BranchExists { branch: branch.to_string() }),

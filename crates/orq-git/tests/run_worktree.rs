@@ -146,3 +146,22 @@ fn a_relative_repository_path_creates_the_worktree_where_the_result_says() {
     assert!(root.join(".claude/worktrees/fix--rel").is_dir());
     assert!(!root.join(&relative).exists(), "nothing nested under the repository");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_parent_cannot_send_the_worktree_outside_the_repository() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let outside = root.parent().unwrap().join(format!("outside-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(".claude")).unwrap();
+    let branches = git(root, &["branch", "--list"]);
+
+    let err = create_run_worktree(root, Path::new(".claude/worktrees/fix--s"), "fix--s", &base).unwrap_err();
+
+    assert!(matches!(err, WorktreeError::InvalidName { .. }), "{err:?}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing written outside");
+    assert_eq!(git(root, &["branch", "--list"]), branches);
+    let _ = std::fs::remove_dir_all(&outside);
+}
