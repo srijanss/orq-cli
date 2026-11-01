@@ -206,3 +206,28 @@ fn a_bracketed_host_must_be_an_ipv6_address_followed_by_nothing_or_a_numeric_por
     }
     assert_eq!(remote_host("ssh://[2001:0DB8:0:0:0:0:0:1]/r").as_deref(), Some("[2001:db8::1]"));
 }
+
+#[test]
+fn an_scp_like_remote_may_have_a_bracketed_ipv6_host() {
+    let hosts = ProviderHosts {
+        github: vec![],
+        gitlab: vec!["[2001:db8::1]".to_string()],
+    };
+    for url in [
+        "git@[2001:db8::1]:team/repo.git",
+        "[2001:db8::1]:team/repo.git",
+        "git@[2001:DB8:0:0:0:0:0:1]:team/repo.git",
+    ] {
+        assert_eq!(remote_host(url).as_deref(), Some("[2001:db8::1]"), "{url:?}");
+        assert_eq!(detect_provider(url, &hosts, None), Ok(Provider::GitLab), "{url:?}");
+    }
+    for url in [
+        "git@[2001:db8::1:team/repo.git",
+        "git@[2001:db8::1]team/repo.git",
+        "git@[not-ip]:team/repo.git",
+    ] {
+        assert_eq!(remote_host(url), None, "{url:?}");
+    }
+    // Plain scp-like remotes are unaffected.
+    assert_eq!(remote_host("git@github.com:o/r.git").as_deref(), Some("github.com"));
+}

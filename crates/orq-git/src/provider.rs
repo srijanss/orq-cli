@@ -84,13 +84,24 @@ pub fn remote_host(url: &str) -> Option<String> {
             rest.split(['/', '?', '#', '\\']).next().unwrap_or("")
         }
         None => {
-            // scp-like `[user@]host:path`: the colon must precede any slash.
-            let colon = url.find(':')?;
-            let before = &url[..colon];
-            if before.contains('/') {
-                return None;
+            // scp-like `[user@]host:path`: the host ends at the first colon
+            // that precedes any slash, and a colon inside an IPv6 literal's
+            // brackets is part of the host.
+            let mut in_brackets = false;
+            let mut colon = None;
+            for (index, c) in url.char_indices() {
+                match c {
+                    '[' => in_brackets = true,
+                    ']' => in_brackets = false,
+                    '/' if !in_brackets => break,
+                    ':' if !in_brackets => {
+                        colon = Some(index);
+                        break;
+                    }
+                    _ => {}
+                }
             }
-            before
+            &url[..colon?]
         }
     };
     let host_port = authority.rsplit('@').next().unwrap_or("");
