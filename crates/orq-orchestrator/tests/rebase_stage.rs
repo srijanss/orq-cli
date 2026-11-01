@@ -225,3 +225,19 @@ fn a_rebase_that_fails_without_a_conflict_is_an_error_and_keeps_local_work() {
     assert_eq!(fs::read_to_string(w.worktree.join("mine.txt")).unwrap(), "dirty\n");
     assert!(kinds(&w).is_empty(), "no success or conflict event");
 }
+
+#[test]
+fn run_ids_that_git_would_reject_as_ref_names_still_rebase() {
+    for id in ["run..1", "run.lock", "run."] {
+        let w = world(&format!("refname-{}", id.replace('.', "_")), None);
+        let mut record = w.store.load("run-1").unwrap();
+        record.run_id = id.to_string();
+        w.store.create(&record).unwrap();
+        let target = advance_target(&w, "theirs.txt", "theirs\n");
+
+        let outcome = rebase_onto_target(&w.store, id, true).unwrap();
+
+        assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: target }, "run id {id}");
+        assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "", "run id {id}");
+    }
+}

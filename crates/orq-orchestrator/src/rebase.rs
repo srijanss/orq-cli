@@ -32,7 +32,9 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
     }
     // Fetch into a ref of this run instead of the FETCH_HEAD that every worktree
     // of the repository shares, so a concurrent fetch cannot swap the commit.
-    let private_ref = format!("refs/orq/rebase/{}", record.run_id);
+    // Hex keeps any id the store accepts (`run..1`, `run.lock`) a valid ref name.
+    let id_hex: String = record.run_id.bytes().map(|byte| format!("{byte:02x}")).collect();
+    let private_ref = format!("refs/orq/rebase/{id_hex}");
     let refspec = format!("+refs/heads/{}:{private_ref}", record.target_branch);
     let fetched = git_raw(worktree, &["fetch", "--no-tags", "--no-write-fetch-head", "--", &record.remote, &refspec])?;
     if !fetched.success {
