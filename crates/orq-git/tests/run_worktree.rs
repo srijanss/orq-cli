@@ -235,3 +235,29 @@ fn concurrent_creations_of_the_same_run_leave_exactly_the_winners_branch_and_wor
         assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]), branch, "round {round}: the worktree survives");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_post_checkout_hook_failure_removes_the_populated_worktree_and_its_branch_and_a_retry_succeeds() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let hook = root.join(".git/hooks/post-checkout");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho hook-says-no >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let branches = git(root, &["branch", "--list"]);
+    let registered = git(root, &["worktree", "list", "--porcelain"]);
+    let dir = Path::new(".claude/worktrees/fix--hook");
+
+    let err = create_run_worktree(root, dir, "fix--hook", &base).unwrap_err();
+
+    assert!(matches!(&err, WorktreeError::Git { message } if message.contains("hook-says-no")), "{err:?}");
+    assert!(!root.join(dir).exists(), "the populated directory is removed");
+    assert_eq!(git(root, &["branch", "--list"]), branches, "the branch is removed");
+    assert_eq!(git(root, &["worktree", "list", "--porcelain"]), registered, "the registration is removed");
+
+    std::fs::remove_file(&hook).unwrap();
+    create_run_worktree(root, dir, "fix--hook", &base).unwrap();
+}
