@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -21,6 +21,7 @@ fn main() -> ExitCode {
         }
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
         (Some("features"), _) => features(&args[1..]),
+        (Some("models"), _) => models(&args[1..]),
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
@@ -138,6 +139,70 @@ fn features(args: &[OsString]) -> ExitCode {
     };
     let list: Vec<serde_json::Value> = entries.iter().map(entry_json).collect();
     println!("{}", serde_json::Value::Array(list));
+    ExitCode::SUCCESS
+}
+
+/// `orq models --repo <path>`: the model profiles, which roles each can fill,
+/// and the defaults a run would use. Unusable defaults are reported in the
+/// output; configuration that cannot be read fails the command.
+fn models(args: &[OsString]) -> ExitCode {
+    let repo = match args {
+        [flag, path] if flag == "--repo" => PathBuf::from(path),
+        _ => return usage_error(),
+    };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let user_config = orq_features::settings_path(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    );
+    let profiles = match orq_features::load_model_profiles(
+        user_config.as_deref().unwrap_or(Path::new("")),
+        &project.root.join(".orq.toml"),
+    ) {
+        Ok(profiles) => profiles,
+        Err(err) => return fail(err),
+    };
+    let reviewers = match orq_features::load_reviewer_config(&project.root.join(".tdd-config.json")) {
+        Ok(config) => config,
+        Err(err) => return fail(err),
+    };
+
+    let list: Vec<serde_json::Value> = profiles
+        .profiles()
+        .iter()
+        .map(|profile| {
+            let reviewer = reviewers.allowed_models.as_ref().is_none_or(|allowed| allowed.contains(&profile.model));
+            serde_json::json!({
+                "name": profile.name,
+                "harness": profile.harness,
+                "model": profile.model,
+                "thinking": profile.thinking,
+                "provider": profile.provider,
+                "roles": {"implementer": profile.harness == "claude", "reviewer": reviewer},
+            })
+        })
+        .collect();
+    let mut out = serde_json::json!({
+        "profiles": list,
+        "allowedModels": reviewers.allowed_models,
+        "defaults": serde_json::Value::Null,
+    });
+    match orq_features::resolve_run_models(&profiles, &reviewers, &orq_features::RunSelection::default()) {
+        Ok(resolved) => {
+            let role = |m: &orq_features::ResolvedModel| {
+                serde_json::json!({"harness": m.harness, "model": m.model, "thinking": m.thinking})
+            };
+            out["defaults"] = serde_json::json!({
+                "implementer": role(&resolved.implementer),
+                "reviewer": role(&resolved.reviewer),
+            });
+        }
+        Err(err) => out["defaultsError"] = serde_json::Value::String(err.to_string()),
+    }
+    println!("{out}");
     ExitCode::SUCCESS
 }
 
