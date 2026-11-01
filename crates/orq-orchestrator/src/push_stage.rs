@@ -42,11 +42,11 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", record.branch);
-    writeln!(log, "$ git push -- {} {refspec}", record.remote)?;
+    writeln!(log, "$ {}", redact_credentials(&format!("git push -- {} {refspec}", record.remote)))?;
     // No force option: a remote branch that diverged is reported, not overwritten.
     let pushed = git_raw(worktree, &["push", "--", &record.remote, &refspec])?;
-    log.write_all(pushed.stdout.as_bytes())?;
-    log.write_all(pushed.stderr.as_bytes())?;
+    log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
+    log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
     if !pushed.success {
         let reason = format!("git push of {} failed", record.branch);
         return fail(store, &record, reason, &log_name);
@@ -58,6 +58,23 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
         serde_json::json!({ "pushed_sha": head_sha, "branch": record.branch, "log": log_name }),
     )?;
     Ok(PushOutcome::Pushed { head_sha })
+}
+
+/// Drop the `user:password@` part of every URL in `text`: a remote may carry a
+/// token, and the log outlives the run.
+fn redact_credentials(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let end = tail.find(|c: char| c.is_whitespace() || c == '/' || c == '\'' || c == '"').unwrap_or(tail.len());
+        let authority = &tail[..end];
+        out.push_str(authority.rsplit_once('@').map_or(authority, |(_, host)| host));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn fail(store: &RunStore, record: &RunRecord, reason: String, log_name: &str) -> Result<PushOutcome, StoreError> {

@@ -143,3 +143,17 @@ fn an_unknown_run_is_an_error() {
 
     assert!(push_run_branch(&w.store, "ghost", &w.log).is_err());
 }
+
+#[test]
+fn credentials_in_the_remote_url_never_reach_the_log_or_the_events() {
+    let w = world("secret", "fix--COM-02", "main", Some("http://deploy:s3cret-token@127.0.0.1:1/repo.git"));
+
+    let outcome = push_run_branch(&w.store, "run-1", &w.log).unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    let logged = fs::read_to_string(&w.log).unwrap();
+    assert!(!logged.contains("s3cret-token"), "{logged}");
+    assert!(logged.contains("127.0.0.1"), "the host is still shown: {logged}");
+    let events = serde_json::to_string(&w.store.events("run-1").unwrap()).unwrap();
+    assert!(!events.contains("s3cret-token"), "{events}");
+}
