@@ -211,4 +211,57 @@ mod tests {
 
         assert!(refused);
     }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("orq-open-log-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_log_swapped_for_a_symlink_after_inspection_is_refused_and_the_target_untouched() {
+        let dir = scratch("link");
+        let log = dir.join("stage.log");
+        let victim = dir.join("victim");
+        fs::write(&log, "old\n").unwrap();
+        fs::write(&victim, "precious\n").unwrap();
+
+        let result = open_log_with(&log, || {
+            fs::remove_file(&log).unwrap();
+            std::os::unix::fs::symlink(&victim, &log).unwrap();
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    }
+
+    #[test]
+    fn a_log_swapped_for_another_regular_file_after_inspection_is_refused() {
+        let dir = scratch("other");
+        let log = dir.join("stage.log");
+        let other = dir.join("other");
+        fs::write(&log, "old\n").unwrap();
+        fs::write(&other, "other\n").unwrap();
+
+        let result = open_log_with(&log, || {
+            fs::remove_file(&log).unwrap();
+            fs::copy(&other, &log).unwrap();
+        });
+
+        assert!(result.is_err(), "a different inode than the inspected one");
+    }
+
+    #[test]
+    fn a_log_planted_before_exclusive_creation_is_not_adopted() {
+        let dir = scratch("planted");
+        let log = dir.join("stage.log");
+        let victim = dir.join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+
+        let result = open_log_with(&log, || std::os::unix::fs::symlink(&victim, &log).unwrap());
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    }
 }
