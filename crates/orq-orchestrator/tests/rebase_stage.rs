@@ -248,6 +248,21 @@ fn run_ids_that_git_would_reject_as_ref_names_still_rebase() {
 }
 
 #[test]
+fn a_run_id_of_the_longest_length_still_rebases_and_leaves_no_ref() {
+    let id = "r".repeat(128);
+    let w = world("longid", None);
+    let mut record = w.store.load("run-1").unwrap();
+    record.run_id = id.clone();
+    w.store.create(&record).unwrap();
+    let target = advance_target(&w, "theirs.txt", "theirs\n");
+
+    let outcome = rebase_onto_target(&w.store, &id, true).unwrap();
+
+    assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: target });
+    assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "");
+}
+
+#[test]
 fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_own_ref() {
     let w = world("linked", None);
     // Run 2 lives in a linked worktree of the same repository and targets another branch.
@@ -264,13 +279,13 @@ fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_o
     record.worktree = second.clone();
     w.store.create(&record).unwrap();
     // Run 1's fetch ref is still in the shared repository while run 2 works.
-    let id_hex: String = "run-1".bytes().map(|byte| format!("{byte:02x}")).collect();
-    git(&w.worktree, &["update-ref", &format!("refs/orq/rebase/{id_hex}"), "HEAD"]);
+    let first_ref = orq_orchestrator::private_ref_name("run-1");
+    git(&w.worktree, &["update-ref", &first_ref, "HEAD"]);
 
     let second_outcome = rebase_onto_target(&w.store, "run-2", true).unwrap();
     assert_eq!(second_outcome, RebaseOutcome::Rebased { target_sha: release });
-    assert!(git(&w.worktree, &["for-each-ref", "refs/orq"]).contains(&id_hex), "run 1's ref is untouched");
-    git(&w.worktree, &["update-ref", "-d", &format!("refs/orq/rebase/{id_hex}")]);
+    assert!(git(&w.worktree, &["for-each-ref", "refs/orq"]).contains(&first_ref), "run 1's ref is untouched");
+    git(&w.worktree, &["update-ref", "-d", &first_ref]);
 
     let first_outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
     assert_eq!(first_outcome, RebaseOutcome::Rebased { target_sha: main });

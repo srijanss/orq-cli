@@ -32,9 +32,7 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
     }
     // Fetch into a ref of this run instead of the FETCH_HEAD that every worktree
     // of the repository shares, so a concurrent fetch cannot swap the commit.
-    // Hex keeps any id the store accepts (`run..1`, `run.lock`) a valid ref name.
-    let id_hex: String = record.run_id.bytes().map(|byte| format!("{byte:02x}")).collect();
-    let private_ref = format!("refs/orq/rebase/{id_hex}");
+    let private_ref = private_ref_name(&record.run_id);
     let refspec = format!("+refs/heads/{}:{private_ref}", record.target_branch);
     let fetched = git_raw(worktree, &["fetch", "--no-tags", "--no-write-fetch-head", "--", &record.remote, &refspec])?;
     if !fetched.success {
@@ -63,6 +61,21 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
     let reason = format!("the rebase onto {} stopped on a conflict", record.target_branch);
     record_event(store, &record, "run.blocked", serde_json::json!({ "reason": reason }))?;
     Ok(RebaseOutcome::Conflict { reason })
+}
+
+/// The private ref of a run. Hex keeps any id the store accepts (`run..1`,
+/// `run.lock`) a valid ref name; it is cut into path components of at most 64
+/// characters so a long id stays under the filesystem's name limit. The final
+/// `end` component cannot be a hex chunk, so no name is a directory of another.
+pub fn private_ref_name(run_id: &str) -> String {
+    let hex: Vec<u8> = run_id.bytes().flat_map(|byte| format!("{byte:02x}").into_bytes()).collect();
+    let mut name = String::from("refs/orq/rebase");
+    for chunk in hex.chunks(64) {
+        name.push('/');
+        name.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+    }
+    name.push_str("/end");
+    name
 }
 
 fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
