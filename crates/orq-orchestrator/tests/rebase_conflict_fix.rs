@@ -124,6 +124,21 @@ fn a_session_that_leaves_the_conflict_keeps_the_worktree_mid_rebase_and_the_run_
 }
 
 #[test]
+fn a_session_that_aborts_or_quits_the_rebase_does_not_count_as_resolved() {
+    for (tag, script) in [("abort", "git rebase --abort"), ("quit", "git rebase --quit")] {
+        let w = world(tag, true);
+
+        let outcome = run_agent(&w, script).unwrap();
+
+        let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("{tag}: expected blocked, got {outcome:?}") };
+        assert!(reason.contains(w.worktree.to_str().unwrap()), "{tag}: {reason}");
+        let events = kinds(&w);
+        assert!(!events.iter().any(|(kind, _)| kind == "rebase.completed"), "{tag}: {events:?}");
+        assert_eq!(events.last().unwrap().0, "run.blocked", "{tag}");
+    }
+}
+
+#[test]
 fn a_worktree_that_is_not_mid_rebase_is_an_error_and_no_session_runs() {
     let w = world("not-rebasing", false);
     let marker = w.root.join("ran");

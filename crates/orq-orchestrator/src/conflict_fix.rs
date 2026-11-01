@@ -26,20 +26,63 @@ pub fn fix_rebase_conflicts(
     if !rebase_in_progress(&record)? {
         return Err(StoreError::Corrupt("the worktree is not in the middle of a rebase".to_string()));
     }
+    // The commit the rebase is replaying onto, read before the session can touch it.
+    let onto = rebase_onto(&record)?;
     // The session's own success is not trusted: only the repository state counts.
     run_session_stage(store, run_id, session, FIX_STAGE)?;
-    if !rebase_in_progress(&record)? {
-        record_event(store, &record, "rebase.completed", serde_json::json!({ "resolved_by": "session" }))?;
+    let still_rebasing = rebase_in_progress(&record)?;
+    if !still_rebasing && completed_onto(&record, &onto)? {
+        record_event(store, &record, "rebase.completed", serde_json::json!({ "resolved_by": "session", "target_sha": onto }))?;
         return Ok(ConflictFixOutcome::Resolved);
     }
-    let reason = format!(
-        "the rebase onto {} is still in progress after the fix session; resolve the conflicts in {}, \
-         then run `git rebase --continue` there",
-        record.target_branch,
-        record.worktree.display()
-    );
+    let reason = if still_rebasing {
+        format!(
+            "the rebase onto {} is still in progress after the fix session; resolve the conflicts in {}, \
+             then run `git rebase --continue` there",
+            record.target_branch,
+            record.worktree.display()
+        )
+    } else {
+        format!(
+            "the fix session ended the rebase onto {} without completing it; check the branch {} in {} \
+             and rebase it again",
+            record.target_branch,
+            record.branch,
+            record.worktree.display()
+        )
+    };
     record_event(store, &record, "run.blocked", serde_json::json!({ "reason": reason }))?;
     Ok(ConflictFixOutcome::StillBlocked { reason })
+}
+
+/// The rebase really finished: the run branch is checked out, no entry is
+/// unmerged, and the commit it was replayed onto is part of its history.
+fn completed_onto(record: &RunRecord, onto: &str) -> Result<bool, StoreError> {
+    let head = git_raw(&record.worktree, &["symbolic-ref", "-q", "HEAD"])?;
+    if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
+        return Ok(false);
+    }
+    let unmerged = git_raw(&record.worktree, &["diff", "--name-only", "--diff-filter=U"])?;
+    if !unmerged.success || !unmerged.stdout.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(git_raw(&record.worktree, &["merge-base", "--is-ancestor", onto, "HEAD"])?.success)
+}
+
+fn rebase_onto(record: &RunRecord) -> Result<String, StoreError> {
+    for name in ["rebase-merge/onto", "rebase-apply/onto"] {
+        let path = git_raw(&record.worktree, &["rev-parse", "--git-path", name])?;
+        if !path.success {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(record.worktree.join(path.stdout.trim())) {
+            let sha = text.trim();
+            if !sha.is_empty() {
+                return Ok(sha.to_string());
+            }
+        }
+    }
+    Err(StoreError::Corrupt("could not tell which commit the rebase is replaying onto".to_string()))
 }
 
 fn rebase_in_progress(record: &RunRecord) -> Result<bool, StoreError> {
