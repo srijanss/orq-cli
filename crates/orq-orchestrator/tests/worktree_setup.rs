@@ -116,3 +116,19 @@ fn a_program_that_cannot_be_started_is_a_failed_step_without_an_exit_code() {
     assert!(failure.reason.contains("orq-no-such-program-anywhere"), "{}", failure.reason);
     assert!(fs::read_to_string(&log).unwrap().contains("orq-no-such-program-anywhere"));
 }
+
+#[test]
+fn arguments_are_never_written_to_the_log_or_the_failure_message() {
+    let dir = worktree("secrets");
+    let log = dir.join("setup.log");
+    let steps = vec![argv(&["sh", "-c", "exit 3", "--token=hunter2-s3cret"])];
+
+    let failure = run_setup(&dir, &steps, &log).unwrap_err();
+
+    // The full argv stays available to the caller, not to logs and messages.
+    assert_eq!(failure.step, steps[0]);
+    assert!(!fs::read_to_string(&log).unwrap().contains("hunter2-s3cret"));
+    assert!(!failure.to_string().contains("hunter2-s3cret"), "{failure}");
+    assert!(!failure.reason.contains("hunter2-s3cret"));
+    assert!(failure.to_string().contains("sh"), "the program is still named: {failure}");
+}

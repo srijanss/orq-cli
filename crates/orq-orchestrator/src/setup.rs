@@ -44,7 +44,9 @@ pub struct SetupFailure {
 
 impl std::fmt::Display for SetupFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "setup step {:?} failed: {} (log: {})", self.step, self.reason, self.log.display())
+        // Arguments can carry tokens, so only the program is ever shown.
+        let program = self.step.first().map(String::as_str).unwrap_or("");
+        write!(f, "setup step {program:?} failed: {} (log: {})", self.reason, self.log.display())
     }
 }
 
@@ -107,7 +109,7 @@ pub fn run_setup(worktree: &Path, steps: &[Vec<String>], log: &Path) -> Result<(
         let Some((program, args)) = step.split_first().filter(|(program, _)| !program.trim().is_empty()) else {
             return Err(failure(step, None, "the step has no program to run".to_string()));
         };
-        let _ = writeln!(file, "$ {}", step.join(" "));
+        let _ = writeln!(file, "$ {program} ({} arguments)", args.len());
         let out = file.try_clone().map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
         let err_out = file.try_clone().map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
         let status = Command::new(program)
