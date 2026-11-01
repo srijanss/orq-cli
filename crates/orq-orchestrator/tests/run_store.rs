@@ -211,12 +211,21 @@ fn a_planted_symlink_at_the_old_temporary_name_is_never_written_through() {
     fs::write(&outside, "precious").unwrap();
     let locks = root.join("locks/repo-1");
     fs::create_dir_all(&locks).unwrap();
-    std::os::unix::fs::symlink(&outside, locks.join(format!(".run-1.{}.tmp", std::process::id()))).unwrap();
+    // Every name the process could pick next: links, and regular files too.
+    for n in 0..5000 {
+        let candidate = locks.join(format!(".run-1.{}.{n}.tmp", std::process::id()));
+        if n % 2 == 0 {
+            std::os::unix::fs::symlink(&outside, &candidate).unwrap();
+        } else {
+            fs::write(&candidate, "stale").unwrap();
+        }
+    }
 
     let store = RunStore::new(&root);
     store.start_run(&record("run-1")).unwrap();
 
     assert_eq!(fs::read_to_string(&outside).unwrap(), "precious");
+    assert_eq!(fs::read_to_string(locks.join(".run-1.".to_string() + &std::process::id().to_string() + ".1.tmp")).unwrap(), "stale");
     assert_eq!(fs::read_to_string(locks.join("COM-02.lock")).unwrap(), "run-1");
 }
 

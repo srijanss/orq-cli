@@ -114,13 +114,22 @@ impl RunStore {
         // The name is unique per call and created exclusively, so a planted
         // file or symlink is never opened, let alone written through.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let private = locks.join(format!(
-            ".{}.{}.{}.tmp",
-            record.run_id,
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&private)?;
+        // A name already taken (a stale file after a crash, or a planted one)
+        // is left alone and the next candidate is tried.
+        let mut attempts = 0;
+        let (private, mut file) = loop {
+            let private = locks.join(format!(
+                ".{}.{}.{}.tmp",
+                record.run_id,
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match fs::OpenOptions::new().write(true).create_new(true).open(&private) {
+                Ok(file) => break (private, file),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempts < 100_000 => attempts += 1,
+                Err(err) => return Err(err.into()),
+            }
+        };
         file.write_all(record.run_id.as_bytes())?;
         drop(file);
         let linked = fs::hard_link(&private, &lock);
