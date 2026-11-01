@@ -58,6 +58,9 @@ pub fn create_run_worktree(
         _ => return Err(failure(&checked)),
     }
 
+    // Git runs with `-C repo`, so a relative repo would be applied twice to the
+    // destination; make it absolute once, here.
+    let repo = &std::path::absolute(repo).map_err(|err| WorktreeError::Git { message: err.to_string() })?;
     let path = repo.join(worktree_dir);
     if std::fs::symlink_metadata(&path).is_ok() {
         return Err(WorktreeError::PathExists { path });

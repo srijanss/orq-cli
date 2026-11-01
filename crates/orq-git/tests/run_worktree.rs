@@ -128,3 +128,21 @@ fn an_unknown_base_commit_is_reported_and_leaves_no_branch_behind() {
     assert!(!git(root, &["branch", "--list"]).contains("fix--y"));
     assert!(!root.join(".claude/worktrees/fix--y").exists());
 }
+
+#[test]
+fn a_relative_repository_path_creates_the_worktree_where_the_result_says() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    // The same repository, spelled relative to this process's working directory
+    // (no other test here depends on the working directory).
+    std::env::set_current_dir(root.parent().unwrap()).unwrap();
+    let relative = PathBuf::from(root.file_name().unwrap());
+    assert!(relative.is_relative());
+
+    let path = create_run_worktree(&relative, Path::new(".claude/worktrees/fix--rel"), "fix--rel", &base).unwrap();
+
+    assert!(path.join(".git").exists(), "{} is the worktree", path.display());
+    assert_eq!(git(&path, &["symbolic-ref", "--short", "HEAD"]), "fix--rel");
+    assert!(root.join(".claude/worktrees/fix--rel").is_dir());
+    assert!(!root.join(&relative).exists(), "nothing nested under the repository");
+}
