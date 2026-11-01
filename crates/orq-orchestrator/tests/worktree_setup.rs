@@ -21,7 +21,7 @@ fn argv(words: &[&str]) -> Vec<String> {
 #[test]
 fn the_install_step_is_chosen_by_lockfile_after_the_configured_steps() {
     let cases: [(&[&str], &[&str]); 7] = [
-        (&["uv.lock"], &["uv", "sync"]),
+        (&["uv.lock"], &["uv", "sync", "--locked"]),
         (&["package.json", "pnpm-lock.yaml"], &["pnpm", "install", "--frozen-lockfile"]),
         (&["package.json", "yarn.lock"], &["yarn", "install", "--frozen-lockfile"]),
         (&["package.json", "bun.lock"], &["bun", "install", "--frozen-lockfile"]),

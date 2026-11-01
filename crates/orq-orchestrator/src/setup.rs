@@ -68,7 +68,8 @@ fn argv(words: &[&str]) -> Vec<String> {
 
 fn install_step(dir: &Path, notes: &mut Vec<String>) -> Option<Vec<String>> {
     if dir.join("uv.lock").is_file() {
-        return Some(argv(&["uv", "sync"]));
+        // `--locked` fails rather than re-resolving and rewriting uv.lock.
+        return Some(argv(&["uv", "sync", "--locked"]));
     }
     if !dir.join("package.json").is_file() {
         return None;
