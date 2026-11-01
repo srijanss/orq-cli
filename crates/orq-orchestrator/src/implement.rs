@@ -45,6 +45,13 @@ pub fn run_implement_stage(
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
     let log = open.open(session.log)?;
+    // The mode above only applies to a new file; tighten one from earlier runs
+    // through the handle, so a swapped path cannot redirect the change.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        log.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     let event = |kind: &str, extra: serde_json::Value| {
         let mut payload = serde_json::json!({
             "session_id": session.session_id,

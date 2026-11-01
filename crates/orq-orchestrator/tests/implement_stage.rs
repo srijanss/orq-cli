@@ -106,6 +106,21 @@ fn the_session_log_is_readable_by_its_owner_only() {
     assert_eq!(mode, 0o600, "log mode is {mode:o}");
 }
 
+#[cfg(unix)]
+#[test]
+fn an_existing_open_log_is_tightened_and_keeps_its_contents() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("existing-log");
+    fs::write(&s.log, "earlier\n").unwrap();
+    fs::set_permissions(&s.log, fs::Permissions::from_mode(0o644)).unwrap();
+    let args = argv(&["-c", "echo later"]);
+
+    run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+
+    assert_eq!(fs::metadata(&s.log).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(fs::read_to_string(&s.log).unwrap(), "earlier\nlater\n");
+}
+
 #[test]
 fn a_failing_session_is_recorded_as_failed_with_its_exit_code() {
     let s = setup("fail");
