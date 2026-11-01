@@ -3,6 +3,7 @@
 
 mod conflict_fix;
 mod gate;
+mod gate_stage;
 mod implement;
 mod outcome;
 mod rebase;
@@ -11,6 +12,7 @@ mod store;
 
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use gate::{choose_gate, Gate, GateError};
+pub use gate_stage::{run_gate_stage, GateOutcome};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use outcome::{check_implement_outcome, ImplementCheck};
 pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
