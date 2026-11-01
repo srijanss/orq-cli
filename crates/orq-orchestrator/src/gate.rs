@@ -105,14 +105,17 @@ fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>)
         notes.push("package.json is not valid JSON; the Node checks were skipped".to_string());
         return;
     };
-    // Real scripts only: npm's placeholder `test` is not a test.
+    // Real scripts only: npm's placeholder `test` is not a test. Only the
+    // `test` script can be the placeholder, and only when it is that command.
     let scripts: HashSet<&str> = manifest
         .get("scripts")
         .and_then(|scripts| scripts.as_object())
         .map(|scripts| {
             scripts
                 .iter()
-                .filter(|(_, command)| command.as_str().is_some_and(|text| !text.contains("no test specified")))
+                .filter(|(name, command)| {
+                    command.as_str().is_some_and(|text| name.as_str() != "test" || !is_npm_placeholder_test(text))
+                })
                 .map(|(name, _)| name.as_str())
                 .collect()
         })
@@ -137,6 +140,12 @@ fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>)
     if scripts.contains("test") {
         steps.push(argv(&[manager, "run", "test"]));
     }
+}
+
+/// The script `npm init` writes: `echo "Error: no test specified" && exit 1`.
+fn is_npm_placeholder_test(command: &str) -> bool {
+    let command = command.trim();
+    command.starts_with("echo ") && command.contains("no test specified") && command.ends_with("exit 1")
 }
 
 fn rust_steps(dir: &Path, steps: &mut Vec<Vec<String>>) {

@@ -261,3 +261,29 @@ fn a_directory_that_does_not_exist_is_just_nothing_detected() {
     let missing = std::env::temp_dir().join(format!("orq-gate-{}-absent", std::process::id()));
     assert!(matches!(choose_gate(&missing, None), Ok(Gate::Skipped { .. })));
 }
+
+#[test]
+fn only_the_test_script_can_be_the_npm_placeholder_and_only_when_it_is_exactly_that() {
+    // A typecheck script that happens to print the phrase is still a check.
+    let dir = worktree("node-phrase-in-typecheck");
+    touch(
+        &dir,
+        "package.json",
+        r#"{"scripts": {"typecheck": "echo no test specified && tsc --noEmit", "test": "jest"}}"#,
+    );
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["npm", "run", "typecheck"], &["npm", "run", "test"]]))
+    );
+
+    // A real test command that merely mentions the phrase still runs.
+    let dir = worktree("node-phrase-in-test");
+    touch(
+        &dir,
+        "package.json",
+        r#"{"scripts": {"test": "jest --passWithNoTests || echo no test specified"}}"#,
+    );
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert_eq!(choose_gate(&dir, None), Ok(run(&[&["npm", "run", "test"]])));
+}
