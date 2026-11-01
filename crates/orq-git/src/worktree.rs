@@ -123,9 +123,14 @@ pub fn create_run_worktree(
     }
 
     // The path goes to git as the bytes that were checked, never re-encoded.
-    let added = git(repo, &[OsStr::new("worktree"), OsStr::new("add"), OsStr::new("--quiet"), OsStr::new("--"), path.as_os_str(), OsStr::new(branch)])?;
-    if !added.status.success() {
-        let mut error = failure(&added);
+    let added = git(repo, &[OsStr::new("worktree"), OsStr::new("add"), OsStr::new("--quiet"), OsStr::new("--"), path.as_os_str(), OsStr::new(branch)]);
+    // A spawn error and a non-zero exit both leave the claims in place.
+    let failed = match &added {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(failure(out)),
+        Err(err) => Some(err.clone()),
+    };
+    if let Some(mut error) = failed {
         // Both the directory and the branch are this call's own: undo them,
         // registration included, and say so if any of that fails.
         let _ = git(repo, &[OsStr::new("worktree"), OsStr::new("remove"), OsStr::new("--force"), OsStr::new("--"), path.as_os_str()]);
@@ -156,6 +161,10 @@ fn failure(output: &Output) -> WorktreeError {
 }
 
 fn git<S: AsRef<OsStr>>(repo: &Path, args: &[S]) -> Result<Output, WorktreeError> {
+    #[cfg(test)]
+    if tests::spawn_fails_for(args) {
+        return Err(WorktreeError::Git { message: "injected spawn failure".to_string() });
+    }
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).args(args);
     for name in crate::REPOSITORY_SELECTION_VARS {
@@ -165,4 +174,46 @@ fn git<S: AsRef<OsStr>>(repo: &Path, args: &[S]) -> Result<Output, WorktreeError
         .stdin(Stdio::null())
         .output()
         .map_err(|err| WorktreeError::Git { message: err.to_string() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orq_test_support::GitFixture;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// While set, running `git worktree add` fails as if git could not be spawned.
+        static FAIL_WORKTREE_ADD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn spawn_fails_for<S: AsRef<OsStr>>(args: &[S]) -> bool {
+        FAIL_WORKTREE_ADD.get()
+            && args.len() >= 2
+            && args[0].as_ref() == OsStr::new("worktree")
+            && args[1].as_ref() == OsStr::new("add")
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_spawn_error_after_the_claims_still_rolls_the_directory_and_branch_back() {
+        let fixture = GitFixture::new();
+        let root = fixture.root();
+        let base = git_out(root, &["rev-parse", "HEAD"]);
+        let branches = git_out(root, &["branch", "--list"]);
+        let dir = Path::new(".claude/worktrees/fix--spawn");
+
+        FAIL_WORKTREE_ADD.set(true);
+        let err = create_run_worktree(root, dir, "fix--spawn", &base).unwrap_err();
+        FAIL_WORKTREE_ADD.set(false);
+
+        assert!(matches!(&err, WorktreeError::Git { message } if message.contains("injected")), "{err:?}");
+        assert!(!root.join(dir).exists(), "the claimed directory is released");
+        assert_eq!(git_out(root, &["branch", "--list"]), branches, "the claimed branch is released");
+        create_run_worktree(root, dir, "fix--spawn", &base).unwrap();
+    }
 }
