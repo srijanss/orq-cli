@@ -287,3 +287,25 @@ fn only_the_test_script_can_be_the_npm_placeholder_and_only_when_it_is_exactly_t
     fs::create_dir_all(dir.join("node_modules")).unwrap();
     assert_eq!(choose_gate(&dir, None), Ok(run(&[&["npm", "run", "test"]])));
 }
+
+#[test]
+fn pytest_is_configured_by_the_real_tool_pytest_table_not_by_a_line_prefix() {
+    for (tag, pyproject, expected) in [
+        ("indented", "  [tool.pytest.ini_options]\n  addopts = \"-q\"\n", true),
+        ("quoted", "[tool.\"pytest\".ini_options]\naddopts = \"-q\"\n", true),
+        ("dotted", "[tool]\npytest.ini_options.addopts = \"-q\"\n", true),
+        ("inline", "[tool]\npytest = { ini_options = { addopts = \"-q\" } }\n", true),
+        ("lookalike", "[tool.pytest_extra]\nx = 1\n", false),
+        ("in-a-string", "[project]\ndescription = \"\"\"\n[tool.pytest.ini_options]\n\"\"\"\n", false),
+    ] {
+        let dir = worktree(&format!("pytest-toml-{tag}"));
+        touch(&dir, "uv.lock", "");
+        touch(&dir, "pyproject.toml", pyproject);
+        let gate = choose_gate(&dir, None).unwrap();
+        if expected {
+            assert_eq!(gate, run(&[&["uv", "run", "pytest"]]), "{tag}");
+        } else {
+            assert!(matches!(gate, Gate::Skipped { .. }), "{tag}: {gate:?}");
+        }
+    }
+}

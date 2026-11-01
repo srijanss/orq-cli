@@ -79,7 +79,10 @@ fn python_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String
         return;
     }
     let pyproject = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
-    let pytest_configured = pyproject.lines().any(|line| line.starts_with("[tool.pytest"))
+    let pytest_configured = pyproject
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .is_some_and(|doc| doc.get("tool").and_then(|tool| tool.get("pytest")).is_some())
         || dir.join("pytest.ini").is_file()
         || dir.join("tests").is_dir();
     if pytest_configured {
