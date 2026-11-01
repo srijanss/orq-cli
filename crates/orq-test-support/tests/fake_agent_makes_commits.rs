@@ -151,3 +151,18 @@ fn a_write_that_fails_stops_the_agent_with_a_diagnostic_and_skips_later_steps() 
     assert!(!fixture.root().join("after.txt").exists());
     assert_eq!(git(fixture.root(), &["rev-list", "--count", "HEAD"]), "1");
 }
+
+#[test]
+fn a_directory_whose_name_starts_with_a_dash_is_created_not_taken_as_an_option() {
+    let fixture = GitFixture::new();
+    let agent = FakeAgent::builder()
+        .write_file("-p/file.txt", "dash\n")
+        .write_file("-v/-x/deep.txt", "deeper\n")
+        .build();
+
+    let output = Command::new(agent.path()).current_dir(fixture.root()).output().unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(std::fs::read_to_string(fixture.root().join("-p/file.txt")).unwrap(), "dash\n");
+    assert_eq!(std::fs::read_to_string(fixture.root().join("-v/-x/deep.txt")).unwrap(), "deeper\n");
+}
