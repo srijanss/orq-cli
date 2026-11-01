@@ -203,6 +203,49 @@ fn finishing_a_run_frees_the_feature_and_only_its_owner_can_free_it() {
     assert_eq!(names(&root.join("locks/repo-1")), vec!["COM-02.lock".to_string()]);
 }
 
+#[test]
+fn a_duplicate_release_never_frees_the_next_owners_lock() {
+    use std::sync::{Arc, Barrier};
+
+    let root = root("release-race");
+    let store = Arc::new(RunStore::new(&root));
+    for round in 0..200 {
+        let (a, b, c) = (format!("a-{round}"), format!("b-{round}"), format!("c-{round}"));
+        store.start_run(&record(&a)).unwrap();
+
+        let gate = Arc::new(Barrier::new(3));
+        let releasers: Vec<_> = (0..2)
+            .map(|_| {
+                let (store, gate, a) = (store.clone(), gate.clone(), a.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    store.finish_run("repo-1", "COM-02", &a).is_ok()
+                })
+            })
+            .collect();
+        gate.wait();
+        // The next run may start at any point while the duplicate releases race.
+        let started = loop {
+            match store.start_run(&record(&b)) {
+                Ok(()) => break true,
+                Err(StoreError::FeatureBusy { .. }) if releasers.iter().all(|h| h.is_finished()) => break false,
+                Err(StoreError::FeatureBusy { .. }) => std::thread::yield_now(),
+                Err(other) => panic!("{other:?}"),
+            }
+        };
+        let released: usize = releasers.into_iter().map(|h| h.join().unwrap() as usize).sum();
+        assert_eq!(released, 1, "exactly one release of {a} succeeds");
+        assert!(started, "{b} starts once {a} is released");
+
+        // {b} is active, so nothing else may take the feature.
+        assert!(
+            matches!(store.start_run(&record(&c)), Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == b),
+            "round {round}: {b}'s lock was freed by a duplicate release of {a}"
+        );
+        store.finish_run("repo-1", "COM-02", &b).unwrap();
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_record_that_cannot_be_serialized_leaves_nothing_behind_and_can_be_retried() {

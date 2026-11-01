@@ -106,6 +106,7 @@ impl RunStore {
     pub fn start_run(&self, record: &RunRecord) -> Result<(), StoreError> {
         let lock = self.lock_path(&record.project_id, &record.feature_id)?;
         self.run_dir(&record.run_id)?;
+        let _guard = self.guard(&record.project_id, &record.feature_id)?;
         let locks = lock.parent().expect("lock path has a parent");
         fs::create_dir_all(locks)?;
         // The lock appears already holding the run id: write a private file,
@@ -132,6 +133,9 @@ impl RunStore {
     /// Release the feature lock when the run ends; only its owner may.
     pub fn finish_run(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
         let lock = self.lock_path(project_id, feature_id)?;
+        // Held across the ownership check and the removal, and by every start,
+        // so a duplicate release cannot remove a newer owner's lock.
+        let _guard = self.guard(project_id, feature_id)?;
         let owner = match fs::read_to_string(&lock) {
             Ok(text) => text.trim().to_string(),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -144,6 +148,18 @@ impl RunStore {
         }
         fs::remove_file(&lock)?;
         Ok(())
+    }
+
+    /// An exclusive advisory lock on a stable per-feature file, released when
+    /// the returned handle is dropped. The file itself is never removed.
+    fn guard(&self, project_id: &str, feature_id: &str) -> Result<fs::File, StoreError> {
+        let path = self.lock_path(project_id, feature_id)?;
+        let dir = self.root.join("guards").join(project_id);
+        fs::create_dir_all(&dir)?;
+        let name = path.file_stem().expect("lock path has a name").to_owned();
+        let file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(name))?;
+        file.lock()?;
+        Ok(file)
     }
 
     fn lock_path(&self, project_id: &str, feature_id: &str) -> Result<PathBuf, StoreError> {
