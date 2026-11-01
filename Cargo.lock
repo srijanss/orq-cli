@@ -803,6 +803,13 @@ name = "orq-herdr"
 version = "0.1.0"
 
 [[package]]
+name = "orq-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "orq-test-support"
 version = "0.1.0"
 dependencies = [

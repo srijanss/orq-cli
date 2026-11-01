@@ -1,0 +1,263 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use orq_orchestrator::{choose_gate, Gate, GateError};
+
+fn worktree(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("orq-gate-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn touch(dir: &Path, name: &str, text: &str) {
+    let path = dir.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn steps(list: &[&[&str]]) -> Vec<Vec<String>> {
+    list.iter().map(|argv| argv.iter().map(|word| word.to_string()).collect()).collect()
+}
+
+fn run(list: &[&[&str]]) -> Gate {
+    Gate::Steps {
+        steps: steps(list),
+        notes: vec![],
+    }
+}
+
+const PACKAGE: &str = r#"{"scripts": {"typecheck": "tsc --noEmit", "test": "vitest run", "lint": "eslint ."}}"#;
+
+#[test]
+fn a_configured_gate_wins_over_every_detected_stack() {
+    let dir = worktree("configured");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    touch(&dir, "package.json", PACKAGE);
+
+    let configured = ["make".to_string(), "check".to_string(), "--jobs=4".to_string()];
+    assert_eq!(
+        choose_gate(&dir, Some(&configured)),
+        Ok(run(&[&["make", "check", "--jobs=4"]]))
+    );
+    // An empty configured list is the same as none, so detection still runs.
+    assert_eq!(choose_gate(&dir, Some(&[])), choose_gate(&dir, None));
+    assert!(matches!(choose_gate(&dir, None), Ok(Gate::Steps { .. })));
+}
+
+#[test]
+fn a_configured_gate_needs_a_program_to_run() {
+    let dir = worktree("empty-program");
+    for bad in [vec!["".to_string()], vec!["  ".to_string(), "x".to_string()]] {
+        assert_eq!(choose_gate(&dir, Some(&bad)), Err(GateError::EmptyProgram));
+    }
+}
+
+#[test]
+fn a_rust_workspace_runs_cargo_test() {
+    let dir = worktree("rust");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    assert_eq!(choose_gate(&dir, None), Ok(run(&[&["cargo", "test", "--workspace"]])));
+}
+
+#[test]
+fn node_runs_typecheck_then_test_with_the_package_manager_the_lockfile_names() {
+    for (lockfile, pm) in [
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("bun.lockb", "bun"),
+        ("bun.lock", "bun"),
+        ("", "npm"),
+    ] {
+        let dir = worktree(&format!("node-{pm}-{}", lockfile.replace('.', "_")));
+        touch(&dir, "package.json", PACKAGE);
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        if !lockfile.is_empty() {
+            touch(&dir, lockfile, "");
+        }
+        assert_eq!(
+            choose_gate(&dir, None),
+            Ok(run(&[&[pm, "run", "typecheck"], &[pm, "run", "test"]])),
+            "{lockfile:?}"
+        );
+    }
+    // pnpm outranks yarn, which outranks bun, when several lockfiles exist.
+    let dir = worktree("node-lockfile-priority");
+    touch(&dir, "package.json", PACKAGE);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    for lockfile in ["bun.lockb", "yarn.lock", "pnpm-lock.yaml"] {
+        touch(&dir, lockfile, "");
+    }
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["pnpm", "run", "typecheck"], &["pnpm", "run", "test"]]))
+    );
+}
+
+#[test]
+fn node_typecheck_falls_back_to_type_check_then_to_tsc() {
+    let dir = worktree("node-type-check");
+    touch(&dir, "package.json", r#"{"scripts": {"type-check": "tsc", "test": "jest"}}"#);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["npm", "run", "type-check"], &["npm", "run", "test"]]))
+    );
+
+    let dir = worktree("node-both-typechecks");
+    touch(&dir, "package.json", r#"{"scripts": {"type-check": "a", "typecheck": "b", "test": "jest"}}"#);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["npm", "run", "typecheck"], &["npm", "run", "test"]]))
+    );
+
+    let dir = worktree("node-tsc");
+    touch(&dir, "package.json", r#"{"scripts": {"test": "jest"}}"#);
+    touch(&dir, "tsconfig.json", "{}");
+    touch(&dir, "node_modules/.bin/tsc", "");
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["node_modules/.bin/tsc", "--noEmit"], &["npm", "run", "test"]]))
+    );
+}
+
+#[test]
+fn npms_placeholder_test_script_is_not_a_test() {
+    let dir = worktree("node-placeholder");
+    touch(
+        &dir,
+        "package.json",
+        r#"{"scripts": {"test": "echo \"Error: no test specified\" && exit 1"}}"#,
+    );
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert!(matches!(choose_gate(&dir, None), Ok(Gate::Skipped { .. })));
+}
+
+#[test]
+fn node_without_installed_dependencies_is_skipped_with_a_recorded_note() {
+    let dir = worktree("node-no-modules");
+    touch(&dir, "package.json", PACKAGE);
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Steps {
+            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            notes: vec![
+                "package.json found but node_modules is missing; install the dependencies to run the Node checks"
+                    .to_string()
+            ],
+        })
+    );
+    // Yarn's plug-and-play has no node_modules but does have .pnp.cjs.
+    touch(&dir, ".pnp.cjs", "");
+    touch(&dir, "yarn.lock", "");
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[
+            &["yarn", "run", "typecheck"],
+            &["yarn", "run", "test"],
+            &["cargo", "test", "--workspace"]
+        ]))
+    );
+}
+
+#[test]
+fn a_malformed_package_json_is_a_note_not_a_failure() {
+    let dir = worktree("node-malformed");
+    touch(&dir, "package.json", "{ not json");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Steps {
+            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            notes: vec!["package.json is not valid JSON; the Node checks were skipped".to_string()],
+        })
+    );
+}
+
+#[test]
+fn python_with_uv_runs_pytest_only_when_pytest_is_configured() {
+    for (tag, files, expected) in [
+        ("uv-pytest-ini", vec![("uv.lock", ""), ("pytest.ini", "")], true),
+        ("uv-tests-dir", vec![("uv.lock", ""), ("tests/test_a.py", "")], true),
+        ("uv-pyproject", vec![("uv.lock", ""), ("pyproject.toml", "[tool.pytest.ini_options]\n")], true),
+        ("uv-bare", vec![("uv.lock", ""), ("pyproject.toml", "[project]\nname = \"x\"\n")], false),
+        ("pytest-without-uv", vec![("pytest.ini", ""), ("tests/test_a.py", "")], false),
+    ] {
+        let dir = worktree(tag);
+        for (name, text) in files {
+            touch(&dir, name, text);
+        }
+        let gate = choose_gate(&dir, None).unwrap();
+        if expected {
+            assert_eq!(gate, run(&[&["uv", "run", "pytest"]]), "{tag}");
+        } else {
+            assert!(matches!(gate, Gate::Skipped { .. }), "{tag}: {gate:?}");
+        }
+    }
+}
+
+#[test]
+fn a_django_project_is_noted_as_unsupported_instead_of_run_half_way() {
+    let dir = worktree("django");
+    touch(&dir, "uv.lock", "");
+    touch(&dir, "src/manage.py", "");
+    touch(&dir, "pytest.ini", "");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Steps {
+            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            notes: vec!["Django project (src/manage.py) is not supported yet; set a gate command to check it".to_string()],
+        })
+    );
+}
+
+#[test]
+fn stacks_run_in_the_order_python_node_rust() {
+    let dir = worktree("order");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    touch(&dir, "package.json", r#"{"scripts": {"test": "jest"}}"#);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    touch(&dir, "uv.lock", "");
+    touch(&dir, "pytest.ini", "");
+
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(run(&[&["uv", "run", "pytest"], &["npm", "run", "test"], &["cargo", "test", "--workspace"]]))
+    );
+}
+
+#[test]
+fn with_nothing_to_run_the_gate_is_skipped_and_says_why() {
+    let dir = worktree("nothing");
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Skipped {
+            reason: "no local gate detected: no Cargo.toml, package.json test scripts or uv.lock with pytest, and no gate command configured"
+                .to_string()
+        })
+    );
+
+    // When stacks were noted but none produced a step, the notes are the reason.
+    let dir = worktree("nothing-noted");
+    touch(&dir, "package.json", PACKAGE);
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Skipped {
+            reason: "package.json found but node_modules is missing; install the dependencies to run the Node checks"
+                .to_string()
+        })
+    );
+}
+
+#[test]
+fn a_directory_that_does_not_exist_is_just_nothing_detected() {
+    let missing = std::env::temp_dir().join(format!("orq-gate-{}-absent", std::process::id()));
+    assert!(matches!(choose_gate(&missing, None), Ok(Gate::Skipped { .. })));
+}

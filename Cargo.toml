@@ -6,6 +6,7 @@ members = [
     "crates/orq-features",
     "crates/orq-git",
     "crates/orq-herdr",
+    "crates/orq-orchestrator",
     "crates/orq-tui",
     "crates/orq-test-support",
 ]
