@@ -48,27 +48,44 @@ impl FakeProvider {
         self.bin_dir().join("glab")
     }
 
-    /// Every call so far, oldest first.
+    /// Every call so far, in the order the calls claimed their slot.
     pub fn calls(&self) -> Vec<ProviderCall> {
-        let Ok(raw) = fs::read(self.root.join("data").join("record")) else {
+        let Ok(entries) = fs::read_dir(self.root.join("data").join("calls")) else {
             return Vec::new();
         };
-        let mut fields = raw
-            .split(|byte| *byte == 0)
-            .map(|field| String::from_utf8_lossy(field).into_owned())
-            .collect::<Vec<_>>();
-        fields.pop(); // the trailing NUL leaves one empty field
-        let mut fields = fields.into_iter();
-        let mut calls = Vec::new();
-        while let Some(count) = fields.next() {
-            let count: usize = count.parse().expect("record starts with the argument count");
-            let program = fields.next().expect("record has a program name");
-            let cwd = PathBuf::from(fields.next().expect("record has a cwd"));
-            let args = fields.by_ref().take(count).collect();
-            calls.push(ProviderCall { program, cwd, args });
-        }
-        calls
+        let mut slots: Vec<(u64, PathBuf)> = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let slot = entry.file_name().to_str()?.parse().ok()?;
+                Some((slot, entry.path()))
+            })
+            .collect();
+        slots.sort();
+        slots
+            .into_iter()
+            .filter_map(|(_, path)| parse_call(&fs::read(path).ok()?))
+            .collect()
     }
+}
+
+/// One call's record: `argc NUL program NUL cwd NUL arg NUL ...`. A slot that
+/// is claimed but still empty (its process has not written yet) is skipped.
+fn parse_call(raw: &[u8]) -> Option<ProviderCall> {
+    if raw.is_empty() {
+        return None;
+    }
+    let mut fields = raw
+        .split(|byte| *byte == 0)
+        .map(|field| String::from_utf8_lossy(field).into_owned())
+        .collect::<Vec<_>>();
+    fields.pop(); // the trailing NUL leaves one empty field
+    let mut fields = fields.into_iter();
+    let count: usize = fields.next()?.parse().expect("record starts with the argument count");
+    let program = fields.next().expect("record has a program name");
+    let cwd = PathBuf::from(fields.next().expect("record has a cwd"));
+    let args: Vec<String> = fields.collect();
+    assert_eq!(args.len(), count, "record holds exactly its argument count");
+    Some(ProviderCall { program, cwd, args })
 }
 
 impl FakeProviderBuilder {
@@ -103,6 +120,7 @@ impl FakeProviderBuilder {
         let replies = root.join("data").join("replies");
         fs::create_dir_all(&bin).expect("create fake provider bin dir");
         fs::create_dir_all(&replies).expect("create fake provider replies dir");
+        fs::create_dir_all(root.join("data").join("calls")).expect("create fake provider calls dir");
 
         // The script tries replies in directory order, so the most specific
         // prefix must come first; equal lengths keep registration order.
@@ -117,13 +135,17 @@ impl FakeProviderBuilder {
         }
 
         // The script locates its data via $0, so no path is embedded in shell
-        // source and nothing needs quoting. Each record is
-        // `argc NUL program NUL cwd NUL arg NUL ...`.
+        // source and nothing needs quoting. Each call claims its own numbered
+        // file (noclobber makes the claim atomic), so concurrent calls never
+        // write to the same file and their records cannot interleave.
         let body = "#!/bin/sh\n\
             [ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\n\
             bin=${0%/*}\n\
             data=$bin/../data\n\
-            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" >> \"$data/record\"\n\
+            set -C\n\
+            n=0\n\
+            while ! { true > \"$data/calls/$n\"; } 2>/dev/null; do n=$((n+1)); done\n\
+            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" >> \"$data/calls/$n\"\n\
             for r in \"$data\"/replies/*; do\n\
             \x20 [ -d \"$r\" ] || continue\n\
             \x20 ok=1; i=0\n\

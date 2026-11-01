@@ -99,3 +99,47 @@ fn found_through_path_it_works_and_the_directory_is_removed_on_drop() {
     drop(provider);
     assert!(!bin.exists());
 }
+
+#[test]
+fn concurrent_calls_with_large_arguments_are_each_recorded_intact() {
+    use std::process::Stdio;
+
+    const COUNT: usize = 48;
+    const BASE: usize = 100_000;
+    let provider = FakeProvider::builder().reply(&["pr", "create"], "{}\n").build();
+    let cwd = std::env::temp_dir();
+    let programs = [provider.gh(), provider.glab()];
+
+    let children: Vec<_> = (0..COUNT)
+        .map(|i| {
+            let body = format!("{i:02}{}", "x".repeat(BASE + i));
+            Command::new(&programs[i % 2])
+                .args(["pr", "create", "--body", &body])
+                .current_dir(&cwd)
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+
+    let calls = provider.calls();
+    assert_eq!(calls.len(), COUNT);
+    let mut seen: Vec<usize> = calls
+        .iter()
+        .map(|call| {
+            assert_eq!(call.args.len(), 4, "{:?}", call.program);
+            assert_eq!(&call.args[..3], ["pr", "create", "--body"]);
+            let body = &call.args[3];
+            let i: usize = body[..2].parse().unwrap();
+            assert_eq!(body.len(), 2 + BASE + i, "argument {i} was cut or mixed");
+            assert!(body[2..].bytes().all(|b| b == b'x'), "argument {i} was mixed with another call's");
+            assert_eq!(call.program, ["gh", "glab"][i % 2]);
+            i
+        })
+        .collect();
+    seen.sort_unstable();
+    assert_eq!(seen, (0..COUNT).collect::<Vec<_>>());
+}
