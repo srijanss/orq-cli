@@ -157,6 +157,52 @@ fn events_for_unknown_runs_or_with_damaged_lines_are_reported_not_skipped() {
     assert!(matches!(store.events("run-1"), Err(StoreError::Corrupt(why)) if why.contains("line 2")));
 }
 
+#[test]
+fn a_second_start_for_the_same_feature_is_refused_with_the_active_run_id() {
+    let root = root("guard");
+    let store = RunStore::new(&root);
+
+    store.start_run(&record("run-1")).unwrap();
+
+    match store.start_run(&record("run-2")) {
+        Err(StoreError::FeatureBusy { active_run_id }) => assert_eq!(active_run_id, "run-1"),
+        other => panic!("expected FeatureBusy, got {other:?}"),
+    }
+    // The refused start left no run behind.
+    assert!(matches!(store.load("run-2"), Err(StoreError::NotFound(_))));
+
+    // Another feature of the same project, and the same feature id in another project, still start.
+    let mut other_feature = record("run-3");
+    other_feature.feature_id = "COM-03".to_string();
+    store.start_run(&other_feature).unwrap();
+    let mut other_project = record("run-4");
+    other_project.project_id = "repo-2".to_string();
+    store.start_run(&other_project).unwrap();
+}
+
+#[test]
+fn finishing_a_run_frees_the_feature_and_only_its_owner_can_free_it() {
+    let root = root("release");
+    let store = RunStore::new(&root);
+    store.start_run(&record("run-1")).unwrap();
+
+    // A different run id cannot release someone else's lock.
+    assert!(matches!(
+        store.finish_run("repo-1", "COM-02", "run-2"),
+        Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == "run-1"
+    ));
+    assert!(matches!(store.start_run(&record("run-3")), Err(StoreError::FeatureBusy { .. })));
+
+    store.finish_run("repo-1", "COM-02", "run-1").unwrap();
+    store.start_run(&record("run-3")).unwrap();
+    // Releasing twice is harmless for the next owner's lock.
+    assert!(store.finish_run("repo-1", "COM-02", "run-1").is_err());
+    assert!(matches!(store.start_run(&record("run-5")), Err(StoreError::FeatureBusy { .. })));
+
+    // Nothing but the lock file is left in the locks directory.
+    assert_eq!(names(&root.join("locks/repo-1")), vec!["COM-02.lock".to_string()]);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_record_that_cannot_be_serialized_leaves_nothing_behind_and_can_be_retried() {

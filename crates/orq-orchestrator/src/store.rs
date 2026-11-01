@@ -53,6 +53,8 @@ pub enum StoreError {
     /// The run id is empty, hidden or contains anything but `[A-Za-z0-9._-]`.
     InvalidRunId(String),
     AlreadyExists(String),
+    /// Another run of the same project and feature is still active.
+    FeatureBusy { active_run_id: String },
     NotFound(String),
     Io(std::io::Error),
     Corrupt(String),
@@ -63,6 +65,9 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::InvalidRunId(id) => write!(f, "invalid run id {id:?}"),
             StoreError::AlreadyExists(id) => write!(f, "run {id} already exists"),
+            StoreError::FeatureBusy { active_run_id } => {
+                write!(f, "the feature already has an active run: {active_run_id}")
+            }
             StoreError::NotFound(id) => write!(f, "run {id} not found"),
             StoreError::Io(err) => write!(f, "run store I/O error: {err}"),
             StoreError::Corrupt(why) => write!(f, "run record is corrupt: {why}"),
@@ -95,6 +100,62 @@ impl RunStore {
             return Err(StoreError::InvalidRunId(run_id.to_string()));
         }
         Ok(self.root.join("runs").join(run_id))
+    }
+
+    /// Create a run and take its project+feature lock.
+    pub fn start_run(&self, record: &RunRecord) -> Result<(), StoreError> {
+        let lock = self.lock_path(&record.project_id, &record.feature_id)?;
+        self.run_dir(&record.run_id)?;
+        let locks = lock.parent().expect("lock path has a parent");
+        fs::create_dir_all(locks)?;
+        // The lock appears already holding the run id: write a private file,
+        // then hard-link it into place, which fails if a lock exists.
+        let private = locks.join(format!(".{}.{}.tmp", record.run_id, std::process::id()));
+        fs::write(&private, record.run_id.as_bytes())?;
+        let linked = fs::hard_link(&private, &lock);
+        let _ = fs::remove_file(&private);
+        match linked {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let active_run_id = fs::read_to_string(&lock).unwrap_or_default().trim().to_string();
+                return Err(StoreError::FeatureBusy { active_run_id });
+            }
+            Err(err) => return Err(err.into()),
+        }
+        if let Err(err) = self.create(record) {
+            let _ = fs::remove_file(&lock);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Release the feature lock when the run ends; only its owner may.
+    pub fn finish_run(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
+        let lock = self.lock_path(project_id, feature_id)?;
+        let owner = match fs::read_to_string(&lock) {
+            Ok(text) => text.trim().to_string(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::NotFound(run_id.to_string()))
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if owner != run_id {
+            return Err(StoreError::FeatureBusy { active_run_id: owner });
+        }
+        fs::remove_file(&lock)?;
+        Ok(())
+    }
+
+    fn lock_path(&self, project_id: &str, feature_id: &str) -> Result<PathBuf, StoreError> {
+        for part in [project_id, feature_id] {
+            let valid = !part.is_empty()
+                && !part.starts_with('.')
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            if !valid {
+                return Err(StoreError::InvalidRunId(part.to_string()));
+            }
+        }
+        Ok(self.root.join("locks").join(project_id).join(format!("{feature_id}.lock")))
     }
 
     /// Write `run.json` for a new run, atomically; refuse to replace one.
