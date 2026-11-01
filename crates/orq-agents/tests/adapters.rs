@@ -73,3 +73,20 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         );
     }
 }
+
+#[test]
+fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
+    let claude = adapter_for("claude").unwrap();
+    let request = ImplementRequest {
+        feature: "COM-02",
+        implementer: spec("claude", "sonnet", Some("high")),
+        reviewer: spec("pi", "kimi-k3", None),
+    };
+    let argv = claude.implement_argv(&request).unwrap();
+    assert_eq!(&argv[..4], ["--model", "sonnet", "--effort", "high"]);
+    assert_eq!(argv.len(), 5);
+
+    // A level that is not a plain word is refused, not passed on.
+    let bad = ImplementRequest { implementer: spec("claude", "sonnet", Some("--x y")), ..request };
+    assert!(matches!(claude.implement_argv(&bad), Err(AdapterError::InvalidValue { .. })));
+}

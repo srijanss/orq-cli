@@ -126,7 +126,14 @@ impl HarnessAdapter for Claude {
             prompt.push_str(" --thinking ");
             prompt.push_str(thinking);
         }
-        Ok(vec!["--model".to_string(), request.implementer.model.clone(), prompt])
+        let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
+        if let Some(thinking) = &request.implementer.thinking {
+            plain("implementer thinking", thinking)?;
+            argv.push("--effort".to_string());
+            argv.push(thinking.clone());
+        }
+        argv.push(prompt);
+        Ok(argv)
     }
 }
 
