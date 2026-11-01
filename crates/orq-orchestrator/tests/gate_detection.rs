@@ -309,3 +309,42 @@ fn pytest_is_configured_by_the_real_tool_pytest_table_not_by_a_line_prefix() {
         }
     }
 }
+
+#[test]
+fn manifests_that_cannot_be_read_are_reported_as_such_not_as_syntax_errors_or_absence() {
+    // package.json that is not UTF-8 is a read problem, not "not valid JSON".
+    let dir = worktree("node-not-utf8");
+    fs::write(dir.join("package.json"), [0xff, 0xfe, 0x7b]).unwrap();
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert_eq!(
+        choose_gate(&dir, None),
+        Ok(Gate::Skipped {
+            reason: "package.json could not be read; the Node checks were skipped".to_string()
+        })
+    );
+
+    // pyproject.toml that is not UTF-8 or not TOML is reported, and the other
+    // signals (here a tests directory) still count.
+    for (tag, bytes) in [("not-utf8", vec![0xffu8, 0xfe]), ("not-toml", b"[tool\nx".to_vec())] {
+        let dir = worktree(&format!("pyproject-{tag}"));
+        touch(&dir, "uv.lock", "");
+        fs::write(dir.join("pyproject.toml"), bytes).unwrap();
+        let reason = "pyproject.toml could not be read as TOML; settings in it were ignored";
+        assert_eq!(
+            choose_gate(&dir, None),
+            Ok(Gate::Skipped {
+                reason: reason.to_string()
+            }),
+            "{tag}"
+        );
+        touch(&dir, "tests/test_a.py", "");
+        assert_eq!(
+            choose_gate(&dir, None),
+            Ok(Gate::Steps {
+                steps: steps(&[&["uv", "run", "pytest"]]),
+                notes: vec![reason.to_string()],
+            }),
+            "{tag}"
+        );
+    }
+}

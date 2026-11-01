@@ -78,11 +78,18 @@ fn python_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String
     if !dir.join("uv.lock").is_file() {
         return;
     }
-    let pyproject = fs::read_to_string(dir.join("pyproject.toml")).unwrap_or_default();
-    let pytest_configured = pyproject
-        .parse::<toml_edit::DocumentMut>()
-        .ok()
-        .is_some_and(|doc| doc.get("tool").and_then(|tool| tool.get("pytest")).is_some())
+    let pyproject_path = dir.join("pyproject.toml");
+    let mut pytest_in_pyproject = false;
+    if pyproject_path.is_file() {
+        match fs::read_to_string(&pyproject_path)
+            .ok()
+            .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        {
+            Some(doc) => pytest_in_pyproject = doc.get("tool").and_then(|tool| tool.get("pytest")).is_some(),
+            None => notes.push("pyproject.toml could not be read as TOML; settings in it were ignored".to_string()),
+        }
+    }
+    let pytest_configured = pytest_in_pyproject
         || dir.join("pytest.ini").is_file()
         || dir.join("tests").is_dir();
     if pytest_configured {
@@ -101,9 +108,11 @@ fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>)
         );
         return;
     }
-    let parsed = fs::read_to_string(&manifest)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let Ok(text) = fs::read_to_string(&manifest) else {
+        notes.push("package.json could not be read; the Node checks were skipped".to_string());
+        return;
+    };
+    let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
     let Some(manifest) = parsed else {
         notes.push("package.json is not valid JSON; the Node checks were skipped".to_string());
         return;
