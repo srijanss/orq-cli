@@ -111,14 +111,14 @@ pub fn run_implement_stage(
     Ok(outcome)
 }
 
-fn next_event_id(run_id: &str) -> String {
+pub(crate) fn next_event_id(run_id: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     format!("{run_id}-{nanos}-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// The current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil date from days since 1970-01-01 (Hinnant's algorithm).

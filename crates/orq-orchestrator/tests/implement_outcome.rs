@@ -1,0 +1,109 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use orq_orchestrator::{check_implement_outcome, ImplementCheck, RunRecord, RunStore};
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+struct World {
+    store: RunStore,
+    worktree: PathBuf,
+}
+
+fn world(tag: &str) -> World {
+    let root = std::env::temp_dir().join(format!("orq-outcome-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let worktree = root.join("worktree");
+    fs::create_dir_all(&worktree).unwrap();
+    git(&worktree, &["init", "-q", "-b", "main"]);
+    fs::write(worktree.join("a.txt"), "a\n").unwrap();
+    git(&worktree, &["add", "."]);
+    git(&worktree, &["commit", "-q", "-m", "base"]);
+    let base = git(&worktree, &["rev-parse", "HEAD"]);
+    let store = RunStore::new(&root.join("state"));
+    store
+        .create(&RunRecord {
+            run_id: "run-1".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            remote: "git@github.com:acme/app.git".to_string(),
+            provider: "github".to_string(),
+            target_branch: "main".to_string(),
+            base_sha: base,
+            branch: "fix--COM-02".to_string(),
+            worktree: worktree.clone(),
+            profiles: BTreeMap::new(),
+        })
+        .unwrap();
+    World { store, worktree }
+}
+
+fn commit_change(w: &World, name: &str) {
+    fs::write(w.worktree.join(name), "x\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", name]);
+}
+
+fn blocked_events(w: &World) -> Vec<orq_orchestrator::Event> {
+    w.store.events("run-1").unwrap().into_iter().filter(|e| e.kind == "run.blocked").collect()
+}
+
+#[test]
+fn a_clean_worktree_with_new_commits_passes_and_records_nothing() {
+    let w = world("ok");
+    commit_change(&w, "b.txt");
+    commit_change(&w, "c.txt");
+
+    let check = check_implement_outcome(&w.store, "run-1").unwrap();
+
+    assert_eq!(check, ImplementCheck::Ready { commits: 2 });
+    assert!(w.store.events("run-1").unwrap().is_empty());
+}
+
+#[test]
+fn no_new_commits_blocks_the_run_with_the_reason_and_keeps_the_worktree() {
+    let w = world("nocommits");
+
+    let check = check_implement_outcome(&w.store, "run-1").unwrap();
+
+    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    assert!(reason.contains("no new commits"), "{reason}");
+    let events = blocked_events(&w);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].stage.as_deref(), Some("implement_and_review"));
+    assert_eq!(events[0].payload["reason"], reason.as_str());
+    assert!(w.worktree.join("a.txt").is_file(), "the worktree is kept");
+}
+
+#[test]
+fn uncommitted_changes_block_the_run_even_with_new_commits() {
+    let w = world("dirty");
+    commit_change(&w, "b.txt");
+    fs::write(w.worktree.join("a.txt"), "edited\n").unwrap();
+    fs::write(w.worktree.join("untracked.txt"), "new\n").unwrap();
+
+    let check = check_implement_outcome(&w.store, "run-1").unwrap();
+
+    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    assert!(reason.contains("uncommitted"), "{reason}");
+    assert_eq!(blocked_events(&w).len(), 1);
+    assert_eq!(fs::read_to_string(w.worktree.join("a.txt")).unwrap(), "edited\n", "changes are left alone");
+}
+
+#[test]
+fn an_unknown_run_is_an_error() {
+    let w = world("unknown");
+    assert!(check_implement_outcome(&w.store, "ghost").is_err());
+}
