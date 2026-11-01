@@ -7,8 +7,10 @@ fn credentials_and_query_secrets_are_removed_from_every_url_in_a_diagnostic() {
         ("see https://host/r.git?access_token=abc123#frag now", "https://host/r.git now"),
         ("a http://u:p@one/x and ssh://git:tok@two/y", "http://one/x and ssh://two/y"),
         ("fatal: 'http://user:sec'ret@host/repo' failed", "http://host/repo"),
-        ("http://u:p'q?x='y&z=w@host/path", "http://host/path"),
+        ("http://u:p'q@host/path?x='y&z=w", "http://host/path"),
         ("no urls here: just text", "no urls here: just text"),
+        ("x https://host?access_token=prefix@secret y", "x https://host y"),
+        ("x https://host#frag@secret y", "x https://host y"),
     ];
     for (input, expected) in cases {
         let out = redact_urls(input);

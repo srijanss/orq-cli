@@ -116,12 +116,14 @@ pub fn redact_urls(text: &str) -> String {
         // only whitespace ends a URL; over-redacting is the safe direction.
         let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
         let (url, after) = tail.split_at(end);
+        // Query and fragment go first, so an '@' inside them is never read as
+        // userinfo; then userinfo is dropped from the authority.
+        let cut = url.find(['?', '#']).unwrap_or(url.len());
+        let url = &url[..cut];
         let authority_end = url.find('/').unwrap_or(url.len());
-        let (authority, remainder) = url.split_at(authority_end);
-        let host = authority.rsplit('@').next().unwrap_or(authority);
-        let kept = format!("{host}{remainder}");
-        let cut = kept.find(['?', '#']).unwrap_or(kept.len());
-        out.push_str(&kept[..cut]);
+        let (authority, path) = url.split_at(authority_end);
+        out.push_str(authority.rsplit('@').next().unwrap_or(authority));
+        out.push_str(path);
         rest = after;
     }
     out.push_str(rest);
