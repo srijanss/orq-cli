@@ -65,6 +65,17 @@ fn the_base_is_the_fetched_remote_tip_and_the_checkout_is_left_alone() {
 }
 
 #[test]
+fn configured_fetch_mappings_do_not_write_other_refs() {
+    let (fixture, main_sha, _) = fixture_with_remote();
+    let root = fixture.root();
+    // A custom mapping that would also update an unrelated local branch.
+    git(root, &["config", "--add", "remote.origin.fetch", "+refs/heads/main:refs/heads/mapped"]);
+
+    assert_eq!(fetch_target_base(root, "origin", "main").unwrap(), main_sha);
+    assert!(git(root, &["for-each-ref", "refs/heads/mapped"]).is_empty());
+}
+
+#[test]
 fn a_missing_remote_or_branch_is_a_typed_error_and_fetches_nothing() {
     let (fixture, _, _) = fixture_with_remote();
     let root = fixture.root();

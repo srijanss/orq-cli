@@ -58,7 +58,7 @@ pub fn fetch_target_base(repo: &Path, remote: &str, branch: &str) -> Result<Stri
 
     let tracking = format!("refs/remotes/{remote}/{branch}");
     let refspec = format!("+{head_ref}:{tracking}");
-    let fetched = git(repo, &["fetch", "--quiet", "--no-tags", "--", remote, &refspec])?;
+    let fetched = git(repo, &["fetch", "--quiet", "--no-tags", "--refmap=", "--", remote, &refspec])?;
     if !fetched.status.success() {
         return Err(failure(&fetched));
     }
