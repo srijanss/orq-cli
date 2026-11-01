@@ -236,6 +236,43 @@ fn concurrent_creations_of_the_same_run_leave_exactly_the_winners_branch_and_wor
     }
 }
 
+#[test]
+fn racing_for_one_branch_from_different_directories_keeps_only_the_winner() {
+    use std::sync::{Arc, Barrier};
+
+    let (fixture, base) = moved_on();
+    let root = Arc::new(fixture.root().to_path_buf());
+    for round in 0..25 {
+        let branch = format!("fix--claim-{round}");
+        let gate = Arc::new(Barrier::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|n| {
+                let (root, gate, branch, base) = (root.clone(), gate.clone(), branch.clone(), base.clone());
+                let dir = PathBuf::from(format!(".claude/worktrees/{branch}-d{n}"));
+                std::thread::spawn(move || {
+                    gate.wait();
+                    let won = create_run_worktree(&root, &dir, &branch, &base).is_ok();
+                    (dir, won)
+                })
+            })
+            .collect();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+
+        let winners: Vec<_> = results.iter().filter(|(_, won)| *won).collect();
+        assert_eq!(winners.len(), 1, "round {round}: exactly one creation wins");
+        assert_eq!(git(&root, &["rev-parse", &format!("refs/heads/{branch}")]), base, "round {round}: the branch survives");
+        let (winning_dir, _) = winners[0];
+        assert_eq!(git(&root.join(winning_dir), &["symbolic-ref", "--short", "HEAD"]), branch);
+        for (dir, won) in &results {
+            if !won {
+                assert!(!root.join(dir).exists(), "round {round}: the loser's directory {} is removed", dir.display());
+            }
+        }
+        let listed = git(&root, &["worktree", "list", "--porcelain"]);
+        assert_eq!(listed.matches("worktree ").count(), round + 2, "round {round}: the source checkout and the winners are registered:\n{listed}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_post_checkout_hook_failure_removes_the_populated_worktree_and_its_branch_and_a_retry_succeeds() {
