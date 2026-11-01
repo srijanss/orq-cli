@@ -112,7 +112,14 @@ pub fn create_run_worktree(
         ],
     )?;
     if !added.status.success() {
-        return Err(failure(&added));
+        let error = failure(&added);
+        // Git creates the branch before it populates the directory and may
+        // leave it behind. The branch did not exist a moment ago, so remove it
+        // only while it still points at the base (a concurrent owner's stays),
+        // and drop any half-made registration.
+        let _ = git(repo, &["update-ref", "-d", &head_ref, base_sha]);
+        let _ = git(repo, &["worktree", "prune"]);
+        return Err(error);
     }
     Ok(path)
 }

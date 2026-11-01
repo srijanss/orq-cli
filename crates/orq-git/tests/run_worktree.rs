@@ -186,3 +186,24 @@ fn a_non_utf8_destination_is_created_exactly_where_it_was_checked() {
         Err(WorktreeError::PathExists { .. })
     ));
 }
+
+#[test]
+fn a_failed_worktree_add_leaves_no_branch_or_registration_so_a_retry_succeeds() {
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    // A regular file where a parent directory is needed: `git worktree add` fails.
+    std::fs::create_dir_all(root.join(".claude")).unwrap();
+    std::fs::write(root.join(".claude/worktrees"), "not a directory").unwrap();
+    let branches = git(root, &["branch", "--list"]);
+    let registered = git(root, &["worktree", "list", "--porcelain"]);
+
+    let err = create_run_worktree(root, Path::new(".claude/worktrees/fix--f"), "fix--f", &base).unwrap_err();
+
+    assert!(matches!(err, WorktreeError::Git { .. }), "{err:?}");
+    assert_eq!(git(root, &["branch", "--list"]), branches, "no branch left behind");
+    assert_eq!(git(root, &["worktree", "list", "--porcelain"]), registered);
+
+    // Once the obstacle is gone the same name works.
+    std::fs::remove_file(root.join(".claude/worktrees")).unwrap();
+    create_run_worktree(root, Path::new(".claude/worktrees/fix--f"), "fix--f", &base).unwrap();
+}
