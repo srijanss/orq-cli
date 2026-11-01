@@ -143,3 +143,30 @@ fn an_unknown_run_is_an_error() {
     let w = world("unknown");
     assert!(check_implement_outcome(&w.store, "ghost").is_err());
 }
+
+#[test]
+fn a_worktree_that_is_not_a_repository_is_an_error_and_records_nothing() {
+    let w = world("not-a-repo");
+    fs::remove_dir_all(w.worktree.join(".git")).unwrap();
+
+    assert!(check_implement_outcome(&w.store, "run-1").is_err());
+    assert!(w.store.events("run-1").unwrap().is_empty());
+}
+
+#[test]
+fn a_missing_base_commit_in_a_clean_worktree_is_an_error_and_records_nothing() {
+    let w = world_with_base("badbase", Some("0000000000000000000000000000000000000000"));
+
+    assert!(check_implement_outcome(&w.store, "run-1").is_err());
+    assert!(w.store.events("run-1").unwrap().is_empty());
+}
+
+#[test]
+fn a_failure_to_record_the_block_is_an_error_not_a_silent_block() {
+    let w = world("append-fails");
+    let events = w.worktree.parent().unwrap().join("state").join("runs").join("run-1").join("events.jsonl");
+    let _ = fs::remove_file(&events);
+    fs::create_dir_all(&events).unwrap();
+
+    assert!(check_implement_outcome(&w.store, "run-1").is_err());
+}
