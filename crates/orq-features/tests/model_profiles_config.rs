@@ -240,6 +240,44 @@ fn profile_names_a_role_could_not_reference_are_rejected() {
     assert!(load_model_profiles(&user, &dir.join("absent.toml")).unwrap().get("my model").is_some());
 }
 
+#[test]
+fn role_references_are_checked_after_both_files_are_merged() {
+    let dir = tempfile_dir("cross-layer");
+    let absent = dir.join("absent.toml");
+    let model = "harness = \"claude\"\nmodel = \"m\"\n";
+
+    // A user role may name a profile only the repo file defines.
+    let user = write(&dir, "u1.toml", "[roles]\nimplementer = \"repo-only\"\n");
+    let repo = write(&dir, "r1.toml", &format!("[models.repo-only]\n{model}"));
+    let merged = load_model_profiles(&user, &repo).unwrap();
+    assert_eq!(merged.role(AgentRole::Implementer).unwrap().name, "repo-only");
+
+    // A dangling user role is fine once the repo file replaces it.
+    let user = write(&dir, "u2.toml", "[roles]\nreviewer = \"ghost\"\n");
+    let repo = write(&dir, "r2.toml", &format!("[models.real]\n{model}[roles]\nreviewer = \"real\"\n"));
+    let merged = load_model_profiles(&user, &repo).unwrap();
+    assert_eq!(merged.role_profile_name(AgentRole::Reviewer), Some("real"));
+
+    // A role still dangling after the merge is rejected.
+    let user = write(&dir, "u3.toml", "[roles]\nreviewer = \"ghost\"\n");
+    let repo = write(&dir, "r3.toml", &format!("[models.real]\n{model}"));
+    assert_eq!(
+        load_model_profiles(&user, &repo).unwrap_err(),
+        ModelProfilesError::UnknownRoleProfile {
+            role: AgentRole::Reviewer,
+            profile: "ghost".to_string()
+        }
+    );
+
+    // A repo role naming a profile neither file defines is rejected too.
+    let user = write(&dir, "u4.toml", &format!("[models.real]\n{model}"));
+    let repo = write(&dir, "r4.toml", "[roles]\nimplementer = \"ghost\"\n");
+    assert!(matches!(
+        load_model_profiles(&user, &repo),
+        Err(ModelProfilesError::UnknownRoleProfile { role: AgentRole::Implementer, .. })
+    ));
+}
+
 fn tempfile_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "orq-model-profiles-{tag}-{}-{:?}",
