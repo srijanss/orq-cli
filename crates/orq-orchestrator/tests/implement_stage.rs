@@ -121,6 +121,22 @@ fn a_failing_session_is_recorded_as_failed_with_its_exit_code() {
     assert!(failed.payload["reason"].as_str().unwrap().contains('5'));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_session_killed_by_a_signal_is_failed_without_an_exit_code_and_says_so() {
+    let s = setup("signal");
+    let args = argv(&["-c", "kill -TERM $$"]);
+
+    let outcome = run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+
+    assert!(!outcome.success);
+    assert_eq!(outcome.exit_code, None);
+    assert_eq!(kinds(&s.store), ["stage.started", "stage.failed"]);
+    let failed = &s.store.events("run-1").unwrap()[1];
+    assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
+    assert!(failed.payload["reason"].as_str().unwrap().contains("signal"), "{}", failed.payload);
+}
+
 #[test]
 fn a_program_that_cannot_start_is_a_failed_stage_without_an_exit_code() {
     let s = setup("missing");
