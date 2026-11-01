@@ -42,9 +42,10 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", record.branch);
-    writeln!(log, "$ {}", redact_credentials(&format!("git push -- {} {refspec}", record.remote)))?;
+    writeln!(log, "$ {}", redact_credentials(&format!("git push --no-follow-tags -- {} {refspec}", record.remote)))?;
     // No force option: a remote branch that diverged is reported, not overwritten.
-    let pushed = git_raw(worktree, &["push", "--", &record.remote, &refspec])?;
+    // `push.followTags` in the user's config must not publish tags with it.
+    let pushed = git_raw(worktree, &["push", "--no-follow-tags", "--", &record.remote, &refspec])?;
     log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
     log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
     if !pushed.success {

@@ -157,3 +157,15 @@ fn credentials_in_the_remote_url_never_reach_the_log_or_the_events() {
     let events = serde_json::to_string(&w.store.events("run-1").unwrap()).unwrap();
     assert!(!events.contains("s3cret-token"), "{events}");
 }
+
+#[test]
+fn an_annotated_tag_is_not_published_even_when_push_follow_tags_is_configured() {
+    let w = world("tags", "fix--COM-02", "main", None);
+    git(&w.worktree, &["config", "push.followTags", "true"]);
+    git(&w.worktree, &["tag", "-a", "-m", "unrelated", "v-unrelated"]);
+
+    let outcome = push_run_branch(&w.store, "run-1", &w.log).unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+    assert_eq!(git(&w.remote, &["tag", "--list"]), "", "only the branch is published");
+}
