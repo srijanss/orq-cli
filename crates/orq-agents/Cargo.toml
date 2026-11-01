@@ -1,0 +1,6 @@
+[package]
+name = "orq-agents"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

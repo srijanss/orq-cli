@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/orq-agents",
     "crates/orq-cli",
     "crates/orq-core",
     "crates/orq-features",

@@ -762,6 +762,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "orq-agents"
+version = "0.1.0"
+
+[[package]]
 name = "orq-cli"
 version = "0.1.0"
 dependencies = [
