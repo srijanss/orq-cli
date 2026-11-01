@@ -131,3 +131,23 @@ fn unsafe_step_arguments_are_rejected_when_the_agent_is_built() {
         assert!(result.is_err(), "session id {bad:?} should be rejected");
     }
 }
+
+#[test]
+fn a_write_that_fails_stops_the_agent_with_a_diagnostic_and_skips_later_steps() {
+    let fixture = GitFixture::new();
+    // README.md is a regular file, so nothing can be created beneath it.
+    let agent = FakeAgent::builder()
+        .write_file("README.md/inside.txt", "x\n")
+        .write_file("after.txt", "never written\n")
+        .commit("never made")
+        .stdout("should not be printed\n")
+        .build();
+
+    let output = Command::new(agent.path()).current_dir(fixture.root()).output().unwrap();
+
+    assert_eq!(output.status.code(), Some(70));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fake agent: write failed: README.md/inside.txt"));
+    assert!(output.stdout.is_empty());
+    assert!(!fixture.root().join("after.txt").exists());
+    assert_eq!(git(fixture.root(), &["rev-list", "--count", "HEAD"]), "1");
+}

@@ -169,7 +169,8 @@ impl FakeAgentBuilder {
 
 /// Shell functions for [`Step`]s; they read their payload from `$dir/step<N>.*`.
 const STEP_FUNCTIONS: &str = concat!(
-    "write_step() { IFS= read -r p < \"$dir/step$1.path\"; case $p in */*) mkdir -p \"${p%/*}\";; esac; cat \"$dir/step$1.body\" > \"$p\"; }\n",
+    "write_step() { IFS= read -r p < \"$dir/step$1.path\" && { case $p in */*) mkdir -p \"${p%/*}\";; esac; } && cat \"$dir/step$1.body\" > \"$p\" ",
+    "|| { echo \"fake agent: write failed: $p\" >&2; exit 70; }; }\n",
     "commit_step() { export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1; ",
     "git add -A >/dev/null 2>&1 && git -c user.name='Orq Fake Agent' -c user.email=fake-agent@example.invalid ",
     "-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q --cleanup=verbatim -F \"$dir/step$1.msg\" >/dev/null 2>&1 ",
