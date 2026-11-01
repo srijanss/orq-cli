@@ -115,35 +115,48 @@ pub(crate) fn run_session_stage(
 /// created exclusively, an existing one must be a regular file and the very
 /// file that was inspected.
 pub(crate) fn open_log(path: &Path) -> std::io::Result<fs::File> {
+    open_log_with(path, || {})
+}
+
+/// `open_log`, running `between` after the path is inspected and before it is
+/// opened, so a test can swap the path at exactly that point.
+fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::File> {
     let refuse = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is {what}", path.display()));
     let mut open = fs::OpenOptions::new();
     open.append(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // No symlink is followed, and a FIFO swapped in cannot block the open.
+        open.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
     match fs::symlink_metadata(path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            between();
             // `create_new` is O_EXCL: it fails rather than follow a link planted meanwhile.
-            return open.create_new(true).open(path);
+            open.create_new(true).open(path)
         }
-        Err(err) => return Err(err),
-        Ok(meta) if !meta.is_file() => return Err(refuse("not a regular file")),
+        Err(err) => Err(err),
+        Ok(meta) if !meta.is_file() => Err(refuse("not a regular file")),
+        #[cfg(unix)]
         Ok(meta) => {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            between();
             let file = open.open(path)?;
             let opened = file.metadata()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::{MetadataExt, PermissionsExt};
-                if opened.dev() != meta.dev() || opened.ino() != meta.ino() {
-                    return Err(refuse("not the file that was inspected"));
-                }
-                // Tighten one from earlier runs through the handle, so a swapped path cannot redirect it.
-                file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            }
             if !opened.is_file() {
                 return Err(refuse("not a regular file"));
             }
+            if opened.dev() != meta.dev() || opened.ino() != meta.ino() {
+                return Err(refuse("not the file that was inspected"));
+            }
+            // Tighten one from earlier runs through the handle, so a swapped path cannot redirect it.
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
             Ok(file)
         }
+        // Without no-follow opening and handle identity checks an existing file cannot be trusted.
+        #[cfg(not(unix))]
+        Ok(_) => Err(refuse("an existing file, which cannot be opened safely on this platform")),
     }
 }
 
@@ -168,4 +181,34 @@ pub(crate) fn now_rfc3339() -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3_600, rem % 3_600 / 60, rem % 60)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn a_log_swapped_for_a_fifo_after_inspection_is_refused_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("orq-open-log-fifo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stage.log");
+        fs::write(&log, "old\n").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let path = log.clone();
+        std::thread::spawn(move || {
+            let swap = || {
+                fs::remove_file(&path).unwrap();
+                assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+            };
+            let _ = sender.send(open_log_with(&path, swap).is_err());
+        });
+
+        let refused = receiver.recv_timeout(Duration::from_secs(5)).expect("open_log blocked on the FIFO");
+
+        assert!(refused);
+    }
 }
