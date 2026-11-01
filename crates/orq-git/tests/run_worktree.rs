@@ -207,3 +207,31 @@ fn a_failed_worktree_add_leaves_no_branch_or_registration_so_a_retry_succeeds() 
     std::fs::remove_file(root.join(".claude/worktrees")).unwrap();
     create_run_worktree(root, Path::new(".claude/worktrees/fix--f"), "fix--f", &base).unwrap();
 }
+
+#[test]
+fn concurrent_creations_of_the_same_run_leave_exactly_the_winners_branch_and_worktree() {
+    use std::sync::{Arc, Barrier};
+
+    let (fixture, base) = moved_on();
+    let root = Arc::new(fixture.root().to_path_buf());
+    for round in 0..25 {
+        let branch = format!("fix--race-{round}");
+        let dir = PathBuf::from(format!(".claude/worktrees/{branch}"));
+        let gate = Arc::new(Barrier::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let (root, gate, branch, dir, base) = (root.clone(), gate.clone(), branch.clone(), dir.clone(), base.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    create_run_worktree(&root, &dir, &branch, &base).is_ok()
+                })
+            })
+            .collect();
+        let wins = threads.into_iter().map(|t| t.join().unwrap() as usize).sum::<usize>();
+
+        assert_eq!(wins, 1, "round {round}: exactly one creation wins");
+        assert_eq!(git(&root, &["rev-parse", &format!("refs/heads/{branch}")]), base, "round {round}: the branch survives");
+        let worktree = root.join(&dir);
+        assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]), branch, "round {round}: the worktree survives");
+    }
+}

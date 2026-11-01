@@ -96,29 +96,56 @@ pub fn create_run_worktree(
         return Err(WorktreeError::Git { message: format!("base commit {base_sha} is not in the repository") });
     }
 
+    // Claim the destination and the branch before git touches either, so that
+    // whatever this call created is provably its own and is the only thing a
+    // rollback removes. `create_dir` and a create-only `update-ref` both fail
+    // if another caller got there first.
+    let io_err = |err: std::io::Error| WorktreeError::Git { message: err.to_string() };
+    std::fs::create_dir_all(path.parent().expect("a destination inside the repository has a parent")).map_err(io_err)?;
+    match std::fs::create_dir(&path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(WorktreeError::PathExists { path }),
+        Err(err) => return Err(io_err(err)),
+    }
+    let claimed = git(repo, &[OsStr::new("update-ref"), OsStr::new(&head_ref), OsStr::new(base_sha), OsStr::new("")]);
+    let refused = match claimed {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(out),
+        Err(err) => {
+            let _ = std::fs::remove_dir(&path);
+            return Err(err);
+        }
+    };
+    if let Some(out) = refused {
+        let _ = std::fs::remove_dir(&path);
+        let taken = git(repo, &["show-ref", "--verify", "--quiet", &head_ref]).is_ok_and(|o| o.status.success());
+        return Err(if taken { WorktreeError::BranchExists { branch: branch.to_string() } } else { failure(&out) });
+    }
+
     // The path goes to git as the bytes that were checked, never re-encoded.
-    let added = git(
-        repo,
-        &[
-            OsStr::new("worktree"),
-            OsStr::new("add"),
-            OsStr::new("--quiet"),
-            OsStr::new("--no-track"),
-            OsStr::new("-b"),
-            OsStr::new(branch),
-            OsStr::new("--"),
-            path.as_os_str(),
-            OsStr::new(base_sha),
-        ],
-    )?;
+    let added = git(repo, &[OsStr::new("worktree"), OsStr::new("add"), OsStr::new("--quiet"), OsStr::new("--"), path.as_os_str(), OsStr::new(branch)])?;
     if !added.status.success() {
-        let error = failure(&added);
-        // Git creates the branch before it populates the directory and may
-        // leave it behind. The branch did not exist a moment ago, so remove it
-        // only while it still points at the base (a concurrent owner's stays),
-        // and drop any half-made registration.
-        let _ = git(repo, &["update-ref", "-d", &head_ref, base_sha]);
+        let mut error = failure(&added);
+        // Both the directory and the branch are this call's own: undo them,
+        // registration included, and say so if any of that fails.
+        let _ = git(repo, &[OsStr::new("worktree"), OsStr::new("remove"), OsStr::new("--force"), OsStr::new("--"), path.as_os_str()]);
+        let mut leftovers = Vec::new();
+        if let Err(err) = std::fs::remove_dir_all(&path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                leftovers.push(format!("could not remove {}: {err}", path.display()));
+            }
+        }
         let _ = git(repo, &["worktree", "prune"]);
+        match git(repo, &["update-ref", "-d", &head_ref, base_sha]) {
+            Ok(out) if out.status.success() => {}
+            _ => leftovers.push(format!("could not remove branch {branch}")),
+        }
+        if let WorktreeError::Git { message } = &mut error {
+            for note in leftovers {
+                message.push_str("; ");
+                message.push_str(&note);
+            }
+        }
         return Err(error);
     }
     Ok(path)
