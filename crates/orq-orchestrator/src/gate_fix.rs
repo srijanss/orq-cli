@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::gate::Gate;
-use crate::gate_stage::{record_event, run_gate_stage, GateOutcome};
+use crate::gate_stage::{record_event, run_gate_attempt, GateOutcome};
 use crate::implement::{run_session_stage, ImplementSession};
 use crate::store::{RunStore, StoreError};
 
@@ -46,14 +46,14 @@ pub fn run_gate_with_fixes(
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
-        match run_gate_stage(store, run_id, gate, enabled, gate_log)? {
+        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1)? {
             GateOutcome::Passed => return Ok(GateFixOutcome::Passed { fix_attempts }),
             GateOutcome::Skipped { reason } => return Ok(GateFixOutcome::Skipped { reason }),
             GateOutcome::Failed { step, exit_code } => {
                 if fix_attempts >= max_attempts {
                     let record = store.load(run_id)?;
                     let reason = format!("the gate is still failing after {fix_attempts} fix attempt(s)");
-                    record_event(store, &record, "run.failed", serde_json::json!({ "reason": reason, "log": gate_log.to_string_lossy() }))?;
+                    record_event(store, &record, "run.failed", fix_attempts + 1, serde_json::json!({ "reason": reason, "log": gate_log.to_string_lossy() }))?;
                     return Ok(GateFixOutcome::Failed { fix_attempts, step, exit_code });
                 }
                 fix_attempts += 1;
@@ -68,7 +68,7 @@ pub fn run_gate_with_fixes(
                     terminal: spec.terminal,
                 };
                 // The session's own result is not trusted: the rerun gate decides.
-                run_session_stage(store, run_id, &session, FIX_STAGE)?;
+                run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
             }
         }
     }

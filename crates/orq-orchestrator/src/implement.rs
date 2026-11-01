@@ -38,16 +38,17 @@ pub fn run_implement_stage(
     run_id: &str,
     session: &ImplementSession<'_>,
 ) -> Result<ImplementOutcome, StoreError> {
-    run_session_stage(store, run_id, session, STAGE)
+    run_session_stage(store, run_id, session, STAGE, 1)
 }
 
 /// Run one harness session as `stage`, recording `stage.started` and
-/// `stage.completed` / `stage.failed` events.
+/// `stage.completed` / `stage.failed` events numbered `attempt`.
 pub(crate) fn run_session_stage(
     store: &RunStore,
     run_id: &str,
     session: &ImplementSession<'_>,
     stage: &str,
+    attempt: u32,
 ) -> Result<ImplementOutcome, StoreError> {
     let record = store.load(run_id)?;
     let log = open_log(session.log)?;
@@ -67,7 +68,7 @@ pub(crate) fn run_session_stage(
             feature_id: record.feature_id.clone(),
             kind: kind.to_string(),
             stage: Some(stage.to_string()),
-            attempt: 1,
+            attempt,
             occurred_at: now_rfc3339(),
             payload,
         }

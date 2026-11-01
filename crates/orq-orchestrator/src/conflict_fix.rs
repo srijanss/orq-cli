@@ -29,7 +29,7 @@ pub fn fix_rebase_conflicts(
     // The commit the rebase is replaying onto, read before the session can touch it.
     let onto = rebase_onto(&record)?;
     // The session's own success is not trusted: only the repository state counts.
-    run_session_stage(store, run_id, session, FIX_STAGE)?;
+    run_session_stage(store, run_id, session, FIX_STAGE, 1)?;
     let still_rebasing = rebase_in_progress(&record)?;
     if !still_rebasing && completed_onto(&record, &onto)? {
         record_event(store, &record, "rebase.completed", serde_json::json!({ "resolved_by": "session", "target_sha": onto }))?;

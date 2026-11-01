@@ -113,6 +113,55 @@ fn a_fix_session_that_repairs_the_failure_lets_the_gate_pass_on_the_rerun() {
 }
 
 #[test]
+fn reruns_and_fix_sessions_carry_their_attempt_number() {
+    let w = world("numbered");
+
+    run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |attempt, _| {
+        spec(&w, if attempt == 2 { "touch fixed" } else { "exit 0" })
+    })
+    .unwrap();
+
+    let seen: Vec<(String, String, u32)> =
+        w.store.events("run-1").unwrap().into_iter().map(|e| (e.stage.unwrap(), e.kind, e.attempt)).collect();
+    let started: Vec<_> = seen.iter().filter(|(_, kind, _)| kind == "stage.started").collect();
+    assert_eq!(
+        started,
+        [
+            &("verify".to_string(), "stage.started".to_string(), 1),
+            &("gate_fix".to_string(), "stage.started".to_string(), 1),
+            &("verify".to_string(), "stage.started".to_string(), 2),
+            &("gate_fix".to_string(), "stage.started".to_string(), 2),
+            &("verify".to_string(), "stage.started".to_string(), 3),
+        ]
+    );
+    assert!(seen.iter().all(|(_, _, attempt)| *attempt >= 1));
+}
+
+#[test]
+fn a_fixer_that_repairs_the_worktree_but_exits_nonzero_still_passes_on_the_rerun() {
+    let w = world("nonzero");
+
+    let outcome =
+        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| {
+            spec(&w, "touch fixed; exit 1")
+        })
+        .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+    assert_eq!(
+        kinds(&w),
+        [
+            pair("verify", "stage.started"),
+            pair("verify", "stage.failed"),
+            pair("gate_fix", "stage.started"),
+            pair("gate_fix", "stage.failed"),
+            pair("verify", "stage.started"),
+            pair("verify", "stage.completed"),
+        ]
+    );
+}
+
+#[test]
 fn a_gate_still_red_after_the_allowed_attempts_fails_the_run_and_keeps_the_worktree() {
     let w = world("red");
     let attempts = RefCell::new(Vec::new());

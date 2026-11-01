@@ -32,6 +32,18 @@ pub fn run_gate_stage(
     enabled: bool,
     log_path: &Path,
 ) -> Result<GateOutcome, StoreError> {
+    run_gate_attempt(store, run_id, gate, enabled, log_path, 1)
+}
+
+/// One run of the gate, its events numbered `attempt`.
+pub(crate) fn run_gate_attempt(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    log_path: &Path,
+    attempt: u32,
+) -> Result<GateOutcome, StoreError> {
     let record = store.load(run_id)?;
     let skip_reason = match gate {
         _ if !enabled => Some("the local gate is disabled".to_string()),
@@ -39,7 +51,7 @@ pub fn run_gate_stage(
         Gate::Steps { .. } => None,
     };
     if let Some(reason) = skip_reason {
-        record_event(store, &record, "stage.skipped", serde_json::json!({ "reason": reason }))?;
+        record_event(store, &record, "stage.skipped", attempt, serde_json::json!({ "reason": reason }))?;
         return Ok(GateOutcome::Skipped { reason });
     }
     let Gate::Steps { steps, .. } = gate else {
@@ -48,7 +60,7 @@ pub fn run_gate_stage(
 
     let mut log = open_log(log_path)?;
     let log_name = log_path.to_string_lossy().into_owned();
-    record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "steps": steps.len() }))?;
+    record_event(store, &record, "stage.started", attempt, serde_json::json!({ "log": log_name, "steps": steps.len() }))?;
 
     for (index, argv) in steps.iter().enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
@@ -59,12 +71,13 @@ pub fn run_gate_stage(
                 store,
                 &record,
                 "stage.failed",
+                attempt,
                 serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name }),
             )?;
             return Ok(GateOutcome::Failed { step: index, exit_code });
         }
     }
-    record_event(store, &record, "stage.completed", serde_json::json!({ "exit_code": 0, "log": log_name }))?;
+    record_event(store, &record, "stage.completed", attempt, serde_json::json!({ "exit_code": 0, "log": log_name }))?;
     Ok(GateOutcome::Passed)
 }
 
@@ -91,7 +104,13 @@ fn run_step(record: &RunRecord, argv: &[String], log: &fs::File) -> Result<(Opti
     })
 }
 
-pub(crate) fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+pub(crate) fn record_event(
+    store: &RunStore,
+    record: &RunRecord,
+    kind: &str,
+    attempt: u32,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -100,7 +119,7 @@ pub(crate) fn record_event(store: &RunStore, record: &RunRecord, kind: &str, pay
         feature_id: record.feature_id.clone(),
         kind: kind.to_string(),
         stage: Some(STAGE.to_string()),
-        attempt: 1,
+        attempt,
         occurred_at: now_rfc3339(),
         payload,
     })
