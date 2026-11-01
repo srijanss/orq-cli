@@ -69,8 +69,8 @@ fn steps_run_in_order_in_the_worktree_and_their_output_is_logged() {
     let dir = worktree("run");
     let log = dir.join("setup.log");
     let steps = vec![
-        argv(&["sh", "-c", "pwd; echo first-out; echo first-err >&2"]),
-        argv(&["sh", "-c", "echo second-out"]),
+        argv(&["sh", "-c", r#"pwd; echo first-""out; echo first-""err >&2"#]),
+        argv(&["sh", "-c", r#"echo second-""out"#]),
     ];
 
     run_setup(&dir, &steps, &log).unwrap();
@@ -79,7 +79,7 @@ fn steps_run_in_order_in_the_worktree_and_their_output_is_logged() {
     let canonical = fs::canonicalize(&dir).unwrap();
     assert!(text.contains(canonical.to_str().unwrap()), "cwd is the worktree: {text}");
     let positions: Vec<usize> =
-        ["first-out", "first-err", "second-out"].iter().map(|needle| text.find(needle).expect(needle)).collect();
+        ["first-out\n", "first-err\n", "second-out\n"].iter().map(|needle| text.find(needle).expect(needle)).collect();
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
 }
 
@@ -89,7 +89,7 @@ fn a_failing_step_stops_setup_with_its_exit_code_and_log_and_keeps_the_worktree(
     let log = dir.join("setup.log");
     let steps = vec![
         argv(&["sh", "-c", "echo ok"]),
-        argv(&["sh", "-c", "echo broke-out; echo broke-err >&2; exit 7"]),
+        argv(&["sh", "-c", r#"echo broke-""out; echo broke-""err >&2; exit 7"#]),
         argv(&["sh", "-c", "touch must-not-run"]),
     ];
 
@@ -99,7 +99,7 @@ fn a_failing_step_stops_setup_with_its_exit_code_and_log_and_keeps_the_worktree(
     assert_eq!(failure.exit_code, Some(7));
     assert_eq!(failure.log, log);
     let text = fs::read_to_string(&log).unwrap();
-    assert!(text.contains("broke-out") && text.contains("broke-err"), "{text}");
+    assert!(text.contains("broke-out\n") && text.contains("broke-err\n"), "{text}");
     assert!(!dir.join("must-not-run").exists(), "later steps are skipped");
     assert!(dir.is_dir(), "the worktree is kept");
 }
