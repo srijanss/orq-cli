@@ -100,6 +100,8 @@ impl RunStore {
     /// Write `run.json` for a new run, atomically; refuse to replace one.
     pub fn create(&self, record: &RunRecord) -> Result<(), StoreError> {
         let dir = self.run_dir(&record.run_id)?;
+        // Serialize first: a record that cannot be written must not claim the id.
+        let json = serde_json::to_vec_pretty(record).map_err(|err| StoreError::Corrupt(err.to_string()))?;
         fs::create_dir_all(dir.parent().expect("run dir has a parent"))?;
         match fs::create_dir(&dir) {
             Ok(()) => {}
@@ -108,7 +110,6 @@ impl RunStore {
             }
             Err(err) => return Err(err.into()),
         }
-        let json = serde_json::to_vec_pretty(record).map_err(|err| StoreError::Corrupt(err.to_string()))?;
         let temp = dir.join("run.json.tmp");
         let written = (|| -> std::io::Result<()> {
             let mut file = fs::File::create(&temp)?;

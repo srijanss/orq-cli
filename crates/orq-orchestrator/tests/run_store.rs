@@ -156,3 +156,21 @@ fn events_for_unknown_runs_or_with_damaged_lines_are_reported_not_skipped() {
     fs::write(&path, text).unwrap();
     assert!(matches!(store.events("run-1"), Err(StoreError::Corrupt(why)) if why.contains("line 2")));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_record_that_cannot_be_serialized_leaves_nothing_behind_and_can_be_retried() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = root("unserializable");
+    let store = RunStore::new(&root);
+    let mut broken = record("run-1");
+    broken.worktree = PathBuf::from(std::ffi::OsString::from_vec(vec![b'w', 0xff, b'k']));
+
+    assert!(store.create(&broken).is_err());
+    assert!(!root.join("runs/run-1").exists());
+
+    // The same run id is still free for a corrected record.
+    store.create(&record("run-1")).unwrap();
+    assert_eq!(store.load("run-1").unwrap(), record("run-1"));
+}
