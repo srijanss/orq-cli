@@ -4,11 +4,13 @@
 mod gate;
 mod implement;
 mod outcome;
+mod rebase;
 mod setup;
 mod store;
 
 pub use gate::{choose_gate, Gate, GateError};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use outcome::{check_implement_outcome, ImplementCheck};
+pub use rebase::{rebase_onto_target, RebaseOutcome};
 pub use setup::{plan_setup, run_setup, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};

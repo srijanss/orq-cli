@@ -47,6 +47,22 @@ pub fn check_implement_outcome(store: &RunStore, run_id: &str) -> Result<Impleme
 }
 
 fn git(worktree: &Path, args: &[&str]) -> Result<String, StoreError> {
+    let out = git_raw(worktree, args)?;
+    if !out.success {
+        return Err(StoreError::Corrupt(format!("git {} failed: {}", args[0], out.stderr.trim())));
+    }
+    Ok(out.stdout)
+}
+
+pub(crate) struct GitOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Run git in `worktree` without the caller's repository-selection variables;
+/// a non-zero exit is reported in the result, not as an error.
+pub(crate) fn git_raw(worktree: &Path, args: &[&str]) -> Result<GitOutput, StoreError> {
     let mut command = Command::new("git");
     command.arg("-C").arg(worktree).args(args);
     // Same list as orq-git: never let the caller's environment pick the repository.
@@ -61,10 +77,12 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String, StoreError> {
     ] {
         command.env_remove(name);
     }
+    // Never block on a credential or editor prompt.
+    command.envs([("GIT_TERMINAL_PROMPT", "0"), ("GIT_EDITOR", "true")]);
     let out = command.stdin(Stdio::null()).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(StoreError::Corrupt(format!("git {} failed: {}", args[0], stderr.trim())));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(GitOutput {
+        success: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
 }
