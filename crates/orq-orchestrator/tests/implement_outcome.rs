@@ -23,6 +23,10 @@ struct World {
 }
 
 fn world(tag: &str) -> World {
+    world_with_base(tag, None)
+}
+
+fn world_with_base(tag: &str, base_override: Option<&str>) -> World {
     let root = std::env::temp_dir().join(format!("orq-outcome-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
@@ -41,7 +45,7 @@ fn world(tag: &str) -> World {
             remote: "git@github.com:acme/app.git".to_string(),
             provider: "github".to_string(),
             target_branch: "main".to_string(),
-            base_sha: base,
+            base_sha: base_override.map(str::to_string).unwrap_or(base),
             branch: "fix--COM-02".to_string(),
             worktree: worktree.clone(),
             profiles: BTreeMap::new(),
@@ -100,6 +104,18 @@ fn uncommitted_changes_block_the_run_even_with_new_commits() {
     assert!(reason.contains("uncommitted"), "{reason}");
     assert_eq!(blocked_events(&w).len(), 1);
     assert_eq!(fs::read_to_string(w.worktree.join("a.txt")).unwrap(), "edited\n", "changes are left alone");
+}
+
+#[test]
+fn a_dirty_worktree_is_blocked_without_needing_the_base_commit() {
+    let w = world_with_base("dirty-badbase", Some("0000000000000000000000000000000000000000"));
+    fs::write(w.worktree.join("a.txt"), "edited\n").unwrap();
+
+    let check = check_implement_outcome(&w.store, "run-1").unwrap();
+
+    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    assert!(reason.contains("uncommitted"), "{reason}");
+    assert_eq!(blocked_events(&w).len(), 1);
 }
 
 #[test]

@@ -20,15 +20,15 @@ pub fn check_implement_outcome(store: &RunStore, run_id: &str) -> Result<Impleme
     let record = store.load(run_id)?;
     let worktree = record.worktree.as_path();
     let dirty = git(worktree, &["status", "--porcelain", "--untracked-files=all"])?;
-    let count = git(worktree, &["rev-list", "--count", &format!("{}..HEAD", record.base_sha)])?;
-    let commits: u32 = count.trim().parse().map_err(|_| StoreError::Corrupt(format!("unexpected commit count {count:?}")))?;
-
-    let reason = if !dirty.trim().is_empty() {
-        Some("the worktree has uncommitted changes".to_string())
-    } else if commits == 0 {
-        Some("the implementer made no new commits".to_string())
+    // The history is only walked for a clean worktree: a dirty one is blocked
+    // whatever the commits are.
+    let (reason, commits) = if !dirty.trim().is_empty() {
+        (Some("the worktree has uncommitted changes".to_string()), 0)
     } else {
-        None
+        let count = git(worktree, &["rev-list", "--count", &format!("{}..HEAD", record.base_sha)])?;
+        let commits: u32 =
+            count.trim().parse().map_err(|_| StoreError::Corrupt(format!("unexpected commit count {count:?}")))?;
+        (if commits == 0 { Some("the implementer made no new commits".to_string()) } else { None }, commits)
     };
     let Some(reason) = reason else { return Ok(ImplementCheck::Ready { commits }) };
     store.append_event(&Event {
