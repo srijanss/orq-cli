@@ -204,3 +204,19 @@ fn the_shared_fetch_head_is_left_alone_so_another_runs_fetch_is_not_clobbered() 
 
     assert_eq!(fs::read_to_string(git_dir.join("FETCH_HEAD")).unwrap(), before);
 }
+
+#[test]
+fn a_rebase_that_fails_without_a_conflict_is_an_error_and_keeps_local_work() {
+    let w = world("nonconflict", None);
+    advance_target(&w, "mine.txt", "theirs\n");
+    // Uncommitted edit to a file the rebase has to touch, with autostash off.
+    fs::write(w.worktree.join("mine.txt"), "dirty\n").unwrap();
+    git(&w.worktree, &["config", "rebase.autoStash", "false"]);
+    let before = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert!(rebase_onto_target(&w.store, "run-1", true).is_err());
+
+    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
+    assert_eq!(fs::read_to_string(w.worktree.join("mine.txt")).unwrap(), "dirty\n");
+    assert!(kinds(&w).is_empty(), "no success or conflict event");
+}
