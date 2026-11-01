@@ -105,6 +105,9 @@ fn a_session_that_finishes_the_rebase_unblocks_the_run() {
     let events = kinds(&w);
     assert_eq!(events.last().unwrap(), &("rebase.completed".to_string(), Some("rebase".to_string())));
     assert!(events.contains(&("stage.started".to_string(), Some("rebase_fix".to_string()))));
+    let target = git(&w.root.join("remote.git"), &["rev-parse", "main"]);
+    let completed = w.store.events("run-1").unwrap().pop().unwrap();
+    assert_eq!(completed.payload["target_sha"], target.as_str(), "the captured target is recorded");
 }
 
 #[test]
@@ -203,6 +206,79 @@ fn a_session_that_finishes_the_rebase_and_then_exits_nonzero_is_still_resolved()
 
     assert_eq!(outcome, ConflictFixOutcome::Resolved);
     assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "rebase.completed"]);
+}
+
+/// Like `run_agent`, for another run and worktree.
+fn run_agent_in(w: &World, run_id: &str, cwd: &Path, script: &str) -> Result<ConflictFixOutcome, orq_orchestrator::StoreError> {
+    let args = vec!["-c".to_string(), script.to_string()];
+    let log = w.root.join(format!("{run_id}.log"));
+    let session = ImplementSession { program: "sh", args: &args, env: &[], cwd, session_id: None, log: &log, terminal: false };
+    fix_rebase_conflicts(&w.store, run_id, &session)
+}
+
+/// Start a rebase by hand (the world's rebase already stopped, so reset first).
+fn restart_rebase_with(w: &World, flag: &str) {
+    git(&w.worktree, &["rebase", "--abort"]);
+    git(&w.worktree, &["fetch", "-q", "origin"]);
+    let out = Command::new("git").arg("-C").arg(&w.worktree).args(["rebase", flag, "origin/main"]).output().unwrap();
+    assert!(!out.status.success(), "the rebase must stop on the conflict");
+}
+
+#[test]
+fn the_apply_backend_is_resolved_the_same_way() {
+    let w = world("apply", true);
+    restart_rebase_with(&w, "--apply");
+    assert!(w.worktree.join(".git/rebase-apply").is_dir() && !w.worktree.join(".git/rebase-merge").exists());
+
+    let outcome = run_agent(&w, "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue").unwrap();
+
+    assert_eq!(outcome, ConflictFixOutcome::Resolved);
+}
+
+#[test]
+fn missing_or_empty_onto_metadata_is_an_error_and_no_session_starts() {
+    for (tag, content) in [("missing", None), ("empty", Some(""))] {
+        let w = world(&format!("onto-{tag}"), true);
+        let onto = w.worktree.join(".git/rebase-merge/onto");
+        match content {
+            None => fs::remove_file(&onto).unwrap(),
+            Some(text) => fs::write(&onto, text).unwrap(),
+        }
+        let marker = w.root.join("ran");
+        let events_before = w.store.events("run-1").unwrap().len();
+
+        let result = run_agent(&w, &format!("touch {}", marker.display()));
+
+        assert!(result.is_err(), "{tag}");
+        assert!(!marker.exists(), "{tag}: the session must not start");
+        assert_eq!(w.store.events("run-1").unwrap().len(), events_before, "{tag}: nothing recorded");
+    }
+}
+
+#[test]
+fn a_linked_worktree_is_resolved_through_its_own_git_dir() {
+    let w = world("linked", false);
+    let second = w.root.join("second");
+    git(&w.worktree, &["worktree", "add", "-q", "-b", "fix--COM-03", second.to_str().unwrap(), "fix--COM-02"]);
+    git(&second, &["fetch", "-q", "origin"]);
+    let out = Command::new("git").arg("-C").arg(&second).args(["rebase", "origin/main"]).output().unwrap();
+    assert!(!out.status.success(), "the rebase must stop on the conflict");
+    let mut record = w.store.load("run-1").unwrap();
+    record.run_id = "run-2".to_string();
+    record.branch = "fix--COM-03".to_string();
+    record.worktree = second.clone();
+    w.store.create(&record).unwrap();
+
+    let outcome = run_agent_in(
+        &w,
+        "run-2",
+        &second,
+        "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue",
+    )
+    .unwrap();
+
+    assert_eq!(outcome, ConflictFixOutcome::Resolved);
+    assert_eq!(git(&second, &["symbolic-ref", "HEAD"]), "refs/heads/fix--COM-03");
 }
 
 #[test]
