@@ -34,6 +34,11 @@ fn world(tag: &str, remote_override: Option<&str>) -> World {
     git(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
     let worktree = root.join("worktree");
     git(&root, &["clone", "-q", remote.to_str().unwrap(), worktree.to_str().unwrap()]);
+    // The rebase itself commits, so the identity must live in the repository,
+    // not only in the helper's -c flags.
+    for (key, value) in [("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+        git(&worktree, &["config", key, value]);
+    }
     fs::write(worktree.join("a.txt"), "a\n").unwrap();
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "base"]);
