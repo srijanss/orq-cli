@@ -95,8 +95,15 @@ pub fn remote_host(url: &str) -> Option<String> {
     };
     let host_port = authority.rsplit('@').next().unwrap_or("");
     let host = if let Some(bracketed) = host_port.strip_prefix('[') {
-        let end = bracketed.find(']')?;
-        format!("[{}]", &bracketed[..end])
+        // An IPv6 literal, in canonical form, with at most a numeric port after it.
+        let (inside, after) = bracketed.split_once(']')?;
+        let address: std::net::Ipv6Addr = inside.parse().ok()?;
+        match after.strip_prefix(':') {
+            Some(port) if !port.chars().all(|c| c.is_ascii_digit()) => return None,
+            None if !after.is_empty() => return None,
+            _ => {}
+        }
+        format!("[{address}]")
     } else {
         match host_port.rsplit_once(':') {
             Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host.to_string(),
@@ -111,8 +118,18 @@ pub fn remote_host(url: &str) -> Option<String> {
     Some(host)
 }
 
+/// A configured hostname in the form `remote_host` produces: lowercase, no
+/// trailing dot, and a bracketed IPv6 literal in canonical spelling.
 fn normalize(host: &str) -> String {
-    host.trim().trim_end_matches('.').to_ascii_lowercase()
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let address = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .and_then(|h| h.parse::<std::net::Ipv6Addr>().ok());
+    match address {
+        Some(address) => format!("[{address}]"),
+        None => host,
+    }
 }
 
 /// The provider for `remote_url`. A non-empty `forge_override` (`gh` or `glab`)

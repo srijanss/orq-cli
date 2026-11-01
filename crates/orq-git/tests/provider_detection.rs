@@ -176,3 +176,33 @@ fn each_provider_names_its_cli_and_errors_explain_themselves() {
         "forge must be gh or glab, got \"x\""
     );
 }
+
+#[test]
+fn a_bracketed_host_must_be_an_ipv6_address_followed_by_nothing_or_a_numeric_port() {
+    for url in [
+        "ssh://[2001:db8::1]junk/repo",
+        "ssh://[2001:db8::1]:invalid/repo",
+        "ssh://[not-an-ip]/repo",
+        "ssh://[github.com]/repo",
+        "ssh://[2001:db8::1/repo",
+        "ssh://[]/repo",
+    ] {
+        assert_eq!(
+            remote_host(url),
+            None,
+            "{url:?} should not yield a host"
+        );
+    }
+    let hosts = ProviderHosts {
+        github: vec![],
+        gitlab: vec!["[2001:db8::1]".to_string()],
+    };
+    for url in [
+        "ssh://[2001:db8::1]/repo",
+        "ssh://[2001:DB8::1]:2222/repo",
+        "https://u:p@[2001:0db8:0:0:0:0:0:1]:8443/repo",
+    ] {
+        assert_eq!(detect_provider(url, &hosts, None), Ok(Provider::GitLab), "{url:?}");
+    }
+    assert_eq!(remote_host("ssh://[2001:0DB8:0:0:0:0:0:1]/r").as_deref(), Some("[2001:db8::1]"));
+}
