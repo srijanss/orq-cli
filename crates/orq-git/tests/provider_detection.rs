@@ -264,3 +264,18 @@ fn credentials_never_appear_in_a_no_host_error_or_its_output() {
     assert_eq!(unknown, ProviderError::UnknownHost { host: "bitbucket.org".to_string() });
     assert!(!format!("{unknown} {unknown:?}").contains("secret"));
 }
+
+#[test]
+fn a_slash_before_the_scp_separator_makes_a_local_path_even_inside_brackets() {
+    for url in [
+        "[dir/file]@github.com:repo.git",
+        "[a/b]:c",
+        "git@[2001:db8::1/64]:team/repo.git",
+        "./[dir]@github.com:repo.git",
+    ] {
+        assert_eq!(remote_host(url), None, "{url:?}");
+        assert!(matches!(detect(url), Err(ProviderError::NoHost { .. })), "{url:?}");
+    }
+    // A slash after the separator is just the path.
+    assert_eq!(remote_host("git@[2001:db8::1]:team/repo.git").as_deref(), Some("[2001:db8::1]"));
+}

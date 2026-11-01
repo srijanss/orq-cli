@@ -86,14 +86,16 @@ pub fn remote_host(url: &str) -> Option<String> {
         None => {
             // scp-like `[user@]host:path`: the host ends at the first colon
             // that precedes any slash, and a colon inside an IPv6 literal's
-            // brackets is part of the host.
+            // brackets is part of the host. A slash ends the scan wherever it
+            // is (an IPv6 literal never holds one): a slash before the
+            // separator means a local path.
             let mut in_brackets = false;
             let mut colon = None;
             for (index, c) in url.char_indices() {
                 match c {
                     '[' => in_brackets = true,
                     ']' => in_brackets = false,
-                    '/' if !in_brackets => break,
+                    '/' => break,
                     ':' if !in_brackets => {
                         colon = Some(index);
                         break;
