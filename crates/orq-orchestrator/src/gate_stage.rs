@@ -91,7 +91,7 @@ fn run_step(record: &RunRecord, argv: &[String], log: &fs::File) -> Result<(Opti
     })
 }
 
-fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+pub(crate) fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
