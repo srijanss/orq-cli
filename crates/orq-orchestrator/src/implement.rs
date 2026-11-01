@@ -245,8 +245,8 @@ mod tests {
         fs::write(&other, "other\n").unwrap();
 
         let result = open_log_with(&log, || {
-            fs::remove_file(&log).unwrap();
-            fs::copy(&other, &log).unwrap();
+            // Renaming over the log keeps both inodes alive, so none can be reused.
+            fs::rename(&other, &log).unwrap();
         });
 
         assert!(result.is_err(), "a different inode than the inspected one");
