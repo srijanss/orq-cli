@@ -54,11 +54,14 @@ fn verify(kind: &str) -> (String, Option<String>) {
 #[test]
 fn a_passing_gate_runs_every_step_in_the_worktree_and_logs_their_output() {
     let w = world("pass");
-    let gate = steps(vec![sh("echo first; pwd"), sh("echo second")]);
+    // The output words are spelled so they never appear in the argv echoed to the log.
+    let second_ran = w.root.join("second-ran");
+    let gate = steps(vec![sh("echo fir\"\"st; pwd"), sh(&format!("echo sec\"\"ond; touch {}", second_ran.display()))]);
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
     assert_eq!(outcome, GateOutcome::Passed);
+    assert!(second_ran.exists(), "the second step ran");
     let log = fs::read_to_string(&w.log).unwrap();
     assert!(log.contains("first") && log.contains("second"), "{log}");
     let worktree = fs::canonicalize(&w.worktree).unwrap();
@@ -73,13 +76,15 @@ fn a_passing_gate_runs_every_step_in_the_worktree_and_logs_their_output() {
 fn a_failing_step_stops_the_gate_and_records_its_exit_code() {
     let w = world("fail");
     let marker = w.root.join("third-ran");
-    let gate = steps(vec![sh("echo ok"), sh("echo broken >&2; exit 3"), sh(&format!("touch {}", marker.display()))]);
+    let gate = steps(vec![sh("echo ok"), sh("echo bro\"\"ken >&2; exit 3"), sh(&format!("touch {}", marker.display()))]);
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
     assert_eq!(outcome, GateOutcome::Failed { step: 1, exit_code: Some(3) });
     assert!(!marker.exists(), "later steps do not run");
-    assert!(fs::read_to_string(&w.log).unwrap().contains("broken"), "stderr is logged");
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert!(log.contains("\nbroken\n"), "stderr is logged: {log}");
+    assert!(!log.contains("first"), "{log}");
     assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.failed")]);
     let failed = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(failed.payload["exit_code"], 3);
