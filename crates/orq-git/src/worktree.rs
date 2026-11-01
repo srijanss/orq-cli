@@ -1,5 +1,6 @@
 //! Creating a run's worktree and branch from a recorded base commit.
 
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -95,8 +96,21 @@ pub fn create_run_worktree(
         return Err(WorktreeError::Git { message: format!("base commit {base_sha} is not in the repository") });
     }
 
-    let path_arg = path.to_string_lossy().into_owned();
-    let added = git(repo, &["worktree", "add", "--quiet", "--no-track", "-b", branch, "--", &path_arg, base_sha])?;
+    // The path goes to git as the bytes that were checked, never re-encoded.
+    let added = git(
+        repo,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--quiet"),
+            OsStr::new("--no-track"),
+            OsStr::new("-b"),
+            OsStr::new(branch),
+            OsStr::new("--"),
+            path.as_os_str(),
+            OsStr::new(base_sha),
+        ],
+    )?;
     if !added.status.success() {
         return Err(failure(&added));
     }
@@ -107,7 +121,7 @@ fn failure(output: &Output) -> WorktreeError {
     WorktreeError::Git { message: crate::redact_urls(String::from_utf8_lossy(&output.stderr).trim()) }
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<Output, WorktreeError> {
+fn git<S: AsRef<OsStr>>(repo: &Path, args: &[S]) -> Result<Output, WorktreeError> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).args(args);
     for name in crate::REPOSITORY_SELECTION_VARS {

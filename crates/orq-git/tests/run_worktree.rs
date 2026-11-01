@@ -165,3 +165,24 @@ fn a_symlinked_parent_cannot_send_the_worktree_outside_the_repository() {
     assert_eq!(git(root, &["branch", "--list"]), branches);
     let _ = std::fs::remove_dir_all(&outside);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_destination_is_created_exactly_where_it_was_checked() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let (fixture, base) = moved_on();
+    let root = fixture.root();
+    let dir = PathBuf::from(std::ffi::OsString::from_vec(b"wt-\xff-dir".to_vec()));
+
+    let path = create_run_worktree(root, &dir, "fix--bytes", &base).unwrap();
+
+    assert_eq!(path, root.join(&dir));
+    assert!(path.join(".git").exists(), "the worktree is at the returned path");
+    assert_eq!(git(&path, &["symbolic-ref", "--short", "HEAD"]), "fix--bytes");
+    // The same name is now taken, and is detected as such.
+    assert!(matches!(
+        create_run_worktree(root, &dir, "fix--bytes2", &base),
+        Err(WorktreeError::PathExists { .. })
+    ));
+}
