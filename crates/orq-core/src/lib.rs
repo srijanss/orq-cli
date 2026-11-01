@@ -1,3 +1,4 @@
+pub mod naming;
 pub mod run;
 pub mod stage;
 
