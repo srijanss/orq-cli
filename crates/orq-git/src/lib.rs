@@ -3,6 +3,9 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod provider;
+pub use provider::{detect_provider, parse_forge, remote_host, Provider, ProviderError, ProviderHosts};
+
 /// A Git repository resolved from some path inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {

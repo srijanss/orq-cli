@@ -1,0 +1,178 @@
+use orq_git::{detect_provider, parse_forge, remote_host, Provider, ProviderError, ProviderHosts};
+
+fn detect(url: &str) -> Result<Provider, ProviderError> {
+    detect_provider(url, &ProviderHosts::default(), None)
+}
+
+#[test]
+fn github_and_gitlab_remotes_are_recognised_in_every_url_form() {
+    for url in [
+        "https://github.com/o/r.git",
+        "http://github.com/o/r",
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r.git",
+        "ssh://git@github.com:22/o/r.git",
+        "git://github.com/o/r",
+        "https://user:token@github.com/o/r",
+        "https://github.com:443/o/r",
+        "HTTPS://GitHub.COM/o/r",
+        "https://github.com./o/r",
+        "  https://github.com/o/r\n",
+    ] {
+        assert_eq!(detect(url), Ok(Provider::GitHub), "{url:?}");
+    }
+    for url in [
+        "https://gitlab.com/group/sub/r.git",
+        "git@gitlab.com:group/sub/r.git",
+        "ssh://git@gitlab.com:2222/group/r.git",
+    ] {
+        assert_eq!(detect(url), Ok(Provider::GitLab), "{url:?}");
+    }
+}
+
+#[test]
+fn self_hosted_hosts_come_from_config_and_match_case_insensitively() {
+    let hosts = ProviderHosts {
+        github: vec!["github.corp.example".to_string()],
+        gitlab: vec!["Git.Example.ORG".to_string()],
+    };
+
+    assert_eq!(
+        detect_provider("git@git.example.org:team/r.git", &hosts, None),
+        Ok(Provider::GitLab)
+    );
+    assert_eq!(
+        detect_provider("https://GITHUB.corp.example/o/r", &hosts, None),
+        Ok(Provider::GitHub)
+    );
+    // Without the config the same hosts are unknown.
+    assert_eq!(
+        detect("git@git.example.org:team/r.git"),
+        Err(ProviderError::UnknownHost {
+            host: "git.example.org".to_string()
+        })
+    );
+}
+
+#[test]
+fn an_unknown_host_is_an_error_not_a_guess() {
+    assert_eq!(
+        detect("https://bitbucket.org/o/r.git"),
+        Err(ProviderError::UnknownHost {
+            host: "bitbucket.org".to_string()
+        })
+    );
+}
+
+#[test]
+fn lookalike_hosts_never_match_a_known_provider() {
+    for (url, host) in [
+        ("https://github.com.evil.example/o/r", "github.com.evil.example"),
+        ("https://notgithub.com/o/r", "notgithub.com"),
+        ("git@gitlab.com.evil.example:o/r.git", "gitlab.com.evil.example"),
+        ("https://evil.example/github.com/o/r", "evil.example"),
+        ("https://github.com@evil.example/o/r", "evil.example"),
+        ("https://github.com:pw@evil.example/o/r", "evil.example"),
+        ("ssh://github.com@evil.example:22/o/r", "evil.example"),
+    ] {
+        assert_eq!(
+            detect(url),
+            Err(ProviderError::UnknownHost { host: host.to_string() }),
+            "{url:?}"
+        );
+    }
+}
+
+#[test]
+fn a_remote_without_a_host_is_reported_as_such() {
+    for url in ["", "   ", "/srv/git/repo.git", "../repo", "./repo.git", "file:///srv/repo.git", "https://", "https:///o/r", "git@:o/r"] {
+        assert_eq!(
+            detect(url),
+            Err(ProviderError::NoHost { url: url.to_string() }),
+            "{url:?}"
+        );
+    }
+}
+
+#[test]
+fn remote_host_extracts_the_lowercase_hostname_only() {
+    assert_eq!(remote_host("git@GitLab.com:g/r.git").as_deref(), Some("gitlab.com"));
+    assert_eq!(remote_host("ssh://u@h.example:2222/x").as_deref(), Some("h.example"));
+    assert_eq!(remote_host("https://u:p@h.example:8443/x").as_deref(), Some("h.example"));
+    assert_eq!(remote_host("/local/path"), None);
+}
+
+#[test]
+fn an_explicit_forge_overrides_the_url_and_even_a_missing_host() {
+    let hosts = ProviderHosts::default();
+    assert_eq!(
+        detect_provider("https://gitlab.com/g/r", &hosts, Some("gh")),
+        Ok(Provider::GitHub)
+    );
+    assert_eq!(
+        detect_provider("https://bitbucket.org/o/r", &hosts, Some("glab")),
+        Ok(Provider::GitLab)
+    );
+    assert_eq!(detect_provider("", &hosts, Some(" GitHub ")), Ok(Provider::GitHub));
+    assert_eq!(detect_provider("/local", &hosts, Some("gitlab")), Ok(Provider::GitLab));
+    // An empty override means "not set".
+    assert_eq!(
+        detect_provider("https://github.com/o/r", &hosts, Some("")),
+        Ok(Provider::GitHub)
+    );
+}
+
+#[test]
+fn an_unrecognised_forge_is_an_error_even_when_the_url_would_match() {
+    assert_eq!(
+        detect_provider("https://github.com/o/r", &ProviderHosts::default(), Some("bitbucket")),
+        Err(ProviderError::InvalidForge("bitbucket".to_string()))
+    );
+    assert_eq!(parse_forge("gh"), Ok(Provider::GitHub));
+    assert_eq!(parse_forge("GLAB"), Ok(Provider::GitLab));
+    assert!(parse_forge("git").is_err());
+}
+
+#[test]
+fn a_host_configured_for_both_providers_is_ambiguous() {
+    let hosts = ProviderHosts {
+        github: vec!["both.example".to_string()],
+        gitlab: vec!["BOTH.example".to_string(), "github.com".to_string()],
+    };
+    assert_eq!(
+        detect_provider("https://both.example/o/r", &hosts, None),
+        Err(ProviderError::AmbiguousHost {
+            host: "both.example".to_string()
+        })
+    );
+    // Even a built-in host is ambiguous once config claims it for the other provider.
+    assert_eq!(
+        detect_provider("https://github.com/o/r", &hosts, None),
+        Err(ProviderError::AmbiguousHost {
+            host: "github.com".to_string()
+        })
+    );
+    // An explicit forge still settles it.
+    assert_eq!(
+        detect_provider("https://both.example/o/r", &hosts, Some("gh")),
+        Ok(Provider::GitHub)
+    );
+}
+
+#[test]
+fn each_provider_names_its_cli_and_errors_explain_themselves() {
+    assert_eq!(Provider::GitHub.cli(), "gh");
+    assert_eq!(Provider::GitLab.cli(), "glab");
+    assert_eq!(
+        ProviderError::UnknownHost { host: "x.example".to_string() }.to_string(),
+        "unknown git host \"x.example\": set the forge explicitly or list the host in the settings"
+    );
+    assert_eq!(
+        ProviderError::NoHost { url: "/srv/r.git".to_string() }.to_string(),
+        "remote \"/srv/r.git\" has no host to detect a provider from"
+    );
+    assert_eq!(
+        ProviderError::InvalidForge("x".to_string()).to_string(),
+        "forge must be gh or glab, got \"x\""
+    );
+}
