@@ -180,3 +180,43 @@ fn the_push_names_the_recorded_commit_not_the_branch_that_could_move() {
     let logged = fs::read_to_string(&w.log).unwrap();
     assert!(logged.contains(&format!("{head}:refs/heads/fix--COM-02")), "the source is the commit: {logged}");
 }
+
+/// The refs on the remote, to show a refused push changed none of them.
+fn remote_refs(w: &World) -> String {
+    git(&w.remote, &["for-each-ref"])
+}
+
+fn assert_refused_without_publishing(w: &World) {
+    let before = remote_refs(w);
+
+    assert!(push_run_branch(&w.store, "run-1", &w.log).is_err());
+
+    assert_eq!(remote_refs(w), before, "the remote is untouched");
+    assert!(!kinds(w).contains(&"stage.completed".to_string()), "{:?}", kinds(w));
+}
+
+#[test]
+fn a_worktree_switched_to_another_branch_is_not_pushed() {
+    let w = world("switched", "fix--COM-02", "main", None);
+    git(&w.worktree, &["checkout", "-q", "-b", "somebody-elses"]);
+
+    assert_refused_without_publishing(&w);
+}
+
+#[test]
+fn a_detached_head_is_not_pushed() {
+    let w = world("detached", "fix--COM-02", "main", None);
+    git(&w.worktree, &["checkout", "-q", "--detach"]);
+
+    assert_refused_without_publishing(&w);
+}
+
+#[test]
+fn an_unborn_run_branch_is_not_pushed() {
+    let w = world("unborn", "fix--COM-02", "main", None);
+    git(&w.worktree, &["checkout", "-q", "--orphan", "fix--COM-02-new"]);
+    git(&w.worktree, &["branch", "-D", "fix--COM-02"]);
+    git(&w.worktree, &["symbolic-ref", "HEAD", "refs/heads/fix--COM-02"]);
+
+    assert_refused_without_publishing(&w);
+}
