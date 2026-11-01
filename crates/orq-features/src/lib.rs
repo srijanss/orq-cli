@@ -282,5 +282,8 @@ pub use extract::{extract_candidates, Candidate, ExtractError};
 mod candidates;
 pub use candidates::{review_candidates, CandidateProblem, ReviewedCandidate, Verdict};
 
+mod model_profiles;
+pub use model_profiles::{load_model_profiles, FieldProblem, ModelProfile, ModelProfiles, ModelProfilesError};
+
 mod eligibility;
 pub use eligibility::{check_run_eligibility, Ineligible, UnmetDependency};
