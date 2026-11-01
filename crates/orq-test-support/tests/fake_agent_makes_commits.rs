@@ -166,3 +166,77 @@ fn a_directory_whose_name_starts_with_a_dash_is_created_not_taken_as_an_option()
     assert_eq!(std::fs::read_to_string(fixture.root().join("-p/file.txt")).unwrap(), "dash\n");
     assert_eq!(std::fs::read_to_string(fixture.root().join("-v/-x/deep.txt")).unwrap(), "deeper\n");
 }
+
+/// Runs git in `dir` with the developer's config out of the way.
+fn setup_git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// A hook script that records it ran, then rejects the commit.
+fn recording_hook(path: &Path, sentinel: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", sentinel.display())).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn commits_ignore_repo_and_global_hooks_identity_and_signing() {
+    let fixture = GitFixture::new();
+    let root = fixture.root();
+    let outside = root.parent().unwrap();
+    let repo_hook_ran = outside.join("repo-hook-ran");
+    let global_hook_ran = outside.join("global-hook-ran");
+
+    // The repo has a rejecting hook, its own identity, and signing that
+    // cannot succeed (`false` as the signer).
+    recording_hook(&root.join(".git/hooks/pre-commit"), &repo_hook_ran);
+    setup_git(root, &["config", "user.name", "Repo Dev"]);
+    setup_git(root, &["config", "user.email", "repo-dev@example.invalid"]);
+    setup_git(root, &["config", "commit.gpgsign", "true"]);
+    setup_git(root, &["config", "gpg.program", "false"]);
+
+    // The global config adds a hooks directory, an identity and signing.
+    let global_hooks = outside.join("global-hooks");
+    std::fs::create_dir_all(&global_hooks).unwrap();
+    recording_hook(&global_hooks.join("pre-commit"), &global_hook_ran);
+    // ...and a global ignore file hiding the file the agent writes, a setting
+    // no per-command override covers: only skipping the global config avoids it.
+    let global_ignore = outside.join("global-ignore");
+    std::fs::write(&global_ignore, "work.txt\n").unwrap();
+    let global_config = outside.join("global.gitconfig");
+    std::fs::write(
+        &global_config,
+        format!(
+            "[user]\n\tname = Global Dev\n\temail = global-dev@example.invalid\n[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n[core]\n\thooksPath = {}\n\texcludesFile = {}\n",
+            global_hooks.display(),
+            global_ignore.display()
+        ),
+    )
+    .unwrap();
+
+    let agent = FakeAgent::builder().write_file("work.txt", "work\n").commit("isolated").build();
+    let output = Command::new(agent.path())
+        .current_dir(root)
+        .env("GIT_CONFIG_GLOBAL", &global_config)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!repo_hook_ran.exists(), "the repo's pre-commit hook ran");
+    assert!(!global_hook_ran.exists(), "the global pre-commit hook ran");
+    assert_eq!(git(root, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(git(root, &["show", "--name-only", "--format=", "HEAD"]), "work.txt");
+    assert_eq!(
+        git(root, &["log", "-1", "--format=%an|%ae|%cn|%ce|%G?"]),
+        "Orq Fake Agent|fake-agent@example.invalid|Orq Fake Agent|fake-agent@example.invalid|N"
+    );
+}
