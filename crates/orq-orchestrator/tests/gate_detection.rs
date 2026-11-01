@@ -286,6 +286,18 @@ fn only_the_test_script_can_be_the_npm_placeholder_and_only_when_it_is_exactly_t
     );
     fs::create_dir_all(dir.join("node_modules")).unwrap();
     assert_eq!(choose_gate(&dir, None), Ok(run(&[&["npm", "run", "test"]])));
+
+    // Starting with echo, mentioning the phrase and ending in exit 1 is not
+    // enough: only npm's own placeholder is skipped.
+    for (tag, script) in [
+        ("fallback", r#"echo \"no test specified fallback\"; jest || exit 1"#),
+        ("chained", r#"echo \"Error: no test specified\" && jest && exit 1"#),
+    ] {
+        let dir = worktree(&format!("node-lookalike-{tag}"));
+        touch(&dir, "package.json", &format!(r#"{{"scripts": {{"test": "{script}"}}}}"#));
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        assert_eq!(choose_gate(&dir, None), Ok(run(&[&["npm", "run", "test"]])), "{tag}");
+    }
 }
 
 #[test]

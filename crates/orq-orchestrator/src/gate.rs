@@ -156,8 +156,7 @@ fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>)
 
 /// The script `npm init` writes: `echo "Error: no test specified" && exit 1`.
 fn is_npm_placeholder_test(command: &str) -> bool {
-    let command = command.trim();
-    command.starts_with("echo ") && command.contains("no test specified") && command.ends_with("exit 1")
+    command.trim() == r#"echo "Error: no test specified" && exit 1"#
 }
 
 fn rust_steps(dir: &Path, steps: &mut Vec<Vec<String>>) {
