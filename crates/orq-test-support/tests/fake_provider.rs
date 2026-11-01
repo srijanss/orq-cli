@@ -169,3 +169,38 @@ fn a_call_still_being_recorded_is_not_reported_but_complete_calls_around_it_are(
     assert_eq!(calls[1].program, "glab");
     assert_eq!(calls[1].args, ["mr", "list"]);
 }
+
+#[test]
+fn a_call_that_cannot_record_itself_fails_with_a_diagnostic_instead_of_hanging() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let provider = FakeProvider::builder().reply(&["pr", "create"], "{}\n").build();
+    // As if the provider were dropped while a child was still starting.
+    std::fs::remove_dir(calls_dir(&provider)).unwrap();
+
+    let mut child = Command::new(provider.gh())
+        .args(["pr", "create"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("the fake provider hung instead of failing");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert_eq!(status.code(), Some(70));
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(stderr.contains("cannot record call"), "{stderr}");
+}

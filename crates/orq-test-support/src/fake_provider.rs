@@ -134,14 +134,20 @@ impl FakeProviderBuilder {
         // The script locates its data via $0, so no path is embedded in shell
         // source and nothing needs quoting. Each call claims its own numbered
         // file (noclobber makes the claim atomic), so concurrent calls never
-        // write to the same file and their records cannot interleave.
+        // write to the same file and their records cannot interleave. A failed
+        // claim retries only when the slot exists; any other failure (such as
+        // a removed calls dir) exits 70 instead of spinning.
         let body = "#!/bin/sh\n\
             [ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\n\
             bin=${0%/*}\n\
             data=$bin/../data\n\
             set -C\n\
             n=0\n\
-            while ! { true > \"$data/calls/$n\"; } 2>/dev/null; do n=$((n+1)); done\n\
+            until { true > \"$data/calls/$n\"; } 2>/dev/null; do\n\
+            \x20 [ -e \"$data/calls/$n\" ] || { echo \"fake provider: cannot record call in $data/calls\" >&2; exit 70; }\n\
+            \x20 n=$((n+1))\n\
+            \x20 [ \"$n\" -le 100000 ] || { echo \"fake provider: cannot record call, no free slot\" >&2; exit 70; }\n\
+            done\n\
             printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" END >> \"$data/calls/$n\"\n\
             for r in \"$data\"/replies/*; do\n\
             \x20 [ -d \"$r\" ] || continue\n\
