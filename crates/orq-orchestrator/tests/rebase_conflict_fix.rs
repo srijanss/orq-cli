@@ -138,6 +138,58 @@ fn a_session_that_aborts_or_quits_the_rebase_does_not_count_as_resolved() {
     }
 }
 
+fn event_kinds(w: &World) -> Vec<String> {
+    kinds(w).into_iter().map(|(kind, _)| kind).collect()
+}
+
+#[test]
+fn a_failing_session_with_the_conflict_left_keeps_the_run_blocked_and_records_the_failure() {
+    let w = world("exit-1", true);
+
+    let outcome = run_agent(&w, "exit 3").unwrap();
+
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    assert!(reason.contains("git rebase --continue"), "{reason}");
+    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "run.blocked"]);
+    assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"));
+}
+
+#[test]
+fn a_session_that_cannot_start_keeps_the_run_blocked_and_records_the_failure() {
+    let w = world("no-program", true);
+    let log = w.root.join("fix.log");
+    let session = ImplementSession {
+        program: "/nonexistent/orq-agent",
+        args: &[],
+        env: &[],
+        cwd: &w.worktree,
+        session_id: None,
+        log: &log,
+        terminal: false,
+    };
+
+    let outcome = fix_rebase_conflicts(&w.store, "run-1", &session).unwrap();
+
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    assert!(reason.contains("git rebase --continue"), "{reason}");
+    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "run.blocked"]);
+    assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"));
+}
+
+#[test]
+fn a_session_that_finishes_the_rebase_and_then_exits_nonzero_is_still_resolved() {
+    let w = world("done-then-fail", true);
+
+    let outcome = run_agent(
+        &w,
+        "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue; exit 1",
+    )
+    .unwrap();
+
+    assert_eq!(outcome, ConflictFixOutcome::Resolved);
+    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "rebase.completed"]);
+}
+
 #[test]
 fn a_worktree_that_is_not_mid_rebase_is_an_error_and_no_session_runs() {
     let w = world("not-rebasing", false);
