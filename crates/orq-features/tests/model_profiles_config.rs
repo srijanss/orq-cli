@@ -218,6 +218,28 @@ fn an_unreadable_path_is_an_io_error_not_an_absent_file() {
     }
 }
 
+#[test]
+fn profile_names_a_role_could_not_reference_are_rejected() {
+    let dir = tempfile_dir("names");
+    for name in [" opus ", "opus ", " opus", "", "a\\nb"] {
+        let user = write(
+            &dir,
+            "config.toml",
+            &format!("[models.\"{name}\"]\nharness = \"claude\"\nmodel = \"m\"\n"),
+        );
+        assert_eq!(
+            load_model_profiles(&user, &dir.join("absent.toml")).unwrap_err(),
+            ModelProfilesError::InvalidProfileName {
+                path: user.clone(),
+                profile: name.replace("\\n", "\n"),
+            },
+            "{name:?}"
+        );
+    }
+    let user = write(&dir, "config.toml", "[models.\"my model\"]\nharness = \"claude\"\nmodel = \"m\"\n");
+    assert!(load_model_profiles(&user, &dir.join("absent.toml")).unwrap().get("my model").is_some());
+}
+
 fn tempfile_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "orq-model-profiles-{tag}-{}-{:?}",

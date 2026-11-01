@@ -43,6 +43,9 @@ pub enum ModelProfilesError {
         field: &'static str,
         problem: FieldProblem,
     },
+    /// A profile name that `[roles]` (which trims its values) could never
+    /// reference: empty, padded with whitespace, or containing a control character.
+    InvalidProfileName { path: PathBuf, profile: String },
     /// `roles` is not a table.
     InvalidRolesSection { path: PathBuf },
     /// A `[roles]` value is not a non-empty single-line string.
@@ -68,6 +71,9 @@ impl std::fmt::Display for ModelProfilesError {
                     FieldProblem::NotASingleLineString => "is not a single-line string",
                 };
                 write!(f, "{}: models.{profile} {field} {what}", path.display())
+            }
+            ModelProfilesError::InvalidProfileName { path, profile } => {
+                write!(f, "{}: models name {profile:?} is empty, padded or has control characters", path.display())
             }
             ModelProfilesError::InvalidRolesSection { path } => {
                 write!(f, "{}: roles is not a table", path.display())
@@ -180,6 +186,13 @@ fn read_layer(path: &Path) -> Result<Option<Layer>, ModelProfilesError> {
     if let Some(models) = doc.get("models") {
         let models = models.as_table_like().ok_or_else(|| not_a_profile("models"))?;
         for (name, item) in models.iter() {
+            // Role values are trimmed on read, so only a trimmed name is referenceable.
+            if name.is_empty() || name.trim() != name || name.chars().any(char::is_control) {
+                return Err(ModelProfilesError::InvalidProfileName {
+                    path: path.to_path_buf(),
+                    profile: name.to_string(),
+                });
+            }
             let table = item.as_table_like().ok_or_else(|| not_a_profile(name))?;
             profiles.push(read_profile(path, name, table)?);
         }
