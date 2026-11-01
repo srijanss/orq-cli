@@ -85,7 +85,7 @@ fn lookalike_hosts_never_match_a_known_provider() {
 
 #[test]
 fn a_remote_without_a_host_is_reported_as_such() {
-    for url in ["", "   ", "/srv/git/repo.git", "../repo", "./repo.git", "file:///srv/repo.git", "https://", "https:///o/r", "git@:o/r"] {
+    for url in ["", "   ", "/srv/git/repo.git", "../repo", "./repo.git", "file:///srv/repo.git", "https://", "https:///o/r"] {
         assert_eq!(
             detect(url),
             Err(ProviderError::NoHost { url: url.to_string() }),
@@ -230,4 +230,37 @@ fn an_scp_like_remote_may_have_a_bracketed_ipv6_host() {
     }
     // Plain scp-like remotes are unaffected.
     assert_eq!(remote_host("git@github.com:o/r.git").as_deref(), Some("github.com"));
+}
+
+fn no_host_url(url: &str) -> String {
+    match detect(url) {
+        Err(ProviderError::NoHost { url }) => url,
+        other => panic!("expected NoHost for {url:?}, got {other:?}"),
+    }
+}
+
+#[test]
+fn credentials_never_appear_in_a_no_host_error_or_its_output() {
+    for (url, secret, kept) in [
+        ("https://user:secret@:443/repo.git", "secret", "https://***@:443/repo.git"),
+        ("https://TOKEN123@/o/r", "TOKEN123", "https://***@/o/r"),
+        ("https://u:p@ss@:80/x", "p@ss", "https://***@:80/x"),
+        ("ssh://deploy:hunter2@/srv/r.git", "hunter2", "ssh://***@/srv/r.git"),
+        ("git@:o/r", "git@", "***@:o/r"),
+        ("HTTPS://x:pw9@?q=1", "pw9", "HTTPS://***@?q=1"),
+    ] {
+        let error = detect(url).unwrap_err();
+        assert_eq!(no_host_url(url), kept, "{url:?}");
+        for text in [error.to_string(), format!("{error:?}")] {
+            assert!(!text.contains(secret), "{secret:?} leaked in {text:?}");
+        }
+    }
+    // Nothing is rewritten when there is no userinfo to hide.
+    for url in ["", "   ", "/srv/git/a@b/repo.git", "file:///srv/repo.git", "https:///o/r", "../a@b", "https://:80/x@y"] {
+        assert_eq!(no_host_url(url), url, "{url:?}");
+    }
+    // A host that is merely unknown never carries userinfo either.
+    let unknown = detect("https://user:secret@bitbucket.org/o/r").unwrap_err();
+    assert_eq!(unknown, ProviderError::UnknownHost { host: "bitbucket.org".to_string() });
+    assert!(!format!("{unknown} {unknown:?}").contains("secret"));
 }

@@ -129,6 +129,21 @@ pub fn remote_host(url: &str) -> Option<String> {
     Some(host)
 }
 
+/// `url` with the userinfo of its authority (everything before the last `@`,
+/// where a password or token may sit) replaced by `***`, so a rejected remote
+/// can be shown or logged. A URL without userinfo comes back unchanged.
+fn redact_userinfo(url: &str) -> String {
+    let (prefix_len, rest, delimiters): (usize, &str, &[char]) = match url.split_once("://") {
+        Some((scheme, rest)) => (scheme.len() + 3, rest, &['/', '?', '#', '\\']),
+        None => (0, url, &['/']),
+    };
+    let authority_end = rest.find(delimiters).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{}***{}", &url[..prefix_len], &rest[at..]),
+        None => url.to_string(),
+    }
+}
+
 /// A configured hostname in the form `remote_host` produces: lowercase, no
 /// trailing dot, and a bracketed IPv6 literal in canonical spelling.
 fn normalize(host: &str) -> String {
@@ -155,7 +170,7 @@ pub fn detect_provider(
         return parse_forge(forge);
     }
     let host = remote_host(remote_url).ok_or_else(|| ProviderError::NoHost {
-        url: remote_url.to_string(),
+        url: redact_userinfo(remote_url),
     })?;
     let listed = |configured: &[String], builtin: &str| host == builtin || configured.iter().any(|h| normalize(h) == host);
     match (listed(&hosts.github, "github.com"), listed(&hosts.gitlab, "gitlab.com")) {
