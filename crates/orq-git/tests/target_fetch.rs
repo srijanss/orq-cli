@@ -76,6 +76,24 @@ fn configured_fetch_mappings_do_not_write_other_refs() {
 }
 
 #[test]
+fn git_failures_are_typed_and_never_echo_url_credentials() {
+    let (fixture, _, _) = fixture_with_remote();
+    let root = fixture.root();
+    let head_before = git(root, &["rev-parse", "HEAD"]);
+    git(root, &["remote", "add", "dead", "http://user:s3cret-token@127.0.0.1:1/repo.git?access_token=abc123"]);
+
+    let err = fetch_target_base(root, "dead", "main").unwrap_err();
+    assert!(matches!(err, FetchError::Git { .. }), "{err:?}");
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains("s3cret-token") && !shown.contains("abc123"), "{shown}");
+    assert_eq!(git(root, &["rev-parse", "HEAD"]), head_before);
+
+    // Not a repository at all.
+    let nowhere = root.join("no-such-dir");
+    assert!(matches!(fetch_target_base(&nowhere, "origin", "main"), Err(FetchError::Git { .. })));
+}
+
+#[test]
 fn a_missing_remote_or_branch_is_a_typed_error_and_fetches_nothing() {
     let (fixture, _, _) = fixture_with_remote();
     let root = fixture.root();

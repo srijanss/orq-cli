@@ -92,15 +92,39 @@ fn check_branch(repo: &Path, branch: &str) -> Result<(), FetchError> {
     }
     // `check-ref-format` rejects `..`, `:`, `~`, `^`, `?`, `*`, `[`, `\\` and the rest.
     let checked = git(repo, &["check-ref-format", &format!("refs/heads/{branch}")])?;
-    if checked.status.success() {
-        Ok(())
-    } else {
-        Err(invalid())
+    match checked.status.code() {
+        Some(0) => Ok(()),
+        // check-ref-format exits 1 for a bad name; anything else is git itself failing.
+        Some(1) => Err(invalid()),
+        _ => Err(failure(&checked)),
     }
 }
 
 fn failure(output: &Output) -> FetchError {
-    FetchError::Git { message: String::from_utf8_lossy(&output.stderr).trim().to_string() }
+    FetchError::Git { message: redact_urls(String::from_utf8_lossy(&output.stderr).trim()) }
+}
+
+/// Drop credentials (`user:token@`), query strings and fragments from every
+/// URL in git's diagnostics, which may echo a remote's configured URL.
+fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>' | '`'))
+            .unwrap_or(tail.len());
+        let (url, after) = tail.split_at(end);
+        let authority_end = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let (authority, remainder) = url.split_at(authority_end);
+        out.push_str(authority.rsplit('@').next().unwrap_or(authority));
+        let path_end = remainder.find(['?', '#']).unwrap_or(remainder.len());
+        out.push_str(&remainder[..path_end]);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Output, FetchError> {
