@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::gate::Gate;
-use crate::implement::{next_event_id, now_rfc3339};
+use crate::implement::{next_event_id, now_rfc3339, open_log};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "verify";
@@ -46,17 +46,7 @@ pub fn run_gate_stage(
         return Ok(GateOutcome::Passed);
     };
 
-    // Gate output can hold source and credentials: owner-only on creation.
-    let mut open = fs::OpenOptions::new();
-    open.create(true).append(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
-    let mut log = open.open(log_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        log.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
+    let mut log = open_log(log_path)?;
     let log_name = log_path.to_string_lossy().into_owned();
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "steps": steps.len() }))?;
 

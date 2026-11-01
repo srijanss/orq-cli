@@ -138,6 +138,22 @@ fn the_gate_log_is_owner_only() {
     assert_eq!(fs::metadata(&w.log).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_log_path_that_is_a_symlink_is_refused_and_its_target_untouched() {
+    let w = world("symlink");
+    let target = w.root.join("victim");
+    fs::write(&target, "precious\n").unwrap();
+    std::os::unix::fs::symlink(&target, &w.log).unwrap();
+    let marker = w.root.join("ran");
+
+    let result = run_gate_stage(&w.store, "run-1", &steps(vec![sh(&format!("touch {}", marker.display()))]), true, &w.log);
+
+    assert!(result.is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "precious\n");
+    assert!(!marker.exists(), "no step runs without a safe log");
+}
+
 #[test]
 fn an_unknown_run_is_an_error_and_nothing_runs() {
     let w = world("unknown");

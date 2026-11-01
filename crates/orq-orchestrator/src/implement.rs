@@ -50,19 +50,7 @@ pub(crate) fn run_session_stage(
     stage: &str,
 ) -> Result<ImplementOutcome, StoreError> {
     let record = store.load(run_id)?;
-    // Harness output can hold source and credentials: owner-only on creation.
-    let mut open = fs::OpenOptions::new();
-    open.create(true).append(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
-    let log = open.open(session.log)?;
-    // The mode above only applies to a new file; tighten one from earlier runs
-    // through the handle, so a swapped path cannot redirect the change.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        log.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
+    let log = open_log(session.log)?;
     let event = |kind: &str, extra: serde_json::Value| {
         let mut payload = serde_json::json!({
             "session_id": session.session_id,
@@ -120,6 +108,43 @@ pub(crate) fn run_session_stage(
     };
     store.append_event(&closing)?;
     Ok(outcome)
+}
+
+/// Open a stage log for appending. Output can hold source and credentials, so
+/// the file is owner-only, and a symlink is never followed: a new file is
+/// created exclusively, an existing one must be a regular file and the very
+/// file that was inspected.
+pub(crate) fn open_log(path: &Path) -> std::io::Result<fs::File> {
+    let refuse = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is {what}", path.display()));
+    let mut open = fs::OpenOptions::new();
+    open.append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // `create_new` is O_EXCL: it fails rather than follow a link planted meanwhile.
+            return open.create_new(true).open(path);
+        }
+        Err(err) => return Err(err),
+        Ok(meta) if !meta.is_file() => return Err(refuse("not a regular file")),
+        Ok(meta) => {
+            let file = open.open(path)?;
+            let opened = file.metadata()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                if opened.dev() != meta.dev() || opened.ino() != meta.ino() {
+                    return Err(refuse("not the file that was inspected"));
+                }
+                // Tighten one from earlier runs through the handle, so a swapped path cannot redirect it.
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            if !opened.is_file() {
+                return Err(refuse("not a regular file"));
+            }
+            Ok(file)
+        }
+    }
 }
 
 pub(crate) fn next_event_id(run_id: &str) -> String {
