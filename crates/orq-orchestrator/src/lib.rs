@@ -1,6 +1,7 @@
 //! Stage logic for a pipeline run: what each stage decides and does, kept
 //! apart from the CLI and the popup that drive it.
 
+mod conflict_fix;
 mod gate;
 mod implement;
 mod outcome;
@@ -8,6 +9,7 @@ mod rebase;
 mod setup;
 mod store;
 
+pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use gate::{choose_gate, Gate, GateError};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use outcome::{check_implement_outcome, ImplementCheck};

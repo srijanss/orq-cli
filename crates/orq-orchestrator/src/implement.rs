@@ -38,6 +38,17 @@ pub fn run_implement_stage(
     run_id: &str,
     session: &ImplementSession<'_>,
 ) -> Result<ImplementOutcome, StoreError> {
+    run_session_stage(store, run_id, session, STAGE)
+}
+
+/// Run one harness session as `stage`, recording `stage.started` and
+/// `stage.completed` / `stage.failed` events.
+pub(crate) fn run_session_stage(
+    store: &RunStore,
+    run_id: &str,
+    session: &ImplementSession<'_>,
+    stage: &str,
+) -> Result<ImplementOutcome, StoreError> {
     let record = store.load(run_id)?;
     // Harness output can hold source and credentials: owner-only on creation.
     let mut open = fs::OpenOptions::new();
@@ -67,7 +78,7 @@ pub fn run_implement_stage(
             project_id: record.project_id.clone(),
             feature_id: record.feature_id.clone(),
             kind: kind.to_string(),
-            stage: Some(STAGE.to_string()),
+            stage: Some(stage.to_string()),
             attempt: 1,
             occurred_at: now_rfc3339(),
             payload,
