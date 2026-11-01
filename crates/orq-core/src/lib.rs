@@ -1,3 +1,5 @@
+pub mod run;
+
 /// Status of a feature in a project's `.tdd-features.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureStatus {
