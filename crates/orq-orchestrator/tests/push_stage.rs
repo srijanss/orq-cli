@@ -220,3 +220,14 @@ fn an_unborn_run_branch_is_not_pushed() {
 
     assert_refused_without_publishing(&w);
 }
+
+#[test]
+fn a_password_with_an_apostrophe_or_a_quote_is_still_stripped_from_the_log() {
+    let w = world("quotes", "fix--COM-02", "main", Some("http://deploy:sec'ret\"pw@127.0.0.1:1/repo.git"));
+
+    push_run_branch(&w.store, "run-1", &w.log).unwrap();
+
+    let logged = fs::read_to_string(&w.log).unwrap();
+    assert!(!logged.contains("sec'ret") && !logged.contains("ret\"pw") && !logged.contains("pw@"), "{logged}");
+    assert!(logged.contains("127.0.0.1"), "the host is still shown: {logged}");
+}

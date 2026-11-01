@@ -70,7 +70,9 @@ fn redact_credentials(text: &str) -> String {
     while let Some(at) = rest.find("://") {
         let (head, tail) = rest.split_at(at + 3);
         out.push_str(head);
-        let end = tail.find(|c: char| c.is_whitespace() || c == '/' || c == '\'' || c == '"').unwrap_or(tail.len());
+        // Quotes are valid in userinfo, so only whitespace and the path end the authority;
+        // a quote closing the URL then stays with the host.
+        let end = tail.find(|c: char| c.is_whitespace() || c == '/').unwrap_or(tail.len());
         let authority = &tail[..end];
         out.push_str(authority.rsplit_once('@').map_or(authority, |(_, host)| host));
         rest = &tail[end..];
