@@ -111,8 +111,18 @@ impl RunStore {
         fs::create_dir_all(locks)?;
         // The lock appears already holding the run id: write a private file,
         // then hard-link it into place, which fails if a lock exists.
-        let private = locks.join(format!(".{}.{}.tmp", record.run_id, std::process::id()));
-        fs::write(&private, record.run_id.as_bytes())?;
+        // The name is unique per call and created exclusively, so a planted
+        // file or symlink is never opened, let alone written through.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let private = locks.join(format!(
+            ".{}.{}.{}.tmp",
+            record.run_id,
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&private)?;
+        file.write_all(record.run_id.as_bytes())?;
+        drop(file);
         let linked = fs::hard_link(&private, &lock);
         let _ = fs::remove_file(&private);
         match linked {

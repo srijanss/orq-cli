@@ -203,6 +203,23 @@ fn finishing_a_run_frees_the_feature_and_only_its_owner_can_free_it() {
     assert_eq!(names(&root.join("locks/repo-1")), vec!["COM-02.lock".to_string()]);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_planted_symlink_at_the_old_temporary_name_is_never_written_through() {
+    let root = root("symlink");
+    let outside = root.join("outside.txt");
+    fs::write(&outside, "precious").unwrap();
+    let locks = root.join("locks/repo-1");
+    fs::create_dir_all(&locks).unwrap();
+    std::os::unix::fs::symlink(&outside, locks.join(format!(".run-1.{}.tmp", std::process::id()))).unwrap();
+
+    let store = RunStore::new(&root);
+    store.start_run(&record("run-1")).unwrap();
+
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "precious");
+    assert_eq!(fs::read_to_string(locks.join("COM-02.lock")).unwrap(), "run-1");
+}
+
 #[test]
 fn a_duplicate_release_never_frees_the_next_owners_lock() {
     use std::sync::{Arc, Barrier};
@@ -226,9 +243,11 @@ fn a_duplicate_release_never_frees_the_next_owners_lock() {
         gate.wait();
         // The next run may start at any point while the duplicate releases race.
         let started = loop {
+            // Read before the attempt: a refusal after the releases finished is final.
+            let done = releasers.iter().all(|h| h.is_finished());
             match store.start_run(&record(&b)) {
                 Ok(()) => break true,
-                Err(StoreError::FeatureBusy { .. }) if releasers.iter().all(|h| h.is_finished()) => break false,
+                Err(StoreError::FeatureBusy { .. }) if done => break false,
                 Err(StoreError::FeatureBusy { .. }) => std::thread::yield_now(),
                 Err(other) => panic!("{other:?}"),
             }
