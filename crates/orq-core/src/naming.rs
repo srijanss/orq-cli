@@ -94,6 +94,11 @@ pub fn run_naming(
         return Err(NamingError::InvalidPrefix(prefix.to_string()));
     }
     let base = format!("{prefix}{feature}");
+    // Git refuses `HEAD` as a branch name; catch it before any branch or
+    // worktree is touched, whichever of prefix and feature spells it.
+    if base == "HEAD" {
+        return Err(NamingError::InvalidFeatureName(feature.to_string()));
+    }
     let candidate = |branch: String| RunNaming {
         worktree_dir: PathBuf::from(WORKTREES_DIR).join(&branch),
         branch,

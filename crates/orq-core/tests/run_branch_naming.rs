@@ -58,3 +58,22 @@ fn giving_up_after_many_collisions_is_a_typed_error() {
         Err(NamingError::NoFreeName("fix--a".to_string()))
     );
 }
+
+#[test]
+fn an_assembled_branch_named_head_is_rejected_before_asking_if_it_is_taken() {
+    let asked = std::cell::Cell::new(false);
+    for (prefix, feature) in [("", "HEAD"), ("HE", "AD"), ("", "HEAD")] {
+        let result = run_naming(prefix, feature, |_| {
+            asked.set(true);
+            false
+        });
+        assert_eq!(
+            result,
+            Err(NamingError::InvalidFeatureName(feature.to_string())),
+            "{prefix:?}+{feature:?}"
+        );
+    }
+    assert!(!asked.get(), "HEAD must be refused before any collision check");
+    assert_eq!(run_naming("", "HEADS", free).unwrap().branch, "HEADS");
+    assert_eq!(run_naming("fix--", "HEAD", free).unwrap().branch, "fix--HEAD");
+}
