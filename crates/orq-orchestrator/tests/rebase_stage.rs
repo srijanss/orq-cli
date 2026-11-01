@@ -70,10 +70,15 @@ fn world(tag: &str, remote_override: Option<&str>) -> World {
 }
 
 fn advance_target(w: &World, file: &str, content: &str) -> String {
+    advance_target_on(w, "main", file, content)
+}
+
+/// Commit in the other clone and push it as `branch` on the remote.
+fn advance_target_on(w: &World, branch: &str, file: &str, content: &str) -> String {
     fs::write(w.other.join(file), content).unwrap();
     git(&w.other, &["add", "."]);
     git(&w.other, &["commit", "-q", "-m", &format!("target {file}")]);
-    git(&w.other, &["push", "-q", "origin", "HEAD:main"]);
+    git(&w.other, &["push", "-q", "origin", &format!("HEAD:{branch}")]);
     git(&w.other, &["rev-parse", "HEAD"])
 }
 
@@ -240,4 +245,33 @@ fn run_ids_that_git_would_reject_as_ref_names_still_rebase() {
         assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: target }, "run id {id}");
         assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "", "run id {id}");
     }
+}
+
+#[test]
+fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_own_ref() {
+    let w = world("linked", None);
+    // Run 2 lives in a linked worktree of the same repository and targets another branch.
+    git(&w.other, &["checkout", "-q", "-b", "release"]);
+    let release = advance_target_on(&w, "release", "release.txt", "release\n");
+    let main = advance_target(&w, "main.txt", "main\n");
+    let second = w.worktree.parent().unwrap().join("second");
+    git(&w.worktree, &["worktree", "add", "-q", "-b", "fix--COM-03", second.to_str().unwrap(), "HEAD"]);
+    let mut record = w.store.load("run-1").unwrap();
+    record.run_id = "run-2".to_string();
+    record.feature_id = "COM-03".to_string();
+    record.branch = "fix--COM-03".to_string();
+    record.target_branch = "release".to_string();
+    record.worktree = second.clone();
+    w.store.create(&record).unwrap();
+    // Run 1's fetch ref is still in the shared repository while run 2 works.
+    let id_hex: String = "run-1".bytes().map(|byte| format!("{byte:02x}")).collect();
+    git(&w.worktree, &["update-ref", &format!("refs/orq/rebase/{id_hex}"), "HEAD"]);
+
+    let second_outcome = rebase_onto_target(&w.store, "run-2", true).unwrap();
+    assert_eq!(second_outcome, RebaseOutcome::Rebased { target_sha: release });
+    assert!(git(&w.worktree, &["for-each-ref", "refs/orq"]).contains(&id_hex), "run 1's ref is untouched");
+    git(&w.worktree, &["update-ref", "-d", &format!("refs/orq/rebase/{id_hex}")]);
+
+    let first_outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
+    assert_eq!(first_outcome, RebaseOutcome::Rebased { target_sha: main });
 }
