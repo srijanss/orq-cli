@@ -25,6 +25,11 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
         return Ok(RebaseOutcome::Skipped);
     }
     let worktree = record.worktree.as_path();
+    // Only ever rewrite the run's own branch: a switched or detached HEAD is left alone.
+    let head = git_raw(worktree, &["symbolic-ref", "-q", "HEAD"])?;
+    if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
+        return Err(StoreError::Corrupt(format!("the worktree is not on the run branch {}", record.branch)));
+    }
     let refspec = format!("refs/heads/{}", record.target_branch);
     let fetched = git_raw(worktree, &["fetch", "--no-tags", "--", &record.remote, &refspec])?;
     if !fetched.success {

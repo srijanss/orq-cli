@@ -138,3 +138,30 @@ fn an_unknown_run_is_an_error() {
     let w = world("unknown", None);
     assert!(rebase_onto_target(&w.store, "ghost", true).is_err());
 }
+
+#[test]
+fn a_worktree_on_another_branch_is_refused_without_touching_it() {
+    let w = world("wrong-branch", None);
+    advance_target(&w, "theirs.txt", "theirs\n");
+    git(&w.worktree, &["checkout", "-q", "-b", "someone-else"]);
+    let before = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert!(rebase_onto_target(&w.store, "run-1", true).is_err());
+
+    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
+    assert_eq!(git(&w.worktree, &["symbolic-ref", "HEAD"]), "refs/heads/someone-else");
+    assert!(kinds(&w).is_empty());
+}
+
+#[test]
+fn a_detached_head_is_refused_without_touching_it() {
+    let w = world("detached", None);
+    advance_target(&w, "theirs.txt", "theirs\n");
+    git(&w.worktree, &["checkout", "-q", "--detach"]);
+    let before = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert!(rebase_onto_target(&w.store, "run-1", true).is_err());
+
+    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
+    assert!(kinds(&w).is_empty());
+}
