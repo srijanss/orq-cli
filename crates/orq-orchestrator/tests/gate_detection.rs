@@ -132,6 +132,16 @@ fn npms_placeholder_test_script_is_not_a_test() {
     );
     fs::create_dir_all(dir.join("node_modules")).unwrap();
     assert!(matches!(choose_gate(&dir, None), Ok(Gate::Skipped { .. })));
+
+    // Surrounding whitespace does not make it a different script.
+    let dir = worktree("node-placeholder-padded");
+    touch(
+        &dir,
+        "package.json",
+        r#"{"scripts": {"test": "  echo \"Error: no test specified\" && exit 1\n"}}"#,
+    );
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    assert!(matches!(choose_gate(&dir, None), Ok(Gate::Skipped { .. })));
 }
 
 #[test]
