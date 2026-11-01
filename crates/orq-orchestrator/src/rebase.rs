@@ -30,8 +30,11 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
     if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
         return Err(StoreError::Corrupt(format!("the worktree is not on the run branch {}", record.branch)));
     }
-    let refspec = format!("refs/heads/{}", record.target_branch);
-    let fetched = git_raw(worktree, &["fetch", "--no-tags", "--", &record.remote, &refspec])?;
+    // Fetch into a ref of this run instead of the FETCH_HEAD that every worktree
+    // of the repository shares, so a concurrent fetch cannot swap the commit.
+    let private_ref = format!("refs/orq/rebase/{}", record.run_id);
+    let refspec = format!("+refs/heads/{}:{private_ref}", record.target_branch);
+    let fetched = git_raw(worktree, &["fetch", "--no-tags", "--no-write-fetch-head", "--", &record.remote, &refspec])?;
     if !fetched.success {
         return Err(StoreError::Corrupt(format!(
             "could not fetch {} from the remote: {}",
@@ -39,7 +42,8 @@ pub fn rebase_onto_target(store: &RunStore, run_id: &str, enabled: bool) -> Resu
             fetched.stderr.replace(&record.remote, "<remote>").trim()
         )));
     }
-    let target_sha = git_raw(worktree, &["rev-parse", "--verify", "FETCH_HEAD^{commit}"])?;
+    let target_sha = git_raw(worktree, &["rev-parse", "--verify", &format!("{private_ref}^{{commit}}")])?;
+    let _ = git_raw(worktree, &["update-ref", "-d", &private_ref])?;
     if !target_sha.success {
         return Err(StoreError::Corrupt("the fetched target branch has no commit".to_string()));
     }

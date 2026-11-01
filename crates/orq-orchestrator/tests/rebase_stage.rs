@@ -165,3 +165,42 @@ fn a_detached_head_is_refused_without_touching_it() {
     assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
     assert!(kinds(&w).is_empty());
 }
+
+#[test]
+fn the_fetched_target_is_kept_in_a_run_specific_ref_that_is_removed_afterwards() {
+    let w = world("fetch-ref", None);
+    advance_target(&w, "theirs.txt", "theirs\n");
+
+    let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
+
+    assert!(matches!(outcome, RebaseOutcome::Rebased { .. }));
+    assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "", "no leftover ref");
+}
+
+#[test]
+fn the_run_specific_ref_is_removed_after_a_conflict_too() {
+    let w = world("fetch-ref-conflict", None);
+    fs::write(w.worktree.join("a.txt"), "mine\n").unwrap();
+    git(&w.worktree, &["commit", "-q", "-am", "edit a"]);
+    advance_target(&w, "a.txt", "theirs\n");
+
+    let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
+
+    assert!(matches!(outcome, RebaseOutcome::Conflict { .. }));
+    assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "");
+}
+
+#[test]
+fn the_shared_fetch_head_is_left_alone_so_another_runs_fetch_is_not_clobbered() {
+    let w = world("fetch-head", None);
+    advance_target(&w, "theirs.txt", "theirs\n");
+    // Another run's fetch in the same repository leaves its result in FETCH_HEAD.
+    git(&w.worktree, &["fetch", "-q", "origin", "main"]);
+    let git_dir = PathBuf::from(git(&w.worktree, &["rev-parse", "--absolute-git-dir"]));
+    let before = fs::read_to_string(git_dir.join("FETCH_HEAD")).unwrap();
+    advance_target(&w, "later.txt", "later\n");
+
+    rebase_onto_target(&w.store, "run-1", true).unwrap();
+
+    assert_eq!(fs::read_to_string(git_dir.join("FETCH_HEAD")).unwrap(), before);
+}
