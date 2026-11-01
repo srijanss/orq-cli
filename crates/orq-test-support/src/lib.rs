@@ -2,6 +2,10 @@ mod fake_agent;
 
 pub use fake_agent::{FakeAgent, FakeAgentBuilder, Run};
 
+mod fake_provider;
+
+pub use fake_provider::{FakeProvider, FakeProviderBuilder, ProviderCall};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

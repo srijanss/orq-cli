@@ -102,7 +102,7 @@ impl FakeAgentBuilder {
 
 /// Another test thread may fork while the script is still open for writing,
 /// leaving the file briefly "busy" (ETXTBSY) to exec. Probe until it is free.
-fn wait_until_executable(script: &Path) {
+pub(crate) fn wait_until_executable(script: &Path) {
     for _ in 0..200 {
         let probe = std::process::Command::new(script)
             .env("FAKE_AGENT_PROBE", "1")
