@@ -148,6 +148,8 @@ fn a_fixer_that_repairs_the_worktree_but_exits_nonzero_still_passes_on_the_rerun
         .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+    let fix_failed = w.store.events("run-1").unwrap().into_iter().find(|e| e.stage.as_deref() == Some("gate_fix") && e.kind == "stage.failed").unwrap();
+    assert_eq!(fix_failed.payload["exit_code"], 1, "the harness status is recorded but does not decide");
     assert_eq!(
         kinds(&w),
         [
