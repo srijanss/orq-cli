@@ -66,7 +66,13 @@ fn completed_onto(record: &RunRecord, onto: &str) -> Result<bool, StoreError> {
     if !unmerged.success || !unmerged.stdout.trim().is_empty() {
         return Ok(false);
     }
-    Ok(git_raw(&record.worktree, &["merge-base", "--is-ancestor", onto, "HEAD"])?.success)
+    if !git_raw(&record.worktree, &["merge-base", "--is-ancestor", onto, "HEAD"])?.success {
+        return Ok(false);
+    }
+    // The run only reaches a conflict with work of its own: a branch that sits
+    // on the target with nothing past it has lost that work.
+    let ahead = git_raw(&record.worktree, &["rev-list", "--count", &format!("{onto}..HEAD")])?;
+    Ok(ahead.success && ahead.stdout.trim().parse::<u32>().is_ok_and(|count| count > 0))
 }
 
 fn rebase_onto(record: &RunRecord) -> Result<String, StoreError> {

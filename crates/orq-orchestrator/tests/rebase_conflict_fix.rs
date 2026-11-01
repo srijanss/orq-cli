@@ -138,6 +138,21 @@ fn a_session_that_aborts_or_quits_the_rebase_does_not_count_as_resolved() {
     }
 }
 
+#[test]
+fn a_session_that_resets_the_run_branch_to_the_target_has_lost_the_work_and_is_not_resolved() {
+    let w = world("reset-to-target", true);
+
+    let outcome = run_agent(
+        &w,
+        "onto=$(cat \"$(git rev-parse --git-path rebase-merge/onto)\") && git rebase --abort && git reset -q --hard $onto",
+    )
+    .unwrap();
+
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    assert!(reason.contains(w.worktree.to_str().unwrap()), "{reason}");
+    assert!(!event_kinds(&w).contains(&"rebase.completed".to_string()));
+}
+
 fn event_kinds(w: &World) -> Vec<String> {
     kinds(w).into_iter().map(|(kind, _)| kind).collect()
 }
