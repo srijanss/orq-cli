@@ -32,6 +32,18 @@ impl LedgerStatus {
         }
     }
 
+    /// The status as written in `.tdd-features.json`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            LedgerStatus::Known(FeatureStatus::Draft) => "draft",
+            LedgerStatus::Known(FeatureStatus::Pending) => "pending",
+            LedgerStatus::Known(FeatureStatus::InProgress) => "in_progress",
+            LedgerStatus::Known(FeatureStatus::Completed) => "completed",
+            LedgerStatus::Known(FeatureStatus::Abandoned) => "abandoned",
+            LedgerStatus::Unrecognised(text) => text,
+        }
+    }
+
     fn from_text(text: String) -> Self {
         match text.as_str() {
             "draft" => LedgerStatus::Known(FeatureStatus::Draft),
@@ -269,3 +281,6 @@ pub use extract::{extract_candidates, Candidate, ExtractError};
 
 mod candidates;
 pub use candidates::{review_candidates, CandidateProblem, ReviewedCandidate, Verdict};
+
+mod eligibility;
+pub use eligibility::{check_run_eligibility, Ineligible, UnmetDependency};
