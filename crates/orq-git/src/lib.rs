@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod fetch;
-pub use fetch::{fetch_target_base, FetchError};
+pub use fetch::{fetch_target_base, redact_urls, FetchError};
 
 mod provider;
 pub use provider::{detect_provider, parse_forge, remote_host, Provider, ProviderError, ProviderHosts};

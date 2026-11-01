@@ -106,21 +106,22 @@ fn failure(output: &Output) -> FetchError {
 
 /// Drop credentials (`user:token@`), query strings and fragments from every
 /// URL in git's diagnostics, which may echo a remote's configured URL.
-fn redact_urls(text: &str) -> String {
+pub fn redact_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("://") {
         let (head, tail) = rest.split_at(at + 3);
         out.push_str(head);
-        let end = tail
-            .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>' | '`'))
-            .unwrap_or(tail.len());
+        // Quotes and apostrophes are valid inside userinfo and query values, so
+        // only whitespace ends a URL; over-redacting is the safe direction.
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
         let (url, after) = tail.split_at(end);
-        let authority_end = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let authority_end = url.find('/').unwrap_or(url.len());
         let (authority, remainder) = url.split_at(authority_end);
-        out.push_str(authority.rsplit('@').next().unwrap_or(authority));
-        let path_end = remainder.find(['?', '#']).unwrap_or(remainder.len());
-        out.push_str(&remainder[..path_end]);
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        let kept = format!("{host}{remainder}");
+        let cut = kept.find(['?', '#']).unwrap_or(kept.len());
+        out.push_str(&kept[..cut]);
         rest = after;
     }
     out.push_str(rest);
