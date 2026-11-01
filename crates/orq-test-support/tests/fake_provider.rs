@@ -143,3 +143,29 @@ fn concurrent_calls_with_large_arguments_are_each_recorded_intact() {
     seen.sort_unstable();
     assert_eq!(seen, (0..COUNT).collect::<Vec<_>>());
 }
+
+fn calls_dir(provider: &FakeProvider) -> std::path::PathBuf {
+    provider.bin_dir().parent().unwrap().join("data").join("calls")
+}
+
+#[test]
+fn a_call_still_being_recorded_is_not_reported_but_complete_calls_around_it_are() {
+    let provider = FakeProvider::builder().reply(&["pr", "create"], "{}\n").build();
+    let cwd = std::env::temp_dir();
+    run(&provider.gh(), &cwd, &["pr", "create", "--title", "first"]);
+
+    // What a call leaves behind while (or after being killed while) it is
+    // still writing: a claimed slot whose record stops partway.
+    let dir = calls_dir(&provider);
+    std::fs::write(dir.join("1"), b"3\0gh\0/tmp\0pr\0create\0--ti").unwrap();
+    std::fs::write(dir.join("2"), b"2\0gh\0/tmp\0pr\0cre").unwrap();
+    std::fs::write(dir.join("3"), b"2\0gh\0/tmp\0pr\0create\0").unwrap();
+    std::fs::write(dir.join("4"), b"2\0gh\0/tmp\0pr\0create\0END").unwrap();
+    run(&provider.glab(), &cwd, &["mr", "list"]);
+
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0].args, ["pr", "create", "--title", "first"]);
+    assert_eq!(calls[1].program, "glab");
+    assert_eq!(calls[1].args, ["mr", "list"]);
+}

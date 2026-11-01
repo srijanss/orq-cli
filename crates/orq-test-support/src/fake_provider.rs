@@ -68,23 +68,20 @@ impl FakeProvider {
     }
 }
 
-/// One call's record: `argc NUL program NUL cwd NUL arg NUL ...`. A slot that
-/// is claimed but still empty (its process has not written yet) is skipped.
+/// One call's record: `argc NUL program NUL cwd NUL arg NUL ... END NUL`.
+/// The trailing `END` is written last, so a record cut off anywhere (a call
+/// still writing, or killed mid-write) lacks it and is skipped, never parsed
+/// as a shorter or truncated call.
 fn parse_call(raw: &[u8]) -> Option<ProviderCall> {
-    if raw.is_empty() {
+    let body = raw.strip_suffix(&[0])?;
+    let mut fields = body.split(|byte| *byte == 0).map(|field| String::from_utf8_lossy(field).into_owned());
+    let count: usize = fields.next()?.parse().ok()?;
+    let program = fields.next()?;
+    let cwd = PathBuf::from(fields.next()?);
+    let mut args: Vec<String> = fields.collect();
+    if args.pop().as_deref() != Some("END") || args.len() != count {
         return None;
     }
-    let mut fields = raw
-        .split(|byte| *byte == 0)
-        .map(|field| String::from_utf8_lossy(field).into_owned())
-        .collect::<Vec<_>>();
-    fields.pop(); // the trailing NUL leaves one empty field
-    let mut fields = fields.into_iter();
-    let count: usize = fields.next()?.parse().expect("record starts with the argument count");
-    let program = fields.next().expect("record has a program name");
-    let cwd = PathBuf::from(fields.next().expect("record has a cwd"));
-    let args: Vec<String> = fields.collect();
-    assert_eq!(args.len(), count, "record holds exactly its argument count");
     Some(ProviderCall { program, cwd, args })
 }
 
@@ -145,7 +142,7 @@ impl FakeProviderBuilder {
             set -C\n\
             n=0\n\
             while ! { true > \"$data/calls/$n\"; } 2>/dev/null; do n=$((n+1)); done\n\
-            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" >> \"$data/calls/$n\"\n\
+            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" END >> \"$data/calls/$n\"\n\
             for r in \"$data\"/replies/*; do\n\
             \x20 [ -d \"$r\" ] || continue\n\
             \x20 ok=1; i=0\n\
