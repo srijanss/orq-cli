@@ -119,6 +119,26 @@ fn a_dirty_worktree_is_blocked_without_needing_the_base_commit() {
 }
 
 #[test]
+fn changes_inside_a_submodule_block_even_when_its_ignore_setting_hides_them() {
+    let w = world("submodule");
+    let sub = w.worktree.parent().unwrap().join("sub-origin");
+    fs::create_dir_all(&sub).unwrap();
+    git(&sub, &["init", "-q", "-b", "main"]);
+    fs::write(sub.join("s.txt"), "s\n").unwrap();
+    git(&sub, &["add", "."]);
+    git(&sub, &["commit", "-q", "-m", "sub"]);
+    git(&w.worktree, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.to_str().unwrap(), "vendor"]);
+    git(&w.worktree, &["commit", "-q", "-m", "add submodule"]);
+    git(&w.worktree, &["config", "submodule.vendor.ignore", "all"]);
+    fs::write(w.worktree.join("vendor/s.txt"), "edited\n").unwrap();
+
+    let check = check_implement_outcome(&w.store, "run-1").unwrap();
+
+    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    assert!(reason.contains("uncommitted"), "{reason}");
+}
+
+#[test]
 fn an_unknown_run_is_an_error() {
     let w = world("unknown");
     assert!(check_implement_outcome(&w.store, "ghost").is_err());

@@ -19,7 +19,7 @@ pub enum ImplementCheck {
 pub fn check_implement_outcome(store: &RunStore, run_id: &str) -> Result<ImplementCheck, StoreError> {
     let record = store.load(run_id)?;
     let worktree = record.worktree.as_path();
-    let dirty = git(worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    let dirty = git(worktree, &["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"])?;
     // The history is only walked for a clean worktree: a dirty one is blocked
     // whatever the commits are.
     let (reason, commits) = if !dirty.trim().is_empty() {
