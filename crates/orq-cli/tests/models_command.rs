@@ -100,3 +100,30 @@ fn unusable_defaults_and_unreadable_config_are_reported_not_hidden() {
     assert!(output.stdout.is_empty());
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn repository_config_overrides_user_profiles_and_reviewers_default_wins_over_the_role() {
+    let repo = GitFixture::new();
+    std::fs::write(
+        repo.root().join(".orq.toml"),
+        "[models.opus]\nharness = \"claude\"\nmodel = \"opus-repo\"\n\n[models.team-pi]\nharness = \"pi\"\nmodel = \"team/model\"\n\n[roles]\nimplementer = \"opus\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.root().join(".tdd-config.json"),
+        r#"{"reviewers":{"default":{"reviewer":"pi","model":"team/model"}}}"#,
+    )
+    .unwrap();
+    let home = config_home("precedence", USER_CONFIG);
+
+    let output = models(repo.root(), &home);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let opus = json["profiles"].as_array().unwrap().iter().find(|p| p["name"] == "opus").unwrap();
+    assert_eq!(opus["model"], "opus-repo", "the repository profile replaces the user one");
+    assert!(json["profiles"].as_array().unwrap().iter().any(|p| p["name"] == "team-pi"));
+    assert_eq!(json["defaults"]["implementer"]["model"], "opus-repo");
+    // reviewers.default beats the user's [roles].reviewer (gpt-6-astra).
+    assert_eq!(json["defaults"]["reviewer"]["model"], "team/model");
+}
