@@ -392,3 +392,22 @@ fn a_fix_session_whose_log_cannot_be_opened_is_not_pushed() {
     assert_eq!(script.pushed, 0);
     assert_eq!(script.waited, [SHA1], "CI is not asked about a fix that never ran");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_failure_log_is_never_written_through_a_symlinked_ancestor_directory() {
+    let w = world("ancestor");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let outside = w.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, w.worktree.join(".orq")).unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+    let mut cfg = config(&w, &gate, 2);
+    cfg.log_dir = Box::leak(w.worktree.join(".orq/logs").into_boxed_path());
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &cfg, &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "nothing was written outside the worktree");
+    assert!(script.sessions.is_empty());
+}

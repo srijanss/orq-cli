@@ -65,7 +65,7 @@ pub fn run_ci_fix_loop(
     config: &CiFixConfig,
     steps: &mut impl CiFixSteps,
 ) -> Result<CiFixOutcome, StoreError> {
-    store.load(run_id)?;
+    let worktree = store.load(run_id)?.worktree;
     let mut head = head_sha.to_string();
     let mut fix_attempts = 0;
     loop {
@@ -84,7 +84,7 @@ pub fn run_ci_fix_loop(
         fix_attempts += 1;
 
         let failure_log = config.log_dir.join(format!("ci-failure-{fix_attempts}.log"));
-        write_failure_log(config.log_dir, &failure_log, &steps.failure_log(&failing))?;
+        write_failure_log(&worktree, config.log_dir, &failure_log, &steps.failure_log(&failing))?;
 
         let spec = steps.fix_session(fix_attempts, &failure_log);
         let session = ImplementSession {
@@ -123,8 +123,9 @@ pub fn run_ci_fix_loop(
 /// whatever the repository or an earlier session left there is not trusted: the file is
 /// created exclusively (never through an existing file or symlink), owner-only, and the
 /// directory itself must not be a symlink. CI output can carry secrets.
-fn write_failure_log(dir: &Path, path: &Path, text: &str) -> Result<(), StoreError> {
+fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Result<(), StoreError> {
     use std::io::Write;
+    reject_symlinked_ancestors(worktree, dir)?;
     match fs::symlink_metadata(dir) {
         Ok(meta) if !meta.is_dir() => {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the CI failure log directory is a symlink or not a directory").into());
@@ -138,6 +139,30 @@ fn write_failure_log(dir: &Path, path: &Path, text: &str) -> Result<(), StoreErr
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options.open(path)?.write_all(text.as_bytes())?;
+    Ok(())
+}
+
+/// Every directory between the worktree and the log directory (the worktree's own path is
+/// the caller's, and may sit behind system symlinks) must be a real directory if it exists:
+/// a repository-planted `.orq -> /elsewhere` must not carry the log out of the tree.
+fn reject_symlinked_ancestors(worktree: &Path, dir: &Path) -> Result<(), StoreError> {
+    let Ok(relative) = dir.strip_prefix(worktree) else { return Ok(()) };
+    let mut current = worktree.to_path_buf();
+    for part in relative.components() {
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "a directory on the way to the CI failure log directory is a symlink",
+                )
+                .into());
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err.into()),
+        }
+    }
     Ok(())
 }
 
