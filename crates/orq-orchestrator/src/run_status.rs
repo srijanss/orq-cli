@@ -33,7 +33,16 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "stage.started" | "stage.completed" => RunPhase::Running,
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
-            "worktree.removed" | "worktree.kept" => RunPhase::Completed,
+            "worktree.removed" => RunPhase::Completed,
+            // Cleanup keeps the worktree of an unsuccessful run too: that says nothing about how
+            // the run ended, so it never overrides a failure or a block, nor an unsuccessful run.
+            "worktree.kept" => {
+                let unsuccessful = event.payload.get("run_succeeded").and_then(|v| v.as_bool()) == Some(false);
+                if unsuccessful || matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked) {
+                    continue;
+                }
+                RunPhase::Completed
+            }
             _ => continue,
         };
         summary.phase = phase;

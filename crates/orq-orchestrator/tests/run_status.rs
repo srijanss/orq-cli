@@ -111,6 +111,42 @@ fn a_kept_worktree_after_success_also_completes_the_run() {
 }
 
 #[test]
+fn a_kept_worktree_does_not_hide_a_failed_run() {
+    let events = [
+        event("stage.failed", Some("verify"), serde_json::json!({ "reason": "tests failed" })),
+        event("worktree.kept", Some("cleanup"), serde_json::json!({ "reason": "the run did not reach review_ready", "run_succeeded": false })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.reason.as_deref(), Some("tests failed"));
+}
+
+#[test]
+fn a_kept_worktree_does_not_hide_a_blocked_run_even_without_the_success_flag() {
+    let events = [
+        event("run.blocked", Some("rebase"), serde_json::json!({ "reason": "conflicts" })),
+        event("worktree.kept", Some("cleanup"), serde_json::json!({ "reason": "x" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Blocked);
+    assert_eq!(summary.reason.as_deref(), Some("conflicts"));
+}
+
+#[test]
+fn a_kept_worktree_of_an_unsuccessful_run_does_not_complete_it() {
+    let events = [
+        event("stage.completed", Some("review"), none()),
+        event("worktree.kept", Some("cleanup"), serde_json::json!({ "reason": "CI did not pass", "run_succeeded": false })),
+    ];
+
+    assert_eq!(summarize_run(&events).phase, RunPhase::Running);
+}
+
+#[test]
 fn a_stage_that_starts_again_after_a_failure_is_running_again() {
     let events = [
         event("stage.failed", Some("verify"), serde_json::json!({ "reason": "tests failed" })),

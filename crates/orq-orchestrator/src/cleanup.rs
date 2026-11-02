@@ -29,38 +29,39 @@ pub fn cleanup_worktree(
 ) -> Result<CleanupOutcome, StoreError> {
     let record = store.load(run_id)?;
     if !review_ready {
-        return keep(store, &record, "the run did not reach review_ready".to_string());
+        return keep(store, &record, "the run did not reach review_ready".to_string(), false);
     }
     if !matches!(ci, CiOutcome::Passed | CiOutcome::Skipped) {
-        return keep(store, &record, "CI did not pass".to_string());
+        return keep(store, &record, "CI did not pass".to_string(), false);
     }
     // Anything uncommitted is work that removal would lose: untracked files, and ignored
     // ones too, since `git worktree remove` deletes ignored files without --force.
     let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
     if !status.success {
-        return keep(store, &record, "the worktree state could not be read".to_string());
+        return keep(store, &record, "the worktree state could not be read".to_string(), true);
     }
     if !status.stdout.trim().is_empty() {
-        return keep(store, &record, "the worktree has uncommitted changes".to_string());
+        return keep(store, &record, "the worktree has uncommitted changes".to_string(), true);
     }
     let common = git_raw(&record.worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     if !common.success {
-        return keep(store, &record, "the repository of the worktree could not be found".to_string());
+        return keep(store, &record, "the repository of the worktree could not be found".to_string(), true);
     }
     let worktree = record.worktree.to_string_lossy().into_owned();
     // Run from the repository's own git dir: the worktree being removed cannot be the working directory.
     // No --force: git itself refuses a locked or modified worktree.
     let removed = git_raw(Path::new(common.stdout.trim()), &["worktree", "remove", "--", &worktree])?;
     if !removed.success {
-        return keep(store, &record, format!("git would not remove the worktree: {}", removed.stderr.trim()));
+        return keep(store, &record, format!("git would not remove the worktree: {}", removed.stderr.trim()), true);
     }
     record_event(store, &record, "worktree.removed", serde_json::json!({ "worktree": worktree }))?;
     Ok(CleanupOutcome::Removed)
 }
 
-fn keep(store: &RunStore, record: &RunRecord, reason: String) -> Result<CleanupOutcome, StoreError> {
+/// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.
+fn keep(store: &RunStore, record: &RunRecord, reason: String, run_succeeded: bool) -> Result<CleanupOutcome, StoreError> {
     let worktree = record.worktree.to_string_lossy().into_owned();
-    record_event(store, record, "worktree.kept", serde_json::json!({ "worktree": worktree, "reason": reason }))?;
+    record_event(store, record, "worktree.kept", serde_json::json!({ "worktree": worktree, "reason": reason, "run_succeeded": run_succeeded }))?;
     Ok(CleanupOutcome::Kept { reason })
 }
 
