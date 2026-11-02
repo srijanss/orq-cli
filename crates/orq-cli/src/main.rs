@@ -1214,7 +1214,13 @@ fn launch_log(stdout: &str) -> Option<PathBuf> {
     stdout.lines().find_map(|line| line.strip_prefix("log: ")).map(PathBuf::from)
 }
 
-/// Opens a Herdr tab that follows the run's log and records where it is on the run.
+/// How long a launch waits for the detached runner to register its run before giving up on
+/// recording the pane.
+const REGISTRATION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Opens a Herdr tab that follows the run's log and records where it is on the run. The detached
+/// runner creates its run record some time after the launch returns, so recording waits for it,
+/// for at most `wait`. When it never appears the tab stays open and the error says so.
 fn attach_pane(
     herdr: &dyn orq_herdr::HerdrCli,
     store: &orq_orchestrator::RunStore,
@@ -1222,15 +1228,23 @@ fn attach_pane(
     cwd: &Path,
     run_id: &str,
     log: &Path,
+    wait: std::time::Duration,
 ) -> Result<(), String> {
     let label = format!("orq {run_id}");
     let pane = orq_herdr::open_run_pane(herdr, workspace, cwd, &label, log)?;
-    orq_orchestrator::record_pane(
-        store,
-        run_id,
-        &orq_orchestrator::PaneRef { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id },
-    )
-    .map_err(|err| format!("cannot record the pane on the run: {err}"))
+    let pane = orq_orchestrator::PaneRef { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id };
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match orq_orchestrator::record_pane(store, run_id, &pane) {
+            Ok(()) => return Ok(()),
+            Err(orq_orchestrator::StoreError::NotFound(_)) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => {
+                return Err(format!("the Herdr tab opened but the pane is not recorded on the run: {err}"));
+            }
+        }
+    }
 }
 
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
@@ -1296,6 +1310,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                     &project.root,
                     &run_id,
                     &log,
+                    REGISTRATION_WAIT,
                 )
             }
             _ => Err("the run reported no log to follow".to_string()),
@@ -2342,16 +2357,54 @@ mod ledger_backend_tests {
         let log = std::path::Path::new("/state/logs/run-9/runner.log");
 
         let herdr = FakeHerdr { calls: Default::default(), fail: false };
-        crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-9", log).unwrap();
+        crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-9", log, std::time::Duration::ZERO).unwrap();
         let pane = orq_orchestrator::run_pane(&store, "run-9").unwrap().unwrap();
         assert_eq!((pane.workspace_id.as_str(), pane.tab_id.as_str(), pane.pane_id.as_str()), ("w1", "w1:t2", "w1:p5"));
         assert!(herdr.calls.borrow()[0].contains(&"orq run-9".to_string()));
 
         let down = FakeHerdr { calls: Default::default(), fail: true };
-        let err = crate::attach_pane(&down, &store, Some("w1"), repo, "run-9", log).unwrap_err();
+        let err = crate::attach_pane(&down, &store, Some("w1"), repo, "run-9", log, std::time::Duration::ZERO).unwrap_err();
         assert!(err.contains("herdr is not running"), "{err}");
 
         assert_eq!(crate::launch_log("run: r\nlog: /state/logs/r/runner.log\n"), Some("/state/logs/r/runner.log".into()));
         assert_eq!(crate::launch_log("run: r\n"), None);
+    }
+
+    #[test]
+    fn the_pane_waits_for_the_runner_to_register_the_run_and_says_when_it_never_does() {
+        let root = std::env::temp_dir().join(format!("orq-attach-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let repo = std::path::Path::new("/repo");
+        let log = std::path::Path::new("/state/logs/run-3/runner.log");
+        let herdr = FakeHerdr { calls: Default::default(), fail: false };
+
+        let late = std::thread::spawn({
+            let root = root.clone();
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let record = orq_orchestrator::RunRecord {
+                    run_id: "run-3".into(),
+                    project_id: "p".into(),
+                    feature_id: "COM-01".into(),
+                    remote: "origin".into(),
+                    provider: "github".into(),
+                    target_branch: "main".into(),
+                    base_sha: "abc".into(),
+                    branch: "fix--COM-01".into(),
+                    worktree: "/tmp/w".into(),
+                    repository: String::new(),
+                    profiles: Default::default(),
+                };
+                orq_orchestrator::RunStore::new(&root).create(&record).unwrap();
+            }
+        });
+        crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-3", log, std::time::Duration::from_secs(10)).unwrap();
+        late.join().unwrap();
+        assert!(orq_orchestrator::run_pane(&store, "run-3").unwrap().is_some());
+
+        let err = crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-never", log, std::time::Duration::from_millis(200))
+            .unwrap_err();
+        assert!(err.contains("opened") && err.contains("not recorded"), "{err}");
     }
 }
