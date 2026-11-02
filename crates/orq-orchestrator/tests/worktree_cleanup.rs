@@ -25,7 +25,7 @@ struct World {
 
 /// A repository on `main` with a linked worktree on `fix--COM-02` holding one commit of its own.
 fn world(tag: &str) -> World {
-    let root = std::env::temp_dir().join(format!("orq-cleanup-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-cleanup-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();

@@ -12,7 +12,7 @@ struct World {
 }
 
 fn world(tag: &str) -> World {
-    let root = std::env::temp_dir().join(format!("orq-gate-stage-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-gate-stage-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();

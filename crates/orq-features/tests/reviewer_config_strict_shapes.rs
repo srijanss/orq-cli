@@ -3,7 +3,7 @@ use std::fs;
 use orq_features::{load_reviewer_config, ReviewerConfigError};
 
 fn load(label: &str, text: &str) -> Result<orq_features::TddReviewerConfig, ReviewerConfigError> {
-    let dir = std::env::temp_dir().join(format!("orq-strict-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-strict-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".tdd-config.json");

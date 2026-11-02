@@ -16,7 +16,7 @@ fn runs(args: &[&str], state_home: &Path) -> Output {
 }
 
 fn state_home(tag: &str) -> PathBuf {
-    let home = std::env::temp_dir().join(format!("orq-runs-{}-{tag}", std::process::id()));
+    let home = orq_test_support::process_temp_dir().join(format!("orq-runs-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     home

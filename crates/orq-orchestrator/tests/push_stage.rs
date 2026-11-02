@@ -32,7 +32,7 @@ fn world(tag: &str, branch: &str, target: &str, remote_override: Option<&str>) -
 
 /// A world whose run was started against `repository` (empty: not pinned).
 fn world_pinned(tag: &str, branch: &str, target: &str, remote_override: Option<&str>, repository: &str) -> World {
-    let root = std::env::temp_dir().join(format!("orq-push-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-push-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let remote = root.join("remote.git");
@@ -259,7 +259,7 @@ fn fake_ssh() {
     use std::os::unix::fs::PermissionsExt;
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let ssh = std::env::temp_dir().join(format!("orq-fake-ssh-{}", std::process::id()));
+        let ssh = orq_test_support::process_temp_dir().join(format!("orq-fake-ssh-{}", std::process::id()));
         fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
         // GIT_SSH_COMMAND is a shell command: quote the path.
@@ -342,7 +342,7 @@ fn a_pinned_push_works_from_a_checkout_whose_path_contains_a_newline_and_a_quote
 #[test]
 fn a_pinned_push_of_a_sha256_repository_reaches_the_remote() {
     fake_ssh();
-    let probe = std::env::temp_dir().join(format!("orq-sha256-probe-{}", std::process::id()));
+    let probe = orq_test_support::process_temp_dir().join(format!("orq-sha256-probe-{}", std::process::id()));
     let supported = Command::new("git").args(["init", "-q", "--object-format=sha256"]).arg(&probe).status().map(|s| s.success()).unwrap_or(false);
     let _ = fs::remove_dir_all(&probe);
     if !supported {

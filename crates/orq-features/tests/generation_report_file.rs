@@ -6,7 +6,7 @@ use std::time::Duration;
 use orq_features::{generation_log_dir, write_generation_report, GenerationReport};
 
 fn dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-genrep-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-genrep-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     dir
 }

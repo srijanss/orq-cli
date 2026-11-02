@@ -4,7 +4,7 @@ use orq_git::{resolve_project, ResolveError};
 
 #[test]
 fn an_unreadable_parent_is_git_unavailable_not_not_a_repository() {
-    let base = std::env::temp_dir().join(format!("orq-metadata-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-metadata-{}", std::process::id()));
     let locked = base.join("locked");
     let inner = locked.join("inner");
     std::fs::create_dir_all(&inner).unwrap();

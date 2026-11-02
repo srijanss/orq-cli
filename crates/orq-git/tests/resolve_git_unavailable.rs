@@ -4,7 +4,7 @@ use orq_git::{resolve_project, ResolveError};
 
 #[test]
 fn missing_or_failing_git_is_a_typed_error_carrying_the_path() {
-    let base = std::env::temp_dir().join(format!("orq-git-unavailable-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-git-unavailable-{}", std::process::id()));
     let workdir = base.join("work");
     let empty_bin = base.join("empty-bin");
     let failing_bin = base.join("failing-bin");

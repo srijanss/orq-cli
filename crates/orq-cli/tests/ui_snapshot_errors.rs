@@ -31,7 +31,7 @@ fn without_a_pane_directory_the_process_directory_is_used() {
 #[test]
 fn an_unavailable_git_is_an_error_not_an_empty_state() {
     let repo = GitFixture::new();
-    let empty_bin = std::env::temp_dir().join(format!("orq-ui-nogit-{}", std::process::id()));
+    let empty_bin = orq_test_support::process_temp_dir().join(format!("orq-ui-nogit-{}", std::process::id()));
     std::fs::create_dir_all(&empty_bin).unwrap();
 
     let output = orq_ui()

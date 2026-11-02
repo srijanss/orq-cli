@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use orq_herdr::{resolve_launch_cwd, CwdSource, LaunchCwdError};
 
 fn dir(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("orq-launch-cwd-{}-{name}", std::process::id()));
+    let path = orq_test_support::process_temp_dir().join(format!("orq-launch-cwd-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     path
 }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use orq_features::{run_generation, AgentProfile, GenerationError, GenerationRequest};
 
 fn dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-gengroup-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-gengroup-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -35,15 +35,25 @@ fn generate(label: &str, body: &str, timeout: Duration) -> (Result<PathBuf, Gene
     fs::write(&spec, "x").unwrap();
     let model = AgentProfile { harness: "claude".into(), model: "writer".into() };
 
-    let result = run_generation(&GenerationRequest {
-        program: &script,
-        model: &model,
-        repo_root: &root,
-        spec: &spec,
-        artifact_dir: &root.join("out"),
-        timeout,
-        focus: None,
-    });
+    // Another test thread forking while this script was open for writing can make the first exec
+    // fail with "text file busy"; that is the harness, not the code under test, so try again.
+    let mut attempts = 0;
+    let result = loop {
+        let result = run_generation(&GenerationRequest {
+            program: &script,
+            model: &model,
+            repo_root: &root,
+            spec: &spec,
+            artifact_dir: &root.join("out"),
+            timeout,
+            focus: None,
+        });
+        attempts += 1;
+        let busy = matches!(&result, Err(GenerationError::Spawn(e)) if e.raw_os_error() == Some(26));
+        if !busy || attempts >= 5 {
+            break result;
+        }
+    };
     let pid = fs::read_to_string(&pid_file).expect("the agent recorded its descendant").trim().to_string();
     (result, Descendant(pid))
 }

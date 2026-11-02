@@ -17,7 +17,7 @@ fn world(tag: &str, provider: &str, remote_url: &str) -> World {
 
 /// A world whose run was started against `repository` (empty: not pinned).
 fn world_pinned(tag: &str, provider: &str, remote_url: &str, repository: &str) -> World {
-    let root = std::env::temp_dir().join(format!("orq-ci-wait-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-ci-wait-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();

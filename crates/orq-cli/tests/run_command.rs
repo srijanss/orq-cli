@@ -16,7 +16,7 @@ struct Env {
 }
 
 fn env(tag: &str) -> Env {
-    let root = std::env::temp_dir().join(format!("orq-run-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-run-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config/orq")).unwrap();
     std::fs::create_dir_all(root.join("state")).unwrap();
@@ -100,7 +100,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A directory holding a `claude` that runs the fake agent, next to the fake `gh`.
 fn path_with(agent: &FakeAgent, provider: &FakeProvider, tag: &str) -> std::ffi::OsString {
-    let bin = std::env::temp_dir().join(format!("orq-run-bin-{}-{tag}", std::process::id()));
+    let bin = orq_test_support::process_temp_dir().join(format!("orq-run-bin-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&bin);
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
@@ -128,7 +128,7 @@ fn world(tag: &str) -> World {
     // An scp-style URL the review stage can name, reached through a shim that runs the
     // remote command locally instead of over ssh.
     git(repo.root(), &["remote", "set-url", "origin", &format!("forge.example:{}", remote.display())]);
-    let ssh = std::env::temp_dir().join(format!("orq-run-ssh-{}-{tag}", std::process::id()));
+    let ssh = orq_test_support::process_temp_dir().join(format!("orq-run-ssh-{}-{tag}", std::process::id()));
     std::fs::write(&ssh, "#!/bin/sh\nfor a; do last=$a; done\nexec sh -c \"$last\"\n").unwrap();
     std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
@@ -217,7 +217,7 @@ fn a_red_ci_fails_the_run_but_still_reports_the_review_request() {
 #[test]
 fn a_feature_with_a_run_in_progress_is_refused_with_its_own_exit_code() {
     let w = world("busy");
-    let slow_bin = std::env::temp_dir().join(format!("orq-run-slow-{}", std::process::id()));
+    let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-run-slow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&slow_bin);
     std::fs::create_dir_all(&slow_bin).unwrap();
     let claude = slow_bin.join("claude");
@@ -483,7 +483,7 @@ fn detaching_keeps_an_option_value_that_is_spelled_like_the_flag() {
     let provider = github();
     let path = path_with(&agent, &provider, &w.tag);
     // The repository is reached through a directory literally named `--detach`.
-    let odd = std::env::temp_dir().join(format!("orq-odd-{}", std::process::id()));
+    let odd = orq_test_support::process_temp_dir().join(format!("orq-odd-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&odd);
     std::fs::create_dir_all(&odd).unwrap();
     std::os::unix::fs::symlink(w.repo.root(), odd.join("--detach")).unwrap();

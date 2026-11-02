@@ -53,7 +53,7 @@ fn world(tag: &str) -> World {
     // `create_dir` is exclusive and never follows a planted symlink: a path another process got to
     // first fails the test instead of redirecting the writes below.
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let base = std::env::temp_dir().join(format!("orq-accept-{}-{tag}-{nonce}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-accept-{}-{tag}-{nonce}", std::process::id()));
     std::fs::create_dir(&base).unwrap();
     std::fs::create_dir_all(base.join("config/orq")).unwrap();
     std::fs::create_dir(base.join("state")).unwrap();

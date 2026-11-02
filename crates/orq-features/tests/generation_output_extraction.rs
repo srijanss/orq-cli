@@ -50,7 +50,7 @@ fn invalid_json_and_wrong_shapes_are_rejected() {
 
 #[test]
 fn rejection_leaves_an_existing_ledger_untouched() {
-    let dir = std::env::temp_dir().join(format!("orq-extract-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-extract-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let ledger = dir.join(".tdd-features.json");
@@ -64,7 +64,7 @@ fn rejection_leaves_an_existing_ledger_untouched() {
 
 #[test]
 fn no_field_is_ever_executed_and_testfile_is_kept_verbatim() {
-    let dir = std::env::temp_dir().join(format!("orq-extract-exec-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-extract-exec-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("ran");

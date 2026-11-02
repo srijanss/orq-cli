@@ -36,7 +36,7 @@ const MCP_LEDGER: &str = r#"[
 "#;
 
 fn fixture(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-mcp-compat-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-mcp-compat-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".tdd-features.json");

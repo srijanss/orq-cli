@@ -26,7 +26,7 @@ struct World {
 
 /// A worktree whose branch has the commits `subjects` on top of a base commit.
 fn world(tag: &str, subjects: &[&str]) -> World {
-    let root = std::env::temp_dir().join(format!("orq-draft-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-draft-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();

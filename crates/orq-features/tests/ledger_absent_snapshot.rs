@@ -2,7 +2,7 @@ use orq_features::{AppendError, FeatureDraft, LoadedLedger, SaveError};
 
 #[test]
 fn an_explicit_absent_snapshot_conflicts_with_a_file_that_appeared_since() {
-    let dir = std::env::temp_dir().join(format!("orq-absent-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-absent-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".tdd-features.json");

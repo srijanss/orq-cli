@@ -2,7 +2,7 @@ use orq_core::FeatureStatus;
 use orq_features::{load_ledger, set_entry_status, LedgerError};
 
 fn ledger(label: &str, text: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-par-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-par-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".tdd-features.json");

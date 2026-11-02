@@ -13,7 +13,7 @@ use orq_test_support::FakeAgent;
 use serde_json::Value;
 
 fn disposable_repo() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-mvp11-demo-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-mvp11-demo-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("SPEC.md"), "# Demo spec\nA tiny app.\n").unwrap();

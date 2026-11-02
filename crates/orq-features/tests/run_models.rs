@@ -30,7 +30,7 @@ reviewer = "gpt-6-astra"
 "#;
 
 fn profiles(tag: &str, text: &str) -> ModelProfiles {
-    let dir: PathBuf = std::env::temp_dir().join(format!("orq-run-models-{}-{tag}", std::process::id()));
+    let dir: PathBuf = orq_test_support::process_temp_dir().join(format!("orq-run-models-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.toml"), text).unwrap();

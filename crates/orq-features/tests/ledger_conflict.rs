@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use orq_features::{LoadedLedger, SaveError};
 
 fn scratch(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-conflict-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-conflict-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir.join(".tdd-features.json")

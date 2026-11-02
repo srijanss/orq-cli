@@ -4,7 +4,7 @@ use std::time::Duration;
 use orq_features::{write_generation_report, GenerationReport};
 
 fn written(argv: &[&str], label: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("orq-genargv-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-genargv-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let report = GenerationReport {
         harness: "h".into(),

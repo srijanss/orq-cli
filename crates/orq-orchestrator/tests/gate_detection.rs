@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use orq_orchestrator::{choose_gate, Gate, GateError};
 
 fn worktree(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-gate-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-gate-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -268,7 +268,7 @@ fn with_nothing_to_run_the_gate_is_skipped_and_says_why() {
 
 #[test]
 fn a_directory_that_does_not_exist_is_just_nothing_detected() {
-    let missing = std::env::temp_dir().join(format!("orq-gate-{}-absent", std::process::id()));
+    let missing = orq_test_support::process_temp_dir().join(format!("orq-gate-{}-absent", std::process::id()));
     assert!(matches!(choose_gate(&missing, None), Ok(Gate::Skipped { .. })));
 }
 

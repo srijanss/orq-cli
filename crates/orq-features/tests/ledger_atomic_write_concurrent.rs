@@ -8,7 +8,7 @@ use orq_features::write_ledger_atomic;
 
 #[test]
 fn concurrent_writers_never_collide_and_readers_see_whole_payloads() {
-    let dir = std::env::temp_dir().join(format!("orq-atomic-concurrent-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-atomic-concurrent-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let path = Arc::new(dir.join(".tdd-features.json"));

@@ -8,7 +8,7 @@ use orq_features::{run_generation, AgentProfile, GenerationRequest};
 use orq_test_support::FakeAgent;
 
 fn args_for(harness: &str, model: &str) -> Vec<String> {
-    let root: PathBuf = std::env::temp_dir().join(format!("orq-model-{}-{harness}", std::process::id()));
+    let root: PathBuf = orq_test_support::process_temp_dir().join(format!("orq-model-{}-{harness}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let spec = root.join("SPEC.md");

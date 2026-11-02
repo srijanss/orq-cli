@@ -27,7 +27,7 @@ struct World {
 /// A bare remote with `main`, a worktree on `fix--COM-02` with one commit of
 /// its own, and another clone to advance `main`.
 fn world(tag: &str, remote_override: Option<&str>) -> World {
-    let root = std::env::temp_dir().join(format!("orq-rebase-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-rebase-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let remote = root.join("remote.git");

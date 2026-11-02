@@ -28,7 +28,7 @@ struct World {
 /// A run whose branch conflicts with the target on `a.txt`; the rebase has
 /// already stopped, so the worktree is mid-rebase when `conflicted` is true.
 fn world(tag: &str, conflicted: bool) -> World {
-    let root = std::env::temp_dir().join(format!("orq-conflict-fix-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-conflict-fix-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let remote = root.join("remote.git");

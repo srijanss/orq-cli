@@ -27,7 +27,7 @@ fn world(tag: &str) -> World {
 }
 
 fn world_with_base(tag: &str, base_override: Option<&str>) -> World {
-    let root = std::env::temp_dir().join(format!("orq-outcome-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-outcome-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();

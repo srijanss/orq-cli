@@ -5,7 +5,7 @@ use orq_features::{Settings, SettingsError};
 #[test]
 fn of_several_writers_from_one_baseline_exactly_one_wins() {
     for round in 0..20 {
-        let dir = std::env::temp_dir().join(format!("orq-conc-{}-{round}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-conc-{}-{round}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");

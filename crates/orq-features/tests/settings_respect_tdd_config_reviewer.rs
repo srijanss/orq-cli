@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use orq_features::{load_reviewer_config, resolve_reviewer, AgentProfile, EffectiveReviewer, ReviewerConfigError};
 
 fn config_file(label: &str, text: Option<&str>) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-tddcfg-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-tddcfg-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".tdd-config.json");

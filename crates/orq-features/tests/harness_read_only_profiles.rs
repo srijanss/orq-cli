@@ -6,7 +6,7 @@ use orq_features::{run_generation, AgentProfile, GenerationError, GenerationRequ
 use orq_test_support::FakeAgent;
 
 fn dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-ro-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-ro-{}-{label}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir

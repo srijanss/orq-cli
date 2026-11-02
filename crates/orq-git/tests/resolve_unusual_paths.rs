@@ -6,7 +6,7 @@ use orq_git::resolve_project;
 
 #[test]
 fn repository_paths_with_newlines_and_non_utf8_bytes_are_preserved() {
-    let base = std::env::temp_dir().join(format!("orq-unusual-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-unusual-{}", std::process::id()));
     let weird = OsString::from_vec(b"re\npo-\xff".to_vec());
     let root = base.join(weird);
     let nested = root.join("sub");

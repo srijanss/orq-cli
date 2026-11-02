@@ -35,7 +35,7 @@ fn models(repo: &Path, config_home: &Path) -> Output {
 }
 
 fn config_home(tag: &str, text: &str) -> std::path::PathBuf {
-    let home = std::env::temp_dir().join(format!("orq-models-{}-{tag}", std::process::id()));
+    let home = orq_test_support::process_temp_dir().join(format!("orq-models-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join("orq")).unwrap();
     std::fs::write(home.join("orq/config.toml"), text).unwrap();

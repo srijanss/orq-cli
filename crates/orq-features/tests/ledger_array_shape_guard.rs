@@ -1,7 +1,7 @@
 use orq_features::{LedgerError, LoadedLedger, SaveError};
 
 fn dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-shape-{}-{label}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-shape-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

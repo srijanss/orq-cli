@@ -58,7 +58,7 @@ fn ui_shows_the_owning_project_for_a_linked_worktree() {
 
 #[test]
 fn ui_shows_the_empty_state_outside_a_repository() {
-    let plain = std::env::temp_dir().join(format!("orq-ui-plain-{}", std::process::id()));
+    let plain = orq_test_support::process_temp_dir().join(format!("orq-ui-plain-{}", std::process::id()));
     std::fs::create_dir_all(&plain).unwrap();
 
     let shown = screen(&ui_snapshot(&plain));

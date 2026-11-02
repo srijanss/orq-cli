@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use orq_orchestrator::{list_runs, Event, RoleProfile, RunPhase, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
-    let root = std::env::temp_dir().join(format!("orq-run-list-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-run-list-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     RunStore::new(&root)
 }
@@ -95,7 +95,7 @@ fn a_store_without_runs_lists_nothing() {
 }
 
 fn runs_dir(root_tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("orq-run-list-{}-{root_tag}", std::process::id())).join("runs")
+    orq_test_support::process_temp_dir().join(format!("orq-run-list-{}-{root_tag}", std::process::id())).join("runs")
 }
 
 #[test]

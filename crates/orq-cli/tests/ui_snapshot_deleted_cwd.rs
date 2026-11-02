@@ -5,7 +5,7 @@ use orq_test_support::GitFixture;
 #[test]
 fn a_valid_pane_directory_works_when_the_process_directory_was_deleted() {
     let repo = GitFixture::new();
-    let doomed = std::env::temp_dir().join(format!("orq-doomed-ui-{}", std::process::id()));
+    let doomed = orq_test_support::process_temp_dir().join(format!("orq-doomed-ui-{}", std::process::id()));
     std::fs::create_dir_all(&doomed).unwrap();
 
     // Delete the process's own working directory before orq starts.

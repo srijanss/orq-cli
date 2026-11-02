@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use orq_features::{AppendError, FeatureDraft, LoadedLedger, SaveError};
 
 fn dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-accept-{name}-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir

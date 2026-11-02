@@ -6,7 +6,7 @@ use orq_features::{run_generation_cancellable, AgentProfile, GenerationError, Ge
 
 #[test]
 fn a_flag_already_set_never_starts_the_agent() {
-    let root = std::env::temp_dir().join(format!("orq-gencancel-early-{}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-gencancel-early-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let spec = root.join("SPEC.md");

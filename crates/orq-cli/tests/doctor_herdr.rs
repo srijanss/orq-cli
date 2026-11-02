@@ -73,7 +73,7 @@ fn a_pane_directory_that_no_longer_exists_is_an_error_and_never_falls_back_to_th
 
 #[test]
 fn a_directory_outside_any_repository_is_reported_not_guessed() {
-    let outside = std::env::temp_dir().join(format!("orq-doctor-outside-{}", std::process::id()));
+    let outside = orq_test_support::process_temp_dir().join(format!("orq-doctor-outside-{}", std::process::id()));
     std::fs::create_dir_all(&outside).unwrap();
 
     let output = doctor(Some(&outside), Path::new("/"));
