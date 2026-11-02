@@ -179,8 +179,12 @@ fn an_unknown_run_is_an_error_and_no_session_is_built() {
     assert!(!*built.borrow());
 }
 
+/// Running, not merely still in the process table: a killed orphan stays a zombie until its adopter reaps it.
 fn alive(pid: &str) -> bool {
-    Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 #[test]
