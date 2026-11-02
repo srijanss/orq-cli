@@ -102,7 +102,7 @@ fn build_prompt(subjects: &[String]) -> String {
 }
 
 /// Run the session and return its stdout, or why there is none.
-fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, String> {
+pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(&session.program);
     command
         .args(&session.args)

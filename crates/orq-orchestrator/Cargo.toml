@@ -10,3 +10,6 @@ toml_edit = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+orq-test-support = { path = "../orq-test-support" }

@@ -811,6 +811,7 @@ name = "orq-orchestrator"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "orq-test-support",
  "serde",
  "serde_json",
  "toml_edit",
