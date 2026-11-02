@@ -220,3 +220,52 @@ fn the_stage_waits_out_its_whole_timeout_even_when_the_poll_interval_is_longer()
     assert!(started.elapsed() >= Duration::from_millis(390), "{:?}", started.elapsed());
     assert!(started.elapsed() < Duration::from_millis(850), "the sleep is capped to the time left: {:?}", started.elapsed());
 }
+
+#[test]
+fn transient_provider_errors_are_forgiven_once_a_poll_succeeds() {
+    let w = world("recover", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder()
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .reply(&["api"], &gh_checks(GREEN, 1))
+        .build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed);
+    assert_eq!(provider.calls().len(), 3);
+    assert_eq!(kinds(&w), ["stage.started", "stage.completed"]);
+}
+
+#[test]
+fn checks_that_finish_while_being_polled_pass_the_stage() {
+    let w = world("pending-then-green", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder()
+        .reply_once(&["api"], &gh_checks(RUNNING, 1))
+        .reply_once(&["api"], &gh_checks("", 0))
+        .reply(&["api"], &gh_checks(GREEN, 1))
+        .build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed);
+    assert_eq!(provider.calls().len(), 3);
+}
+
+#[test]
+fn a_usable_pending_answer_resets_the_count_of_consecutive_provider_errors() {
+    let w = world("reset", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder()
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .reply_once(&["api"], &gh_checks(RUNNING, 1))
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .fail_once(&["api"], 1, "HTTP 502\n")
+        .reply(&["api"], &gh_checks(GREEN, 1))
+        .build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed, "four errors in all, but never three in a row");
+    assert_eq!(provider.calls().len(), 6);
+}
