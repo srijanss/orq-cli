@@ -1276,6 +1276,9 @@ fn reopen_run(
     run_id: &str,
 ) -> orq_tui::PaneFocus {
     let log = state_root.join("logs").join(run_id).join("runner.log");
+    if !log.is_file() {
+        return orq_tui::PaneFocus::Failed(format!("{run_id} has no log to follow ({})", printable(&log.display().to_string())));
+    }
     match attach_pane(herdr, store, workspace, cwd, run_id, &log, std::time::Duration::ZERO) {
         Ok(()) => orq_tui::PaneFocus::Focused,
         Err(reason) => orq_tui::PaneFocus::Failed(printable(&reason)),
@@ -2539,6 +2542,8 @@ mod ledger_backend_tests {
             profiles: Default::default(),
         };
         store.create(&record).unwrap();
+        std::fs::create_dir_all(root.join("logs/run-1")).unwrap();
+        std::fs::write(root.join("logs/run-1/runner.log"), "log\n").unwrap();
         let created = r#"{"result":{"root_pane":{"pane_id":"w1:p9","tab_id":"w1:t8","workspace_id":"w1"}}}"#;
         let herdr = ScriptHerdr(std::cell::RefCell::new(vec![Ok(created.into()), Ok("{}".into())]));
 
@@ -2551,5 +2556,17 @@ mod ledger_backend_tests {
         let down = ScriptHerdr(std::cell::RefCell::new(vec![Err("server_not_running: no herdr server".into())]));
         let failed = crate::reopen_run(&down, &store, None, std::path::Path::new("/repo"), &root, "run-1");
         assert!(matches!(failed, orq_tui::PaneFocus::Failed(reason) if reason.contains("no herdr server")));
+    }
+
+    #[test]
+    fn reopening_a_run_without_a_runner_log_opens_nothing_and_says_why() {
+        let root = std::env::temp_dir().join(format!("orq-reopen-nolog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let herdr = ScriptHerdr(std::cell::RefCell::new(vec![]));
+
+        let outcome = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
+
+        assert!(matches!(outcome, orq_tui::PaneFocus::Failed(reason) if reason.contains("no log")));
     }
 }
