@@ -170,3 +170,57 @@ fn a_worktree_with_uncommitted_changes_is_kept_with_them_intact() {
         assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
     }
 }
+
+fn summary(w: &World) -> orq_orchestrator::RunSummary {
+    orq_orchestrator::summarize_run(&w.store.events("run-1").unwrap())
+}
+
+fn record_failure(w: &World, kind: &str, reason: &str) {
+    w.store
+        .append_event(&orq_orchestrator::Event {
+            schema_version: 1,
+            event_id: format!("e-{kind}"),
+            run_id: "run-1".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            kind: kind.to_string(),
+            stage: Some("verify".to_string()),
+            attempt: 1,
+            occurred_at: "2026-11-02T10:00:00Z".to_string(),
+            payload: serde_json::json!({ "reason": reason }),
+        })
+        .unwrap();
+}
+
+#[test]
+fn cleanup_events_of_a_failed_run_leave_its_summary_failed_with_the_reason() {
+    let w = world("summary-failed");
+    record_failure(&w, "run.failed", "gate fix budget spent");
+
+    cleanup_worktree(&w.store, "run-1", false, &CiOutcome::Skipped).unwrap();
+
+    let summary = summary(&w);
+    assert_eq!(summary.phase, orq_orchestrator::RunPhase::Failed);
+    assert_eq!(summary.reason.as_deref(), Some("gate fix budget spent"));
+}
+
+#[test]
+fn cleanup_events_of_a_run_with_red_ci_do_not_complete_it() {
+    let w = world("summary-ci-red");
+
+    cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Failed { failing: vec!["build".to_string()] }).unwrap();
+
+    assert_ne!(summary(&w).phase, orq_orchestrator::RunPhase::Completed);
+}
+
+#[test]
+fn cleanup_events_of_a_successful_run_complete_it_whether_removed_or_kept_dirty() {
+    let removed = world("summary-removed");
+    cleanup_worktree(&removed.store, "run-1", true, &CiOutcome::Passed).unwrap();
+    assert_eq!(summary(&removed).phase, orq_orchestrator::RunPhase::Completed);
+
+    let dirty = world("summary-dirty");
+    fs::write(dirty.worktree.join("scratch.txt"), "unsaved\n").unwrap();
+    cleanup_worktree(&dirty.store, "run-1", true, &CiOutcome::Passed).unwrap();
+    assert_eq!(summary(&dirty).phase, orq_orchestrator::RunPhase::Completed);
+}
