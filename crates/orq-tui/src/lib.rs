@@ -1986,8 +1986,8 @@ impl SettingsState {
     }
 }
 
-/// The rectangle of each tab in the tab bar of `area`; the Settings tab is
-/// left out when it does not fit. Empty when the chrome is not drawn.
+/// The rectangle of each tab in the tab bar of `area`; the Settings and Runs
+/// tabs are left out when they do not fit. Empty when the chrome is not drawn.
 fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
     if chrome_body(area) == area {
         return Vec::new();
@@ -1996,8 +1996,14 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
     let features = Rect::new(area.x, area.y + 1, width(FEATURES_TAB).min(area.width), 3);
     let mut rects = vec![(Tab::Features, features)];
     let settings_width = width(SETTINGS_TAB);
-    if features.right() + settings_width <= area.right() {
-        rects.push((Tab::Settings, Rect::new(features.right(), area.y + 1, settings_width, 3)));
+    let mut next = features.right();
+    if next + settings_width <= area.right() {
+        rects.push((Tab::Settings, Rect::new(next, area.y + 1, settings_width, 3)));
+        next += settings_width;
+        let runs_width = width(RUNS_TAB);
+        if next + runs_width <= area.right() {
+            rects.push((Tab::Runs, Rect::new(next, area.y + 1, runs_width, 3)));
+        }
     }
     rects
 }
@@ -3127,6 +3133,11 @@ where
                     match target {
                         Some(Tab::Settings) if browser.tab != Tab::Settings => {
                             browser.open_settings(backend);
+                            dirty = true;
+                            continue;
+                        }
+                        Some(Tab::Runs) if browser.tab != Tab::Runs => {
+                            browser.open_runs(backend);
                             dirty = true;
                             continue;
                         }
