@@ -1476,6 +1476,16 @@ pub struct RunRow {
     pub reviewer_model: Option<String>,
 }
 
+/// What asking Herdr to show a run's pane came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneFocus {
+    Focused,
+    /// The run has no pane, or the recorded one no longer exists; the reason is shown.
+    Missing(String),
+    /// Herdr could not be asked; the reason is shown.
+    Failed(String),
+}
+
 /// Where the browser's data lives: reads the ledger and performs promotes.
 /// The browser itself never touches a file.
 pub trait BrowserBackend {
@@ -1485,6 +1495,11 @@ pub trait BrowserBackend {
     /// The project's runs for the Runs tab; the reason is shown when they cannot be read.
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         Err("runs are not available".into())
+    }
+
+    /// Brings the Herdr pane of `run_id` to the front.
+    fn focus_run_pane(&mut self, _run_id: &str) -> PaneFocus {
+        PaneFocus::Failed("Herdr navigation is not available".into())
     }
 
     /// Model profile names the launch picker offers.
@@ -1711,7 +1726,7 @@ pub enum Tab {
 
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
-const RUNS_HINT: &str = " ↑↓ move · r reload · Esc back ";
+const RUNS_HINT: &str = " ↑↓ move · Enter show pane · r reload · Esc back ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
 struct RunsState {
@@ -1756,7 +1771,7 @@ impl RunsState {
     }
 }
 
-fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState) {
+fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<&str>) {
     let width = usize::from(body.width);
     let dim = Style::new().fg(Color::DarkGray);
     let mut put = |row: u16, line: Line<'static>| {
@@ -1789,7 +1804,11 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState) {
         }
     }
     if body.height > 0 {
-        put(body.height - 1, Line::from(Span::styled(truncate_right(RUNS_HINT, width), dim)));
+        let last = match notice {
+            Some(text) => Line::from(Span::styled(truncate_right(&printable(text), width), Style::new().fg(Color::Yellow))),
+            None => Line::from(Span::styled(truncate_right(RUNS_HINT, width), dim)),
+        };
+        put(body.height - 1, last);
     }
 }
 
@@ -2525,6 +2544,16 @@ impl Browser {
         self.tab = Tab::Settings;
     }
 
+    fn focus_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
+        let Ok(rows) = &self.runs.rows else { return };
+        let Some(run) = rows.get(self.runs.selected) else { return };
+        let run_id = run.run_id.clone();
+        self.notice = Some(match backend.focus_run_pane(&run_id) {
+            PaneFocus::Focused => format!("Focused the pane of {run_id}"),
+            PaneFocus::Missing(reason) | PaneFocus::Failed(reason) => reason,
+        });
+    }
+
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
         self.runs = RunsState { rows: backend.load_runs(), selected: 0 };
         self.tab = Tab::Runs;
@@ -2549,7 +2578,7 @@ impl Browser {
         let full = frame.area();
         let area = render_chrome_tabs(frame, full, self.tab);
         if self.tab == Tab::Runs {
-            render_runs(frame, area, &self.runs);
+            render_runs(frame, area, &self.runs, self.notice.as_deref());
             return;
         }
         if self.tab == Tab::Settings {
@@ -2803,7 +2832,9 @@ where
                     continue;
                 }
                 if browser.tab == Tab::Runs {
+                    browser.notice = None;
                     match key.code {
+                        KeyCode::Enter => browser.focus_selected_run(backend),
                         KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
                         KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
