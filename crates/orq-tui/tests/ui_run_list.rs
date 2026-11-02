@@ -159,3 +159,44 @@ fn no_runs_and_an_unreadable_store_each_say_so() {
     let mut broken = Fake { runs: Err("run data is corrupt".into()), loads: 0 };
     assert!(has(&show(&mut broken, vec![key(KeyCode::Char('R'))]), "run data is corrupt"));
 }
+
+fn many_runs(count: usize) -> Fake {
+    Fake {
+        runs: Ok((1..=count).map(|n| run_row(&format!("run-{n}"), &format!("COM-{n:02}"), "running", Some("implement"))).collect()),
+        loads: 0,
+    }
+}
+
+#[test]
+fn the_list_scrolls_to_keep_the_selected_run_visible_and_leaves_the_hint_row_alone() {
+    let mut keys = vec![key(KeyCode::Char('R'))];
+    keys.extend((0..25).map(|_| key(KeyCode::Down)));
+
+    let lines = show(&mut many_runs(30), keys.clone());
+    let selected = selected_line(&mut many_runs(30), keys);
+
+    assert!(selected.contains("COM-26"), "{selected}");
+    assert!(has(&lines, "COM-26") && !has(&lines, "COM-01"), "{lines:?}");
+    assert!(has(&lines, "close") || has(&lines, "move"), "the hint row is still shown: {lines:?}");
+}
+
+#[test]
+fn the_last_body_row_is_the_hint_so_the_run_beneath_it_is_reached_by_scrolling() {
+    let lines = show(&mut many_runs(30), vec![key(KeyCode::Char('R'))]);
+
+    let last_run = lines.iter().rposition(|l| l.contains("COM-")).expect("a run row");
+    let hint = lines.iter().position(|l| l.contains("move")).expect("hint row");
+    assert!(last_run < hint, "{lines:?}");
+}
+
+#[test]
+fn clicking_after_scrolling_selects_the_run_shown_on_that_row() {
+    let mut keys = vec![key(KeyCode::Char('R'))];
+    keys.extend((0..25).map(|_| key(KeyCode::Down)));
+    keys.push(click(3, 5));
+
+    let line = selected_line(&mut many_runs(30), keys);
+
+    assert!(line.contains("COM-"), "{line}");
+    assert!(!line.contains("COM-26") && !line.contains("COM-01"), "{line}");
+}

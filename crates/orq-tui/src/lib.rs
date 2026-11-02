@@ -1726,10 +1726,23 @@ impl RunsState {
         if !body.contains(press) {
             return;
         }
-        let index = usize::from(press.y - body.y);
-        if index < self.len() {
+        let row = usize::from(press.y - body.y);
+        let visible = Self::visible(body);
+        let index = self.offset(visible) + row;
+        if row < visible && index < self.len() {
             self.selected = index;
         }
+    }
+
+    /// Rows available to runs: the last body row is the hint.
+    fn visible(body: Rect) -> usize {
+        usize::from(body.height.saturating_sub(1))
+    }
+
+    /// The first listed run: the selection stays on screen, at the bottom
+    /// once the list has scrolled.
+    fn offset(&self, visible: usize) -> usize {
+        (self.selected + 1).saturating_sub(visible)
     }
 }
 
@@ -1745,7 +1758,9 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState) {
         Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
         Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No runs yet", dim))),
         Ok(rows) => {
-            for (i, run) in rows.iter().enumerate() {
+            let visible = RunsState::visible(body);
+            let offset = state.offset(visible);
+            for (i, run) in rows.iter().enumerate().skip(offset).take(visible) {
                 let models = format!(
                     "{} / {}",
                     run.implementer_model.as_deref().unwrap_or("-"),
@@ -1759,7 +1774,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState) {
                     models
                 );
                 let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-                put(u16::try_from(i).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+                put(u16::try_from(i - offset).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
             }
         }
     }
