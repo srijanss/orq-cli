@@ -20,6 +20,9 @@ const PAGE: usize = 100;
 const GITLAB_PAGE: usize = 30;
 /// Keeps only what the verdict reads; a full page of raw check runs would not fit the output cap.
 const CHECK_RUN_FIELDS: &str = "{total_count, check_runs: [.check_runs[] | {name, status, conclusion}]}";
+/// The `--jq` projection of the commit-status answer: only what the verdict reads,
+/// so a long status list still fits the output cap.
+const STATUS_FIELDS: &str = "{state, total_count, statuses: [.statuses[] | {state, context}]}";
 /// Consecutive failed polls tolerated before the stage gives up on the provider.
 const MAX_POLL_FAILURES: u32 = 3;
 /// Floor on the pause between polls, so a zero interval cannot hammer the provider.
@@ -180,7 +183,7 @@ fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>
         Kind::GitHub => vec![
             strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}"), "--jq", CHECK_RUN_FIELDS]),
             // Older integrations report through commit statuses, which check runs do not include.
-            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/status")]),
+            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/status"), "--jq", STATUS_FIELDS]),
         ],
         Kind::GitLab => {
             let project = path.replace('/', "%2F");

@@ -362,6 +362,22 @@ fn the_github_check_run_call_asks_for_only_the_fields_it_reads_so_a_full_page_fi
 }
 
 #[test]
+fn the_github_status_call_asks_for_only_the_fields_it_reads_so_a_long_status_list_fits_the_output_cap() {
+    let w = world("status-projection", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks(GREEN, 1)).build();
+
+    wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    let status = status_call();
+    let call = provider.calls().into_iter().find(|c| c.args.starts_with(&status)).expect("the status call is made");
+    let at = call.args.iter().position(|a| a == "--jq").expect("the status response is projected with --jq");
+    let filter = &call.args[at + 1];
+    for field in ["state", "total_count", "statuses", "context"] {
+        assert!(filter.contains(field), "{filter} keeps {field}");
+    }
+}
+
+#[test]
 fn a_gitlab_page_is_small_enough_that_its_whole_listing_fits_the_output_cap() {
     let w = world("glab-page", "gitlab", "https://gitlab.example/group/r.git");
     let body = format!("[{{\"id\":4,\"sha\":\"{SHA}\",\"status\":\"success\"}}]\n");
