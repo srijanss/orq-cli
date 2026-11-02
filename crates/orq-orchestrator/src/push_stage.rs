@@ -52,7 +52,14 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     // No force option: a remote branch that diverged is reported, not overwritten.
     // `push.followTags` in the user's config must not publish tags with it.
     let pushed = if checked.is_some() {
-        isolated_push(worktree, &destination, &refspec)?
+        // A setup failure is a failed stage, not an error that leaves the stage started.
+        match isolated_push(worktree, &destination, &refspec) {
+            Ok(pushed) => pushed,
+            Err(error) => {
+                writeln!(log, "{}", redact_credentials(&error.to_string()))?;
+                return fail(store, &record, format!("git push of {} failed", record.branch), &log_name);
+            }
+        }
     } else {
         git_raw(worktree, &["push", "--no-follow-tags", "--", &destination, &refspec])?
     };
@@ -80,23 +87,22 @@ fn isolated_push(worktree: &Path, url: &str, refspec: &str) -> Result<crate::out
         return Err(StoreError::Corrupt("the worktree has no git directory".to_string()));
     }
     let objects = Path::new(common.stdout.trim()).join("objects");
+    let format = git_raw(worktree, &["rev-parse", "--show-object-format"])?;
+    let format = if format.success { format.stdout.trim().to_string() } else { "sha1".to_string() };
     let scratch = std::env::temp_dir().join(format!("orq-push-{}-{}", std::process::id(), next_event_id("scratch")));
     std::fs::create_dir_all(&scratch)?;
     let result = (|| {
-        let init = git_raw(&scratch, &["init", "-q"])?;
+        let init = git_raw(&scratch, &["init", "-q", &format!("--object-format={format}")])?;
         if !init.success {
-            return Err(StoreError::Corrupt("could not create a scratch repository for the push".to_string()));
+            return Err(StoreError::Corrupt(format!("could not create a scratch repository for the push: {}", init.stderr.trim())));
         }
-        let output = std::process::Command::new("git")
-            .current_dir(&scratch)
-            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects)
-            .args(["push", "--no-follow-tags", "--", url, refspec])
-            .output()?;
-        Ok(crate::outcome::GitOutput {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        // An alternates file holds one path per line, so a ':' in the checkout path is safe
+        // (GIT_ALTERNATE_OBJECT_DIRECTORIES would split on it).
+        let alternates = scratch.join(".git").join("objects").join("info").join("alternates");
+        std::fs::write(&alternates, format!("{}\n", objects.display()))?;
+        let mut command = std::process::Command::new("git");
+        command.arg("-C").arg(&scratch).args(["push", "--no-follow-tags", "--", url, refspec]);
+        crate::outcome::run_sanitized(command)
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result

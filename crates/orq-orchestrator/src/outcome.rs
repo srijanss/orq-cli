@@ -65,6 +65,12 @@ pub(crate) struct GitOutput {
 pub(crate) fn git_raw(worktree: &Path, args: &[&str]) -> Result<GitOutput, StoreError> {
     let mut command = Command::new("git");
     command.arg("-C").arg(worktree).args(args);
+    run_sanitized(command)
+}
+
+/// Run an already built git command with the repository-selection variables removed and
+/// prompts disabled, so the caller's environment cannot pick the repository or its config.
+pub(crate) fn run_sanitized(mut command: Command) -> Result<GitOutput, StoreError> {
     // Same list as orq-git: never let the caller's environment pick the repository.
     for name in [
         "GIT_DIR",

@@ -295,6 +295,50 @@ fn a_rewrite_rule_in_the_worktree_cannot_redirect_a_pinned_push() {
 }
 
 #[cfg(unix)]
+fn pin_to_ssh_remote(w: &World) {
+    let remote = w.remote.to_str().unwrap();
+    git(&w.worktree, &["remote", "set-url", "origin", &format!("git@forge.example:{remote}")]);
+    let mut record = w.store.load("run-1").unwrap();
+    record.repository = format!("https://forge.example/{}", remote.trim_start_matches('/'));
+    w.store.create(&RunRecord { run_id: "run-2".to_string(), ..record }).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pinned_push_works_from_a_checkout_whose_path_contains_a_colon() {
+    fake_ssh();
+    let w = world_pinned("co:lon", "fix--COM-02", "main", Some("origin"), "");
+    pin_to_ssh_remote(&w);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    let outcome = push_run_branch(&w.store, "run-2", &w.log);
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pinned_push_the_remote_rejects_fails_the_stage() {
+    fake_ssh();
+    let w = world_pinned("rejected", "fix--COM-02", "main", Some("origin"), "");
+    pin_to_ssh_remote(&w);
+    // The remote refuses every update.
+    fs::write(w.remote.join("hooks").join("pre-receive"), "#!/bin/sh\nexit 1\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(w.remote.join("hooks").join("pre-receive"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let outcome = push_run_branch(&w.store, "run-2", &w.log).unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    let kinds: Vec<String> = w.store.events("run-2").unwrap().into_iter().map(|e| e.kind).collect();
+    assert_eq!(kinds.last().map(String::as_str), Some("stage.failed"));
+    assert!(!kinds.iter().any(|k| k == "stage.completed"));
+}
+
+#[cfg(unix)]
 #[test]
 fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
     fake_ssh();
