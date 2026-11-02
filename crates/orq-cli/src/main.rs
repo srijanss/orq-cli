@@ -821,6 +821,8 @@ struct LedgerBackend {
     program_override: Option<PathBuf>,
     /// Replaces the XDG state lookup of the generation report directory (tests).
     log_dir_override: Option<PathBuf>,
+    /// Replaces the XDG state lookup of the run store root (tests).
+    state_root_override: Option<PathBuf>,
     /// Harness name and program pairs replacing the PATH lookup of the
     /// picker's discovery (tests).
     harness_programs: Option<Vec<(String, PathBuf)>>,
@@ -1135,6 +1137,7 @@ impl LedgerBackend {
             staged: Default::default(),
             program_override: None,
             log_dir_override: None,
+            state_root_override: None,
             harness_programs: None,
             harness_cache: None,
         }
@@ -1200,6 +1203,35 @@ fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSet
 }
 
 impl orq_tui::BrowserBackend for LedgerBackend {
+    fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        let root = self
+            .state_root_override
+            .clone()
+            .or_else(pipeline::state_root)
+            .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
+        let store = orq_orchestrator::RunStore::new(&root);
+        let listings = orq_orchestrator::list_runs(&store, &pipeline::slug(&project.name)).map_err(|err| err.to_string())?;
+        Ok(listings
+            .into_iter()
+            .map(|run| orq_tui::RunRow {
+                run_id: run.run_id,
+                feature: run.feature_id,
+                status: match run.phase {
+                    orq_orchestrator::RunPhase::Running => "running",
+                    orq_orchestrator::RunPhase::Completed => "completed",
+                    orq_orchestrator::RunPhase::Failed => "failed",
+                    orq_orchestrator::RunPhase::Blocked => "blocked",
+                }
+                .to_string(),
+                stage: run.stage,
+                implementer_model: run.implementer_model,
+                reviewer_model: run.reviewer_model,
+            })
+            .collect())
+    }
+
     fn load(&mut self) -> Result<Vec<orq_tui::BrowserEntry>, orq_tui::LedgerErrorView> {
         match orq_features::LoadedLedger::load(&self.path) {
             Ok(loaded) => {
@@ -2062,6 +2094,64 @@ mod ledger_backend_tests {
         let retry = backend.add_feature(&fields("b"));
         assert!(matches!(retry, orq_tui::FormSaveOutcome::Saved), "{retry:?}");
         assert!(std::fs::read_to_string(&path).unwrap().contains(r#""b""#));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_runs_lists_this_projects_runs_only() {
+        use std::collections::BTreeMap;
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-runs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let project = orq_git::resolve_project(fixture.root()).unwrap();
+        let mine = crate::pipeline::slug(&project.name);
+        let seed = |project_id: &str, run_id: &str, feature: &str| {
+            let profile = |model: &str| orq_orchestrator::RoleProfile {
+                harness: "claude".into(),
+                model: model.into(),
+                thinking: None,
+            };
+            let mut profiles = BTreeMap::new();
+            profiles.insert("implementer".to_string(), profile("opus"));
+            profiles.insert("reviewer".to_string(), profile("kimi-k3"));
+            store
+                .create(&orq_orchestrator::RunRecord {
+                    run_id: run_id.into(),
+                    project_id: project_id.into(),
+                    feature_id: feature.into(),
+                    remote: "origin".into(),
+                    provider: "github".into(),
+                    target_branch: "main".into(),
+                    base_sha: "abc".into(),
+                    branch: format!("orq/{run_id}"),
+                    worktree: std::path::PathBuf::from("/tmp/w"),
+                    repository: String::new(),
+                    profiles,
+                })
+                .unwrap();
+        };
+        seed(&mine, "run-1", "COM-01");
+        seed("other-project", "run-2", "COM-02");
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+        backend.state_root_override = Some(root.clone());
+
+        let rows = orq_tui::BrowserBackend::load_runs(&mut backend).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![orq_tui::RunRow {
+                run_id: "run-1".into(),
+                feature: "COM-01".into(),
+                status: "running".into(),
+                stage: None,
+                implementer_model: Some("opus".into()),
+                reviewer_model: Some("kimi-k3".into()),
+            }]
+        );
+        let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
