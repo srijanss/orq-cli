@@ -83,9 +83,8 @@ pub fn run_ci_fix_loop(
         }
         fix_attempts += 1;
 
-        fs::create_dir_all(config.log_dir)?;
         let failure_log = config.log_dir.join(format!("ci-failure-{fix_attempts}.log"));
-        fs::write(&failure_log, steps.failure_log(&failing))?;
+        write_failure_log(config.log_dir, &failure_log, &steps.failure_log(&failing))?;
 
         let spec = steps.fix_session(fix_attempts, &failure_log);
         let session = ImplementSession {
@@ -118,6 +117,28 @@ pub fn run_ci_fix_loop(
             }
         }
     }
+}
+
+/// Write one attempt's failure log. The log directory may sit inside the worktree, so
+/// whatever the repository or an earlier session left there is not trusted: the file is
+/// created exclusively (never through an existing file or symlink), owner-only, and the
+/// directory itself must not be a symlink. CI output can carry secrets.
+fn write_failure_log(dir: &Path, path: &Path, text: &str) -> Result<(), StoreError> {
+    use std::io::Write;
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if !meta.is_dir() => {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the CI failure log directory is a symlink or not a directory").into());
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(dir)?,
+        Err(err) => return Err(err.into()),
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(text.as_bytes())?;
+    Ok(())
 }
 
 fn fail_run(store: &RunStore, run_id: &str, attempt: u32, payload: serde_json::Value) -> Result<(), StoreError> {

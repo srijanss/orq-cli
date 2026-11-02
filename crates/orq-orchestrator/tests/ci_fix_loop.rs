@@ -289,3 +289,35 @@ fn an_unknown_run_is_an_error_and_nothing_is_asked() {
     assert!(result.is_err());
     assert!(script.waited.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_failure_log_is_never_written_through_a_planted_symlink() {
+    let w = world("symlink");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let victim = w.root.join("victim.txt");
+    fs::write(&victim, "precious\n").unwrap();
+    fs::create_dir_all(w.worktree.join(".orq")).unwrap();
+    std::os::unix::fs::symlink(&victim, w.worktree.join(".orq/ci-failure-1.log")).unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    assert!(script.sessions.is_empty(), "no session runs after the log could not be written");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failure_log_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("mode");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "exit 0");
+
+    run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+
+    let mode = fs::metadata(w.worktree.join(".orq/ci-failure-1.log")).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "{mode:o}");
+}
