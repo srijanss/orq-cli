@@ -56,3 +56,13 @@ fn a_failure_reason_comes_from_herdrs_json_error_or_else_its_first_stderr_line()
     assert_eq!(failure_reason("", "\n  boom happened\nmore"), "boom happened");
     assert_eq!(failure_reason("not json", ""), "herdr failed");
 }
+
+#[test]
+fn only_a_missing_tab_or_pane_counts_as_gone_and_a_failed_first_step_stops_there() {
+    let unrelated = Fake::new(vec![Err("command_not_found: no such herdr command".into())]);
+    assert!(matches!(focus_pane(&unrelated, &pane()), FocusOutcome::Failed(_)));
+    assert_eq!(*unrelated.calls.borrow(), vec![strings(&["tab", "focus", "w1:t2"])]);
+
+    let second = Fake::new(vec![Ok("{}".into()), Err("permission_denied: no".into())]);
+    assert!(matches!(focus_pane(&second, &pane()), FocusOutcome::Failed(reason) if reason.contains("permission_denied")));
+}

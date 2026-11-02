@@ -149,7 +149,7 @@ pub fn focus_pane(herdr: &dyn HerdrCli, pane: &PaneLocation) -> FocusOutcome {
     for step in steps {
         let args: Vec<String> = step.iter().map(|part| part.to_string()).collect();
         if let Err(reason) = herdr.run(&args) {
-            let gone = reason.split(':').next().is_some_and(|code| code.ends_with("_not_found"));
+            let gone = reason.split(':').next().is_some_and(|code| matches!(code, "tab_not_found" | "pane_not_found"));
             return if gone { FocusOutcome::Gone(reason) } else { FocusOutcome::Failed(reason) };
         }
     }
