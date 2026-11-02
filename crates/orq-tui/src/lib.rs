@@ -1502,6 +1502,11 @@ pub trait BrowserBackend {
         PaneFocus::Failed("Herdr navigation is not available".into())
     }
 
+    /// Opens a fresh Herdr pane that follows the log of `run_id`, replacing a missing one.
+    fn reopen_run_pane(&mut self, _run_id: &str) -> PaneFocus {
+        PaneFocus::Failed("Herdr navigation is not available".into())
+    }
+
     /// Model profile names the launch picker offers.
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         Err("launching runs is not available".into())
@@ -1726,7 +1731,7 @@ pub enum Tab {
 
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
-const RUNS_HINT: &str = " ↑↓ move · Enter show pane · r reload · Esc back ";
+const RUNS_HINT: &str = " ↑↓ move · Enter show pane · o new pane · r reload · Esc back ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
 struct RunsState {
@@ -2550,6 +2555,17 @@ impl Browser {
         let run_id = run.run_id.clone();
         self.notice = Some(match backend.focus_run_pane(&run_id) {
             PaneFocus::Focused => format!("Focused the pane of {run_id}"),
+            PaneFocus::Missing(reason) => format!("{reason} · press o to open a new one"),
+            PaneFocus::Failed(reason) => reason,
+        });
+    }
+
+    fn reopen_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
+        let Ok(rows) = &self.runs.rows else { return };
+        let Some(run) = rows.get(self.runs.selected) else { return };
+        let run_id = run.run_id.clone();
+        self.notice = Some(match backend.reopen_run_pane(&run_id) {
+            PaneFocus::Focused => format!("Opened a new pane for {run_id}"),
             PaneFocus::Missing(reason) | PaneFocus::Failed(reason) => reason,
         });
     }
@@ -2835,6 +2851,7 @@ where
                     browser.notice = None;
                     match key.code {
                         KeyCode::Enter => browser.focus_selected_run(backend),
+                        KeyCode::Char('o') => browser.reopen_selected_run(backend),
                         KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
                         KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
