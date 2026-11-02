@@ -288,5 +288,7 @@ pub use model_profiles::{load_model_profiles, FieldProblem, ModelProfile, ModelP
 mod eligibility;
 pub use eligibility::{check_run_eligibility, Ineligible, UnmetDependency};
 
+mod launch_request;
+pub use launch_request::LaunchRequest;
 mod run_models;
 pub use run_models::{resolve_run_models, ResolvedModel, ResolvedModels, RunModelsError, RunSelection};
