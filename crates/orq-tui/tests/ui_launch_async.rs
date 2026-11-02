@@ -115,3 +115,16 @@ fn the_notice_names_the_run_once_the_launch_finishes_and_the_reason_when_it_fail
     let lines = show(&mut bad, launch_keys());
     assert!(has(&lines, "feature is already running"), "{lines:?}");
 }
+
+#[test]
+fn a_second_launch_is_refused_while_the_first_is_still_running() {
+    let mut backend = Fake { started: vec![], polls: 100, result: Ok("run-7".into()) };
+    let mut events = launch_keys();
+    events.extend([key(KeyCode::Char('L'))]);
+
+    let lines = show(&mut backend, events);
+
+    assert!(has(&lines, "A launch is still running"), "{lines:?}");
+    assert!(!has(&lines, "choose the implementer"), "no second picker: {lines:?}");
+    assert_eq!(backend.started.len(), 1);
+}

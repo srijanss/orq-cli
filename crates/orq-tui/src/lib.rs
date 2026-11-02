@@ -2719,6 +2719,10 @@ impl Browser {
     }
 
     fn open_launch(&mut self, backend: &mut dyn BrowserBackend) {
+        if self.launching.is_some() {
+            self.notice = Some("A launch is still running; wait for it to finish".to_string());
+            return;
+        }
         let mut skipped = Vec::new();
         let features: Vec<String> = if self.marked.is_empty() {
             let Some(row) = self.selected_row() else { return };
