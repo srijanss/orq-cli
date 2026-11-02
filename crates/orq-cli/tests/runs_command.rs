@@ -155,3 +155,67 @@ fn runs_fails_when_the_repo_is_not_a_project() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot resolve project"));
 }
+
+#[test]
+fn a_corrupt_event_log_fails_the_command_with_a_diagnostic_and_no_json() {
+    let fixture = GitFixture::new();
+    let home = state_home("corrupt-events");
+    let mine = project_id(fixture.root());
+    seed(&home, &mine, "run-a", "COM-01", &[]);
+    std::fs::write(home.join("orq/runs/run-a/events.jsonl"), "not json\n").unwrap();
+
+    let out = runs(&["--repo", fixture.root().to_str().unwrap(), "--json"], &home);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("corrupt"), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn a_corrupt_run_record_fails_the_command() {
+    let fixture = GitFixture::new();
+    let home = state_home("corrupt-record");
+    let mine = project_id(fixture.root());
+    seed(&home, &mine, "run-a", "COM-01", &[]);
+    std::fs::write(home.join("orq/runs/run-a/run.json"), "{").unwrap();
+
+    let out = runs(&["--repo", fixture.root().to_str().unwrap()], &home);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("corrupt"));
+}
+
+fn runs_without_xdg(repo: &Path, home: Option<&Path>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    command.args(["runs", "--repo"]).arg(repo).env_remove("XDG_STATE_HOME").env_remove("HERDR_ACTIVE_PANE_CWD");
+    match home {
+        Some(home) => command.env("HOME", home),
+        None => command.env_remove("HOME"),
+    };
+    command.output().unwrap()
+}
+
+#[test]
+fn without_a_state_location_the_command_says_so() {
+    let fixture = GitFixture::new();
+
+    let out = runs_without_xdg(fixture.root(), None);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("state directory"));
+}
+
+#[test]
+fn the_state_directory_falls_back_to_home_when_xdg_state_home_is_unset() {
+    let fixture = GitFixture::new();
+    let home = state_home("home-fallback");
+    let mine = project_id(fixture.root());
+    // Seeds under <home>/.local/state/orq, the fallback location.
+    seed(&home.join(".local/state"), &mine, "run-a", "COM-01", &[]);
+
+    let out = runs_without_xdg(fixture.root(), Some(&home));
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("run-a"));
+}
