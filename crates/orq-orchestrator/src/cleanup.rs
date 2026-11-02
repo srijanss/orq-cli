@@ -34,8 +34,9 @@ pub fn cleanup_worktree(
     if !matches!(ci, CiOutcome::Passed | CiOutcome::Skipped) {
         return keep(store, &record, "CI did not pass".to_string());
     }
-    // Anything uncommitted, untracked files included, is work that removal would lose.
-    let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    // Anything uncommitted is work that removal would lose: untracked files, and ignored
+    // ones too, since `git worktree remove` deletes ignored files without --force.
+    let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
     if !status.success {
         return keep(store, &record, "the worktree state could not be read".to_string());
     }

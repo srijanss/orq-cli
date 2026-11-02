@@ -114,6 +114,21 @@ fn a_run_that_did_not_reach_review_ready_keeps_its_worktree() {
 }
 
 #[test]
+fn a_worktree_holding_an_ignored_file_is_kept_with_it_intact() {
+    let w = world("ignored");
+    fs::write(w.worktree.join(".gitignore"), "local.env\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore local config"]);
+    fs::write(w.worktree.join("local.env"), "SECRET=1\n").unwrap();
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert_eq!(fs::read_to_string(w.worktree.join("local.env")).unwrap(), "SECRET=1\n");
+    assert_eq!(kinds(&w), ["worktree.kept"]);
+}
+
+#[test]
 fn a_worktree_with_uncommitted_changes_is_kept_with_them_intact() {
     for (tag, edit) in [("modified", "mine.txt"), ("untracked", "scratch.txt")] {
         let w = world(tag);
