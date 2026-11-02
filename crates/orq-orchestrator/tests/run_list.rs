@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use orq_orchestrator::{list_runs, Event, RoleProfile, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{list_runs, list_runs_report, Event, RoleProfile, RunPhase, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
     let root = orq_test_support::process_temp_dir().join(format!("orq-run-list-{}-{tag}", std::process::id()));
@@ -113,20 +113,23 @@ fn a_stray_file_or_non_run_directory_under_runs_does_not_break_the_listing() {
 }
 
 #[test]
-fn a_corrupt_record_or_event_log_of_the_project_is_an_error_but_another_projects_is_not_read() {
+fn a_corrupt_record_or_event_log_is_skipped_and_counted_while_the_other_runs_still_list() {
     let s = store("corrupt");
-    let mine = record("run-a", "repo-1", "COM-02");
-    s.create(&mine).unwrap();
+    s.create(&record("run-a", "repo-1", "COM-02")).unwrap();
+    s.create(&record("run-b", "repo-1", "COM-03")).unwrap();
+    s.create(&record("run-c", "repo-1", "COM-04")).unwrap();
     std::fs::write(runs_dir("corrupt").join("run-a").join("events.jsonl"), "not json\n").unwrap();
+    std::fs::write(runs_dir("corrupt").join("run-b").join("run.json"), "{").unwrap();
 
-    assert!(matches!(list_runs(&s, "repo-1"), Err(orq_orchestrator::StoreError::Corrupt(_))));
-    // Another project's broken log is not even opened.
-    assert!(list_runs(&s, "repo-2").unwrap().is_empty());
+    let report = list_runs_report(&s, "repo-1").unwrap();
+    assert_eq!(report.runs.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(), ["run-c"]);
+    assert_eq!(report.unreadable, 2);
+    assert_eq!(list_runs(&s, "repo-1").unwrap().len(), 1);
 
-    let broken = store("corrupt-record");
-    broken.create(&record("run-b", "repo-1", "COM-03")).unwrap();
-    std::fs::write(runs_dir("corrupt-record").join("run-b").join("run.json"), "{").unwrap();
-    assert!(matches!(list_runs(&broken, "repo-1"), Err(orq_orchestrator::StoreError::Corrupt(_))));
+    // Another project's broken log is not even opened, so it is not counted.
+    let other = list_runs_report(&s, "repo-2").unwrap();
+    assert!(other.runs.is_empty());
+    assert_eq!(other.unreadable, 1, "only the record that cannot be attributed to a project is counted");
 }
 
 #[test]

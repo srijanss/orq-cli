@@ -165,7 +165,7 @@ fn runs_fails_when_the_repo_is_not_a_project() {
 }
 
 #[test]
-fn a_corrupt_event_log_fails_the_command_with_a_diagnostic_and_no_json() {
+fn a_corrupt_event_log_is_left_out_of_the_listing_instead_of_failing_the_command() {
     let fixture = GitFixture::new();
     let home = state_home("corrupt-events");
     let mine = project_id(fixture.root());
@@ -174,13 +174,13 @@ fn a_corrupt_event_log_fails_the_command_with_a_diagnostic_and_no_json() {
 
     let out = runs(&["--repo", fixture.root().to_str().unwrap(), "--json"], &home);
 
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("corrupt"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["runs"].as_array().unwrap().is_empty());
 }
 
 #[test]
-fn a_corrupt_run_record_fails_the_command() {
+fn a_corrupt_run_record_is_left_out_of_the_listing_instead_of_failing_the_command() {
     let fixture = GitFixture::new();
     let home = state_home("corrupt-record");
     let mine = project_id(fixture.root());
@@ -189,9 +189,8 @@ fn a_corrupt_run_record_fails_the_command() {
 
     let out = runs(&["--repo", fixture.root().to_str().unwrap()], &home);
 
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("corrupt"));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("run-a"));
 }
 
 fn runs_without_xdg(repo: &Path, home: Option<&Path>) -> Output {
