@@ -1534,6 +1534,12 @@ pub trait BrowserBackend {
         Err("launching runs is not available".into())
     }
 
+    /// Starts `launch` without holding the UI: the default runs it to completion and returns a
+    /// finished job, a backend with a slow launch returns one that finishes later.
+    fn start_launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Box<dyn LaunchJob> {
+        Box::new(FinishedLaunch(Some(self.launch(feature, implementer, reviewer))))
+    }
+
     /// The user-level settings the Settings tab shows. Backends without
     /// settings keep this default, which says so.
     fn load_settings(&mut self) -> SettingsView {
@@ -1701,6 +1707,20 @@ pub trait GenerationJob {
     fn poll(&mut self) -> Option<Result<Vec<CandidateView>, String>>;
     /// Stops the run; its result is discarded.
     fn cancel(&mut self);
+}
+
+/// A launch running off the UI thread.
+pub trait LaunchJob {
+    /// `Some` once, when the launch has finished: the run's id (with any note), or why it did not start.
+    fn poll(&mut self) -> Option<Result<String, String>>;
+}
+
+struct FinishedLaunch(Option<Result<String, String>>);
+
+impl LaunchJob for FinishedLaunch {
+    fn poll(&mut self) -> Option<Result<String, String>> {
+        self.0.take()
+    }
 }
 
 struct FinishedJob(Option<Result<Vec<CandidateView>, String>>);
@@ -2202,6 +2222,8 @@ struct Browser {
     absent: bool,
     /// A generation running in the background; only Esc is handled meanwhile.
     generating: Option<Box<dyn GenerationJob>>,
+    /// A launch still registering its run; the popup keeps taking keys meanwhile.
+    launching: Option<Box<dyn LaunchJob>>,
 }
 
 impl Drop for Browser {
@@ -2805,6 +2827,7 @@ where
         launch: None,
         absent: false,
         generating: None,
+        launching: None,
     };
     browser.reload(backend);
     let mut dirty = true;
@@ -2812,6 +2835,15 @@ where
         if dirty {
             terminal.draw(|frame| browser.draw(frame, model))?;
             dirty = false;
+        }
+        if let Some(result) = browser.launching.as_mut().and_then(|job| job.poll()) {
+            browser.launching = None;
+            browser.notice = Some(match result {
+                Ok(id) => format!("Started run {id}"),
+                Err(reason) => reason,
+            });
+            dirty = true;
+            continue;
         }
         let event = if browser.generating.is_some() {
             let finished = browser.generating.as_mut().and_then(|job| job.poll());
@@ -2832,6 +2864,11 @@ where
                 _ => {}
             }
             continue;
+        } else if browser.launching.is_some() {
+            match events.poll_event(std::time::Duration::from_millis(50))? {
+                Some(event) => event,
+                None => continue,
+            }
         } else {
             events.next_event()?
         };
@@ -2852,10 +2889,8 @@ where
                         LaunchAction::Launch { implementer, reviewer } => {
                             let feature = launch.feature.clone();
                             browser.launch = None;
-                            browser.notice = Some(match backend.launch(&feature, &implementer, &reviewer) {
-                                Ok(id) => format!("Started run {id}"),
-                                Err(reason) => reason,
-                            });
+                            browser.notice = Some(format!("Launching {feature}…"));
+                            browser.launching = Some(backend.start_launch(&feature, &implementer, &reviewer));
                         }
                         LaunchAction::None => {}
                     }

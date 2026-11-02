@@ -1414,6 +1414,83 @@ fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSet
         .unwrap_or_default()
 }
 
+/// Starts a detached run of `feature` and, when a pane can follow its log, opens one.
+fn launch_run(
+repo_root: Option<PathBuf>,
+state_root_override: Option<PathBuf>,
+feature: String,
+implementer: String,
+reviewer: String,
+) -> Result<String, String> {
+    let repo = repo_root.as_deref().ok_or("the project is not known")?;
+    let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+    let (profiles, reviewers) = load_model_config(&project.root)?;
+    let request = orq_features::LaunchRequest {
+        repo: project.root.clone(),
+        feature: feature.clone(),
+        remote: "origin".to_string(),
+        target: default_target_branch(&project.root),
+        implementer: implementer.clone(),
+        reviewer: reviewer.clone(),
+    };
+    request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
+    // `orq run --detach` checks eligibility, starts the runner in a session of its own and
+    // returns at once, so closing the popup never stops the run.
+    let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
+    let output = std::process::Command::new(exe)
+        .args(request.args())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("cannot start orq run: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
+    // The run is already going; a pane is only a convenient view of its log.
+    let pane = match (launch_log(&stdout), state_root_override.clone().or_else(pipeline::state_root)) {
+        (Some(log), Some(root)) => {
+            let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
+            attach_pane(
+                &orq_herdr::HerdrBinary,
+                &orq_orchestrator::RunStore::new(&root),
+                workspace.as_deref(),
+                &project.root,
+                &run_id,
+                &log,
+                REGISTRATION_WAIT,
+            )
+        }
+        _ => Err("the run reported no log to follow".to_string()),
+    };
+    Ok(match pane {
+        Ok(()) => run_id,
+        Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
+    })
+}
+
+/// A launch running on a thread of its own; `poll` reports once it has finished.
+struct ThreadLaunch {
+    result: std::sync::mpsc::Receiver<Result<String, String>>,
+}
+
+impl ThreadLaunch {
+    fn spawn(work: impl FnOnce() -> Result<String, String> + Send + 'static) -> Self {
+        let (sender, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        ThreadLaunch { result }
+    }
+}
+
+impl orq_tui::LaunchJob for ThreadLaunch {
+    fn poll(&mut self) -> Option<Result<String, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("the launch stopped unexpectedly".to_string())),
+        }
+    }
+}
+
 impl orq_tui::BrowserBackend for LedgerBackend {
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
@@ -1423,48 +1500,22 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     }
 
     fn launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Result<String, String> {
-        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
-        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
-        let (profiles, reviewers) = load_model_config(&project.root)?;
-        let request = orq_features::LaunchRequest {
-            repo: project.root.clone(),
-            feature: feature.to_string(),
-            remote: "origin".to_string(),
-            target: default_target_branch(&project.root),
-            implementer: implementer.to_string(),
-            reviewer: reviewer.to_string(),
-        };
-        request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
-        // `orq run --detach` checks eligibility, starts the runner in a session of its own and
-        // returns at once, so closing the popup never stops the run.
-        let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
-        let output = std::process::Command::new(exe)
-            .args(request.args())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|err| format!("cannot start orq run: {err}"))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
-        // The run is already going; a pane is only a convenient view of its log.
-        let pane = match (launch_log(&stdout), self.state_root_override.clone().or_else(pipeline::state_root)) {
-            (Some(log), Some(root)) => {
-                let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
-                attach_pane(
-                    &orq_herdr::HerdrBinary,
-                    &orq_orchestrator::RunStore::new(&root),
-                    workspace.as_deref(),
-                    &project.root,
-                    &run_id,
-                    &log,
-                    REGISTRATION_WAIT,
-                )
-            }
-            _ => Err("the run reported no log to follow".to_string()),
-        };
-        Ok(match pane {
-            Ok(()) => run_id,
-            Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
-        })
+        launch_run(
+            self.repo_root.clone(),
+            self.state_root_override.clone(),
+            feature.to_string(),
+            implementer.to_string(),
+            reviewer.to_string(),
+        )
+    }
+
+    /// The launch waits for the run to register its Herdr pane, so it runs on a thread and the
+    /// popup keeps taking keys until it reports.
+    fn start_launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Box<dyn orq_tui::LaunchJob> {
+        let repo_root = self.repo_root.clone();
+        let state_root = self.state_root_override.clone();
+        let (feature, implementer, reviewer) = (feature.to_string(), implementer.to_string(), reviewer.to_string());
+        Box::new(ThreadLaunch::spawn(move || launch_run(repo_root, state_root, feature, implementer, reviewer)))
     }
 
     fn focus_run_pane(&mut self, run_id: &str) -> orq_tui::PaneFocus {
@@ -2620,6 +2671,44 @@ mod ledger_backend_tests {
         assert!(err.contains("run-x"), "{err}");
         assert_eq!(crate::describe_wait(std::time::Duration::from_secs(10)), "10s");
         assert_eq!(crate::describe_wait(std::time::Duration::from_millis(1500)), "1.5s");
+    }
+
+    #[test]
+    fn a_thread_launch_reports_nothing_while_it_works_and_its_result_once_it_is_done() {
+        use super::ThreadLaunch;
+        use orq_tui::LaunchJob;
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let mut job = ThreadLaunch::spawn(move || {
+            gate.recv().unwrap();
+            Ok("run-1".to_string())
+        });
+        assert_eq!(job.poll(), None, "still working");
+        release.send(()).unwrap();
+        let mut result = None;
+        for _ in 0..200 {
+            result = job.poll();
+            if result.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(result, Some(Ok("run-1".to_string())));
+    }
+
+    #[test]
+    fn a_thread_launch_that_panics_reports_a_failure_instead_of_hanging() {
+        use super::ThreadLaunch;
+        use orq_tui::LaunchJob;
+        let mut job = ThreadLaunch::spawn(|| panic!("boom"));
+        let mut result = None;
+        for _ in 0..200 {
+            result = job.poll();
+            if result.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(matches!(result, Some(Err(_))), "{result:?}");
     }
 
     struct ScriptHerdr(std::cell::RefCell<Vec<Result<String, String>>>);
