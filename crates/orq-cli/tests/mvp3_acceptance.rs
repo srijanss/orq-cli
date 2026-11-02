@@ -67,12 +67,17 @@ fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
         .reply(&["pr", "create"], &format!("{PR_URL}\n"))
         .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
         .build();
-    // The agent takes a moment, so both runs are going at once when the launchers return.
+    // Each agent reports in and then waits for the test to release it (giving up after a minute),
+    // so the runs can only finish once both are known to be running at the same time.
+    let (ready, release) = (base.join("ready"), base.join("release"));
+    std::fs::create_dir(&ready).unwrap();
     let claude = base.join("bin/claude");
     std::fs::write(
         &claude,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = -p ]; then printf 'Add the feature\\n\\nThe feature.\\n'; exit 0; fi\nsleep 2\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = -p ]; then printf 'Add the feature\\n\\nThe feature.\\n'; exit 0; fi\ntouch '{}'/$$\nn=0; while [ ! -e '{}' ] && [ $n -lt 600 ]; do n=$((n+1)); sleep 0.1; done\nexec '{}' \"$@\"\n",
+            ready.display(),
+            release.display(),
             agent.path().display()
         ),
     )
@@ -118,10 +123,14 @@ fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         value["runs"].as_array().unwrap().iter().map(|r| r["run_id"].as_str().unwrap().to_string()).collect()
     };
+    // Both agents are up at once, held at the barrier, and both launchers have already exited: the
+    // runs overlap and carry on without the launchers.
+    wait_until("both agents to be running", || std::fs::read_dir(&ready).unwrap().count() == 2);
     for (p, run_id) in [(&projects[0], &first), (&projects[1], &second)] {
         wait_until("the run to be listed", || !listed(p).is_empty());
         assert_eq!(listed(p), vec![run_id.clone()]);
     }
+    std::fs::write(&release, "").unwrap();
 
     // Both finish on their own, though both launchers have exited.
     let store = orq_orchestrator::RunStore::new(&state.join("orq"));
