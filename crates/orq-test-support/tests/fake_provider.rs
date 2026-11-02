@@ -228,6 +228,18 @@ fn one_shot_replies_are_served_in_order_and_then_the_standing_reply_takes_over()
 }
 
 #[test]
+fn a_one_shot_reply_is_served_first_even_when_the_standing_reply_was_registered_before_it() {
+    let provider = FakeProvider::builder().reply(&["api"], "standing\n").reply_once(&["api"], "once\n").build();
+    let cwd = std::env::temp_dir();
+
+    let first = run(&provider.gh(), &cwd, &["api", "x"]);
+    let second = run(&provider.gh(), &cwd, &["api", "x"]);
+
+    assert_eq!(String::from_utf8_lossy(&first.stdout), "once\n");
+    assert_eq!(String::from_utf8_lossy(&second.stdout), "standing\n");
+}
+
+#[test]
 fn a_slow_reply_takes_at_least_its_delay() {
     let provider = FakeProvider::builder().reply_slowly(&["api"], "late\n", 300).build();
     let started = std::time::Instant::now();

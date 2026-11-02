@@ -143,7 +143,9 @@ impl FakeProviderBuilder {
 
         // The script tries replies in directory order, so the most specific
         // prefix must come first; equal lengths keep registration order.
-        self.replies.sort_by_key(|reply| std::cmp::Reverse(reply.prefix.len()));
+        // Longest prefix first; at equal length the one-shot replies go ahead of the standing one.
+        // The sort is stable, so registration order is kept within each group.
+        self.replies.sort_by_key(|reply| (std::cmp::Reverse(reply.prefix.len()), !reply.once));
         for (index, reply) in self.replies.iter().enumerate() {
             let dir = replies.join(format!("{index:04}"));
             fs::create_dir(&dir).expect("create reply dir");
