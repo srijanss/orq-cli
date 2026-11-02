@@ -251,19 +251,54 @@ fn a_remote_repointed_since_the_run_started_is_not_pushed_to() {
     assert!(!kinds(&w).contains(&"stage.completed".to_string()));
 }
 
+/// A local stand-in for ssh that runs the command git asks for, whatever the host: ssh-style
+/// remotes then reach the bare repositories of the test. It is wired in through the user-level
+/// environment, because a pinned push ignores the worktree's own configuration.
+#[cfg(unix)]
+fn fake_ssh() {
+    use std::os::unix::fs::PermissionsExt;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let ssh = std::env::temp_dir().join(format!("orq-fake-ssh-{}", std::process::id()));
+        fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        // GIT_SSH_COMMAND is a shell command: quote the path.
+        std::env::set_var("GIT_SSH_COMMAND", format!("'{}'", ssh.to_str().unwrap().replace('\'', "'\\''")));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rewrite_rule_in_the_worktree_cannot_redirect_a_pinned_push() {
+    fake_ssh();
+    let w = world_pinned("chained", "fix--COM-02", "main", Some("origin"), "");
+    let evil = w.root.join("evil.git");
+    git(&w.root, &["init", "-q", "--bare", evil.to_str().unwrap()]);
+    let remote = w.remote.to_str().unwrap();
+    let checked = format!("git@forge.example:{remote}");
+    let redirected = format!("git@evil.example:{}", evil.to_str().unwrap());
+    // `remote get-url` rewrites the alias to the checked url once; handing that url to git
+    // would rewrite it again, to the other repository.
+    git(&w.worktree, &["remote", "set-url", "origin", "https://alias.example/r"]);
+    git(&w.worktree, &["config", &format!("url.{checked}.insteadOf"), "https://alias.example/r"]);
+    git(&w.worktree, &["config", &format!("url.{redirected}.insteadOf"), &checked]);
+    let mut record = w.store.load("run-1").unwrap();
+    record.repository = format!("https://forge.example/{}", remote.trim_start_matches('/'));
+    w.store.create(&RunRecord { run_id: "run-2".to_string(), ..record }).unwrap();
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    let outcome = push_run_branch(&w.store, "run-2", &w.log);
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head, "the pinned repository got the branch");
+    assert!(git(&evil, &["branch", "--list"]).is_empty(), "the redirect target got nothing");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
-    use std::os::unix::fs::PermissionsExt;
+    fake_ssh();
     let w = world_pinned("pinned-ok", "fix--COM-02", "main", Some("origin"), "");
-    // An ssh-style remote for the pinned repository, served by a local stand-in for ssh
-    // that runs the command git asks for against the bare remote.
-    let ssh = w.root.join("fake-ssh");
-    fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
-    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
-    // core.sshCommand is a shell command: quote the path.
-    let quoted = format!("'{}'", ssh.to_str().unwrap().replace('\'', "'\\''"));
-    git(&w.worktree, &["config", "core.sshCommand", &quoted]);
     let url = format!("git@forge.example:{}", w.remote.to_str().unwrap());
     git(&w.worktree, &["remote", "set-url", "origin", &url]);
     let pinned = format!("https://forge.example/{}", w.remote.to_str().unwrap().trim_start_matches('/'));

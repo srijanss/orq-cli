@@ -41,7 +41,8 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     let head_sha = head_sha.stdout.trim().to_string();
     // The session can change the remote's configuration: a pinned run pushes to the url it just
     // checked, not to the name git would look up again.
-    let destination = checked_push_url(&record)?.unwrap_or_else(|| record.remote.clone());
+    let checked = checked_push_url(&record)?;
+    let destination = checked.clone().unwrap_or_else(|| record.remote.clone());
 
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
@@ -50,7 +51,11 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     writeln!(log, "$ {}", redact_credentials(&format!("git push --no-follow-tags -- {destination} {refspec}")))?;
     // No force option: a remote branch that diverged is reported, not overwritten.
     // `push.followTags` in the user's config must not publish tags with it.
-    let pushed = git_raw(worktree, &["push", "--no-follow-tags", "--", &destination, &refspec])?;
+    let pushed = if checked.is_some() {
+        isolated_push(worktree, &destination, &refspec)?
+    } else {
+        git_raw(worktree, &["push", "--no-follow-tags", "--", &destination, &refspec])?
+    };
     log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
     log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
     if !pushed.success {
@@ -64,6 +69,37 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
         serde_json::json!({ "pushed_sha": head_sha, "branch": record.branch, "log": log_name }),
     )?;
     Ok(PushOutcome::Pushed { head_sha })
+}
+
+/// Push `refspec` to the already checked `url` from an empty scratch repository that borrows the
+/// worktree's objects. The worktree's own configuration (url rewrites, hooks, pushurl) is never
+/// read, so it cannot change where the commit goes between the check and the push.
+fn isolated_push(worktree: &Path, url: &str, refspec: &str) -> Result<crate::outcome::GitOutput, StoreError> {
+    let common = git_raw(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    if !common.success {
+        return Err(StoreError::Corrupt("the worktree has no git directory".to_string()));
+    }
+    let objects = Path::new(common.stdout.trim()).join("objects");
+    let scratch = std::env::temp_dir().join(format!("orq-push-{}-{}", std::process::id(), next_event_id("scratch")));
+    std::fs::create_dir_all(&scratch)?;
+    let result = (|| {
+        let init = git_raw(&scratch, &["init", "-q"])?;
+        if !init.success {
+            return Err(StoreError::Corrupt("could not create a scratch repository for the push".to_string()));
+        }
+        let output = std::process::Command::new("git")
+            .current_dir(&scratch)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects)
+            .args(["push", "--no-follow-tags", "--", url, refspec])
+            .output()?;
+        Ok(crate::outcome::GitOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
 }
 
 /// Drop the `user:password@` part of every URL in `text`: a remote may carry a
