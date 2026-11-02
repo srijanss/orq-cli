@@ -215,3 +215,25 @@ fn a_failing_session_does_not_leave_its_background_process_either() {
     }
     assert!(!alive(&pid), "the background process {pid} outlived the drafting session");
 }
+
+#[test]
+fn only_the_oldest_commits_and_a_bounded_slice_of_each_subject_reach_the_prompt() {
+    let long = format!("long {}", "x".repeat(2000));
+    let mut subjects: Vec<String> = vec![long];
+    subjects.extend((2..=60).map(|n| format!("commit number {n}")));
+    let refs: Vec<&str> = subjects.iter().map(String::as_str).collect();
+    let w = world("many", &refs);
+    let seen = RefCell::new(String::new());
+
+    let draft = draft_review_description(&w.store, "run-1", WAIT, |prompt| {
+        *seen.borrow_mut() = prompt.to_string();
+        session(&w, "exit 1")
+    })
+    .unwrap();
+
+    let prompt = seen.borrow();
+    assert!(prompt.contains("commit number 2") && prompt.contains("commit number 50"), "the oldest are kept");
+    assert!(!prompt.contains("commit number 51") && !prompt.contains("commit number 60"), "the newest are dropped");
+    assert!(!prompt.contains(&"x".repeat(500)), "a subject is cut");
+    assert!(draft.title.starts_with("long x"), "the fallback title is the first commit, not the last: {}", draft.title);
+}

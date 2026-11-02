@@ -16,6 +16,7 @@ use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "review_draft";
 const MAX_COMMITS: usize = 50;
+const MAX_SUBJECT_CHARS: usize = 200;
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 8000;
 /// More than any accepted draft needs; the rest of the output is read and dropped.
@@ -73,8 +74,13 @@ pub fn draft_review_description(
 
 fn commit_subjects(record: &RunRecord) -> Result<Vec<String>, StoreError> {
     let range = format!("{}..HEAD", record.base_sha);
-    let log = git_raw(&record.worktree, &["log", "--reverse", "--format=%s", &range])?;
-    if !log.success {
+    let count = git_raw(&record.worktree, &["rev-list", "--count", &range])?;
+    let total: usize = count.stdout.trim().parse().map_err(|_| StoreError::Corrupt("the run's commits cannot be counted".to_string()))?;
+    // The oldest MAX_COMMITS: git skips from the newest end, then reverses what is left.
+    let skip = format!("--skip={}", total.saturating_sub(MAX_COMMITS));
+    let max = format!("--max-count={MAX_COMMITS}");
+    let log = git_raw(&record.worktree, &["log", "--reverse", &skip, &max, "--format=%s", &range])?;
+    if !count.success || !log.success {
         return Err(StoreError::Corrupt("the run's commits cannot be listed".to_string()));
     }
     Ok(log.stdout.lines().map(clean_line).filter(|s| !s.is_empty()).take(MAX_COMMITS).collect())
@@ -199,7 +205,7 @@ fn strip_controls(text: &str) -> String {
 }
 
 fn clean_line(line: &str) -> String {
-    strip_controls(line).trim().to_string()
+    strip_controls(line).trim().chars().take(MAX_SUBJECT_CHARS).collect()
 }
 
 fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
