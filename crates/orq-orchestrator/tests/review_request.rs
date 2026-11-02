@@ -244,3 +244,47 @@ fn a_remote_that_cannot_be_resolved_is_an_error_and_nothing_is_called() {
     assert!(create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).is_err());
     assert!(provider.calls().is_empty());
 }
+
+fn failed_without_a_review(w: &World, outcome: &ReviewRequestOutcome, tag: &str) {
+    assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
+    assert_eq!(kinds(w), ["stage.started", "stage.failed"], "{tag}: no false completion");
+    assert_eq!(recorded_review(&w.store, "run-1").unwrap(), None, "{tag}");
+}
+
+#[test]
+fn a_view_that_fails_after_a_successful_create_fails_the_stage_and_records_nothing() {
+    let w = world("view-fails", "github", "main");
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "create"], "https://github.example/o/r/pull/7\n")
+        .fail(&["pr", "view"], 1, "HTTP 502\n")
+        .build();
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    failed_without_a_review(&w, &outcome, "view");
+    assert_eq!(provider.calls().len(), 2);
+}
+
+#[test]
+fn a_provider_cli_that_cannot_start_fails_the_stage() {
+    let w = world("no-cli", "github", "main");
+
+    let outcome = create_review_request(&w.store, "run-1", Path::new("/nonexistent/gh"), &draft(), WAIT).unwrap();
+
+    failed_without_a_review(&w, &outcome, "missing");
+}
+
+#[test]
+fn a_provider_cli_that_never_answers_is_stopped_and_fails_the_stage() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("hang", "github", "main");
+    let script = w.worktree.parent().unwrap().join("gh-hang");
+    fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let started = std::time::Instant::now();
+
+    let outcome = create_review_request(&w.store, "run-1", &script, &draft(), Duration::from_millis(300)).unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    failed_without_a_review(&w, &outcome, "timeout");
+}
