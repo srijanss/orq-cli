@@ -1122,6 +1122,18 @@ impl Drop for WorkerJob {
 }
 
 impl LedgerBackend {
+    /// Runs `act` on the review link of one of this project's runs.
+    fn review_link(&self, run_id: &str, act: &dyn Fn(&str) -> Result<String, String>) -> Result<String, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        let root = self
+            .state_root_override
+            .clone()
+            .or_else(pipeline::state_root)
+            .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
+        with_review_link(&orq_orchestrator::RunStore::new(&root), &pipeline::slug(&project.name), run_id, act)
+    }
+
     fn new(path: PathBuf) -> Self {
         let settings_path = orq_features::settings_path(
             std::env::var_os("XDG_CONFIG_HOME").as_deref(),
@@ -1285,6 +1297,60 @@ fn reopen_run(
     }
 }
 
+/// Hands the review link of `run_id` (a run of `project_id`) to `act`. A run with no review
+/// request yet, or of another project, says so instead.
+fn with_review_link(
+    store: &orq_orchestrator::RunStore,
+    project_id: &str,
+    run_id: &str,
+    act: &dyn Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let runs = orq_orchestrator::list_runs(store, project_id).map_err(|err| err.to_string())?;
+    let run = runs.into_iter().find(|run| run.run_id == run_id).ok_or_else(|| format!("{run_id} is not a run of this project"))?;
+    match run.review_url {
+        Some(url) => act(&url),
+        None => Err(format!("{run_id} has no review request yet")),
+    }
+}
+
+/// Opens `url` with the desktop's opener.
+fn open_url(url: &str) -> Result<String, String> {
+    for program in ["xdg-open", "open"] {
+        let status = std::process::Command::new(program)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if matches!(status, Ok(status) if status.success()) {
+            return Ok(format!("Opened {}", printable(url)));
+        }
+    }
+    Err(format!("cannot open the link, no opener worked: {}", printable(url)))
+}
+
+/// Puts `text` on the clipboard with the first clipboard tool that works.
+fn copy_text(text: &str) -> Result<String, String> {
+    use std::io::Write;
+    let tools: [(&str, &[&str]); 3] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("pbcopy", &[])];
+    for (program, args) in tools {
+        let Ok(mut child) = std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        if matches!(child.wait(), Ok(status) if status.success()) && wrote {
+            return Ok(format!("Copied {}", printable(text)));
+        }
+    }
+    Err(format!("cannot copy: no clipboard tool worked (wl-copy, xclip, pbcopy); the link is {}", printable(text)))
+}
+
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
 fn default_target_branch(repo: &Path) -> String {
     std::process::Command::new("git")
@@ -1366,6 +1432,14 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 "cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set".to_string(),
             ),
         }
+    }
+
+    fn open_review_link(&mut self, run_id: &str) -> Result<String, String> {
+        self.review_link(run_id, &open_url)
+    }
+
+    fn copy_review_link(&mut self, run_id: &str) -> Result<String, String> {
+        self.review_link(run_id, &copy_text)
     }
 
     fn reopen_run_pane(&mut self, run_id: &str) -> orq_tui::PaneFocus {
@@ -2603,5 +2677,51 @@ mod ledger_backend_tests {
         assert_eq!(calls[1][..3], ["pane".to_string(), "run".to_string(), "w1:p9".to_string()]);
         let log = root.join("logs/run-1/runner.log").display().to_string();
         assert!(calls[1][3].contains(&log), "{calls:?}");
+    }
+
+    #[test]
+    fn a_runs_review_link_goes_to_the_action_and_an_absent_link_says_why() {
+        let root = std::env::temp_dir().join(format!("orq-review-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
+        let act = |url: &str| -> Result<String, String> { Ok(format!("did {url}")) };
+
+        let none = crate::with_review_link(&store, "p", "run-1", &act);
+        assert!(matches!(none, Err(reason) if reason.contains("no review request yet")));
+        let other_project = crate::with_review_link(&store, "q", "run-1", &act);
+        assert!(other_project.is_err());
+
+        store
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: "e-review".into(),
+                run_id: "run-1".into(),
+                project_id: "p".into(),
+                feature_id: "COM-01".into(),
+                kind: "review.created".into(),
+                stage: None,
+                attempt: 1,
+                occurred_at: "2026-11-02T00:00:00Z".into(),
+                payload: serde_json::json!({"url": "https://example.test/pr/7"}),
+            })
+            .unwrap();
+
+        assert_eq!(crate::with_review_link(&store, "p", "run-1", &act), Ok("did https://example.test/pr/7".to_string()));
+        let failing = |_: &str| -> Result<String, String> { Err("no clipboard tool found".into()) };
+        assert_eq!(crate::with_review_link(&store, "p", "run-1", &failing), Err("no clipboard tool found".to_string()));
     }
 }
