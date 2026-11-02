@@ -1715,6 +1715,45 @@ pub trait LaunchJob {
     fn poll(&mut self) -> Option<Result<String, String>>;
 }
 
+/// The launches one confirmation started: the ones still going and how the others ended.
+struct LaunchBatch {
+    running: Vec<(String, Box<dyn LaunchJob>)>,
+    finished: Vec<(String, Result<String, String>)>,
+}
+
+impl LaunchBatch {
+    /// Collects the launches that have finished; the notice once none is left running.
+    fn poll(&mut self) -> Option<String> {
+        let mut index = 0;
+        while index < self.running.len() {
+            match self.running[index].1.poll() {
+                Some(result) => {
+                    let (feature, _) = self.running.remove(index);
+                    self.finished.push((feature, result));
+                }
+                None => index += 1,
+            }
+        }
+        if !self.running.is_empty() {
+            return None;
+        }
+        Some(match self.finished.as_slice() {
+            [(_, Ok(id))] => format!("Started run {id}"),
+            [(_, Err(reason))] => reason.clone(),
+            all => {
+                let started = all.iter().filter(|(_, result)| result.is_ok()).count();
+                let mut text = format!("Started {started} of {} runs", all.len());
+                for (feature, result) in all {
+                    if let Err(reason) = result {
+                        text.push_str(&format!("; {feature}: {reason}"));
+                    }
+                }
+                text
+            }
+        })
+    }
+}
+
 struct FinishedLaunch(Option<Result<String, String>>);
 
 impl LaunchJob for FinishedLaunch {
@@ -2134,7 +2173,8 @@ where
 
 /// Chooses the implementer and then the reviewer profile for a launch.
 struct LaunchPicker {
-    feature: String,
+    /// The features to launch, in list order; one unless some were marked.
+    features: Vec<String>,
     profiles: Vec<String>,
     selected: usize,
     implementer: Option<String>,
@@ -2172,7 +2212,11 @@ impl LaunchPicker {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         let step = if self.implementer.is_none() { "implementer" } else { "reviewer" };
-        let mut lines = vec![Line::from(format!(" Launch {} — choose the {step}", printable(&self.feature)))];
+        let what = match self.features.as_slice() {
+            [one] => printable(one),
+            many => format!("{} features", many.len()),
+        };
+        let mut lines = vec![Line::from(format!(" Launch {what} — choose the {step}"))];
         if let Some(implementer) = &self.implementer {
             lines.push(Line::from(format!(" Implementer: {}", printable(implementer))));
         }
@@ -2223,7 +2267,7 @@ struct Browser {
     /// A generation running in the background; only Esc is handled meanwhile.
     generating: Option<Box<dyn GenerationJob>>,
     /// A launch still registering its run; the popup keeps taking keys meanwhile.
-    launching: Option<Box<dyn LaunchJob>>,
+    launching: Option<LaunchBatch>,
 }
 
 impl Drop for Browser {
@@ -2648,15 +2692,30 @@ impl Browser {
     }
 
     fn open_launch(&mut self, backend: &mut dyn BrowserBackend) {
-        let Some(row) = self.selected_row() else { return };
-        if row.status != "pending" {
-            self.notice = Some("Only pending features can be launched".to_string());
-            return;
-        }
+        let features: Vec<String> = if self.marked.is_empty() {
+            let Some(row) = self.selected_row() else { return };
+            if row.status != "pending" {
+                self.notice = Some("Only pending features can be launched".to_string());
+                return;
+            }
+            vec![row.name]
+        } else {
+            let marked: Vec<String> = self
+                .entries
+                .iter()
+                .filter(|entry| self.marked.contains(&entry.name) && entry.status == "pending")
+                .map(|entry| entry.name.clone())
+                .collect();
+            if marked.is_empty() {
+                self.notice = Some("Only pending features can be launched".to_string());
+                return;
+            }
+            marked
+        };
         match backend.launch_profiles() {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
-                self.launch = Some(LaunchPicker { feature: row.name, profiles, selected: 0, implementer: None })
+                self.launch = Some(LaunchPicker { features, profiles, selected: 0, implementer: None })
             }
             Err(reason) => self.notice = Some(reason),
         }
@@ -2836,12 +2895,9 @@ where
             terminal.draw(|frame| browser.draw(frame, model))?;
             dirty = false;
         }
-        if let Some(result) = browser.launching.as_mut().and_then(|job| job.poll()) {
+        if let Some(notice) = browser.launching.as_mut().and_then(|batch| batch.poll()) {
             browser.launching = None;
-            browser.notice = Some(match result {
-                Ok(id) => format!("Started run {id}"),
-                Err(reason) => reason,
-            });
+            browser.notice = Some(notice);
             dirty = true;
             continue;
         }
@@ -2887,10 +2943,20 @@ where
                     match launch.handle_key(key.code) {
                         LaunchAction::Cancel => browser.launch = None,
                         LaunchAction::Launch { implementer, reviewer } => {
-                            let feature = launch.feature.clone();
+                            let features = launch.features.clone();
                             browser.launch = None;
-                            browser.notice = Some(format!("Launching {feature}…"));
-                            browser.launching = Some(backend.start_launch(&feature, &implementer, &reviewer));
+                            browser.notice = Some(match features.as_slice() {
+                                [one] => format!("Launching {one}…"),
+                                many => format!("Launching {} features…", many.len()),
+                            });
+                            let running = features
+                                .into_iter()
+                                .map(|feature| {
+                                    let job = backend.start_launch(&feature, &implementer, &reviewer);
+                                    (feature, job)
+                                })
+                                .collect();
+                            browser.launching = Some(LaunchBatch { running, finished: Vec::new() });
                         }
                         LaunchAction::None => {}
                     }
