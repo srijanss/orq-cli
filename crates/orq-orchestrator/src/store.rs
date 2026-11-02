@@ -176,6 +176,16 @@ impl RunStore {
         Ok(())
     }
 
+    /// The run that currently holds the project+feature lock, if any.
+    pub fn active_run(&self, project_id: &str, feature_id: &str) -> Result<Option<String>, StoreError> {
+        let lock = self.lock_path(project_id, feature_id)?;
+        match fs::read_to_string(&lock) {
+            Ok(owner) => Ok(Some(owner.trim().to_string())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     /// Release the feature lock when the run ends; only its owner may.
     pub fn finish_run(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
         let lock = self.lock_path(project_id, feature_id)?;

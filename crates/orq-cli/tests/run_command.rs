@@ -392,6 +392,44 @@ fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothi
     assert!(state_is_empty(&env));
 }
 
+#[test]
+fn a_detached_launch_of_a_feature_that_is_already_running_fails_with_the_reason_and_records_no_run() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    let env = env("detach-busy");
+    let inspected = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["project", "inspect", "--cwd"])
+        .arg(repo.root())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    let project: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
+    store
+        .start_run(&orq_orchestrator::RunRecord {
+            run_id: "run-active".into(),
+            project_id: project["id"].as_str().unwrap().to_string(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "orq/run-active".into(),
+            worktree: PathBuf::from("/tmp/w"),
+            repository: String::new(),
+            profiles: Default::default(),
+        })
+        .unwrap();
+
+    let output = run(repo.root(), &env, &["--feature", "COM-01", "--detach"]);
+
+    assert_eq!(output.status.code(), Some(EXIT_BUSY), "{}", stderr(&output));
+    assert!(stderr(&output).contains("already has an active run: run-active"), "{}", stderr(&output));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("state: launched"));
+    assert_eq!(store.run_ids().unwrap(), ["run-active"], "no ghost run was recorded");
+    assert!(!env.state.join("orq/logs").exists(), "no log directory was created");
+}
+
 // Reads /proc, so it can only run where procfs exists.
 #[cfg(target_os = "linux")]
 #[test]

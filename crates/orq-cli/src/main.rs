@@ -256,6 +256,14 @@ fn run(args: &[OsString]) -> ExitCode {
         if parsed.run_id.is_some() {
             return usage_error();
         }
+        match pipeline::active_run(&project, feature) {
+            Ok(None) => {}
+            Ok(Some(active)) => {
+                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+                return ExitCode::from(EXIT_BUSY);
+            }
+            Err(message) => return fail(message),
+        }
         let forwarded = without_detach_flag(args);
         return match pipeline::launch_detached(&forwarded) {
             Ok((run_id, log)) => {

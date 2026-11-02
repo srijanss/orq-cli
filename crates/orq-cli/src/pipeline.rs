@@ -37,6 +37,13 @@ fn new_run_id() -> String {
     )
 }
 
+/// The run that already holds the lock of `feature` in `project`, if any. A detached launch asks
+/// first, so a busy feature is refused by the launcher instead of by a runner nobody is watching.
+pub fn active_run(project: &orq_git::Project, feature: &str) -> Result<Option<String>, String> {
+    let root = state_root().ok_or_else(|| "no state location: set XDG_STATE_HOME or HOME".to_string())?;
+    RunStore::new(&root).active_run(&project_id(project), &slug(feature)).map_err(|e| e.to_string())
+}
+
 /// Start `orq run` again as a detached runner: a process group of its own, no terminal input,
 /// its output in the run's log. Returns the run id and the log path without waiting for the run.
 /// `args` are the `orq run` arguments, without `--detach`.
