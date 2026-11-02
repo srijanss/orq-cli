@@ -59,16 +59,28 @@ pub fn launch_detached(args: &[std::ffi::OsString]) -> Result<(String, PathBuf),
         .map_err(|e| format!("cannot create the run log: {e}"))?;
     let err = out.try_clone().map_err(|e| format!("cannot open the run log: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot find the orq executable: {e}"))?;
-    Command::new(exe)
+    let mut runner = Command::new(exe);
+    runner
         .arg("run")
         .args(args)
         .arg("--run-id")
         .arg(&run_id)
         .stdin(std::process::Stdio::null())
         .stdout(out)
-        .stderr(err)
-        // Its own process group: closing the launcher's terminal does not signal the runner.
-        .process_group(0)
+        .stderr(err);
+    // SAFETY: the closure runs between fork and exec and calls only `setsid`, which is
+    // async-signal-safe and touches no memory of the parent.
+    unsafe {
+        // A session of its own: no controlling terminal, so closing the launcher's terminal
+        // (or its process group) never signals the runner or the agents under it.
+        runner.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    runner
         .spawn()
         .map_err(|e| format!("cannot start the runner: {e}"))?;
     Ok((run_id, log))

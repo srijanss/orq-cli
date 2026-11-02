@@ -393,6 +393,54 @@ fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothi
 }
 
 #[test]
+fn the_detached_runner_and_its_agent_live_in_a_session_of_their_own() {
+    let w = world("detach-session");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = path_with(&agent, &provider, &w.tag);
+    // The harness stand-in notes the session it runs in (field 6 of /proc/<pid>/stat).
+    let note = w.env.state.join("agent-session");
+    let claude = std::env::split_paths(&path).next().unwrap().join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = -p ]; then printf 'Add the feature\\n\\nThe feature.\\n'; exit 0; fi\nawk '{{print $6}}' /proc/$$/stat > '{}'\nexec '{}' \"$@\"\n",
+            note.display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect(&stdout).to_string();
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    wait_until("the detached run to complete", || {
+        store.events(&run_id).map(|e| e.iter().any(|e| e.kind == "worktree.removed")).unwrap_or(false)
+    });
+    let events = store.events(&run_id).unwrap();
+    let pid = events.iter().find(|e| e.kind == "run.launched").unwrap().payload["pid"].as_u64().unwrap();
+    let agent_session: u64 = std::fs::read_to_string(&note).unwrap().trim().parse().unwrap();
+    let own_session: u64 =
+        std::fs::read_to_string("/proc/self/stat").unwrap().rsplit(')').next().unwrap().split_whitespace().nth(3).unwrap().parse().unwrap();
+    assert_eq!(agent_session, pid, "the agent runs in the session the runner leads");
+    assert_ne!(agent_session, own_session, "and not in the launcher's session");
+}
+
+#[test]
 fn the_runner_log_and_its_directory_are_private_to_the_user() {
     use std::os::unix::fs::PermissionsExt;
     let w = world("detach-private");
