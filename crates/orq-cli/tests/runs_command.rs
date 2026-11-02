@@ -177,6 +177,7 @@ fn a_corrupt_event_log_is_left_out_of_the_listing_instead_of_failing_the_command
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(value["runs"].as_array().unwrap().is_empty());
+    assert_eq!(value["unreadable"], 1);
 }
 
 #[test]
@@ -191,6 +192,7 @@ fn a_corrupt_run_record_is_left_out_of_the_listing_instead_of_failing_the_comman
 
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("run-a"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("1 run could not be read"), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 fn runs_without_xdg(repo: &Path, home: Option<&Path>) -> Output {

@@ -1499,6 +1499,11 @@ pub trait BrowserBackend {
         Err("runs are not available".into())
     }
 
+    /// How many runs the last `load_runs` left out because their files could not be read.
+    fn unreadable_runs(&mut self) -> usize {
+        0
+    }
+
     /// Brings the Herdr pane of `run_id` to the front.
     fn focus_run_pane(&mut self, _run_id: &str) -> PaneFocus {
         PaneFocus::Failed("Herdr navigation is not available".into())
@@ -1750,6 +1755,8 @@ const RUNS_HINT_NO_LINK: &str = " ↑↓ move · Enter pane · o new pane · no 
 struct RunsState {
     rows: Result<Vec<RunRow>, String>,
     selected: usize,
+    /// Runs that were left out of `rows` because they could not be read.
+    unreadable: usize,
 }
 
 impl RunsState {
@@ -1820,6 +1827,14 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                 put(u16::try_from(i - offset).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
             }
         }
+    }
+    if state.unreadable > 0 && body.height > 1 {
+        let text = format!(
+            "{} {} could not be read",
+            state.unreadable,
+            if state.unreadable == 1 { "run" } else { "runs" }
+        );
+        put(body.height - 2, Line::from(Span::styled(truncate_right(&text, width), Style::new().fg(Color::Yellow))));
     }
     if body.height > 0 {
         let last = match notice {
@@ -2598,7 +2613,9 @@ impl Browser {
     }
 
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
-        self.runs = RunsState { rows: backend.load_runs(), selected: 0 };
+        let rows = backend.load_runs();
+        let unreadable = if rows.is_ok() { backend.unreadable_runs() } else { 0 };
+        self.runs = RunsState { rows, selected: 0, unreadable };
         self.tab = Tab::Runs;
     }
 
@@ -2775,7 +2792,7 @@ where
             editing: None,
             status: None,
         },
-        runs: RunsState { rows: Ok(Vec::new()), selected: 0 },
+        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
         form: None,
         preview: None,
         picker: None,

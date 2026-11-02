@@ -339,8 +339,8 @@ fn runs(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     let store = orq_orchestrator::RunStore::new(&root);
-    let listings = match orq_orchestrator::list_runs(&store, &pipeline::project_id(&project)) {
-        Ok(listings) => listings,
+    let (listings, unreadable) = match orq_orchestrator::list_runs_report(&store, &pipeline::project_id(&project)) {
+        Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
     let phase = |phase: orq_orchestrator::RunPhase| match phase {
@@ -365,7 +365,7 @@ fn runs(args: &[OsString]) -> ExitCode {
                 })
             })
             .collect();
-        println!("{}", serde_json::json!({ "runs": list }));
+        println!("{}", serde_json::json!({ "runs": list, "unreadable": unreadable }));
     } else {
         for run in &listings {
             let field = |value: &Option<String>| value.as_deref().unwrap_or("-").to_string();
@@ -380,6 +380,9 @@ fn runs(args: &[OsString]) -> ExitCode {
                 printable(&field(&run.reason)),
                 printable(&field(&run.review_url)),
             );
+        }
+        if unreadable > 0 {
+            eprintln!("{unreadable} {} could not be read", if unreadable == 1 { "run" } else { "runs" });
         }
     }
     ExitCode::SUCCESS
@@ -824,6 +827,8 @@ struct LedgerBackend {
     log_dir_override: Option<PathBuf>,
     /// Replaces the XDG state lookup of the run store root (tests).
     state_root_override: Option<PathBuf>,
+    /// Runs the last `load_runs` left out because their files could not be read.
+    unreadable_runs: usize,
     /// Harness name and program pairs replacing the PATH lookup of the
     /// picker's discovery (tests).
     harness_programs: Option<Vec<(String, PathBuf)>>,
@@ -1151,6 +1156,7 @@ impl LedgerBackend {
             program_override: None,
             log_dir_override: None,
             state_root_override: None,
+            unreadable_runs: 0,
             harness_programs: None,
             harness_cache: None,
         }
@@ -1504,6 +1510,10 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         )
     }
 
+    fn unreadable_runs(&mut self) -> usize {
+        self.unreadable_runs
+    }
+
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
@@ -1513,8 +1523,10 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .or_else(pipeline::state_root)
             .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        let listings = orq_orchestrator::list_runs(&store, &pipeline::project_id(&project)).map_err(|err| err.to_string())?;
-        Ok(listings
+        let list = orq_orchestrator::list_runs_report(&store, &pipeline::project_id(&project)).map_err(|err| err.to_string())?;
+        self.unreadable_runs = list.unreadable;
+        Ok(list
+            .runs
             .into_iter()
             .map(|run| orq_tui::RunRow {
                 run_id: run.run_id,
