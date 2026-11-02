@@ -1758,14 +1758,22 @@ impl LaunchBatch {
             [(_, Ok(id))] => format!("Started run {id}"),
             [(_, Err(reason))] => reason.clone(),
             all => {
-                let started = all.iter().filter(|(_, result)| result.is_ok()).count();
-                let mut text = format!("Started {started} of {} runs", all.len());
-                for (feature, result) in all {
-                    if let Err(reason) = result {
-                        text.push_str(&format!("; {feature}: {reason}"));
-                    }
+                let started: Vec<String> = all
+                    .iter()
+                    .filter_map(|(feature, result)| result.as_ref().ok().map(|id| format!("{feature} ({id})")))
+                    .collect();
+                let failed: Vec<String> = all
+                    .iter()
+                    .filter_map(|(feature, result)| result.as_ref().err().map(|reason| format!("{feature}: {reason}")))
+                    .collect();
+                let mut parts = Vec::new();
+                if !started.is_empty() {
+                    parts.push(format!("Started {}", started.join(", ")));
                 }
-                text
+                if !failed.is_empty() {
+                    parts.push(format!("failed {}", failed.join(", ")));
+                }
+                parts.join("; ")
             }
         }
     }

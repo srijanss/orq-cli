@@ -27,6 +27,8 @@ impl LaunchJob for Done {
 struct Fake {
     started: Vec<(String, String, String)>,
     statuses: [&'static str; 3],
+    /// A feature whose launch fails with this reason.
+    failing: Option<(&'static str, &'static str)>,
 }
 
 impl BrowserBackend for Fake {
@@ -48,7 +50,11 @@ impl BrowserBackend for Fake {
     }
     fn start_launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Box<dyn LaunchJob> {
         self.started.push((feature.into(), implementer.into(), reviewer.into()));
-        Box::new(Done(Some(Ok(format!("run-{feature}")))))
+        let result = match self.failing {
+            Some((name, reason)) if name == feature => Err(reason.to_string()),
+            _ => Ok(format!("run-{feature}")),
+        };
+        Box::new(Done(Some(result)))
     }
 }
 
@@ -72,7 +78,7 @@ fn has(lines: &[String], needle: &str) -> bool {
 
 #[test]
 fn l_with_marked_features_picks_once_and_starts_one_run_per_marked_feature_in_list_order() {
-    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3], failing: None };
     // Mark gamma, then alpha (so marking order differs from list order), then launch.
     let events = vec![
         key(KeyCode::Down),
@@ -97,7 +103,7 @@ fn l_with_marked_features_picks_once_and_starts_one_run_per_marked_feature_in_li
 
 #[test]
 fn the_picker_names_how_many_features_it_launches() {
-    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3], failing: None };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Char(' ')),
@@ -114,7 +120,7 @@ fn the_picker_names_how_many_features_it_launches() {
 
 #[test]
 fn l_without_marks_still_launches_the_selected_feature() {
-    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3], failing: None };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Down),
@@ -131,7 +137,7 @@ fn l_without_marks_still_launches_the_selected_feature() {
 
 #[test]
 fn marked_features_that_are_not_pending_are_skipped_and_the_notice_says_which_and_why() {
-    let mut backend = Fake { started: vec![], statuses: ["pending", "draft", "complete"] };
+    let mut backend = Fake { started: vec![], statuses: ["pending", "draft", "complete"], failing: None };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Char(' ')),
@@ -154,7 +160,7 @@ fn marked_features_that_are_not_pending_are_skipped_and_the_notice_says_which_an
 
 #[test]
 fn when_every_marked_feature_is_skipped_nothing_launches_and_the_notice_says_why() {
-    let mut backend = Fake { started: vec![], statuses: ["draft", "draft", "pending"] };
+    let mut backend = Fake { started: vec![], statuses: ["draft", "draft", "pending"], failing: None };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Char(' ')),
@@ -167,4 +173,26 @@ fn when_every_marked_feature_is_skipped_nothing_launches_and_the_notice_says_why
 
     assert!(backend.started.is_empty());
     assert!(has(&lines, "Only pending features can be launched"), "{lines:?}");
+}
+
+#[test]
+fn the_outcome_lists_the_started_features_with_their_runs_and_the_failed_ones_with_the_reason() {
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3], failing: Some(("beta", "already running")) };
+    let events = vec![
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Char('L')),
+        key(KeyCode::Enter),
+        key(KeyCode::Enter),
+    ];
+
+    let lines = show(&mut backend, events);
+
+    assert_eq!(backend.started.len(), 3, "a failure does not stop the others");
+    assert!(has(&lines, "Started alpha (run-alpha), gamma (run-gamma)"), "{lines:?}");
+    assert!(has(&lines, "failed beta: already running"), "{lines:?}");
 }
