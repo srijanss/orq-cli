@@ -1474,6 +1474,8 @@ pub struct RunRow {
     pub stage: Option<String>,
     pub implementer_model: Option<String>,
     pub reviewer_model: Option<String>,
+    /// Whether the run has a review request to open or copy.
+    pub has_review_link: bool,
 }
 
 /// What asking Herdr to show a run's pane came to.
@@ -1742,6 +1744,7 @@ pub enum Tab {
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
 const RUNS_HINT: &str = " ↑↓ move · Enter pane · o new pane · u open MR · y copy link · r reload · Esc ";
+const RUNS_HINT_NO_LINK: &str = " ↑↓ move · Enter pane · o new pane · no review link yet · r reload · Esc ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
 struct RunsState {
@@ -1821,7 +1824,11 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
     if body.height > 0 {
         let last = match notice {
             Some(text) => Line::from(Span::styled(truncate_right(&printable(text), width), Style::new().fg(Color::Yellow))),
-            None => Line::from(Span::styled(truncate_right(RUNS_HINT, width), dim)),
+            None => {
+                let no_link = matches!(&state.rows, Ok(rows) if rows.get(state.selected).is_some_and(|run| !run.has_review_link));
+                let hint = if no_link { RUNS_HINT_NO_LINK } else { RUNS_HINT };
+                Line::from(Span::styled(truncate_right(hint, width), dim))
+            }
         };
         put(body.height - 1, last);
     }

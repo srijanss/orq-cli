@@ -37,6 +37,7 @@ impl BrowserBackend for Fake {
             stage: Some("implement".into()),
             implementer_model: None,
             reviewer_model: None,
+            has_review_link: true,
         };
         Ok(vec![run("run-1", "COM-01"), run("run-2", "COM-02")])
     }

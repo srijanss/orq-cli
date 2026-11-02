@@ -1529,6 +1529,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 stage: run.stage,
                 implementer_model: run.implementer_model,
                 reviewer_model: run.reviewer_model,
+                has_review_link: run.review_url.is_some(),
             })
             .collect())
     }
@@ -2450,6 +2451,7 @@ mod ledger_backend_tests {
                 stage: None,
                 implementer_model: Some("opus".into()),
                 reviewer_model: Some("kimi-k3".into()),
+                has_review_link: false,
             }]
         );
         let _ = std::fs::remove_dir_all(root);

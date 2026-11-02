@@ -48,6 +48,7 @@ fn run_row(id: &str, feature: &str, status: &str, stage: Option<&str>) -> RunRow
         stage: stage.map(str::to_string),
         implementer_model: Some("opus".into()),
         reviewer_model: Some("kimi-k3".into()),
+        has_review_link: true,
     }
 }
 

@@ -20,6 +20,7 @@ impl EventSource for Script {
 struct Fake {
     calls: Vec<String>,
     answer: Result<String, String>,
+    has_link: bool,
 }
 
 impl BrowserBackend for Fake {
@@ -37,6 +38,7 @@ impl BrowserBackend for Fake {
             stage: None,
             implementer_model: None,
             reviewer_model: None,
+            has_review_link: self.has_link,
         }])
     }
     fn open_review_link(&mut self, run_id: &str) -> Result<String, String> {
@@ -69,7 +71,7 @@ fn has(lines: &[String], needle: &str) -> bool {
 
 #[test]
 fn u_opens_and_y_copies_the_selected_runs_review_link_and_says_what_happened() {
-    let mut backend = Fake { calls: vec![], answer: Ok("Opened https://example.test/pr/1".into()) };
+    let mut backend = Fake { has_link: true, calls: vec![], answer: Ok("Opened https://example.test/pr/1".into()) };
 
     let lines = show(&mut backend, vec![key(KeyCode::Char('R')), key(KeyCode::Char('u'))]);
     assert!(has(&lines, "Opened https://example.test/pr/1"), "{lines:?}");
@@ -81,9 +83,21 @@ fn u_opens_and_y_copies_the_selected_runs_review_link_and_says_what_happened() {
 
 #[test]
 fn a_run_without_a_review_link_says_why_instead() {
-    let mut backend = Fake { calls: vec![], answer: Err("run-1 has no review request yet".into()) };
+    let mut backend = Fake { has_link: false, calls: vec![], answer: Err("run-1 has no review request yet".into()) };
 
     let lines = show(&mut backend, vec![key(KeyCode::Char('R')), key(KeyCode::Char('y'))]);
 
     assert!(has(&lines, "has no review request yet"), "{lines:?}");
+}
+
+#[test]
+fn the_hint_offers_u_and_y_only_for_a_run_with_a_review_link() {
+    let mut with = Fake { has_link: true, calls: vec![], answer: Ok(String::new()) };
+    let lines = show(&mut with, vec![key(KeyCode::Char('R'))]);
+    assert!(has(&lines, "u open MR") && has(&lines, "y copy link"), "{lines:?}");
+
+    let mut without = Fake { has_link: false, calls: vec![], answer: Ok(String::new()) };
+    let lines = show(&mut without, vec![key(KeyCode::Char('R'))]);
+    assert!(!has(&lines, "u open MR") && !has(&lines, "y copy link"), "{lines:?}");
+    assert!(has(&lines, "no review link yet"), "{lines:?}");
 }
