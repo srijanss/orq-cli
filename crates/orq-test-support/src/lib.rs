@@ -66,6 +66,32 @@ impl Drop for TempDir {
     }
 }
 
+static PROCESS_TEMP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+extern "C" {
+    fn atexit(callback: extern "C" fn()) -> i32;
+}
+
+extern "C" fn remove_process_temp_dir() {
+    if let Some(dir) = PROCESS_TEMP_DIR.get() {
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+/// A private directory under the temp dir for everything this test process makes there, removed
+/// when the process exits (tests that pass, fail or panic alike). Tests use it where they would
+/// use `std::env::temp_dir()`, and no longer leave their scratch directories behind.
+pub fn process_temp_dir() -> PathBuf {
+    PROCESS_TEMP_DIR
+        .get_or_init(|| {
+            let dir = private_dir("orq-tests");
+            // SAFETY: registers a plain function that only removes a directory.
+            unsafe { atexit(remove_process_temp_dir) };
+            dir
+        })
+        .clone()
+}
+
 /// A throwaway Git repository in a unique temp directory, removed on drop.
 pub struct GitFixture {
     base: PathBuf,
