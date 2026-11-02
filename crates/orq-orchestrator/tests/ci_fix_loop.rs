@@ -52,6 +52,9 @@ struct Script {
     waited: Vec<String>,
     sessions: Vec<u32>,
     pushed: u32,
+    /// Make `wait` / `push` fail with a store error instead of answering.
+    fail_wait: bool,
+    fail_push: bool,
 }
 
 impl Script {
@@ -65,6 +68,8 @@ impl Script {
             waited: Vec::new(),
             sessions: Vec::new(),
             pushed: 0,
+            fail_wait: false,
+            fail_push: false,
         }
     }
 }
@@ -72,10 +77,16 @@ impl Script {
 impl CiFixSteps for Script {
     fn wait(&mut self, head_sha: &str) -> Result<CiOutcome, StoreError> {
         self.waited.push(head_sha.to_string());
+        if self.fail_wait {
+            return Err(StoreError::NotFound("ci".to_string()));
+        }
         Ok(self.waits.pop_front().expect("CI was asked more often than scripted"))
     }
     fn push(&mut self) -> Result<PushOutcome, StoreError> {
         self.pushed += 1;
+        if self.fail_push {
+            return Err(StoreError::NotFound("push".to_string()));
+        }
         Ok(self.pushes.pop_front().expect("a push was not scripted"))
     }
     fn failure_log(&mut self, failing: &[String]) -> String {
@@ -323,4 +334,61 @@ fn a_failure_log_is_readable_by_its_owner_only() {
 
     let mode = fs::metadata(w.worktree.join(".orq/ci-failure-1.log")).unwrap().permissions().mode();
     assert_eq!(mode & 0o077, 0, "{mode:o}");
+}
+
+#[test]
+fn an_error_while_waiting_on_ci_propagates_before_anything_else_happens() {
+    let w = world("wait-error");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let mut script = Script::new(&w, vec![], vec![], "exit 0");
+    script.fail_wait = true;
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(script.sessions.is_empty());
+    assert_eq!(script.pushed, 0);
+    assert!(kinds(&w).is_empty(), "{:?}", kinds(&w));
+}
+
+#[test]
+fn an_error_while_pushing_a_fix_propagates_without_waiting_again() {
+    let w = world("push-error");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+    script.fail_push = true;
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(script.waited, [SHA1]);
+    assert_eq!(script.sessions, [1], "the fix ran, the push is what failed");
+}
+
+#[test]
+fn a_log_directory_that_is_not_a_directory_stops_the_loop_before_any_session() {
+    let w = world("log-dir-file");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    fs::write(w.worktree.join(".orq"), "in the way").unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(script.sessions.is_empty());
+    assert_eq!(script.pushed, 0);
+}
+
+#[test]
+fn a_fix_session_whose_log_cannot_be_opened_is_not_pushed() {
+    let w = world("session-log");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![pushed(SHA2)], "exit 0");
+    script.root = w.root.join("missing-dir");
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(script.pushed, 0);
+    assert_eq!(script.waited, [SHA1], "CI is not asked about a fix that never ran");
 }
