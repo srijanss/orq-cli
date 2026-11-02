@@ -1247,6 +1247,24 @@ fn attach_pane(
     }
 }
 
+/// Brings the Herdr pane recorded for `run_id` to the front. A run with no recorded pane, or whose
+/// pane Herdr no longer has, is `Missing`; anything else that goes wrong is `Failed`.
+fn focus_run(herdr: &dyn orq_herdr::HerdrCli, store: &orq_orchestrator::RunStore, run_id: &str) -> orq_tui::PaneFocus {
+    let pane = match orq_orchestrator::run_pane(store, run_id) {
+        Ok(Some(pane)) => pane,
+        Ok(None) => return orq_tui::PaneFocus::Missing(format!("{run_id} has no Herdr pane")),
+        Err(err) => return orq_tui::PaneFocus::Failed(format!("cannot read the run: {err}")),
+    };
+    let location = orq_herdr::PaneLocation { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id };
+    match orq_herdr::focus_pane(herdr, &location) {
+        orq_herdr::FocusOutcome::Focused => orq_tui::PaneFocus::Focused,
+        orq_herdr::FocusOutcome::Gone(reason) => {
+            orq_tui::PaneFocus::Missing(format!("the pane of {run_id} no longer exists ({})", printable(&reason)))
+        }
+        orq_herdr::FocusOutcome::Failed(reason) => orq_tui::PaneFocus::Failed(printable(&reason)),
+    }
+}
+
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
 fn default_target_branch(repo: &Path) -> String {
     std::process::Command::new("git")
@@ -1319,6 +1337,15 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             Ok(()) => run_id,
             Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
         })
+    }
+
+    fn focus_run_pane(&mut self, run_id: &str) -> orq_tui::PaneFocus {
+        match self.state_root_override.clone().or_else(pipeline::state_root) {
+            Some(root) => focus_run(&orq_herdr::HerdrBinary, &orq_orchestrator::RunStore::new(&root), run_id),
+            None => orq_tui::PaneFocus::Failed(
+                "cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set".to_string(),
+            ),
+        }
     }
 
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
@@ -2406,5 +2433,49 @@ mod ledger_backend_tests {
         let err = crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-never", log, std::time::Duration::from_millis(200))
             .unwrap_err();
         assert!(err.contains("opened") && err.contains("not recorded"), "{err}");
+    }
+
+    struct ScriptHerdr(std::cell::RefCell<Vec<Result<String, String>>>);
+
+    impl orq_herdr::HerdrCli for ScriptHerdr {
+        fn run(&self, _args: &[String]) -> Result<String, String> {
+            self.0.borrow_mut().remove(0)
+        }
+    }
+
+    #[test]
+    fn focusing_a_run_needs_a_recorded_pane_and_tells_a_gone_pane_from_a_broken_herdr() {
+        let root = std::env::temp_dir().join(format!("orq-focus-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
+        let herdr = |replies: Vec<Result<String, String>>| ScriptHerdr(std::cell::RefCell::new(replies));
+
+        let none = crate::focus_run(&herdr(vec![]), &store, "run-1");
+        assert!(matches!(none, orq_tui::PaneFocus::Missing(reason) if reason.contains("no Herdr pane")));
+
+        let pane = orq_orchestrator::PaneRef { workspace_id: "w1".into(), tab_id: "w1:t2".into(), pane_id: "w1:p5".into() };
+        orq_orchestrator::record_pane(&store, "run-1", &pane).unwrap();
+
+        assert_eq!(crate::focus_run(&herdr(vec![Ok("{}".into()), Ok("{}".into())]), &store, "run-1"), orq_tui::PaneFocus::Focused);
+        let gone = crate::focus_run(&herdr(vec![Err("tab_not_found: tab w1:t2 not found".into())]), &store, "run-1");
+        assert!(matches!(gone, orq_tui::PaneFocus::Missing(reason) if reason.contains("no longer exists")));
+        let down = crate::focus_run(&herdr(vec![Err("server_not_running: no herdr server".into())]), &store, "run-1");
+        assert!(matches!(down, orq_tui::PaneFocus::Failed(reason) if reason.contains("no herdr server")));
+        let unknown = crate::focus_run(&herdr(vec![]), &store, "no-such-run");
+        assert!(matches!(unknown, orq_tui::PaneFocus::Failed(_)));
     }
 }
