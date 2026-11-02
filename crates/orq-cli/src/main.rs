@@ -1265,6 +1265,23 @@ fn focus_run(herdr: &dyn orq_herdr::HerdrCli, store: &orq_orchestrator::RunStore
     }
 }
 
+/// Opens a fresh Herdr pane following the run's runner log and records it, replacing a missing one.
+/// The run is already registered, so no waiting is needed.
+fn reopen_run(
+    herdr: &dyn orq_herdr::HerdrCli,
+    store: &orq_orchestrator::RunStore,
+    workspace: Option<&str>,
+    cwd: &Path,
+    state_root: &Path,
+    run_id: &str,
+) -> orq_tui::PaneFocus {
+    let log = state_root.join("logs").join(run_id).join("runner.log");
+    match attach_pane(herdr, store, workspace, cwd, run_id, &log, std::time::Duration::ZERO) {
+        Ok(()) => orq_tui::PaneFocus::Focused,
+        Err(reason) => orq_tui::PaneFocus::Failed(printable(&reason)),
+    }
+}
+
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
 fn default_target_branch(repo: &Path) -> String {
     std::process::Command::new("git")
@@ -1346,6 +1363,30 @@ impl orq_tui::BrowserBackend for LedgerBackend {
                 "cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set".to_string(),
             ),
         }
+    }
+
+    fn reopen_run_pane(&mut self, run_id: &str) -> orq_tui::PaneFocus {
+        let Some(repo) = self.repo_root.as_deref() else {
+            return orq_tui::PaneFocus::Failed("the project is not known".to_string());
+        };
+        let project = match orq_git::resolve_project(repo) {
+            Ok(project) => project,
+            Err(err) => return orq_tui::PaneFocus::Failed(format!("cannot resolve project: {err:?}")),
+        };
+        let Some(root) = self.state_root_override.clone().or_else(pipeline::state_root) else {
+            return orq_tui::PaneFocus::Failed(
+                "cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set".to_string(),
+            );
+        };
+        let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
+        reopen_run(
+            &orq_herdr::HerdrBinary,
+            &orq_orchestrator::RunStore::new(&root),
+            workspace.as_deref(),
+            &project.root,
+            &root,
+            run_id,
+        )
     }
 
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
@@ -2477,5 +2518,38 @@ mod ledger_backend_tests {
         assert!(matches!(down, orq_tui::PaneFocus::Failed(reason) if reason.contains("no herdr server")));
         let unknown = crate::focus_run(&herdr(vec![]), &store, "no-such-run");
         assert!(matches!(unknown, orq_tui::PaneFocus::Failed(_)));
+    }
+
+    #[test]
+    fn reopening_a_run_pane_follows_its_runner_log_and_records_the_new_pane() {
+        let root = std::env::temp_dir().join(format!("orq-reopen-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
+        let created = r#"{"result":{"root_pane":{"pane_id":"w1:p9","tab_id":"w1:t8","workspace_id":"w1"}}}"#;
+        let herdr = ScriptHerdr(std::cell::RefCell::new(vec![Ok(created.into()), Ok("{}".into())]));
+
+        let outcome = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
+
+        assert_eq!(outcome, orq_tui::PaneFocus::Focused);
+        let pane = orq_orchestrator::run_pane(&store, "run-1").unwrap().unwrap();
+        assert_eq!(pane.pane_id, "w1:p9");
+
+        let down = ScriptHerdr(std::cell::RefCell::new(vec![Err("server_not_running: no herdr server".into())]));
+        let failed = crate::reopen_run(&down, &store, None, std::path::Path::new("/repo"), &root, "run-1");
+        assert!(matches!(failed, orq_tui::PaneFocus::Failed(reason) if reason.contains("no herdr server")));
     }
 }
