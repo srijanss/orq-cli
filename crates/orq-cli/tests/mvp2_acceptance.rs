@@ -44,11 +44,14 @@ fn world(tag: &str) -> World {
     git(repo.root(), &["branch", "release"]);
     git(repo.root(), &["push", "--quiet", "origin", "main", "release"]);
     git(repo.root(), &["remote", "set-url", "origin", &format!("forge.example:{}", remote.display())]);
-    let base = std::env::temp_dir().join(format!("orq-accept-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    // `create_dir` is exclusive and never follows a planted symlink: a path another process got to
+    // first fails the test instead of redirecting the writes below.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let base = std::env::temp_dir().join(format!("orq-accept-{}-{tag}-{nonce}", std::process::id()));
+    std::fs::create_dir(&base).unwrap();
     std::fs::create_dir_all(base.join("config/orq")).unwrap();
-    std::fs::create_dir_all(base.join("state")).unwrap();
-    std::fs::create_dir_all(base.join("bin")).unwrap();
+    std::fs::create_dir(base.join("state")).unwrap();
+    std::fs::create_dir(base.join("bin")).unwrap();
     let ssh = base.join("ssh");
     std::fs::write(&ssh, "#!/bin/sh\nfor a; do last=$a; done\nexec sh -c \"$last\"\n").unwrap();
     make_executable(&ssh);
