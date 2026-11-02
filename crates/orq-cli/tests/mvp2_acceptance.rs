@@ -41,7 +41,13 @@ fn world(tag: &str) -> World {
     let repo = GitFixture::new();
     let remote = repo.add_bare_remote();
     git(repo.root(), &["branch", "-M", "main"]);
-    git(repo.root(), &["branch", "release"]);
+    // `release` has a commit `main` lacks, so a run cut from the wrong branch can be told apart.
+    git(repo.root(), &["checkout", "--quiet", "-b", "release"]);
+    git(
+        repo.root(),
+        &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "release only"],
+    );
+    git(repo.root(), &["checkout", "--quiet", "main"]);
     git(repo.root(), &["push", "--quiet", "origin", "main", "release"]);
     git(repo.root(), &["remote", "set-url", "origin", &format!("forge.example:{}", remote.display())]);
     // `create_dir` is exclusive and never follows a planted symlink: a path another process got to
@@ -142,6 +148,19 @@ fn assert_nothing_merged(provider: &FakeProvider, w: &World, before: &(String, S
     assert_eq!(&remote_sha(w, "release"), &before.1, "release moved");
 }
 
+/// The pushed run branch was cut from `target`: it carries the `release`-only commit exactly
+/// when the target is `release`.
+fn assert_cut_from(w: &World, before: &(String, String), target: &str) {
+    let on_branch = Command::new("git")
+        .arg("-C")
+        .arg(&w.remote)
+        .args(["merge-base", "--is-ancestor", &before.1, RUN_BRANCH])
+        .status()
+        .unwrap()
+        .success();
+    assert_eq!(on_branch, target == "release", "the run branch was cut from the wrong base for {target}");
+}
+
 fn targets(w: &World) -> (String, String) {
     (remote_sha(w, "main"), remote_sha(w, "release"))
 }
@@ -172,6 +191,7 @@ fn a_github_run_against_main_and_against_another_branch_opens_a_pull_request_int
         assert_eq!(flag_of(&provider, ["pr", "create"], "--base"), target);
         assert_eq!(flag_of(&provider, ["pr", "create"], "--head"), RUN_BRANCH);
         assert!(remote_branches(&w).contains(&RUN_BRANCH.to_string()), "the run branch was pushed");
+        assert_cut_from(&w, &before, target);
         assert_nothing_merged(&provider, &w, &before);
     }
 }
@@ -191,6 +211,7 @@ fn a_gitlab_run_against_main_and_against_another_branch_opens_a_merge_request_in
         assert_eq!(flag_of(&provider, ["mr", "create"], "--target-branch"), target);
         assert_eq!(flag_of(&provider, ["mr", "create"], "--source-branch"), RUN_BRANCH);
         assert!(remote_branches(&w).contains(&RUN_BRANCH.to_string()), "the run branch was pushed");
+        assert_cut_from(&w, &before, target);
         assert_nothing_merged(&provider, &w, &before);
     }
 }
