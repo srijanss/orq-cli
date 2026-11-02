@@ -30,7 +30,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
     let mut summary = RunSummary { phase: RunPhase::Running, stage: None, reason: None };
     for event in events {
         let phase = match event.kind.as_str() {
-            "stage.started" | "stage.completed" => RunPhase::Running,
+            "stage.started" | "stage.completed" | "stage.skipped" => RunPhase::Running,
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
             "worktree.removed" => RunPhase::Completed,

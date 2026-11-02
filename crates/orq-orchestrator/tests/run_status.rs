@@ -147,6 +147,20 @@ fn a_kept_worktree_of_an_unsuccessful_run_does_not_complete_it() {
 }
 
 #[test]
+fn a_skipped_stage_is_the_latest_stage_and_the_run_keeps_running() {
+    let events = [
+        event("stage.completed", Some("review"), none()),
+        event("stage.skipped", Some("ci"), serde_json::json!({ "reason": "disabled" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Running);
+    assert_eq!(summary.stage.as_deref(), Some("ci"));
+    assert_eq!(summary.reason, None);
+}
+
+#[test]
 fn a_stage_that_starts_again_after_a_failure_is_running_again() {
     let events = [
         event("stage.failed", Some("verify"), serde_json::json!({ "reason": "tests failed" })),
