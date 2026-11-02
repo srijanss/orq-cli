@@ -77,9 +77,7 @@ impl HerdrCli for HerdrBinary {
         if output.status.success() {
             return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let reason = stderr.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("herdr failed");
-        Err(reason.to_string())
+        Err(failure_reason(&String::from_utf8_lossy(&output.stdout), &String::from_utf8_lossy(&output.stderr)))
     }
 }
 
@@ -119,4 +117,41 @@ fn parse_location(reply: &str) -> Result<PaneLocation, String> {
     let pane = value.pointer("/result/root_pane").ok_or_else(bad)?;
     let field = |name: &str| pane.get(name).and_then(|v| v.as_str()).map(str::to_string).ok_or_else(bad);
     Ok(PaneLocation { workspace_id: field("workspace_id")?, tab_id: field("tab_id")?, pane_id: field("pane_id")? })
+}
+
+/// Why a `herdr` call failed. Herdr prints its error as JSON on stdout, `code: message`; anything
+/// else falls back to the first line of stderr.
+pub fn failure_reason(stdout: &str, stderr: &str) -> String {
+    let json_error = serde_json::from_str::<serde_json::Value>(stdout).ok().and_then(|value| {
+        let error = value.get("error")?;
+        let code = error.get("code")?.as_str()?;
+        let message = error.get("message")?.as_str()?;
+        Some(format!("{code}: {message}"))
+    });
+    json_error
+        .or_else(|| stderr.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_string))
+        .unwrap_or_else(|| "herdr failed".to_string())
+}
+
+/// What bringing a run's pane to the front came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusOutcome {
+    Focused,
+    /// The tab or pane no longer exists in Herdr.
+    Gone(String),
+    /// Herdr could not be asked, or refused for another reason.
+    Failed(String),
+}
+
+/// Shows the pane's tab, then the pane in it.
+pub fn focus_pane(herdr: &dyn HerdrCli, pane: &PaneLocation) -> FocusOutcome {
+    let steps = [["tab", "focus", pane.tab_id.as_str()], ["pane", "focus", pane.pane_id.as_str()]];
+    for step in steps {
+        let args: Vec<String> = step.iter().map(|part| part.to_string()).collect();
+        if let Err(reason) = herdr.run(&args) {
+            let gone = reason.split(':').next().is_some_and(|code| code.ends_with("_not_found"));
+            return if gone { FocusOutcome::Gone(reason) } else { FocusOutcome::Failed(reason) };
+        }
+    }
+    FocusOutcome::Focused
 }
