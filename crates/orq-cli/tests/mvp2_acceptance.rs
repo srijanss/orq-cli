@@ -161,6 +161,16 @@ fn assert_cut_from(w: &World, before: &(String, String), target: &str) {
     assert_eq!(on_branch, target == "release", "the run branch was cut from the wrong base for {target}");
 }
 
+/// The CI stage really ran: some `api` call asked about the commit the run pushed.
+fn assert_ci_asked_about_the_pushed_commit(provider: &FakeProvider, w: &World) {
+    let head = remote_sha(w, RUN_BRANCH);
+    assert!(
+        provider.calls().iter().any(|c| c.args.first().is_some_and(|a| a == "api") && c.args.iter().any(|a| a.contains(&head))),
+        "no CI request named {head}: {:?}",
+        provider.calls()
+    );
+}
+
 fn targets(w: &World) -> (String, String) {
     (remote_sha(w, "main"), remote_sha(w, "release"))
 }
@@ -233,7 +243,45 @@ fn a_green_ci_on_github_still_ends_at_review_ready_without_a_merge() {
 
     assert_eq!(output.status.code(), Some(0), "{}\n{}", stderr(&output), stdout(&output));
     assert!(stdout(&output).contains("state: review_ready"), "{}", stdout(&output));
+    assert_ci_asked_about_the_pushed_commit(&provider, &w);
     assert_nothing_merged(&provider, &w, &before);
+}
+
+/// A `glab` ahead of the fake on PATH that answers a pipeline query for whatever commit the run
+/// pushed (the test cannot know that sha beforehand) and logs the query; every other call goes
+/// to the fake provider.
+fn gitlab_with_pipeline(w: &World, provider: &FakeProvider, status: &str) -> PathBuf {
+    let quote = |p: &Path| p.display().to_string().replace('\'', "'\\''");
+    let log = w.bin.join("ci.log");
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  api)\n    echo \"$*\" >> '{log}'\n    sha=$(git -C '{remote}' rev-parse {RUN_BRANCH})\n    printf '[{{\"id\":4,\"sha\":\"%s\",\"status\":\"{status}\"}}]\\n' \"$sha\" ;;\n  *) exec '{fake}' \"$@\" ;;\nesac\n",
+        log = quote(&log),
+        remote = quote(&w.remote),
+        fake = quote(&provider.glab()),
+    );
+    let glab = w.bin.join("glab");
+    std::fs::write(&glab, script).unwrap();
+    make_executable(&glab);
+    log
+}
+
+#[test]
+fn a_green_pipeline_on_gitlab_ends_at_review_ready_and_a_red_one_fails_the_run() {
+    for (status, code, state) in [("success", 0, "review_ready"), ("failed", EXIT_FAILED, "failed")] {
+        let w = world(&format!("gl-ci-{status}"));
+        let before = targets(&w);
+        let provider = gitlab();
+        let log = gitlab_with_pipeline(&w, &provider, status);
+
+        let output = run(&w, &feature_agent(), &provider, "glab", "main", &[]);
+
+        assert_eq!(output.status.code(), Some(code), "{}\n{}", stderr(&output), stdout(&output));
+        assert!(stdout(&output).contains(&format!("state: {state}")), "{}", stdout(&output));
+        assert!(stdout(&output).contains(&format!("review: {MR_URL}")), "{}", stdout(&output));
+        let asked = std::fs::read_to_string(log).unwrap_or_default();
+        assert!(asked.contains(&format!("pipelines?sha={}", remote_sha(&w, RUN_BRANCH))), "no pipeline query for the pushed commit: {asked}");
+        assert_nothing_merged(&provider, &w, &before);
+    }
 }
 
 /// A stopped run leaves a review nowhere: nothing but the base is on the remote, no pull request
@@ -323,5 +371,6 @@ fn a_red_ci_fails_the_run_but_reports_the_review_and_merges_nothing_on_github() 
     assert_eq!(output.status.code(), Some(EXIT_FAILED), "{}\n{}", stderr(&output), stdout(&output));
     assert!(stdout(&output).contains("state: failed"), "{}", stdout(&output));
     assert!(stdout(&output).contains(&format!("review: {PR_URL}")), "{}", stdout(&output));
+    assert_ci_asked_about_the_pushed_commit(&provider, &w);
     assert_nothing_merged(&provider, &w, &before);
 }
