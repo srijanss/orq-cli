@@ -116,11 +116,13 @@ pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRe
 /// The stored remote as a credential-free https URL the provider CLIs accept.
 fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
     let unresolved = || StoreError::Corrupt(format!("the remote {} has no repository url", record.remote));
-    let got = git_raw(&record.worktree, &["remote", "get-url", "--", &record.remote])?;
-    if !got.success {
-        return Err(unresolved());
+    // Where the branch is pushed (pushurl and pushInsteadOf apply), which is where the review belongs.
+    let got = git_raw(&record.worktree, &["remote", "get-url", "--push", "--all", "--", &record.remote])?;
+    let mut urls = got.stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    match (got.success, urls.next(), urls.next()) {
+        (true, Some(url), None) => normalize_remote(url).ok_or_else(unresolved),
+        _ => Err(unresolved()),
     }
-    normalize_remote(got.stdout.trim()).ok_or_else(unresolved)
 }
 
 fn normalize_remote(raw: &str) -> Option<String> {

@@ -288,3 +288,33 @@ fn a_provider_cli_that_never_answers_is_stopped_and_fails_the_stage() {
     assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     failed_without_a_review(&w, &outcome, "timeout");
 }
+
+fn git_in(w: &World, args: &[&str]) {
+    let out = std::process::Command::new("git").arg("-C").arg(&w.worktree).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn the_repository_is_where_the_branch_is_pushed_not_where_it_is_fetched_from() {
+    let w = world_with_remote("pushurl", "github", "main", "https://github.example/upstream/r.git");
+    git_in(&w, &["remote", "set-url", "--push", "origin", "git@github.example:me/fork.git"]);
+    let provider = github();
+
+    create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    for call in provider.calls() {
+        let at = call.args.iter().position(|a| a == "--repo").unwrap();
+        assert_eq!(call.args[at + 1], "https://github.example/me/fork.git");
+    }
+}
+
+#[test]
+fn a_remote_that_pushes_to_several_urls_is_ambiguous_and_nothing_is_called() {
+    let w = world("many-push", "github", "main");
+    git_in(&w, &["remote", "set-url", "--add", "--push", "origin", "https://github.example/a/one.git"]);
+    git_in(&w, &["remote", "set-url", "--add", "--push", "origin", "https://github.example/b/two.git"]);
+    let provider = github();
+
+    assert!(create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).is_err());
+    assert!(provider.calls().is_empty());
+}
