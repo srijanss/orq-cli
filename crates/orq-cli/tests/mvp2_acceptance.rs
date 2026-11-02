@@ -83,7 +83,10 @@ fn gitlab() -> FakeProvider {
 /// on PATH; `extra_bin` holds any further fake programs (a failing `cargo`, say).
 fn run(w: &World, agent: &FakeAgent, provider: &FakeProvider, forge: &str, target: &str, extra: &[&str]) -> Output {
     let claude = w.bin.join("claude");
-    std::fs::write(&claude, format!("#!/bin/sh\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
+    // The session's environment is not the test's, so the path is written into the script,
+    // single-quoted with any apostrophe in it closed, escaped and reopened.
+    let quoted = agent.path().display().to_string().replace('\'', "'\\''");
+    std::fs::write(&claude, format!("#!/bin/sh\nexec '{quoted}' \"$@\"\n")).unwrap();
     make_executable(&claude);
     let mut dirs = vec![w.bin.clone(), provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
