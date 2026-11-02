@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_test_support::{write_ledger, FakeAgent, FakeProvider, GitFixture, LedgerEntry};
+use orq_test_support::{write_ledger, FakeAgent, FakeProvider, GitFixture, LedgerEntry, TempDir};
 
 const PR_URL: &str = "https://github.example/o/r/pull/7";
 
@@ -51,11 +51,12 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 
 #[test]
 fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
-    let base = std::env::temp_dir().join(format!("orq-mvp3-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = TempDir::new("orq-mvp3");
     std::fs::create_dir_all(base.join("config/orq")).unwrap();
-    std::fs::create_dir_all(base.join("state")).unwrap();
-    std::fs::create_dir_all(base.join("bin")).unwrap();
+    std::fs::create_dir(base.join("state")).unwrap();
+    std::fs::create_dir(base.join("bin")).unwrap();
+    // Nobody else can have planted anything here: the scripts below are run.
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&base).unwrap().permissions()) & 0o777, 0o700);
     let (state, config) = (base.join("state"), base.join("config"));
     let ssh = base.join("ssh");
     std::fs::write(&ssh, "#!/bin/sh\nfor a; do last=$a; done\nexec sh -c \"$last\"\n").unwrap();
