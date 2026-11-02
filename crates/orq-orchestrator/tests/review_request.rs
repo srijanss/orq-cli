@@ -461,3 +461,23 @@ fn a_retry_after_a_create_whose_readback_failed_adopts_the_review_that_exists() 
     assert!(matches!(&retried, ReviewRequestOutcome::Adopted(r) if r.id == "7"), "{retried:?}");
     assert!(!has_call(&second, "create"));
 }
+
+#[test]
+fn a_listing_row_that_is_not_understood_fails_the_stage_without_creating() {
+    let url = "https://github.example/o/r/pull/5";
+    for (tag, body) in [
+        ("row-null", "[null]\n".to_string()),
+        ("row-number", "[3]\n".to_string()),
+        ("row-no-state", format!("[{{\"number\":5,\"url\":\"{url}\"}}]\n")),
+        ("row-state-not-text", format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":1}}]\n")),
+        ("row-unknown-state", format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":\"DRAFTING\"}}]\n")),
+    ] {
+        let w = world(tag, "github", "main");
+        let provider = FakeProvider::builder().reply(&["pr", "list"], &body).build();
+
+        let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+        assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
+        assert!(!has_call(&provider, "create"), "{tag}: a blind create could duplicate");
+    }
+}

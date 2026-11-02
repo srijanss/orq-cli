@@ -228,11 +228,18 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
         serde_json::from_str(text.trim()).map_err(|_| "the provider's listing is not a json array".to_string())?;
     let (mut open, mut merged) = (None, None);
     for row in &rows {
-        let state = row.get("state").and_then(|s| s.as_str()).unwrap_or("").to_ascii_lowercase();
+        // Only a state known to be reusable or known not to be is accepted; anything else
+        // means the lookup cannot be trusted, and a blind create could duplicate.
+        let state = row
+            .get("state")
+            .and_then(|s| s.as_str())
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| "a listed review has no state".to_string())?;
         let slot = match state.as_str() {
             "open" | "opened" => &mut open,
             "merged" => &mut merged,
-            _ => continue,
+            "closed" | "locked" => continue,
+            other => return Err(format!("a listed review has the unknown state {other}")),
         };
         let review = review_from(kind, row).ok_or_else(|| "a listed review has no usable url and id".to_string())?;
         slot.get_or_insert(review);
