@@ -1,0 +1,140 @@
+use orq_orchestrator::{summarize_run, Event, RunPhase};
+
+fn event(kind: &str, stage: Option<&str>, payload: serde_json::Value) -> Event {
+    Event {
+        schema_version: 1,
+        event_id: format!("e-{kind}-{}", stage.unwrap_or("none")),
+        run_id: "run-1".to_string(),
+        project_id: "repo-1".to_string(),
+        feature_id: "COM-02".to_string(),
+        kind: kind.to_string(),
+        stage: stage.map(str::to_string),
+        attempt: 1,
+        occurred_at: "2026-11-02T10:00:00Z".to_string(),
+        payload,
+    }
+}
+
+fn none() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+#[test]
+fn a_run_without_events_is_starting_with_no_stage() {
+    let summary = summarize_run(&[]);
+
+    assert_eq!(summary.phase, RunPhase::Running);
+    assert_eq!(summary.stage, None);
+    assert_eq!(summary.reason, None);
+}
+
+#[test]
+fn a_started_stage_is_running_in_that_stage() {
+    let events = [event("stage.started", Some("implement_and_review"), none())];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Running);
+    assert_eq!(summary.stage.as_deref(), Some("implement_and_review"));
+}
+
+#[test]
+fn a_completed_stage_keeps_the_run_running_until_the_next_one_starts() {
+    let events = [
+        event("stage.started", Some("push"), none()),
+        event("stage.completed", Some("push"), none()),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Running);
+    assert_eq!(summary.stage.as_deref(), Some("push"));
+}
+
+#[test]
+fn a_failed_stage_fails_the_run_with_its_reason() {
+    let events = [
+        event("stage.started", Some("push"), none()),
+        event("stage.failed", Some("push"), serde_json::json!({ "reason": "git push of fix failed" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.stage.as_deref(), Some("push"));
+    assert_eq!(summary.reason.as_deref(), Some("git push of fix failed"));
+}
+
+#[test]
+fn a_blocked_run_is_blocked_with_its_reason() {
+    let events = [
+        event("stage.started", Some("rebase"), none()),
+        event("run.blocked", Some("rebase"), serde_json::json!({ "reason": "conflicts" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Blocked);
+    assert_eq!(summary.reason.as_deref(), Some("conflicts"));
+}
+
+#[test]
+fn a_run_that_failed_after_a_stage_failure_reports_the_latest_reason() {
+    let events = [
+        event("stage.failed", Some("verify"), serde_json::json!({ "reason": "tests failed" })),
+        event("run.failed", Some("verify"), serde_json::json!({ "reason": "gate fix budget spent" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.reason.as_deref(), Some("gate fix budget spent"));
+}
+
+#[test]
+fn a_cleaned_up_worktree_marks_the_run_completed() {
+    let events = [
+        event("stage.completed", Some("review"), none()),
+        event("worktree.removed", Some("cleanup"), serde_json::json!({ "worktree": "w" })),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Completed);
+}
+
+#[test]
+fn a_kept_worktree_after_success_also_completes_the_run() {
+    let events = [event("worktree.kept", Some("cleanup"), serde_json::json!({ "reason": "dirty" }))];
+
+    assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
+}
+
+#[test]
+fn a_stage_that_starts_again_after_a_failure_is_running_again() {
+    let events = [
+        event("stage.failed", Some("verify"), serde_json::json!({ "reason": "tests failed" })),
+        event("stage.started", Some("verify"), none()),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Running);
+    assert_eq!(summary.reason, None);
+}
+
+#[test]
+fn a_failure_without_a_reason_has_none_and_unknown_events_are_ignored() {
+    let events = [
+        event("stage.started", Some("ci"), none()),
+        event("something.new", None, none()),
+        event("stage.failed", Some("ci"), none()),
+        event("another.unknown", None, none()),
+    ];
+
+    let summary = summarize_run(&events);
+
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.stage.as_deref(), Some("ci"));
+    assert_eq!(summary.reason, None);
+}
