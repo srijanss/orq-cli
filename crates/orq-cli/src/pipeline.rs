@@ -41,13 +41,22 @@ fn new_run_id() -> String {
 /// its output in the run's log. Returns the run id and the log path without waiting for the run.
 /// `args` are the `orq run` arguments, without `--detach`.
 pub fn launch_detached(args: &[std::ffi::OsString]) -> Result<(String, PathBuf), String> {
+    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let root = state_root().ok_or_else(|| "no state location: set XDG_STATE_HOME or HOME".to_string())?;
     let run_id = new_run_id();
     let logs = root.join("logs").join(&run_id);
-    std::fs::create_dir_all(&logs).map_err(|e| format!("cannot create the run log directory: {e}"))?;
+    // The log can hold what the agents and git printed: the user's alone, never a shared file.
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&logs)
+        .map_err(|e| format!("cannot create the run log directory: {e}"))?;
     let log = logs.join("runner.log");
-    let out = std::fs::File::create(&log).map_err(|e| format!("cannot create the run log: {e}"))?;
+    let out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&log)
+        .map_err(|e| format!("cannot create the run log: {e}"))?;
     let err = out.try_clone().map_err(|e| format!("cannot open the run log: {e}"))?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot find the orq executable: {e}"))?;
     Command::new(exe)
