@@ -197,6 +197,17 @@ fn clicking_after_scrolling_selects_the_run_shown_on_that_row() {
 
     let line = selected_line(&mut many_runs(30), keys);
 
-    assert!(line.contains("COM-"), "{line}");
-    assert!(!line.contains("COM-26") && !line.contains("COM-01"), "{line}");
+    // 25 downs select run 26 of 30; with 18 run rows the first shown is run 9.
+    assert!(line.contains("COM-09"), "{line}");
+}
+
+#[test]
+fn clicking_the_hint_row_after_scrolling_leaves_the_selection_alone() {
+    let mut keys = vec![key(KeyCode::Char('R'))];
+    keys.extend((0..25).map(|_| key(KeyCode::Down)));
+    keys.push(click(3, 23));
+
+    let line = selected_line(&mut many_runs(30), keys);
+
+    assert!(line.contains("COM-26"), "{line}");
 }
