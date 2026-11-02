@@ -345,3 +345,32 @@ fn an_unreadable_commit_status_is_never_green() {
 
     assert!(matches!(outcome, CiOutcome::Errored { .. }), "{outcome:?}");
 }
+
+#[test]
+fn the_github_check_run_call_asks_for_only_the_fields_it_reads_so_a_full_page_fits_the_output_cap() {
+    let w = world("projection", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks(GREEN, 1)).build();
+
+    wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    let args = provider.calls()[0].args.clone();
+    let at = args.iter().position(|a| a == "--jq").expect("the response is projected with --jq");
+    let filter = &args[at + 1];
+    for field in ["total_count", "name", "status", "conclusion"] {
+        assert!(filter.contains(field), "{filter} keeps {field}");
+    }
+}
+
+#[test]
+fn a_gitlab_page_is_small_enough_that_its_whole_listing_fits_the_output_cap() {
+    let w = world("glab-page", "gitlab", "https://gitlab.example/group/r.git");
+    let body = format!("[{{\"id\":4,\"sha\":\"{SHA}\",\"status\":\"success\"}}]\n");
+    let provider = FakeProvider::builder().reply(&["api"], &body).build();
+
+    wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap();
+
+    let args = provider.calls()[0].args.join("\u{1}");
+    let per_page: usize = args.split("per_page=").nth(1).unwrap().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap();
+    // A GitLab pipeline row is a few hundred bytes with its urls; 64 KiB must hold a full page.
+    assert!(per_page <= 50, "per_page={per_page}");
+}

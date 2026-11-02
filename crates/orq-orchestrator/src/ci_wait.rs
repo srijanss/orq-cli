@@ -15,6 +15,11 @@ use crate::store::{Event, RunRecord, RunStore, StoreError};
 const STAGE: &str = "ci";
 /// One page of results; an answer that says there are more than it holds is unusable.
 const PAGE: usize = 100;
+/// A GitLab pipeline row carries urls and timestamps, so a smaller page keeps the whole
+/// listing well inside the output cap of one provider call.
+const GITLAB_PAGE: usize = 30;
+/// Keeps only what the verdict reads; a full page of raw check runs would not fit the output cap.
+const CHECK_RUN_FIELDS: &str = "{total_count, check_runs: [.check_runs[] | {name, status, conclusion}]}";
 /// Consecutive failed polls tolerated before the stage gives up on the provider.
 const MAX_POLL_FAILURES: u32 = 3;
 /// Floor on the pause between polls, so a zero interval cannot hammer the provider.
@@ -173,13 +178,13 @@ fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match kind {
         Kind::GitHub => vec![
-            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}")]),
+            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}"), "--jq", CHECK_RUN_FIELDS]),
             // Older integrations report through commit statuses, which check runs do not include.
             strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/status")]),
         ],
         Kind::GitLab => {
             let project = path.replace('/', "%2F");
-            vec![strings(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={PAGE}")])]
+            vec![strings(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}")])]
         }
     })
 }
@@ -263,7 +268,7 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
     let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
         return unusable("not a json array");
     };
-    if rows.len() >= PAGE {
+    if rows.len() >= GITLAB_PAGE {
         return unusable("more pipelines than one page holds");
     }
     // The newest pipeline for exactly this commit is the one that counts.
