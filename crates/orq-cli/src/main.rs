@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod desktop;
 mod pipeline;
 
 use orq_git::ResolveError;
@@ -1367,40 +1368,12 @@ fn has_web_host(url: &str) -> bool {
 
 /// Opens `url` with the desktop's opener.
 fn open_url(url: &str) -> Result<String, String> {
-    for program in ["xdg-open", "open"] {
-        let status = std::process::Command::new(program)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if matches!(status, Ok(status) if status.success()) {
-            return Ok(format!("Opened {}", printable(url)));
-        }
-    }
-    Err(format!("cannot open the link, no opener worked: {}", printable(url)))
+    desktop::open_url_with(url, &find_program)
 }
 
 /// Puts `text` on the clipboard with the first clipboard tool that works.
 fn copy_text(text: &str) -> Result<String, String> {
-    use std::io::Write;
-    let tools: [(&str, &[&str]); 3] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("pbcopy", &[])];
-    for (program, args) in tools {
-        let Ok(mut child) = std::process::Command::new(program)
-            .args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        else {
-            continue;
-        };
-        let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
-        if matches!(child.wait(), Ok(status) if status.success()) && wrote {
-            return Ok(format!("Copied {}", printable(text)));
-        }
-    }
-    Err(format!("cannot copy: no clipboard tool worked (wl-copy, xclip, pbcopy); the link is {}", printable(text)))
+    desktop::copy_text_with(text, &find_program)
 }
 
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
