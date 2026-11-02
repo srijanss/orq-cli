@@ -159,7 +159,11 @@ pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<(), StoreError>
     }
     let current = resolve_repository_url(&record.worktree, &record.remote)?;
     // `.git` and a trailing slash name the same repository.
-    let identity = |url: &str| url.trim_end_matches('/').trim_end_matches(".git").to_string();
+    // At most one: `r.git.git` is another repository.
+    let identity = |url: &str| {
+        let url = url.trim_end_matches('/');
+        url.strip_suffix(".git").unwrap_or(url).to_string()
+    };
     if identity(&current) != identity(&record.repository) {
         return Err(StoreError::Corrupt(format!(
             "the remote {} now resolves to {current}, not the {} the run was started against",

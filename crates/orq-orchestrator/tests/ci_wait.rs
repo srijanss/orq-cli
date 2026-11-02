@@ -445,3 +445,14 @@ fn a_remote_that_still_resolves_to_the_pinned_repository_is_waited_on() {
 
     assert_eq!(wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap(), CiOutcome::Passed);
 }
+
+#[test]
+fn a_repeated_git_suffix_is_a_different_repository_from_the_pinned_one() {
+    let w = world_pinned("suffix", "github", "https://github.example/o/r.git.git", "https://github.example/o/r.git");
+    let provider = github_provider().build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config());
+
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert!(provider.calls().is_empty(), "{:?}", provider.calls());
+}
