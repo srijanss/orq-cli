@@ -51,7 +51,7 @@ pub fn create_review_request(
     let session = |args: Vec<String>| DraftSession {
         program: program.to_string_lossy().into_owned(),
         args,
-        env: Vec::new(),
+        env: provider_environment(),
         cwd: record.worktree.clone(),
     };
     if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft)), timeout) {
@@ -73,6 +73,33 @@ pub fn create_review_request(
     )?;
     record_event(store, &record, "stage.completed", serde_json::json!({ "url": review.url }))?;
     Ok(ReviewRequestOutcome::Created(review))
+}
+
+/// The session starts from an empty environment; these are the variables the
+/// provider CLIs read for credentials, host and configuration, and only these pass.
+const FORWARDED_ENV: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_CONFIG_DIR",
+    "GITLAB_TOKEN",
+    "GITLAB_ACCESS_TOKEN",
+    "OAUTH_TOKEN",
+    "GITLAB_HOST",
+    "GL_HOST",
+    "GLAB_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+];
+
+fn provider_environment() -> Vec<(String, String)> {
+    FORWARDED_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect()
 }
 
 /// The review request recorded for `run_id`, if one was created.

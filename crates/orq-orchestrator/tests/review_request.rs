@@ -169,3 +169,37 @@ fn an_unknown_provider_or_run_is_an_error_and_nothing_is_called() {
     assert!(create_review_request(&w.store, "ghost", &provider.gh(), &draft(), WAIT).is_err());
     assert!(provider.calls().is_empty());
 }
+
+#[test]
+fn provider_credentials_from_the_environment_reach_the_cli_and_nothing_else_does() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("env", "github", "main");
+    let dir = w.worktree.parent().unwrap().to_path_buf();
+    let seen = dir.join("seen.txt");
+    let script = dir.join("gh-probe");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$GH_TOKEN|$GITHUB_TOKEN|$GH_HOST|$ORQ_UNRELATED_SECRET\" >> {}\n\
+             if [ \"$2\" = view ]; then echo '{{\"number\":7,\"url\":\"https://github.example/o/r/pull/7\"}}'; fi\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("GH_TOKEN", "tok-gh");
+    std::env::set_var("GITHUB_TOKEN", "tok-github");
+    std::env::set_var("GH_HOST", "github.example");
+    std::env::set_var("ORQ_UNRELATED_SECRET", "leak");
+
+    let outcome = create_review_request(&w.store, "run-1", &script, &draft(), WAIT).unwrap();
+
+    assert!(matches!(outcome, ReviewRequestOutcome::Created(_)), "{outcome:?}");
+    let lines = fs::read_to_string(&seen).unwrap();
+    assert!(!lines.is_empty());
+    for line in lines.lines() {
+        assert_eq!(line, "tok-gh|tok-github|github.example|", "credentials pass, other variables do not");
+    }
+    let events = fs::read_to_string(dir.join("state")).ok();
+    assert!(events.map_or(true, |e| !e.contains("tok-gh")), "a token is never logged");
+}
