@@ -1,6 +1,7 @@
 //! Stage logic for a pipeline run: what each stage decides and does, kept
 //! apart from the CLI and the popup that drive it.
 
+mod ci_fix;
 mod ci_wait;
 mod cleanup;
 mod conflict_fix;
@@ -16,6 +17,7 @@ mod review_request;
 mod setup;
 mod store;
 
+pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};

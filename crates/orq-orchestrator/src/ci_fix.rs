@@ -1,0 +1,126 @@
+//! When CI is red on the pushed branch: let a harness session fix it, gate and push the
+//! fix, and wait on CI again, up to a number of attempts. A CI still red after that fails
+//! the run; the worktree is left as it is for inspection.
+
+use std::fs;
+use std::path::Path;
+
+use crate::ci_wait::CiOutcome;
+use crate::gate::Gate;
+use crate::gate_fix::FixSessionSpec;
+use crate::gate_stage::{record_event, run_gate_attempt, GateOutcome};
+use crate::implement::{run_session_stage, ImplementSession};
+use crate::push_stage::PushOutcome;
+use crate::store::{RunStore, StoreError};
+
+const FIX_STAGE: &str = "ci_fix";
+
+/// What the loop needs from the outside world. The orchestrator owns the order of events;
+/// the caller owns talking to the CI provider, pushing, and describing failures.
+pub trait CiFixSteps {
+    /// Wait for CI on the commit `head_sha`.
+    fn wait(&mut self, head_sha: &str) -> Result<CiOutcome, StoreError>;
+    /// Publish the branch again after a fix.
+    fn push(&mut self) -> Result<PushOutcome, StoreError>;
+    /// The text of the failure log for these failing checks (fetched from the provider).
+    fn failure_log(&mut self, failing: &[String]) -> String;
+    /// The fix session of attempt `attempt` (from 1), given the file holding the failure log.
+    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> FixSessionSpec;
+}
+
+pub struct CiFixConfig<'a> {
+    pub gate: &'a Gate,
+    pub gate_enabled: bool,
+    pub gate_log: &'a Path,
+    /// Where each attempt's failure log is written (created if missing).
+    pub log_dir: &'a Path,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CiFixOutcome {
+    /// CI is green, after `fix_attempts` fix sessions.
+    Passed { fix_attempts: u32 },
+    /// CI is disabled for the run.
+    Skipped,
+    /// CI never gave a verdict in time; nothing was fixed.
+    TimedOut { fix_attempts: u32 },
+    /// CI could not be read.
+    Errored { fix_attempts: u32, reason: String },
+    /// Still red after `fix_attempts` fix sessions; the run has failed.
+    Failed { fix_attempts: u32, failing: Vec<String> },
+    /// A fix left the gate red, so it was not pushed; the run has failed.
+    GateFailed { fix_attempts: u32, step: usize, exit_code: Option<i32> },
+    /// A fix could not be pushed; the run has failed.
+    PushFailed { fix_attempts: u32, reason: String },
+}
+
+/// Wait on CI for `head_sha`; while it is red and fewer than `config.max_attempts` fixes
+/// were tried, write the failure log, run a fix session, rerun the gate, push, and wait on
+/// the pushed commit.
+pub fn run_ci_fix_loop(
+    store: &RunStore,
+    run_id: &str,
+    head_sha: &str,
+    config: &CiFixConfig,
+    steps: &mut impl CiFixSteps,
+) -> Result<CiFixOutcome, StoreError> {
+    store.load(run_id)?;
+    let mut head = head_sha.to_string();
+    let mut fix_attempts = 0;
+    loop {
+        let failing = match steps.wait(&head)? {
+            CiOutcome::Passed => return Ok(CiFixOutcome::Passed { fix_attempts }),
+            CiOutcome::Skipped => return Ok(CiFixOutcome::Skipped),
+            CiOutcome::TimedOut => return Ok(CiFixOutcome::TimedOut { fix_attempts }),
+            CiOutcome::Errored { reason } => return Ok(CiFixOutcome::Errored { fix_attempts, reason }),
+            CiOutcome::Failed { failing } => failing,
+        };
+        if fix_attempts >= config.max_attempts {
+            let reason = format!("CI is still failing after {fix_attempts} fix attempt(s)");
+            fail_run(store, run_id, fix_attempts + 1, serde_json::json!({ "reason": reason, "failing": failing }))?;
+            return Ok(CiFixOutcome::Failed { fix_attempts, failing });
+        }
+        fix_attempts += 1;
+
+        fs::create_dir_all(config.log_dir)?;
+        let failure_log = config.log_dir.join(format!("ci-failure-{fix_attempts}.log"));
+        fs::write(&failure_log, steps.failure_log(&failing))?;
+
+        let spec = steps.fix_session(fix_attempts, &failure_log);
+        let session = ImplementSession {
+            program: &spec.program,
+            args: &spec.args,
+            env: &spec.env,
+            cwd: &spec.cwd,
+            session_id: spec.session_id.as_deref(),
+            log: &spec.log,
+            terminal: spec.terminal,
+        };
+        // The session's own result is not trusted: the gate and CI decide.
+        run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
+
+        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts)? {
+            GateOutcome::Passed | GateOutcome::Skipped { .. } => {}
+            GateOutcome::Failed { step, exit_code } => {
+                let reason = format!("the gate failed after CI fix attempt {fix_attempts}; nothing was pushed");
+                fail_run(store, run_id, fix_attempts, serde_json::json!({ "reason": reason }))?;
+                return Ok(CiFixOutcome::GateFailed { fix_attempts, step, exit_code });
+            }
+        }
+
+        match steps.push()? {
+            PushOutcome::Pushed { head_sha } => head = head_sha,
+            PushOutcome::Failed { reason } => {
+                let message = format!("pushing CI fix attempt {fix_attempts} failed: {reason}");
+                fail_run(store, run_id, fix_attempts, serde_json::json!({ "reason": message }))?;
+                return Ok(CiFixOutcome::PushFailed { fix_attempts, reason });
+            }
+        }
+    }
+}
+
+fn fail_run(store: &RunStore, run_id: &str, attempt: u32, payload: serde_json::Value) -> Result<(), StoreError> {
+    let record = store.load(run_id)?;
+    record_event(store, &record, "run.failed", attempt, payload)
+}
