@@ -208,8 +208,11 @@ fn provider_credentials_from_the_environment_reach_the_cli_and_nothing_else_does
     for line in lines.lines() {
         assert_eq!(line, "tok-gh|tok-github|github.example|", "credentials pass, other variables do not");
     }
-    let events = fs::read_to_string(dir.join("state")).ok();
-    assert!(events.map_or(true, |e| !e.contains("tok-gh")), "a token is never logged");
+    let events = format!("{:?}", w.store.events("run-1").unwrap());
+    assert!(events.contains("stage.completed"), "the events were really read: {events}");
+    for secret in ["tok-gh", "tok-github"] {
+        assert!(!events.contains(secret), "a token is never logged: {events}");
+    }
 }
 
 #[test]
