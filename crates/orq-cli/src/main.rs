@@ -1196,6 +1196,19 @@ impl LedgerBackend {
     }
 }
 
+/// The run id `orq run --detach` printed, or the first line it gave as the reason it failed.
+fn launch_outcome(success: bool, stdout: &str, stderr: &str) -> Result<String, String> {
+    if success {
+        return stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("run: "))
+            .map(str::to_string)
+            .ok_or_else(|| "the run started but reported no run id".to_string());
+    }
+    let reason = stderr.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("orq run failed");
+    Err(printable(reason.trim_start_matches("orq: ")))
+}
+
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
 fn default_target_branch(repo: &Path) -> String {
     std::process::Command::new("git")
@@ -1246,17 +1259,11 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|err| format!("cannot start orq run: {err}"))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() {
-            return stdout
-                .lines()
-                .find_map(|line| line.strip_prefix("run: "))
-                .map(str::to_string)
-                .ok_or_else(|| "the run started but reported no run id".to_string());
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let reason = stderr.lines().find(|line| !line.trim().is_empty()).unwrap_or("orq run failed");
-        Err(printable(reason.trim_start_matches("orq: ")))
+        launch_outcome(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
     }
 
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
@@ -2230,5 +2237,31 @@ mod ledger_backend_tests {
         let reason = refused.unwrap_err();
         assert!(reason.contains("no-such-profile"), "{reason}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_output_gives_the_run_id_or_the_first_reason_line() {
+        assert_eq!(crate::launch_outcome(true, "run: run-9\nlog: /x\nstate: launched\n", ""), Ok("run-9".to_string()));
+        assert!(crate::launch_outcome(true, "state: launched\n", "").unwrap_err().contains("no run id"));
+        assert_eq!(
+            crate::launch_outcome(false, "", "\norq: feature a already has an active run: run-1\nmore\n"),
+            Err("feature a already has an active run: run-1".to_string())
+        );
+        assert_eq!(crate::launch_outcome(false, "", "  \n"), Err("orq run failed".to_string()));
+    }
+
+    #[test]
+    fn the_target_branch_is_the_remotes_default_or_main() {
+        let fixture = orq_test_support::GitFixture::new();
+        assert_eq!(crate::default_target_branch(fixture.root()), "main");
+
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").arg("-C").arg(fixture.root()).args(args).status().unwrap();
+            assert!(ok.success(), "{args:?}");
+        };
+        git(&["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
+
+        assert_eq!(crate::default_target_branch(fixture.root()), "trunk");
     }
 }
