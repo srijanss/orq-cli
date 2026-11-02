@@ -56,6 +56,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 fn github() -> FakeProvider {
     FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
         .reply(&["pr", "create"], "Creating pull request\nhttps://github.example/o/r/pull/7\n")
         .reply(&["pr", "view"], "{\"number\":7,\"url\":\"https://github.example/o/r/pull/7\"}\n")
         .build()
@@ -63,6 +64,7 @@ fn github() -> FakeProvider {
 
 fn gitlab() -> FakeProvider {
     FakeProvider::builder()
+        .reply(&["mr", "list"], "[]\n")
         .reply(&["mr", "create"], "https://gitlab.example/o/r/-/merge_requests/3\n")
         .reply(&["mr", "view"], "{\"iid\":3,\"web_url\":\"https://gitlab.example/o/r/-/merge_requests/3\"}\n")
         .build()
@@ -86,7 +88,7 @@ fn a_github_pull_request_is_opened_from_the_run_branch_against_the_stored_target
     let expected = ReviewRef { url: "https://github.example/o/r/pull/7".to_string(), id: "7".to_string() };
     assert_eq!(outcome, ReviewRequestOutcome::Created(expected.clone()));
     let calls = provider.calls();
-    let create = &calls[0];
+    let create = calls.iter().find(|c| c.args[1] == "create").expect("a create call");
     assert_eq!(&create.args[..2], ["pr", "create"]);
     assert!(same_dir(&create.cwd, &w.worktree));
     let args = create.args.join("\u{1}");
@@ -106,7 +108,8 @@ fn a_gitlab_merge_request_is_opened_the_same_way() {
 
     let expected = ReviewRef { url: "https://gitlab.example/o/r/-/merge_requests/3".to_string(), id: "3".to_string() };
     assert_eq!(outcome, ReviewRequestOutcome::Created(expected));
-    let args = provider.calls()[0].args.join("\u{1}");
+    let calls = provider.calls();
+    let args = calls.iter().find(|c| c.args[1] == "create").unwrap().args.join("\u{1}");
     assert!(args.starts_with("mr\u{1}create"), "{args}");
     assert!(args.contains("--source-branch\u{1}fix--COM-02") && args.contains("--target-branch\u{1}main"), "{args}");
 }
@@ -128,7 +131,7 @@ fn the_url_and_id_are_recorded_in_a_review_created_event() {
 #[test]
 fn a_provider_that_refuses_fails_the_stage_and_records_no_review() {
     let w = world("refused", "github", "main");
-    let provider = FakeProvider::builder().fail(&["pr", "create"], 1, "HTTP 401\n").build();
+    let provider = FakeProvider::builder().reply(&["pr", "list"], "[]\n").fail(&["pr", "create"], 1, "HTTP 401\n").build();
 
     let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
 
@@ -146,7 +149,7 @@ fn answers_that_are_not_a_web_url_and_a_number_are_not_recorded() {
         ("missing", "{}\n"),
     ] {
         let w = world(tag, "github", "main");
-        let provider = FakeProvider::builder().reply(&["pr", "create"], "ok\n").reply(&["pr", "view"], view).build();
+        let provider = FakeProvider::builder().reply(&["pr", "list"], "[]\n").reply(&["pr", "create"], "ok\n").reply(&["pr", "view"], view).build();
 
         let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
 
@@ -163,7 +166,7 @@ fn the_provider_is_only_ever_asked_to_create_and_view_never_to_merge() {
     create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
 
     for call in provider.calls() {
-        assert!(matches!(call.args[1].as_str(), "create" | "view"), "{:?}", call.args);
+        assert!(matches!(call.args[1].as_str(), "list" | "create" | "view"), "{:?}", call.args);
         assert!(!call.args.iter().any(|a| a.contains("merge") && !a.contains('/')), "{:?}", call.args);
     }
 }
@@ -189,6 +192,7 @@ fn provider_credentials_from_the_environment_reach_the_cli_and_nothing_else_does
         &script,
         format!(
             "#!/bin/sh\necho \"$GH_TOKEN|$GITHUB_TOKEN|$GH_HOST|$ORQ_UNRELATED_SECRET\" >> {}\n\
+             if [ \"$2\" = list ]; then echo '[]'; fi\n\
              if [ \"$2\" = view ]; then echo '{{\"number\":7,\"url\":\"https://github.example/o/r/pull/7\"}}'; fi\n",
             seen.display()
         ),
@@ -228,7 +232,7 @@ fn both_calls_name_the_stored_remotes_repository_without_its_credentials() {
         create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
 
         let calls = provider.calls();
-        assert_eq!(calls.len(), 2, "{tag}");
+        assert_eq!(calls.len(), 3, "{tag}");
         for call in &calls {
             let at = call.args.iter().position(|a| a == "--repo").unwrap_or_else(|| panic!("{tag}: no --repo in {:?}", call.args));
             assert_eq!(call.args[at + 1], expected, "{tag}");
@@ -258,6 +262,7 @@ fn failed_without_a_review(w: &World, outcome: &ReviewRequestOutcome, tag: &str)
 fn a_view_that_fails_after_a_successful_create_fails_the_stage_and_records_nothing() {
     let w = world("view-fails", "github", "main");
     let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
         .reply(&["pr", "create"], "https://github.example/o/r/pull/7\n")
         .fail(&["pr", "view"], 1, "HTTP 502\n")
         .build();
@@ -265,7 +270,7 @@ fn a_view_that_fails_after_a_successful_create_fails_the_stage_and_records_nothi
     let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
 
     failed_without_a_review(&w, &outcome, "view");
-    assert_eq!(provider.calls().len(), 2);
+    assert_eq!(provider.calls().len(), 3);
 }
 
 #[test]
@@ -338,4 +343,121 @@ fn a_remote_url_with_a_query_or_fragment_is_refused_so_no_secret_reaches_events_
         let events = format!("{:?}", w.store.events("run-1").unwrap());
         assert!(!events.contains("sekrit"), "{tag}: {events}");
     }
+}
+
+fn listing(provider: &str, number_key: &str, url_key: &str, items: &[(u64, &str, &str)]) -> String {
+    let rows: Vec<String> = items
+        .iter()
+        .map(|(n, state, url)| format!("{{\"{number_key}\":{n},\"{url_key}\":\"{url}\",\"state\":\"{state}\"}}"))
+        .collect();
+    let _ = provider;
+    format!("[{}]\n", rows.join(","))
+}
+
+fn gh_with_listing(rows: &[(u64, &str, &str)]) -> FakeProvider {
+    FakeProvider::builder().reply(&["pr", "list"], &listing("gh", "number", "url", rows)).build()
+}
+
+fn has_call(provider: &FakeProvider, verb: &str) -> bool {
+    provider.calls().iter().any(|c| c.args[1] == verb)
+}
+
+#[test]
+fn an_open_review_for_the_same_branches_is_adopted_and_nothing_is_created() {
+    let w = world("adopt-open", "github", "release/1.x");
+    let provider = gh_with_listing(&[(5, "OPEN", "https://github.example/o/r/pull/5")]);
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    let adopted = ReviewRef { url: "https://github.example/o/r/pull/5".to_string(), id: "5".to_string() };
+    assert_eq!(outcome, ReviewRequestOutcome::Adopted(adopted.clone()));
+    assert!(!has_call(&provider, "create"), "no duplicate is created");
+    let list = provider.calls().into_iter().find(|c| c.args[1] == "list").unwrap();
+    let args = list.args.join("\u{1}");
+    assert!(args.contains("--head\u{1}fix--COM-02") && args.contains("--base\u{1}release/1.x") && args.contains("--state\u{1}all"), "{args}");
+    assert!(args.contains("--repo\u{1}https://github.example/o/r.git"), "{args}");
+    assert_eq!(kinds(&w), ["stage.started", "review.adopted", "stage.completed"]);
+    assert_eq!(recorded_review(&w.store, "run-1").unwrap(), Some(adopted));
+}
+
+#[test]
+fn a_merged_review_is_adopted_too_and_an_open_one_is_preferred() {
+    let merged = world("adopt-merged", "github", "main");
+    let provider = gh_with_listing(&[(4, "MERGED", "https://github.example/o/r/pull/4")]);
+    let outcome = create_review_request(&merged.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+    assert!(matches!(&outcome, ReviewRequestOutcome::Adopted(r) if r.id == "4"), "{outcome:?}");
+
+    let both = world("adopt-both", "github", "main");
+    let provider = gh_with_listing(&[(4, "MERGED", "https://github.example/o/r/pull/4"), (9, "OPEN", "https://github.example/o/r/pull/9")]);
+    let outcome = create_review_request(&both.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+    assert!(matches!(&outcome, ReviewRequestOutcome::Adopted(r) if r.id == "9"), "{outcome:?}");
+}
+
+#[test]
+fn a_closed_review_is_not_adopted_and_a_new_one_is_created() {
+    let w = world("closed", "github", "main");
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], &listing("gh", "number", "url", &[(3, "CLOSED", "https://github.example/o/r/pull/3")]))
+        .reply(&["pr", "create"], "ok\n")
+        .reply(&["pr", "view"], "{\"number\":8,\"url\":\"https://github.example/o/r/pull/8\"}\n")
+        .build();
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    assert!(matches!(&outcome, ReviewRequestOutcome::Created(r) if r.id == "8"), "{outcome:?}");
+}
+
+#[test]
+fn a_gitlab_merge_request_is_adopted_from_its_listing() {
+    let w = world("adopt-glab", "gitlab", "main");
+    let rows = listing("glab", "iid", "web_url", &[(2, "opened", "https://gitlab.example/o/r/-/merge_requests/2")]);
+    let provider = FakeProvider::builder().reply(&["mr", "list"], &rows).build();
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.glab(), &draft(), WAIT).unwrap();
+
+    assert!(matches!(&outcome, ReviewRequestOutcome::Adopted(r) if r.id == "2"), "{outcome:?}");
+    let list = provider.calls().into_iter().find(|c| c.args[1] == "list").unwrap();
+    let args = list.args.join("\u{1}");
+    assert!(args.contains("--source-branch\u{1}fix--COM-02") && args.contains("--target-branch\u{1}main") && args.contains("--all"), "{args}");
+    assert!(!has_call(&provider, "create"));
+}
+
+#[test]
+fn a_lookup_that_fails_or_is_unusable_fails_the_stage_without_creating() {
+    for (tag, provider) in [
+        ("list-fails", FakeProvider::builder().fail(&["pr", "list"], 1, "HTTP 500\n").build()),
+        ("list-junk", FakeProvider::builder().reply(&["pr", "list"], "not json\n").build()),
+        (
+            "list-bad-url",
+            FakeProvider::builder()
+                .reply(&["pr", "list"], &listing("gh", "number", "url", &[(5, "OPEN", "javascript:alert(1)")]))
+                .build(),
+        ),
+    ] {
+        let w = world(tag, "github", "main");
+
+        let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+        assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
+        assert!(!has_call(&provider, "create"), "{tag}: a blind create could duplicate");
+        assert_eq!(recorded_review(&w.store, "run-1").unwrap(), None, "{tag}");
+    }
+}
+
+#[test]
+fn a_retry_after_a_create_whose_readback_failed_adopts_the_review_that_exists() {
+    let w = world("retry", "github", "main");
+    let first = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], "ok\n")
+        .fail(&["pr", "view"], 1, "HTTP 502\n")
+        .build();
+    let failed = create_review_request(&w.store, "run-1", &first.gh(), &draft(), WAIT).unwrap();
+    assert!(matches!(failed, ReviewRequestOutcome::Failed { .. }));
+
+    let second = gh_with_listing(&[(7, "OPEN", "https://github.example/o/r/pull/7")]);
+    let retried = create_review_request(&w.store, "run-1", &second.gh(), &draft(), WAIT).unwrap();
+
+    assert!(matches!(&retried, ReviewRequestOutcome::Adopted(r) if r.id == "7"), "{retried:?}");
+    assert!(!has_call(&second, "create"));
 }

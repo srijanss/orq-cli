@@ -1,7 +1,8 @@
 //! The review-request stage: open the GitHub PR or GitLab MR for the run branch
 //! against the stored target branch, read its URL and id back as structured
-//! output, and record them. Only create and view are ever asked of the provider;
-//! nothing here approves or merges.
+//! output, and record them. An open or merged review for the same branches is
+//! adopted instead of duplicated. Only list, create and view are ever asked of
+//! the provider; nothing here approves or merges.
 
 use std::path::Path;
 use std::time::Duration;
@@ -13,6 +14,7 @@ use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "review";
 const CREATED: &str = "review.created";
+const ADOPTED: &str = "review.adopted";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRef {
@@ -23,6 +25,8 @@ pub struct ReviewRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewRequestOutcome {
     Created(ReviewRef),
+    /// An open or merged review for the same branches already existed and was recorded instead.
+    Adopted(ReviewRef),
     /// The provider refused or answered with something unusable; the stage has failed.
     Failed { reason: String },
 }
@@ -57,6 +61,22 @@ pub fn create_review_request(
         env: provider_environment(),
         cwd: record.worktree.clone(),
     };
+    // A review for these branches may exist already (an earlier attempt whose read-back failed, or
+    // someone else's); it is adopted, and when that cannot be told a blind create could duplicate it.
+    match find_existing(kind, &session(list_args(kind, &record, &repo)), timeout) {
+        Err(reason) => return fail(store, &record, format!("existing review requests could not be listed: {reason}")),
+        Ok(Some(review)) => {
+            record_event(
+                store,
+                &record,
+                ADOPTED,
+                serde_json::json!({ "url": review.url, "id": review.id, "provider": record.provider }),
+            )?;
+            record_event(store, &record, "stage.completed", serde_json::json!({ "url": review.url, "adopted": true }))?;
+            return Ok(ReviewRequestOutcome::Adopted(review));
+        }
+        Ok(None) => {}
+    }
     if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft, &repo)), timeout) {
         return fail(store, &record, format!("the review request could not be created: {reason}"));
     }
@@ -107,7 +127,7 @@ fn provider_environment() -> Vec<(String, String)> {
 
 /// The review request recorded for `run_id`, if one was created.
 pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRef>, StoreError> {
-    let found = store.events(run_id)?.into_iter().rev().find(|e| e.kind == CREATED);
+    let found = store.events(run_id)?.into_iter().rev().find(|e| e.kind == CREATED || e.kind == ADOPTED);
     Ok(found.and_then(|e| {
         Some(ReviewRef { url: e.payload.get("url")?.as_str()?.to_string(), id: e.payload.get("id")?.as_str()?.to_string() })
     }))
@@ -178,6 +198,48 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) 
     }
 }
 
+fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
+    let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match kind {
+        Kind::GitHub => strings(&[
+            "pr", "list", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--state", "all",
+            "--json", "number,url,state", "--limit", "50",
+        ]),
+        Kind::GitLab => strings(&[
+            "mr",
+            "list",
+            "--repo",
+            repo,
+            "--source-branch",
+            &record.branch,
+            "--target-branch",
+            &record.target_branch,
+            "--all",
+            "--output",
+            "json",
+        ]),
+    }
+}
+
+/// The open review for these branches, else a merged one; closed ones are not reused.
+fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Result<Option<ReviewRef>, String> {
+    let text = run_drafter(session, timeout)?;
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(text.trim()).map_err(|_| "the provider's listing is not a json array".to_string())?;
+    let (mut open, mut merged) = (None, None);
+    for row in &rows {
+        let state = row.get("state").and_then(|s| s.as_str()).unwrap_or("").to_ascii_lowercase();
+        let slot = match state.as_str() {
+            "open" | "opened" => &mut open,
+            "merged" => &mut merged,
+            _ => continue,
+        };
+        let review = review_from(kind, row).ok_or_else(|| "a listed review has no usable url and id".to_string())?;
+        slot.get_or_insert(review);
+    }
+    Ok(open.or(merged))
+}
+
 fn view_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
@@ -188,7 +250,10 @@ fn view_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
 
 /// A web url and a numeric id, or nothing: the provider's text is untrusted.
 fn parse_view(kind: Kind, text: &str) -> Option<ReviewRef> {
-    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    review_from(kind, &serde_json::from_str(text.trim()).ok()?)
+}
+
+fn review_from(kind: Kind, value: &serde_json::Value) -> Option<ReviewRef> {
     let (id_key, url_key) = match kind {
         Kind::GitHub => ("number", "url"),
         Kind::GitLab => ("iid", "web_url"),
