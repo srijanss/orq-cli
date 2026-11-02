@@ -392,6 +392,8 @@ fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothi
     assert!(state_is_empty(&env));
 }
 
+// Reads /proc, so it can only run where procfs exists.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_detached_runner_and_its_agent_live_in_a_session_of_their_own() {
     let w = world("detach-session");
