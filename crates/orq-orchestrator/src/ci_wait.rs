@@ -52,6 +52,8 @@ enum Verdict {
     Passed,
     Failed(Vec<String>),
     Pending,
+    /// The source reported nothing at all for the commit.
+    Empty,
     Unusable(String),
 }
 
@@ -80,19 +82,22 @@ pub fn wait_for_ci(
         other => return Err(StoreError::Corrupt(format!("the provider {other} has no CI to wait for"))),
     };
     let repo = repository_url(&record)?;
-    let Some(args) = poll_args(kind, &repo, head_sha) else {
+    let Some(calls) = poll_calls(kind, &repo, head_sha) else {
         let reason = "the repository or commit cannot be addressed safely".to_string();
         let payload = serde_json::json!({ "result": "errored", "reason": reason, "head_sha": head_sha });
         return fail(store, &record, payload, CiOutcome::Errored { reason });
     };
     record_event(store, &record, "stage.started", serde_json::json!({ "provider": record.provider, "head_sha": head_sha }))?;
 
-    let session = DraftSession {
-        program: program.to_string_lossy().into_owned(),
-        args,
-        env: provider_environment(),
-        cwd: record.worktree.clone(),
-    };
+    let sessions: Vec<DraftSession> = calls
+        .into_iter()
+        .map(|args| DraftSession {
+            program: program.to_string_lossy().into_owned(),
+            args,
+            env: provider_environment(),
+            cwd: record.worktree.clone(),
+        })
+        .collect();
     let deadline = Instant::now() + config.timeout;
     let mut failures = 0;
     loop {
@@ -102,13 +107,7 @@ pub fn wait_for_ci(
             let payload = serde_json::json!({ "result": "timed_out", "head_sha": head_sha });
             return fail(store, &record, payload, CiOutcome::TimedOut);
         }
-        let verdict = match run_drafter(&session, config.command_timeout.min(remaining)) {
-            Ok(text) => match kind {
-                Kind::GitHub => github_verdict(&text),
-                Kind::GitLab => gitlab_verdict(&text, head_sha),
-            },
-            Err(reason) => Verdict::Unusable(reason),
-        };
+        let verdict = poll_once(&sessions, kind, head_sha, config, deadline);
         match verdict {
             Verdict::Passed => {
                 record_event(store, &record, "stage.completed", serde_json::json!({ "result": "passed", "head_sha": head_sha }))?;
@@ -125,15 +124,43 @@ pub fn wait_for_ci(
                     return fail(store, &record, payload, CiOutcome::Errored { reason });
                 }
             }
-            Verdict::Pending => failures = 0,
+            Verdict::Pending | Verdict::Empty => failures = 0,
         }
         std::thread::sleep(config.poll_interval.max(MIN_POLL_INTERVAL).min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
-/// The read-only API call that lists the checks of one commit. Everything that ends up in the
+/// One poll: every call is made in turn and the answers are combined. A red or unreadable
+/// answer ends the poll early, since nothing the later calls say could change it.
+fn poll_once(sessions: &[DraftSession], kind: Kind, head_sha: &str, config: &CiWaitConfig, deadline: Instant) -> Verdict {
+    let mut verdicts = Vec::new();
+    for (index, session) in sessions.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let verdict = match run_drafter(session, config.command_timeout.min(remaining)) {
+            Ok(text) => match (kind, index) {
+                (Kind::GitHub, 0) => github_verdict(&text),
+                (Kind::GitHub, _) => github_status_verdict(&text),
+                (Kind::GitLab, _) => gitlab_verdict(&text, head_sha),
+            },
+            Err(reason) => Verdict::Unusable(reason),
+        };
+        if matches!(verdict, Verdict::Failed(_) | Verdict::Unusable(_)) {
+            return verdict;
+        }
+        verdicts.push(verdict);
+    }
+    if verdicts.contains(&Verdict::Pending) {
+        Verdict::Pending
+    } else if verdicts.contains(&Verdict::Passed) {
+        Verdict::Passed
+    } else {
+        Verdict::Pending
+    }
+}
+
+/// The read-only API calls that list the checks of one commit. Everything that ends up in the
 /// request path is checked first, since it comes from a remote url and a recorded sha.
-fn poll_args(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<String>> {
+fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>> {
     let sha_ok = (40..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| c.is_ascii_hexdigit());
     let (_, rest) = repo.split_once("://")?;
     let (host, path) = rest.split_once('/')?;
@@ -145,10 +172,14 @@ fn poll_args(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<String>> {
     }
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match kind {
-        Kind::GitHub => strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}")]),
+        Kind::GitHub => vec![
+            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}")]),
+            // Older integrations report through commit statuses, which check runs do not include.
+            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/status")]),
+        ],
         Kind::GitLab => {
             let project = path.replace('/', "%2F");
-            strings(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={PAGE}")])
+            vec![strings(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={PAGE}")])]
         }
     })
 }
@@ -182,10 +213,48 @@ fn github_verdict(text: &str) -> Verdict {
     }
     if !failing.is_empty() {
         Verdict::Failed(failing)
-    } else if pending || runs.is_empty() {
+    } else if pending {
         Verdict::Pending
+    } else if runs.is_empty() {
+        Verdict::Empty
     } else {
         Verdict::Passed
+    }
+}
+
+/// The combined status of a commit: its own `state` sums up every status, so a list cut short
+/// by paging cannot hide a red one.
+fn github_status_verdict(text: &str) -> Verdict {
+    let unusable = |why: &str| Verdict::Unusable(format!("the commit status is unusable: {why}"));
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return unusable("not json");
+    };
+    let (Some(total), Some(state), Some(statuses)) = (
+        value.get("total_count").and_then(|t| t.as_u64()),
+        value.get("state").and_then(|s| s.as_str()),
+        value.get("statuses").and_then(|s| s.as_array()),
+    ) else {
+        return unusable("no state");
+    };
+    if total == 0 {
+        return Verdict::Empty;
+    }
+    match state {
+        "success" => Verdict::Passed,
+        "pending" => Verdict::Pending,
+        "failure" | "error" => {
+            let mut failing: Vec<String> = statuses
+                .iter()
+                .filter(|s| matches!(s.get("state").and_then(|s| s.as_str()), Some("failure" | "error")))
+                .filter_map(|s| s.get("context").and_then(|c| c.as_str()).map(clean_name))
+                .take(MAX_FAILING_NAMES)
+                .collect();
+            if failing.is_empty() {
+                failing.push("commit status".to_string());
+            }
+            Verdict::Failed(failing)
+        }
+        _ => unusable("an unrecognised state"),
     }
 }
 
@@ -268,7 +337,7 @@ mod tests {
     #[test]
     fn github_unfinished_or_absent_runs_keep_waiting() {
         assert_eq!(github_verdict(&runs(&run("a", "queued", ""), 1)), Verdict::Pending);
-        assert_eq!(github_verdict(&runs("", 0)), Verdict::Pending);
+        assert_eq!(github_verdict(&runs("", 0)), Verdict::Empty);
     }
 
     #[test]
