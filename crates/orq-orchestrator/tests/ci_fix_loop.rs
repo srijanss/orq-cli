@@ -313,13 +313,12 @@ fn a_failure_log_is_never_written_through_a_planted_symlink() {
     fs::write(&victim, "precious\n").unwrap();
     fs::create_dir_all(w.worktree.join(".orq")).unwrap();
     std::os::unix::fs::symlink(&victim, w.worktree.join(".orq/ci-failure-1.log")).unwrap();
-    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "exit 0");
 
-    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
-    assert!(result.is_err(), "{result:?}");
-    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
-    assert!(script.sessions.is_empty(), "no session runs after the log could not be written");
+    assert_eq!(result, CiFixOutcome::Passed { fix_attempts: 1 });
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n", "nothing was written through the link");
 }
 
 #[cfg(unix)]
@@ -410,4 +409,29 @@ fn a_failure_log_is_never_written_through_a_symlinked_ancestor_directory() {
     assert!(result.is_err(), "{result:?}");
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "nothing was written outside the worktree");
     assert!(script.sessions.is_empty());
+}
+
+#[test]
+fn a_failure_log_left_by_an_earlier_invocation_is_kept_and_the_loop_still_proceeds() {
+    let w = world("retry");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    fs::create_dir_all(w.worktree.join(".orq")).unwrap();
+    fs::write(w.worktree.join(".orq/ci-failure-1.log"), "from an earlier invocation\n").unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "cat \"$LOG\" > \"$LOG.seen\"");
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+
+    assert_eq!(result, CiFixOutcome::Passed { fix_attempts: 1 });
+    assert_eq!(
+        fs::read_to_string(w.worktree.join(".orq/ci-failure-1.log")).unwrap(),
+        "from an earlier invocation\n",
+        "the earlier log is not overwritten"
+    );
+    let seen: Vec<_> = fs::read_dir(w.worktree.join(".orq"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "seen"))
+        .collect();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(fs::read_to_string(&seen[0]).unwrap(), "boom: build\n", "the session was given the fresh log");
 }

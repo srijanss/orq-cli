@@ -3,7 +3,7 @@
 //! the run; the worktree is left as it is for inspection.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::ci_wait::CiOutcome;
 use crate::gate::Gate;
@@ -84,7 +84,7 @@ pub fn run_ci_fix_loop(
         fix_attempts += 1;
 
         let failure_log = config.log_dir.join(format!("ci-failure-{fix_attempts}.log"));
-        write_failure_log(&worktree, config.log_dir, &failure_log, &steps.failure_log(&failing))?;
+        let failure_log = write_failure_log(&worktree, config.log_dir, &failure_log, &steps.failure_log(&failing))?;
 
         let spec = steps.fix_session(fix_attempts, &failure_log);
         let session = ImplementSession {
@@ -119,11 +119,14 @@ pub fn run_ci_fix_loop(
     }
 }
 
-/// Write one attempt's failure log. The log directory may sit inside the worktree, so
-/// whatever the repository or an earlier session left there is not trusted: the file is
-/// created exclusively (never through an existing file or symlink), owner-only, and the
-/// directory itself must not be a symlink. CI output can carry secrets.
-fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Result<(), StoreError> {
+/// Write one attempt's failure log and return the path it got. The log directory may sit
+/// inside the worktree, so whatever the repository or an earlier session left there is not
+/// trusted: the file is created exclusively (never through an existing file or symlink; a
+/// taken name moves on to the next free one), owner-only, and neither the directory nor
+/// any directory below the worktree on the way to it may be a symlink. CI output can carry
+/// secrets. A directory swapped for a symlink between the check and the open is not guarded
+/// against; a log directory outside the worktree avoids the question.
+fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Result<PathBuf, StoreError> {
     use std::io::Write;
     reject_symlinked_ancestors(worktree, dir)?;
     match fs::symlink_metadata(dir) {
@@ -138,8 +141,22 @@ fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Re
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_bytes())?;
-    Ok(())
+    // A log from an earlier invocation (or another run sharing the directory) is never
+    // overwritten nor fatal: take the next free name, `ci-failure-N.log`, `ci-failure-N.1.log`, ...
+    let mut candidate = path.to_path_buf();
+    for suffix in 1u32.. {
+        match options.open(&candidate) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                candidate = path.with_extension(format!("{suffix}.log"));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    unreachable!("the suffix counter does not run out")
 }
 
 /// Every directory between the worktree and the log directory (the worktree's own path is
