@@ -471,7 +471,6 @@ fn a_listing_row_that_is_not_understood_fails_the_stage_without_creating() {
         ("row-number", "[3]\n".to_string()),
         ("row-no-state", format!("[{{\"number\":5,\"url\":\"{url}\"}}]\n")),
         ("row-state-not-text", format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":1}}]\n")),
-        ("row-unknown-state", format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":\"DRAFTING\"}}]\n")),
     ] {
         let w = world(tag, "github", "main");
         let provider = FakeProvider::builder().reply(&["pr", "list"], &body).build();
@@ -579,5 +578,34 @@ fn a_listing_that_fills_its_page_may_be_incomplete_so_the_stage_fails_without_cr
         assert!(!has_call(&provider, "create"), "{tag}: a page that is full may hide an older review");
         let listed = provider.calls().into_iter().find(|c| c.args[1] == "list").unwrap();
         assert!(listed.args.windows(2).any(|p| p[0] == page_flag && p[1] == "100"), "{tag}: {:?}", listed.args);
+    }
+}
+
+#[test]
+fn a_listing_row_in_an_unknown_state_fails_the_lookup_for_that_reason() {
+    let github = "https://github.example/o/r/pull/5";
+    let gitlab = "https://gitlab.example/o/r/-/merge_requests/5";
+    for (tag, provider_name, list, row) in [
+        (
+            "unknown-gh",
+            "github",
+            ["pr", "list"],
+            format!("[{{\"number\":5,\"url\":\"{github}\",\"state\":\"DRAFTING\",\"isCrossRepository\":false}}]\n"),
+        ),
+        (
+            "unknown-gl",
+            "gitlab",
+            ["mr", "list"],
+            format!("[{{\"iid\":5,\"web_url\":\"{gitlab}\",\"state\":\"archived\",\"source_project_id\":9,\"target_project_id\":9}}]\n"),
+        ),
+    ] {
+        let w = world(tag, provider_name, "main");
+        let provider = FakeProvider::builder().reply(&list, &row).build();
+        let program = if provider_name == "github" { provider.gh() } else { provider.glab() };
+
+        let outcome = create_review_request(&w.store, "run-1", &program, &draft(), WAIT).unwrap();
+
+        assert!(matches!(&outcome, ReviewRequestOutcome::Failed { reason } if reason.contains("unknown state")), "{tag}: {outcome:?}");
+        assert!(!has_call(&provider, "create"), "{tag}");
     }
 }
