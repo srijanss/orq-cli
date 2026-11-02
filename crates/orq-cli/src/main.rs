@@ -1308,8 +1308,23 @@ fn with_review_link(
     let runs = orq_orchestrator::list_runs(store, project_id).map_err(|err| err.to_string())?;
     let run = runs.into_iter().find(|run| run.run_id == run_id).ok_or_else(|| format!("{run_id} is not a run of this project"))?;
     match run.review_url {
-        Some(url) => act(&url),
+        Some(url) => with_checked_url(&url, act),
         None => Err(format!("{run_id} has no review request yet")),
+    }
+}
+
+/// Hands `url` to `act` only when it is an absolute http(s) link with a host, so a tampered event
+/// cannot make the desktop open a file, another scheme or an option.
+fn with_checked_url(url: &str, act: &dyn Fn(&str) -> Result<String, String>) -> Result<String, String> {
+    let host_part = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    let ok = host_part.is_some_and(|rest| {
+        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+        !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    });
+    if ok {
+        act(url)
+    } else {
+        Err(format!("the review link is not a web link: {}", printable(url)))
     }
 }
 
@@ -2723,5 +2738,17 @@ mod ledger_backend_tests {
         assert_eq!(crate::with_review_link(&store, "p", "run-1", &act), Ok("did https://example.test/pr/7".to_string()));
         let failing = |_: &str| -> Result<String, String> { Err("no clipboard tool found".into()) };
         assert_eq!(crate::with_review_link(&store, "p", "run-1", &failing), Err("no clipboard tool found".to_string()));
+    }
+
+    #[test]
+    fn only_an_absolute_http_or_https_url_with_a_host_is_acted_on() {
+        let act = |url: &str| -> Result<String, String> { Ok(format!("did {url}")) };
+        for good in ["https://example.test/pr/7", "http://host/x"] {
+            assert_eq!(crate::with_checked_url(good, &act), Ok(format!("did {good}")));
+        }
+        for bad in ["", "/etc/passwd", "file:///etc/passwd", "--help", "-x", "javascript:alert(1)", "https://", "https:///nohost", "ssh://host/x", "https://a b/c", "https://host/\nx"] {
+            let got = crate::with_checked_url(bad, &act);
+            assert!(matches!(&got, Err(reason) if reason.contains("not a web link")), "{bad:?} gave {got:?}");
+        }
     }
 }
