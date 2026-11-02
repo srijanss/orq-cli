@@ -22,9 +22,17 @@ fn state_home(tag: &str) -> PathBuf {
     home
 }
 
+/// The id `orq` files this repository's runs under, as `project inspect` reports it.
 fn project_id(repo: &Path) -> String {
-    let name = repo.file_name().unwrap().to_string_lossy().into_owned();
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect()
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["project", "inspect", "--json", "--cwd"])
+        .arg(repo)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    value["id"].as_str().unwrap().to_string()
 }
 
 fn seed(state_home: &Path, project: &str, run_id: &str, feature: &str, events: &[(&str, Option<&str>, serde_json::Value)]) {

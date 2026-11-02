@@ -25,20 +25,19 @@ fn git(dir: &Path, args: &[&str]) -> String {
 struct Project {
     #[allow(dead_code)] // keeps the fixture (and its cleanup) alive
     repo: GitFixture,
-    /// The repository, in a directory named for the project (the project's name is the directory's).
     root: PathBuf,
     remote: PathBuf,
 }
 
-fn project(name: &str) -> Project {
+fn project() -> Project {
     let repo = GitFixture::new();
     let remote = repo.add_bare_remote();
     git(repo.root(), &["branch", "-M", "main"]);
     git(repo.root(), &["push", "--quiet", "origin", "main"]);
     git(repo.root(), &["remote", "set-url", "origin", &format!("forge.example:{}", remote.display())]);
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
-    let root = repo.root().with_file_name(name);
-    std::fs::rename(repo.root(), &root).unwrap();
+    // Both repositories sit in a directory called `repo`: same name, different projects.
+    let root = repo.root().to_path_buf();
     Project { repo, root, remote }
 }
 
@@ -83,7 +82,7 @@ fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let path = std::env::join_paths(dirs).unwrap();
 
-    let projects = [project("alpha"), project("beta")];
+    let projects = [project(), project()];
     let launch = |p: &Project| {
         let output = Command::new(env!("CARGO_BIN_EXE_orq"))
             .args(["run", "--repo"])

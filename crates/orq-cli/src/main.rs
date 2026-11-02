@@ -118,6 +118,7 @@ fn project_inspect(args: &[OsString]) -> ExitCode {
     };
     let json = serde_json::json!({
         "name": project.name,
+        "id": pipeline::project_id(&project),
         "root": root,
         "git_common_dir": common,
         "is_linked_worktree": project.is_linked_worktree,
@@ -338,7 +339,7 @@ fn runs(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     let store = orq_orchestrator::RunStore::new(&root);
-    let listings = match orq_orchestrator::list_runs(&store, &pipeline::slug(&project.name)) {
+    let listings = match orq_orchestrator::list_runs(&store, &pipeline::project_id(&project)) {
         Ok(listings) => listings,
         Err(err) => return fail(err),
     };
@@ -1131,7 +1132,7 @@ impl LedgerBackend {
             .clone()
             .or_else(pipeline::state_root)
             .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
-        with_review_link(&orq_orchestrator::RunStore::new(&root), &pipeline::slug(&project.name), run_id, act)
+        with_review_link(&orq_orchestrator::RunStore::new(&root), &pipeline::project_id(&project), run_id, act)
     }
 
     fn new(path: PathBuf) -> Self {
@@ -1512,7 +1513,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .or_else(pipeline::state_root)
             .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        let listings = orq_orchestrator::list_runs(&store, &pipeline::slug(&project.name)).map_err(|err| err.to_string())?;
+        let listings = orq_orchestrator::list_runs(&store, &pipeline::project_id(&project)).map_err(|err| err.to_string())?;
         Ok(listings
             .into_iter()
             .map(|run| orq_tui::RunRow {
@@ -2405,7 +2406,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let project = orq_git::resolve_project(fixture.root()).unwrap();
-        let mine = crate::pipeline::slug(&project.name);
+        let mine = crate::pipeline::project_id(&project);
         let seed = |project_id: &str, run_id: &str, feature: &str| {
             let profile = |model: &str| orq_orchestrator::RoleProfile {
                 harness: "claude".into(),
