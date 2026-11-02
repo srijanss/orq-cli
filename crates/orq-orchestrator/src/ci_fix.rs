@@ -8,10 +8,10 @@ use std::path::Path;
 use crate::ci_wait::CiOutcome;
 use crate::gate::Gate;
 use crate::gate_fix::FixSessionSpec;
-use crate::gate_stage::{record_event, run_gate_attempt, GateOutcome};
-use crate::implement::{run_session_stage, ImplementSession};
+use crate::gate_stage::{run_gate_attempt, GateOutcome};
+use crate::implement::{next_event_id, now_rfc3339, run_session_stage, ImplementSession};
 use crate::push_stage::PushOutcome;
-use crate::store::{RunStore, StoreError};
+use crate::store::{Event, RunStore, StoreError};
 
 const FIX_STAGE: &str = "ci_fix";
 
@@ -143,5 +143,17 @@ fn write_failure_log(dir: &Path, path: &Path, text: &str) -> Result<(), StoreErr
 
 fn fail_run(store: &RunStore, run_id: &str, attempt: u32, payload: serde_json::Value) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
-    record_event(store, &record, "run.failed", attempt, payload)
+    // Recorded under this stage, not the gate's: the run failed here, whatever the gate said.
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "run.failed".to_string(),
+        stage: Some(FIX_STAGE.to_string()),
+        attempt,
+        occurred_at: now_rfc3339(),
+        payload,
+    })
 }

@@ -207,6 +207,7 @@ fn a_ci_still_red_after_the_allowed_attempts_fails_the_run_and_keeps_the_worktre
     assert!(w.worktree.exists(), "the worktree is kept for inspection");
     let last = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(last.kind, "run.failed");
+    assert_eq!(last.stage.as_deref(), Some("ci_fix"), "a CI failure is not a verify failure");
     assert!(last.payload["reason"].as_str().unwrap().contains("2 fix attempt"), "{}", last.payload);
 }
 
@@ -259,6 +260,7 @@ fn a_fix_that_leaves_the_gate_red_is_not_pushed_and_fails_the_run() {
     assert_eq!(script.waited, [SHA1]);
     let last = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(last.kind, "run.failed");
+    assert_eq!(last.stage.as_deref(), Some("ci_fix"), "a CI failure is not a verify failure");
     assert!(last.payload["reason"].as_str().unwrap().contains("gate"), "{}", last.payload);
 }
 
@@ -275,6 +277,7 @@ fn a_push_that_fails_after_a_fix_fails_the_run_without_waiting_again() {
     assert_eq!(script.waited, [SHA1]);
     let last = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(last.kind, "run.failed");
+    assert_eq!(last.stage.as_deref(), Some("ci_fix"), "a CI failure is not a verify failure");
     assert!(last.payload["reason"].as_str().unwrap().contains("rejected"), "{}", last.payload);
 }
 
