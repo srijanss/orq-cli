@@ -15,6 +15,9 @@ use crate::store::{Event, RunRecord, RunStore, StoreError};
 const STAGE: &str = "review";
 const CREATED: &str = "review.created";
 const ADOPTED: &str = "review.adopted";
+/// One page of the lookup. Reviews for a single pair of branches are few; a page that fills
+/// up may be hiding older ones, so the lookup then fails rather than guess.
+const LOOKUP_PAGE: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRef {
@@ -200,10 +203,11 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) 
 
 fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let page = LOOKUP_PAGE.to_string();
     match kind {
         Kind::GitHub => strings(&[
             "pr", "list", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--state", "all",
-            "--json", "number,url,state,isCrossRepository", "--limit", "50",
+            "--json", "number,url,state,isCrossRepository", "--limit", &page,
         ]),
         Kind::GitLab => strings(&[
             "mr",
@@ -215,6 +219,8 @@ fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
             "--target-branch",
             &record.target_branch,
             "--all",
+            "--per-page",
+            &page,
             "--output",
             "json",
         ]),
@@ -226,6 +232,9 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
     let text = run_drafter(session, timeout)?;
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(text.trim()).map_err(|_| "the provider's listing is not a json array".to_string())?;
+    if rows.len() >= LOOKUP_PAGE {
+        return Err(format!("the listing filled its page of {LOOKUP_PAGE}, so it may be incomplete"));
+    }
     let (mut open, mut merged) = (None, None);
     for row in &rows {
         // Only a state known to be reusable or known not to be is accepted; anything else

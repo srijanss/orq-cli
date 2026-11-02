@@ -557,3 +557,27 @@ fn the_github_listing_asks_whether_each_review_crosses_repositories() {
     let args = list.args.join("\u{1}");
     assert!(args.contains("isCrossRepository"), "{args}");
 }
+
+#[test]
+fn a_listing_that_fills_its_page_may_be_incomplete_so_the_stage_fails_without_creating() {
+    for (tag, provider_name, number_key, url_key, list, page_flag) in [
+        ("full-gh", "github", "number", "url", ["pr", "list"], "--limit"),
+        ("full-gl", "gitlab", "iid", "web_url", ["mr", "list"], "--per-page"),
+    ] {
+        let state = if provider_name == "github" { "CLOSED" } else { "closed" };
+        let url = "https://example.test/o/r/pull/1";
+        let rows: Vec<(u64, &str, &str)> = (1..=100).map(|n| (n, state, url)).collect();
+        let w = world(tag, provider_name, "main");
+        let provider = FakeProvider::builder()
+            .reply(&list, &listing(if provider_name == "github" { "gh" } else { "glab" }, number_key, url_key, &rows))
+            .build();
+        let program = if provider_name == "github" { provider.gh() } else { provider.glab() };
+
+        let outcome = create_review_request(&w.store, "run-1", &program, &draft(), WAIT).unwrap();
+
+        assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
+        assert!(!has_call(&provider, "create"), "{tag}: a page that is full may hide an older review");
+        let listed = provider.calls().into_iter().find(|c| c.args[1] == "list").unwrap();
+        assert!(listed.args.windows(2).any(|p| p[0] == page_flag && p[1] == "100"), "{tag}: {:?}", listed.args);
+    }
+}
