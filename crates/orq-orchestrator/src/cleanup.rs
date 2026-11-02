@@ -1,0 +1,79 @@
+//! Removing a run's worktree once the run has finished well.
+
+use std::path::Path;
+
+use crate::ci_wait::CiOutcome;
+use crate::implement::{next_event_id, now_rfc3339};
+use crate::outcome::git_raw;
+use crate::store::{Event, RunRecord, RunStore, StoreError};
+
+const STAGE: &str = "cleanup";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CleanupOutcome {
+    /// The worktree directory and its registration are gone.
+    Removed,
+    /// The worktree stays where it is, for this reason.
+    Kept { reason: String },
+}
+
+/// Remove the worktree of `run_id` if the run reached `review_ready` with CI green (or
+/// CI disabled). A blocked or failed run, a red or unknown CI result, and a worktree
+/// with uncommitted work are all kept. Only the worktree goes: the branch and the
+/// pushed review request are never touched.
+pub fn cleanup_worktree(
+    store: &RunStore,
+    run_id: &str,
+    review_ready: bool,
+    ci: &CiOutcome,
+) -> Result<CleanupOutcome, StoreError> {
+    let record = store.load(run_id)?;
+    if !review_ready {
+        return keep(store, &record, "the run did not reach review_ready".to_string());
+    }
+    if !matches!(ci, CiOutcome::Passed | CiOutcome::Skipped) {
+        return keep(store, &record, "CI did not pass".to_string());
+    }
+    // Anything uncommitted, untracked files included, is work that removal would lose.
+    let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    if !status.success {
+        return keep(store, &record, "the worktree state could not be read".to_string());
+    }
+    if !status.stdout.trim().is_empty() {
+        return keep(store, &record, "the worktree has uncommitted changes".to_string());
+    }
+    let common = git_raw(&record.worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    if !common.success {
+        return keep(store, &record, "the repository of the worktree could not be found".to_string());
+    }
+    let worktree = record.worktree.to_string_lossy().into_owned();
+    // Run from the repository's own git dir: the worktree being removed cannot be the working directory.
+    // No --force: git itself refuses a locked or modified worktree.
+    let removed = git_raw(Path::new(common.stdout.trim()), &["worktree", "remove", "--", &worktree])?;
+    if !removed.success {
+        return keep(store, &record, format!("git would not remove the worktree: {}", removed.stderr.trim()));
+    }
+    record_event(store, &record, "worktree.removed", serde_json::json!({ "worktree": worktree }))?;
+    Ok(CleanupOutcome::Removed)
+}
+
+fn keep(store: &RunStore, record: &RunRecord, reason: String) -> Result<CleanupOutcome, StoreError> {
+    let worktree = record.worktree.to_string_lossy().into_owned();
+    record_event(store, record, "worktree.kept", serde_json::json!({ "worktree": worktree, "reason": reason }))?;
+    Ok(CleanupOutcome::Kept { reason })
+}
+
+fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: kind.to_string(),
+        stage: Some(STAGE.to_string()),
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload,
+    })
+}

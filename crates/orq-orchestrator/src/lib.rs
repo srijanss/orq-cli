@@ -2,6 +2,7 @@
 //! apart from the CLI and the popup that drive it.
 
 mod ci_wait;
+mod cleanup;
 mod conflict_fix;
 mod gate;
 mod gate_fix;
@@ -16,6 +17,7 @@ mod setup;
 mod store;
 
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
+pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use gate::{choose_gate, Gate, GateError};
 pub use gate_fix::{run_gate_with_fixes, FixSessionSpec, GateFixOutcome};
