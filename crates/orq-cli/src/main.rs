@@ -1268,10 +1268,27 @@ fn attach_pane(
             Err(orq_orchestrator::StoreError::NotFound(_)) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            Err(orq_orchestrator::StoreError::NotFound(_)) if !wait.is_zero() => {
+                return Err(format!(
+                    "the Herdr tab opened but {run_id} did not register within {}; the run continues and the tab keeps following its log",
+                    describe_wait(wait)
+                ));
+            }
             Err(err) => {
                 return Err(format!("the Herdr tab opened but the pane is not recorded on the run: {err}"));
             }
         }
+    }
+}
+
+/// A wait bound as the user reads it: `10s`, `1.5s`, `200ms`.
+fn describe_wait(wait: std::time::Duration) -> String {
+    if wait.as_millis() < 1000 {
+        format!("{}ms", wait.as_millis())
+    } else if wait.subsec_millis() == 0 {
+        format!("{}s", wait.as_secs())
+    } else {
+        format!("{}.{}s", wait.as_secs(), format!("{:03}", wait.subsec_millis()).trim_end_matches('0'))
     }
 }
 
@@ -2583,7 +2600,26 @@ mod ledger_backend_tests {
 
         let err = crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-never", log, std::time::Duration::from_millis(200))
             .unwrap_err();
-        assert!(err.contains("opened") && err.contains("not recorded"), "{err}");
+        assert!(err.contains("opened") && err.contains("did not register within 200ms"), "{err}");
+    }
+
+    #[test]
+    fn a_registration_wait_that_runs_out_tells_the_user_the_bound_and_that_the_run_continues() {
+        let root = std::env::temp_dir().join(format!("orq-attach-bound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let repo = std::path::Path::new("/repo");
+        let log = std::path::Path::new("/state/logs/run-x/runner.log");
+        let herdr = FakeHerdr { calls: Default::default(), fail: false };
+
+        let err = crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-x", log, std::time::Duration::from_millis(200))
+            .unwrap_err();
+
+        assert!(err.contains("within 200ms"), "the bound is named: {err}");
+        assert!(err.contains("run continues"), "{err}");
+        assert!(err.contains("run-x"), "{err}");
+        assert_eq!(crate::describe_wait(std::time::Duration::from_secs(10)), "10s");
+        assert_eq!(crate::describe_wait(std::time::Duration::from_millis(1500)), "1.5s");
     }
 
     struct ScriptHerdr(std::cell::RefCell<Vec<Result<String, String>>>);
