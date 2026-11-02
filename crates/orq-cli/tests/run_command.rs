@@ -391,3 +391,37 @@ fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothi
     assert_eq!(output.status.code(), Some(EXIT_INELIGIBLE), "{}", stderr(&output));
     assert!(state_is_empty(&env));
 }
+
+#[test]
+fn detaching_keeps_an_option_value_that_is_spelled_like_the_flag() {
+    let w = world("detach-value");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = path_with(&agent, &provider, &w.tag);
+    // The repository is reached through a directory literally named `--detach`.
+    let odd = std::env::temp_dir().join(format!("orq-odd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&odd);
+    std::fs::create_dir_all(&odd).unwrap();
+    std::os::unix::fs::symlink(w.repo.root(), odd.join("--detach")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .current_dir(&odd)
+        .args(["run", "--repo", "--detach"])
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect(&stdout).to_string();
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    wait_until("the detached run to complete", || {
+        store.events(&run_id).map(|e| e.iter().any(|e| e.kind == "worktree.removed")).unwrap_or(false)
+    });
+}

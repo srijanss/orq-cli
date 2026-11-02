@@ -197,6 +197,24 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
     Some(parsed)
 }
 
+/// The `orq run` arguments without the `--detach` flag. An option value that happens to be
+/// spelled `--detach` is kept: values are skipped as the parser reads them.
+fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_str() {
+            Some("--detach") => {}
+            Some("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--run-id") => {
+                kept.push(arg.clone());
+                kept.extend(iter.next().cloned());
+            }
+            _ => kept.push(arg.clone()),
+        }
+    }
+    kept
+}
+
 /// `orq run --repo <path> --feature <id> --remote <name> --target <branch>`: check that the
 /// feature may start and which models it would use, before anything is created.
 fn run(args: &[OsString]) -> ExitCode {
@@ -237,7 +255,7 @@ fn run(args: &[OsString]) -> ExitCode {
         if parsed.run_id.is_some() {
             return usage_error();
         }
-        let forwarded: Vec<OsString> = args.iter().filter(|arg| arg.to_str() != Some("--detach")).cloned().collect();
+        let forwarded = without_detach_flag(args);
         return match pipeline::launch_detached(&forwarded) {
             Ok((run_id, log)) => {
                 println!("run: {run_id}");
