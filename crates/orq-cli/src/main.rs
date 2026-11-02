@@ -1209,6 +1209,30 @@ fn launch_outcome(success: bool, stdout: &str, stderr: &str) -> Result<String, S
     Err(printable(reason.trim_start_matches("orq: ")))
 }
 
+/// The runner log path `orq run --detach` printed.
+fn launch_log(stdout: &str) -> Option<PathBuf> {
+    stdout.lines().find_map(|line| line.strip_prefix("log: ")).map(PathBuf::from)
+}
+
+/// Opens a Herdr tab that follows the run's log and records where it is on the run.
+fn attach_pane(
+    herdr: &dyn orq_herdr::HerdrCli,
+    store: &orq_orchestrator::RunStore,
+    workspace: Option<&str>,
+    cwd: &Path,
+    run_id: &str,
+    log: &Path,
+) -> Result<(), String> {
+    let label = format!("orq {run_id}");
+    let pane = orq_herdr::open_run_pane(herdr, workspace, cwd, &label, log)?;
+    orq_orchestrator::record_pane(
+        store,
+        run_id,
+        &orq_orchestrator::PaneRef { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id },
+    )
+    .map_err(|err| format!("cannot record the pane on the run: {err}"))
+}
+
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
 fn default_target_branch(repo: &Path) -> String {
     std::process::Command::new("git")
@@ -1259,11 +1283,27 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|err| format!("cannot start orq run: {err}"))?;
-        launch_outcome(
-            output.status.success(),
-            &String::from_utf8_lossy(&output.stdout),
-            &String::from_utf8_lossy(&output.stderr),
-        )
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
+        // The run is already going; a pane is only a convenient view of its log.
+        let pane = match (launch_log(&stdout), self.state_root_override.clone().or_else(pipeline::state_root)) {
+            (Some(log), Some(root)) => {
+                let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
+                attach_pane(
+                    &orq_herdr::HerdrBinary,
+                    &orq_orchestrator::RunStore::new(&root),
+                    workspace.as_deref(),
+                    &project.root,
+                    &run_id,
+                    &log,
+                )
+            }
+            _ => Err("the run reported no log to follow".to_string()),
+        };
+        Ok(match pane {
+            Ok(()) => run_id,
+            Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
+        })
     }
 
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
@@ -2263,5 +2303,55 @@ mod ledger_backend_tests {
         git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"]);
 
         assert_eq!(crate::default_target_branch(fixture.root()), "trunk");
+    }
+    struct FakeHerdr {
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
+        fail: bool,
+    }
+
+    impl orq_herdr::HerdrCli for FakeHerdr {
+        fn run(&self, args: &[String]) -> Result<String, String> {
+            self.calls.borrow_mut().push(args.to_vec());
+            if self.fail {
+                return Err("herdr is not running".to_string());
+            }
+            Ok(r#"{"result":{"root_pane":{"pane_id":"w1:p5","tab_id":"w1:t2","workspace_id":"w1"}}}"#.to_string())
+        }
+    }
+
+    #[test]
+    fn a_launched_run_gets_a_pane_that_is_recorded_and_a_herdr_failure_leaves_the_run_alone() {
+        let root = std::env::temp_dir().join(format!("orq-attach-pane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-9".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
+        let repo = std::path::Path::new("/repo");
+        let log = std::path::Path::new("/state/logs/run-9/runner.log");
+
+        let herdr = FakeHerdr { calls: Default::default(), fail: false };
+        crate::attach_pane(&herdr, &store, Some("w1"), repo, "run-9", log).unwrap();
+        let pane = orq_orchestrator::run_pane(&store, "run-9").unwrap().unwrap();
+        assert_eq!((pane.workspace_id.as_str(), pane.tab_id.as_str(), pane.pane_id.as_str()), ("w1", "w1:t2", "w1:p5"));
+        assert!(herdr.calls.borrow()[0].contains(&"orq run-9".to_string()));
+
+        let down = FakeHerdr { calls: Default::default(), fail: true };
+        let err = crate::attach_pane(&down, &store, Some("w1"), repo, "run-9", log).unwrap_err();
+        assert!(err.contains("herdr is not running"), "{err}");
+
+        assert_eq!(crate::launch_log("run: r\nlog: /state/logs/r/runner.log\n"), Some("/state/logs/r/runner.log".into()));
+        assert_eq!(crate::launch_log("run: r\n"), None);
     }
 }
