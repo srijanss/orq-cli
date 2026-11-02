@@ -1507,6 +1507,16 @@ pub trait BrowserBackend {
         PaneFocus::Failed("Herdr navigation is not available".into())
     }
 
+    /// Opens the review request (MR/PR) of `run_id`; `Ok` is what happened, `Err` why it could not.
+    fn open_review_link(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("opening links is not available".into())
+    }
+
+    /// Copies the review link of `run_id` to the clipboard; the messages work like `open_review_link`.
+    fn copy_review_link(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("copying links is not available".into())
+    }
+
     /// Model profile names the launch picker offers.
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         Err("launching runs is not available".into())
@@ -1731,7 +1741,7 @@ pub enum Tab {
 
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
-const RUNS_HINT: &str = " ↑↓ move · Enter show pane · o new pane · r reload · Esc back ";
+const RUNS_HINT: &str = " ↑↓ move · Enter pane · o new pane · u open MR · y copy link · r reload · Esc ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
 struct RunsState {
@@ -2560,6 +2570,16 @@ impl Browser {
         });
     }
 
+    fn review_link_of_selected_run(&mut self, backend: &mut dyn BrowserBackend, copy: bool) {
+        let Ok(rows) = &self.runs.rows else { return };
+        let Some(run) = rows.get(self.runs.selected) else { return };
+        let run_id = run.run_id.clone();
+        let outcome = if copy { backend.copy_review_link(&run_id) } else { backend.open_review_link(&run_id) };
+        self.notice = Some(match outcome {
+            Ok(message) | Err(message) => message,
+        });
+    }
+
     fn reopen_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
         let Ok(rows) = &self.runs.rows else { return };
         let Some(run) = rows.get(self.runs.selected) else { return };
@@ -2852,6 +2872,8 @@ where
                     match key.code {
                         KeyCode::Enter => browser.focus_selected_run(backend),
                         KeyCode::Char('o') => browser.reopen_selected_run(backend),
+                        KeyCode::Char('u') => browser.review_link_of_selected_run(backend, false),
+                        KeyCode::Char('y') => browser.review_link_of_selected_run(backend, true),
                         KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
                         KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
