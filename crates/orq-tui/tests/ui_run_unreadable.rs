@@ -81,3 +81,21 @@ fn the_runs_view_says_nothing_when_every_run_could_be_read() {
 
     assert!(!lines.iter().any(|l| l.contains("could not be read")), "{lines:?}");
 }
+
+#[test]
+fn the_selected_run_stays_visible_when_the_warning_takes_a_row() {
+    let runs: Vec<RunRow> = (0..40).map(|i| RunRow { feature: format!("FEAT-{i:02}"), ..run_row() }).collect();
+    let mut backend = Fake { runs, unreadable: 3 };
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut events = vec![Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))];
+    events.extend((0..39).map(|_| Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))));
+    let _ = run_browser(&mut terminal, &model, &mut backend, &mut Script(events.into()));
+    let buffer = terminal.backend().buffer();
+    let lines: Vec<String> = (0..24u16)
+        .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect();
+
+    assert!(lines.iter().any(|l| l.contains("FEAT-39")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("3 runs could not be read")), "{lines:?}");
+}

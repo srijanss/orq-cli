@@ -1861,16 +1861,18 @@ impl RunsState {
             return;
         }
         let row = usize::from(press.y - body.y);
-        let visible = Self::visible(body);
+        let visible = self.visible(body);
         let index = self.offset(visible) + row;
         if row < visible && index < self.len() {
             self.selected = index;
         }
     }
 
-    /// Rows available to runs: the last body row is the hint.
-    fn visible(body: Rect) -> usize {
-        usize::from(body.height.saturating_sub(1))
+    /// Rows available to runs: the last body row is the hint, and the row
+    /// above it holds the unreadable-runs warning when there is one.
+    fn visible(&self, body: Rect) -> usize {
+        let reserved = if self.unreadable > 0 && body.height > 1 { 2 } else { 1 };
+        usize::from(body.height.saturating_sub(reserved))
     }
 
     /// The first listed run: the selection stays on screen, at the bottom
@@ -1892,7 +1894,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
         Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
         Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No runs yet", dim))),
         Ok(rows) => {
-            let visible = RunsState::visible(body);
+            let visible = state.visible(body);
             let offset = state.offset(visible);
             for (i, run) in rows.iter().enumerate().skip(offset).take(visible) {
                 let models = format!(
