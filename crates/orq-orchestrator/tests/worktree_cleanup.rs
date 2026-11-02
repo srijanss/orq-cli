@@ -129,6 +129,34 @@ fn a_worktree_holding_an_ignored_file_is_kept_with_it_intact() {
 }
 
 #[test]
+fn a_locked_worktree_is_kept_registered_with_its_branch() {
+    let w = world("locked");
+    git(&w.repo, &["worktree", "lock", "--reason", "in use", w.worktree.to_str().unwrap()]);
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("expected Kept, got {outcome:?}") };
+    assert!(reason.contains("would not remove"), "{reason}");
+    assert!(w.worktree.join("mine.txt").exists());
+    let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
+    assert!(listed.contains(w.worktree.to_str().unwrap()), "still registered: {listed}");
+    git(&w.repo, &["rev-parse", "--verify", "refs/heads/fix--COM-02"]);
+    assert_eq!(kinds(&w), ["worktree.kept"]);
+}
+
+#[test]
+fn a_worktree_directory_that_is_already_gone_is_kept_with_a_recorded_reason() {
+    let w = world("missing");
+    fs::remove_dir_all(&w.worktree).unwrap();
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed);
+
+    assert!(matches!(outcome, Ok(CleanupOutcome::Kept { .. })), "{outcome:?}");
+    assert_eq!(kinds(&w), ["worktree.kept"]);
+    git(&w.repo, &["rev-parse", "--verify", "refs/heads/fix--COM-02"]);
+}
+
+#[test]
 fn a_worktree_with_uncommitted_changes_is_kept_with_them_intact() {
     for (tag, edit) in [("modified", "mine.txt"), ("untracked", "scratch.txt")] {
         let w = world(tag);
