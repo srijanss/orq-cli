@@ -52,6 +52,7 @@ fn world(tag: &str) -> World {
             base_sha: base,
             branch: "fix--COM-02".to_string(),
             worktree: worktree.clone(),
+            repository: String::new(),
             profiles: BTreeMap::new(),
         })
         .unwrap();

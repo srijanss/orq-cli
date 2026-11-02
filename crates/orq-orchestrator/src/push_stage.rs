@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::implement::{next_event_id, now_rfc3339, open_log};
 use crate::outcome::git_raw;
+use crate::review_request::ensure_pinned_remote;
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "push";
@@ -38,6 +39,8 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
         return Err(StoreError::Corrupt("the run branch has no commit".to_string()));
     }
     let head_sha = head_sha.stdout.trim().to_string();
+    // The push goes to the remote as it is configured now, which the session could have changed.
+    ensure_pinned_remote(&record)?;
 
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;

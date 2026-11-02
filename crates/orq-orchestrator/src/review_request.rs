@@ -136,16 +136,43 @@ pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRe
     }))
 }
 
-/// The stored remote as a credential-free https URL the provider CLIs accept.
-pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
-    let unresolved = || StoreError::Corrupt(format!("the remote {} has no repository url", record.remote));
+/// The push url of `remote` in the repository at `dir`, as a credential-free https URL the
+/// provider CLIs accept. This is what a run pins when it starts.
+pub fn resolve_repository_url(dir: &Path, remote: &str) -> Result<String, StoreError> {
+    let unresolved = || StoreError::Corrupt(format!("the remote {remote} has no repository url"));
     // Where the branch is pushed (pushurl and pushInsteadOf apply), which is where the review belongs.
-    let got = git_raw(&record.worktree, &["remote", "get-url", "--push", "--all", "--", &record.remote])?;
+    let got = git_raw(dir, &["remote", "get-url", "--push", "--all", "--", remote])?;
     let mut urls = got.stdout.lines().map(str::trim).filter(|l| !l.is_empty());
     match (got.success, urls.next(), urls.next()) {
         (true, Some(url), None) => normalize_remote(url).ok_or_else(unresolved),
         _ => Err(unresolved()),
     }
+}
+
+/// Refuse when the remote no longer resolves to the repository the run was started against:
+/// the worktree's configuration can be changed by the agent session, and the provider
+/// credentials and the push must only reach the host the user chose. A record without a pin
+/// (made before runs pinned it) is not checked.
+pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<(), StoreError> {
+    if record.repository.is_empty() {
+        return Ok(());
+    }
+    let current = resolve_repository_url(&record.worktree, &record.remote)?;
+    // `.git` and a trailing slash name the same repository.
+    let identity = |url: &str| url.trim_end_matches('/').trim_end_matches(".git").to_string();
+    if identity(&current) != identity(&record.repository) {
+        return Err(StoreError::Corrupt(format!(
+            "the remote {} now resolves to {current}, not the {} the run was started against",
+            record.remote, record.repository
+        )));
+    }
+    Ok(())
+}
+
+/// The stored remote as a credential-free https URL the provider CLIs accept.
+pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
+    ensure_pinned_remote(record)?;
+    resolve_repository_url(&record.worktree, &record.remote)
 }
 
 fn normalize_remote(raw: &str) -> Option<String> {

@@ -39,6 +39,7 @@ fn record(run_id: &str) -> RunRecord {
         base_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
         branch: "fix--COM-02".to_string(),
         worktree: PathBuf::from(".claude/worktrees/fix--COM-02"),
+        repository: String::new(),
         profiles,
     }
 }

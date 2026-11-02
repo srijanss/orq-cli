@@ -27,6 +27,11 @@ struct World {
 
 /// A bare remote with `main`, and a worktree on `branch` with one commit of its own.
 fn world(tag: &str, branch: &str, target: &str, remote_override: Option<&str>) -> World {
+    world_pinned(tag, branch, target, remote_override, "")
+}
+
+/// A world whose run was started against `repository` (empty: not pinned).
+fn world_pinned(tag: &str, branch: &str, target: &str, remote_override: Option<&str>, repository: &str) -> World {
     let root = std::env::temp_dir().join(format!("orq-push-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
@@ -56,6 +61,7 @@ fn world(tag: &str, branch: &str, target: &str, remote_override: Option<&str>) -
             base_sha: base,
             branch: branch.to_string(),
             worktree: worktree.clone(),
+            repository: repository.to_string(),
             profiles: BTreeMap::new(),
         })
         .unwrap();
@@ -230,4 +236,16 @@ fn a_password_with_an_apostrophe_or_a_quote_is_still_stripped_from_the_log() {
     let logged = fs::read_to_string(&w.log).unwrap();
     assert!(!logged.contains("sec'ret") && !logged.contains("ret\"pw") && !logged.contains("pw@"), "{logged}");
     assert!(logged.contains("127.0.0.1"), "the host is still shown: {logged}");
+}
+
+#[test]
+fn a_remote_repointed_since_the_run_started_is_not_pushed_to() {
+    let w = world_pinned("repointed", "fix--COM-02", "main", Some("origin"), "https://github.example/o/r");
+    git(&w.worktree, &["remote", "set-url", "origin", "https://evil.example/o/r.git"]);
+
+    let outcome = push_run_branch(&w.store, "run-1", &w.log);
+
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-02"));
+    assert!(!kinds(&w).contains(&"stage.completed".to_string()));
 }

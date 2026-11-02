@@ -29,6 +29,10 @@ pub struct RunRecord {
     pub base_sha: String,
     pub branch: String,
     pub worktree: PathBuf,
+    /// The credential-free repository url the run was started against. Provider calls and the
+    /// push are refused when the remote no longer resolves to it. Empty on records that predate it.
+    #[serde(default)]
+    pub repository: String,
     pub profiles: BTreeMap<String, RoleProfile>,
 }
 

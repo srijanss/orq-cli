@@ -48,6 +48,7 @@ fn world_with_base(tag: &str, base_override: Option<&str>) -> World {
             base_sha: base_override.map(str::to_string).unwrap_or(base),
             branch: "fix--COM-02".to_string(),
             worktree: worktree.clone(),
+            repository: String::new(),
             profiles: BTreeMap::new(),
         })
         .unwrap();

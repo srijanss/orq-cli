@@ -12,6 +12,11 @@ struct World {
 }
 
 fn world(tag: &str, provider: &str, remote_url: &str) -> World {
+    world_pinned(tag, provider, remote_url, "")
+}
+
+/// A world whose run was started against `repository` (empty: not pinned).
+fn world_pinned(tag: &str, provider: &str, remote_url: &str, repository: &str) -> World {
     let root = std::env::temp_dir().join(format!("orq-ci-wait-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
@@ -32,6 +37,7 @@ fn world(tag: &str, provider: &str, remote_url: &str) -> World {
             base_sha: "0".repeat(40),
             branch: "fix--COM-02".to_string(),
             worktree: worktree.clone(),
+            repository: repository.to_string(),
             profiles: BTreeMap::new(),
         })
         .unwrap();
@@ -417,4 +423,25 @@ fn a_gitlab_page_is_small_enough_that_its_whole_listing_fits_the_output_cap() {
     let per_page: usize = args.split("per_page=").nth(1).unwrap().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap();
     // A GitLab pipeline row is a few hundred bytes with its urls; 64 KiB must hold a full page.
     assert!(per_page <= 50, "per_page={per_page}");
+}
+
+#[test]
+fn a_remote_that_moved_to_another_host_since_the_run_started_is_never_called() {
+    let w = world_pinned("moved", "github", "https://evil.example/o/r.git", "https://github.example/o/r");
+    let provider = github_provider().build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config());
+
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert!(provider.calls().is_empty(), "no credential is sent to the new host: {:?}", provider.calls());
+}
+
+#[test]
+fn a_remote_that_still_resolves_to_the_pinned_repository_is_waited_on() {
+    let w = world_pinned("pinned", "github", "https://github.example/o/r.git", "https://github.example/o/r");
+    let provider = github_provider()
+        .reply(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"b\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n")
+        .build();
+
+    assert_eq!(wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap(), CiOutcome::Passed);
 }

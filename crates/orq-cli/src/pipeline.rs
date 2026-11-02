@@ -126,6 +126,10 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let provider = detect_provider(&url, &ProviderHosts::default(), forge.as_deref())
         .map_err(|e| other(format!("{e:?}")))?;
 
+    // Pinned now: the session's worktree can repoint the remote later, and provider calls must
+    // still only reach the host the user chose.
+    let repository = orq_orchestrator::resolve_repository_url(repo, options.remote).map_err(|e| other(format!("{e:?}")))?;
+
     let run_id = format!(
         "run-{}-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
@@ -145,6 +149,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         base_sha: base_sha.clone(),
         branch: naming.branch.clone(),
         worktree: repo.join(&naming.worktree_dir),
+        repository,
         profiles: [
             ("implementer".to_string(), profile(&options.implementer)),
             ("reviewer".to_string(), profile(&options.reviewer)),

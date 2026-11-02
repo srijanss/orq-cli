@@ -18,6 +18,11 @@ fn world(tag: &str, provider: &str, target: &str) -> World {
 }
 
 fn world_with_remote(tag: &str, provider: &str, target: &str, remote_url: &str) -> World {
+    world_pinned(tag, provider, target, remote_url, "")
+}
+
+/// A world whose run was started against `repository` (empty: not pinned).
+fn world_pinned(tag: &str, provider: &str, target: &str, remote_url: &str, repository: &str) -> World {
     let root = std::env::temp_dir().join(format!("orq-review-req-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
@@ -38,6 +43,7 @@ fn world_with_remote(tag: &str, provider: &str, target: &str, remote_url: &str) 
             base_sha: "0".repeat(40),
             branch: "fix--COM-02".to_string(),
             worktree: worktree.clone(),
+            repository: repository.to_string(),
             profiles: BTreeMap::new(),
         })
         .unwrap();
@@ -608,4 +614,15 @@ fn a_listing_row_in_an_unknown_state_fails_the_lookup_for_that_reason() {
         assert!(matches!(&outcome, ReviewRequestOutcome::Failed { reason } if reason.contains("unknown state")), "{tag}: {outcome:?}");
         assert!(!has_call(&provider, "create"), "{tag}");
     }
+}
+
+#[test]
+fn a_remote_repointed_since_the_run_started_gets_no_provider_call() {
+    let w = world_pinned("repointed", "github", "main", "https://evil.example/o/r.git", "https://github.example/o/r");
+    let provider = github();
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT);
+
+    assert!(outcome.is_err(), "{outcome:?}");
+    assert!(provider.calls().is_empty(), "{:?}", provider.calls());
 }
