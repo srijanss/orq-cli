@@ -281,3 +281,42 @@ fn a_harness_found_through_a_relative_path_entry_still_runs_inside_the_worktree(
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
     assert!(stdout.contains("state: review_ready"), "{stdout}");
 }
+
+#[test]
+fn a_lock_that_cannot_be_released_fails_the_run_but_keeps_the_review_url() {
+    let w = world("lockrelease");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = path_with(&agent, &provider, &w.tag);
+    // The harness hands the feature's lock to another run before doing its work, so the
+    // release at the end of this run is refused.
+    let claude = std::env::split_paths(&path).next().unwrap().join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nfor f in '{}'/orq/locks/*/COM-01.lock; do echo run-other > \"$f\"; done\nexec '{}' \"$@\"\n",
+            w.env.state.display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: failed"), "{stdout}");
+    assert!(stdout.contains(&format!("review: {PR_URL}")), "the review is still named: {stdout}");
+    assert!(stderr(&output).contains("lock"), "the release failure is reported: {}", stderr(&output));
+}

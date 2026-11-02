@@ -158,31 +158,38 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
     }
-    let finish = |store: &RunStore| {
-        let _ = store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
-    };
+    let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
     if let Err(err) = orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha) {
-        finish(&store);
-        return Err(other(format!("cannot create the worktree: {err:?}")));
+        let released = finish(&store);
+        let mut message = format!("cannot create the worktree: {err:?}");
+        if let Err(lock) = released {
+            message.push_str(&format!("; the feature lock was not released: {lock:?}"));
+        }
+        return Err(other(message));
     }
 
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
         .and_then(|()| stages(&store, &record, options, provider.cli(), &logs));
-    finish(&store);
-    match outcome {
+    let released = finish(&store);
+    let mut report = match outcome {
         Ok(mut report) => {
             report.run_id = run_id;
-            Ok(report)
+            report
         }
-        Err(err) => Ok(Report {
-            run_id,
-            ending: Ending::Failed,
-            detail: Some(format!("{err:?}")),
-            review_url: None,
-        }),
+        Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None },
+    };
+    // A lock left behind blocks the next run of the feature, so it is never reported as success.
+    if let Err(lock) = released {
+        report.ending = Ending::Failed;
+        let note = format!("the feature lock was not released: {lock:?}");
+        report.detail = Some(match report.detail.take() {
+            Some(detail) => format!("{detail}; {note}"),
+            None => note,
+        });
     }
+    Ok(report)
 }
 
 fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreError> {
