@@ -318,3 +318,21 @@ fn a_remote_that_pushes_to_several_urls_is_ambiguous_and_nothing_is_called() {
     assert!(create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).is_err());
     assert!(provider.calls().is_empty());
 }
+
+#[test]
+fn a_remote_url_with_a_query_or_fragment_is_refused_so_no_secret_reaches_events_or_arguments() {
+    for (tag, url) in [
+        ("query", "https://github.example/o/r.git?access_token=sekrit"),
+        ("fragment", "https://github.example/o/r.git#sekrit"),
+        ("scp-query", "git@github.example:o/r.git?token=sekrit"),
+    ] {
+        let w = world_with_remote(tag, "github", "main", url);
+        let provider = github();
+
+        assert!(create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).is_err(), "{tag}");
+
+        assert!(provider.calls().is_empty(), "{tag}");
+        let events = format!("{:?}", w.store.events("run-1").unwrap());
+        assert!(!events.contains("sekrit"), "{tag}: {events}");
+    }
+}

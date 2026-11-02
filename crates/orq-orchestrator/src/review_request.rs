@@ -126,7 +126,8 @@ fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
 }
 
 fn normalize_remote(raw: &str) -> Option<String> {
-    if raw.is_empty() || raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    // A query or fragment may carry a credential, and is never part of a repository's identity.
+    if raw.is_empty() || raw.chars().any(|c| c.is_whitespace() || c.is_control() || c == '?' || c == '#') {
         return None;
     }
     let (scheme, authority_and_path) = match raw.split_once("://") {
