@@ -25,7 +25,7 @@ fn state_home(tag: &str) -> PathBuf {
 /// The id `orq` files this repository's runs under, as `project inspect` reports it.
 fn project_id(repo: &Path) -> String {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_orq"))
-        .args(["project", "inspect", "--json", "--cwd"])
+        .args(["project", "inspect", "--cwd"])
         .arg(repo)
         .env_remove("HERDR_ACTIVE_PANE_CWD")
         .output()
