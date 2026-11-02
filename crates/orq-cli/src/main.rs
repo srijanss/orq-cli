@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod pipeline;
+
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
@@ -25,6 +27,7 @@ fn main() -> ExitCode {
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
+        (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
         _ => usage_error(),
@@ -140,6 +143,141 @@ fn features(args: &[OsString]) -> ExitCode {
     let list: Vec<serde_json::Value> = entries.iter().map(entry_json).collect();
     println!("{}", serde_json::Value::Array(list));
     ExitCode::SUCCESS
+}
+
+/// Exit codes of `orq run`, one per outcome (0 is a run that reached review_ready).
+const EXIT_INELIGIBLE: u8 = 20;
+const EXIT_MODEL_SELECTION: u8 = 21;
+const EXIT_BUSY: u8 = 22;
+const EXIT_BLOCKED: u8 = 30;
+const EXIT_FAILED: u8 = 31;
+
+/// The flags of `orq run`.
+#[derive(Default)]
+struct RunArgs {
+    repo: Option<PathBuf>,
+    feature: Option<String>,
+    remote: Option<String>,
+    target: Option<String>,
+    implementer: Option<String>,
+    reviewer: Option<String>,
+    no_rebase: bool,
+    no_gate: bool,
+    no_ci_check: bool,
+}
+
+fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
+    let mut parsed = RunArgs::default();
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.to_str()? {
+            "--no-rebase" => parsed.no_rebase = true,
+            "--no-gate" => parsed.no_gate = true,
+            "--no-ci-check" => parsed.no_ci_check = true,
+            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer") => {
+                let value = iter.next()?;
+                match name {
+                    "--repo" => parsed.repo = Some(PathBuf::from(value)),
+                    "--feature" => parsed.feature = Some(value.to_str()?.to_string()),
+                    "--remote" => parsed.remote = Some(value.to_str()?.to_string()),
+                    "--target" => parsed.target = Some(value.to_str()?.to_string()),
+                    "--implementer" => parsed.implementer = Some(value.to_str()?.to_string()),
+                    _ => parsed.reviewer = Some(value.to_str()?.to_string()),
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(parsed)
+}
+
+/// `orq run --repo <path> --feature <id> --remote <name> --target <branch>`: check that the
+/// feature may start and which models it would use, before anything is created.
+fn run(args: &[OsString]) -> ExitCode {
+    let Some(parsed) = parse_run_args(args) else { return usage_error() };
+    let (Some(repo), Some(feature), Some(remote), Some(target)) =
+        (parsed.repo.as_deref(), parsed.feature.as_deref(), parsed.remote.as_deref(), parsed.target.as_deref())
+    else {
+        return usage_error();
+    };
+    let project = match orq_git::resolve_project(repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let ledger = match orq_features::load_ledger(&orq_features::ledger_path(&project)) {
+        Ok(entries) => entries,
+        Err(err) => return fail(ledger_error_text(&err)),
+    };
+    if let Err(err) = orq_features::check_run_eligibility(&ledger, feature) {
+        eprintln!("orq: feature {} may not start a run: {}", printable(feature), printable(&err.to_string()));
+        return ExitCode::from(EXIT_INELIGIBLE);
+    }
+    let (profiles, reviewers) = match load_model_config(&project.root) {
+        Ok(config) => config,
+        Err(message) => return fail(message),
+    };
+    let selection = orq_features::RunSelection {
+        implementer: parsed.implementer.as_deref(),
+        reviewer: parsed.reviewer.as_deref(),
+    };
+    let models = match orq_features::resolve_run_models(&profiles, &reviewers, &selection) {
+        Ok(models) => models,
+        Err(err) => {
+            eprintln!("orq: {}", printable(&err.to_string()));
+            return ExitCode::from(EXIT_MODEL_SELECTION);
+        }
+    };
+    let options = pipeline::Options {
+        project: &project,
+        feature,
+        remote,
+        target,
+        implementer: models.implementer,
+        reviewer: models.reviewer,
+        rebase: !parsed.no_rebase,
+        gate: !parsed.no_gate,
+        ci_check: !parsed.no_ci_check,
+    };
+    match pipeline::execute(&options) {
+        Ok(report) => {
+            println!("run: {}", report.run_id);
+            println!("state: {}", report.ending.name());
+            if let Some(url) = &report.review_url {
+                println!("review: {}", printable(url));
+            }
+            if let Some(detail) = &report.detail {
+                eprintln!("orq: {}", printable(detail));
+            }
+            ExitCode::from(match report.ending {
+                pipeline::Ending::ReviewReady => 0,
+                pipeline::Ending::Blocked => EXIT_BLOCKED,
+                pipeline::Ending::Failed => EXIT_FAILED,
+            })
+        }
+        Err(pipeline::StartError::Busy(active)) => {
+            eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+            ExitCode::from(EXIT_BUSY)
+        }
+        Err(pipeline::StartError::Other(message)) => fail(message),
+    }
+}
+
+/// The model profiles and the reviewer policy a project is configured with.
+fn load_model_config(
+    root: &Path,
+) -> Result<(orq_features::ModelProfiles, orq_features::TddReviewerConfig), String> {
+    let user_config = orq_features::settings_path(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    );
+    let profiles = orq_features::load_model_profiles(
+        user_config.as_deref().unwrap_or(Path::new("")),
+        &root.join(".orq.toml"),
+    )
+    .map_err(|err| err.to_string())?;
+    let reviewers =
+        orq_features::load_reviewer_config(&root.join(".tdd-config.json")).map_err(|err| err.to_string())?;
+    Ok((profiles, reviewers))
 }
 
 /// `orq models --repo <path>`: the model profiles, which roles each can fill,

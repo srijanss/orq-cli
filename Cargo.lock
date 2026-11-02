@@ -769,10 +769,12 @@ version = "0.1.0"
 name = "orq-cli"
 version = "0.1.0"
 dependencies = [
+ "orq-agents",
  "orq-core",
  "orq-features",
  "orq-git",
  "orq-herdr",
+ "orq-orchestrator",
  "orq-test-support",
  "orq-tui",
  "serde_json",
