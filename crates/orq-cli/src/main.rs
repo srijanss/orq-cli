@@ -1316,16 +1316,38 @@ fn with_review_link(
 /// Hands `url` to `act` only when it is an absolute http(s) link with a host, so a tampered event
 /// cannot make the desktop open a file, another scheme or an option.
 fn with_checked_url(url: &str, act: &dyn Fn(&str) -> Result<String, String>) -> Result<String, String> {
-    let host_part = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
-    let ok = host_part.is_some_and(|rest| {
-        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-        !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\')
-    });
+    let ok = !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\') && has_web_host(url);
     if ok {
         act(url)
     } else {
         Err(format!("the review link is not a web link: {}", printable(url)))
     }
+}
+
+/// Whether `url` is `http(s)://[userinfo@]host[:port][/...]` with a plausible host.
+fn has_web_host(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else { return false };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let (host, port) = match host_port.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((addr, tail)) => (addr, tail.strip_prefix(':').or(if tail.is_empty() { Some("") } else { None })),
+            None => return false,
+        },
+        None => match host_port.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (host_port, Some("")),
+        },
+    };
+    let host_ok = if host_port.starts_with('[') {
+        !host.is_empty() && host.parse::<std::net::Ipv6Addr>().is_ok()
+    } else {
+        !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    };
+    host_ok && port.is_some_and(|port| port.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Opens `url` with the desktop's opener.
@@ -2743,10 +2765,10 @@ mod ledger_backend_tests {
     #[test]
     fn only_an_absolute_http_or_https_url_with_a_host_is_acted_on() {
         let act = |url: &str| -> Result<String, String> { Ok(format!("did {url}")) };
-        for good in ["https://example.test/pr/7", "http://host/x"] {
+        for good in ["https://example.test/pr/7", "http://host/x", "HTTPS://Host:8443/x?y#z", "https://user@host/x", "https://[::1]:80/x"] {
             assert_eq!(crate::with_checked_url(good, &act), Ok(format!("did {good}")));
         }
-        for bad in ["", "/etc/passwd", "file:///etc/passwd", "--help", "-x", "javascript:alert(1)", "https://", "https:///nohost", "ssh://host/x", "https://a b/c", "https://host/\nx"] {
+        for bad in ["", "/etc/passwd", "file:///etc/passwd", "--help", "-x", "javascript:alert(1)", "https://", "https:///nohost", "ssh://host/x", "https://a b/c", "https://host/\nx", "https://user@/x", "https://:443/x", "https://[invalid]/x", "https://host:port/x", "https://@/x"] {
             let got = crate::with_checked_url(bad, &act);
             assert!(matches!(&got, Err(reason) if reason.contains("not a web link")), "{bad:?} gave {got:?}");
         }
