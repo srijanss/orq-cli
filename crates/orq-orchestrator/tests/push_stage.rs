@@ -250,3 +250,28 @@ fn a_remote_repointed_since_the_run_started_is_not_pushed_to() {
     assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-02"));
     assert!(!kinds(&w).contains(&"stage.completed".to_string()));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world_pinned("pinned-ok", "fix--COM-02", "main", Some("origin"), "");
+    // An ssh-style remote for the pinned repository, served by a local stand-in for ssh
+    // that runs the command git asks for against the bare remote.
+    let ssh = w.root.join("fake-ssh");
+    fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&w.worktree, &["config", "core.sshCommand", ssh.to_str().unwrap()]);
+    let url = format!("git@forge.example:{}", w.remote.to_str().unwrap());
+    git(&w.worktree, &["remote", "set-url", "origin", &url]);
+    let pinned = format!("https://forge.example/{}", w.remote.to_str().unwrap().trim_start_matches('/'));
+    let mut record = w.store.load("run-1").unwrap();
+    record.repository = pinned;
+    w.store.create(&RunRecord { run_id: "run-2".to_string(), ..record }).unwrap();
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    let outcome = push_run_branch(&w.store, "run-2", &w.log);
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+}
