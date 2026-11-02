@@ -99,13 +99,33 @@ fn isolated_push(worktree: &Path, url: &str, refspec: &str) -> Result<crate::out
         // An alternates file holds one path per line, so a ':' in the checkout path is safe
         // (GIT_ALTERNATE_OBJECT_DIRECTORIES would split on it).
         let alternates = scratch.join(".git").join("objects").join("info").join("alternates");
-        std::fs::write(&alternates, format!("{}\n", objects.display()))?;
+        std::fs::write(&alternates, format!("{}\n", alternate_line(&objects)))?;
         let mut command = std::process::Command::new("git");
         command.arg("-C").arg(&scratch).args(["push", "--no-follow-tags", "--", url, refspec]);
         crate::outcome::run_sanitized(command)
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// One line of an alternates file for `path`: git reads a line starting with a double quote as a
+/// C-style quoted path, which is how a newline (or a leading quote) in the path survives.
+fn alternate_line(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if !text.contains(['\n', '"', '\\']) && !text.starts_with('"') {
+        return text.into_owned();
+    }
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Drop the `user:password@` part of every URL in `text`: a remote may carry a

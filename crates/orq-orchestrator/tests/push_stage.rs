@@ -319,6 +319,57 @@ fn a_pinned_push_works_from_a_checkout_whose_path_contains_a_colon() {
 
 #[cfg(unix)]
 #[test]
+fn a_pinned_push_works_from_a_checkout_whose_path_contains_a_newline_and_a_quote() {
+    fake_ssh();
+    let w = world_pinned("odd-path", "fix--COM-02", "main", Some("origin"), "");
+    pin_to_ssh_remote(&w);
+    // Only the checkout is oddly named: the remote url has to stay a valid repository url.
+    let odd = w.root.join("new\nli\"ne");
+    git(&w.root, &["clone", "-q", w.worktree.to_str().unwrap(), odd.to_str().unwrap()]);
+    git(&odd, &["remote", "set-url", "origin", &git(&w.worktree, &["remote", "get-url", "origin"])]);
+    let mut record = w.store.load("run-2").unwrap();
+    record.worktree = odd.clone();
+    w.store.create(&RunRecord { run_id: "run-4".to_string(), ..record }).unwrap();
+    let head = git(&odd, &["rev-parse", "HEAD"]);
+
+    let outcome = push_run_branch(&w.store, "run-4", &w.log);
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pinned_push_of_a_sha256_repository_reaches_the_remote() {
+    fake_ssh();
+    let probe = std::env::temp_dir().join(format!("orq-sha256-probe-{}", std::process::id()));
+    let supported = Command::new("git").args(["init", "-q", "--object-format=sha256"]).arg(&probe).status().map(|s| s.success()).unwrap_or(false);
+    let _ = fs::remove_dir_all(&probe);
+    if !supported {
+        return;
+    }
+    let w = world_pinned("sha256", "fix--COM-02", "main", Some("origin"), "");
+    // A fresh sha256 repository pair stands in for the default-format ones of the fixture.
+    let remote = w.root.join("remote256.git");
+    let work = w.root.join("work256");
+    git(&w.root, &["init", "-q", "--bare", "--object-format=sha256", remote.to_str().unwrap()]);
+    git(&w.root, &["init", "-q", "-b", "fix--COM-02", "--object-format=sha256", work.to_str().unwrap()]);
+    git(&work, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "c"]);
+    git(&work, &["remote", "add", "origin", &format!("git@forge.example:{}", remote.to_str().unwrap())]);
+    let mut record = w.store.load("run-1").unwrap();
+    record.worktree = work.clone();
+    record.repository = format!("https://forge.example/{}", remote.to_str().unwrap().trim_start_matches('/'));
+    w.store.create(&RunRecord { run_id: "run-3".to_string(), ..record }).unwrap();
+    let head = git(&work, &["rev-parse", "HEAD"]);
+
+    let outcome = push_run_branch(&w.store, "run-3", &w.log);
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert_eq!(git(&remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_pinned_push_the_remote_rejects_fails_the_stage() {
     fake_ssh();
     let w = world_pinned("rejected", "fix--COM-02", "main", Some("origin"), "");
