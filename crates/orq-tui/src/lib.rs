@@ -347,6 +347,7 @@ pub fn render_chrome_tabs(frame: &mut Frame, area: Rect, active: Tab) -> Rect {
         let (label, colour) = match tab {
             Tab::Features => (FEATURES_TAB, Color::Blue),
             Tab::Settings => (SETTINGS_TAB, Color::Blue),
+            Tab::Runs => (RUNS_TAB, Color::Blue),
         };
         let colour = if tab == active { colour } else { Color::DarkGray };
         let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(colour));
@@ -356,6 +357,7 @@ pub fn render_chrome_tabs(frame: &mut Frame, area: Rect, active: Tab) -> Rect {
     let (name, file) = match active {
         Tab::Features => (FEATURES_TAB, LEDGER_FILE),
         Tab::Settings => (SETTINGS_TAB, SETTINGS_FILE),
+        Tab::Runs => (RUNS_TAB, RUNS_FILE),
     };
     let file = truncate_left(file, width.saturating_sub(name.len() + 1));
     let gap = width.saturating_sub(name.len() + display_width(&file));
@@ -1463,11 +1465,27 @@ pub struct BrowserEntry {
     pub test_file: Option<String>,
 }
 
+/// One run as the Runs tab lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRow {
+    pub run_id: String,
+    pub feature: String,
+    pub status: String,
+    pub stage: Option<String>,
+    pub implementer_model: Option<String>,
+    pub reviewer_model: Option<String>,
+}
+
 /// Where the browser's data lives: reads the ledger and performs promotes.
 /// The browser itself never touches a file.
 pub trait BrowserBackend {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView>;
     fn promote(&mut self, feature: &str) -> PromoteOutcome;
+
+    /// The project's runs for the Runs tab; the reason is shown when they cannot be read.
+    fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
+        Err("runs are not available".into())
+    }
 
     /// The user-level settings the Settings tab shows. Backends without
     /// settings keep this default, which says so.
@@ -1678,6 +1696,76 @@ pub struct SettingsView {
 pub enum Tab {
     Features,
     Settings,
+    Runs,
+}
+
+const RUNS_TAB: &str = "Runs";
+const RUNS_FILE: &str = "runs";
+const RUNS_HINT: &str = " ↑↓ move · r reload · Esc back ";
+
+/// What the Runs tab holds: the rows last loaded, or why there are none.
+struct RunsState {
+    rows: Result<Vec<RunRow>, String>,
+    selected: usize,
+}
+
+impl RunsState {
+    fn len(&self) -> usize {
+        self.rows.as_ref().map_or(0, Vec::len)
+    }
+
+    fn move_by(&mut self, down: bool) {
+        self.selected = if down {
+            (self.selected + 1).min(self.len().saturating_sub(1))
+        } else {
+            self.selected.saturating_sub(1)
+        };
+    }
+
+    fn click(&mut self, body: Rect, press: Position) {
+        if !body.contains(press) {
+            return;
+        }
+        let index = usize::from(press.y - body.y);
+        if index < self.len() {
+            self.selected = index;
+        }
+    }
+}
+
+fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState) {
+    let width = usize::from(body.width);
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut put = |row: u16, line: Line<'static>| {
+        if row < body.height {
+            frame.render_widget(Paragraph::new(line), Rect::new(body.x, body.y + row, body.width, 1));
+        }
+    };
+    match &state.rows {
+        Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
+        Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No runs yet", dim))),
+        Ok(rows) => {
+            for (i, run) in rows.iter().enumerate() {
+                let models = format!(
+                    "{} / {}",
+                    run.implementer_model.as_deref().unwrap_or("-"),
+                    run.reviewer_model.as_deref().unwrap_or("-")
+                );
+                let text = format!(
+                    "{}  {}  {}  {}",
+                    run.feature,
+                    run.status,
+                    run.stage.as_deref().unwrap_or("-"),
+                    models
+                );
+                let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+                put(u16::try_from(i).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+            }
+        }
+    }
+    if body.height > 0 {
+        put(body.height - 1, Line::from(Span::styled(truncate_right(RUNS_HINT, width), dim)));
+    }
 }
 
 const SETTINGS_TAB: &str = "Settings";
@@ -1956,6 +2044,7 @@ struct Browser {
     dropdown: Option<usize>,
     tab: Tab,
     settings: SettingsState,
+    runs: RunsState,
     /// The open Add Feature form; it covers the Features body.
     form: Option<FormState>,
     /// The open generation preview; it covers the Features body.
@@ -2351,9 +2440,18 @@ impl Browser {
         self.tab = Tab::Settings;
     }
 
+    fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
+        self.runs = RunsState { rows: backend.load_runs(), selected: 0 };
+        self.tab = Tab::Runs;
+    }
+
     fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
         let full = frame.area();
         let area = render_chrome_tabs(frame, full, self.tab);
+        if self.tab == Tab::Runs {
+            render_runs(frame, area, &self.runs);
+            return;
+        }
         if self.tab == Tab::Settings {
             render_settings(frame, area, &self.settings);
             return;
@@ -2500,6 +2598,7 @@ where
             editing: None,
             status: None,
         },
+        runs: RunsState { rows: Ok(Vec::new()), selected: 0 },
         form: None,
         preview: None,
         picker: None,
@@ -2578,6 +2677,27 @@ where
                     if browser.settings.handle_key(key.code, backend) {
                         browser.tab = Tab::Features;
                     }
+                    dirty = true;
+                    continue;
+                }
+                if browser.tab == Tab::Runs {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
+                        KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
+                        KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
+                        KeyCode::Char('r') => browser.open_runs(backend),
+                        _ => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('R')
+                    && !browser.search.active
+                    && browser.detail.is_none()
+                    && browser.dropdown.is_none()
+                    && browser.error.is_none()
+                {
+                    browser.open_runs(backend);
                     dirty = true;
                     continue;
                 }
@@ -2795,6 +2915,13 @@ where
                 if browser.tab == Tab::Settings {
                     browser.settings.handle_mouse(chrome_body(full), mouse);
                     dirty = true;
+                    continue;
+                }
+                if browser.tab == Tab::Runs {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        browser.runs.click(chrome_body(full), Position::new(mouse.column, mouse.row));
+                        dirty = true;
+                    }
                     continue;
                 }
                 if browser.error.is_some() {
