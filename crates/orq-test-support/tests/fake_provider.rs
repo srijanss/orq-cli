@@ -204,3 +204,36 @@ fn a_call_that_cannot_record_itself_fails_with_a_diagnostic_instead_of_hanging()
     child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     assert!(stderr.contains("cannot record call"), "{stderr}");
 }
+
+#[test]
+fn one_shot_replies_are_served_in_order_and_then_the_standing_reply_takes_over() {
+    let provider = FakeProvider::builder()
+        .reply_once(&["api"], "first\n")
+        .fail_once(&["api"], 3, "boom\n")
+        .reply(&["api"], "standing\n")
+        .build();
+    let cwd = std::env::temp_dir();
+
+    let first = run(&provider.gh(), &cwd, &["api", "x"]);
+    let second = run(&provider.gh(), &cwd, &["api", "x"]);
+    let third = run(&provider.gh(), &cwd, &["api", "x"]);
+    let fourth = run(&provider.gh(), &cwd, &["api", "x"]);
+
+    assert_eq!(String::from_utf8_lossy(&first.stdout), "first\n");
+    assert_eq!(second.status.code(), Some(3));
+    assert_eq!(String::from_utf8_lossy(&second.stderr), "boom\n");
+    assert_eq!(String::from_utf8_lossy(&third.stdout), "standing\n");
+    assert_eq!(String::from_utf8_lossy(&fourth.stdout), "standing\n");
+    assert_eq!(provider.calls().len(), 4);
+}
+
+#[test]
+fn a_slow_reply_takes_at_least_its_delay() {
+    let provider = FakeProvider::builder().reply_slowly(&["api"], "late\n", 300).build();
+    let started = std::time::Instant::now();
+
+    let out = run(&provider.gh(), &std::env::temp_dir(), &["api"]);
+
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "late\n");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(280), "{:?}", started.elapsed());
+}

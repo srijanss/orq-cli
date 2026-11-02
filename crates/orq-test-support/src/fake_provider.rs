@@ -24,6 +24,9 @@ struct Scripted {
     stdout: String,
     stderr: String,
     exit_code: i32,
+    /// Served to one call only; the next matching call falls through to later replies.
+    once: bool,
+    delay_ms: u64,
 }
 
 pub struct FakeProviderBuilder {
@@ -88,15 +91,31 @@ fn parse_call(raw: &[u8]) -> Option<ProviderCall> {
 impl FakeProviderBuilder {
     /// Answer calls starting with `prefix` by printing `stdout` and exiting 0.
     pub fn reply(self, prefix: &[&str], stdout: &str) -> Self {
-        self.script(prefix, stdout, "", 0)
+        self.script(prefix, stdout, "", 0, false, 0)
+    }
+
+    /// Like `reply`, but for one call only. Several one-shot replies with the
+    /// same prefix are served in registration order, ahead of any standing reply.
+    pub fn reply_once(self, prefix: &[&str], stdout: &str) -> Self {
+        self.script(prefix, stdout, "", 0, true, 0)
+    }
+
+    /// Like `fail`, but for one call only.
+    pub fn fail_once(self, prefix: &[&str], exit_code: i32, stderr: &str) -> Self {
+        self.script(prefix, "", stderr, exit_code, true, 0)
+    }
+
+    /// Like `reply`, but the answer only arrives after `delay_ms` milliseconds.
+    pub fn reply_slowly(self, prefix: &[&str], stdout: &str, delay_ms: u64) -> Self {
+        self.script(prefix, stdout, "", 0, false, delay_ms)
     }
 
     /// Answer calls starting with `prefix` by printing `stderr` and exiting `exit_code`.
     pub fn fail(self, prefix: &[&str], exit_code: i32, stderr: &str) -> Self {
-        self.script(prefix, "", stderr, exit_code)
+        self.script(prefix, "", stderr, exit_code, false, 0)
     }
 
-    fn script(mut self, prefix: &[&str], stdout: &str, stderr: &str, exit_code: i32) -> Self {
+    fn script(mut self, prefix: &[&str], stdout: &str, stderr: &str, exit_code: i32, once: bool, delay_ms: u64) -> Self {
         assert!(!prefix.is_empty(), "a scripted prefix needs at least one word");
         assert!(
             prefix.iter().all(|word| !word.is_empty() && !word.contains('\n')),
@@ -107,6 +126,8 @@ impl FakeProviderBuilder {
             stdout: stdout.to_string(),
             stderr: stderr.to_string(),
             exit_code,
+            once,
+            delay_ms,
         });
         self
     }
@@ -118,6 +139,7 @@ impl FakeProviderBuilder {
         fs::create_dir_all(&bin).expect("create fake provider bin dir");
         fs::create_dir_all(&replies).expect("create fake provider replies dir");
         fs::create_dir_all(root.join("data").join("calls")).expect("create fake provider calls dir");
+        fs::create_dir_all(root.join("data").join("used")).expect("create fake provider used dir");
 
         // The script tries replies in directory order, so the most specific
         // prefix must come first; equal lengths keep registration order.
@@ -129,6 +151,13 @@ impl FakeProviderBuilder {
             fs::write(dir.join("stdout"), &reply.stdout).expect("write reply stdout");
             fs::write(dir.join("stderr"), &reply.stderr).expect("write reply stderr");
             fs::write(dir.join("code"), reply.exit_code.to_string()).expect("write reply code");
+            if reply.once {
+                fs::write(dir.join("once"), "").expect("write reply once marker");
+            }
+            if reply.delay_ms > 0 {
+                let seconds = format!("{}.{:03}", reply.delay_ms / 1000, reply.delay_ms % 1000);
+                fs::write(dir.join("delay"), seconds).expect("write reply delay");
+            }
         }
 
         // The script locates its data via $0, so no path is embedded in shell
@@ -158,6 +187,8 @@ impl FakeProviderBuilder {
             \x20   [ \"$have\" = \"$want\" ] || { ok=0; break; }\n\
             \x20 done < \"$r/argv\"\n\
             \x20 if [ \"$ok\" = 1 ]; then\n\
+            \x20   if [ -f \"$r/once\" ]; then mv \"$r\" \"$data/used/${r##*/}\" 2>/dev/null || continue; r=$data/used/${r##*/}; fi\n\
+            \x20   [ -f \"$r/delay\" ] && sleep \"$(cat \"$r/delay\")\"\n\
             \x20   cat \"$r/stdout\"; cat \"$r/stderr\" >&2\n\
             \x20   exit \"$(cat \"$r/code\")\"\n\
             \x20 fi\n\
