@@ -111,3 +111,35 @@ fn a_stray_file_or_non_run_directory_under_runs_does_not_break_the_listing() {
 
     assert_eq!(listed.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(), ["run-a"]);
 }
+
+#[test]
+fn a_corrupt_record_or_event_log_of_the_project_is_an_error_but_another_projects_is_not_read() {
+    let s = store("corrupt");
+    let mine = record("run-a", "repo-1", "COM-02");
+    s.create(&mine).unwrap();
+    std::fs::write(runs_dir("corrupt").join("run-a").join("events.jsonl"), "not json\n").unwrap();
+
+    assert!(matches!(list_runs(&s, "repo-1"), Err(orq_orchestrator::StoreError::Corrupt(_))));
+    // Another project's broken log is not even opened.
+    assert!(list_runs(&s, "repo-2").unwrap().is_empty());
+
+    let broken = store("corrupt-record");
+    broken.create(&record("run-b", "repo-1", "COM-03")).unwrap();
+    std::fs::write(runs_dir("corrupt-record").join("run-b").join("run.json"), "{").unwrap();
+    assert!(matches!(list_runs(&broken, "repo-1"), Err(orq_orchestrator::StoreError::Corrupt(_))));
+}
+
+#[test]
+fn an_adopted_review_lists_its_link_and_a_run_without_profiles_lists_no_models() {
+    let s = store("adopted");
+    let mut r = record("run-a", "repo-1", "COM-02");
+    r.profiles.clear();
+    s.create(&r).unwrap();
+    s.append_event(&event(&r, "review.adopted", "create_review", serde_json::json!({ "url": "https://x/pull/7", "id": "7" }))).unwrap();
+
+    let runs = list_runs(&s, "repo-1").unwrap();
+
+    assert_eq!(runs[0].review_url.as_deref(), Some("https://x/pull/7"));
+    assert_eq!(runs[0].implementer_model, None);
+    assert_eq!(runs[0].reviewer_model, None);
+}
