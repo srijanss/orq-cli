@@ -153,11 +153,12 @@ pub fn resolve_repository_url(dir: &Path, remote: &str) -> Result<String, StoreE
 /// the worktree's configuration can be changed by the agent session, and the provider
 /// credentials and the push must only reach the host the user chose. A record without a pin
 /// (made before runs pinned it) is not checked.
-pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<(), StoreError> {
-    if record.repository.is_empty() {
-        return Ok(());
-    }
+/// Returns the resolved url that was checked, so a caller uses exactly what was validated.
+pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<String, StoreError> {
     let current = resolve_repository_url(&record.worktree, &record.remote)?;
+    if record.repository.is_empty() {
+        return Ok(current);
+    }
     // `.git` and a trailing slash name the same repository.
     // At most one: `r.git.git` is another repository.
     let identity = |url: &str| {
@@ -170,13 +171,12 @@ pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<(), StoreError>
             record.remote, record.repository
         )));
     }
-    Ok(())
+    Ok(current)
 }
 
 /// The stored remote as a credential-free https URL the provider CLIs accept.
 pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
-    ensure_pinned_remote(record)?;
-    resolve_repository_url(&record.worktree, &record.remote)
+    ensure_pinned_remote(record)
 }
 
 fn normalize_remote(raw: &str) -> Option<String> {

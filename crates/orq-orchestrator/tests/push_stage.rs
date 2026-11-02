@@ -245,6 +245,7 @@ fn a_remote_repointed_since_the_run_started_is_not_pushed_to() {
 
     let outcome = push_run_branch(&w.store, "run-1", &w.log);
 
+    assert!(format!("{outcome:?}").contains("now resolves"), "{outcome:?}");
     assert!(outcome.is_err(), "{outcome:?}");
     assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-02"));
     assert!(!kinds(&w).contains(&"stage.completed".to_string()));

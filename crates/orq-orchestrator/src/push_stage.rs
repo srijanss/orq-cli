@@ -40,7 +40,9 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
     }
     let head_sha = head_sha.stdout.trim().to_string();
     // The push goes to the remote as it is configured now, which the session could have changed.
-    ensure_pinned_remote(&record)?;
+    if !record.repository.is_empty() {
+        ensure_pinned_remote(&record)?;
+    }
 
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
