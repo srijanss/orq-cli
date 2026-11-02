@@ -178,3 +178,40 @@ fn an_unknown_run_is_an_error_and_no_session_is_built() {
     assert!(result.is_err());
     assert!(!*built.borrow());
 }
+
+fn alive(pid: &str) -> bool {
+    Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[test]
+fn a_process_the_session_leaves_running_in_the_background_is_stopped() {
+    let w = world("orphan", &["add the thing"]);
+    let pid_file = w.worktree.parent().unwrap().join("bg.pid");
+    let script = format!("sleep 30 & echo $! > {}; printf 'Title\\n\\nBody'", pid_file.display());
+
+    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, &script)).unwrap();
+
+    let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(&pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(&pid), "the background process {pid} outlived the drafting session");
+    assert_eq!(draft.source, DraftSource::Agent, "the output written before it exited is still used");
+}
+
+#[test]
+fn a_failing_session_does_not_leave_its_background_process_either() {
+    let w = world("orphan-fail", &["add the thing"]);
+    let pid_file = w.worktree.parent().unwrap().join("bg.pid");
+    let script = format!("sleep 30 & echo $! > {}; exit 2", pid_file.display());
+
+    draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, &script)).unwrap();
+
+    let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(&pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(&pid), "the background process {pid} outlived the drafting session");
+}

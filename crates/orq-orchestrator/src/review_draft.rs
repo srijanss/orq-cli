@@ -141,9 +141,15 @@ fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, Stri
                 stop(&mut child);
                 return Err("the drafting session timed out".to_string());
             }
-            Err(e) => return Err(format!("the drafting session could not be awaited: {e}")),
+            Err(e) => {
+                stop(&mut child);
+                return Err(format!("the drafting session could not be awaited: {e}"));
+            }
         }
     };
+    // Whatever the exit status, nothing the session started may outlive it; this also
+    // closes the output pipe so the reader ends.
+    kill_group(child.id());
     if !status.success() {
         return Err(format!("the drafting session failed ({status})"));
     }
@@ -154,10 +160,15 @@ fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, Stri
 
 /// Kill the session's whole process group, then reap it.
 fn stop(child: &mut std::process::Child) {
-    let group = format!("-{}", child.id());
-    let _ = Command::new("kill").args(["-KILL", "--", &group]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    kill_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The session leads its own process group, whose id is its pid.
+fn kill_group(pgid: u32) {
+    let group = format!("-{pgid}");
+    let _ = Command::new("kill").args(["-KILL", "--", &group]).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// Title from the first line, body from the rest; None when there is no title.
