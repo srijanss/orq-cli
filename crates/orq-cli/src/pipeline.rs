@@ -247,6 +247,9 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         if let Err(lock) = released {
             message.push_str(&format!("; the feature lock was not released: {lock:?}"));
         }
+        if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, "failed", Some(&message)) {
+            eprintln!("orq: cannot record the end of {run_id}: {err:?}");
+        }
         return Err(other(message));
     }
 

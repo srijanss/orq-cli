@@ -585,3 +585,28 @@ fn every_run_records_exactly_one_run_completed_event_with_how_it_ended() {
     assert_eq!(done[0].0, "blocked");
     assert!(done[0].1.is_some(), "the reason is kept: {done:?}");
 }
+
+#[test]
+fn a_run_whose_worktree_cannot_be_created_still_records_that_it_failed() {
+    let w = world("completed-no-worktree");
+    // A file where git keeps its worktree metadata makes `git worktree add` fail.
+    std::fs::write(w.repo.root().join(".git").join("worktrees"), "in the way").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_ne!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stderr(&output).contains("worktree"), "{}", stderr(&output));
+    let World { env: scratch, .. } = &w;
+    let runs = scratch.state.join("orq").join("runs");
+    let ids: Vec<String> = std::fs::read_dir(&runs)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?} {}", stderr(&output));
+    let events = orq_orchestrator::RunStore::new(&scratch.state.join("orq")).events(&ids[0]).unwrap();
+    let done: Vec<_> = events.iter().filter(|e| e.kind == "run.completed").collect();
+    assert_eq!(done.len(), 1, "{events:?}");
+    assert_eq!(done[0].payload["ending"].as_str(), Some("failed"));
+    assert!(done[0].payload["reason"].as_str().is_some_and(|r| r.contains("worktree")), "{:?}", done[0].payload);
+}
