@@ -17,6 +17,8 @@ const STAGE: &str = "ci";
 const PAGE: usize = 100;
 /// Consecutive failed polls tolerated before the stage gives up on the provider.
 const MAX_POLL_FAILURES: u32 = 3;
+/// Floor on the pause between polls, so a zero interval cannot hammer the provider.
+const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_FAILING_NAMES: usize = 20;
 const MAX_NAME_CHARS: usize = 100;
 
@@ -125,7 +127,7 @@ pub fn wait_for_ci(
             }
             Verdict::Pending => failures = 0,
         }
-        std::thread::sleep(config.poll_interval.min(deadline.saturating_duration_since(Instant::now())));
+        std::thread::sleep(config.poll_interval.max(MIN_POLL_INTERVAL).min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 

@@ -269,3 +269,15 @@ fn a_usable_pending_answer_resets_the_count_of_consecutive_provider_errors() {
     assert_eq!(outcome, CiOutcome::Passed, "four errors in all, but never three in a row");
     assert_eq!(provider.calls().len(), 6);
 }
+
+#[test]
+fn a_zero_poll_interval_does_not_hammer_the_provider() {
+    let w = world("zero-interval", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder().reply(&["api"], &gh_checks(RUNNING, 1)).build();
+    let cfg = CiWaitConfig { poll_interval: Duration::ZERO, timeout: Duration::from_millis(500), ..config() };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+    assert!(provider.calls().len() <= 12, "polled {} times in half a second", provider.calls().len());
+}
