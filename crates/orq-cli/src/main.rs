@@ -2569,4 +2569,39 @@ mod ledger_backend_tests {
 
         assert!(matches!(outcome, orq_tui::PaneFocus::Failed(reason) if reason.contains("no log")));
     }
+
+    struct RecordHerdr(std::cell::RefCell<Vec<Vec<String>>>);
+
+    impl orq_herdr::HerdrCli for RecordHerdr {
+        fn run(&self, args: &[String]) -> Result<String, String> {
+            let mut calls = self.0.borrow_mut();
+            calls.push(args.to_vec());
+            if calls.len() == 1 {
+                Ok(r#"{"result":{"root_pane":{"pane_id":"w1:p9","tab_id":"w1:t8","workspace_id":"w1"}}}"#.into())
+            } else {
+                Ok("{}".into())
+            }
+        }
+    }
+
+    #[test]
+    fn reopening_opens_a_tab_on_the_project_that_tails_the_runner_log_and_reports_an_unrecorded_pane() {
+        let root = std::env::temp_dir().join(format!("orq-reopen-cmds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("logs/run-1")).unwrap();
+        std::fs::write(root.join("logs/run-1/runner.log"), "log\n").unwrap();
+        let store = orq_orchestrator::RunStore::new(&root);
+        let herdr = RecordHerdr(Default::default());
+
+        // The run was never registered, so the new pane cannot be recorded.
+        let outcome = crate::reopen_run(&herdr, &store, Some("w1"), std::path::Path::new("/repo"), &root, "run-1");
+
+        assert!(matches!(outcome, orq_tui::PaneFocus::Failed(reason) if reason.contains("not recorded")));
+        let calls = herdr.0.borrow();
+        assert_eq!(calls[0][..2], ["tab".to_string(), "create".to_string()]);
+        assert!(calls[0].iter().any(|a| a == "/repo") && calls[0].iter().any(|a| a == "orq run-1"), "{calls:?}");
+        assert_eq!(calls[1][..3], ["pane".to_string(), "run".to_string(), "w1:p9".to_string()]);
+        let log = root.join("logs/run-1/runner.log").display().to_string();
+        assert!(calls[1][3].contains(&log), "{calls:?}");
+    }
 }
