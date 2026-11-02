@@ -106,6 +106,24 @@ impl RunStore {
         Ok(self.root.join("runs").join(run_id))
     }
 
+    /// The ids of the directories under `runs/`, sorted; none when the store has no runs yet.
+    pub fn run_ids(&self) -> Result<Vec<String>, StoreError> {
+        let entries = match fs::read_dir(self.root.join("runs")) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut ids = Vec::new();
+        for entry in entries {
+            // A name that is not valid UTF-8 cannot be a run id.
+            if let Ok(name) = entry?.file_name().into_string() {
+                ids.push(name);
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
     /// Create a run and take its project+feature lock.
     pub fn start_run(&self, record: &RunRecord) -> Result<(), StoreError> {
         let lock = self.lock_path(&record.project_id, &record.feature_id)?;
