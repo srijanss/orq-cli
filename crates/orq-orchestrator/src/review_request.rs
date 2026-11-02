@@ -124,7 +124,7 @@ const FORWARDED_ENV: &[&str] = &[
     "NO_PROXY",
 ];
 
-fn provider_environment() -> Vec<(String, String)> {
+pub(crate) fn provider_environment() -> Vec<(String, String)> {
     FORWARDED_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect()
 }
 
@@ -137,7 +137,7 @@ pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRe
 }
 
 /// The stored remote as a credential-free https URL the provider CLIs accept.
-fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
+pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
     let unresolved = || StoreError::Corrupt(format!("the remote {} has no repository url", record.remote));
     // Where the branch is pushed (pushurl and pushInsteadOf apply), which is where the review belongs.
     let got = git_raw(&record.worktree, &["remote", "get-url", "--push", "--all", "--", &record.remote])?;
