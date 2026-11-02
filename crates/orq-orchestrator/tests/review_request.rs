@@ -14,10 +14,18 @@ struct World {
 }
 
 fn world(tag: &str, provider: &str, target: &str) -> World {
+    world_with_remote(tag, provider, target, "https://github.example/o/r.git")
+}
+
+fn world_with_remote(tag: &str, provider: &str, target: &str, remote_url: &str) -> World {
     let root = std::env::temp_dir().join(format!("orq-review-req-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
+    for args in [vec!["init", "-q", "-b", "main"], vec!["remote", "add", "origin", remote_url]] {
+        let out = std::process::Command::new("git").arg("-C").arg(&worktree).args(&args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    }
     let store = RunStore::new(&root.join("state"));
     store
         .create(&RunRecord {
@@ -202,4 +210,37 @@ fn provider_credentials_from_the_environment_reach_the_cli_and_nothing_else_does
     }
     let events = fs::read_to_string(dir.join("state")).ok();
     assert!(events.map_or(true, |e| !e.contains("tok-gh")), "a token is never logged");
+}
+
+#[test]
+fn both_calls_name_the_stored_remotes_repository_without_its_credentials() {
+    for (tag, url, expected) in [
+        ("repo-https", "https://user:secret@github.example/o/r.git", "https://github.example/o/r.git"),
+        ("repo-scp", "git@github.example:o/r.git", "https://github.example/o/r.git"),
+        ("repo-ssh", "ssh://git@github.example:2222/o/r.git", "https://github.example/o/r.git"),
+    ] {
+        let w = world_with_remote(tag, "github", "main", url);
+        let provider = github();
+
+        create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 2, "{tag}");
+        for call in &calls {
+            let at = call.args.iter().position(|a| a == "--repo").unwrap_or_else(|| panic!("{tag}: no --repo in {:?}", call.args));
+            assert_eq!(call.args[at + 1], expected, "{tag}");
+            assert!(!call.args.iter().any(|a| a.contains("secret")), "{tag}: {:?}", call.args);
+        }
+    }
+}
+
+#[test]
+fn a_remote_that_cannot_be_resolved_is_an_error_and_nothing_is_called() {
+    let w = world("no-remote", "github", "main");
+    let out = std::process::Command::new("git").arg("-C").arg(&w.worktree).args(["remote", "remove", "origin"]).output().unwrap();
+    assert!(out.status.success());
+    let provider = github();
+
+    assert!(create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).is_err());
+    assert!(provider.calls().is_empty());
 }

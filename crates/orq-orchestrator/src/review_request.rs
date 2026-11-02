@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::implement::{next_event_id, now_rfc3339};
+use crate::outcome::git_raw;
 use crate::review_draft::{run_drafter, DraftSession, ReviewDraft};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
@@ -46,7 +47,9 @@ pub fn create_review_request(
         "gitlab" => Kind::GitLab,
         other => return Err(StoreError::Corrupt(format!("the provider {other} cannot open review requests"))),
     };
-    record_event(store, &record, "stage.started", serde_json::json!({ "provider": record.provider }))?;
+    // The repository comes from the stored remote, never from the CLI's own inference.
+    let repo = repository_url(&record)?;
+    record_event(store, &record, "stage.started", serde_json::json!({ "provider": record.provider, "repository": repo }))?;
 
     let session = |args: Vec<String>| DraftSession {
         program: program.to_string_lossy().into_owned(),
@@ -54,10 +57,10 @@ pub fn create_review_request(
         env: provider_environment(),
         cwd: record.worktree.clone(),
     };
-    if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft)), timeout) {
+    if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft, &repo)), timeout) {
         return fail(store, &record, format!("the review request could not be created: {reason}"));
     }
-    let viewed = match run_drafter(&session(view_args(kind, &record)), timeout) {
+    let viewed = match run_drafter(&session(view_args(kind, &record, &repo)), timeout) {
         Ok(text) => text,
         Err(reason) => return fail(store, &record, format!("the new review request could not be read back: {reason}")),
     };
@@ -110,16 +113,55 @@ pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRe
     }))
 }
 
-fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft) -> Vec<String> {
+/// The stored remote as a credential-free https URL the provider CLIs accept.
+fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
+    let unresolved = || StoreError::Corrupt(format!("the remote {} has no repository url", record.remote));
+    let got = git_raw(&record.worktree, &["remote", "get-url", "--", &record.remote])?;
+    if !got.success {
+        return Err(unresolved());
+    }
+    normalize_remote(got.stdout.trim()).ok_or_else(unresolved)
+}
+
+fn normalize_remote(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let (scheme, authority_and_path) = match raw.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest.to_string()),
+        // scp-like: [user@]host:path
+        None => {
+            let (host, path) = raw.split_once(':')?;
+            if host.contains('/') {
+                return None;
+            }
+            (None, format!("{host}/{}", path.trim_start_matches('/')))
+        }
+    };
+    let (authority, path) = authority_and_path.split_once('/')?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    // A port on http(s) is the web port; on ssh or git it is not, and is dropped.
+    let web = matches!(scheme, Some("http" | "https"));
+    let host = if web { host_port } else { host_port.split(':').next().unwrap_or("") };
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    let scheme = if scheme == Some("http") { "http" } else { "https" };
+    Some(format!("{scheme}://{host}/{path}"))
+}
+
+fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
         Kind::GitHub => strings(&[
-            "pr", "create", "--head", &record.branch, "--base", &record.target_branch, "--title", &draft.title, "--body",
-            &draft.body,
+            "pr", "create", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--title",
+            &draft.title, "--body", &draft.body,
         ]),
         Kind::GitLab => strings(&[
             "mr",
             "create",
+            "--repo",
+            repo,
             "--source-branch",
             &record.branch,
             "--target-branch",
@@ -133,11 +175,11 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft) -> Vec<Strin
     }
 }
 
-fn view_args(kind: Kind, record: &RunRecord) -> Vec<String> {
+fn view_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
-        Kind::GitHub => strings(&["pr", "view", &record.branch, "--json", "number,url"]),
-        Kind::GitLab => strings(&["mr", "view", &record.branch, "--output", "json"]),
+        Kind::GitHub => strings(&["pr", "view", &record.branch, "--repo", repo, "--json", "number,url"]),
+        Kind::GitLab => strings(&["mr", "view", &record.branch, "--repo", repo, "--output", "json"]),
     }
 }
 
