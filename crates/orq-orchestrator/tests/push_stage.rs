@@ -276,4 +276,8 @@ fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
 
     assert!(outcome.is_ok(), "{outcome:?}");
     assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+    // The push names the url that was checked, not the remote's name, which git would look up again.
+    let logged = fs::read_to_string(&w.log).unwrap();
+    let command = logged.lines().find(|l| l.starts_with("$ git ")).unwrap();
+    assert!(command.contains("forge.example") && !command.contains(" origin "), "{command}");
 }

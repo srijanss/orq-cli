@@ -139,14 +139,35 @@ pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRe
 /// The push url of `remote` in the repository at `dir`, as a credential-free https URL the
 /// provider CLIs accept. This is what a run pins when it starts.
 pub fn resolve_repository_url(dir: &Path, remote: &str) -> Result<String, StoreError> {
-    let unresolved = || StoreError::Corrupt(format!("the remote {remote} has no repository url"));
-    // Where the branch is pushed (pushurl and pushInsteadOf apply), which is where the review belongs.
+    let raw = push_url(dir, remote)?;
+    normalize_remote(&raw).ok_or_else(|| unresolved(remote))
+}
+
+fn unresolved(remote: &str) -> StoreError {
+    StoreError::Corrupt(format!("the remote {remote} has no repository url"))
+}
+
+/// The raw url `remote` is pushed to (pushurl and pushInsteadOf apply), which is where the review belongs.
+fn push_url(dir: &Path, remote: &str) -> Result<String, StoreError> {
     let got = git_raw(dir, &["remote", "get-url", "--push", "--all", "--", remote])?;
     let mut urls = got.stdout.lines().map(str::trim).filter(|l| !l.is_empty());
     match (got.success, urls.next(), urls.next()) {
-        (true, Some(url), None) => normalize_remote(url).ok_or_else(unresolved),
-        _ => Err(unresolved()),
+        (true, Some(url), None) => Ok(url.to_string()),
+        _ => Err(unresolved(remote)),
     }
+}
+
+/// The url a pinned run pushes to: resolved once and checked against the pin, so the push uses
+/// exactly what was validated instead of having git look the remote's name up again. `None` for
+/// a run without a pin, which pushes to the remote by name.
+pub(crate) fn checked_push_url(record: &RunRecord) -> Result<Option<String>, StoreError> {
+    if record.repository.is_empty() {
+        return Ok(None);
+    }
+    let raw = push_url(&record.worktree, &record.remote)?;
+    let normalized = normalize_remote(&raw).ok_or_else(|| unresolved(&record.remote))?;
+    check_pin(record, &normalized)?;
+    Ok(Some(raw))
 }
 
 /// Refuse when the remote no longer resolves to the repository the run was started against:
@@ -159,19 +180,24 @@ pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<String, StoreEr
     if record.repository.is_empty() {
         return Ok(current);
     }
+    check_pin(record, &current)?;
+    Ok(current)
+}
+
+fn check_pin(record: &RunRecord, current: &str) -> Result<(), StoreError> {
     // `.git` and a trailing slash name the same repository.
     // At most one: `r.git.git` is another repository.
     let identity = |url: &str| {
         let url = url.trim_end_matches('/');
         url.strip_suffix(".git").unwrap_or(url).to_string()
     };
-    if identity(&current) != identity(&record.repository) {
+    if identity(current) != identity(&record.repository) {
         return Err(StoreError::Corrupt(format!(
             "the remote {} now resolves to {current}, not the {} the run was started against",
             record.remote, record.repository
         )));
     }
-    Ok(current)
+    Ok(())
 }
 
 /// The stored remote as a credential-free https URL the provider CLIs accept.

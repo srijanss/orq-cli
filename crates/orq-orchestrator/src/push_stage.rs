@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::implement::{next_event_id, now_rfc3339, open_log};
 use crate::outcome::git_raw;
-use crate::review_request::ensure_pinned_remote;
+use crate::review_request::checked_push_url;
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "push";
@@ -39,19 +39,18 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
         return Err(StoreError::Corrupt("the run branch has no commit".to_string()));
     }
     let head_sha = head_sha.stdout.trim().to_string();
-    // The push goes to the remote as it is configured now, which the session could have changed.
-    if !record.repository.is_empty() {
-        ensure_pinned_remote(&record)?;
-    }
+    // The session can change the remote's configuration: a pinned run pushes to the url it just
+    // checked, not to the name git would look up again.
+    let destination = checked_push_url(&record)?.unwrap_or_else(|| record.remote.clone());
 
     let mut log = open_log(log_path)?;
     record_event(store, &record, "stage.started", serde_json::json!({ "log": log_name, "branch": record.branch }))?;
     // The source is the commit that was recorded, so a branch moved meanwhile cannot change what is published.
     let refspec = format!("{head_sha}:refs/heads/{}", record.branch);
-    writeln!(log, "$ {}", redact_credentials(&format!("git push --no-follow-tags -- {} {refspec}", record.remote)))?;
+    writeln!(log, "$ {}", redact_credentials(&format!("git push --no-follow-tags -- {destination} {refspec}")))?;
     // No force option: a remote branch that diverged is reported, not overwritten.
     // `push.followTags` in the user's config must not publish tags with it.
-    let pushed = git_raw(worktree, &["push", "--no-follow-tags", "--", &record.remote, &refspec])?;
+    let pushed = git_raw(worktree, &["push", "--no-follow-tags", "--", &destination, &refspec])?;
     log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
     log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
     if !pushed.success {
