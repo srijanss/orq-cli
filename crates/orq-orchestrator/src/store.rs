@@ -115,8 +115,13 @@ impl RunStore {
         };
         let mut ids = Vec::new();
         for entry in entries {
-            // A name that is not valid UTF-8 cannot be a run id.
-            if let Ok(name) = entry?.file_name().into_string() {
+            let entry = entry?;
+            // Only real directories are runs (a symlink is not followed); a name that is not
+            // valid UTF-8 cannot be a run id.
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Ok(name) = entry.file_name().into_string() {
                 ids.push(name);
             }
         }

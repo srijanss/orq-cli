@@ -93,3 +93,21 @@ fn a_store_without_runs_lists_nothing() {
 
     assert!(list_runs(&s, "repo-1").unwrap().is_empty());
 }
+
+fn runs_dir(root_tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("orq-run-list-{}-{root_tag}", std::process::id())).join("runs")
+}
+
+#[test]
+fn a_stray_file_or_non_run_directory_under_runs_does_not_break_the_listing() {
+    let s = store("stray");
+    s.create(&record("run-a", "repo-1", "COM-02")).unwrap();
+    let runs = runs_dir("stray");
+    std::fs::write(runs.join("notes"), "not a run").unwrap();
+    std::fs::create_dir(runs.join("empty-dir")).unwrap();
+    std::fs::create_dir(runs.join(".hidden")).unwrap();
+
+    let listed = list_runs(&s, "repo-1").unwrap();
+
+    assert_eq!(listed.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(), ["run-a"]);
+}
