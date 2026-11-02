@@ -30,6 +30,42 @@ pub(crate) fn private_dir(prefix: &str) -> PathBuf {
     }
 }
 
+/// A private, empty directory under the temp dir, created exclusively (see `private_dir`) and
+/// removed with everything in it when dropped, including when the test panics.
+pub struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn new(prefix: &str) -> Self {
+        TempDir { path: private_dir(prefix) }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A throwaway Git repository in a unique temp directory, removed on drop.
 pub struct GitFixture {
     base: PathBuf,
