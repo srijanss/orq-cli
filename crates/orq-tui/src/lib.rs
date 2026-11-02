@@ -1540,6 +1540,12 @@ pub trait BrowserBackend {
         Box::new(FinishedLaunch(Some(self.launch(feature, implementer, reviewer))))
     }
 
+    /// Starts one launch per feature, in order, without holding the UI. The default starts each
+    /// with `start_launch`; a backend whose launches must not overlap runs them in sequence.
+    fn start_launches(&mut self, features: &[String], implementer: &str, reviewer: &str) -> Vec<Box<dyn LaunchJob>> {
+        features.iter().map(|feature| self.start_launch(feature, implementer, reviewer)).collect()
+    }
+
     /// The user-level settings the Settings tab shows. Backends without
     /// settings keep this default, which says so.
     fn load_settings(&mut self) -> SettingsView {
@@ -2966,13 +2972,8 @@ where
                                 [one] => format!("Launching {one}…"),
                                 many => format!("Launching {} features…", many.len()),
                             });
-                            let running = features
-                                .into_iter()
-                                .map(|feature| {
-                                    let job = backend.start_launch(&feature, &implementer, &reviewer);
-                                    (feature, job)
-                                })
-                                .collect();
+                            let jobs = backend.start_launches(&features, &implementer, &reviewer);
+                            let running = features.into_iter().zip(jobs).collect();
                             browser.launching = Some(LaunchBatch { running, skipped, finished: Vec::new() });
                         }
                         LaunchAction::None => {}

@@ -1479,6 +1479,26 @@ impl ThreadLaunch {
         });
         ThreadLaunch { result }
     }
+
+    /// Runs `works` one after another on a single thread, each reporting through its own job, so
+    /// a failing launch does not stop the ones after it and they never race one another.
+    fn spawn_in_sequence(works: Vec<Box<dyn FnOnce() -> Result<String, String> + Send>>) -> Vec<ThreadLaunch> {
+        let mut senders = Vec::new();
+        let mut jobs = Vec::new();
+        for _ in &works {
+            let (sender, result) = std::sync::mpsc::channel();
+            senders.push(sender);
+            jobs.push(ThreadLaunch { result });
+        }
+        std::thread::spawn(move || {
+            for (work, sender) in works.into_iter().zip(senders) {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                    .unwrap_or_else(|_| Err("the launch stopped unexpectedly".to_string()));
+                let _ = sender.send(result);
+            }
+        });
+        jobs
+    }
 }
 
 impl orq_tui::LaunchJob for ThreadLaunch {
@@ -1507,6 +1527,29 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             implementer.to_string(),
             reviewer.to_string(),
         )
+    }
+
+    /// One job per feature, run one after another so the popup never races its own launches.
+    fn start_launches(
+        &mut self,
+        features: &[String],
+        implementer: &str,
+        reviewer: &str,
+    ) -> Vec<Box<dyn orq_tui::LaunchJob>> {
+        let works = features
+            .iter()
+            .map(|feature| {
+                let repo_root = self.repo_root.clone();
+                let state_root = self.state_root_override.clone();
+                let (feature, implementer, reviewer) = (feature.clone(), implementer.to_string(), reviewer.to_string());
+                Box::new(move || launch_run(repo_root, state_root, feature, implementer, reviewer))
+                    as Box<dyn FnOnce() -> Result<String, String> + Send>
+            })
+            .collect();
+        ThreadLaunch::spawn_in_sequence(works)
+            .into_iter()
+            .map(|job| Box::new(job) as Box<dyn orq_tui::LaunchJob>)
+            .collect()
     }
 
     /// The launch waits for the run to register its Herdr pane, so it runs on a thread and the
@@ -2709,6 +2752,48 @@ mod ledger_backend_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(matches!(result, Some(Err(_))), "{result:?}");
+    }
+
+    #[test]
+    fn launches_in_sequence_run_one_after_another_and_a_failure_does_not_stop_the_rest() {
+        use super::ThreadLaunch;
+        use orq_tui::LaunchJob;
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let first = {
+            let log = Arc::clone(&log);
+            move || {
+                log.lock().unwrap().push("1 start".into());
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                log.lock().unwrap().push("1 end".into());
+                Err("cannot start".to_string())
+            }
+        };
+        let second = {
+            let log = Arc::clone(&log);
+            move || {
+                log.lock().unwrap().push("2 start".into());
+                Ok("run-2".to_string())
+            }
+        };
+        let works: Vec<Box<dyn FnOnce() -> Result<String, String> + Send>> = vec![Box::new(first), Box::new(second)];
+
+        let mut jobs = ThreadLaunch::spawn_in_sequence(works);
+
+        let mut results = vec![None, None];
+        for _ in 0..300 {
+            for (slot, job) in results.iter_mut().zip(jobs.iter_mut()) {
+                if slot.is_none() {
+                    *slot = job.poll();
+                }
+            }
+            if results.iter().all(Option::is_some) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(*log.lock().unwrap(), ["1 start", "1 end", "2 start"]);
+        assert_eq!(results, vec![Some(Err("cannot start".to_string())), Some(Ok("run-2".to_string()))]);
     }
 
     struct ScriptHerdr(std::cell::RefCell<Vec<Result<String, String>>>);
