@@ -1,7 +1,34 @@
 //! What a run is doing right now, read off its stored events. Pure: the caller loads
 //! the events, so listing many runs and testing the rules need no process or disk.
 
-use crate::store::Event;
+use crate::implement::{next_event_id, now_rfc3339};
+use crate::store::{Event, RunRecord, RunStore, StoreError};
+
+/// Record that the run has ended. `ending` is `review_ready`, `blocked` or `failed`; a reason
+/// is kept for the last two. Listing reads this instead of inferring the end from other events.
+pub fn record_run_completed(
+    store: &RunStore,
+    record: &RunRecord,
+    ending: &str,
+    reason: Option<&str>,
+) -> Result<(), StoreError> {
+    let mut payload = serde_json::json!({ "ending": ending });
+    if let Some(reason) = reason {
+        payload["reason"] = serde_json::Value::String(reason.to_string());
+    }
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "run.completed".to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunPhase {
@@ -34,6 +61,13 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
             "worktree.removed" => RunPhase::Completed,
+            // The explicit ending of the run: it wins over everything inferred before it.
+            "run.completed" => match event.payload.get("ending").and_then(|e| e.as_str()) {
+                Some("review_ready") => RunPhase::Completed,
+                Some("failed") => RunPhase::Failed,
+                Some("blocked") => RunPhase::Blocked,
+                _ => continue,
+            },
             // Cleanup keeps the worktree of an unsuccessful run too: that says nothing about how
             // the run ended, so it never overrides a failure or a block, nor an unsuccessful run.
             "worktree.kept" => {

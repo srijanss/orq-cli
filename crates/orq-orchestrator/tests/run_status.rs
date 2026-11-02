@@ -188,3 +188,44 @@ fn a_failure_without_a_reason_has_none_and_unknown_events_are_ignored() {
     assert_eq!(summary.stage.as_deref(), Some("ci"));
     assert_eq!(summary.reason, None);
 }
+
+#[test]
+fn a_run_completed_event_ends_the_run_with_the_ending_it_names() {
+    let started = event("stage.started", Some("push"), none());
+
+    let done = summarize_run(&[started.clone(), event("run.completed", None, serde_json::json!({ "ending": "review_ready" }))]);
+    assert_eq!(done.phase, RunPhase::Completed);
+    assert_eq!(done.reason, None);
+
+    let failed = summarize_run(&[
+        started.clone(),
+        event("run.completed", None, serde_json::json!({ "ending": "failed", "reason": "no harness" })),
+    ]);
+    assert_eq!(failed.phase, RunPhase::Failed);
+    assert_eq!(failed.reason.as_deref(), Some("no harness"));
+
+    let blocked = summarize_run(&[
+        started,
+        event("run.completed", None, serde_json::json!({ "ending": "blocked", "reason": "no commit" })),
+    ]);
+    assert_eq!(blocked.phase, RunPhase::Blocked);
+    assert_eq!(blocked.reason.as_deref(), Some("no commit"));
+}
+
+#[test]
+fn a_run_completed_event_wins_over_the_events_before_it_but_an_unknown_ending_is_ignored() {
+    let events = [
+        event("stage.failed", Some("ci"), serde_json::json!({ "reason": "red" })),
+        event("worktree.kept", Some("cleanup"), serde_json::json!({ "run_succeeded": false })),
+        event("run.completed", None, serde_json::json!({ "ending": "failed", "reason": "ci was red" })),
+    ];
+    let summary = summarize_run(&events);
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.reason.as_deref(), Some("ci was red"));
+
+    let odd = summarize_run(&[
+        event("stage.started", Some("push"), none()),
+        event("run.completed", None, serde_json::json!({ "ending": "something_new" })),
+    ]);
+    assert_eq!(odd.phase, RunPhase::Running);
+}

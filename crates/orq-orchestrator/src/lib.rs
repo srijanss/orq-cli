@@ -37,6 +37,6 @@ pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
 pub use review_draft::{draft_review_description, DraftSession, DraftSource, ReviewDraft};
 pub use review_request::{create_review_request, recorded_review, resolve_repository_url, ReviewRef, ReviewRequestOutcome};
 pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
-pub use run_status::{summarize_run, RunPhase, RunSummary};
+pub use run_status::{record_run_completed, summarize_run, RunPhase, RunSummary};
 pub use setup::{plan_setup, run_setup, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};

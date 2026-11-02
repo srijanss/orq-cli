@@ -547,3 +547,41 @@ fn detaching_keeps_an_option_value_that_is_spelled_like_the_flag() {
         store.events(&run_id).map(|e| e.iter().any(|e| e.kind == "worktree.removed")).unwrap_or(false)
     });
 }
+
+fn completed_events(w: &World, stdout: &str) -> Vec<(String, Option<String>)> {
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect("run id printed").trim().to_string();
+    let World { env: scratch, .. } = w;
+    let store = orq_orchestrator::RunStore::new(&scratch.state.join("orq"));
+    store
+        .events(&run_id)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "run.completed")
+        .map(|e| {
+            (
+                e.payload["ending"].as_str().unwrap().to_string(),
+                e.payload.get("reason").and_then(|r| r.as_str()).map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn every_run_records_exactly_one_run_completed_event_with_how_it_ended() {
+    let w = world("completed-happy");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert_eq!(completed_events(&w, &stdout), [("review_ready".to_string(), None)]);
+
+    let w = world("completed-blocked");
+    let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(EXIT_BLOCKED), "{}\n{stdout}", stderr(&output));
+    let done = completed_events(&w, &stdout);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].0, "blocked");
+    assert!(done[0].1.is_some(), "the reason is kept: {done:?}");
+}

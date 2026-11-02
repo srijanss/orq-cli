@@ -271,6 +271,9 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
             None => note,
         });
     }
+    if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
+        eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
+    }
     Ok(report)
 }
 
