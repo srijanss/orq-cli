@@ -237,3 +237,20 @@ fn only_the_oldest_commits_and_a_bounded_slice_of_each_subject_reach_the_prompt(
     assert!(!prompt.contains(&"x".repeat(500)), "a subject is cut");
     assert!(draft.title.starts_with("long x"), "the fallback title is the first commit, not the last: {}", draft.title);
 }
+
+#[test]
+fn a_session_writing_megabytes_is_drained_and_its_multibyte_text_cut_cleanly() {
+    let w = world("drain", &["add the thing"]);
+    // Well past the retained bytes, with 3-byte characters straddling the boundary.
+    let script = "printf 'Title\\n\\n'; yes 'ééé…' | head -c 4000000";
+    let started = Instant::now();
+
+    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, script)).unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(8), "a full pipe must not stall the session: {:?}", started.elapsed());
+    assert_eq!(draft.source, DraftSource::Agent);
+    assert_eq!(draft.title, "Title");
+    let size = draft.body.chars().count();
+    assert!((7990..=8000).contains(&size), "bounded, with only trailing whitespace trimmed: {size}");
+    assert!(!draft.body.contains('\u{fffd}'), "no character is split");
+}
