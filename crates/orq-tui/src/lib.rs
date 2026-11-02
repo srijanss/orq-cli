@@ -1718,6 +1718,8 @@ pub trait LaunchJob {
 /// The launches one confirmation started: the ones still going and how the others ended.
 struct LaunchBatch {
     running: Vec<(String, Box<dyn LaunchJob>)>,
+    /// Marked features that were not launched, with their status.
+    skipped: Vec<(String, String)>,
     finished: Vec<(String, Result<String, String>)>,
 }
 
@@ -1737,7 +1739,16 @@ impl LaunchBatch {
         if !self.running.is_empty() {
             return None;
         }
-        Some(match self.finished.as_slice() {
+        let mut notice = self.outcome();
+        if !self.skipped.is_empty() {
+            let skipped: Vec<String> = self.skipped.iter().map(|(name, status)| format!("{name} ({status})")).collect();
+            notice.push_str(&format!("; skipped {}", skipped.join(", ")));
+        }
+        Some(notice)
+    }
+
+    fn outcome(&self) -> String {
+        match self.finished.as_slice() {
             [(_, Ok(id))] => format!("Started run {id}"),
             [(_, Err(reason))] => reason.clone(),
             all => {
@@ -1750,7 +1761,7 @@ impl LaunchBatch {
                 }
                 text
             }
-        })
+        }
     }
 }
 
@@ -2175,6 +2186,8 @@ where
 struct LaunchPicker {
     /// The features to launch, in list order; one unless some were marked.
     features: Vec<String>,
+    /// Marked features left out because they are not pending, with their status.
+    skipped: Vec<(String, String)>,
     profiles: Vec<String>,
     selected: usize,
     implementer: Option<String>,
@@ -2692,6 +2705,7 @@ impl Browser {
     }
 
     fn open_launch(&mut self, backend: &mut dyn BrowserBackend) {
+        let mut skipped = Vec::new();
         let features: Vec<String> = if self.marked.is_empty() {
             let Some(row) = self.selected_row() else { return };
             if row.status != "pending" {
@@ -2700,22 +2714,24 @@ impl Browser {
             }
             vec![row.name]
         } else {
-            let marked: Vec<String> = self
-                .entries
-                .iter()
-                .filter(|entry| self.marked.contains(&entry.name) && entry.status == "pending")
-                .map(|entry| entry.name.clone())
-                .collect();
-            if marked.is_empty() {
+            let mut launchable = Vec::new();
+            for entry in self.entries.iter().filter(|entry| self.marked.contains(&entry.name)) {
+                if entry.status == "pending" {
+                    launchable.push(entry.name.clone());
+                } else {
+                    skipped.push((entry.name.clone(), entry.status.clone()));
+                }
+            }
+            if launchable.is_empty() {
                 self.notice = Some("Only pending features can be launched".to_string());
                 return;
             }
-            marked
+            launchable
         };
         match backend.launch_profiles() {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
-                self.launch = Some(LaunchPicker { features, profiles, selected: 0, implementer: None })
+                self.launch = Some(LaunchPicker { features, skipped, profiles, selected: 0, implementer: None })
             }
             Err(reason) => self.notice = Some(reason),
         }
@@ -2944,6 +2960,7 @@ where
                         LaunchAction::Cancel => browser.launch = None,
                         LaunchAction::Launch { implementer, reviewer } => {
                             let features = launch.features.clone();
+                            let skipped = launch.skipped.clone();
                             browser.launch = None;
                             browser.notice = Some(match features.as_slice() {
                                 [one] => format!("Launching {one}…"),
@@ -2956,7 +2973,7 @@ where
                                     (feature, job)
                                 })
                                 .collect();
-                            browser.launching = Some(LaunchBatch { running, finished: Vec::new() });
+                            browser.launching = Some(LaunchBatch { running, skipped, finished: Vec::new() });
                         }
                         LaunchAction::None => {}
                     }

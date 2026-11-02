@@ -26,6 +26,7 @@ impl LaunchJob for Done {
 
 struct Fake {
     started: Vec<(String, String, String)>,
+    statuses: [&'static str; 3],
 }
 
 impl BrowserBackend for Fake {
@@ -37,7 +38,7 @@ impl BrowserBackend for Fake {
             depends_on: vec![],
             test_file: None,
         };
-        Ok(vec![entry("alpha", "pending"), entry("beta", "pending"), entry("gamma", "pending")])
+        Ok(vec![entry("alpha", self.statuses[0]), entry("beta", self.statuses[1]), entry("gamma", self.statuses[2])])
     }
     fn promote(&mut self, _feature: &str) -> PromoteOutcome {
         PromoteOutcome::Saved
@@ -71,7 +72,7 @@ fn has(lines: &[String], needle: &str) -> bool {
 
 #[test]
 fn l_with_marked_features_picks_once_and_starts_one_run_per_marked_feature_in_list_order() {
-    let mut backend = Fake { started: vec![] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
     // Mark gamma, then alpha (so marking order differs from list order), then launch.
     let events = vec![
         key(KeyCode::Down),
@@ -96,7 +97,7 @@ fn l_with_marked_features_picks_once_and_starts_one_run_per_marked_feature_in_li
 
 #[test]
 fn the_picker_names_how_many_features_it_launches() {
-    let mut backend = Fake { started: vec![] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Char(' ')),
@@ -113,7 +114,7 @@ fn the_picker_names_how_many_features_it_launches() {
 
 #[test]
 fn l_without_marks_still_launches_the_selected_feature() {
-    let mut backend = Fake { started: vec![] };
+    let mut backend = Fake { started: vec![], statuses: ["pending"; 3] };
     let events = vec![
         key(KeyCode::Down),
         key(KeyCode::Down),
@@ -126,4 +127,44 @@ fn l_without_marks_still_launches_the_selected_feature() {
 
     assert_eq!(backend.started.len(), 1);
     assert_eq!(backend.started[0].0, "beta");
+}
+
+#[test]
+fn marked_features_that_are_not_pending_are_skipped_and_the_notice_says_which_and_why() {
+    let mut backend = Fake { started: vec![], statuses: ["pending", "draft", "complete"] };
+    let events = vec![
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Char('L')),
+        key(KeyCode::Enter),
+        key(KeyCode::Enter),
+    ];
+
+    let lines = show(&mut backend, events);
+
+    let names: Vec<_> = backend.started.iter().map(|(f, _, _)| f.as_str()).collect();
+    assert_eq!(names, ["alpha"]);
+    assert!(has(&lines, "Started run run-alpha"), "{lines:?}");
+    assert!(has(&lines, "skipped beta (draft), gamma (complete)"), "{lines:?}");
+}
+
+#[test]
+fn when_every_marked_feature_is_skipped_nothing_launches_and_the_notice_says_why() {
+    let mut backend = Fake { started: vec![], statuses: ["draft", "draft", "pending"] };
+    let events = vec![
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Char('L')),
+    ];
+
+    let lines = show(&mut backend, events);
+
+    assert!(backend.started.is_empty());
+    assert!(has(&lines, "Only pending features can be launched"), "{lines:?}");
 }
