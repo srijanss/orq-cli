@@ -1196,6 +1196,21 @@ impl LedgerBackend {
     }
 }
 
+/// The branch a run's review targets: the remote's default branch when known, else `main`.
+fn default_target_branch(repo: &Path) -> String {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| text.trim().strip_prefix("origin/").map(str::to_string))
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
 fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
     model
         .map(|p| orq_tui::AgentSetting { harness: p.harness, model: p.model })
@@ -1203,6 +1218,47 @@ fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSet
 }
 
 impl orq_tui::BrowserBackend for LedgerBackend {
+    fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        let (profiles, _) = load_model_config(&project.root)?;
+        Ok(profiles.profiles().iter().map(|profile| profile.name.clone()).collect())
+    }
+
+    fn launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Result<String, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        let (profiles, reviewers) = load_model_config(&project.root)?;
+        let request = orq_features::LaunchRequest {
+            repo: project.root.clone(),
+            feature: feature.to_string(),
+            remote: "origin".to_string(),
+            target: default_target_branch(&project.root),
+            implementer: implementer.to_string(),
+            reviewer: reviewer.to_string(),
+        };
+        request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
+        // `orq run --detach` checks eligibility, starts the runner in a session of its own and
+        // returns at once, so closing the popup never stops the run.
+        let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
+        let output = std::process::Command::new(exe)
+            .args(request.args())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("cannot start orq run: {err}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() {
+            return stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("run: "))
+                .map(str::to_string)
+                .ok_or_else(|| "the run started but reported no run id".to_string());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.lines().find(|line| !line.trim().is_empty()).unwrap_or("orq run failed");
+        Err(printable(reason.trim_start_matches("orq: ")))
+    }
+
     fn load_runs(&mut self) -> Result<Vec<orq_tui::RunRow>, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
@@ -2152,6 +2208,27 @@ mod ledger_backend_tests {
             }]
         );
         let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_profiles_lists_the_repos_profiles_and_an_unknown_one_is_refused_before_spawning() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::write(
+            fixture.root().join(".orq.toml"),
+            "[models.zz-launch-a]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.zz-launch-b]\nharness = \"claude\"\nmodel = \"sonnet\"\n",
+        )
+        .unwrap();
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+
+        let names = orq_tui::BrowserBackend::launch_profiles(&mut backend).unwrap();
+        let refused = orq_tui::BrowserBackend::launch(&mut backend, "a", "no-such-profile", "zz-launch-b");
+
+        assert!(names.contains(&"zz-launch-a".to_string()) && names.contains(&"zz-launch-b".to_string()), "{names:?}");
+        let reason = refused.unwrap_err();
+        assert!(reason.contains("no-such-profile"), "{reason}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
