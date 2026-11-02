@@ -10,7 +10,7 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, run_gate_stage, run_implement_stage, run_setup, wait_for_ci,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_stage, run_implement_stage, run_setup, wait_for_ci,
     CiOutcome, CiWaitConfig, DraftSession, GateOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
@@ -25,6 +25,44 @@ pub struct Options<'a> {
     pub rebase: bool,
     pub gate: bool,
     pub ci_check: bool,
+    /// The id of a run whose launcher already announced it (a detached run); otherwise one is made.
+    pub run_id: Option<&'a str>,
+}
+
+fn new_run_id() -> String {
+    format!(
+        "run-{}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+        std::process::id()
+    )
+}
+
+/// Start `orq run` again as a detached runner: a process group of its own, no terminal input,
+/// its output in the run's log. Returns the run id and the log path without waiting for the run.
+/// `args` are the `orq run` arguments, without `--detach`.
+pub fn launch_detached(args: &[std::ffi::OsString]) -> Result<(String, PathBuf), String> {
+    use std::os::unix::process::CommandExt;
+    let root = state_root().ok_or_else(|| "no state location: set XDG_STATE_HOME or HOME".to_string())?;
+    let run_id = new_run_id();
+    let logs = root.join("logs").join(&run_id);
+    std::fs::create_dir_all(&logs).map_err(|e| format!("cannot create the run log directory: {e}"))?;
+    let log = logs.join("runner.log");
+    let out = std::fs::File::create(&log).map_err(|e| format!("cannot create the run log: {e}"))?;
+    let err = out.try_clone().map_err(|e| format!("cannot open the run log: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find the orq executable: {e}"))?;
+    Command::new(exe)
+        .arg("run")
+        .args(args)
+        .arg("--run-id")
+        .arg(&run_id)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        // Its own process group: closing the launcher's terminal does not signal the runner.
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("cannot start the runner: {e}"))?;
+    Ok((run_id, log))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,11 +168,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     // still only reach the host the user chose.
     let repository = orq_orchestrator::resolve_repository_url(repo, options.remote).map_err(|e| other(format!("{e:?}")))?;
 
-    let run_id = format!(
-        "run-{}-{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
-        std::process::id()
-    );
+    let run_id = options.run_id.map_or_else(new_run_id, str::to_string);
     let record = RunRecord {
         run_id: run_id.clone(),
         project_id: slug(&options.project.name),
@@ -162,6 +196,12 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
+    }
+    if options.run_id.is_some() {
+        let log = root.join("logs").join(&run_id).join("runner.log");
+        if let Err(err) = record_launch(&store, &run_id, std::process::id(), &log) {
+            eprintln!("orq: cannot record the launch of {run_id}: {err}");
+        }
     }
     let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
     if let Err(err) = orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha) {

@@ -7,7 +7,7 @@ mod pipeline;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq run --repo <path> --feature <id> --remote <name> --target <branch> [--detach] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -165,6 +165,9 @@ struct RunArgs {
     no_rebase: bool,
     no_gate: bool,
     no_ci_check: bool,
+    detach: bool,
+    /// Set by a detached launch for the runner it starts; not meant for people.
+    run_id: Option<String>,
 }
 
 fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
@@ -175,9 +178,11 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--no-rebase" => parsed.no_rebase = true,
             "--no-gate" => parsed.no_gate = true,
             "--no-ci-check" => parsed.no_ci_check = true,
-            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer") => {
+            "--detach" => parsed.detach = true,
+            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--run-id") => {
                 let value = iter.next()?;
                 match name {
+                    "--run-id" => parsed.run_id = Some(value.to_str()?.to_string()),
                     "--repo" => parsed.repo = Some(PathBuf::from(value)),
                     "--feature" => parsed.feature = Some(value.to_str()?.to_string()),
                     "--remote" => parsed.remote = Some(value.to_str()?.to_string()),
@@ -228,6 +233,21 @@ fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::from(EXIT_MODEL_SELECTION);
         }
     };
+    if parsed.detach {
+        if parsed.run_id.is_some() {
+            return usage_error();
+        }
+        let forwarded: Vec<OsString> = args.iter().filter(|arg| arg.to_str() != Some("--detach")).cloned().collect();
+        return match pipeline::launch_detached(&forwarded) {
+            Ok((run_id, log)) => {
+                println!("run: {run_id}");
+                println!("log: {}", log.display());
+                println!("state: launched");
+                ExitCode::SUCCESS
+            }
+            Err(message) => fail(message),
+        };
+    }
     let options = pipeline::Options {
         project: &project,
         feature,
@@ -238,6 +258,7 @@ fn run(args: &[OsString]) -> ExitCode {
         rebase: !parsed.no_rebase,
         gate: !parsed.no_gate,
         ci_check: !parsed.no_ci_check,
+        run_id: parsed.run_id.as_deref(),
     };
     match pipeline::execute(&options) {
         Ok(report) => {

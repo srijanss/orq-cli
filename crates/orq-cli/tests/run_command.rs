@@ -320,3 +320,74 @@ fn a_lock_that_cannot_be_released_fails_the_run_but_keeps_the_review_url() {
     assert!(stdout.contains(&format!("review: {PR_URL}")), "the review is still named: {stdout}");
     assert!(stderr(&output).contains("lock"), "the release failure is reported: {}", stderr(&output));
 }
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed().as_secs() < 60, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_detached_run_returns_at_once_while_the_run_goes_on_and_finishes_after_the_launcher_exited() {
+    let w = world("detach");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    // The agent takes a moment, so the run is certainly still going when the launcher returns.
+    let provider = github();
+    let path = path_with(&agent, &provider, &w.tag);
+    let claude = std::env::split_paths(&path).next().unwrap().join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = -p ]; then printf 'Add the feature\\n\\nThe feature.\\n'; exit 0; fi\nsleep 2\nexec '{}' \"$@\"\n",
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(started.elapsed().as_secs() < 2, "the launcher did not wait for the run: {:?}", started.elapsed());
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect(&stdout).to_string();
+    let log = stdout.lines().find_map(|l| l.strip_prefix("log: ")).expect(&stdout).to_string();
+    assert!(stdout.contains("state: launched"), "{stdout}");
+
+    // The run finishes on its own: its worktree is cleaned up and the review request exists.
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    wait_until("the detached run to complete", || {
+        store.events(&run_id).map(|e| e.iter().any(|e| e.kind == "worktree.removed")).unwrap_or(false)
+    });
+    let events = store.events(&run_id).unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert!(kinds.contains(&"run.launched"), "{kinds:?}");
+    assert!(kinds.contains(&"review.created"), "{kinds:?}");
+    assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "the run branch was pushed");
+    assert!(std::path::Path::new(&log).is_file(), "the run log exists at {log}");
+}
+
+#[test]
+fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothing() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    let env = env("detach-refused");
+
+    let output = run(repo.root(), &env, &["--feature", "COM-01", "--detach"]);
+
+    assert_eq!(output.status.code(), Some(EXIT_INELIGIBLE), "{}", stderr(&output));
+    assert!(state_is_empty(&env));
+}
