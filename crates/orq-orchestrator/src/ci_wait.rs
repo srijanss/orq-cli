@@ -194,11 +194,15 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
         return unusable("more pipelines than one page holds");
     }
     // The newest pipeline for exactly this commit is the one that counts.
-    let latest = rows
-        .iter()
-        .filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha))
-        .filter_map(|row| Some((row.get("id")?.as_u64()?, row.get("status")?.as_str()?)))
-        .max_by_key(|(id, _)| *id);
+    // Every row for it must be well formed: a row that cannot be read might be the newest.
+    let mut matching = Vec::new();
+    for row in rows.iter().filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha)) {
+        let (Some(id), Some(status)) = (row.get("id").and_then(|i| i.as_u64()), row.get("status").and_then(|s| s.as_str())) else {
+            return unusable("a pipeline for the commit has no readable id or status");
+        };
+        matching.push((id, status));
+    }
+    let latest = matching.into_iter().max_by_key(|(id, _)| *id);
     match latest {
         None => Verdict::Pending,
         Some((_, "success")) => Verdict::Passed,
@@ -284,6 +288,14 @@ mod tests {
         let text = pipelines(&[(5, SHA, "success"), (9, SHA, "failed"), (12, "other", "success")]);
         assert_eq!(gitlab_verdict(&text, SHA), Verdict::Failed(vec!["pipeline 9".to_string()]));
         assert_eq!(gitlab_verdict(&pipelines(&[(9, SHA, "success")]), SHA), Verdict::Passed);
+    }
+
+    #[test]
+    fn gitlab_a_malformed_row_for_the_sha_is_unusable_not_ignored() {
+        let text = format!("[{{\"id\":4,\"sha\":\"{SHA}\",\"status\":\"success\"}},{{\"id\":9,\"sha\":\"{SHA}\"}}]");
+        assert!(matches!(gitlab_verdict(&text, SHA), Verdict::Unusable(_)));
+        let text = format!("[{{\"id\":4,\"sha\":\"{SHA}\",\"status\":\"success\"}},{{\"id\":\"9\",\"sha\":\"{SHA}\",\"status\":\"failed\"}}]");
+        assert!(matches!(gitlab_verdict(&text, SHA), Verdict::Unusable(_)));
     }
 
     #[test]

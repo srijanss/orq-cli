@@ -182,3 +182,14 @@ fn an_unknown_run_is_an_error() {
 
     assert!(wait_for_ci(&w.store, "ghost", &provider.gh(), SHA, &config()).is_err());
 }
+
+#[test]
+fn a_newer_gitlab_pipeline_without_a_status_is_not_skipped_in_favour_of_an_older_green_one() {
+    let w = world("glab-malformed", "gitlab", "https://gitlab.example/group/sub/r.git");
+    let body = format!("[{{\"id\":4,\"sha\":\"{SHA}\",\"status\":\"success\"}},{{\"id\":9,\"sha\":\"{SHA}\"}}]\n");
+    let provider = FakeProvider::builder().reply(&["api"], &body).build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap();
+
+    assert!(matches!(outcome, CiOutcome::Errored { .. }), "{outcome:?}");
+}
