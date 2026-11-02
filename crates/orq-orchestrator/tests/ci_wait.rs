@@ -193,3 +193,30 @@ fn a_newer_gitlab_pipeline_without_a_status_is_not_skipped_in_favour_of_an_older
 
     assert!(matches!(outcome, CiOutcome::Errored { .. }), "{outcome:?}");
 }
+
+#[test]
+fn a_provider_call_that_outlasts_the_stage_timeout_is_cut_short_and_never_passes() {
+    let w = world("slow-call", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder().reply_slowly(&["api"], &gh_checks(GREEN, 1), 4000).build();
+    let short = CiWaitConfig { timeout: Duration::from_millis(500), command_timeout: Duration::from_secs(30), ..config() };
+    let started = std::time::Instant::now();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &short).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(3), "the stage timeout bounds the call: {:?}", started.elapsed());
+}
+
+#[test]
+fn the_stage_waits_out_its_whole_timeout_even_when_the_poll_interval_is_longer() {
+    let w = world("long-interval", "github", "https://github.example/o/r.git");
+    let provider = FakeProvider::builder().reply(&["api"], &gh_checks(RUNNING, 1)).build();
+    let cfg = CiWaitConfig { poll_interval: Duration::from_millis(900), timeout: Duration::from_millis(400), ..config() };
+    let started = std::time::Instant::now();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+    assert!(started.elapsed() >= Duration::from_millis(390), "{:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_millis(850), "the sleep is capped to the time left: {:?}", started.elapsed());
+}

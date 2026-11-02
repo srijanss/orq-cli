@@ -94,7 +94,13 @@ pub fn wait_for_ci(
     let deadline = Instant::now() + config.timeout;
     let mut failures = 0;
     loop {
-        let verdict = match run_drafter(&session, config.command_timeout) {
+        // A call never runs past the stage deadline, so nothing is accepted after it.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let payload = serde_json::json!({ "result": "timed_out", "head_sha": head_sha });
+            return fail(store, &record, payload, CiOutcome::TimedOut);
+        }
+        let verdict = match run_drafter(&session, config.command_timeout.min(remaining)) {
             Ok(text) => match kind {
                 Kind::GitHub => github_verdict(&text),
                 Kind::GitLab => gitlab_verdict(&text, head_sha),
@@ -119,11 +125,7 @@ pub fn wait_for_ci(
             }
             Verdict::Pending => failures = 0,
         }
-        if Instant::now() + config.poll_interval >= deadline {
-            let payload = serde_json::json!({ "result": "timed_out", "head_sha": head_sha });
-            return fail(store, &record, payload, CiOutcome::TimedOut);
-        }
-        std::thread::sleep(config.poll_interval);
+        std::thread::sleep(config.poll_interval.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
