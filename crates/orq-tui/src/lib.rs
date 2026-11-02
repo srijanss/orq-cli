@@ -1487,6 +1487,16 @@ pub trait BrowserBackend {
         Err("runs are not available".into())
     }
 
+    /// Model profile names the launch picker offers.
+    fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
+        Err("launching runs is not available".into())
+    }
+
+    /// Starts a detached run of `feature`; the id of the run, or why it did not start.
+    fn launch(&mut self, _feature: &str, _implementer: &str, _reviewer: &str) -> Result<String, String> {
+        Err("launching runs is not available".into())
+    }
+
     /// The user-level settings the Settings tab shows. Backends without
     /// settings keep this default, which says so.
     fn load_settings(&mut self) -> SettingsView {
@@ -2040,6 +2050,64 @@ where
     Ok(())
 }
 
+/// Chooses the implementer and then the reviewer profile for a launch.
+struct LaunchPicker {
+    feature: String,
+    profiles: Vec<String>,
+    selected: usize,
+    implementer: Option<String>,
+}
+
+enum LaunchAction {
+    None,
+    Cancel,
+    Launch { implementer: String, reviewer: String },
+}
+
+impl LaunchPicker {
+    fn handle_key(&mut self, code: KeyCode) -> LaunchAction {
+        match code {
+            KeyCode::Esc => return LaunchAction::Cancel,
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1).min(self.profiles.len().saturating_sub(1))
+            }
+            KeyCode::Enter => {
+                if let Some(chosen) = self.profiles.get(self.selected).cloned() {
+                    match self.implementer.take() {
+                        None => {
+                            self.implementer = Some(chosen);
+                            self.selected = 0;
+                        }
+                        Some(implementer) => return LaunchAction::Launch { implementer, reviewer: chosen },
+                    }
+                }
+            }
+            _ => {}
+        }
+        LaunchAction::None
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect) {
+        let step = if self.implementer.is_none() { "implementer" } else { "reviewer" };
+        let mut lines = vec![Line::from(format!(" Launch {} — choose the {step}", printable(&self.feature)))];
+        if let Some(implementer) = &self.implementer {
+            lines.push(Line::from(format!(" Implementer: {}", printable(implementer))));
+        }
+        lines.push(Line::from(""));
+        let room = usize::from(area.height).saturating_sub(5).max(1);
+        let first = self.selected.saturating_sub(room - 1);
+        for (index, profile) in self.profiles.iter().enumerate().skip(first).take(room) {
+            let mark = if index == self.selected { "▸ " } else { "  " };
+            let style = if index == self.selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+            lines.push(Line::from(Span::styled(format!("   {mark}{}", printable(profile)), style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(" ↑↓ choose · Enter confirm · Esc cancel"));
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+}
+
 struct Browser {
     entries: Vec<BrowserEntry>,
     /// Derived from `entries` once per load, so redraws and keys do not clone the ledger.
@@ -2066,6 +2134,8 @@ struct Browser {
     preview: Option<PreviewState>,
     /// The spec file / section chooser shown before generation starts.
     picker: Option<SpecPicker>,
+    /// The implementer / reviewer chooser for launching a run.
+    launch: Option<LaunchPicker>,
     /// The ledger file does not exist yet (and nothing else is wrong).
     absent: bool,
     /// A generation running in the background; only Esc is handled meanwhile.
@@ -2460,6 +2530,21 @@ impl Browser {
         self.tab = Tab::Runs;
     }
 
+    fn open_launch(&mut self, backend: &mut dyn BrowserBackend) {
+        let Some(row) = self.selected_row() else { return };
+        if row.status != "pending" {
+            self.notice = Some("Only pending features can be launched".to_string());
+            return;
+        }
+        match backend.launch_profiles() {
+            Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
+            Ok(profiles) => {
+                self.launch = Some(LaunchPicker { feature: row.name, profiles, selected: 0, implementer: None })
+            }
+            Err(reason) => self.notice = Some(reason),
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame, model: &PopupModel) {
         let full = frame.area();
         let area = render_chrome_tabs(frame, full, self.tab);
@@ -2473,6 +2558,11 @@ impl Browser {
         }
         if let Some(picker) = &self.picker {
             picker.render(frame, body_area(area, self.notice.is_some()));
+            render_notice(frame, area, self.notice.as_deref());
+            return;
+        }
+        if let Some(launch) = &self.launch {
+            launch.render(frame, body_area(area, self.notice.is_some()));
             render_notice(frame, area, self.notice.as_deref());
             return;
         }
@@ -2617,6 +2707,7 @@ where
         form: None,
         preview: None,
         picker: None,
+        launch: None,
         absent: false,
         generating: None,
     };
@@ -2656,6 +2747,22 @@ where
                         PickerAction::Cancel => browser.picker = None,
                         PickerAction::Start { spec, focus } => browser.start_picked(backend, &spec, &focus),
                         PickerAction::None => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if let Some(launch) = browser.launch.as_mut() {
+                    match launch.handle_key(key.code) {
+                        LaunchAction::Cancel => browser.launch = None,
+                        LaunchAction::Launch { implementer, reviewer } => {
+                            let feature = launch.feature.clone();
+                            browser.launch = None;
+                            browser.notice = Some(match backend.launch(&feature, &implementer, &reviewer) {
+                                Ok(id) => format!("Started run {id}"),
+                                Err(reason) => reason,
+                            });
+                        }
+                        LaunchAction::None => {}
                     }
                     dirty = true;
                     continue;
@@ -2703,6 +2810,16 @@ where
                         KeyCode::Char('r') => browser.open_runs(backend),
                         _ => {}
                     }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('L')
+                    && !browser.search.active
+                    && browser.detail.is_none()
+                    && browser.dropdown.is_none()
+                    && browser.error.is_none()
+                {
+                    browser.open_launch(backend);
                     dirty = true;
                     continue;
                 }
