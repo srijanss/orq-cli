@@ -203,7 +203,7 @@ fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     match kind {
         Kind::GitHub => strings(&[
             "pr", "list", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--state", "all",
-            "--json", "number,url,state", "--limit", "50",
+            "--json", "number,url,state,isCrossRepository", "--limit", "50",
         ]),
         Kind::GitLab => strings(&[
             "mr",
@@ -235,6 +235,10 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
             .and_then(|s| s.as_str())
             .map(str::to_ascii_lowercase)
             .ok_or_else(|| "a listed review has no state".to_string())?;
+        // A review from a fork can share the branch name; it does not review this run's branch.
+        if !from_own_repository(kind, row)? {
+            continue;
+        }
         let slot = match state.as_str() {
             "open" | "opened" => &mut open,
             "merged" => &mut merged,
@@ -245,6 +249,20 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
         slot.get_or_insert(review);
     }
     Ok(open.or(merged))
+}
+
+/// Whether the review's source lives in the repository the run was pushed to; an answer that
+/// does not say is an error, never a guess.
+fn from_own_repository(kind: Kind, row: &serde_json::Value) -> Result<bool, String> {
+    let unsaid = || "a listed review does not say where its source branch lives".to_string();
+    match kind {
+        Kind::GitHub => Ok(!row.get("isCrossRepository").and_then(|v| v.as_bool()).ok_or_else(unsaid)?),
+        Kind::GitLab => {
+            let source = row.get("source_project_id").and_then(|v| v.as_u64()).ok_or_else(unsaid)?;
+            let target = row.get("target_project_id").and_then(|v| v.as_u64()).ok_or_else(unsaid)?;
+            Ok(source == target)
+        }
+    }
 }
 
 fn view_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {

@@ -345,12 +345,13 @@ fn a_remote_url_with_a_query_or_fragment_is_refused_so_no_secret_reaches_events_
     }
 }
 
+/// Rows from the run's own repository; `provider` picks the fields that say so.
 fn listing(provider: &str, number_key: &str, url_key: &str, items: &[(u64, &str, &str)]) -> String {
+    let own = if provider == "glab" { "\"source_project_id\":9,\"target_project_id\":9" } else { "\"isCrossRepository\":false" };
     let rows: Vec<String> = items
         .iter()
-        .map(|(n, state, url)| format!("{{\"{number_key}\":{n},\"{url_key}\":\"{url}\",\"state\":\"{state}\"}}"))
+        .map(|(n, state, url)| format!("{{\"{number_key}\":{n},\"{url_key}\":\"{url}\",\"state\":\"{state}\",{own}}}"))
         .collect();
-    let _ = provider;
     format!("[{}]\n", rows.join(","))
 }
 
@@ -480,4 +481,79 @@ fn a_listing_row_that_is_not_understood_fails_the_stage_without_creating() {
         assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
         assert!(!has_call(&provider, "create"), "{tag}: a blind create could duplicate");
     }
+}
+
+#[test]
+fn a_review_from_a_fork_with_the_same_branch_name_is_not_adopted() {
+    let url = "https://github.example/o/r/pull/5";
+    let gitlab_url = "https://gitlab.example/o/r/-/merge_requests/5";
+    for (tag, provider_name, rows, list) in [
+        (
+            "fork-gh",
+            "github",
+            format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":\"OPEN\",\"isCrossRepository\":true}}]\n"),
+            ["pr", "list"],
+        ),
+        (
+            "fork-gl",
+            "gitlab",
+            format!("[{{\"iid\":5,\"web_url\":\"{gitlab_url}\",\"state\":\"opened\",\"source_project_id\":4,\"target_project_id\":9}}]\n"),
+            ["mr", "list"],
+        ),
+    ] {
+        let w = world(tag, provider_name, "main");
+        let (create, view, program_view) = if provider_name == "github" {
+            (["pr", "create"], ["pr", "view"], "{\"number\":8,\"url\":\"https://github.example/o/r/pull/8\"}\n")
+        } else {
+            (["mr", "create"], ["mr", "view"], "{\"iid\":8,\"web_url\":\"https://gitlab.example/o/r/-/merge_requests/8\"}\n")
+        };
+        let provider =
+            FakeProvider::builder().reply(&list, &rows).reply(&create, "ok\n").reply(&view, program_view).build();
+        let program = if provider_name == "github" { provider.gh() } else { provider.glab() };
+
+        let outcome = create_review_request(&w.store, "run-1", &program, &draft(), WAIT).unwrap();
+
+        assert!(matches!(&outcome, ReviewRequestOutcome::Created(r) if r.id == "8"), "{tag}: {outcome:?}");
+    }
+}
+
+#[test]
+fn a_listing_that_does_not_say_where_the_source_lives_fails_the_stage() {
+    let url = "https://github.example/o/r/pull/5";
+    let gitlab_url = "https://gitlab.example/o/r/-/merge_requests/5";
+    for (tag, provider_name, rows, list) in [
+        ("gh-unsaid", "github", format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":\"OPEN\"}}]\n"), ["pr", "list"]),
+        (
+            "gh-not-bool",
+            "github",
+            format!("[{{\"number\":5,\"url\":\"{url}\",\"state\":\"OPEN\",\"isCrossRepository\":\"no\"}}]\n"),
+            ["pr", "list"],
+        ),
+        (
+            "gl-unsaid",
+            "gitlab",
+            format!("[{{\"iid\":5,\"web_url\":\"{gitlab_url}\",\"state\":\"opened\",\"source_project_id\":9}}]\n"),
+            ["mr", "list"],
+        ),
+    ] {
+        let w = world(tag, provider_name, "main");
+        let provider = FakeProvider::builder().reply(&list, &rows).build();
+        let program = if provider_name == "github" { provider.gh() } else { provider.glab() };
+
+        let outcome = create_review_request(&w.store, "run-1", &program, &draft(), WAIT).unwrap();
+
+        assert!(matches!(outcome, ReviewRequestOutcome::Failed { .. }), "{tag}: {outcome:?}");
+        assert!(!has_call(&provider, "create"), "{tag}");
+    }
+}
+
+#[test]
+fn the_github_listing_asks_whether_each_review_crosses_repositories() {
+    let w = world("asks-cross", "github", "main");
+    let provider = gh_with_listing(&[]);
+    let _ = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    let list = provider.calls().into_iter().find(|c| c.args[1] == "list").unwrap();
+    let args = list.args.join("\u{1}");
+    assert!(args.contains("isCrossRepository"), "{args}");
 }
