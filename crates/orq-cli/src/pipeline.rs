@@ -79,9 +79,13 @@ fn state_root() -> Option<PathBuf> {
 fn find_program(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| {
-        candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
+    // Sessions run in the worktree, so the program must not depend on this process's cwd:
+    // relative and empty PATH entries are anchored to it here.
+    let here = std::env::current_dir().ok()?;
+    std::env::split_paths(&path)
+        .map(|dir| if dir.is_absolute() { dir } else { here.join(dir) })
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
@@ -206,6 +210,9 @@ fn stages(
     let Some(claude) = find_program(&options.implementer.harness) else {
         return stopped(Ending::Failed, format!("the {} harness is not on PATH", options.implementer.harness));
     };
+    let Some(claude_program) = claude.to_str() else {
+        return stopped(Ending::Failed, format!("the {} harness path is not valid UTF-8", options.implementer.harness));
+    };
     let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     let args = adapter
         .implement_argv(&ImplementRequest {
@@ -215,7 +222,7 @@ fn stages(
         })
         .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     let session = ImplementSession {
-        program: claude.to_str().unwrap_or("claude"),
+        program: claude_program,
         args: &args,
         env: &[],
         cwd: worktree,

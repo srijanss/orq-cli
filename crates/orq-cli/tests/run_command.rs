@@ -251,3 +251,33 @@ fn a_feature_with_a_run_in_progress_is_refused_with_its_own_exit_code() {
     assert!(stderr(&second).contains("run-"), "the active run is named: {}", stderr(&second));
     assert!(second.stdout.is_empty());
 }
+
+#[test]
+fn a_harness_found_through_a_relative_path_entry_still_runs_inside_the_worktree() {
+    let w = world("relpath");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let absolute = path_with(&agent, &provider, &w.tag);
+    let mut entries: Vec<PathBuf> = std::env::split_paths(&absolute).collect();
+    // The harness directory is named relative to the directory orq is started from.
+    let bin = entries[0].clone();
+    entries[0] = PathBuf::from(bin.file_name().unwrap());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .current_dir(bin.parent().unwrap())
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(entries).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+}
