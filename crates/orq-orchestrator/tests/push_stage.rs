@@ -261,7 +261,9 @@ fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
     let ssh = w.root.join("fake-ssh");
     fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
-    git(&w.worktree, &["config", "core.sshCommand", ssh.to_str().unwrap()]);
+    // core.sshCommand is a shell command: quote the path.
+    let quoted = format!("'{}'", ssh.to_str().unwrap().replace('\'', "'\\''"));
+    git(&w.worktree, &["config", "core.sshCommand", &quoted]);
     let url = format!("git@forge.example:{}", w.remote.to_str().unwrap());
     git(&w.worktree, &["remote", "set-url", "origin", &url]);
     let pinned = format!("https://forge.example/{}", w.remote.to_str().unwrap().trim_start_matches('/'));
