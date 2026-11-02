@@ -347,6 +347,34 @@ fn an_unreadable_commit_status_is_never_green() {
 }
 
 #[test]
+fn a_pending_check_run_is_not_overridden_by_a_green_commit_status() {
+    let w = world("pending-vs-green", "github", "https://github.example/o/r.git");
+    let call = status_call();
+    let prefix: Vec<&str> = call.iter().map(String::as_str).collect();
+    let green = gh_status("success", "{\"context\":\"ci/legacy\",\"state\":\"success\"}", 1);
+    let provider = FakeProvider::builder().reply(&["api"], &gh_checks(RUNNING, 1)).reply(&prefix, &green).build();
+    let config = CiWaitConfig { timeout: Duration::from_millis(300), ..config() };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut, "a running check run keeps the stage waiting");
+}
+
+#[test]
+fn a_transient_failure_of_the_status_request_is_forgiven_once_a_poll_succeeds() {
+    let w = world("status-transient", "github", "https://github.example/o/r.git");
+    let call = status_call();
+    let prefix: Vec<&str> = call.iter().map(String::as_str).collect();
+    let provider = github_provider().reply(&["api"], &gh_checks(GREEN, 1)).fail_once(&prefix, 1, "boom").build();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed);
+    let status_calls = provider.calls().iter().filter(|c| c.args.starts_with(&call)).count();
+    assert_eq!(status_calls, 2, "the failed status request was polled again");
+}
+
+#[test]
 fn the_github_check_run_call_asks_for_only_the_fields_it_reads_so_a_full_page_fits_the_output_cap() {
     let w = world("projection", "github", "https://github.example/o/r.git");
     let provider = github_provider().reply(&["api"], &gh_checks(GREEN, 1)).build();
