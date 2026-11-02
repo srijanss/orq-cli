@@ -412,6 +412,46 @@ fn a_failure_log_is_never_written_through_a_symlinked_ancestor_directory() {
     assert!(script.sessions.is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlink_deeper_in_the_log_directory_path_is_rejected_too() {
+    let w = world("deep-ancestor");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let outside = w.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(w.worktree.join(".orq")).unwrap();
+    std::os::unix::fs::symlink(&outside, w.worktree.join(".orq/nested")).unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+    let mut cfg = config(&w, &gate, 2);
+    cfg.log_dir = Box::leak(w.worktree.join(".orq/nested/logs").into_boxed_path());
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &cfg, &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "nothing was written outside the worktree");
+    assert!(script.sessions.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_log_directory_spelled_with_parent_components_cannot_hide_a_symlink() {
+    let w = world("parent-components");
+    let gate = Gate::Skipped { reason: "none".to_string() };
+    let outside = w.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(w.worktree.join("sub")).unwrap();
+    std::os::unix::fs::symlink(&outside, w.worktree.join(".orq")).unwrap();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "exit 0");
+    let mut cfg = config(&w, &gate, 2);
+    cfg.log_dir = Box::leak(w.worktree.join("sub/../.orq/logs").into_boxed_path());
+
+    let result = run_ci_fix_loop(&w.store, "run-1", SHA1, &cfg, &mut script);
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "nothing was written outside the worktree");
+    assert!(script.sessions.is_empty());
+}
+
 #[test]
 fn a_failure_log_left_by_an_earlier_invocation_is_kept_and_the_loop_still_proceeds() {
     let w = world("retry");
