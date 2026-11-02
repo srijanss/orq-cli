@@ -68,7 +68,7 @@ fn other(message: impl Into<String>) -> StartError {
     StartError::Other(message.into())
 }
 
-fn state_root() -> Option<PathBuf> {
+pub(crate) fn state_root() -> Option<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".local/state"),
@@ -92,7 +92,7 @@ fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Command::new("git").arg("-C").arg(repo).args(args).output().is_ok_and(|o| o.status.success())
 }
 
-fn slug(text: &str) -> String {
+pub(crate) fn slug(text: &str) -> String {
     text.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect()
 }
 

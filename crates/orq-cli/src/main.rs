@@ -7,7 +7,7 @@ mod pipeline;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -24,6 +24,7 @@ fn main() -> ExitCode {
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
         (Some("features"), _) => features(&args[1..]),
         (Some("models"), _) => models(&args[1..]),
+        (Some("runs"), _) => runs(&args[1..]),
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
@@ -283,6 +284,67 @@ fn load_model_config(
 /// `orq models --repo <path>`: the model profiles, which roles each can fill,
 /// and the defaults a run would use. Unusable defaults are reported in the
 /// output; configuration that cannot be read fails the command.
+/// `orq runs --repo <path> [--json]`: the runs of the repository's project, from the run store.
+fn runs(args: &[OsString]) -> ExitCode {
+    let (repo, json) = match args {
+        [flag, path] if flag == "--repo" => (PathBuf::from(path), false),
+        [flag, path, json] if flag == "--repo" && json == "--json" => (PathBuf::from(path), true),
+        _ => return usage_error(),
+    };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    let store = orq_orchestrator::RunStore::new(&root);
+    let listings = match orq_orchestrator::list_runs(&store, &pipeline::slug(&project.name)) {
+        Ok(listings) => listings,
+        Err(err) => return fail(err),
+    };
+    let phase = |phase: orq_orchestrator::RunPhase| match phase {
+        orq_orchestrator::RunPhase::Running => "running",
+        orq_orchestrator::RunPhase::Completed => "completed",
+        orq_orchestrator::RunPhase::Failed => "failed",
+        orq_orchestrator::RunPhase::Blocked => "blocked",
+    };
+    if json {
+        let list: Vec<serde_json::Value> = listings
+            .iter()
+            .map(|run| {
+                serde_json::json!({
+                    "run_id": run.run_id,
+                    "feature_id": run.feature_id,
+                    "phase": phase(run.phase),
+                    "stage": run.stage,
+                    "reason": run.reason,
+                    "implementer_model": run.implementer_model,
+                    "reviewer_model": run.reviewer_model,
+                    "review_url": run.review_url,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "runs": list }));
+    } else {
+        for run in &listings {
+            let field = |value: &Option<String>| value.as_deref().unwrap_or("-").to_string();
+            println!(
+                "{}\t{}\t{}\t{}\t{}/{}\t{}\t{}",
+                printable(&run.run_id),
+                printable(&run.feature_id),
+                phase(run.phase),
+                printable(&field(&run.stage)),
+                printable(&field(&run.implementer_model)),
+                printable(&field(&run.reviewer_model)),
+                printable(&field(&run.reason)),
+                printable(&field(&run.review_url)),
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn models(args: &[OsString]) -> ExitCode {
     let repo = match args {
         [flag, path] if flag == "--repo" => PathBuf::from(path),
