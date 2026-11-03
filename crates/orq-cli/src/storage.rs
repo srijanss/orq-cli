@@ -254,14 +254,20 @@ pub(crate) fn ui_view(ctx: &Ctx) -> orq_tui::StorageView {
     }
 }
 
-/// What a cleanup would remove, as lines to read; empty when there is nothing to remove.
+/// What a cleanup would do, as lines to read; empty when there is nothing to do.
 pub(crate) fn ui_preview(ctx: &Ctx) -> Result<(Vec<String>, PrunePlan), String> {
     let policy = policy(&ctx.roots)?;
     let the_plan = ctx.plan(&policy, now())?;
-    if the_plan.candidates.is_empty() && the_plan.metadata.is_empty() {
-        return Ok((Vec::new(), the_plan));
+    // Reading the journal changes nothing; only a confirmed cleanup settles it.
+    let pending = ctx.store.pending_removals().map_err(|e| e.to_string())?.len();
+    let mut lines = Vec::new();
+    if pending > 0 {
+        lines.push(format!("{pending} removal(s) of an interrupted prune are pending; a cleanup will settle them."));
     }
-    Ok((the_plan.render(), the_plan))
+    if !the_plan.candidates.is_empty() || !the_plan.metadata.is_empty() {
+        lines.extend(the_plan.render());
+    }
+    Ok((lines, the_plan))
 }
 
 /// Carries out exactly `previewed`, the plan the person confirmed. Each file is still checked
@@ -373,6 +379,17 @@ mod tests {
         ui_prune(&c, &previewed).unwrap();
         assert!(!c.roots.data.join("runs/shown-run/events.jsonl").exists());
         assert!(c.roots.data.join("runs/later-run/events.jsonl").exists(), "never shown, so never removed");
+    }
+
+    #[test]
+    fn an_interrupted_prune_is_offered_for_settling_and_only_a_cleanup_settles_it() {
+        let c = ctx("pending");
+        c.store.begin_removal("old-run", "runs/old-run/events.jsonl").unwrap();
+        let (lines, previewed) = ui_preview(&c).unwrap();
+        assert!(lines.iter().any(|l| l.contains("1 removal(s) of an interrupted prune")), "{lines:?}");
+        assert_eq!(c.store.pending_removals().unwrap().len(), 1, "previewing leaves the journal alone");
+        ui_prune(&c, &previewed).unwrap();
+        assert!(c.store.pending_removals().unwrap().is_empty());
     }
 
     #[cfg(unix)]
