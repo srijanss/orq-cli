@@ -165,9 +165,10 @@ pub fn open_grid_pane(
     .iter()
     .map(|part| part.to_string())
     .collect();
-    let created = herdr.run(&split).map_err(|err| err.to_string()).and_then(|reply| parse_split(&reply, &newest));
-    let location = match created {
-        Ok(location) => location,
+    // Only a split Herdr refused falls back to a tab of its own. One that succeeded but whose
+    // reply names no pane has made a pane this cannot find, so it is reported, not hidden.
+    let location = match herdr.run(&split) {
+        Ok(reply) => parse_split(&reply, &newest)?,
         Err(_) => return open_run_pane(herdr, workspace, cwd, label, log),
     };
     rename(&location);

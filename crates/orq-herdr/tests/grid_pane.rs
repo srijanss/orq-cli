@@ -86,3 +86,15 @@ fn a_split_that_fails_gives_that_run_a_tab_of_its_own_and_later_runs_keep_the_gr
     assert_eq!(third.pane_id, "w:p3", "the grid went on from the last pane that is in it");
     assert_eq!(herdr.calls.borrow()[6][3], "w:p1");
 }
+
+#[test]
+fn a_split_that_succeeded_but_named_no_pane_is_an_error_not_a_second_tab() {
+    let herdr = Fake::new(vec![Ok(CREATED.into()), Ok(OK.into()), Ok(OK.into()), Ok(r#"{"result":{"type":"pane_created"}}"#.into())]);
+    let mut grid = GridTab::new("feats");
+    open_grid_pane(&herdr, &mut grid, None, Path::new("/repo"), "orq run-1", Path::new("/l1")).unwrap();
+
+    let err = open_grid_pane(&herdr, &mut grid, None, Path::new("/repo"), "orq run-2", Path::new("/l2")).unwrap_err();
+
+    assert!(err.contains("did not name the new pane"), "{err}");
+    assert_eq!(herdr.calls.borrow().len(), 4, "no fallback tab was opened");
+}
