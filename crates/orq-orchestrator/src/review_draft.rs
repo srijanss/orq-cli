@@ -7,7 +7,8 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::implement::{next_event_id, now_rfc3339};
@@ -21,6 +22,20 @@ const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 8000;
 /// More than any accepted draft needs; the rest of the output is read and dropped.
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_STDERR_BYTES: usize = 8 * 1024;
+
+/// What a session wrote to stderr, kept bounded. `done` is set once the pipe is closed.
+struct StderrSink {
+    bytes: Mutex<Vec<u8>>,
+    done: AtomicBool,
+}
+
+/// Why a session gave no output, with the (bounded) stderr it wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionFailure {
+    pub reason: String,
+    pub stderr: String,
+}
 
 /// How to start the read-only drafting session.
 #[derive(Debug, Clone)]
@@ -103,6 +118,24 @@ fn build_prompt(subjects: &[String]) -> String {
 
 /// Run the session and return its stdout, or why there is none.
 pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, String> {
+    run_session(session, timeout, &Arc::new(StderrSink { bytes: Mutex::new(Vec::new()), done: AtomicBool::new(true) }))
+}
+
+/// Like `run_drafter`, but a failure carries what the session wrote to stderr.
+pub(crate) fn run_captured(session: &DraftSession, timeout: Duration) -> Result<String, SessionFailure> {
+    let sink = Arc::new(StderrSink { bytes: Mutex::new(Vec::new()), done: AtomicBool::new(true) });
+    run_session(session, timeout, &sink).map_err(|reason| {
+        // The session's group is dead, so its stderr pipe is closing; give the reader a moment.
+        let wait = Instant::now() + Duration::from_secs(1);
+        while !sink.done.load(Ordering::Acquire) && Instant::now() < wait {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let bytes = sink.bytes.lock().map(|b| b.clone()).unwrap_or_default();
+        SessionFailure { reason, stderr: String::from_utf8_lossy(&bytes).into_owned() }
+    })
+}
+
+fn run_session(session: &DraftSession, timeout: Duration, stderr_sink: &Arc<StderrSink>) -> Result<String, String> {
     // The human-only merge rule: no provider call that merges or approves is ever started.
     if let Some(why) = orq_core::no_merge::forbidden_provider_call(&session.program, &session.args) {
         return Err(format!("refused: {why}"));
@@ -114,7 +147,7 @@ pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<S
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         // Its own process group, so a timeout stops the session's children too.
         .process_group(0);
     for key in ["PATH", "HOME", "TERM"] {
@@ -125,6 +158,25 @@ pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<S
     command.envs(session.env.iter().map(|(k, v)| (k, v)));
     let mut child = command.spawn().map_err(|e| format!("the drafting session could not start: {e}"))?;
     let mut stdout = child.stdout.take().ok_or_else(|| "the drafting session has no output".to_string())?;
+    if let Some(mut stderr) = child.stderr.take() {
+        stderr_sink.done.store(false, Ordering::Release);
+        let sink = Arc::clone(stderr_sink);
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut kept) = sink.bytes.lock() {
+                            let room = MAX_STDERR_BYTES.saturating_sub(kept.len());
+                            kept.extend_from_slice(&chunk[..n.min(room)]);
+                        }
+                    }
+                }
+            }
+            sink.done.store(true, Ordering::Release);
+        });
+    }
 
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
