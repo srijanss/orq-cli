@@ -6,7 +6,7 @@
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
 use crate::storage::{check_head_sha, check_run_id, write_atomic};
@@ -246,6 +246,23 @@ impl Store {
             lifecycles.push(lifecycle);
         }
         Ok(lifecycles)
+    }
+
+    /// What the provider last showed about the run's review, and when.
+    pub fn review_observation(&self, run_id: &str) -> Result<Option<crate::retention::ReviewFacts>> {
+        check_run_id(run_id)?;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT state, last_checked, last_error FROM review_lifecycles WHERE run_id = ?1 ORDER BY last_checked DESC, rowid DESC LIMIT 1",
+                params![run_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<String>>(2)?)),
+            )
+            .optional()
+            .map_err(db)?;
+        let Some((state, checked, last_error)) = row else { return Ok(None) };
+        let state = ProviderState::parse(&state).ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("stored review state {:?} is not recognised", state)))?;
+        Ok(Some(crate::retention::ReviewFacts { state, observed_at: checked.max(0) as u64, last_error }))
     }
 
     /// Exempts a run from pruning until it is unpinned. Pinning twice is a no-op.
