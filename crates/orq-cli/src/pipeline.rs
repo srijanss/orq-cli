@@ -309,6 +309,18 @@ fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str,
     }
 }
 
+/// The number `git rev-list --count` printed. A failed git or unreadable output is an error: an
+/// unestablished count must never read as "there are commits to publish".
+fn ahead_count(output: &std::process::Output) -> Result<u64, String> {
+    if !output.status.success() {
+        return Err(format!("cannot count the commits to publish: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| "cannot count the commits to publish: git printed no number".to_string())
+}
+
 /// The branch `--publish` pushes: the one checked out in `repo`. It must be a real branch other
 /// than the target, carry commits the target lacks, and leave the working tree clean.
 fn published_branch(repo: &Path, target: &str, base_sha: &str) -> Result<String, String> {
@@ -325,7 +337,7 @@ fn published_branch(repo: &Path, target: &str, base_sha: &str) -> Result<String,
         return Err("the working tree has uncommitted changes; commit or stash them before publishing".to_string());
     }
     let ahead = Command::new("git").arg("-C").arg(repo).args(["rev-list", "--count", &format!("{base_sha}..HEAD")]).output().map_err(|e| e.to_string())?;
-    if String::from_utf8_lossy(&ahead.stdout).trim() == "0" {
+    if ahead_count(&ahead)? == 0 {
         return Err(format!("nothing to publish: {branch} has no commits beyond {target}"));
     }
     Ok(branch)
@@ -455,4 +467,24 @@ fn stages(
         });
     }
     Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review.url) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ahead_count;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: i32, stdout: &str) -> Output {
+        Output { status: ExitStatus::from_raw(code << 8), stdout: stdout.as_bytes().to_vec(), stderr: b"fatal: bad object\n".to_vec() }
+    }
+
+    #[test]
+    fn the_commit_count_must_come_from_a_successful_git_and_be_a_number() {
+        assert_eq!(ahead_count(&output(0, "3\n")), Ok(3));
+        assert_eq!(ahead_count(&output(0, "0\n")), Ok(0));
+        assert!(ahead_count(&output(128, "")).unwrap_err().contains("bad object"));
+        assert!(ahead_count(&output(0, "")).is_err());
+        assert!(ahead_count(&output(0, "many\n")).is_err());
+    }
 }
