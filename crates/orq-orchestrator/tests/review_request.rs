@@ -362,7 +362,7 @@ fn listing(provider: &str, number_key: &str, url_key: &str, items: &[(u64, &str,
 }
 
 fn gh_with_listing(rows: &[(u64, &str, &str)]) -> FakeProvider {
-    FakeProvider::builder().reply(&["pr", "list"], &listing("gh", "number", "url", rows)).build()
+    FakeProvider::builder().reply(&["pr", "list"], &listing("gh", "number", "url", rows)).reply(&["pr", "edit"], "ok\n").build()
 }
 
 fn has_call(provider: &FakeProvider, verb: &str) -> bool {
@@ -383,7 +383,7 @@ fn an_open_review_for_the_same_branches_is_adopted_and_nothing_is_created() {
     let args = list.args.join("\u{1}");
     assert!(args.contains("--head\u{1}fix--COM-02") && args.contains("--base\u{1}release/1.x") && args.contains("--state\u{1}all"), "{args}");
     assert!(args.contains("--repo\u{1}https://github.example/o/r.git"), "{args}");
-    assert_eq!(kinds(&w), ["stage.started", "review.adopted", "stage.completed"]);
+    assert_eq!(kinds(&w), ["stage.started", "review.adopted", "review.updated", "stage.completed"]);
     assert_eq!(recorded_review(&w.store, "run-1").unwrap(), Some(adopted));
 }
 
@@ -625,4 +625,64 @@ fn a_remote_repointed_since_the_run_started_gets_no_provider_call() {
 
     assert!(outcome.is_err(), "{outcome:?}");
     assert!(provider.calls().is_empty(), "{:?}", provider.calls());
+}
+
+fn edit_call(provider: &FakeProvider, verb: &str) -> String {
+    provider.calls().into_iter().find(|c| c.args[1] == verb).map(|c| c.args.join("\u{1}")).unwrap_or_default()
+}
+
+#[test]
+fn an_adopted_open_pull_request_gets_the_current_title_and_body() {
+    let w = world("update-gh", "github", "main");
+    let provider = gh_with_listing(&[(5, "OPEN", "https://github.example/o/r/pull/5")]);
+
+    create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    let args = edit_call(&provider, "edit");
+    let d = draft();
+    assert!(args.starts_with("pr\u{1}edit\u{1}5\u{1}"), "{args}");
+    assert!(args.contains(&format!("--title\u{1}{}", d.title)) && args.contains(&format!("--body\u{1}{}", d.body)), "{args}");
+    assert!(args.contains("--repo\u{1}https://github.example/o/r.git"), "{args}");
+}
+
+#[test]
+fn an_adopted_open_merge_request_gets_the_current_title_and_description() {
+    let w = world("update-glab", "gitlab", "main");
+    let rows = listing("glab", "iid", "web_url", &[(2, "opened", "https://gitlab.example/o/r/-/merge_requests/2")]);
+    let provider = FakeProvider::builder().reply(&["mr", "list"], &rows).reply(&["mr", "update"], "ok\n").build();
+
+    create_review_request(&w.store, "run-1", &provider.glab(), &draft(), WAIT).unwrap();
+
+    let args = edit_call(&provider, "update");
+    let d = draft();
+    assert!(args.starts_with("mr\u{1}update\u{1}2\u{1}"), "{args}");
+    assert!(args.contains(&format!("--title\u{1}{}", d.title)) && args.contains(&format!("--description\u{1}{}", d.body)), "{args}");
+    assert!(kinds(&w).contains(&"review.updated".to_string()));
+}
+
+#[test]
+fn a_merged_review_is_not_edited() {
+    let w = world("update-merged", "github", "main");
+    let provider = gh_with_listing(&[(4, "MERGED", "https://github.example/o/r/pull/4")]);
+
+    create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    assert!(!has_call(&provider, "edit"));
+    assert!(!kinds(&w).contains(&"review.updated".to_string()));
+}
+
+#[test]
+fn a_failed_edit_still_adopts_the_review_and_records_why() {
+    let w = world("update-fails", "github", "main");
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], &listing("gh", "number", "url", &[(5, "OPEN", "https://github.example/o/r/pull/5")]))
+        .fail(&["pr", "edit"], 1, "HTTP 403\n")
+        .build();
+
+    let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
+
+    assert!(matches!(&outcome, ReviewRequestOutcome::Adopted(r) if r.id == "5"), "{outcome:?}");
+    assert_eq!(kinds(&w), ["stage.started", "review.adopted", "review.update_failed", "stage.completed"]);
+    let event = w.store.events("run-1").unwrap().into_iter().find(|e| e.kind == "review.update_failed").unwrap();
+    assert!(event.payload.to_string().contains("HTTP 403"), "{}", event.payload);
 }

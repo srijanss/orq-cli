@@ -9,12 +9,14 @@ use std::time::Duration;
 
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::outcome::git_raw;
-use crate::review_draft::{run_drafter, DraftSession, ReviewDraft};
+use crate::review_draft::{run_captured, run_drafter, DraftSession, ReviewDraft};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "review";
 const CREATED: &str = "review.created";
 const ADOPTED: &str = "review.adopted";
+const UPDATED: &str = "review.updated";
+const UPDATE_FAILED: &str = "review.update_failed";
 /// One page of the lookup. Reviews for a single pair of branches are few; a page that fills
 /// up may be hiding older ones, so the lookup then fails rather than guess.
 const LOOKUP_PAGE: usize = 100;
@@ -68,13 +70,24 @@ pub fn create_review_request(
     // someone else's); it is adopted, and when that cannot be told a blind create could duplicate it.
     match find_existing(kind, &session(list_args(kind, &record, &repo)), timeout) {
         Err(reason) => return fail(store, &record, format!("existing review requests could not be listed: {reason}")),
-        Ok(Some(review)) => {
+        Ok(Some((review, open))) => {
             record_event(
                 store,
                 &record,
                 ADOPTED,
                 serde_json::json!({ "url": review.url, "id": review.id, "provider": record.provider }),
             )?;
+            // An open review is brought up to date with the current draft; a merged one is history.
+            // A refused edit does not fail the stage: the review exists and the run can go on.
+            if open {
+                match run_captured(&session(update_args(kind, &review, draft, &repo)), timeout) {
+                    Ok(_) => record_event(store, &record, UPDATED, serde_json::json!({ "id": review.id }))?,
+                    Err(failure) => {
+                        let reason = format!("{}: {}", failure.reason, failure.stderr.trim());
+                        record_event(store, &record, UPDATE_FAILED, serde_json::json!({ "id": review.id, "reason": reason }))?
+                    }
+                }
+            }
             record_event(store, &record, "stage.completed", serde_json::json!({ "url": review.url, "adopted": true }))?;
             return Ok(ReviewRequestOutcome::Adopted(review));
         }
@@ -258,6 +271,16 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) 
     }
 }
 
+fn update_args(kind: Kind, review: &ReviewRef, draft: &ReviewDraft, repo: &str) -> Vec<String> {
+    let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match kind {
+        Kind::GitHub => strings(&["pr", "edit", &review.id, "--repo", repo, "--title", &draft.title, "--body", &draft.body]),
+        Kind::GitLab => {
+            strings(&["mr", "update", &review.id, "--repo", repo, "--title", &draft.title, "--description", &draft.body])
+        }
+    }
+}
+
 fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let page = LOOKUP_PAGE.to_string();
@@ -284,8 +307,8 @@ fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     }
 }
 
-/// The open review for these branches, else a merged one; closed ones are not reused.
-fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Result<Option<ReviewRef>, String> {
+/// The open review for these branches, else a merged one (flagged `false`); closed ones are not reused.
+fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Result<Option<(ReviewRef, bool)>, String> {
     let text = run_drafter(session, timeout)?;
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(text.trim()).map_err(|_| "the provider's listing is not a json array".to_string())?;
@@ -314,7 +337,7 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
         let review = review_from(kind, row).ok_or_else(|| "a listed review has no usable url and id".to_string())?;
         slot.get_or_insert(review);
     }
-    Ok(open.or(merged))
+    Ok(open.map(|r| (r, true)).or(merged.map(|r| (r, false))))
 }
 
 /// Whether the review's source lives in the repository the run was pushed to; an answer that
