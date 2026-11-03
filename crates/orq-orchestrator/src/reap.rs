@@ -124,6 +124,18 @@ fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
 /// Why the worktree is not, verifiably, the checkout of `branch` at `tip` of this repository.
 /// Removing a worktree on another commit or branch could discard the only copy of its commits.
 fn worktree_problem(repo: &Path, worktree: &Path, branch: &str, tip: &str) -> Result<Option<String>, StoreError> {
+    if let Some(problem) = checkout_problem(repo, worktree, branch)? {
+        return Ok(Some(problem));
+    }
+    let at = git_raw(worktree, &["rev-parse", "--verify", "HEAD"])?;
+    if !at.success || at.stdout.trim() != tip {
+        return Ok(Some("the worktree is not on the branch tip".to_string()));
+    }
+    Ok(None)
+}
+
+/// Why the worktree is not, verifiably, a checkout of `branch` belonging to this repository.
+pub(crate) fn checkout_problem(repo: &Path, worktree: &Path, branch: &str) -> Result<Option<String>, StoreError> {
     let common = |dir: &Path| -> Result<Option<PathBuf>, StoreError> {
         let out = git_raw(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
         Ok(out.success.then(|| PathBuf::from(out.stdout.trim())).and_then(|p| p.canonicalize().ok()))
@@ -136,14 +148,10 @@ fn worktree_problem(repo: &Path, worktree: &Path, branch: &str, tip: &str) -> Re
     if !head.success || head.stdout.trim() != format!("refs/heads/{branch}") {
         return Ok(Some("the worktree is not on the branch of the run".to_string()));
     }
-    let at = git_raw(worktree, &["rev-parse", "--verify", "HEAD"])?;
-    if !at.success || at.stdout.trim() != tip {
-        return Ok(Some("the worktree is not on the branch tip".to_string()));
-    }
     Ok(None)
 }
 
-fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
+pub(crate) fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
     let (Ok(repo), Ok(worktree)) = (repo.canonicalize(), worktree.canonicalize()) else { return false };
     worktree != repo && worktree.starts_with(repo.join(".claude").join("worktrees")) && worktree != repo.join(".claude").join("worktrees")
 }

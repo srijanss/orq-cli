@@ -3,6 +3,9 @@
 //! safely (setup, rebase, gate, push, drafting, and opening the review, which adopts an existing
 //! one), so only the agent session is skipped, and only when it already finished.
 
+use std::path::Path;
+
+use crate::reap::{checkout_problem, within_worktrees_dir};
 use crate::run_status::{summarize_run, RunPhase};
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
@@ -18,7 +21,7 @@ pub struct ResumePlan {
 }
 
 /// The latest run of the feature, if it stopped in a way that can be picked up.
-pub fn plan_resume(store: &RunStore, project_id: &str, feature_id: &str) -> Result<ResumePlan, String> {
+pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: &str) -> Result<ResumePlan, String> {
     let mut latest: Option<RunRecord> = None;
     for run_id in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
         let Ok(record) = store.load(&run_id) else { continue };
@@ -33,9 +36,13 @@ pub fn plan_resume(store: &RunStore, project_id: &str, feature_id: &str) -> Resu
         RunPhase::Running => return Err(format!("{} did not stop; it may still be running", from.run_id)),
         RunPhase::Completed => return Err(format!("{} ended with a review ready; there is nothing to resume", from.run_id)),
     }
-    // A linked worktree has a `.git` file; the repository itself (a `--publish` run) has a directory.
-    if !from.worktree.join(".git").is_file() {
-        return Err(format!("{} has no worktree of its own left at {}; start a new run instead", from.run_id, from.worktree.display()));
+    // The saved path is only trusted after it proves to be this repository's checkout of the
+    // run's branch: the agent and the setup commands run there.
+    if !within_worktrees_dir(repo, &from.worktree) {
+        return Err(format!("{}: {} is not under the repository's worktrees directory; start a new run instead", from.run_id, from.worktree.display()));
+    }
+    if let Some(problem) = checkout_problem(repo, &from.worktree, &from.branch).map_err(|e| format!("cannot inspect the worktree: {e:?}"))? {
+        return Err(format!("{}: {problem}; finish or abort a stopped rebase, or start a new run", from.run_id));
     }
     let skip_implement = implement_finished(&events);
     Ok(ResumePlan { from, skip_implement })

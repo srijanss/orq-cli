@@ -207,7 +207,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let store = RunStore::new(&root);
     let project_id = project_id(options.project);
     let resumed = if options.resume {
-        Some(orq_orchestrator::plan_resume(&store, &project_id, &slug(options.feature)).map_err(other)?)
+        Some(orq_orchestrator::plan_resume(&store, repo, &project_id, &slug(options.feature)).map_err(other)?)
     } else {
         None
     };
