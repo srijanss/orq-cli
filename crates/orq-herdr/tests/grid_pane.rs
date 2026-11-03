@@ -98,3 +98,44 @@ fn a_split_that_succeeded_but_named_no_pane_is_an_error_not_a_second_tab() {
     assert!(err.contains("did not name the new pane"), "{err}");
     assert_eq!(herdr.calls.borrow().len(), 4, "no fallback tab was opened");
 }
+
+#[test]
+fn a_log_viewer_that_cannot_start_closes_only_what_it_made_and_keeps_the_grid_intact() {
+    let herdr = Fake::new(vec![
+        // The root tab is made, but the viewer cannot start: the tab is closed, the grid stays empty.
+        Ok(CREATED.into()),
+        Ok(OK.into()),
+        Err("cannot run".into()),
+        Ok(OK.into()),
+        // So the next run creates the root again; its second run's viewer fails on a split pane.
+        Ok(CREATED.into()),
+        Ok(OK.into()),
+        Ok(OK.into()),
+        Ok(split("w:p2")),
+        Ok(OK.into()),
+        Err("cannot run".into()),
+        Ok(OK.into()),
+        // The next run splits the root again, in the same direction as the one that failed.
+        Ok(split("w:p3")),
+        Ok(OK.into()),
+        Ok(OK.into()),
+    ]);
+    let mut grid = GridTab::new("feats");
+    let at = |herdr: &Fake, grid: &mut GridTab, n: &str| {
+        open_grid_pane(herdr, grid, None, Path::new("/repo"), &format!("orq {n}"), Path::new("/l"))
+    };
+
+    let err = at(&herdr, &mut grid, "run-1").unwrap_err();
+    assert!(err.contains("cannot start the log viewer"), "{err}");
+    assert_eq!(herdr.calls.borrow()[3], ["tab", "close", "w:t2"]);
+
+    at(&herdr, &mut grid, "run-2").unwrap();
+    let err = at(&herdr, &mut grid, "run-3").unwrap_err();
+    assert!(err.contains("cannot start the log viewer"), "{err}");
+    assert_eq!(herdr.calls.borrow()[10], ["pane", "close", "w:p2"], "only the new pane is closed");
+
+    let fourth = at(&herdr, &mut grid, "run-4").unwrap();
+    assert_eq!(fourth.pane_id, "w:p3");
+    let calls = herdr.calls.borrow();
+    assert_eq!(calls[11][..6], ["pane", "split", "--pane", "w:p1", "--direction", "right"], "same pane, same direction");
+}
