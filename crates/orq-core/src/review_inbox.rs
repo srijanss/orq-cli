@@ -127,9 +127,12 @@ fn read_report(data_root: &Path, record: &ReviewRecord) -> Result<Value, String>
     for part in dirs {
         dir = openat(&dir, *part, dir_flags, Mode::empty()).map_err(|_| NOT_VALID.to_string())?;
     }
-    let fd = openat(&dir, *name, OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW, Mode::empty())
+    let fd = openat(&dir, *name, OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK, Mode::empty())
         .map_err(|_| "the stored report cannot be opened".to_string())?;
     let file = std::fs::File::from(fd);
+    if !file.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return Err("the stored report is not a regular file".to_string());
+    }
     let mut bytes = Vec::new();
     file.take(MAX_REPORT_BYTES + 1).read_to_end(&mut bytes).map_err(|err| err.to_string())?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
