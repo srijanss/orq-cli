@@ -822,6 +822,7 @@ name = "orq-orchestrator"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "orq-core",
  "orq-test-support",
  "serde",
  "serde_json",

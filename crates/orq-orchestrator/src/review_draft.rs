@@ -103,6 +103,10 @@ fn build_prompt(subjects: &[String]) -> String {
 
 /// Run the session and return its stdout, or why there is none.
 pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, String> {
+    // The human-only merge rule: no provider call that merges or approves is ever started.
+    if let Some(why) = orq_core::no_merge::forbidden_provider_call(&session.program, &session.args) {
+        return Err(format!("refused: {why}"));
+    }
     let mut command = Command::new(&session.program);
     command
         .args(&session.args)

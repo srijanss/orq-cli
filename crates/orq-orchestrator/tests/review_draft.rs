@@ -259,3 +259,28 @@ fn a_session_writing_megabytes_is_drained_and_its_multibyte_text_cut_cleanly() {
     assert!((7990..=8000).contains(&size), "bounded, with only trailing whitespace trimmed: {size}");
     assert!(!draft.body.contains('\u{fffd}'), "no character is split");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_provider_merge_call_is_refused_before_anything_is_launched() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let w = world("no-merge", &["add the thing"]);
+    let bin = w.worktree.parent().unwrap().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let marker = bin.join("launched");
+    let gh = bin.join("gh");
+    fs::write(&gh, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut merge = session(&w, "");
+    merge.program = gh.display().to_string();
+    merge.args = vec!["pr".to_string(), "merge".to_string(), "7".to_string()];
+
+    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| merge).unwrap();
+
+    assert!(!marker.exists(), "the merge command must never be started");
+    match draft.source {
+        DraftSource::Fallback { reason } => assert!(reason.contains("refused"), "{reason}"),
+        other => panic!("expected a refusal fallback, got {other:?}"),
+    }
+}
