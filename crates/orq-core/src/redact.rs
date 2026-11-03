@@ -128,7 +128,12 @@ fn redact_value(value: &mut serde_json::Value) -> bool {
         }
         Value::Array(items) => items.iter_mut().fold(false, |changed, item| redact_value(item) | changed),
         Value::Object(map) => map.iter_mut().fold(false, |changed, (key, item)| {
-            if is_secret_key(key) && matches!(item, Value::String(text) if text != REDACTED) {
+            let replaceable = match item {
+                Value::Null | Value::Bool(_) => false,
+                Value::String(text) => text != REDACTED,
+                _ => true,
+            };
+            if is_secret_key(key) && replaceable {
                 *item = Value::String(REDACTED.to_string());
                 true
             } else {
