@@ -10,6 +10,7 @@ fn dir(tag: &str) -> PathBuf {
     d
 }
 
+#[cfg(unix)]
 #[test]
 fn a_file_reached_through_a_symlinked_directory_inside_the_root_may_not_be_deleted() {
     let d = dir("symlink");
