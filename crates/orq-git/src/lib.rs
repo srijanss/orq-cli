@@ -3,6 +3,9 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod diff;
+pub use diff::{diff_evidence, DiffError, DiffEvidence, FileChange};
+
 mod fetch;
 pub use fetch::{fetch_target_base, redact_urls, FetchError};
 
