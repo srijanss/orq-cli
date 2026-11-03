@@ -386,7 +386,75 @@ fn load_model_config(
 /// and the defaults a run would use. Unusable defaults are reported in the
 /// output; configuration that cannot be read fails the command.
 /// `orq runs --repo <path> [--json]`: the runs of the repository's project, from the run store.
+/// `orq runs reap --repo <path> [--dry-run] [--yes]`: remove the local worktree and branch of
+/// every finished run whose review was merged or closed. Without `--yes` it only reports.
+fn reap(args: &[OsString]) -> ExitCode {
+    let (mut repo, mut yes, mut dry) = (None, false, false);
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match word.to_str() {
+            Some("--repo") => match words.next() {
+                Some(path) if repo.is_none() => repo = Some(PathBuf::from(path)),
+                _ => return usage_error(),
+            },
+            Some("--yes") => yes = true,
+            Some("--dry-run") => dry = true,
+            _ => return usage_error(),
+        }
+    }
+    let Some(repo) = repo else { return usage_error() };
+    if yes && dry {
+        return usage_error();
+    }
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let (_, db, store) = match storage::open() {
+        Ok(opened) => opened,
+        Err(err) => return fail(err),
+    };
+    let pinned = match db.pinned() {
+        Ok(pinned) => pinned,
+        Err(err) => return fail(format!("cannot read the pinned runs: {err}")),
+    };
+    let program_for = |provider: &str| pipeline::find_program(if provider == "gitlab" { "glab" } else { "gh" });
+    let items = match orq_orchestrator::plan_reap(
+        &store,
+        &repo,
+        &pipeline::project_id(&project),
+        &pinned,
+        &program_for,
+        std::time::Duration::from_secs(60),
+    ) {
+        Ok(items) => items,
+        Err(err) => return fail(err),
+    };
+    let mut failed = false;
+    for item in &items {
+        match &item.verdict {
+            orq_orchestrator::ReapVerdict::Keep(reason) => println!("keep\t{}\t{}\t{reason}", item.run_id, item.feature_id),
+            orq_orchestrator::ReapVerdict::Reap if !yes => println!("would remove\t{}\t{}\t{}", item.run_id, item.feature_id, item.branch),
+            orq_orchestrator::ReapVerdict::Reap => match orq_orchestrator::reap_run(&repo, item) {
+                Ok(()) => println!("removed\t{}\t{}\t{}", item.run_id, item.feature_id, item.branch),
+                Err(err) => {
+                    failed = true;
+                    eprintln!("orq: {}: {err}", item.run_id);
+                }
+            },
+        }
+    }
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn runs(args: &[OsString]) -> ExitCode {
+    if args.first().is_some_and(|a| a == "reap") {
+        return reap(&args[1..]);
+    }
     let (repo, json) = match args {
         [flag, path] if flag == "--repo" => (PathBuf::from(path), false),
         [flag, path, json] if flag == "--repo" && json == "--json" => (PathBuf::from(path), true),

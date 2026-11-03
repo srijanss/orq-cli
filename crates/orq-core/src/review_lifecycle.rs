@@ -100,7 +100,7 @@ pub fn plain_line(text: &str) -> String {
 }
 
 impl ObservationError {
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         match self {
             ObservationError::Unavailable(detail) => format!("the provider could not be reached: {}", plain_line(detail)),
             ObservationError::PermissionDenied(detail) => format!("permission to read the review was denied: {}", plain_line(detail)),

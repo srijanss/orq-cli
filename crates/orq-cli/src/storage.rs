@@ -19,7 +19,7 @@ fn roots() -> Result<StorageRoots, String> {
     Ok(roots)
 }
 
-fn open() -> Result<(StorageRoots, Store, RunStore), String> {
+pub(crate) fn open() -> Result<(StorageRoots, Store, RunStore), String> {
     let roots = roots()?;
     let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the Orq database: {err}"))?;
     let state = pipeline::state_root().ok_or_else(|| "no state location: set XDG_STATE_HOME or HOME".to_string())?;
