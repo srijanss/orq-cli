@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    create_review_request, recorded_review, DraftSource, ReviewDraft, ReviewRef, ReviewRequestOutcome, RunRecord, RunStore,
+    create_review_request, create_review_request_with, recorded_review, DraftSource, ReviewPeople, ReviewDraft, ReviewRef, ReviewRequestOutcome, RunRecord, RunStore,
 };
 use orq_test_support::FakeProvider;
 
@@ -685,4 +685,52 @@ fn a_failed_edit_still_adopts_the_review_and_keeps_the_providers_words_out_of_th
     assert_eq!(kinds(&w), ["stage.started", "review.adopted", "review.update_failed", "stage.completed"]);
     let event = w.store.events("run-1").unwrap().into_iter().find(|e| e.kind == "review.update_failed").unwrap();
     assert!(!event.payload.to_string().contains("s3cret"), "{}", event.payload);
+}
+
+fn create_call(provider: &FakeProvider) -> Vec<String> {
+    provider.calls().into_iter().find(|c| c.args[1] == "create").expect("a create call").args
+}
+
+fn after(args: &[String], flag: &str) -> Vec<String> {
+    args.windows(2).filter(|w| w[0] == flag).map(|w| w[1].clone()).collect()
+}
+
+#[test]
+fn an_assignee_and_a_reviewer_are_set_when_the_request_is_created() {
+    let people = ReviewPeople::checked(Some("alice"), Some("bob")).unwrap();
+
+    let w = world("people-gh", "github", "main");
+    let gh = github();
+    create_review_request_with(&w.store, "run-1", &gh.gh(), &draft(), &people, WAIT).unwrap();
+    let args = create_call(&gh);
+    assert_eq!((after(&args, "--assignee"), after(&args, "--reviewer")), (vec!["alice".to_string()], vec!["bob".to_string()]));
+
+    let w = world("people-glab", "gitlab", "main");
+    let glab = gitlab();
+    create_review_request_with(&w.store, "run-1", &glab.glab(), &draft(), &people, WAIT).unwrap();
+    let args = create_call(&glab);
+    assert_eq!((after(&args, "--assignee"), after(&args, "--reviewer")), (vec!["alice".to_string()], vec!["bob".to_string()]));
+}
+
+#[test]
+fn nobody_named_means_no_assignee_or_reviewer_flag() {
+    let w = world("people-none", "github", "main");
+    let gh = github();
+    create_review_request(&w.store, "run-1", &gh.gh(), &draft(), WAIT).unwrap();
+    let args = create_call(&gh);
+    assert!(!args.iter().any(|a| a == "--assignee" || a == "--reviewer"), "{args:?}");
+
+    let blank = ReviewPeople::checked(Some("  "), None).unwrap();
+    assert_eq!(blank, ReviewPeople::default());
+}
+
+#[test]
+fn a_name_that_could_pass_as_an_option_or_a_list_is_refused() {
+    for bad in ["-x", "--assignee", "a b", "a,b", "a\nb", "a=b", &"x".repeat(101)] {
+        assert!(ReviewPeople::checked(Some(bad), None).is_err(), "{bad:?}");
+        assert!(ReviewPeople::checked(None, Some(bad)).is_err(), "{bad:?}");
+    }
+    for good in ["alice", "@me", "a.b_c-d", "org/team"] {
+        assert!(ReviewPeople::checked(Some(good), Some(good)).is_ok(), "{good:?}");
+    }
 }

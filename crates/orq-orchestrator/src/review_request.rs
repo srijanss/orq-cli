@@ -42,12 +42,53 @@ enum Kind {
     GitLab,
 }
 
+/// Who a new review request is assigned to and who is asked to review it. A name is one
+/// provider login (or `@me`, or a `org/team` for a GitHub reviewer), never an option or a list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewPeople {
+    pub(crate) assignee: Option<String>,
+    pub(crate) reviewer: Option<String>,
+}
+
+const MAX_PERSON_CHARS: usize = 100;
+
+impl ReviewPeople {
+    /// The people for a request; a blank name means nobody, an unacceptable one is refused.
+    pub fn checked(assignee: Option<&str>, reviewer: Option<&str>) -> Result<ReviewPeople, String> {
+        let person = |what: &str, name: Option<&str>| -> Result<Option<String>, String> {
+            let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
+            let plain = name.chars().count() <= MAX_PERSON_CHARS
+                && !name.starts_with('-')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | '/'));
+            if plain {
+                Ok(Some(name.to_string()))
+            } else {
+                Err(format!("{what} {name:?} is not a single user name"))
+            }
+        };
+        Ok(ReviewPeople { assignee: person("assignee", assignee)?, reviewer: person("reviewer", reviewer)? })
+    }
+}
+
 /// Open the review request for `run_id` with the provider CLI at `program`.
 pub fn create_review_request(
     store: &RunStore,
     run_id: &str,
     program: &Path,
     draft: &ReviewDraft,
+    timeout: Duration,
+) -> Result<ReviewRequestOutcome, StoreError> {
+    create_review_request_with(store, run_id, program, draft, &ReviewPeople::default(), timeout)
+}
+
+/// As [`create_review_request`], naming an assignee and a reviewer for a request it creates; an
+/// adopted request keeps the people it has.
+pub fn create_review_request_with(
+    store: &RunStore,
+    run_id: &str,
+    program: &Path,
+    draft: &ReviewDraft,
+    people: &ReviewPeople,
     timeout: Duration,
 ) -> Result<ReviewRequestOutcome, StoreError> {
     let record = store.load(run_id)?;
@@ -93,7 +134,7 @@ pub fn create_review_request(
         }
         Ok(None) => {}
     }
-    if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft, &repo)), timeout) {
+    if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft, people, &repo)), timeout) {
         return fail(store, &record, format!("the review request could not be created: {reason}"));
     }
     let viewed = match run_drafter(&session(view_args(kind, &record, &repo)), timeout) {
@@ -246,9 +287,9 @@ fn normalize_remote(raw: &str) -> Option<String> {
     Some(format!("{scheme}://{host}/{path}"))
 }
 
-fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) -> Vec<String> {
+fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, people: &ReviewPeople, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    match kind {
+    let mut args = match kind {
         Kind::GitHub => strings(&[
             "pr", "create", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--title",
             &draft.title, "--body", &draft.body,
@@ -268,7 +309,14 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, repo: &str) 
             &draft.body,
             "--yes",
         ]),
+    };
+    for (flag, name) in [("--assignee", &people.assignee), ("--reviewer", &people.reviewer)] {
+        if let Some(name) = name {
+            args.push(flag.to_string());
+            args.push(name.clone());
+        }
     }
+    args
 }
 
 fn update_args(kind: Kind, review: &ReviewRef, draft: &ReviewDraft, repo: &str) -> Vec<String> {

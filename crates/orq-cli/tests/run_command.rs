@@ -192,6 +192,36 @@ fn a_bad_issue_id_is_refused_before_a_run_is_recorded() {
     }
 }
 
+#[test]
+fn an_assignee_and_a_reviewer_are_requested_on_the_new_review() {
+    let w = world("people");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+
+    let _ = run_with(&w, &agent, &provider, &["--no-ci-check", "--mr-assignee", "alice", "--mr-reviewer", "bob"]);
+
+    let create = provider.calls().into_iter().find(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).expect("a review was created");
+    let after = |flag: &str| create.args.windows(2).find(|p| p[0] == flag).map(|p| p[1].clone());
+    assert_eq!((after("--assignee").as_deref(), after("--reviewer").as_deref()), (Some("alice"), Some("bob")));
+}
+
+#[test]
+fn a_bad_assignee_or_reviewer_is_refused_before_a_run_is_recorded() {
+    let repo = GitFixture::new();
+    repo.add_bare_remote();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    let env = env("badpeople");
+
+    for flags in [&["--mr-assignee", "-x"][..], &["--mr-reviewer", "a b", "--detach"][..]] {
+        let mut args = vec!["--feature", "COM-01"];
+        args.extend_from_slice(flags);
+        let output = run(repo.root(), &env, &args);
+        assert!(!output.status.success(), "{}", stderr(&output));
+        assert!(stderr(&output).contains("mr-"), "{}", stderr(&output));
+        assert!(state_is_empty(&env), "no run was recorded");
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")

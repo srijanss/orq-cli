@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::outcome::git_raw;
+use crate::review_request::ReviewPeople;
 
 const SHARED_FILE: &str = ".orq/run.toml";
 const PRIVATE_LABEL: &str = "orq/run.toml in the git directory";
@@ -24,6 +25,9 @@ pub struct RunSettings {
     /// Extra setup steps, run before the detected install step.
     pub setup: Vec<Vec<String>>,
     pub ci_timeout: Option<Duration>,
+    /// Who a new review request is assigned to, and who is asked to review it.
+    pub mr_assignee: Option<String>,
+    pub mr_reviewer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +57,8 @@ struct Layer {
     gate: Option<Vec<String>>,
     setup: Option<Vec<Vec<String>>>,
     ci_timeout: Option<Duration>,
+    mr_assignee: Option<String>,
+    mr_reviewer: Option<String>,
 }
 
 impl Layer {
@@ -64,6 +70,8 @@ impl Layer {
             gate: self.gate.or(lower.gate),
             setup: self.setup.or(lower.setup),
             ci_timeout: self.ci_timeout.or(lower.ci_timeout),
+            mr_assignee: self.mr_assignee.or(lower.mr_assignee),
+            mr_reviewer: self.mr_reviewer.or(lower.mr_reviewer),
         }
     }
 }
@@ -82,6 +90,8 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         gate: merged.gate,
         setup: merged.setup.unwrap_or_default(),
         ci_timeout: merged.ci_timeout,
+        mr_assignee: merged.mr_assignee,
+        mr_reviewer: merged.mr_reviewer,
     })
 }
 
@@ -116,6 +126,8 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "ci_timeout_secs" => {
                 layer.ci_timeout = Some(timeout(value.as_integer().ok_or_else(|| bad("must be a whole number"))?).map_err(|r| bad(&r))?)
             }
+            "mr_assignee" => layer.mr_assignee = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, true).map_err(|r| bad(&r))?),
+            "mr_reviewer" => layer.mr_reviewer = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, false).map_err(|r| bad(&r))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -144,6 +156,12 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
         let secs: i64 = v.trim().parse().map_err(|_| invalid("ORQ_CI_TIMEOUT_SECS", "must be a whole number"))?;
         layer.ci_timeout = Some(timeout(secs).map_err(|r| invalid("ORQ_CI_TIMEOUT_SECS", r))?);
     }
+    for (name, assignee) in [("ORQ_MR_ASSIGNEE", true), ("ORQ_MR_REVIEWER", false)] {
+        if let Some(v) = get(name) {
+            let who = Some(person(&v, assignee).map_err(|r| invalid(name, r))?);
+            if assignee { layer.mr_assignee = who } else { layer.mr_reviewer = who }
+        }
+    }
     Ok(layer)
 }
 
@@ -161,6 +179,11 @@ fn forge(value: &str) -> Result<String, String> {
         "gh" | "glab" => Ok(value.to_string()),
         _ => Err("must be gh or glab".to_string()),
     }
+}
+
+fn person(value: &str, assignee: bool) -> Result<String, String> {
+    let people = if assignee { ReviewPeople::checked(Some(value), None) } else { ReviewPeople::checked(None, Some(value)) }?;
+    people.assignee.or(people.reviewer).ok_or_else(|| "must not be blank".to_string())
 }
 
 fn branch(value: &str) -> Result<String, String> {

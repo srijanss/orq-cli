@@ -9,7 +9,7 @@ use orq_agents::{adapter_for, ImplementRequest, ModelSpec};
 use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
-    check_implement_outcome, choose_gate, cleanup_worktree, create_review_request, draft_review_description,
+    check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
     plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_stage, run_implement_stage, run_setup, wait_for_ci,
     CiOutcome, CiWaitConfig, DraftSession, GateOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
@@ -31,6 +31,10 @@ pub struct Options<'a> {
     pub context: Option<&'a str>,
     /// A checked issue number; the review description then closes it.
     pub issue: Option<&'a str>,
+    /// Who the new review request is assigned to and who reviews it; the run settings fill in
+    /// whatever is left unnamed.
+    pub mr_assignee: Option<&'a str>,
+    pub mr_reviewer: Option<&'a str>,
 }
 
 fn new_run_id() -> String {
@@ -369,7 +373,14 @@ fn stages(
         Some(number) => orq_orchestrator::link_issue(draft, number),
         None => draft,
     };
-    let review = match create_review_request(store, run_id, &provider, &draft, Duration::from_secs(60))? {
+    let people = match orq_orchestrator::ReviewPeople::checked(
+        options.mr_assignee.or(settings.mr_assignee.as_deref()),
+        options.mr_reviewer.or(settings.mr_reviewer.as_deref()),
+    ) {
+        Ok(people) => people,
+        Err(reason) => return stopped(Ending::Failed, reason),
+    };
+    let review = match create_review_request_with(store, run_id, &provider, &draft, &people, Duration::from_secs(60))? {
         ReviewRequestOutcome::Created(review) | ReviewRequestOutcome::Adopted(review) => review,
         ReviewRequestOutcome::Failed { reason } => {
             return stopped(Ending::Failed, format!("review request failed: {reason}"))

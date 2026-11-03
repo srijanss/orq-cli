@@ -117,3 +117,24 @@ fn branch_names_git_accepts_are_accepted() {
         assert_eq!(s.base_branch.as_deref(), Some(name));
     }
 }
+
+#[test]
+fn the_people_for_a_review_request_come_from_the_files_and_the_environment() {
+    let r = repo("people");
+    shared(&r, "mr_assignee = \"alice\"\nmr_reviewer = \"bob\"\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!((s.mr_assignee.as_deref(), s.mr_reviewer.as_deref()), (Some("alice"), Some("bob")));
+
+    let env = |key: &str| (key == "ORQ_MR_REVIEWER").then(|| "carol".to_string());
+    let s = load_run_settings(&r, &env).unwrap();
+    assert_eq!((s.mr_assignee.as_deref(), s.mr_reviewer.as_deref()), (Some("alice"), Some("carol")));
+
+    assert!(invalid("mr_assignee = \"-x\"\n", "badassignee").contains("mr_assignee"));
+    assert!(invalid("mr_reviewer = \"a b\"\n", "badreviewer").contains("mr_reviewer"));
+    assert!(invalid("mr_reviewer = \" \"\n", "blankreviewer").contains("mr_reviewer"));
+    let bad = |key: &str| (key == "ORQ_MR_ASSIGNEE").then(|| "a,b".to_string());
+    match load_run_settings(&r, &bad) {
+        Err(SettingsError::Invalid { source, .. }) => assert_eq!(source, "ORQ_MR_ASSIGNEE"),
+        other => panic!("{other:?}"),
+    }
+}
