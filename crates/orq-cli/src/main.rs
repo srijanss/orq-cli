@@ -259,6 +259,11 @@ fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::from(EXIT_MODEL_SELECTION);
         }
     };
+    // Checked before a detached launch spawns anything, so a bad settings file is an error the
+    // caller sees, not a runner that exits unseen.
+    if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
+        return fail(format!("run settings: {err}"));
+    }
     if parsed.detach {
         if parsed.run_id.is_some() {
             return usage_error();
@@ -1424,11 +1429,9 @@ fn default_target_branch(repo: &Path) -> String {
 }
 
 /// The configured base branch (settings file or `ORQ_BASE_BRANCH`), else the remote's default.
-fn configured_target_branch(repo: &Path) -> String {
-    orq_orchestrator::load_run_settings(repo, &|name| std::env::var(name).ok())
-        .ok()
-        .and_then(|settings| settings.base_branch)
-        .unwrap_or_else(|| default_target_branch(repo))
+fn configured_target_branch(repo: &Path) -> Result<String, String> {
+    let settings = orq_orchestrator::load_run_settings(repo, &|name| std::env::var(name).ok()).map_err(|err| format!("run settings: {err}"))?;
+    Ok(settings.base_branch.unwrap_or_else(|| default_target_branch(repo)))
 }
 
 fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
@@ -1452,7 +1455,7 @@ reviewer: String,
         repo: project.root.clone(),
         feature: feature.clone(),
         remote: "origin".to_string(),
-        target: configured_target_branch(&project.root),
+        target: configured_target_branch(&project.root)?,
         implementer: implementer.clone(),
         reviewer: reviewer.clone(),
     };
@@ -2671,10 +2674,10 @@ mod ledger_backend_tests {
         let fixture = orq_test_support::GitFixture::new();
         std::fs::create_dir_all(fixture.root().join(".orq")).unwrap();
         std::fs::write(fixture.root().join(".orq/run.toml"), "base_branch = \"develop\"\n").unwrap();
-        assert_eq!(crate::configured_target_branch(fixture.root()), "develop");
+        assert_eq!(crate::configured_target_branch(fixture.root()), Ok("develop".to_string()));
 
         std::fs::write(fixture.root().join(".orq/run.toml"), "base_branch = \"-x\"\n").unwrap();
-        assert_eq!(crate::configured_target_branch(fixture.root()), "main", "a bad value falls back to detection");
+        assert!(crate::configured_target_branch(fixture.root()).unwrap_err().contains("base_branch"));
     }
 
     struct FakeHerdr {

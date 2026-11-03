@@ -102,6 +102,38 @@ fn a_bad_settings_file_is_refused_by_name_before_a_run_is_recorded() {
     assert!(state_is_empty(&env), "no run was recorded");
 }
 
+#[test]
+fn a_bad_settings_file_stops_a_detached_launch_too() {
+    let repo = GitFixture::new();
+    repo.add_bare_remote();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    std::fs::create_dir_all(repo.root().join(".orq")).unwrap();
+    std::fs::write(repo.root().join(".orq/run.toml"), "ci_timeout_secs = 0\n").unwrap();
+    let env = env("baddetach");
+
+    let output = run(repo.root(), &env, &["--feature", "COM-01", "--detach"]);
+
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("ci_timeout_secs"), "{}", stderr(&output));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("state: launched"));
+    assert!(state_is_empty(&env), "no log directory or runner was created");
+}
+
+#[test]
+fn a_configured_gate_runs_and_a_failing_one_stops_the_run_before_the_push() {
+    let w = world("cfggate");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"false\"]\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_ne!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(!stdout.contains("state: review_ready"), "{stdout}");
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
