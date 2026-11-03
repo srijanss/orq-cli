@@ -52,3 +52,112 @@ impl RetentionPolicy {
         Ok(policy)
     }
 }
+
+use crate::review_lifecycle::ProviderState;
+use crate::run::RunState;
+
+/// What Orq knows about one run when deciding whether to prune it.
+#[derive(Debug, Clone)]
+pub struct RunFacts {
+    pub run_id: String,
+    pub state: RunState,
+    /// Unix seconds of the run's terminal state or last relevant activity.
+    pub ended_at: Option<u64>,
+    /// What the provider last showed about the run's review, if anything.
+    pub review: Option<ReviewFacts>,
+    pub pinned: bool,
+    pub worktree_in_use: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewFacts {
+    pub state: ProviderState,
+    /// Unix seconds when the provider was last asked.
+    pub observed_at: u64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactClass {
+    Temporary,
+    Log,
+    Checkpoint,
+    Report,
+    Metadata,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retained {
+    Active,
+    AwaitingReview,
+    Pinned,
+    WorktreeInUse,
+    UnresolvedReview,
+    RemoteStateUncertain,
+    NoEndTime,
+    TooRecent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Assessment {
+    Retained(Retained),
+    Prunable(Vec<ArtifactClass>),
+}
+
+const DAY_SECS: u64 = 86_400;
+
+pub fn assess(policy: &RetentionPolicy, facts: &RunFacts, now: u64) -> Assessment {
+    if facts.pinned {
+        return Assessment::Retained(Retained::Pinned);
+    }
+    match facts.state {
+        RunState::Queued | RunState::Preparing | RunState::Running | RunState::Blocked => {
+            return Assessment::Retained(Retained::Active)
+        }
+        RunState::ReviewReady => return Assessment::Retained(Retained::AwaitingReview),
+        RunState::Completed | RunState::Failed | RunState::Cancelled => {}
+    }
+    if facts.worktree_in_use {
+        return Assessment::Retained(Retained::WorktreeInUse);
+    }
+    let Some(ended_at) = facts.ended_at else {
+        return Assessment::Retained(Retained::NoEndTime);
+    };
+    let report_days = if facts.state == RunState::Completed {
+        let Some(review) = &facts.review else {
+            return Assessment::Retained(Retained::RemoteStateUncertain);
+        };
+        if review.last_error.is_some() {
+            return Assessment::Retained(Retained::RemoteStateUncertain);
+        }
+        match review.state {
+            ProviderState::Open => return Assessment::Retained(Retained::UnresolvedReview),
+            ProviderState::Closed => {
+                if now.saturating_sub(review.observed_at) > DAY_SECS {
+                    return Assessment::Retained(Retained::RemoteStateUncertain);
+                }
+                policy.closed_days
+            }
+            ProviderState::Merged => policy.merged_days,
+        }
+    } else {
+        policy.failed_days
+    };
+    let age = now.saturating_sub(ended_at) / DAY_SECS;
+    let classes: Vec<ArtifactClass> = [
+        (ArtifactClass::Temporary, policy.temporary_days),
+        (ArtifactClass::Log, policy.logs_days),
+        (ArtifactClass::Checkpoint, policy.checkpoint_days),
+        (ArtifactClass::Report, report_days),
+        (ArtifactClass::Metadata, policy.metadata_days),
+    ]
+    .into_iter()
+    .filter(|(_, days)| age >= u64::from(*days))
+    .map(|(class, _)| class)
+    .collect();
+    if classes.is_empty() {
+        Assessment::Retained(Retained::TooRecent)
+    } else {
+        Assessment::Prunable(classes)
+    }
+}
