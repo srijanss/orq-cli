@@ -28,6 +28,9 @@ pub struct RunSettings {
     /// Who a new review request is assigned to, and who is asked to review it.
     pub mr_assignee: Option<String>,
     pub mr_reviewer: Option<String>,
+    /// The command that tells a person a run ended, and which endings it is run for (`all` or `failures`).
+    pub notify_cmd: Option<Vec<String>>,
+    pub notify_on: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +62,8 @@ struct Layer {
     ci_timeout: Option<Duration>,
     mr_assignee: Option<String>,
     mr_reviewer: Option<String>,
+    notify_cmd: Option<Vec<String>>,
+    notify_on: Option<String>,
 }
 
 impl Layer {
@@ -72,6 +77,8 @@ impl Layer {
             ci_timeout: self.ci_timeout.or(lower.ci_timeout),
             mr_assignee: self.mr_assignee.or(lower.mr_assignee),
             mr_reviewer: self.mr_reviewer.or(lower.mr_reviewer),
+            notify_cmd: self.notify_cmd.or(lower.notify_cmd),
+            notify_on: self.notify_on.or(lower.notify_on),
         }
     }
 }
@@ -92,6 +99,8 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         ci_timeout: merged.ci_timeout,
         mr_assignee: merged.mr_assignee,
         mr_reviewer: merged.mr_reviewer,
+        notify_cmd: merged.notify_cmd,
+        notify_on: merged.notify_on,
     })
 }
 
@@ -128,6 +137,8 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             }
             "mr_assignee" => layer.mr_assignee = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, true).map_err(|r| bad(&r))?),
             "mr_reviewer" => layer.mr_reviewer = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, false).map_err(|r| bad(&r))?),
+            "notify_cmd" => layer.notify_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
+            "notify_on" => layer.notify_on = Some(notify_on(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -155,6 +166,12 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     if let Some(v) = get("ORQ_CI_TIMEOUT_SECS") {
         let secs: i64 = v.trim().parse().map_err(|_| invalid("ORQ_CI_TIMEOUT_SECS", "must be a whole number"))?;
         layer.ci_timeout = Some(timeout(secs).map_err(|r| invalid("ORQ_CI_TIMEOUT_SECS", r))?);
+    }
+    if let Some(v) = get("ORQ_NOTIFY_CMD") {
+        layer.notify_cmd = Some(argv(&json("ORQ_NOTIFY_CMD", &v)?).map_err(|r| invalid("ORQ_NOTIFY_CMD", r))?);
+    }
+    if let Some(v) = get("ORQ_NOTIFY_ON") {
+        layer.notify_on = Some(notify_on(v.trim()).map_err(|r| invalid("ORQ_NOTIFY_ON", r))?);
     }
     for (name, assignee) in [("ORQ_MR_ASSIGNEE", true), ("ORQ_MR_REVIEWER", false)] {
         if let Some(v) = get(name) {
@@ -184,6 +201,13 @@ fn forge(value: &str) -> Result<String, String> {
 fn person(value: &str, assignee: bool) -> Result<String, String> {
     let people = if assignee { ReviewPeople::checked(Some(value), None) } else { ReviewPeople::checked(None, Some(value)) }?;
     people.assignee.or(people.reviewer).ok_or_else(|| "must not be blank".to_string())
+}
+
+fn notify_on(value: &str) -> Result<String, String> {
+    match value {
+        "all" | "failures" => Ok(value.to_string()),
+        _ => Err("must be all or failures".to_string()),
+    }
 }
 
 fn branch(value: &str) -> Result<String, String> {

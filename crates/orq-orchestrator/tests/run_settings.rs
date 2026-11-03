@@ -138,3 +138,24 @@ fn the_people_for_a_review_request_come_from_the_files_and_the_environment() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn the_notification_command_and_mode_are_settings() {
+    let r = repo("notify");
+    shared(&r, "notify_cmd = [\"notify-send\", \"orq\"]\nnotify_on = \"failures\"\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.notify_cmd, Some(vec!["notify-send".to_string(), "orq".to_string()]));
+    assert_eq!(s.notify_on.as_deref(), Some("failures"));
+
+    let env = |key: &str| match key {
+        "ORQ_NOTIFY_CMD" => Some("[\"say\"]".to_string()),
+        "ORQ_NOTIFY_ON" => Some("all".to_string()),
+        _ => None,
+    };
+    let s = load_run_settings(&r, &env).unwrap();
+    assert_eq!((s.notify_cmd, s.notify_on.as_deref()), (Some(vec!["say".to_string()]), Some("all")));
+
+    assert!(invalid("notify_cmd = \"say hi\"\n", "notifystring").contains("notify_cmd"));
+    assert!(invalid("notify_cmd = []\n", "notifyempty").contains("notify_cmd"));
+    assert!(invalid("notify_on = \"sometimes\"\n", "notifymode").contains("notify_on"));
+}

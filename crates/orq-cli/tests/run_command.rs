@@ -768,3 +768,27 @@ fn a_run_whose_worktree_cannot_be_created_still_records_that_it_failed() {
     assert_eq!(done[0].payload["ending"].as_str(), Some("failed"));
     assert!(done[0].payload["reason"].as_str().is_some_and(|r| r.contains("worktree")), "{:?}", done[0].payload);
 }
+
+#[test]
+fn a_configured_notification_command_hears_how_the_run_ended_and_its_failure_changes_nothing() {
+    let w = world("notify");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let heard = w.repo.root().join("heard.txt");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    let toml = format!("notify_cmd = [\"sh\", \"-c\", \"printf %s \\\"$NOTIFY_MESSAGE\\\" > '{}'\"]\n", heard.display());
+    std::fs::write(w.repo.root().join(".orq/run.toml"), toml).unwrap();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let message = std::fs::read_to_string(&heard).expect("the notifier ran");
+    assert!(message.starts_with("orq: COM-01 review_ready"), "{message}");
+
+    let w = world("notifyfails");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "notify_cmd = [\"no-such-notifier\"]\n").unwrap();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("notification"), "{}", stderr(&output));
+}

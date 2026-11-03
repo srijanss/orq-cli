@@ -287,6 +287,20 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
         eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
     }
+    // Telling a person is best effort: a notifier that fails never changes how the run ended.
+    if let Some(argv) = settings.notify_cmd.as_deref() {
+        if orq_orchestrator::wants_notification(settings.notify_on.as_deref(), report.ending.name()) {
+            let message = orq_orchestrator::notification_message(
+                &record.feature_id,
+                report.ending.name(),
+                report.detail.as_deref(),
+                report.review_url.as_deref(),
+            );
+            if let Err(err) = orq_orchestrator::send_notification(argv, repo, &message, Duration::from_secs(30)) {
+                eprintln!("orq: the notification command failed: {err}");
+            }
+        }
+    }
     Ok(report)
 }
 
