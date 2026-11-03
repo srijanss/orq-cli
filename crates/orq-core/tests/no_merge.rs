@@ -170,3 +170,16 @@ fn implicit_matching_and_wildcard_pushes_are_forbidden_because_their_destination
     // An explicit single-branch destination stays allowed.
     assert_eq!(forbidden_git_push(&args(&["push", "--no-follow-tags", "--", "origin", "abc123:refs/heads/fix--a"]), &protected), None);
 }
+
+#[test]
+fn a_graphql_mutation_is_caught_wherever_the_endpoint_sits_among_the_options() {
+    let mutation = "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }";
+    for call in [
+        vec!["api", "-f", mutation, "graphql"],
+        vec!["api", "--raw-field", mutation, "graphql"],
+        vec!["api", "--field", mutation, "graphql"],
+        vec!["api", "graphql", "--field", mutation],
+    ] {
+        assert!(forbidden_provider_call("gh", &args(&call)).is_some(), "{call:?} must be forbidden");
+    }
+}
