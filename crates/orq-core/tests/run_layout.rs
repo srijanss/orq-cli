@@ -67,7 +67,7 @@ fn an_index_failure_after_the_report_was_written_is_reported_and_leaves_a_retrya
     assert!(store.save_review(&root, "r1", "alpha", "login", SHA, b"{\"v\":1}").is_err());
     assert!(store.reviews_for_run("r1").unwrap().is_empty(), "no row may exist for the failed insert");
     let report = root.join(format!("runs/r1/review/{SHA}/review.json"));
-    assert_eq!(std::fs::read(&report).unwrap(), b"{\"v\":1}", "the written report stays whole");
+    assert!(!report.exists(), "a report the index refused is rolled back, not left half-published");
 
     // Once the index accepts writes again, retrying the same save indexes it.
     raw.execute_batch("DROP TRIGGER refuse_index;").unwrap();

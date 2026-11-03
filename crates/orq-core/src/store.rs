@@ -8,6 +8,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
+use crate::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
 use crate::storage::{check_head_sha, check_run_id, write_atomic};
 
 /// One stored review report, pinned to the head SHA it reviewed.
@@ -23,7 +24,7 @@ pub struct ReviewRecord {
 
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended.
-const MIGRATIONS: [&str; 1] = ["
+const MIGRATIONS: [&str; 2] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -35,6 +36,21 @@ const MIGRATIONS: [&str; 1] = ["
     );
     CREATE INDEX reviews_by_feature ON reviews (project, feature);
     CREATE INDEX reviews_by_head_sha ON reviews (head_sha);
+", "
+    CREATE TABLE review_lifecycles (
+        run_id            TEXT    NOT NULL,
+        reported_head_sha TEXT    NOT NULL,
+        provider          TEXT    NOT NULL,
+        review_id         TEXT    NOT NULL,
+        url               TEXT    NOT NULL,
+        state             TEXT    NOT NULL,
+        gate              TEXT    NOT NULL,
+        stale             INTEGER NOT NULL,
+        observed_head_sha TEXT,
+        last_error        TEXT,
+        last_checked      INTEGER NOT NULL,
+        PRIMARY KEY (run_id, reported_head_sha)
+    );
 "];
 
 pub struct Store {
@@ -123,6 +139,73 @@ impl Store {
             });
         }
         Ok(record)
+    }
+
+    /// Stores (or replaces) what the provider last showed about the review of
+    /// `run_id` at its reported head. A recorded error is redacted first.
+    pub fn save_lifecycle(&self, run_id: &str, lifecycle: &ReviewLifecycle) -> Result<()> {
+        check_run_id(run_id)?;
+        check_head_sha(&lifecycle.reported_head_sha)?;
+        if let Some(observed) = &lifecycle.observed_head_sha {
+            check_head_sha(observed)?;
+        }
+        let checked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let error = lifecycle.last_error.as_deref().map(crate::redact::redact);
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO review_lifecycles (run_id, reported_head_sha, provider, review_id, url, state, gate, stale, observed_head_sha, last_error, last_checked) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    run_id,
+                    lifecycle.reported_head_sha,
+                    lifecycle.provider,
+                    lifecycle.review_id,
+                    lifecycle.url,
+                    lifecycle.state.as_str(),
+                    lifecycle.gate.as_str(),
+                    lifecycle.stale,
+                    lifecycle.observed_head_sha,
+                    error,
+                    checked
+                ],
+            )
+            .map(drop)
+            .map_err(db)
+    }
+
+    pub fn lifecycles_for_run(&self, run_id: &str) -> Result<Vec<ReviewLifecycle>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT provider, review_id, url, reported_head_sha, observed_head_sha, state, gate, stale, last_error FROM review_lifecycles WHERE run_id = ?1 ORDER BY last_checked, rowid")
+            .map_err(db)?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                let (state, gate): (String, String) = (row.get(5)?, row.get(6)?);
+                Ok((
+                    ReviewLifecycle {
+                        provider: row.get(0)?,
+                        review_id: row.get(1)?,
+                        url: row.get(2)?,
+                        reported_head_sha: row.get(3)?,
+                        observed_head_sha: row.get(4)?,
+                        state: ProviderState::Open,
+                        gate: Gate::AwaitingHumanReview,
+                        stale: row.get(7)?,
+                        last_error: row.get(8)?,
+                    },
+                    state,
+                    gate,
+                ))
+            })
+            .map_err(db)?;
+        let mut lifecycles = Vec::new();
+        for row in rows {
+            let (mut lifecycle, state, gate) = row.map_err(db)?;
+            let corrupt = |what: &str, value: &str| Error::new(ErrorKind::InvalidData, format!("stored review {what} {value:?} is not recognised"));
+            lifecycle.state = ProviderState::parse(&state).ok_or_else(|| corrupt("state", &state))?;
+            lifecycle.gate = Gate::parse(&gate).ok_or_else(|| corrupt("gate", &gate))?;
+            lifecycles.push(lifecycle);
+        }
+        Ok(lifecycles)
     }
 
     pub fn reviews_for_run(&self, run_id: &str) -> Result<Vec<ReviewRecord>> {
