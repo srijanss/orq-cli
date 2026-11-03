@@ -149,7 +149,7 @@ impl RunFile {
 #[cfg(unix)]
 pub fn save_run_file(data_root: &Path, run_id: &str, file: RunFile, bytes: &[u8]) -> std::io::Result<()> {
     check_run_id(run_id)?;
-    write_atomic(data_root, &Path::new("runs").join(run_id).join(file.file_name()), bytes)
+    write_atomic(data_root, &Path::new("runs").join(run_id).join(file.file_name()), &crate::redact::redact_bytes(bytes))
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {

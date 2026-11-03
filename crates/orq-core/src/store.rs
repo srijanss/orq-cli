@@ -106,7 +106,7 @@ impl Store {
         check_run_id(run_id)?;
         check_head_sha(head_sha)?;
         let report_path = format!("runs/{run_id}/review/{head_sha}/review.json");
-        write_atomic(data_root, Path::new(&report_path), report)?;
+        write_atomic(data_root, Path::new(&report_path), &crate::redact::redact_bytes(report))?;
         let record = ReviewRecord { run_id: run_id.into(), project: project.into(), feature: feature.into(), head_sha: head_sha.into(), report_path };
         self.record_review(&record)?;
         Ok(record)

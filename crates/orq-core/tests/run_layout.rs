@@ -76,6 +76,23 @@ fn an_index_failure_after_the_report_was_written_is_reported_and_leaves_a_retrya
 }
 
 #[test]
+fn secrets_never_reach_a_stored_report_or_run_file() {
+    let root = scratch("redacted");
+    let store = Store::open(&root.join("orq.db")).unwrap();
+    let report = b"{\"findings\":[{\"note\":\"leaked gh\x70_abcdefghijklmnopqrstuvwxyz0123456789 and password=hunter2hunter2\"}]}";
+    let saved = store.save_review(&root, "r1", "alpha", "login", SHA, report).unwrap();
+    let stored = std::fs::read_to_string(root.join(&saved.report_path)).unwrap();
+    assert!(!stored.contains("gh\x70_abcdefghijklmnopqrstuvwxyz0123456789") && !stored.contains("hunter2hunter2"), "{stored}");
+    assert!(stored.contains("[REDACTED]") && stored.contains("\"findings\""));
+
+    for file in [RunFile::Tests, RunFile::ReviewRounds, RunFile::Handoff, RunFile::Events] {
+        save_run_file(&root, "r1", file, b"{\"log\":\"git clone https://u:pa55w0rd@example.com/r.git\"}\n").unwrap();
+        let stored = std::fs::read_to_string(root.join("runs/r1").join(file.file_name())).unwrap();
+        assert!(!stored.contains("pa55w0rd"), "{} kept a credential: {stored}", file.file_name());
+    }
+}
+
+#[test]
 fn run_files_are_written_only_under_their_fixed_names() {
     let root = scratch("files");
     for (file, name) in [

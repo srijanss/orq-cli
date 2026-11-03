@@ -817,6 +817,7 @@ dependencies = [
 name = "orq-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "rusqlite",
  "rustix",
  "serde_json",
