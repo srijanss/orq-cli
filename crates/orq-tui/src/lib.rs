@@ -1590,6 +1590,12 @@ pub trait BrowserBackend {
         SettingsView { error: Some("settings are not available".into()), ..SettingsView::default() }
     }
 
+    /// Disk usage, retention policy, last cleanup and pins, for the Storage
+    /// section of the Settings tab.
+    fn load_storage(&mut self) -> StorageView {
+        StorageView { error: Some("storage is not available".into()), ..StorageView::default() }
+    }
+
     /// Installed harnesses with their model suggestions, for the Settings
     /// tab's picker. Free text stays possible, so empty is acceptable.
     fn harness_options(&mut self) -> Vec<HarnessOption> {
@@ -1858,6 +1864,20 @@ pub struct SettingsView {
     pub reviewer_override: Option<String>,
     /// Why the settings file could not be used, if it could not.
     pub error: Option<String>,
+}
+
+/// What the Storage section of the Settings tab shows. Every line is text
+/// read from disk or config, so it is cleaned before display.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageView {
+    /// Why the storage could not be read, if it could not.
+    pub error: Option<String>,
+    /// One line per artifact category: files and size.
+    pub usage: Vec<String>,
+    /// The retention policy, one line per rule.
+    pub policy: Vec<String>,
+    pub last_cleanup: Option<String>,
+    pub pinned: Vec<String>,
 }
 
 /// The tabs of the popup.
@@ -2302,6 +2322,8 @@ struct SettingsState {
     /// The text being typed into the selected field.
     editing: Option<String>,
     status: Option<String>,
+    /// The Storage section, loaded when the tab opens.
+    storage: StorageView,
 }
 
 impl SettingsState {
@@ -2515,10 +2537,46 @@ fn render_settings(frame: &mut Frame, body: Rect, state: &SettingsState) {
     if let Some(status) = &state.status {
         put(8, Line::from(truncate_right(&format!(" {status}"), width)));
     }
+    render_storage_section(&state.storage, body, &mut put);
     if body.height > 0 {
         put(body.height - 1, Line::from(Span::styled(truncate_right(SETTINGS_HINT, width), dim)));
     }
 }
+
+/// The Storage section below the role settings: usage, policy, last cleanup, pins.
+fn render_storage_section(storage: &StorageView, body: Rect, put: &mut dyn FnMut(u16, Line<'static>)) {
+    let width = usize::from(body.width);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(Color::DarkGray);
+    let last_row = body.height.saturating_sub(1);
+    let mut row = STORAGE_TOP_ROW;
+    let mut line = |text: String, style: Style| {
+        if row < last_row {
+            put(row, Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+        }
+        row = row.saturating_add(1);
+    };
+    line(" Storage".to_string(), bold);
+    if let Some(error) = &storage.error {
+        line(format!(" {error}"), Style::new().fg(Color::Red));
+        return;
+    }
+    for usage in &storage.usage {
+        line(format!("   {usage}"), Style::new());
+    }
+    if !storage.policy.is_empty() {
+        line(" Policy".to_string(), dim);
+        for rule in &storage.policy {
+            line(format!("   {rule}"), Style::new());
+        }
+    }
+    line(format!(" Last cleanup: {}", storage.last_cleanup.as_deref().unwrap_or("never")), Style::new());
+    let pinned = if storage.pinned.is_empty() { "none".to_string() } else { storage.pinned.join(", ") };
+    line(format!(" Pinned: {pinned}"), Style::new());
+}
+
+/// Body row where the Storage section starts, below the role settings.
+const STORAGE_TOP_ROW: u16 = 10;
 
 /// `orq ui`'s popup on the real terminal: the feature browser between `enter`
 /// and `leave`.
@@ -3031,6 +3089,7 @@ impl Browser {
             selected: 0,
             editing: None,
             status: None,
+            storage: backend.load_storage(),
         };
         self.tab = Tab::Settings;
     }
@@ -3296,6 +3355,7 @@ where
             selected: 0,
             editing: None,
             status: None,
+            storage: StorageView::default(),
         },
         runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
         reviews: ReviewsState::new(model.project_name.clone()),
