@@ -43,7 +43,8 @@ fn facts_of(runs: &RunStore, store: &Store, run_id: &str, pinned: bool) -> Resul
         RunPhase::Completed => RunState::Completed,
     };
     let ended_at = events.last().and_then(|event| parse_rfc3339(&event.occurred_at));
-    let worktree_in_use = std::fs::symlink_metadata(&record.worktree).is_ok();
+    // Only a definite "not found" proves the worktree is gone; any other error leaves it unknown, so it counts as in use.
+    let worktree_in_use = !matches!(std::fs::symlink_metadata(&record.worktree), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
     // An unreadable review table is the same as not knowing: the run is kept either way.
     let review = store.review_observation(run_id).map_err(StoreError::from)?;
     Ok(Some(RunFacts { pinned, run_id: run_id.to_string(), state, ended_at, review, worktree_in_use }))
