@@ -171,3 +171,23 @@ fn a_root_that_is_itself_a_symlink_is_refused() {
     assert!(delete_in_root(&root, std::path::Path::new("Cargo.toml")).is_err());
     assert!(real.join("Cargo.toml").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_root_is_refused_however_its_path_is_spelled() {
+    use orq_core::ownership::delete_in_root;
+
+    let d = dir("root-spellings");
+    let real = d.join("repo");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("Cargo.toml"), "x").unwrap();
+    std::os::unix::fs::symlink(&real, d.join("orq")).unwrap();
+
+    for spelling in ["orq/", "orq/.", "orq//", "./orq/"] {
+        let root = d.join(spelling);
+        assert!(delete_in_root(&root, std::path::Path::new("Cargo.toml")).is_err(), "{spelling}");
+        assert!(real.join("Cargo.toml").exists(), "{spelling}");
+    }
+    // A root with no final name cannot be verified, so it is refused too.
+    assert!(delete_in_root(std::path::Path::new("/"), std::path::Path::new("x")).is_err());
+}

@@ -78,7 +78,16 @@ pub fn delete_in_root(orq_root: &Path, rel: &Path) -> std::io::Result<()> {
         return Err(denied("tool and project files are not Orq's to delete"));
     }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let mut dir = open(orq_root, flags | OFlags::NOFOLLOW, Mode::empty())?;
+    // O_NOFOLLOW only guards the last path component, and `orq/` or `orq/.`
+    // would hide the root's own entry from it, so open the root's parent
+    // (trusted) and then the root by name, as `Path` normalises the spelling.
+    let root_name = orq_root.file_name().ok_or_else(|| denied("the Orq root must name a directory"))?;
+    let parent = match orq_root.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let parent = open(parent, flags, Mode::empty())?;
+    let mut dir = openat(&parent, root_name, flags | OFlags::NOFOLLOW, Mode::empty())?;
     for part in dirs {
         dir = openat(&dir, *part, flags | OFlags::NOFOLLOW, Mode::empty())?;
     }
