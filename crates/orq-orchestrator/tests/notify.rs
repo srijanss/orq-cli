@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use orq_orchestrator::{notification_message, send_notification, wants_notification};
+use orq_orchestrator::{notification_message, send_notification, send_notification_with, wants_notification};
 
 fn dir(tag: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-notify-{}-{tag}", std::process::id()));
@@ -74,4 +74,17 @@ fn the_notifier_keeps_the_desktop_session_and_proxy_variables_but_not_other_secr
     send_notification(&argv, &d, "m", Duration::from_secs(10)).unwrap();
 
     assert_eq!(fs::read_to_string(&out).unwrap(), "unix:path=/run/orq-test-bus|");
+}
+
+#[test]
+fn a_notifier_receives_exactly_the_variables_it_is_told_to_keep() {
+    let d = dir("named");
+    let out = d.join("named.txt");
+    std::env::set_var("ORQ_TEST_WEBHOOK_TOKEN", "s3cret");
+    std::env::set_var("ORQ_TEST_OTHER_SECRET", "nope");
+    let argv = vec!["sh".to_string(), "-c".to_string(), format!("printf '%s|%s' \"$ORQ_TEST_WEBHOOK_TOKEN\" \"$ORQ_TEST_OTHER_SECRET\" > {}", out.display())];
+
+    send_notification_with(&argv, &d, "m", Duration::from_secs(10), &["ORQ_TEST_WEBHOOK_TOKEN".to_string()]).unwrap();
+
+    assert_eq!(fs::read_to_string(&out).unwrap(), "s3cret|");
 }

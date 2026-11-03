@@ -300,7 +300,7 @@ fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str,
         return;
     }
     let message = orq_orchestrator::notification_message(feature, ending, detail, url);
-    if let Err(err) = orq_orchestrator::send_notification(argv, cwd, &message, Duration::from_secs(30)) {
+    if let Err(err) = orq_orchestrator::send_notification_with(argv, cwd, &message, Duration::from_secs(30), settings.notify_env.as_deref().unwrap_or(&[])) {
         eprintln!("orq: the notification command failed: {err}");
     }
 }

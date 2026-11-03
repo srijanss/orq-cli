@@ -41,7 +41,7 @@ pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
 pub use review_draft::{draft_review_description, issue_number, link_issue, DraftSession, DraftSource, ReviewDraft};
 pub use review_observe::{observe_review, Observed};
 pub use retention_facts::{collect_run_facts, collect_run_facts_for};
-pub use notify::{notification_message, send_notification, wants_notification};
+pub use notify::{notification_message, send_notification, send_notification_with, wants_notification};
 pub use review_request::{
     create_review_request, create_review_request_with, recorded_review, resolve_repository_url, ReviewPeople, ReviewRef,
     ReviewRequestOutcome,

@@ -159,3 +159,19 @@ fn the_notification_command_and_mode_are_settings() {
     assert!(invalid("notify_cmd = []\n", "notifyempty").contains("notify_cmd"));
     assert!(invalid("notify_on = \"sometimes\"\n", "notifymode").contains("notify_on"));
 }
+
+#[test]
+fn the_variables_a_notifier_may_keep_are_a_setting() {
+    let r = repo("notifyenv");
+    shared(&r, "notify_env = [\"SLACK_WEBHOOK_URL\", \"TOKEN_2\"]\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.notify_env, Some(vec!["SLACK_WEBHOOK_URL".to_string(), "TOKEN_2".to_string()]));
+
+    let env = |key: &str| (key == "ORQ_NOTIFY_ENV").then(|| "[\"HOOK\"]".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().notify_env, Some(vec!["HOOK".to_string()]));
+
+    assert!(invalid("notify_env = \"HOOK\"\n", "envstring").contains("notify_env"));
+    assert!(invalid("notify_env = [\"A=B\"]\n", "envequals").contains("notify_env"));
+    assert!(invalid("notify_env = [\"1X\"]\n", "envdigit").contains("notify_env"));
+    assert!(invalid("notify_env = [\"NOTIFY_MESSAGE\"]\n", "envmessage").contains("notify_env"));
+}

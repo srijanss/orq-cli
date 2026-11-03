@@ -30,11 +30,17 @@ pub fn notification_message(feature: &str, ending: &str, detail: Option<&str>, u
 
 /// Start the notifier `argv` in `cwd` with `message` in `NOTIFY_MESSAGE` and wait up to `timeout`.
 pub fn send_notification(argv: &[String], cwd: &Path, message: &str, timeout: Duration) -> Result<(), String> {
+    send_notification_with(argv, cwd, message, timeout, &[])
+}
+
+/// Like `send_notification`, and the variables named in `keep` (a webhook address or token the
+/// notifier needs) are passed through as well; every other variable stays out of its reach.
+pub fn send_notification_with(argv: &[String], cwd: &Path, message: &str, timeout: Duration, keep: &[String]) -> Result<(), String> {
     let (program, args) = argv.split_first().ok_or("the notification command is empty")?;
     let session = DraftSession {
         program: program.clone(),
         args: args.to_vec(),
-        env: notifier_env(message),
+        env: notifier_env(message, keep),
         cwd: cwd.to_path_buf(),
     };
     run_drafter(&session, timeout).map(|_| ())
@@ -56,8 +62,9 @@ const KEPT_VARIABLES: [&str; 12] = [
     "no_proxy",
 ];
 
-fn notifier_env(message: &str) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = KEPT_VARIABLES.iter().filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v))).collect();
+fn notifier_env(message: &str, keep: &[String]) -> Vec<(String, String)> {
+    let names = KEPT_VARIABLES.iter().copied().chain(keep.iter().map(String::as_str));
+    let mut env: Vec<(String, String)> = names.filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v))).collect();
     env.push(("NOTIFY_MESSAGE".to_string(), message.to_string()));
     env
 }

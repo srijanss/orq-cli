@@ -31,6 +31,8 @@ pub struct RunSettings {
     /// The command that tells a person a run ended, and which endings it is run for (`all` or `failures`).
     pub notify_cmd: Option<Vec<String>>,
     pub notify_on: Option<String>,
+    /// Names of environment variables the notifier may keep (a webhook address, a token).
+    pub notify_env: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +66,7 @@ struct Layer {
     mr_reviewer: Option<String>,
     notify_cmd: Option<Vec<String>>,
     notify_on: Option<String>,
+    notify_env: Option<Vec<String>>,
 }
 
 impl Layer {
@@ -79,6 +82,7 @@ impl Layer {
             mr_reviewer: self.mr_reviewer.or(lower.mr_reviewer),
             notify_cmd: self.notify_cmd.or(lower.notify_cmd),
             notify_on: self.notify_on.or(lower.notify_on),
+            notify_env: self.notify_env.or(lower.notify_env),
         }
     }
 }
@@ -101,6 +105,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         mr_reviewer: merged.mr_reviewer,
         notify_cmd: merged.notify_cmd,
         notify_on: merged.notify_on,
+        notify_env: merged.notify_env,
     })
 }
 
@@ -139,6 +144,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "mr_reviewer" => layer.mr_reviewer = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, false).map_err(|r| bad(&r))?),
             "notify_cmd" => layer.notify_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "notify_on" => layer.notify_on = Some(notify_on(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
+            "notify_env" => layer.notify_env = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -173,6 +179,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     if let Some(v) = get("ORQ_NOTIFY_ON") {
         layer.notify_on = Some(notify_on(v.trim()).map_err(|r| invalid("ORQ_NOTIFY_ON", r))?);
     }
+    if let Some(v) = get("ORQ_NOTIFY_ENV") {
+        layer.notify_env = Some(variable_names(&json("ORQ_NOTIFY_ENV", &v)?).map_err(|r| invalid("ORQ_NOTIFY_ENV", r))?);
+    }
     for (name, assignee) in [("ORQ_MR_ASSIGNEE", true), ("ORQ_MR_REVIEWER", false)] {
         if let Some(v) = get(name) {
             let who = Some(person(&v, assignee).map_err(|r| invalid(name, r))?);
@@ -201,6 +210,23 @@ fn forge(value: &str) -> Result<String, String> {
 fn person(value: &str, assignee: bool) -> Result<String, String> {
     let people = if assignee { ReviewPeople::checked(Some(value), None) } else { ReviewPeople::checked(None, Some(value)) }?;
     people.assignee.or(people.reviewer).ok_or_else(|| "must not be blank".to_string())
+}
+
+fn variable_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    let names: Vec<String> = value
+        .as_array()
+        .ok_or("must be a list of variable names")?
+        .iter()
+        .map(|n| n.as_str().map(str::to_string).ok_or("must hold only strings"))
+        .collect::<Result<_, _>>()?;
+    for name in &names {
+        let mut chars = name.chars();
+        let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !plain || name == "NOTIFY_MESSAGE" {
+            return Err(format!("{name:?} is not a usable variable name"));
+        }
+    }
+    Ok(names)
 }
 
 fn notify_on(value: &str) -> Result<String, String> {
