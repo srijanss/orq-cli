@@ -136,3 +136,21 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         assert!(matches!(claude.implement_argv(&request), Err(AdapterError::InvalidValue { field: "context", .. })), "{bad:?}");
     }
 }
+
+#[test]
+fn context_limits_count_characters_and_allow_tabs_and_newlines() {
+    use orq_agents::{checked_context, MAX_CONTEXT_CHARS};
+
+    let exact = "x".repeat(MAX_CONTEXT_CHARS);
+    assert_eq!(checked_context(&exact).unwrap(), Some(exact.as_str()));
+
+    // Multibyte characters count once each, not once per byte.
+    let wide = "é".repeat(MAX_CONTEXT_CHARS);
+    assert!(wide.len() > MAX_CONTEXT_CHARS);
+    assert_eq!(checked_context(&wide).unwrap(), Some(wide.as_str()));
+    let too_wide = "é".repeat(MAX_CONTEXT_CHARS + 1);
+    assert!(matches!(checked_context(&too_wide), Err(AdapterError::InvalidValue { field: "context", .. })));
+
+    assert_eq!(checked_context("a\tb\nc").unwrap(), Some("a\tb\nc"));
+    assert_eq!(checked_context(" \n ").unwrap(), None);
+}
