@@ -6,7 +6,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use orq_core::review_input::load_review_input;
+use orq_core::review_input::{load_review_findings, load_review_input};
+use orq_core::review_intelligence::apply_intelligence;
 use orq_core::review_lifecycle::ReviewLifecycle;
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
 use orq_core::storage::{check_run_id, write_atomic, StorageRoots};
@@ -88,7 +89,21 @@ fn build(args: &[OsString]) -> ExitCode {
         },
         generated_at: utc_now(),
     };
-    let report = build_report(&inputs);
+    let mut report = build_report(&inputs);
+    let rounds = match &parsed.review_input {
+        None => Ok(Vec::new()),
+        Some(path) => load_review_findings(path),
+    };
+    match rounds {
+        Ok(rounds) => apply_intelligence(&mut report, &inputs.files, &rounds, None),
+        Err(err) => {
+            apply_intelligence(&mut report, &inputs.files, &[], None);
+            if let Some(gaps) = report["gaps"].as_array_mut() {
+                gaps.push(serde_json::json!(format!("review findings could not be read ({err:?}), so no risks are listed")));
+            }
+            report["status"] = serde_json::json!("incomplete");
+        }
+    }
     let json = match serde_json::to_vec_pretty(&report) {
         Ok(json) => json,
         Err(err) => return fail(err),
