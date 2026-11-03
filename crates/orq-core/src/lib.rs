@@ -5,6 +5,7 @@ pub mod review_input;
 pub mod run;
 pub mod stage;
 pub mod storage;
+pub mod store;
 
 /// Status of a feature in a project's `.tdd-features.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
