@@ -1909,6 +1909,21 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         options
     }
 
+    fn load_storage(&mut self) -> orq_tui::StorageView {
+        match storage::open_ctx() {
+            Ok(ctx) => storage::ui_view(&ctx),
+            Err(error) => orq_tui::StorageView { error: Some(error), ..Default::default() },
+        }
+    }
+
+    fn preview_storage(&mut self) -> Result<Vec<String>, String> {
+        storage::ui_preview(&storage::open_ctx()?)
+    }
+
+    fn prune_storage(&mut self) -> Result<Vec<String>, String> {
+        storage::ui_prune(&storage::open_ctx()?)
+    }
+
     fn load_settings(&mut self) -> orq_tui::SettingsView {
         let failed = |error: String| orq_tui::SettingsView { error: Some(error), ..Default::default() };
         let path = match self.settings_file() {

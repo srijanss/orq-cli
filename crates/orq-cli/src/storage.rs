@@ -131,25 +131,22 @@ fn list() -> Result<(), String> {
 
 fn run_prune(dry_run: bool) -> Result<(), String> {
     let (roots, store, runs) = open()?;
+    let ctx = Ctx { roots, store, runs };
     // A dry run changes nothing, not even the bookkeeping of an interrupted prune.
     if dry_run {
-        let pending = store.pending_removals().map_err(|e| e.to_string())?.len();
+        let pending = ctx.store.pending_removals().map_err(|e| e.to_string())?.len();
         if pending > 0 {
             println!("{pending} removal(s) of an interrupted prune are pending; a real prune will settle them.");
         }
     } else {
-        let settled = reconcile(&roots.data, &store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
+        let settled = reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
         if !settled.completed.is_empty() || !settled.abandoned.is_empty() {
             println!("Settled an interrupted prune: {} finished, {} left in place.", settled.completed.len(), settled.abandoned.len());
         }
     }
-    let policy = policy(&roots)?;
-    let facts = collect_run_facts(&runs, &store).map_err(|e| e.to_string())?;
-    let items = inventory(&roots.data).map_err(|e| e.to_string())?;
+    let policy = policy(&ctx.roots)?;
     let now = now();
-    let mut the_plan = plan(&policy, &facts, &items, now);
-    // A run whose review metadata is already gone has nothing left to forget.
-    the_plan.metadata.retain(|run_id| store.has_run_metadata(run_id).unwrap_or(true));
+    let the_plan = ctx.plan(&policy, now)?;
     for line in the_plan.render() {
         println!("{line}");
     }
@@ -159,23 +156,18 @@ fn run_prune(dry_run: bool) -> Result<(), String> {
         }
         return Ok(());
     }
-    // Facts are read again per run just before its files go: the world may have moved on since the preview.
-    let current = |run_id: &str| collect_run_facts_for(&runs, &store, run_id).ok().flatten();
-    let report = prune(&roots.data, &store, &policy, &the_plan, now, &current).map_err(|e| e.to_string())?;
-    record_cleanup(&roots, now);
-    if !the_plan.candidates.is_empty() || !report.metadata_removed.is_empty() {
-        println!("Removed {} file(s), freed {}.", report.removed.len(), human_bytes(report.freed));
-    }
-    for rel in &report.missing {
-        println!("  already gone: {rel}");
-    }
-    for (rel, why) in &report.skipped {
-        println!("  kept {rel}: {why}");
-    }
-    for run in &report.metadata_removed {
-        println!("  forgot review metadata of run {run}");
+    let report = ctx.prune(&policy, &the_plan, now)?;
+    for line in report_lines(&the_plan, &report) {
+        // The CLI indents what it kept or forgot; the headline stands alone.
+        if line.starts_with("Removed ") { println!("{line}") } else { println!("  {line}") }
     }
     Ok(())
+}
+
+/// The storage context the Settings tab acts on, opened the same way the commands open it.
+pub(crate) fn open_ctx() -> Result<Ctx, String> {
+    let (roots, store, runs) = open()?;
+    Ok(Ctx { roots, store, runs })
 }
 
 /// `orq run pin|unpin <run-id>`.
@@ -193,5 +185,192 @@ pub(crate) fn pin(args: &[OsString], pinned: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(message) => fail(message),
+    }
+}
+
+/// Everything storage commands need, so the CLI and the Settings tab act on the same things.
+pub(crate) struct Ctx {
+    pub(crate) roots: StorageRoots,
+    pub(crate) store: Store,
+    pub(crate) runs: RunStore,
+}
+
+impl Ctx {
+    fn plan(&self, policy: &RetentionPolicy, now: u64) -> Result<orq_core::retention::PrunePlan, String> {
+        let facts = collect_run_facts(&self.runs, &self.store).map_err(|e| e.to_string())?;
+        let items = inventory(&self.roots.data).map_err(|e| e.to_string())?;
+        let mut the_plan = plan(policy, &facts, &items, now);
+        // A run whose review metadata is already gone has nothing left to forget.
+        the_plan.metadata.retain(|run_id| self.store.has_run_metadata(run_id).unwrap_or(true));
+        Ok(the_plan)
+    }
+
+    /// Facts are read again per run just before its files go: the world may have moved on since the preview.
+    fn prune(&self, policy: &RetentionPolicy, the_plan: &orq_core::retention::PrunePlan, now: u64) -> Result<orq_core::prune::PruneReport, String> {
+        let current = |run_id: &str| collect_run_facts_for(&self.runs, &self.store, run_id).ok().flatten();
+        let report = prune(&self.roots.data, &self.store, policy, the_plan, now, &current).map_err(|e| e.to_string())?;
+        record_cleanup(&self.roots, now);
+        Ok(report)
+    }
+}
+
+fn report_lines(the_plan: &orq_core::retention::PrunePlan, report: &orq_core::prune::PruneReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !the_plan.candidates.is_empty() || !report.metadata_removed.is_empty() {
+        lines.push(format!("Removed {} file(s), freed {}.", report.removed.len(), human_bytes(report.freed)));
+    }
+    lines.extend(report.missing.iter().map(|rel| format!("already gone: {rel}")));
+    lines.extend(report.skipped.iter().map(|(rel, why)| format!("kept {rel}: {why}")));
+    lines.extend(report.metadata_removed.iter().map(|run| format!("forgot review metadata of run {run}")));
+    lines
+}
+
+pub(crate) fn ui_view(ctx: &Ctx) -> orq_tui::StorageView {
+    let failed = |error: String| orq_tui::StorageView { error: Some(error), ..Default::default() };
+    let policy = match policy(&ctx.roots) {
+        Ok(policy) => policy,
+        Err(error) => return failed(error),
+    };
+    let items = match inventory(&ctx.roots.data) {
+        Ok(items) => items,
+        Err(error) => return failed(format!("cannot measure storage: {error}")),
+    };
+    let pinned = match ctx.store.pinned() {
+        Ok(pinned) => pinned,
+        Err(error) => return failed(format!("cannot read pinned runs: {error}")),
+    };
+    let mut by_class: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    for item in &items {
+        let entry = by_class.entry(item.class.as_str()).or_default();
+        entry.0 += 1;
+        entry.1 += item.bytes;
+    }
+    let total: u64 = items.iter().map(|i| i.bytes).sum();
+    let mut usage = vec![format!("total: {} file(s), {}", items.len(), human_bytes(total))];
+    usage.extend(by_class.into_iter().map(|(class, (count, bytes))| format!("{class}: {count} file(s), {}", human_bytes(bytes))));
+    orq_tui::StorageView {
+        error: None,
+        usage,
+        policy: vec![policy_summary(&policy)],
+        last_cleanup: last_cleanup(&ctx.roots).map(format_time),
+        pinned,
+    }
+}
+
+/// What a cleanup would remove, as lines to read; empty when there is nothing to remove.
+pub(crate) fn ui_preview(ctx: &Ctx) -> Result<Vec<String>, String> {
+    let policy = policy(&ctx.roots)?;
+    let the_plan = ctx.plan(&policy, now())?;
+    if the_plan.candidates.is_empty() && the_plan.metadata.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(the_plan.render())
+}
+
+pub(crate) fn ui_prune(ctx: &Ctx) -> Result<Vec<String>, String> {
+    reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
+    let policy = policy(&ctx.roots)?;
+    let now = now();
+    let the_plan = ctx.plan(&policy, now)?;
+    let report = ctx.prune(&policy, &the_plan, now)?;
+    Ok(report_lines(&the_plan, &report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orq_orchestrator::{Event, RunRecord};
+
+    fn ctx(tag: &str) -> Ctx {
+        let base = orq_test_support::process_temp_dir().join(format!("orq-storage-ui-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        roots.create_all().unwrap();
+        let store = Store::open(&roots.database()).unwrap();
+        let runs = RunStore::new(&base.join("state/orq"));
+        Ctx { roots, store, runs }
+    }
+
+    fn old_failed_run(ctx: &Ctx, run_id: &str, bytes: usize) {
+        ctx.runs
+            .create(&RunRecord {
+                run_id: run_id.into(),
+                project_id: "p".into(),
+                feature_id: "F".into(),
+                remote: "origin".into(),
+                provider: "github".into(),
+                target_branch: "main".into(),
+                base_sha: "a".repeat(40),
+                branch: "b".into(),
+                worktree: ctx.roots.state.join("no-such-worktree"),
+                repository: String::new(),
+                profiles: std::collections::BTreeMap::new(),
+            })
+            .unwrap();
+        ctx.runs
+            .append_event(&Event {
+                schema_version: 1,
+                event_id: "e1".into(),
+                run_id: run_id.into(),
+                project_id: "p".into(),
+                feature_id: "F".into(),
+                kind: "run.failed".into(),
+                stage: None,
+                attempt: 1,
+                occurred_at: "2020-01-01T00:00:00Z".into(),
+                payload: serde_json::json!({ "reason": "boom" }),
+            })
+            .unwrap();
+        let log = ctx.roots.data.join(format!("runs/{run_id}/events.jsonl"));
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(log, vec![b'x'; bytes]).unwrap();
+    }
+
+    #[test]
+    fn the_view_has_usage_by_category_the_policy_the_last_cleanup_and_pins() {
+        let c = ctx("view");
+        old_failed_run(&c, "old-run", 2048);
+        c.store.pin("keep-me").unwrap();
+        let view = ui_view(&c);
+        assert_eq!(view.error, None);
+        assert!(view.usage.iter().any(|l| l.contains("log") && l.contains("2.0 KiB")), "{:?}", view.usage);
+        assert!(view.policy.iter().any(|l| l.contains("failed") && l.contains("30")), "{:?}", view.policy);
+        assert_eq!(view.last_cleanup, None);
+        assert_eq!(view.pinned, vec!["keep-me".to_string()]);
+    }
+
+    #[test]
+    fn preview_lists_what_would_go_and_removes_nothing() {
+        let c = ctx("preview");
+        old_failed_run(&c, "old-run", 2048);
+        let lines = ui_preview(&c).unwrap();
+        assert!(lines.iter().any(|l| l.contains("runs/old-run/events.jsonl")), "{lines:?}");
+        assert!(c.roots.data.join("runs/old-run/events.jsonl").exists());
+        assert_eq!(ui_view(&c).last_cleanup, None, "a preview is not a cleanup");
+    }
+
+    #[test]
+    fn nothing_to_remove_gives_an_empty_preview() {
+        let c = ctx("empty");
+        assert_eq!(ui_preview(&c).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn prune_removes_reports_and_stamps_the_time() {
+        let c = ctx("prune");
+        old_failed_run(&c, "old-run", 2048);
+        let lines = ui_prune(&c).unwrap();
+        assert!(lines.iter().any(|l| l.contains("Removed 1 file(s)") && l.contains("2.0 KiB")), "{lines:?}");
+        assert!(!c.roots.data.join("runs/old-run/events.jsonl").exists());
+        assert!(ui_view(&c).last_cleanup.is_some());
+    }
+
+    #[test]
+    fn a_broken_config_is_an_error_not_a_default_policy() {
+        let c = ctx("badconfig");
+        std::fs::write(c.roots.config_file(), "[retention]\nfailed_days = \"x\"").unwrap();
+        assert!(ui_view(&c).error.is_some());
+        assert!(ui_preview(&c).is_err());
+        assert!(ui_prune(&c).is_err());
     }
 }
