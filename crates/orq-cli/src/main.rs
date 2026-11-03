@@ -1138,6 +1138,12 @@ impl Drop for WorkerJob {
     }
 }
 
+/// Orq's storage roots, resolved the same way `orq review` does; nothing is created.
+fn review_roots() -> Result<orq_core::storage::StorageRoots, String> {
+    orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok())
+        .map_err(|err| format!("cannot locate the Orq data directory: {err}"))
+}
+
 impl LedgerBackend {
     /// Runs `act` on the review link of one of this project's runs.
     fn review_link(&self, run_id: &str, act: &dyn Fn(&str) -> Result<String, String>) -> Result<String, String> {
@@ -1602,6 +1608,22 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             &root,
             run_id,
         )
+    }
+
+    fn load_reviews(&mut self) -> Result<Vec<orq_tui::ReviewRow>, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        let roots = review_roots()?;
+        let rows = orq_core::review_inbox::inbox(&roots, &pipeline::project_id(&project), &project.name)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, stale: r.stale })
+            .collect())
+    }
+
+    fn load_review_detail(&mut self, run_id: &str) -> Result<orq_tui::ReviewDetail, String> {
+        let d = orq_core::review_inbox::detail(&review_roots()?, run_id)?;
+        Ok(orq_tui::ReviewDetail { summary: d.summary, risks: d.risks, files: d.files, tests: d.tests, rounds: d.rounds })
     }
 
     fn unreadable_runs(&mut self) -> usize {

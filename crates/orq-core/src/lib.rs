@@ -3,6 +3,7 @@ pub mod no_merge;
 pub mod ownership;
 pub mod provider_observation;
 pub mod redact;
+pub mod review_inbox;
 pub mod review_intelligence;
 pub mod review_lifecycle;
 pub mod review_report;

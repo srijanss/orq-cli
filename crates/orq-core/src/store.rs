@@ -208,6 +208,11 @@ impl Store {
         Ok(lifecycles)
     }
 
+    /// Every stored report, oldest first.
+    pub fn all_reviews(&self) -> Result<Vec<ReviewRecord>> {
+        self.query("1 = 1", [])
+    }
+
     pub fn reviews_for_run(&self, run_id: &str) -> Result<Vec<ReviewRecord>> {
         self.query("run_id = ?1", params![run_id])
     }
