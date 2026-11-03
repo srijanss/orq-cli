@@ -106,7 +106,11 @@ struct Facts {
 fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
     let store = Store::open_read_only(&roots.database()).ok()?;
     let head = store.reviews_for_run(run_id).ok()?.pop()?.head_sha;
-    let lifecycle = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().rev().find(|l| l.reported_head_sha == head));
+    // A lifecycle that cannot be read is unknown, never "fresh": it counts as stale and offers no link.
+    let Ok(all) = store.lifecycles_for_run(run_id) else {
+        return Some(Facts { head, observed: None, link: None, stale: true });
+    };
+    let lifecycle = all.into_iter().rev().find(|l| l.reported_head_sha == head);
     Some(Facts {
         observed: lifecycle.as_ref().and_then(|l| l.observed_head_sha.clone()),
         link: lifecycle.as_ref().and_then(|l| safe_link(&l.url)),
