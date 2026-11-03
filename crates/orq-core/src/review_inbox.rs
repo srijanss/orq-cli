@@ -50,8 +50,9 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
     let mut rows = Vec::new();
     for record in latest {
         let report = read_report(&roots.data, &record);
-        let lifecycles = store.lifecycles_for_run(&record.run_id).unwrap_or_default();
-        let lifecycle = lifecycles.iter().rev().find(|l| l.reported_head_sha == record.head_sha);
+        // A lifecycle that cannot be read is unknown, never treated as "no lifecycle".
+        let lifecycles = store.lifecycles_for_run(&record.run_id);
+        let lifecycle = lifecycles.as_ref().ok().and_then(|all| all.iter().rev().find(|l| l.reported_head_sha == record.head_sha));
         let (mut status, risk) = match &report {
             Ok(report) => (
                 if report["status"] == "current" { "ready" } else { "draft" }.to_string(),
@@ -59,8 +60,14 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
             ),
             Err(_) => ("unreadable".to_string(), "-".to_string()),
         };
-        if let Some(l) = lifecycle {
-            status = l.state.as_str().to_string();
+        if report.is_ok() {
+            if let Some(l) = lifecycle {
+                status = l.state.as_str().to_string();
+            }
+        }
+        let unknown = lifecycles.is_err();
+        if unknown && report.is_ok() {
+            status = "unknown".to_string();
         }
         rows.push(InboxRow {
             run_id: record.run_id,
@@ -68,7 +75,7 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
             project: if record.project == current_project_id { current_project_name.to_string() } else { display_project(&record.project) },
             status,
             risk,
-            stale: lifecycle.is_some_and(|l| l.stale),
+            stale: unknown || lifecycle.is_some_and(|l| l.stale),
         });
     }
     Ok(rows)
