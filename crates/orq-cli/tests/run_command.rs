@@ -818,3 +818,19 @@ fn a_run_that_cannot_create_its_worktree_is_still_announced() {
     let heard = std::fs::read_to_string(&heard).expect("the notifier ran");
     assert!(heard.starts_with("orq: COM-01 failed"), "{heard}");
 }
+
+#[test]
+fn notify_on_failures_stays_quiet_for_a_clean_run_and_speaks_for_one_that_stops() {
+    let (w, heard) = notify_world("notifyquiet", Some("failures"));
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!heard.exists(), "a clean run is not announced under notify_on = failures");
+
+    // An agent that changes nothing leaves no work to review: the run stops, and that is announced.
+    let (w, heard) = notify_world("notifystops", Some("failures"));
+    let idle = FakeAgent::builder().build();
+    let _ = run_with(&w, &idle, &github(), &["--no-ci-check"]);
+    let heard = std::fs::read_to_string(&heard).expect("a run that stops is announced");
+    assert!(heard.starts_with("orq: COM-01 blocked") || heard.starts_with("orq: COM-01 failed"), "{heard}");
+}
