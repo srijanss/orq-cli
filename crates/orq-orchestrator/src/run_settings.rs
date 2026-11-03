@@ -1,0 +1,203 @@
+//! Per-repository run settings: forge, base branch, gate, setup steps and the CI wait
+//! timeout. They come from a private file in the git directory (`orq/run.toml`), a checked-in
+//! `.orq/run.toml`, and `ORQ_*` environment variables; the environment wins over the private
+//! file, which wins over the checked-in one, key by key. Commands are argv lists, never shell
+//! text, and every value is validated before a run uses it.
+
+use std::path::Path;
+use std::time::Duration;
+
+use crate::outcome::git_raw;
+
+const SHARED_FILE: &str = ".orq/run.toml";
+const PRIVATE_LABEL: &str = "orq/run.toml in the git directory";
+/// A CI wait longer than a day is a typo, not a wish.
+const MAX_CI_TIMEOUT_SECS: i64 = 86_400;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunSettings {
+    /// `gh` or `glab`.
+    pub forge: Option<String>,
+    pub base_branch: Option<String>,
+    /// The gate command; `None` leaves the project's own detection in charge.
+    pub gate: Option<Vec<String>>,
+    /// Extra setup steps, run before the detected install step.
+    pub setup: Vec<Vec<String>>,
+    pub ci_timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsError {
+    /// A settings file exists but cannot be read.
+    Unreadable { path: String, reason: String },
+    /// A value (or a whole file) is not acceptable; `source` names the file or variable.
+    Invalid { source: String, reason: String },
+}
+
+impl std::fmt::Display for SettingsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SettingsError::Unreadable { path, reason } => write!(f, "cannot read {path}: {reason}"),
+            SettingsError::Invalid { source, reason } => write!(f, "{source}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SettingsError {}
+
+/// One source's values, before the sources are merged.
+#[derive(Default)]
+struct Layer {
+    forge: Option<String>,
+    base_branch: Option<String>,
+    gate: Option<Vec<String>>,
+    setup: Option<Vec<Vec<String>>>,
+    ci_timeout: Option<Duration>,
+}
+
+impl Layer {
+    /// `self` wins; whatever it leaves unset comes from `lower`.
+    fn over(self, lower: Layer) -> Layer {
+        Layer {
+            forge: self.forge.or(lower.forge),
+            base_branch: self.base_branch.or(lower.base_branch),
+            gate: self.gate.or(lower.gate),
+            setup: self.setup.or(lower.setup),
+            ci_timeout: self.ci_timeout.or(lower.ci_timeout),
+        }
+    }
+}
+
+/// The settings for the repository at `repo`; `env` looks a variable up.
+pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<RunSettings, SettingsError> {
+    let shared = read_layer(&repo.join(SHARED_FILE), SHARED_FILE)?;
+    let private = match git_dir(repo) {
+        Some(dir) => read_layer(&dir.join("orq/run.toml"), PRIVATE_LABEL)?,
+        None => Layer::default(),
+    };
+    let merged = env_layer(env)?.over(private).over(shared);
+    Ok(RunSettings {
+        forge: merged.forge,
+        base_branch: merged.base_branch,
+        gate: merged.gate,
+        setup: merged.setup.unwrap_or_default(),
+        ci_timeout: merged.ci_timeout,
+    })
+}
+
+fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
+    let got = git_raw(repo, &["rev-parse", "--git-dir"]).ok()?;
+    let line = got.stdout.lines().next()?.trim();
+    (got.success && !line.is_empty()).then(|| repo.join(line))
+}
+
+fn invalid(source: &str, reason: impl Into<String>) -> SettingsError {
+    SettingsError::Invalid { source: source.to_string(), reason: reason.into() }
+}
+
+fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Layer::default()),
+        Err(err) => return Err(SettingsError::Unreadable { path: label.to_string(), reason: err.to_string() }),
+    };
+    let doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| invalid(label, err.to_string()))?;
+    let mut layer = Layer::default();
+    for (key, item) in doc.iter() {
+        let value = item.as_value().ok_or_else(|| invalid(label, format!("{key} must be a plain value")))?;
+        let bad = |reason: &str| invalid(label, format!("{key} {reason}"));
+        match key {
+            "forge" => layer.forge = Some(forge(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
+            "base_branch" => {
+                layer.base_branch = Some(branch(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?)
+            }
+            "gate" => layer.gate = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
+            "setup" => layer.setup = Some(steps(&json_of(value)).map_err(|r| bad(&r))?),
+            "ci_timeout_secs" => {
+                layer.ci_timeout = Some(timeout(value.as_integer().ok_or_else(|| bad("must be a whole number"))?).map_err(|r| bad(&r))?)
+            }
+            other => return Err(invalid(label, format!("unknown setting {other}"))),
+        }
+    }
+    Ok(layer)
+}
+
+fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsError> {
+    let get = |name: &str| env(name).filter(|v| !v.trim().is_empty());
+    let json = |name: &str, text: &str| -> Result<serde_json::Value, SettingsError> {
+        serde_json::from_str(text).map_err(|_| invalid(name, "must be a JSON value"))
+    };
+    let mut layer = Layer::default();
+    if let Some(v) = get("ORQ_FORGE") {
+        layer.forge = Some(forge(v.trim()).map_err(|r| invalid("ORQ_FORGE", r))?);
+    }
+    if let Some(v) = get("ORQ_BASE_BRANCH") {
+        layer.base_branch = Some(branch(v.trim()).map_err(|r| invalid("ORQ_BASE_BRANCH", r))?);
+    }
+    if let Some(v) = get("ORQ_GATE") {
+        layer.gate = Some(argv(&json("ORQ_GATE", &v)?).map_err(|r| invalid("ORQ_GATE", r))?);
+    }
+    if let Some(v) = get("ORQ_SETUP") {
+        layer.setup = Some(steps(&json("ORQ_SETUP", &v)?).map_err(|r| invalid("ORQ_SETUP", r))?);
+    }
+    if let Some(v) = get("ORQ_CI_TIMEOUT_SECS") {
+        let secs: i64 = v.trim().parse().map_err(|_| invalid("ORQ_CI_TIMEOUT_SECS", "must be a whole number"))?;
+        layer.ci_timeout = Some(timeout(secs).map_err(|r| invalid("ORQ_CI_TIMEOUT_SECS", r))?);
+    }
+    Ok(layer)
+}
+
+/// A TOML value as JSON, so one validator serves both file and environment.
+fn json_of(value: &toml_edit::Value) -> serde_json::Value {
+    match value {
+        toml_edit::Value::String(s) => serde_json::Value::String(s.value().clone()),
+        toml_edit::Value::Array(items) => serde_json::Value::Array(items.iter().map(json_of).collect()),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn forge(value: &str) -> Result<String, String> {
+    match value {
+        "gh" | "glab" => Ok(value.to_string()),
+        _ => Err("must be gh or glab".to_string()),
+    }
+}
+
+fn branch(value: &str) -> Result<String, String> {
+    let ok = !value.is_empty()
+        && !value.starts_with(['-', '/', '.'])
+        && !value.ends_with(['/', '.'])
+        && !value.contains("..")
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
+    if ok {
+        Ok(value.to_string())
+    } else {
+        Err("must be a plain branch name".to_string())
+    }
+}
+
+fn argv(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    let words: Vec<String> = value
+        .as_array()
+        .ok_or("must be a list of words, not a shell string")?
+        .iter()
+        .map(|w| w.as_str().map(str::to_string).ok_or("must hold only strings"))
+        .collect::<Result<_, _>>()?;
+    match words.first() {
+        None => Err("must not be empty".to_string()),
+        Some(program) if program.trim().is_empty() => Err("must start with a program".to_string()),
+        Some(_) => Ok(words),
+    }
+}
+
+fn steps(value: &serde_json::Value) -> Result<Vec<Vec<String>>, String> {
+    value.as_array().ok_or("must be a list of commands")?.iter().map(argv).collect()
+}
+
+fn timeout(secs: i64) -> Result<Duration, String> {
+    if (1..=MAX_CI_TIMEOUT_SECS).contains(&secs) {
+        Ok(Duration::from_secs(secs as u64))
+    } else {
+        Err(format!("must be between 1 and {MAX_CI_TIMEOUT_SECS}"))
+    }
+}

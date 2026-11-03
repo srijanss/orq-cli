@@ -1423,6 +1423,14 @@ fn default_target_branch(repo: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
+/// The configured base branch (settings file or `ORQ_BASE_BRANCH`), else the remote's default.
+fn configured_target_branch(repo: &Path) -> String {
+    orq_orchestrator::load_run_settings(repo, &|name| std::env::var(name).ok())
+        .ok()
+        .and_then(|settings| settings.base_branch)
+        .unwrap_or_else(|| default_target_branch(repo))
+}
+
 fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSetting {
     model
         .map(|p| orq_tui::AgentSetting { harness: p.harness, model: p.model })
@@ -1444,7 +1452,7 @@ reviewer: String,
         repo: project.root.clone(),
         feature: feature.clone(),
         remote: "origin".to_string(),
-        target: default_target_branch(&project.root),
+        target: configured_target_branch(&project.root),
         implementer: implementer.clone(),
         reviewer: reviewer.clone(),
     };
@@ -2658,6 +2666,17 @@ mod ledger_backend_tests {
 
         assert_eq!(crate::default_target_branch(fixture.root()), "trunk");
     }
+    #[test]
+    fn a_configured_base_branch_beats_the_remotes_default() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::create_dir_all(fixture.root().join(".orq")).unwrap();
+        std::fs::write(fixture.root().join(".orq/run.toml"), "base_branch = \"develop\"\n").unwrap();
+        assert_eq!(crate::configured_target_branch(fixture.root()), "develop");
+
+        std::fs::write(fixture.root().join(".orq/run.toml"), "base_branch = \"-x\"\n").unwrap();
+        assert_eq!(crate::configured_target_branch(fixture.root()), "main", "a bad value falls back to detection");
+    }
+
     struct FakeHerdr {
         calls: std::cell::RefCell<Vec<Vec<String>>>,
         fail: bool,

@@ -183,6 +183,9 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let repo = &options.project.root;
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
 
+    // Read from the user's checkout, never from the agent's worktree.
+    let settings = orq_orchestrator::load_run_settings(&options.project.root, &|name| std::env::var(name).ok())
+        .map_err(|e| other(format!("run settings: {e}")))?;
     let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
     let naming = orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
         git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
@@ -197,8 +200,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         .output()
         .map_err(|e| other(e.to_string()))?;
     let url = String::from_utf8_lossy(&url.stdout).trim().to_string();
-    let forge = std::env::var("ORQ_FORGE").ok();
-    let provider = detect_provider(&url, &ProviderHosts::default(), forge.as_deref())
+    let provider = detect_provider(&url, &ProviderHosts::default(), settings.forge.as_deref())
         .map_err(|e| other(format!("{e:?}")))?;
 
     // Pinned now: the session's worktree can repoint the remote later, and provider calls must
@@ -256,7 +258,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, provider.cli(), &logs));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
@@ -288,13 +290,14 @@ fn stages(
     store: &RunStore,
     record: &RunRecord,
     options: &Options<'_>,
+    settings: &orq_orchestrator::RunSettings,
     provider_cli: &str,
     logs: &Path,
 ) -> Result<Report, StoreError> {
     let run_id = record.run_id.as_str();
     let worktree = record.worktree.as_path();
 
-    let plan = match plan_setup(worktree, &[]) {
+    let plan = match plan_setup(worktree, &settings.setup) {
         Ok(plan) => plan,
         Err(err) => return stopped(Ending::Failed, format!("setup: {err:?}")),
     };
@@ -336,7 +339,7 @@ fn stages(
         return stopped(Ending::Blocked, reason);
     }
 
-    let gate = choose_gate(worktree, None).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+    let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     if let GateOutcome::Failed { step, exit_code } =
         run_gate_stage(store, run_id, &gate, options.gate, &logs.join("gate.log"))?
     {
@@ -372,7 +375,7 @@ fn stages(
         &CiWaitConfig {
             enabled: options.ci_check,
             poll_interval: Duration::from_secs(15),
-            timeout: Duration::from_secs(30 * 60),
+            timeout: settings.ci_timeout.unwrap_or(Duration::from_secs(30 * 60)),
             command_timeout: Duration::from_secs(60),
         },
     )?;

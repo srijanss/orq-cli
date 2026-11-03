@@ -85,6 +85,23 @@ fn a_profile_that_is_not_defined_is_refused_before_anything_is_created() {
     assert!(state_is_empty(&env));
 }
 
+#[test]
+fn a_bad_settings_file_is_refused_by_name_before_a_run_is_recorded() {
+    let repo = GitFixture::new();
+    repo.add_bare_remote();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    std::fs::create_dir_all(repo.root().join(".orq")).unwrap();
+    std::fs::write(repo.root().join(".orq/run.toml"), "gate = \"make check\"\n").unwrap();
+    let env = env("badsettings");
+
+    let output = run(repo.root(), &env, &["--feature", "COM-01"]);
+
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains(".orq/run.toml") && stderr(&output).contains("gate"), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
+    assert!(state_is_empty(&env), "no run was recorded");
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
