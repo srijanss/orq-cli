@@ -161,7 +161,12 @@ pub fn build_report(inputs: &ReportInputs) -> Value {
 /// A readable rendering of [`build_report`]'s output. Pure: the same report
 /// always renders the same text.
 pub fn render_markdown(report: &Value) -> String {
-    let text = |value: &Value| value.as_str().unwrap_or("-").to_string();
+    // Paths, commands and ids come from repositories and test output: control
+    // characters are shown escaped so they can neither drive the terminal nor
+    // start new report lines. The structured report keeps the originals.
+    let text = |value: &Value| {
+        value.as_str().unwrap_or("-").chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect::<String>()
+    };
     let mut md = String::new();
     md.push_str(&format!("# Review report {}\n\n", text(&report["report_id"])));
     md.push_str(&format!("- State: {}\n", text(&report["status"])));
@@ -176,7 +181,7 @@ pub fn render_markdown(report: &Value) -> String {
     for file in report["files"].as_array().into_iter().flatten() {
         let counts = if file["binary"] == true { "binary".to_string() } else { format!("+{} -{}", file["added"], file["deleted"]) };
         match file["old_path"].as_str() {
-            Some(old) => md.push_str(&format!("- {} (renamed from {}) {counts}\n", text(&file["path"]), old)),
+            Some(_) => md.push_str(&format!("- {} (renamed from {}) {counts}\n", text(&file["path"]), text(&file["old_path"]))),
             None => md.push_str(&format!("- {} {counts}\n", text(&file["path"]))),
         }
     }
