@@ -95,15 +95,17 @@ fn build(args: &[OsString]) -> ExitCode {
         Ok(store) => store,
         Err(err) => return fail(format!("cannot open the review index: {err}")),
     };
+    // The readable copy goes first: if it cannot be written nothing is
+    // published or indexed, so a failed build leaves no half-visible report.
+    let markdown = orq_core::redact::redact(&render_markdown(&report));
+    let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
+    if let Err(err) = write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()) {
+        return fail(format!("cannot store the readable report: {err}"));
+    }
     let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
         Ok(record) => record,
         Err(err) => return fail(format!("cannot store the review report: {err}")),
     };
-    let markdown = orq_core::redact::redact(&render_markdown(&report));
-    let markdown_path = Path::new(&record.report_path).with_file_name("review.md");
-    if let Err(err) = write_atomic(&roots.data, &markdown_path, markdown.as_bytes()) {
-        return fail(format!("cannot store the readable report: {err}"));
-    }
     println!("{}", roots.data.join(&record.report_path).display());
     ExitCode::SUCCESS
 }
@@ -135,17 +137,16 @@ fn show(args: &[OsString]) -> ExitCode {
         Ok(bytes) => bytes,
         Err(err) => return fail(format!("cannot read the stored report for run {run_id}: {err}")),
     };
+    let report: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(report) => report,
+        Err(err) => return fail(format!("the stored report for run {run_id} is unreadable: {err}")),
+    };
     if json {
         println!("{}", String::from_utf8_lossy(&bytes));
-        return ExitCode::SUCCESS;
+    } else {
+        print!("{}", render_markdown(&report));
     }
-    match serde_json::from_slice(&bytes) {
-        Ok(report) => {
-            print!("{}", render_markdown(&report));
-            ExitCode::SUCCESS
-        }
-        Err(err) => fail(format!("the stored report for run {run_id} is unreadable: {err}")),
-    }
+    ExitCode::SUCCESS
 }
 
 /// The current UTC time as RFC 3339, without a date-time dependency.
