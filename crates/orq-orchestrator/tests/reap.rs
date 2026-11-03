@@ -32,9 +32,12 @@ struct Case {
     finished: bool,
     /// Where the worktree lives relative to the repository.
     inside_worktrees_dir: bool,
+    /// The worktree was detached and given a commit of its own, so it is not on the recorded branch.
+    detached_ahead: bool,
 }
 
-const GOOD: Case = Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true };
+const GOOD: Case =
+    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false };
 
 struct Planned {
     verdict: ReapVerdict,
@@ -61,6 +64,12 @@ fn scenario(tag: &str, case: Case) -> Planned {
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
     let tip = git(&worktree, &["rev-parse", "HEAD"]);
+    if case.detached_ahead {
+        git(&worktree, &["checkout", "-q", "--detach"]);
+        fs::write(worktree.join("only-here.txt"), "unpushed\n").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-q", "-m", "only here"]);
+    }
     if case.dirty {
         fs::write(worktree.join("scratch.txt"), "x\n").unwrap();
     }
@@ -132,6 +141,7 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
         ("dirty", Case { dirty: true, ..GOOD }, "uncommitted"),
         ("unpushed", Case { pushed: false, ..GOOD }, "not pushed"),
         ("outside", Case { inside_worktrees_dir: false, ..GOOD }, "not under"),
+        ("detached", Case { detached_ahead: true, ..GOOD }, "not on the branch"),
     ];
     for (tag, case, why) in cases {
         let planned = scenario(tag, case);

@@ -89,6 +89,9 @@ fn judge(
         return Ok(keep("the local branch cannot be found"));
     }
     *tip = resolved.stdout.trim().to_string();
+    if let Some(problem) = worktree_problem(repo, &record.worktree, &record.branch, tip)? {
+        return Ok(ReapVerdict::Keep(problem));
+    }
     let Some(program) = program_for(&record.provider) else { return Ok(keep("no provider CLI to ask about the review")) };
     let observed = match observe_review(store, &record.run_id, &program, timeout)? {
         Ok(observed) => observed,
@@ -108,6 +111,28 @@ fn judge(
         return Ok(keep("the worktree has uncommitted changes"));
     }
     Ok(ReapVerdict::Reap)
+}
+
+/// Why the worktree is not, verifiably, the checkout of `branch` at `tip` of this repository.
+/// Removing a worktree on another commit or branch could discard the only copy of its commits.
+fn worktree_problem(repo: &Path, worktree: &Path, branch: &str, tip: &str) -> Result<Option<String>, StoreError> {
+    let common = |dir: &Path| -> Result<Option<PathBuf>, StoreError> {
+        let out = git_raw(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        Ok(out.success.then(|| PathBuf::from(out.stdout.trim())).and_then(|p| p.canonicalize().ok()))
+    };
+    match (common(repo)?, common(worktree)?) {
+        (Some(a), Some(b)) if a == b => {}
+        _ => return Ok(Some("the worktree does not belong to this repository".to_string())),
+    }
+    let head = git_raw(worktree, &["symbolic-ref", "--quiet", "HEAD"])?;
+    if !head.success || head.stdout.trim() != format!("refs/heads/{branch}") {
+        return Ok(Some("the worktree is not on the branch of the run".to_string()));
+    }
+    let at = git_raw(worktree, &["rev-parse", "--verify", "HEAD"])?;
+    if !at.success || at.stdout.trim() != tip {
+        return Ok(Some("the worktree is not on the branch tip".to_string()));
+    }
+    Ok(None)
 }
 
 fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
