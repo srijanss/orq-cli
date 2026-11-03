@@ -60,6 +60,54 @@ impl StorageRoots {
     }
 }
 
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Writes `bytes` to `rel` (relative, no `..`) inside `root`. The data goes to
+/// a private temporary file in the destination directory that is synced and
+/// then renamed over the target, so a reader or a crash sees the old file or
+/// the whole new one, never a partial write. Directories are created
+/// owner-only and opened one at a time without following symlinks, so a
+/// symlink planted inside the root cannot redirect the write; a symlink at the
+/// target itself is replaced, never written through.
+#[cfg(unix)]
+pub fn write_atomic(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use rustix::fs::{fsync, mkdirat, open, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+    use rustix::io::Errno;
+    use std::io::Write;
+    use std::path::Component;
+
+    let refuse = |why: &str| Error::new(ErrorKind::PermissionDenied, why.to_string());
+    let mut parts = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            _ => return Err(refuse("path must stay inside the Orq root")),
+        }
+    }
+    let (name, dirs) = parts.split_last().ok_or_else(|| refuse("nothing to write"))?;
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut dir = open(root, dir_flags, Mode::empty())?;
+    for part in dirs {
+        match mkdirat(&dir, *part, Mode::from_raw_mode(0o700)) {
+            Ok(()) | Err(Errno::EXIST) => {}
+            Err(error) => return Err(error.into()),
+        }
+        dir = openat(&dir, *part, dir_flags, Mode::empty())?;
+    }
+    let temp = format!(".{}.{}.{}.tmp", name.to_string_lossy(), std::process::id(), TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let fd = openat(&dir, temp.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o600))?;
+    let mut file = std::fs::File::from(fd);
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let finished = written.and_then(|()| renameat(&dir, temp.as_str(), &dir, *name).map_err(Error::from));
+    if let Err(error) = finished {
+        let _ = unlinkat(&dir, temp.as_str(), AtFlags::empty());
+        return Err(error);
+    }
+    fsync(&dir)?;
+    Ok(())
+}
+
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

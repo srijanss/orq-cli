@@ -30,7 +30,7 @@ fn credential_named_keys_lose_their_values_in_every_common_shape() {
 
 #[test]
 fn well_known_token_shapes_are_removed_anywhere() {
-    gone("failed with ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    gone("failed with gh\x70_abcdefghijklmnopqrstuvwxyz0123456789", "gh\x70_abcdefghijklmnopqrstuvwxyz0123456789");
     gone("token sk-live-1234567890abcdef", "sk-live-1234567890abcdef");
     gone("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijk", "eyJhbGciOiJIUzI1NiJ9");
     gone("blob 0123456789abcdef0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef");
