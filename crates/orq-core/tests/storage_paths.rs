@@ -78,6 +78,20 @@ fn directories_that_already_exist_with_loose_permissions_are_tightened() {
 
 #[cfg(unix)]
 #[test]
+fn refusing_a_symlinked_directory_never_changes_what_it_points_at() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = scratch("victim");
+    let victim = scratch("victim-target");
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let roots = StorageRoots::resolve(&env(&[("HOME", base.to_str().unwrap())])).unwrap();
+    std::fs::create_dir_all(roots.data.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&victim, &roots.data).unwrap();
+    assert!(roots.create_all().is_err());
+    assert_eq!(std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777, 0o755, "the link's target must keep its mode");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_symlinked_orq_directory_is_refused_instead_of_followed() {
     let base = scratch("symlinked");
     let elsewhere = scratch("symlinked-elsewhere");

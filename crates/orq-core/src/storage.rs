@@ -167,14 +167,15 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
             Err(error) => return Err(error),
         }
         // A directory that already existed may be a symlink planted elsewhere
-        // or have loose permissions; refuse the first and tighten the second
-        // (chmod fails for a directory owned by someone else).
-        let meta = std::fs::symlink_metadata(dir)?;
-        if !meta.is_dir() {
-            return Err(Error::new(ErrorKind::PermissionDenied, format!("{} is not a plain directory", dir.display())));
-        }
-        if meta.permissions().mode() & 0o777 != 0o700 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        // or have loose permissions. Open it without following a symlink and
+        // inspect and chmod that same descriptor, so a link swapped in after
+        // the check can never have its target's permissions changed (fchmod
+        // fails for a directory owned by someone else).
+        let handle = rustix::fs::open(dir, rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC, rustix::fs::Mode::empty())
+            .map_err(|error| Error::new(ErrorKind::PermissionDenied, format!("{} is not a plain directory: {error}", dir.display())))?;
+        let handle = std::fs::File::from(handle);
+        if handle.metadata()?.permissions().mode() & 0o777 != 0o700 {
+            handle.set_permissions(std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
     }
