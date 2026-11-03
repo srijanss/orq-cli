@@ -121,7 +121,11 @@ fn parse_finding(value: &serde_json::Value) -> Result<Finding, InputError> {
     if !value.is_object() {
         return Err(InputError::Malformed("a finding is not an object".to_string()));
     }
-    let id = bounded_field(value, "id", MAX_FIELD_CHARS)?.filter(|id| !id.trim().is_empty()).ok_or_else(|| InputError::Malformed("a finding has no id".to_string()))?;
+    // The id is an identity, not display text: it is kept whole or refused, never cut or rewritten.
+    let id = optional_text(value, "id")?.filter(|id| !id.trim().is_empty()).ok_or_else(|| InputError::Malformed("a finding has no id".to_string()))?;
+    if id.chars().count() > MAX_FIELD_CHARS || id.chars().any(char::is_control) {
+        return Err(InputError::Malformed(format!("a finding id is longer than {MAX_FIELD_CHARS} characters or has control characters")));
+    }
     let word = |key: &str| bounded_field(value, key, MAX_FIELD_CHARS).map(|w| w.map(|w| w.to_lowercase()));
     let severity = match word("severity")?.as_deref() {
         Some("high") => Severity::High,
