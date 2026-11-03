@@ -11,6 +11,20 @@ fn dir(tag: &str) -> PathBuf {
 }
 
 #[test]
+fn a_file_reached_through_a_symlinked_directory_inside_the_root_may_not_be_deleted() {
+    let d = dir("symlink");
+    let root = d.join("orq");
+    let outside = d.join("repo");
+    std::fs::create_dir_all(root.join("real")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("Cargo.toml"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("runs")).unwrap();
+
+    assert!(!may_orq_delete(&root, &root.join("runs/Cargo.toml")));
+    assert!(may_orq_delete(&root, &root.join("real/review.json")), "a plain directory is fine, file or not yet created");
+}
+
+#[test]
 fn an_exported_review_input_reports_the_rounds_it_actually_observed() {
     let d = dir("ok");
     let file = d.join("review-rounds.json");

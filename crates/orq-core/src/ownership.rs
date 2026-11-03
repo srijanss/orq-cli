@@ -35,5 +35,18 @@ pub fn may_orq_delete(orq_root: &Path, path: &Path) -> bool {
     if inside.as_os_str().is_empty() || inside.components().any(|c| !matches!(c, Component::Normal(_))) {
         return false;
     }
-    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| classify(name) == Ownership::Unowned)
+    if !path.file_name().and_then(|name| name.to_str()).is_some_and(|name| classify(name) == Ownership::Unowned) {
+        return false;
+    }
+    // A symlinked directory between the root and the file would redirect the
+    // deletion outside the root, so no existing ancestor may be a symlink.
+    let mut ancestor = orq_root.to_path_buf();
+    let parts: Vec<_> = inside.components().collect();
+    for part in &parts[..parts.len() - 1] {
+        ancestor.push(part);
+        if std::fs::symlink_metadata(&ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return false;
+        }
+    }
+    true
 }
