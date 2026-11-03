@@ -17,6 +17,30 @@ const VALUE_FLAGS: [&str; 8] = ["--repo", "-R", "--hostname", "-H", "--method", 
 /// Options of the push command whose next argument is their value.
 const PUSH_VALUE_OPTIONS: [&str; 5] = ["-o", "--push-option", "--receive-pack", "--exec", "--repo"];
 
+/// Options that take no value and cannot change which refs are pushed.
+const PUSH_PLAIN_OPTIONS: [&str; 17] = [
+    "--set-upstream", "--force", "--force-with-lease", "--no-follow-tags", "--follow-tags", "--dry-run", "--verbose",
+    "--quiet", "--no-verify", "--verify", "--atomic", "--progress", "--tags", "--delete", "--porcelain",
+    "--mirror", "--all",
+];
+/// Single-letter forms of the plain options, which may be clustered (`-fu`).
+const PUSH_PLAIN_SHORT: &str = "ufnvqd";
+
+/// Git accepts abbreviated long options and short clusters, so anything not
+/// spelled exactly as listed is refused rather than guessed at.
+fn known_push_option(arg: &str) -> bool {
+    if PUSH_VALUE_OPTIONS.contains(&arg) {
+        return true;
+    }
+    if let Some(long) = arg.strip_prefix("--") {
+        let name = long.split('=').next().unwrap_or(long);
+        let name = format!("--{name}");
+        return PUSH_PLAIN_OPTIONS.contains(&name.as_str())
+            || (arg.contains('=') && PUSH_VALUE_OPTIONS.contains(&name.as_str()));
+    }
+    arg.len() > 1 && arg[1..].chars().all(|flag| PUSH_PLAIN_SHORT.contains(flag))
+}
+
 fn program_name(program: &str) -> &str {
     Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program)
 }
@@ -109,6 +133,9 @@ pub fn forbidden_git_push(args: &[String], protected: &[String]) -> Option<&'sta
         if !options_ended && arg == "--" {
             options_ended = true;
         } else if !options_ended && arg.starts_with('-') {
+            if !known_push_option(arg) {
+                return Some("a push option whose spelling is not recognised");
+            }
             skip_value = PUSH_VALUE_OPTIONS.contains(&arg.as_str());
         } else {
             operands.push(arg);

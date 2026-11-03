@@ -217,3 +217,26 @@ fn a_push_option_value_is_not_counted_as_the_remote_or_a_branch() {
         assert_eq!(forbidden_git_push(&args(&push), &protected), None, "{push:?} must stay allowed");
     }
 }
+
+#[test]
+fn an_unrecognised_push_option_spelling_fails_closed() {
+    let protected = args(&["main"]);
+    for push in [
+        vec!["push", "--push-opt", "ci.skip", "origin"],
+        vec!["push", "--push-opt=ci.skip", "origin", "feat/x"],
+        vec!["push", "-vo", "ci.skip", "origin"],
+        vec!["push", "-ovalue", "origin", "feat/x"],
+        vec!["push", "--rece", "x", "origin"],
+        vec!["push", "--no-such-option", "origin", "feat/x"],
+    ] {
+        assert!(forbidden_git_push(&args(&push), &protected).is_some(), "{push:?} must be forbidden");
+    }
+    for push in [
+        vec!["push", "-u", "origin", "feat/x"],
+        vec!["push", "-fu", "origin", "feat/x"],
+        vec!["push", "--force-with-lease=feat/x:abc", "origin", "feat/x"],
+        vec!["push", "--verbose", "--no-verify", "origin", "feat/x"],
+    ] {
+        assert_eq!(forbidden_git_push(&args(&push), &protected), None, "{push:?} must stay allowed");
+    }
+}
