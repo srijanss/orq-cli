@@ -182,3 +182,23 @@ fn resuming_does_not_need_a_free_branch_name() {
 
     assert_eq!(second.status.code(), Some(0), "{}", String::from_utf8_lossy(&second.stderr));
 }
+
+#[test]
+fn a_resume_that_fails_in_setup_still_remembers_that_the_agent_finished() {
+    let w = world("setup-fails");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+
+    // The resumed run stops in setup, before it reaches any stage.
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"true\"]\nsetup = [[\"false\"]]\n").unwrap();
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
+    assert_eq!(run_with(&w, &second_agent, &["--resume"]).status.code(), Some(EXIT_FAILED), "setup fails");
+
+    set_gate(&w, "true");
+    let third = run_with(&w, &second_agent, &["--resume"]);
+
+    assert_eq!(third.status.code(), Some(0), "{}", String::from_utf8_lossy(&third.stderr));
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(!pushed.contains("again.txt"), "the agent was not asked again after a failed resume: {pushed}");
+}

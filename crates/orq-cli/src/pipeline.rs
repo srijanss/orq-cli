@@ -281,6 +281,20 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         }
     }
     let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
+    // Carried over first thing: a run resumed again after failing early must still skip the agent.
+    if let Some(from) = resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()) {
+        if let Err(err) = orq_orchestrator::record_inherited_implement(&store, &record, from) {
+            let released = finish(&store);
+            let message = format!("cannot record that the agent session already finished: {err:?}");
+            if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, "failed", Some(&message)) {
+                eprintln!("orq: cannot record the end of {run_id}: {err:?}");
+            }
+            if let Err(lock) = released {
+                eprintln!("orq: the feature lock of {run_id} was not released: {lock:?}");
+            }
+            return Err(other(message));
+        }
+    }
     let created = match &naming {
         Some(naming) => orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()),
         None => Ok(()),
@@ -404,10 +418,9 @@ fn stages(
             return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));
         }
 
-        // A resumed run whose agent session already finished goes on from the next stage.
-        if let Some(from) = implement_inherited_from {
-            orq_orchestrator::record_inherited_implement(store, record, from)?;
-        } else {
+        // A resumed run whose agent session already finished goes on from the next stage; that was
+        // recorded when the run began, so it survives a failure anywhere before here.
+        if implement_inherited_from.is_none() {
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let args = adapter
                 .implement_argv(&ImplementRequest {
