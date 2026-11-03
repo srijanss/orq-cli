@@ -50,3 +50,34 @@ pub fn may_orq_delete(orq_root: &Path, path: &Path) -> bool {
     }
     true
 }
+
+/// Deletes the file `rel` (relative to `orq_root`) without ever trusting a
+/// path check made earlier: the root is opened once, each directory is opened
+/// relative to its parent handle refusing symlinks, and the file is unlinked
+/// relative to the final handle. A directory swapped for a symlink at any
+/// moment makes the deletion fail instead of escaping the root.
+#[cfg(unix)]
+pub fn delete_in_root(orq_root: &Path, rel: &Path) -> std::io::Result<()> {
+    use rustix::fs::{open, openat, unlinkat, AtFlags, Mode, OFlags};
+    use std::io::{Error, ErrorKind};
+
+    let denied = |why: &str| Error::new(ErrorKind::PermissionDenied, why.to_string());
+    let mut parts = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => parts.push(part),
+            _ => return Err(denied("path must stay inside the Orq root")),
+        }
+    }
+    let (name, dirs) = parts.split_last().ok_or_else(|| denied("nothing to delete"))?;
+    if !name.to_str().is_some_and(|name| classify(name) == Ownership::Unowned) {
+        return Err(denied("tool and project files are not Orq's to delete"));
+    }
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let mut dir = open(orq_root, flags, Mode::empty())?;
+    for part in dirs {
+        dir = openat(&dir, *part, flags | OFlags::NOFOLLOW, Mode::empty())?;
+    }
+    unlinkat(&dir, *name, AtFlags::empty())?;
+    Ok(())
+}

@@ -125,3 +125,33 @@ fn only_files_inside_an_orq_root_that_are_not_tool_files_may_be_deleted() {
     assert!(!may_orq_delete(root, &root.join("../other/file")));
     assert!(!may_orq_delete(root, &root.join("runs/../../escape")));
 }
+
+#[cfg(unix)]
+#[test]
+fn deleting_relative_to_the_root_never_follows_a_symlink_even_if_swapped_in_after_any_check() {
+    use orq_core::ownership::delete_in_root;
+
+    let d = dir("delete-in-root");
+    let root = d.join("orq");
+    let outside = d.join("repo");
+    std::fs::create_dir_all(root.join("runs/r1")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("Cargo.toml"), "x").unwrap();
+    std::fs::write(root.join("runs/r1/review.json"), "{}").unwrap();
+
+    // The directory is swapped for a symlink with no prior check at all.
+    std::fs::remove_dir_all(root.join("runs/r1")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("runs/r1")).unwrap();
+
+    assert!(delete_in_root(&root, std::path::Path::new("runs/r1/Cargo.toml")).is_err());
+    assert!(outside.join("Cargo.toml").exists(), "the project file outside the root survives");
+
+    // Normal deletion works, and tool files and escapes are refused.
+    std::fs::write(root.join("runs/review.json"), "{}").unwrap();
+    delete_in_root(&root, std::path::Path::new("runs/review.json")).unwrap();
+    assert!(!root.join("runs/review.json").exists());
+    std::fs::write(root.join(".tdd-state.json"), "{}").unwrap();
+    assert!(delete_in_root(&root, std::path::Path::new(".tdd-state.json")).is_err());
+    assert!(delete_in_root(&root, std::path::Path::new("../repo/Cargo.toml")).is_err());
+    assert!(outside.join("Cargo.toml").exists());
+}
