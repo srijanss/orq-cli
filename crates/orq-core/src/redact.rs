@@ -39,11 +39,79 @@ fn rules() -> &'static [Rule] {
     })
 }
 
-/// Redacts stored bytes. Text that is valid UTF-8 is redacted as text; bytes
-/// that are not are converted lossily first, so a secret can never hide
-/// behind an invalid byte.
+/// Redacts a stored artifact. A JSON document, or a log of JSON lines, is
+/// redacted value by value so the result stays parseable and secrets hidden
+/// behind JSON escapes are found; JSON that holds no secret is returned
+/// byte for byte. Anything else is redacted as text, where bytes that are
+/// not UTF-8 are converted lossily first so a secret cannot hide behind them.
 pub fn redact_bytes(bytes: &[u8]) -> Vec<u8> {
+    if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        return if redact_value(&mut value) { serde_json::to_vec(&value).unwrap_or_else(|_| redact_text_bytes(bytes)) } else { bytes.to_vec() };
+    }
+    if let Some(out) = redact_json_lines(bytes) {
+        return out;
+    }
+    redact_text_bytes(bytes)
+}
+
+fn redact_text_bytes(bytes: &[u8]) -> Vec<u8> {
     redact(&String::from_utf8_lossy(bytes)).into_bytes()
+}
+
+/// Handles a log where every non-empty line is JSON; a log that mixes in
+/// plain lines is redacted line by line, still keeping its line structure.
+fn redact_json_lines(bytes: &[u8]) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut any_json = false;
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(mut value) if value.is_object() || value.is_array() => {
+                any_json = true;
+                if redact_value(&mut value) {
+                    out.extend(serde_json::to_vec(&value).ok()?);
+                } else {
+                    out.extend(body.as_bytes());
+                }
+            }
+            _ => out.extend(redact(body).into_bytes()),
+        }
+        out.extend(newline.as_bytes());
+    }
+    any_json.then_some(out)
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "apikey", "api_key", "api-key", "credential", "private_key", "private-key", "privatekey"].iter().any(|word| key.contains(word))
+}
+
+/// Redacts every string in `value`, and whole string values under secret-named
+/// keys. Returns whether anything changed.
+fn redact_value(value: &mut serde_json::Value) -> bool {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => {
+            let redacted = redact(text);
+            let changed = redacted != *text;
+            *text = redacted;
+            changed
+        }
+        Value::Array(items) => items.iter_mut().fold(false, |changed, item| redact_value(item) | changed),
+        Value::Object(map) => map.iter_mut().fold(false, |changed, (key, item)| {
+            if is_secret_key(key) && matches!(item, Value::String(text) if text != REDACTED) {
+                *item = Value::String(REDACTED.to_string());
+                true
+            } else {
+                redact_value(item) | changed
+            }
+        }),
+        _ => false,
+    }
 }
 
 /// Returns `text` with every recognised secret replaced by [`REDACTED`].
