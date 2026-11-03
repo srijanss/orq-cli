@@ -245,7 +245,7 @@ impl Store {
 
 /// A report path is relative to the data root and must sit under its own
 /// run's directory, so joining it to the root can never leave the root.
-fn check_report_path(run_id: &str, report_path: &str) -> Result<()> {
+pub(crate) fn check_report_path(run_id: &str, report_path: &str) -> Result<()> {
     use std::path::Component;
     let mut parts = Path::new(report_path).components();
     let inside = matches!(parts.next(), Some(Component::Normal(first)) if first == "runs")

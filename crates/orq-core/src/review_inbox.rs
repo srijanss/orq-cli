@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::storage::{check_run_id, StorageRoots};
-use crate::store::{ReviewRecord, Store};
+use crate::store::{check_report_path, ReviewRecord, Store};
 
 /// One line of the inbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,8 +94,32 @@ pub fn detail(roots: &StorageRoots, run_id: &str) -> Result<InboxDetail, String>
     Ok(sections(&report))
 }
 
+/// The most a stored report may be before it is refused.
+const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Reads a stored report. The path comes from the index, so it is checked on
+/// every read: it must sit under its own run's directory, resolve inside the
+/// data root, and not itself be a symlink.
 fn read_report(data_root: &Path, record: &ReviewRecord) -> Result<Value, String> {
-    let bytes = std::fs::read(data_root.join(&record.report_path)).map_err(|err| err.to_string())?;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    check_report_path(&record.run_id, &record.report_path).map_err(|_| "the stored report path is not valid".to_string())?;
+    let full = data_root.join(&record.report_path);
+    let root = data_root.canonicalize().map_err(|err| err.to_string())?;
+    let resolved = full.canonicalize().map_err(|err| err.to_string())?;
+    if !resolved.starts_with(&root) {
+        return Err("the stored report path is not valid".to_string());
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&full)
+        .map_err(|_| "the stored report cannot be opened".to_string())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REPORT_BYTES + 1).read_to_end(&mut bytes).map_err(|err| err.to_string())?;
+    if bytes.len() as u64 > MAX_REPORT_BYTES {
+        return Err("the report is too large".to_string());
+    }
     serde_json::from_slice(&bytes).map_err(|err| err.to_string())
 }
 
