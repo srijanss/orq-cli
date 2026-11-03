@@ -2625,18 +2625,20 @@ fn render_storage_section(
     };
     line(" Storage".to_string(), bold);
     if let Some(report) = report {
-        // Keep the confirmation prompt and the closing hint on screen however long the report is.
-        let reserved = usize::from(confirming);
-        let room = usize::from(last_row.saturating_sub(STORAGE_TOP_ROW + 1)).saturating_sub(reserved);
+        // The prompt owns the row above the hint, whatever the screen height or report length.
+        let prompt_row = last_row.saturating_sub(1);
+        let limit = if confirming { prompt_row } else { last_row };
+        let room = usize::from(limit.saturating_sub(STORAGE_TOP_ROW + 1));
         let shown = if report.len() > room { room.saturating_sub(1) } else { report.len() };
         for text in &report[..shown] {
             line(format!("   {text}"), Style::new());
         }
-        if shown < report.len() {
+        if shown < report.len() && room > 0 {
             line(format!("   … {} more", report.len() - shown), dim);
         }
         if confirming {
-            line(" Remove these? Press y to confirm, any other key cancels".to_string(), Style::new().fg(Color::Yellow));
+            let prompt = " Remove these? Press y to confirm, any other key cancels";
+            put(prompt_row, Line::from(Span::styled(truncate_right(prompt, width), Style::new().fg(Color::Yellow))));
         }
         return;
     }

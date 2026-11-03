@@ -106,8 +106,12 @@ fn ch(c: char) -> Event {
 }
 
 fn run(backend: &mut Fake, events: Vec<Event>) -> Vec<String> {
+    run_sized(backend, events, 32)
+}
+
+fn run_sized(backend: &mut Fake, events: Vec<Event>, height: u16) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let (width, height) = (70u16, 32u16);
+    let width = 70u16;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
@@ -187,4 +191,16 @@ fn a_long_preview_is_clipped_to_the_screen() {
     assert_eq!(lines.len(), 32);
     assert!(has(&lines, "more"), "{lines:#?}");
     assert!(has(&lines, "y to confirm"), "the prompt must stay visible: {lines:#?}");
+}
+
+#[test]
+fn the_confirmation_prompt_is_visible_on_every_screen_height() {
+    for height in 12..=32 {
+        for lines_in_preview in [1usize, 2, 3, 50] {
+            let mut fake = Fake::new();
+            fake.preview = Ok((0..lines_in_preview).map(|i| format!("runs/r/file-{i}")).collect());
+            let lines = run_sized(&mut fake, vec![key(KeyCode::Tab), ch('c')], height);
+            assert!(has(&lines, "y to confirm"), "height {height}, {lines_in_preview} line(s): {lines:#?}");
+        }
+    }
 }
