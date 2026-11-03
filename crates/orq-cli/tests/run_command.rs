@@ -860,3 +860,46 @@ fn publish_pushes_the_checked_out_branch_and_opens_the_review_without_a_worktree
     let first = agent.first_run().expect("the drafter ran");
     assert_eq!(first.args, agent.last_run().unwrap().args, "exactly one agent session");
 }
+
+#[test]
+fn publish_refuses_a_checkout_it_cannot_publish_and_leaves_everything_alone() {
+    // (tag, how to prepare the repo, what the refusal must say)
+    let cases: [(&str, fn(&Path), &str); 4] = [
+        ("pubtarget", |_| {}, "is the target branch"),
+        (
+            "pubdetached",
+            |r| {
+                git(r, &["checkout", "--quiet", "--detach"]);
+            },
+            "detached"),
+        (
+            "pubdirty",
+            |r| {
+                git(r, &["checkout", "--quiet", "-b", "topic"]);
+                std::fs::write(r.join("topic.txt"), "work\n").unwrap();
+                git(r, &["add", "topic.txt"]);
+                git(r, &["-c", "user.name=Topic", "-c", "user.email=topic@example.invalid", "commit", "--quiet", "-m", "topic"]);
+                std::fs::write(r.join("topic.txt"), "changed\n").unwrap();
+            },
+            "uncommitted changes",
+        ),
+        (
+            "pubempty",
+            |r| {
+                git(r, &["checkout", "--quiet", "-b", "topic"]);
+            },
+            "no commits beyond"),
+    ];
+    for (tag, prepare, message) in cases {
+        let w = world(tag);
+        prepare(w.repo.root());
+        let agent = FakeAgent::builder().build();
+        let provider = github();
+        let output = run_with(&w, &agent, &provider, &["--publish", "--no-ci-check"]);
+        assert!(!output.status.success(), "{tag}: {}", String::from_utf8_lossy(&output.stdout));
+        assert!(stderr(&output).contains(message), "{tag}: {}", stderr(&output));
+        assert!(provider.calls().is_empty(), "{tag}: no review was asked for");
+        assert!(agent.last_run().is_none(), "{tag}: no agent session ran");
+        assert!(!w.repo.root().join(".claude/worktrees").exists(), "{tag}: no worktree");
+    }
+}
