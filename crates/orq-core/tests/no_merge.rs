@@ -152,3 +152,21 @@ fn ordinary_text_that_mentions_automerge_is_not_a_graphql_mutation() {
     let mutation = args(&["api", "graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"]);
     assert!(forbidden_provider_call("gh", &mutation).is_some());
 }
+
+#[test]
+fn implicit_matching_and_wildcard_pushes_are_forbidden_because_their_destinations_are_unknown() {
+    let protected = args(&["main"]);
+    for push in [
+        vec!["push", "origin"],
+        vec!["push"],
+        vec!["push", "origin", ":"],
+        vec!["push", "origin", "refs/heads/*:refs/heads/*"],
+        vec!["push", "origin", "HEAD"],
+        vec!["push", "origin", "feat:"],
+        vec!["push", "--tags", "origin"],
+    ] {
+        assert!(forbidden_git_push(&args(&push), &protected).is_some(), "{push:?} must be forbidden");
+    }
+    // An explicit single-branch destination stays allowed.
+    assert_eq!(forbidden_git_push(&args(&["push", "--no-follow-tags", "--", "origin", "abc123:refs/heads/fix--a"]), &protected), None);
+}

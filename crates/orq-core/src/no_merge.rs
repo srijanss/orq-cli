@@ -84,13 +84,22 @@ pub fn forbidden_git_push(args: &[String], protected: &[String]) -> Option<&'sta
     }
     let mut positionals = args[1..].iter().filter(|arg| !arg.starts_with('-'));
     let _remote = positionals.next();
+    let mut explicit = 0;
     for refspec in positionals {
         let refspec = refspec.trim_start_matches('+');
+        // The destination of these depends on configuration or expansion, so it cannot be checked.
+        if refspec == "HEAD" || refspec.contains('*') || refspec.ends_with(':') {
+            return Some("a push whose destination branches cannot be determined");
+        }
+        explicit += 1;
         let destination = refspec.rsplit(':').next().unwrap_or(refspec);
         let branch = destination.strip_prefix("refs/heads/").unwrap_or(destination);
         if protected.iter().any(|name| name == branch) {
             return Some("a push to a protected target branch");
         }
+    }
+    if explicit == 0 {
+        return Some("a push without an explicit branch to update");
     }
     None
 }
