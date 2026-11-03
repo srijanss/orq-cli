@@ -97,7 +97,7 @@ fn run_prune(dry_run: bool) -> Result<(), String> {
     let now = now();
     let mut the_plan = plan(&policy, &facts, &items, now);
     // A run whose review metadata is already gone has nothing left to forget.
-    the_plan.metadata.retain(|run_id| store.reviews_for_run(run_id).map_or(true, |rows| !rows.is_empty()));
+    the_plan.metadata.retain(|run_id| store.has_run_metadata(run_id).unwrap_or(true));
     for line in the_plan.render() {
         println!("{line}");
     }

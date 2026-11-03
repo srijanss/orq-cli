@@ -307,6 +307,17 @@ impl Store {
         tx.commit().map_err(db)
     }
 
+    /// Whether anything `remove_run_metadata` would forget is still stored for the run.
+    pub fn has_run_metadata(&self, run_id: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reviews WHERE run_id = ?1) OR EXISTS (SELECT 1 FROM review_lifecycles WHERE run_id = ?1)",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(db)
+    }
+
     /// Exempts a run from pruning until it is unpinned. Pinning twice is a no-op.
     pub fn pin(&self, run_id: &str) -> Result<()> {
         check_run_id(run_id)?;
