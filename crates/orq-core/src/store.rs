@@ -83,6 +83,7 @@ impl Store {
     pub fn record_review(&self, record: &ReviewRecord) -> Result<()> {
         check_run_id(&record.run_id)?;
         check_head_sha(&record.head_sha)?;
+        check_report_path(&record.run_id, &record.report_path)?;
         let recorded_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         self.conn
             .execute(
@@ -133,6 +134,22 @@ impl Store {
             })
             .map_err(db)?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db)
+    }
+}
+
+/// A report path is relative to the data root and must sit under its own
+/// run's directory, so joining it to the root can never leave the root.
+fn check_report_path(run_id: &str, report_path: &str) -> Result<()> {
+    use std::path::Component;
+    let mut parts = Path::new(report_path).components();
+    let inside = matches!(parts.next(), Some(Component::Normal(first)) if first == "runs")
+        && matches!(parts.next(), Some(Component::Normal(second)) if second == run_id)
+        && parts.clone().next().is_some()
+        && parts.all(|part| matches!(part, Component::Normal(_)));
+    if inside {
+        Ok(())
+    } else {
+        Err(Error::new(ErrorKind::InvalidInput, format!("report path {report_path:?} is not inside runs/{run_id}/")))
     }
 }
 

@@ -76,6 +76,17 @@ fn identifiers_that_could_name_a_path_outside_the_run_are_refused() {
 }
 
 #[test]
+fn a_report_path_must_stay_inside_its_own_run_directory() {
+    let store = Store::open(&scratch("paths").join("orq.db")).unwrap();
+    for path in ["/etc/passwd", "../outside.json", "runs/r1/../../x.json", "runs/other/review/x/review.json", "elsewhere/review.json", ""] {
+        let bad = ReviewRecord { report_path: path.into(), ..record("r1", "alpha", "login", SHA_A) };
+        assert!(store.record_review(&bad).is_err(), "{path:?} must be refused");
+    }
+    assert!(store.reviews_for_run("r1").unwrap().is_empty());
+    store.record_review(&record("r1", "alpha", "login", SHA_A)).unwrap();
+}
+
+#[test]
 fn concurrent_writers_lose_no_rows() {
     let db = scratch("concurrent").join("orq.db");
     Store::open(&db).unwrap();
