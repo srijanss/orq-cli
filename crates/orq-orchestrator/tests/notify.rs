@@ -62,3 +62,16 @@ fn a_command_that_fails_or_hangs_or_is_missing_is_reported_not_waited_on() {
     let missing = vec!["orq-no-such-notifier".to_string()];
     assert!(send_notification(&missing, &d, "m", Duration::from_secs(10)).is_err());
 }
+
+#[test]
+fn the_notifier_keeps_the_desktop_session_and_proxy_variables_but_not_other_secrets() {
+    let d = dir("env");
+    let out = d.join("env.txt");
+    std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/orq-test-bus");
+    std::env::set_var("ORQ_TEST_UNRELATED_SECRET", "hunter2");
+    let argv = vec!["sh".to_string(), "-c".to_string(), format!("printf '%s|%s' \"$DBUS_SESSION_BUS_ADDRESS\" \"$ORQ_TEST_UNRELATED_SECRET\" > {}", out.display())];
+
+    send_notification(&argv, &d, "m", Duration::from_secs(10)).unwrap();
+
+    assert_eq!(fs::read_to_string(&out).unwrap(), "unix:path=/run/orq-test-bus|");
+}

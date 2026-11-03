@@ -34,8 +34,30 @@ pub fn send_notification(argv: &[String], cwd: &Path, message: &str, timeout: Du
     let session = DraftSession {
         program: program.clone(),
         args: args.to_vec(),
-        env: vec![("NOTIFY_MESSAGE".to_string(), message.to_string())],
+        env: notifier_env(message),
         cwd: cwd.to_path_buf(),
     };
     run_drafter(&session, timeout).map(|_| ())
+}
+
+/// What a desktop or webhook notifier needs to reach its session or network, and nothing else.
+const KEPT_VARIABLES: [&str; 12] = [
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XDG_CURRENT_DESKTOP",
+    "LANG",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+];
+
+fn notifier_env(message: &str) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = KEPT_VARIABLES.iter().filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v))).collect();
+    env.push(("NOTIFY_MESSAGE".to_string(), message.to_string()));
+    env
 }
