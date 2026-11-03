@@ -152,3 +152,30 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
         assert!(planned.worktree.exists(), "{tag}: nothing was touched");
     }
 }
+
+#[test]
+fn a_plan_gone_stale_removes_nothing() {
+    // Work that lands after the plan was made: an ignored scratch file, an uncommitted edit, a new commit.
+    let changes: [(&str, fn(&Planned)); 3] = [
+        ("untracked", |p| fs::write(p.worktree.join("late.txt"), "x\n").unwrap()),
+        ("commit", |p| {
+            fs::write(p.worktree.join("late.txt"), "x\n").unwrap();
+            git(&p.worktree, &["add", "."]);
+            git(&p.worktree, &["commit", "-q", "-m", "late"]);
+        }),
+        ("ignored", |p| {
+            fs::write(p.worktree.join(".gitignore"), "*.log\n").unwrap();
+            git(&p.worktree, &["add", ".gitignore"]);
+            git(&p.worktree, &["commit", "-q", "-m", "ignore"]);
+            fs::write(p.worktree.join("keep.log"), "x\n").unwrap();
+        }),
+    ];
+    for (tag, change) in changes {
+        let planned = scenario(&format!("stale-{tag}"), GOOD);
+        assert_eq!(planned.verdict, ReapVerdict::Reap);
+        change(&planned);
+        assert!(reap_run(&planned.repo, &planned.item).is_err(), "{tag}: a stale plan must be refused");
+        assert!(planned.worktree.exists(), "{tag}: the worktree stays");
+        assert!(!git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(), "{tag}: the branch stays");
+    }
+}

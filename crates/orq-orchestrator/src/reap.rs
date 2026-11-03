@@ -103,14 +103,22 @@ fn judge(
     if observed.observation.head_sha != *tip {
         return Ok(keep("the branch has commits that were not pushed to the review"));
     }
-    let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
-    if !status.success {
-        return Ok(keep("the worktree state could not be read"));
-    }
-    if !status.stdout.trim().is_empty() {
-        return Ok(keep("the worktree has uncommitted changes"));
+    if let Some(problem) = uncommitted_problem(&record.worktree)? {
+        return Ok(ReapVerdict::Keep(problem));
     }
     Ok(ReapVerdict::Reap)
+}
+
+/// Anything uncommitted, ignored files included, is work that removal would lose.
+fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
+    let status = git_raw(worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
+    if !status.success {
+        return Ok(Some("the worktree state could not be read".to_string()));
+    }
+    if !status.stdout.trim().is_empty() {
+        return Ok(Some("the worktree has uncommitted changes".to_string()));
+    }
+    Ok(None)
 }
 
 /// Why the worktree is not, verifiably, the checkout of `branch` at `tip` of this repository.
@@ -145,6 +153,14 @@ fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
 pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     if item.verdict != ReapVerdict::Reap || item.tip.is_empty() {
         return Ok(());
+    }
+    // The plan may be minutes old: look again, right before anything is removed.
+    let current = git_raw(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}^{{commit}}", item.branch)])?;
+    if !current.success || current.stdout.trim() != item.tip {
+        return Err(StoreError::Corrupt("the branch moved since the plan was made".to_string()));
+    }
+    if let Some(problem) = worktree_problem(repo, &item.worktree, &item.branch, &item.tip)?.or(uncommitted_problem(&item.worktree)?) {
+        return Err(StoreError::Corrupt(problem));
     }
     let worktree = item.worktree.to_string_lossy().into_owned();
     let removed = git_raw(repo, &["worktree", "remove", "--", &worktree])?;
