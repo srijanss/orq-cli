@@ -123,3 +123,18 @@ fn the_terminal_ui_exposes_no_approve_or_merge_control() {
     }
     assert!(seen > 0, "no UI source files were scanned");
 }
+
+#[test]
+fn approval_and_auto_merge_flags_are_caught_in_short_and_assigned_forms() {
+    for call in [
+        ("gh", vec!["pr", "review", "12", "-a"]),
+        ("gh", vec!["pr", "review", "-a", "12"]),
+        ("gh", vec!["pr", "review", "12", "--approve=true"]),
+        ("gh", vec!["pr", "edit", "12", "--enable-auto-merge=true"]),
+        ("gh", vec!["pr", "view", "12", "--admin=true"]),
+    ] {
+        assert!(forbidden_provider_call(call.0, &args(&call.1)).is_some(), "{} {:?} must be forbidden", call.0, call.1);
+    }
+    // Commenting through the same subcommand stays allowed.
+    assert_eq!(forbidden_provider_call("gh", &args(&["pr", "review", "12", "--comment", "-b", "looks fine"])), None);
+}

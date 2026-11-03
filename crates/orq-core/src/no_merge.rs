@@ -24,18 +24,24 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
         return None;
     }
     let mut positionals = Vec::new();
+    let mut short_flags = Vec::new();
     let mut skip_value = false;
     for arg in args {
         if std::mem::take(&mut skip_value) {
             continue;
         }
-        if FORBIDDEN_FLAGS.contains(&arg.as_str()) {
+        // `--flag=value` is the same flag as `--flag`.
+        let name = arg.split('=').next().unwrap_or(arg);
+        if FORBIDDEN_FLAGS.contains(&name) {
             return Some("a provider flag that approves or automates a merge");
         }
         if arg.starts_with("--method=") || arg.starts_with("--repo=") {
             continue;
         }
         if arg.starts_with('-') {
+            if !arg.starts_with("--") {
+                short_flags.push(arg.as_str());
+            }
             skip_value = VALUE_FLAGS.contains(&arg.as_str());
             continue;
         }
@@ -43,6 +49,10 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
     }
     if positionals.get(1).is_some_and(|sub| FORBIDDEN_SUBCOMMANDS.contains(sub)) && matches!(positionals[0], "pr" | "mr") {
         return Some("a provider subcommand that merges or approves");
+    }
+    // `-a` is the short form of `gh pr review --approve`, alone or clustered (`-ab`).
+    if positionals.starts_with(&["pr", "review"]) && short_flags.iter().any(|flag| flag.contains('a')) {
+        return Some("a provider flag that approves or automates a merge");
     }
     if positionals.first() == Some(&"api") {
         for arg in &positionals[1..] {
