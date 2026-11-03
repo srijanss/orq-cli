@@ -46,6 +46,16 @@ fn unsafe_run_ids_and_head_shas_write_nothing() {
 }
 
 #[test]
+fn a_report_that_cannot_be_written_is_not_indexed() {
+    let root = scratch("write-fails");
+    let store = Store::open(&root.join("orq.db")).unwrap();
+    // The report's destination is already a directory, so the write must fail.
+    std::fs::create_dir_all(root.join(format!("runs/r1/review/{SHA}/review.json"))).unwrap();
+    assert!(store.save_review(&root, "r1", "alpha", "login", SHA, b"{}").is_err());
+    assert!(store.reviews_for_run("r1").unwrap().is_empty(), "no index row may point at a report that was not written");
+}
+
+#[test]
 fn run_files_are_written_only_under_their_fixed_names() {
     let root = scratch("files");
     for (file, name) in [

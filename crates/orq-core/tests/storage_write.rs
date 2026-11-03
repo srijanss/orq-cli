@@ -41,6 +41,17 @@ fn every_directory_created_for_a_deeply_nested_write_is_owner_only_and_reachable
 }
 
 #[test]
+fn a_failed_rename_reports_the_error_and_leaves_no_temporary_file() {
+    let root = scratch("rename-fails");
+    // The destination is an existing directory, so the final rename cannot succeed.
+    std::fs::create_dir_all(root.join("out/report.json")).unwrap();
+    assert!(write_atomic(&root, Path::new("out/report.json"), b"x").is_err());
+    assert!(root.join("out/report.json").is_dir(), "the existing directory must be intact");
+    let names: Vec<_> = std::fs::read_dir(root.join("out")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("report.json")], "the temporary file must be cleaned up");
+}
+
+#[test]
 fn paths_that_escape_the_root_are_refused() {
     let root = scratch("escape");
     for bad in ["../outside.txt", "/abs/outside.txt", "a/../../outside.txt", "", "."] {
