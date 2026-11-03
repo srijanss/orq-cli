@@ -211,11 +211,18 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     } else {
         None
     };
-    let naming = orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
-        git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
-            || repo.join(&n.worktree_dir).exists()
-    })
-    .map_err(|e| other(e.to_string()))?;
+    // A resumed or published run names nothing new, so it must not need a free name either.
+    let naming = if published.is_some() || resumed.is_some() {
+        None
+    } else {
+        Some(
+            orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
+                git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
+                    || repo.join(&n.worktree_dir).exists()
+            })
+            .map_err(|e| other(e.to_string()))?,
+        )
+    };
 
     let url = Command::new("git")
         .arg("-C")
@@ -247,12 +254,12 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         branch: match (&published, &resumed) {
             (Some(branch), _) => branch.clone(),
             (None, Some(r)) => r.from.branch.clone(),
-            (None, None) => naming.branch.clone(),
+            (None, None) => naming.as_ref().expect("a new run is named").branch.clone(),
         },
         worktree: match (&published, &resumed) {
             (Some(_), _) => repo.clone(),
             (None, Some(r)) => r.from.worktree.clone(),
-            (None, None) => repo.join(&naming.worktree_dir),
+            (None, None) => repo.join(&naming.as_ref().expect("a new run is named").worktree_dir),
         },
         repository,
         profiles: [
@@ -274,7 +281,10 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         }
     }
     let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
-    let created = if published.is_some() || resumed.is_some() { Ok(()) } else { orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()) };
+    let created = match &naming {
+        Some(naming) => orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()),
+        None => Ok(()),
+    };
     if let Err(err) = created {
         let released = finish(&store);
         let mut message = format!("cannot create the worktree: {err:?}");

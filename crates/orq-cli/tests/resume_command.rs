@@ -165,3 +165,20 @@ fn a_run_resumed_twice_still_remembers_that_the_agent_finished() {
     let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
     assert!(!pushed.contains("again.txt"), "no agent session was started on either resume: {pushed}");
 }
+
+#[test]
+fn resuming_does_not_need_a_free_branch_name() {
+    let w = world("names");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    // Every name a new run could take is used up; the stopped run's own branch is the one reused.
+    for n in 2..=100 {
+        git(w.repo.root(), &["branch", &format!("fix--COM-01-{n}"), "main"]);
+    }
+
+    set_gate(&w, "true");
+    let second = run_with(&w, &agent, &["--resume"]);
+
+    assert_eq!(second.status.code(), Some(0), "{}", String::from_utf8_lossy(&second.stderr));
+}
