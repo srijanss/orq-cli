@@ -348,6 +348,7 @@ pub fn render_chrome_tabs(frame: &mut Frame, area: Rect, active: Tab) -> Rect {
             Tab::Features => (FEATURES_TAB, Color::Blue),
             Tab::Settings => (SETTINGS_TAB, Color::Blue),
             Tab::Runs => (RUNS_TAB, Color::Blue),
+            Tab::Reviews => (REVIEWS_TAB, Color::Blue),
         };
         let colour = if tab == active { colour } else { Color::DarkGray };
         let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(colour));
@@ -358,6 +359,7 @@ pub fn render_chrome_tabs(frame: &mut Frame, area: Rect, active: Tab) -> Rect {
         Tab::Features => (FEATURES_TAB, LEDGER_FILE),
         Tab::Settings => (SETTINGS_TAB, SETTINGS_FILE),
         Tab::Runs => (RUNS_TAB, RUNS_FILE),
+        Tab::Reviews => (REVIEWS_TAB, REVIEWS_FILE),
     };
     let file = truncate_left(file, width.saturating_sub(name.len() + 1));
     let gap = width.saturating_sub(name.len() + display_width(&file));
@@ -1478,6 +1480,17 @@ pub struct RunRow {
     pub has_review_link: bool,
 }
 
+/// One review as the Reviews tab lists it. Every field is text from a stored report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRow {
+    pub run_id: String,
+    pub feature: String,
+    pub project: String,
+    pub status: String,
+    /// The highest risk level in the report, or "-" when none is recorded.
+    pub risk: String,
+}
+
 /// What asking Herdr to show a run's pane came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -1497,6 +1510,11 @@ pub trait BrowserBackend {
     /// The project's runs for the Runs tab; the reason is shown when they cannot be read.
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         Err("runs are not available".into())
+    }
+
+    /// The review inbox for the Reviews tab; the reason is shown when it cannot be read.
+    fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
+        Err("reviews are not available".into())
     }
 
     /// How many runs the last `load_runs` left out because their files could not be read.
@@ -1828,6 +1846,77 @@ pub enum Tab {
     Features,
     Settings,
     Runs,
+    Reviews,
+}
+
+const REVIEWS_TAB: &str = "Reviews";
+const REVIEWS_FILE: &str = "reviews";
+const REVIEWS_HINT: &str = " ↑↓ move · r reload · Esc back ";
+
+/// What the Reviews tab holds: the rows last loaded, or why there are none.
+struct ReviewsState {
+    rows: Result<Vec<ReviewRow>, String>,
+    selected: usize,
+}
+
+impl ReviewsState {
+    fn len(&self) -> usize {
+        self.rows.as_ref().map_or(0, Vec::len)
+    }
+
+    fn move_by(&mut self, down: bool) {
+        self.selected = if down {
+            (self.selected + 1).min(self.len().saturating_sub(1))
+        } else {
+            self.selected.saturating_sub(1)
+        };
+    }
+
+    fn visible(body: Rect) -> usize {
+        usize::from(body.height.saturating_sub(1))
+    }
+
+    fn offset(&self, visible: usize) -> usize {
+        (self.selected + 1).saturating_sub(visible)
+    }
+
+    fn click(&mut self, body: Rect, press: Position) {
+        if !body.contains(press) {
+            return;
+        }
+        let row = usize::from(press.y - body.y);
+        let visible = Self::visible(body);
+        let index = self.offset(visible) + row;
+        if row < visible && index < self.len() {
+            self.selected = index;
+        }
+    }
+}
+
+fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState) {
+    let width = usize::from(body.width);
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut put = |row: u16, line: Line<'static>| {
+        if row < body.height {
+            frame.render_widget(Paragraph::new(line), Rect::new(body.x, body.y + row, body.width, 1));
+        }
+    };
+    match &state.rows {
+        Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
+        Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No reviews yet", dim))),
+        Ok(rows) => {
+            let visible = ReviewsState::visible(body);
+            let offset = state.offset(visible);
+            for (i, review) in rows.iter().enumerate().skip(offset).take(visible) {
+                let text = format!("{}  {}  {}  {}", review.feature, review.project, review.status, review.risk);
+                let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+                put(u16::try_from(i - offset).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+            }
+        }
+    }
+    if body.height > 0 {
+        put(body.height - 1, Line::from(Span::styled(truncate_right(REVIEWS_HINT, width), dim)));
+    }
 }
 
 const RUNS_TAB: &str = "Runs";
@@ -2089,6 +2178,13 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
         let runs_width = width(RUNS_TAB);
         if next + runs_width <= area.right() {
             rects.push((Tab::Runs, Rect::new(next, area.y + 1, runs_width, 3)));
+            next += runs_width;
+            let reviews_width = width(REVIEWS_TAB);
+            // The Add Feature button keeps its place: Reviews only shows when both fit.
+            let add_width = u16::try_from(ADD_LABEL.len() + 1).unwrap_or(u16::MAX);
+            if next + reviews_width + add_width < area.right() {
+                rects.push((Tab::Reviews, Rect::new(next, area.y + 1, reviews_width, 3)));
+            }
         }
     }
     rects
@@ -2283,6 +2379,7 @@ struct Browser {
     tab: Tab,
     settings: SettingsState,
     runs: RunsState,
+    reviews: ReviewsState,
     /// The open Add Feature form; it covers the Features body.
     form: Option<FormState>,
     /// The open generation preview; it covers the Features body.
@@ -2720,6 +2817,11 @@ impl Browser {
         self.tab = Tab::Runs;
     }
 
+    fn open_reviews(&mut self, backend: &mut dyn BrowserBackend) {
+        self.reviews = ReviewsState { rows: backend.load_reviews(), selected: 0 };
+        self.tab = Tab::Reviews;
+    }
+
     fn open_launch(&mut self, backend: &mut dyn BrowserBackend) {
         if self.launching.is_some() {
             self.notice = Some("A launch is still running; wait for it to finish".to_string());
@@ -2762,6 +2864,10 @@ impl Browser {
         let area = render_chrome_tabs(frame, full, self.tab);
         if self.tab == Tab::Runs {
             render_runs(frame, area, &self.runs, self.notice.as_deref());
+            return;
+        }
+        if self.tab == Tab::Reviews {
+            render_reviews(frame, area, &self.reviews);
             return;
         }
         if self.tab == Tab::Settings {
@@ -2916,6 +3022,7 @@ where
             status: None,
         },
         runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
+        reviews: ReviewsState { rows: Ok(Vec::new()), selected: 0 },
         form: None,
         preview: None,
         picker: None,
@@ -3043,6 +3150,27 @@ where
                         KeyCode::Char('r') => browser.open_runs(backend),
                         _ => {}
                     }
+                    dirty = true;
+                    continue;
+                }
+                if browser.tab == Tab::Reviews {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
+                        KeyCode::Down | KeyCode::Char('j') => browser.reviews.move_by(true),
+                        KeyCode::Up | KeyCode::Char('k') => browser.reviews.move_by(false),
+                        KeyCode::Char('r') => browser.open_reviews(backend),
+                        _ => {}
+                    }
+                    dirty = true;
+                    continue;
+                }
+                if key.code == KeyCode::Char('V')
+                    && !browser.search.active
+                    && browser.detail.is_none()
+                    && browser.dropdown.is_none()
+                    && browser.error.is_none()
+                {
+                    browser.open_reviews(backend);
                     dirty = true;
                     continue;
                 }
@@ -3274,6 +3402,11 @@ where
                             dirty = true;
                             continue;
                         }
+                        Some(Tab::Reviews) if browser.tab != Tab::Reviews => {
+                            browser.open_reviews(backend);
+                            dirty = true;
+                            continue;
+                        }
                         Some(Tab::Features) if browser.tab != Tab::Features => {
                             browser.tab = Tab::Features;
                             dirty = true;
@@ -3285,6 +3418,13 @@ where
                 if browser.tab == Tab::Settings {
                     browser.settings.handle_mouse(chrome_body(full), mouse);
                     dirty = true;
+                    continue;
+                }
+                if browser.tab == Tab::Reviews {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        browser.reviews.click(chrome_body(full), Position::new(mouse.column, mouse.row));
+                        dirty = true;
+                    }
                     continue;
                 }
                 if browser.tab == Tab::Runs {
