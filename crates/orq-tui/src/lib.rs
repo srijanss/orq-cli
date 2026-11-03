@@ -1489,6 +1489,8 @@ pub struct ReviewRow {
     pub status: String,
     /// The highest risk level in the report, or "-" when none is recorded.
     pub risk: String,
+    /// Whether the report no longer matches the reviewed code.
+    pub stale: bool,
 }
 
 /// The stored report of one review, as text lines per section of the detail view.
@@ -1866,13 +1868,35 @@ pub enum Tab {
 
 const REVIEWS_TAB: &str = "Reviews";
 const REVIEWS_FILE: &str = "reviews";
-const REVIEWS_HINT: &str = " ↑↓ move · r reload · Esc back ";
+const REVIEWS_HINT: &str = " ↑↓ move · Enter open · a scope · s status · x risk · / search · u open link · y copy link · Esc ";
 
 /// What the Reviews tab holds: the rows last loaded, or why there are none.
 struct ReviewsState {
     rows: Result<Vec<ReviewRow>, String>,
+    /// Index into the rows that pass the filters.
     selected: usize,
     detail: Option<ReviewDetailView>,
+    /// The project the popup was opened for; its reviews show unless all projects are chosen.
+    project: String,
+    all_projects: bool,
+    status: Option<String>,
+    risk: Option<String>,
+    query: String,
+    typing: bool,
+}
+
+/// Orders risk levels from most to least severe; unknown levels sort last, by name.
+fn risk_rank(level: &str) -> (usize, String) {
+    let rank = ["critical", "high", "medium", "low"].iter().position(|l| *l == level).unwrap_or(4);
+    (rank, level.to_string())
+}
+
+/// The value after `current` in `options`, wrapping to none after the last.
+fn next_option(options: &[String], current: &Option<String>) -> Option<String> {
+    match current {
+        None => options.first().cloned(),
+        Some(c) => options.iter().position(|o| o == c).and_then(|i| options.get(i + 1)).cloned(),
+    }
 }
 
 const REVIEW_SECTIONS: [&str; 5] = ["Summary", "Risks", "Files", "Tests", "Review Rounds"];
@@ -1929,8 +1953,103 @@ impl ReviewDetailView {
 }
 
 impl ReviewsState {
+    fn new(project: String) -> Self {
+        ReviewsState {
+            rows: Ok(Vec::new()),
+            selected: 0,
+            detail: None,
+            project,
+            all_projects: false,
+            status: None,
+            risk: None,
+            query: String::new(),
+            typing: false,
+        }
+    }
+
+    /// Replaces the rows; the filters stay, the selection and open detail do not.
+    fn reload(&mut self, rows: Result<Vec<ReviewRow>, String>) {
+        self.rows = rows;
+        self.selected = 0;
+        self.detail = None;
+    }
+
+    /// The rows in the chosen project scope, before the other filters.
+    fn in_scope(&self) -> Vec<&ReviewRow> {
+        let Ok(rows) = &self.rows else { return Vec::new() };
+        rows.iter().filter(|r| self.all_projects || r.project == self.project).collect()
+    }
+
+    /// The rows that pass every filter.
+    fn shown(&self) -> Vec<&ReviewRow> {
+        let query = self.query.to_lowercase();
+        self.in_scope()
+            .into_iter()
+            .filter(|r| self.status.as_ref().is_none_or(|s| &r.status == s))
+            .filter(|r| self.risk.as_ref().is_none_or(|l| &r.risk == l))
+            .filter(|r| query.is_empty() || r.feature.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn selected_run_id(&self) -> Option<String> {
+        self.shown().get(self.selected).map(|r| r.run_id.clone())
+    }
+
+    fn toggle_scope(&mut self) {
+        self.all_projects = !self.all_projects;
+        self.status = None;
+        self.risk = None;
+        self.selected = 0;
+    }
+
+    fn cycle_status(&mut self) {
+        let mut options: Vec<String> = self.in_scope().iter().map(|r| r.status.clone()).collect();
+        options.sort();
+        options.dedup();
+        self.status = next_option(&options, &self.status);
+        self.selected = 0;
+    }
+
+    fn cycle_risk(&mut self) {
+        let mut options: Vec<String> = self.in_scope().iter().map(|r| r.risk.clone()).collect();
+        options.sort_by_key(|l| risk_rank(l));
+        options.dedup();
+        self.risk = next_option(&options, &self.risk);
+        self.selected = 0;
+    }
+
+    /// Keys while the search text is being typed.
+    fn type_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => self.typing = false,
+            KeyCode::Esc => {
+                self.typing = false;
+                self.query.clear();
+            }
+            KeyCode::Backspace => {
+                self.query.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() && self.query.chars().count() < 100 => self.query.push(c),
+            _ => {}
+        }
+        self.selected = 0;
+    }
+
+    fn filter_line(&self) -> String {
+        let project = if self.all_projects { "All projects" } else { self.project.as_str() };
+        let mut line = format!(
+            " Project: {project} · Status: {} · Risk: {}",
+            self.status.as_deref().unwrap_or("any"),
+            self.risk.as_deref().unwrap_or("any")
+        );
+        if self.typing || !self.query.is_empty() {
+            line.push_str(&format!(" · Search: {}{}", self.query, if self.typing { "_" } else { "" }));
+        }
+        line
+    }
+
     fn len(&self) -> usize {
-        self.rows.as_ref().map_or(0, Vec::len)
+        self.shown().len()
     }
 
     fn move_by(&mut self, down: bool) {
@@ -1941,8 +2060,9 @@ impl ReviewsState {
         };
     }
 
+    /// Rows for reviews: the first row holds the filters, the last the hint.
     fn visible(body: Rect) -> usize {
-        usize::from(body.height.saturating_sub(1))
+        usize::from(body.height.saturating_sub(2))
     }
 
     fn offset(&self, visible: usize) -> usize {
@@ -1963,14 +2083,15 @@ impl ReviewsState {
             return;
         }
         let visible = Self::visible(body);
-        let index = self.offset(visible) + row;
-        if row < visible && index < self.len() {
+        let Some(list_row) = row.checked_sub(1) else { return };
+        let index = self.offset(visible) + list_row;
+        if list_row < visible && index < self.len() {
             self.selected = index;
         }
     }
 }
 
-fn render_review_detail(frame: &mut Frame, body: Rect, view: &ReviewDetailView) {
+fn render_review_detail(frame: &mut Frame, body: Rect, view: &ReviewDetailView, notice: Option<&str>) {
     let width = usize::from(body.width);
     let dim = Style::new().fg(Color::DarkGray);
     let mut put = |row: u16, line: Line<'static>| {
@@ -1998,13 +2119,21 @@ fn render_review_detail(frame: &mut Frame, body: Rect, view: &ReviewDetailView) 
         }
     }
     if body.height > 0 {
-        put(body.height - 1, Line::from(Span::styled(truncate_right(REVIEW_DETAIL_HINT, width), dim)));
+        put(body.height - 1, review_footer(REVIEW_DETAIL_HINT, notice, width));
     }
 }
 
-fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState) {
+/// The last row: the outcome of the last action when there is one, else the key hint.
+fn review_footer(hint: &str, notice: Option<&str>, width: usize) -> Line<'static> {
+    match notice {
+        Some(text) => Line::from(Span::styled(truncate_right(&printable(text), width), Style::new().fg(Color::Yellow))),
+        None => Line::from(Span::styled(truncate_right(hint, width), Style::new().fg(Color::DarkGray))),
+    }
+}
+
+fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: Option<&str>) {
     if let Some(view) = &state.detail {
-        render_review_detail(frame, body, view);
+        render_review_detail(frame, body, view, notice);
         return;
     }
     let width = usize::from(body.width);
@@ -2017,18 +2146,24 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState) {
     match &state.rows {
         Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
         Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No reviews yet", dim))),
-        Ok(rows) => {
+        Ok(_) => {
+            put(0, Line::from(Span::styled(truncate_right(&printable(&state.filter_line()), width), dim)));
+            let shown = state.shown();
+            if shown.is_empty() {
+                put(1, Line::from(Span::styled("No reviews match these filters (a: all projects, s/x/Esc: clear)", dim)));
+            }
             let visible = ReviewsState::visible(body);
             let offset = state.offset(visible);
-            for (i, review) in rows.iter().enumerate().skip(offset).take(visible) {
-                let text = format!("{}  {}  {}  {}", review.feature, review.project, review.status, review.risk);
+            for (i, review) in shown.iter().enumerate().skip(offset).take(visible) {
+                let stale = if review.stale { "  stale" } else { "" };
+                let text = format!("{}  {}  {}{}  {}", review.feature, review.project, review.status, stale, review.risk);
                 let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-                put(u16::try_from(i - offset).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+                put(u16::try_from(i - offset + 1).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
             }
         }
     }
     if body.height > 0 {
-        put(body.height - 1, Line::from(Span::styled(truncate_right(REVIEWS_HINT, width), dim)));
+        put(body.height - 1, review_footer(REVIEWS_HINT, notice, width));
     }
 }
 
@@ -2931,14 +3066,21 @@ impl Browser {
     }
 
     fn open_selected_review(&mut self, backend: &mut dyn BrowserBackend) {
-        let Ok(rows) = &self.reviews.rows else { return };
-        let Some(row) = rows.get(self.reviews.selected) else { return };
-        let content = backend.load_review_detail(&row.run_id);
+        let Some(run_id) = self.reviews.selected_run_id() else { return };
+        let content = backend.load_review_detail(&run_id);
         self.reviews.detail = Some(ReviewDetailView { content, section: 0, scroll: 0 });
     }
 
+    fn review_link_of_selected_review(&mut self, backend: &mut dyn BrowserBackend, copy: bool) {
+        let Some(run_id) = self.reviews.selected_run_id() else { return };
+        let outcome = if copy { backend.copy_review_link(&run_id) } else { backend.open_review_link(&run_id) };
+        self.notice = Some(match outcome {
+            Ok(message) | Err(message) => message,
+        });
+    }
+
     fn open_reviews(&mut self, backend: &mut dyn BrowserBackend) {
-        self.reviews = ReviewsState { rows: backend.load_reviews(), selected: 0, detail: None };
+        self.reviews.reload(backend.load_reviews());
         self.tab = Tab::Reviews;
     }
 
@@ -2987,7 +3129,7 @@ impl Browser {
             return;
         }
         if self.tab == Tab::Reviews {
-            render_reviews(frame, area, &self.reviews);
+            render_reviews(frame, area, &self.reviews, self.notice.as_deref());
             return;
         }
         if self.tab == Tab::Settings {
@@ -3142,7 +3284,7 @@ where
             status: None,
         },
         runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
-        reviews: ReviewsState { rows: Ok(Vec::new()), selected: 0, detail: None },
+        reviews: ReviewsState::new(model.project_name.clone()),
         form: None,
         preview: None,
         picker: None,
@@ -3273,6 +3415,14 @@ where
                     dirty = true;
                     continue;
                 }
+                if browser.tab == Tab::Reviews && browser.reviews.typing {
+                    browser.reviews.type_key(key.code);
+                    dirty = true;
+                    continue;
+                }
+                if browser.tab == Tab::Reviews {
+                    browser.notice = None;
+                }
                 if browser.tab == Tab::Reviews && browser.reviews.detail.is_some() {
                     let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
                     if let Some(detail) = browser.reviews.detail.as_mut() {
@@ -3288,13 +3438,28 @@ where
                             _ => {}
                         }
                     }
+                    match key.code {
+                        KeyCode::Char('u') => browser.review_link_of_selected_review(backend, false),
+                        KeyCode::Char('y') => browser.review_link_of_selected_review(backend, true),
+                        _ => {}
+                    }
                     dirty = true;
                     continue;
                 }
                 if browser.tab == Tab::Reviews {
                     match key.code {
                         KeyCode::Enter => browser.open_selected_review(backend),
+                        KeyCode::Esc if !browser.reviews.query.is_empty() => {
+                            browser.reviews.query.clear();
+                            browser.reviews.selected = 0;
+                        }
                         KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
+                        KeyCode::Char('a') => browser.reviews.toggle_scope(),
+                        KeyCode::Char('s') => browser.reviews.cycle_status(),
+                        KeyCode::Char('x') => browser.reviews.cycle_risk(),
+                        KeyCode::Char('/') => browser.reviews.typing = true,
+                        KeyCode::Char('u') => browser.review_link_of_selected_review(backend, false),
+                        KeyCode::Char('y') => browser.review_link_of_selected_review(backend, true),
                         KeyCode::Down | KeyCode::Char('j') => browser.reviews.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.reviews.move_by(false),
                         KeyCode::Char('r') => browser.open_reviews(backend),

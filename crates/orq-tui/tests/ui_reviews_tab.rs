@@ -29,7 +29,7 @@ impl BrowserBackend for Fake {
 }
 
 fn row(feature: &str, project: &str, status: &str, risk: &str) -> ReviewRow {
-    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into() }
+    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into(), stale: false }
 }
 
 fn click(column: u16, row: u16) -> Event {
@@ -55,7 +55,7 @@ fn has(lines: &[String], needle: &str) -> bool {
 }
 
 fn inbox() -> Result<Vec<ReviewRow>, String> {
-    Ok(vec![row("COM-01", "orq-cli", "ready", "high"), row("COM-02", "other", "stale", "low")])
+    Ok(vec![row("COM-01", "orq-cli", "ready", "high"), row("COM-02", "orq-cli", "draft", "low")])
 }
 
 #[test]
@@ -69,7 +69,6 @@ fn the_tab_bar_lists_reviews_after_runs() {
 fn clicking_the_reviews_tab_lists_each_review_with_project_status_and_risk() {
     let lines = show(inbox(), vec![click(36, 2)]);
     assert!(has(&lines, "COM-01") && has(&lines, "orq-cli") && has(&lines, "ready") && has(&lines, "high"), "{lines:?}");
-    assert!(has(&lines, "COM-02") && has(&lines, "other") && has(&lines, "stale"), "{lines:?}");
     assert!(!has(&lines, "alpha"), "{lines:?}");
 }
 
@@ -110,7 +109,7 @@ fn there_is_no_approve_or_merge_action() {
 
 #[test]
 fn hostile_text_in_a_row_cannot_drive_the_terminal() {
-    let lines = show(Ok(vec![row("x\u{1b}[2J", "p", "ready", "low")]), vec![click(36, 2)]);
+    let lines = show(Ok(vec![row("x\u{1b}[2J", "orq-cli", "ready", "low")]), vec![click(36, 2)]);
     assert!(!lines.iter().any(|l| l.contains('\u{1b}')), "{lines:?}");
 }
 

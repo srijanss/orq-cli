@@ -26,7 +26,7 @@ impl BrowserBackend for Fake {
         PromoteOutcome::Saved
     }
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
-        Ok(vec![ReviewRow { run_id: "run-1".into(), feature: "COM-01".into(), project: "orq-cli".into(), status: "ready".into(), risk: "high".into() }])
+        Ok(vec![ReviewRow { run_id: "run-1".into(), feature: "COM-01".into(), project: "orq-cli".into(), status: "ready".into(), risk: "high".into(), stale: false }])
     }
     fn load_review_detail(&mut self, run_id: &str) -> Result<ReviewDetail, String> {
         assert_eq!(run_id, "run-1");
