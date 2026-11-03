@@ -89,12 +89,14 @@ pub fn write_atomic(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<()
     let mut dir = open(root, dir_flags, Mode::empty())?;
     for part in dirs {
         match mkdirat(&dir, *part, Mode::from_raw_mode(0o700)) {
-            // The new entry lives in `dir`; sync it so a crash cannot lose the
-            // directory (and the report inside it) after the write returned.
-            Ok(()) => fsync(&dir)?,
-            Err(Errno::EXIST) => {}
+            Ok(()) | Err(Errno::EXIST) => {}
             Err(error) => return Err(error.into()),
         }
+        // The child's entry lives in `dir`. Sync it whether this call created
+        // the child or found it: a concurrent creator may not have synced yet,
+        // and a crash must not lose the directory (and the report inside it)
+        // after this write returned.
+        fsync(&dir)?;
         dir = openat(&dir, *part, dir_flags, Mode::empty())?;
     }
     let temp = format!(".{}.{}.{}.tmp", name.to_string_lossy(), std::process::id(), TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));

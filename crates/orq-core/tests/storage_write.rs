@@ -41,6 +41,20 @@ fn every_directory_created_for_a_deeply_nested_write_is_owner_only_and_reachable
 }
 
 #[test]
+fn writers_racing_to_create_the_same_nested_directories_all_succeed() {
+    let root = scratch("race-dirs");
+    std::thread::scope(|scope| {
+        for writer in 0..8 {
+            let root = &root;
+            scope.spawn(move || {
+                write_atomic(root, Path::new(&format!("a/b/c/file{writer}.txt")), b"x").unwrap();
+            });
+        }
+    });
+    assert_eq!(std::fs::read_dir(root.join("a/b/c")).unwrap().count(), 8);
+}
+
+#[test]
 fn a_failed_rename_reports_the_error_and_leaves_no_temporary_file() {
     let root = scratch("rename-fails");
     // The destination is an existing directory, so the final rename cannot succeed.
