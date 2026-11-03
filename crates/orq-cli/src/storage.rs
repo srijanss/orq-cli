@@ -9,7 +9,7 @@ use orq_core::prune::{prune, reconcile};
 use orq_core::retention::{human_bytes, inventory, plan, RetentionPolicy};
 use orq_core::storage::{check_run_id, StorageRoots};
 use orq_core::store::Store;
-use orq_orchestrator::{collect_run_facts, RunStore};
+use orq_orchestrator::{collect_run_facts, collect_run_facts_for, RunStore};
 
 use crate::{fail, pipeline, usage_error};
 
@@ -108,7 +108,7 @@ fn run_prune(dry_run: bool) -> Result<(), String> {
         return Ok(());
     }
     // Facts are read again per run just before its files go: the world may have moved on since the preview.
-    let current = |run_id: &str| collect_run_facts(&runs, &store).ok().and_then(|mut all| all.remove(run_id));
+    let current = |run_id: &str| collect_run_facts_for(&runs, &store, run_id).ok().flatten();
     let report = prune(&roots.data, &store, &policy, &the_plan, now, &current).map_err(|e| e.to_string())?;
     if !the_plan.candidates.is_empty() || !report.metadata_removed.is_empty() {
         println!("Removed {} file(s), freed {}.", report.removed.len(), human_bytes(report.freed));

@@ -38,7 +38,7 @@ pub use push_stage::{push_run_branch, PushOutcome};
 pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
 pub use review_draft::{draft_review_description, DraftSession, DraftSource, ReviewDraft};
 pub use review_observe::{observe_review, Observed};
-pub use retention_facts::collect_run_facts;
+pub use retention_facts::{collect_run_facts, collect_run_facts_for};
 pub use review_request::{create_review_request, recorded_review, resolve_repository_url, ReviewRef, ReviewRequestOutcome};
 pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
 pub use run_status::{record_run_completed, summarize_run, RunPhase, RunSummary};

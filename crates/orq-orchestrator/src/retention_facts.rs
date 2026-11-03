@@ -15,26 +15,38 @@ pub fn collect_run_facts(runs: &RunStore, store: &Store) -> Result<BTreeMap<Stri
     let pinned: std::collections::BTreeSet<String> = store.pinned().map_err(StoreError::from)?.into_iter().collect();
     let mut all = BTreeMap::new();
     for run_id in runs.run_ids()? {
-        if check_run_id(&run_id).is_err() {
-            continue;
+        if let Some(facts) = facts_of(runs, store, &run_id, pinned.contains(&run_id))? {
+            all.insert(run_id, facts);
         }
-        let (Ok(record), Ok(events)) = (runs.load(&run_id), runs.events(&run_id)) else { continue };
-        let state = match summarize_run(&events).phase {
-            RunPhase::Running => RunState::Running,
-            RunPhase::Blocked => RunState::Blocked,
-            RunPhase::Failed => RunState::Failed,
-            RunPhase::Completed => RunState::Completed,
-        };
-        let ended_at = events.last().and_then(|event| parse_rfc3339(&event.occurred_at));
-        let worktree_in_use = std::fs::symlink_metadata(&record.worktree).is_ok();
-        // An unreadable review table is the same as not knowing: the run is kept either way.
-        let review = store.review_observation(&run_id).map_err(StoreError::from)?;
-        all.insert(
-            run_id.clone(),
-            RunFacts { pinned: pinned.contains(&run_id), run_id, state, ended_at, review, worktree_in_use },
-        );
     }
     Ok(all)
+}
+
+/// The facts of one run, read without touching any other run. `None` when the id is unsafe or the run cannot be read.
+pub fn collect_run_facts_for(runs: &RunStore, store: &Store, run_id: &str) -> Result<Option<RunFacts>, StoreError> {
+    if check_run_id(run_id).is_err() {
+        return Ok(None);
+    }
+    let pinned = store.is_pinned(run_id).map_err(StoreError::from)?;
+    facts_of(runs, store, run_id, pinned)
+}
+
+fn facts_of(runs: &RunStore, store: &Store, run_id: &str, pinned: bool) -> Result<Option<RunFacts>, StoreError> {
+    if check_run_id(run_id).is_err() {
+        return Ok(None);
+    }
+    let (Ok(record), Ok(events)) = (runs.load(run_id), runs.events(run_id)) else { return Ok(None) };
+    let state = match summarize_run(&events).phase {
+        RunPhase::Running => RunState::Running,
+        RunPhase::Blocked => RunState::Blocked,
+        RunPhase::Failed => RunState::Failed,
+        RunPhase::Completed => RunState::Completed,
+    };
+    let ended_at = events.last().and_then(|event| parse_rfc3339(&event.occurred_at));
+    let worktree_in_use = std::fs::symlink_metadata(&record.worktree).is_ok();
+    // An unreadable review table is the same as not knowing: the run is kept either way.
+    let review = store.review_observation(run_id).map_err(StoreError::from)?;
+    Ok(Some(RunFacts { pinned, run_id: run_id.to_string(), state, ended_at, review, worktree_in_use }))
 }
 
 /// Unix seconds of a `YYYY-MM-DDTHH:MM:SSZ` timestamp, the form events are written in.
