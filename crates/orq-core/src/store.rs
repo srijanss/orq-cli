@@ -72,6 +72,23 @@ impl Store {
         Ok(store)
     }
 
+    /// Opens an existing database for reading only: nothing is created,
+    /// tightened, migrated or switched to WAL. A database that is not at the
+    /// schema this Orq understands is refused.
+    pub fn open_read_only(path: &Path) -> Result<Store> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(db)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(db)?;
+        let store = Store { conn };
+        let version = store.schema_version()?;
+        if version != Self::LATEST_VERSION {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("orq.db has schema version {version}, not the {} this Orq reads; run Orq once to upgrade it", Self::LATEST_VERSION),
+            ));
+        }
+        Ok(store)
+    }
+
     pub fn schema_version(&self) -> Result<u32> {
         self.conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db)
     }

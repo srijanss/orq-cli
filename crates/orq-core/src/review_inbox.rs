@@ -38,7 +38,7 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
     if !roots.database().exists() {
         return Ok(Vec::new());
     }
-    let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
+    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let records = store.all_reviews().map_err(|err| format!("cannot read the review index: {err}"))?;
     let mut latest: Vec<ReviewRecord> = Vec::new();
     for record in records {
@@ -87,7 +87,7 @@ pub fn detail(roots: &StorageRoots, run_id: &str) -> Result<InboxDetail, String>
     if !roots.database().exists() {
         return Err(format!("no review report for run {run_id}"));
     }
-    let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
+    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
     let record = records.last().ok_or_else(|| format!("no review report for run {run_id}"))?;
     let report = read_report(&roots.data, record).map_err(|why| format!("the report for run {run_id} is unreadable: {why}"))?;
