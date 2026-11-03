@@ -86,7 +86,13 @@ pub fn delete_in_root(orq_root: &Path, rel: &Path) -> std::io::Result<()> {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let parent = open(parent, flags, Mode::empty())?;
+    // The parent is only searched through, never listed, so a search-only
+    // handle is enough and no read permission on it is needed.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let parent_flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let parent_flags = flags;
+    let parent = open(parent, parent_flags, Mode::empty())?;
     let mut dir = openat(&parent, root_name, flags | OFlags::NOFOLLOW, Mode::empty())?;
     for part in dirs {
         dir = openat(&dir, *part, flags | OFlags::NOFOLLOW, Mode::empty())?;
