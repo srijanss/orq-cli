@@ -34,10 +34,12 @@ struct Case {
     inside_worktrees_dir: bool,
     /// The worktree was detached and given a commit of its own, so it is not on the recorded branch.
     detached_ahead: bool,
+    /// The provider CLI fails instead of answering.
+    provider_fails: bool,
 }
 
 const GOOD: Case =
-    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false };
+    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false, provider_fails: false };
 
 struct Planned {
     verdict: ReapVerdict,
@@ -111,7 +113,11 @@ fn scenario(tag: &str, case: Case) -> Planned {
         r#"[{{"number":7,"url":"https://github.example/o/r/pull/7","state":"{}","headRefOid":"{head}","isCrossRepository":false}}]"#,
         case.state
     );
-    let provider = FakeProvider::builder().reply(&["pr", "list"], &format!("{row}\n")).build();
+    let provider = if case.provider_fails {
+        FakeProvider::builder().fail(&["pr", "list"], 1, "HTTP 502: Bad Gateway\n").build()
+    } else {
+        FakeProvider::builder().reply(&["pr", "list"], &format!("{row}\n")).build()
+    };
     let gh = provider.gh();
     let pinned = if case.pinned { vec!["run-1".to_string()] } else { Vec::new() };
     let items = plan_reap(&store, &repo, "repo-1", &pinned, &|_| Some(gh.clone()), WAIT).unwrap();
@@ -142,6 +148,7 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
         ("unpushed", Case { pushed: false, ..GOOD }, "not pushed"),
         ("outside", Case { inside_worktrees_dir: false, ..GOOD }, "not under"),
         ("detached", Case { detached_ahead: true, ..GOOD }, "not on the branch"),
+        ("providerdown", Case { provider_fails: true, ..GOOD }, "could not be checked"),
     ];
     for (tag, case, why) in cases {
         let planned = scenario(tag, case);
