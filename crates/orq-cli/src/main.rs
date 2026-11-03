@@ -179,6 +179,10 @@ struct RunArgs {
     run_id: Option<String>,
 }
 
+/// The `orq run` flags that take a value; parsing and forwarding both read this list.
+const RUN_VALUE_FLAGS: [&str; 8] =
+    ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--run-id"];
+
 fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
     let mut parsed = RunArgs::default();
     let mut iter = args.iter();
@@ -188,7 +192,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--no-gate" => parsed.no_gate = true,
             "--no-ci-check" => parsed.no_ci_check = true,
             "--detach" => parsed.detach = true,
-            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--context" | "--run-id") => {
+            name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
                 match name {
                     "--run-id" => parsed.run_id = Some(value.to_str()?.to_string()),
@@ -215,7 +219,7 @@ fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--detach") => {}
-            Some("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--run-id") => {
+            Some(name) if RUN_VALUE_FLAGS.contains(&name) => {
                 kept.push(arg.clone());
                 kept.extend(iter.next().cloned());
             }
@@ -3057,6 +3061,23 @@ mod ledger_backend_tests {
         for bad in ["", "/etc/passwd", "file:///etc/passwd", "--help", "-x", "javascript:alert(1)", "https://", "https:///nohost", "ssh://host/x", "https://a b/c", "https://host/\nx", "https://user@/x", "https://:443/x", "https://[invalid]/x", "https://host:port/x", "https://@/x"] {
             let got = crate::with_checked_url(bad, &act);
             assert!(matches!(&got, Err(reason) if reason.contains("not a web link")), "{bad:?} gave {got:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use std::ffi::OsString;
+
+    fn os(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn every_option_value_survives_forwarding_even_when_spelled_like_the_detach_flag() {
+        for flag in ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--run-id"] {
+            let args = os(&["run", flag, "--detach", "--detach"]);
+            assert_eq!(super::without_detach_flag(&args), os(&["run", flag, "--detach"]), "{flag}");
         }
     }
 }
