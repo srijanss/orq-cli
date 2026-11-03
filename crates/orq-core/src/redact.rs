@@ -62,27 +62,52 @@ fn redact_text_bytes(bytes: &[u8]) -> Vec<u8> {
 /// plain lines is redacted line by line, still keeping its line structure.
 fn redact_json_lines(bytes: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(bytes).ok()?;
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut any_json = false;
+    // Structural lines are objects, arrays and strings; numbers, booleans and
+    // null stay plain so key-body lines like `12345678` do not split a span.
+    let parse = |body: &str| -> Option<serde_json::Value> {
+        let first = body.trim_start().chars().next()?;
+        if !matches!(first, '{' | '[' | '"') {
+            return None;
+        }
+        serde_json::from_str(body).ok()
+    };
+    let mut lines = Vec::new();
     for line in text.split_inclusive('\n') {
         let (body, newline) = match line.strip_suffix('\n') {
             Some(body) => (body, "\n"),
             None => (line, ""),
         };
-        match serde_json::from_str::<serde_json::Value>(body) {
-            Ok(mut value) if value.is_object() || value.is_array() => {
-                any_json = true;
+        lines.push((body, newline, parse(body)));
+    }
+    if lines.iter().all(|(_, _, value)| value.is_none()) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut span = String::new();
+    for (body, newline, value) in lines {
+        match value {
+            None => {
+                span.push_str(body);
+                span.push_str(newline);
+            }
+            Some(mut value) => {
+                if !span.is_empty() {
+                    out.extend(redact(&span).into_bytes());
+                    span.clear();
+                }
                 if redact_value(&mut value) {
                     out.extend(serde_json::to_vec(&value).ok()?);
                 } else {
                     out.extend(body.as_bytes());
                 }
+                out.extend(newline.as_bytes());
             }
-            _ => out.extend(redact(body).into_bytes()),
         }
-        out.extend(newline.as_bytes());
     }
-    any_json.then_some(out)
+    if !span.is_empty() {
+        out.extend(redact(&span).into_bytes());
+    }
+    Some(out)
 }
 
 fn is_secret_key(key: &str) -> bool {
