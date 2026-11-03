@@ -1998,6 +1998,11 @@ impl ReviewsState {
         self.shown().get(self.selected).map(|r| r.run_id.clone())
     }
 
+    /// Whether the selected review belongs to the project the popup is in.
+    fn selected_is_current(&self) -> bool {
+        self.shown().get(self.selected).is_some_and(|r| r.current)
+    }
+
     fn toggle_scope(&mut self) {
         self.all_projects = !self.all_projects;
         self.status = None;
@@ -3076,6 +3081,12 @@ impl Browser {
 
     fn review_link_of_selected_review(&mut self, backend: &mut dyn BrowserBackend, copy: bool) {
         let Some(run_id) = self.reviews.selected_run_id() else { return };
+        // Links are resolved inside the current project, so another project's
+        // review has none to offer from here.
+        if !self.reviews.selected_is_current() {
+            self.notice = Some("This review belongs to another project; open it from that project".to_string());
+            return;
+        }
         let outcome = if copy { backend.copy_review_link(&run_id) } else { backend.open_review_link(&run_id) };
         self.notice = Some(match outcome {
             Ok(message) | Err(message) => message,
