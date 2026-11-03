@@ -92,7 +92,7 @@ pub fn parse_list(provider: &str, output: &str) -> Result<Vec<Listed>, Observati
         };
         let (id_key, url_key) = if provider == "github" { ("number", "url") } else { ("iid", "web_url") };
         let id = row.get(id_key).and_then(Value::as_u64).ok_or_else(|| unreadable("no review number"))?;
-        let url = row.get(url_key).and_then(Value::as_str).filter(|u| u.starts_with("https://") || u.starts_with("http://")).ok_or_else(|| unreadable("no review address"))?;
+        let url = row.get(url_key).and_then(Value::as_str).filter(|u| (u.starts_with("https://") || u.starts_with("http://")) && !u.chars().any(|c| c.is_control() || c.is_whitespace())).ok_or_else(|| unreadable("no review address"))?;
         let state = row.get("state").and_then(Value::as_str).and_then(|n| map_state(provider, n)).ok_or_else(|| unreadable("unknown state"))?;
         let head = head_of(provider, row).ok_or_else(|| unreadable("no head commit"))?;
         check_head_sha(head).map_err(|_| unreadable("head commit is not a commit id"))?;
@@ -140,7 +140,7 @@ pub fn parse_view(provider: &str, output: &str) -> Result<Observation, Observati
 pub fn classify_failure(stderr: &str) -> ObservationError {
     let lowered = stderr.to_lowercase();
     let denied = ["forbidden", "unauthorized", "bad credentials", "auth login", "not accessible", "permission denied", "http 401", "http 403"];
-    let redacted = crate::redact::redact(stderr.trim());
+    let redacted = crate::review_lifecycle::plain_line(&crate::redact::redact(stderr.trim()));
     let mut detail: String = redacted.chars().take(MAX_DETAIL).collect();
     if detail.is_empty() {
         detail = "no details were given".to_string();

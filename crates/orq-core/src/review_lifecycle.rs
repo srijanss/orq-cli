@@ -93,11 +93,17 @@ pub enum ObservationError {
     PermissionDenied(String),
 }
 
+/// Text from a provider as one plain line: control characters (escape sequences, line breaks)
+/// become spaces, so it cannot move the cursor or pose as another line when printed.
+pub fn plain_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 impl ObservationError {
     fn describe(&self) -> String {
         match self {
-            ObservationError::Unavailable(detail) => format!("the provider could not be reached: {detail}"),
-            ObservationError::PermissionDenied(detail) => format!("permission to read the review was denied: {detail}"),
+            ObservationError::Unavailable(detail) => format!("the provider could not be reached: {}", plain_line(detail)),
+            ObservationError::PermissionDenied(detail) => format!("permission to read the review was denied: {}", plain_line(detail)),
         }
     }
 }
