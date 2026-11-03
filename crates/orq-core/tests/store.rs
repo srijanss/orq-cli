@@ -87,6 +87,23 @@ fn a_report_path_must_stay_inside_its_own_run_directory() {
 }
 
 #[test]
+fn opening_an_up_to_date_database_does_not_wait_for_the_writer_lock() {
+    let db = scratch("readers").join("orq.db");
+    let store = Store::open(&db).unwrap();
+    store.record_review(&record("r1", "alpha", "login", SHA_A)).unwrap();
+    drop(store);
+
+    let writer = rusqlite::Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE;").unwrap(); // another process is writing
+
+    let started = std::time::Instant::now();
+    let reader = Store::open(&db).unwrap();
+    assert_eq!(reader.reviews_for_run("r1").unwrap().len(), 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "open waited {:?} for the writer", started.elapsed());
+    drop(writer);
+}
+
+#[test]
 fn concurrent_writers_lose_no_rows() {
     let db = scratch("concurrent").join("orq.db");
     Store::open(&db).unwrap();

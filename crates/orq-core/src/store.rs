@@ -61,9 +61,14 @@ impl Store {
     }
 
     fn migrate(&mut self) -> Result<()> {
+        // An up-to-date database needs no write lock, so opening it never waits
+        // behind a writer.
+        if self.schema_version()? == Self::LATEST_VERSION {
+            return Ok(());
+        }
         // The version is re-read inside the write lock so two processes
         // opening at once cannot both apply the same migration.
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db)?;
+        let tx =self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db)?;
         let current: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db)?;
         if current > Self::LATEST_VERSION {
             return Err(Error::new(
