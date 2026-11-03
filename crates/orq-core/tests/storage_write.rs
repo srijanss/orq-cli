@@ -26,6 +26,20 @@ fn a_write_creates_parents_and_leaves_an_owner_only_file_with_no_temporaries() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn every_directory_created_for_a_deeply_nested_write_is_owner_only_and_reachable() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("nested");
+    write_atomic(&root, Path::new("a/b/c/d/file.txt"), b"x").unwrap();
+    let mut dir = root.clone();
+    for part in ["a", "b", "c", "d"] {
+        dir.push(part);
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700, "{dir:?}");
+    }
+    assert_eq!(std::fs::read(dir.join("file.txt")).unwrap(), b"x");
+}
+
 #[test]
 fn paths_that_escape_the_root_are_refused() {
     let root = scratch("escape");

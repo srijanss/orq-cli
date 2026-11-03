@@ -89,7 +89,10 @@ pub fn write_atomic(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<()
     let mut dir = open(root, dir_flags, Mode::empty())?;
     for part in dirs {
         match mkdirat(&dir, *part, Mode::from_raw_mode(0o700)) {
-            Ok(()) | Err(Errno::EXIST) => {}
+            // The new entry lives in `dir`; sync it so a crash cannot lose the
+            // directory (and the report inside it) after the write returned.
+            Ok(()) => fsync(&dir)?,
+            Err(Errno::EXIST) => {}
             Err(error) => return Err(error.into()),
         }
         dir = openat(&dir, *part, dir_flags, Mode::empty())?;
