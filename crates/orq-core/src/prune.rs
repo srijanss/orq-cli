@@ -5,7 +5,7 @@
 use std::path::{Component, Path};
 
 use crate::ownership::delete_in_root;
-use crate::retention::{assess, ArtifactClass, Assessment, PrunePlan, RetentionPolicy, RunFacts};
+use crate::retention::{assess, classify, ArtifactClass, Assessment, PrunePlan, RetentionPolicy, RunFacts};
 use crate::storage::check_run_id;
 use crate::store::Store;
 
@@ -53,8 +53,13 @@ pub fn prune(
             report.skipped.push((rel, "path is not inside its run".into()));
             continue;
         }
+        // The class comes from the path, never from the plan.
+        let Some(class) = classify(&artifact.rel) else {
+            report.skipped.push((rel, "not a file Orq wrote".into()));
+            continue;
+        };
         match prunable(policy, current(&artifact.run_id), now) {
-            Ok(classes) if classes.contains(&artifact.class) => {}
+            Ok(classes) if classes.contains(&class) => {}
             Ok(_) => {
                 report.skipped.push((rel, "not yet past retention".into()));
                 continue;

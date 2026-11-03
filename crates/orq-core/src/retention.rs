@@ -180,6 +180,32 @@ pub struct Artifact {
     pub bytes: u64,
 }
 
+/// The class of a file Orq itself wrote, from its path relative to the data
+/// root (`runs/<run>/...`). `None` for anything Orq does not recognise.
+pub fn classify(rel: &std::path::Path) -> Option<ArtifactClass> {
+    use std::path::Component;
+    let parts: Vec<&str> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(p) => p.to_str(),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let is_temp = |name: &str| name.starts_with('.') && name.ends_with(".tmp");
+    match parts.as_slice() {
+        ["runs", _, name] => match *name {
+            "events.jsonl" => Some(ArtifactClass::Log),
+            "handoff.json" => Some(ArtifactClass::Checkpoint),
+            "tests.json" | "review-rounds.json" => Some(ArtifactClass::Report),
+            n if is_temp(n) => Some(ArtifactClass::Temporary),
+            _ => None,
+        },
+        ["runs", _, "review", .., last] => Some(if is_temp(last) { ArtifactClass::Temporary } else { ArtifactClass::Report }),
+        ["runs", _, "tmp", ..] if parts.len() >= 4 => Some(ArtifactClass::Temporary),
+        _ => None,
+    }
+}
+
 /// Lists the files Orq itself wrote for each run, by artifact class. Anything
 /// Orq does not recognise (other tools' files, worktrees, symlinks) is left
 /// out, so it can never be counted or pruned. Sorted by run, then path.
