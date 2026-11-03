@@ -734,3 +734,27 @@ fn a_name_that_could_pass_as_an_option_or_a_list_is_refused() {
         assert!(ReviewPeople::checked(Some(good), Some(good)).is_ok(), "{good:?}");
     }
 }
+
+#[test]
+fn an_adopted_request_keeps_its_people_and_is_not_given_new_ones() {
+    let people = ReviewPeople::checked(Some("alice"), Some("bob")).unwrap();
+
+    let w = world("adopt-people-gh", "github", "main");
+    let gh = gh_with_listing(&[(5, "OPEN", "https://github.example/o/r/pull/5")]);
+    let outcome = create_review_request_with(&w.store, "run-1", &gh.gh(), &draft(), &people, WAIT).unwrap();
+    assert!(matches!(outcome, ReviewRequestOutcome::Adopted(_)));
+    assert!(!has_call(&gh, "create"));
+    for call in gh.calls() {
+        assert!(!call.args.iter().any(|a| a == "--assignee" || a == "--reviewer"), "{:?}", call.args);
+    }
+
+    let w = world("adopt-people-glab", "gitlab", "main");
+    let rows = listing("glab", "iid", "web_url", &[(2, "opened", "https://gitlab.example/o/r/-/merge_requests/2")]);
+    let glab = FakeProvider::builder().reply(&["mr", "list"], &rows).reply(&["mr", "update"], "ok\n").build();
+    let outcome = create_review_request_with(&w.store, "run-1", &glab.glab(), &draft(), &people, WAIT).unwrap();
+    assert!(matches!(outcome, ReviewRequestOutcome::Adopted(_)));
+    assert!(!has_call(&glab, "create"));
+    for call in glab.calls() {
+        assert!(!call.args.iter().any(|a| a == "--assignee" || a == "--reviewer"), "{:?}", call.args);
+    }
+}

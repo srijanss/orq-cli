@@ -206,6 +206,27 @@ fn an_assignee_and_a_reviewer_are_requested_on_the_new_review() {
 }
 
 #[test]
+fn a_flag_replaces_only_its_own_configured_person_and_a_blank_one_clears_it() {
+    let create_args = |tag: &str, extra: &[&str]| {
+        let w = world(tag);
+        std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+        std::fs::write(w.repo.root().join(".orq/run.toml"), "mr_assignee = \"alice\"\nmr_reviewer = \"bob\"\n").unwrap();
+        let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+        let provider = github();
+        let mut flags = vec!["--no-ci-check"];
+        flags.extend_from_slice(extra);
+        let _ = run_with(&w, &agent, &provider, &flags);
+        let create = provider.calls().into_iter().find(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).expect("a review was created");
+        let after = |flag: &str| create.args.windows(2).find(|p| p[0] == flag).map(|p| p[1].clone());
+        (after("--assignee"), after("--reviewer"))
+    };
+
+    assert_eq!(create_args("people-cfg", &[]), (Some("alice".to_string()), Some("bob".to_string())));
+    assert_eq!(create_args("people-one", &["--mr-reviewer", "carol"]), (Some("alice".to_string()), Some("carol".to_string())));
+    assert_eq!(create_args("people-blank", &["--mr-assignee", ""]), (None, Some("bob".to_string())));
+}
+
+#[test]
 fn a_bad_assignee_or_reviewer_is_refused_before_a_run_is_recorded() {
     let repo = GitFixture::new();
     repo.add_bare_remote();
