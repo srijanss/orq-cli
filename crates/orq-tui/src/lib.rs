@@ -1596,6 +1596,17 @@ pub trait BrowserBackend {
         StorageView { error: Some("storage is not available".into()), ..StorageView::default() }
     }
 
+    /// What a cleanup would remove right now, one line per item; empty when
+    /// there is nothing to remove. Removes nothing.
+    fn preview_storage(&mut self) -> Result<Vec<String>, String> {
+        Err("storage is not available".into())
+    }
+
+    /// Runs the cleanup; the lines say what happened.
+    fn prune_storage(&mut self) -> Result<Vec<String>, String> {
+        Err("storage is not available".into())
+    }
+
     /// Installed harnesses with their model suggestions, for the Settings
     /// tab's picker. Free text stays possible, so empty is acceptable.
     fn harness_options(&mut self) -> Vec<HarnessOption> {
@@ -2302,7 +2313,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
 
 const SETTINGS_TAB: &str = "Settings";
 const SETTINGS_FILE: &str = "config.toml";
-const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · Esc cancel/back · Tab features ";
+const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · p preview · c clean up · Esc back · Tab features ";
 /// Settings fields in display order: (role, field name).
 const SETTINGS_FIELDS: [(&str, &str); 4] =
     [("Implementer", "harness"), ("Implementer", "model"), ("Reviewer", "harness"), ("Reviewer", "model")];
@@ -2324,6 +2335,10 @@ struct SettingsState {
     status: Option<String>,
     /// The Storage section, loaded when the tab opens.
     storage: StorageView,
+    /// A cleanup preview or report shown in place of the usage lines.
+    report: Option<Vec<String>>,
+    /// A cleanup was previewed and waits for `y`.
+    confirming: bool,
 }
 
 impl SettingsState {
@@ -2358,6 +2373,39 @@ impl SettingsState {
             (None, false) => len - 1,
         };
         self.editing = Some(choices[next].clone());
+    }
+
+    /// Shows what a cleanup would remove; with `ask`, waits for `y` to run it.
+    fn preview_cleanup(&mut self, backend: &mut dyn BrowserBackend, ask: bool) {
+        match backend.preview_storage() {
+            Err(reason) => {
+                self.report = None;
+                self.status = Some(format!("Preview failed: {}", printable(&reason)));
+            }
+            Ok(lines) if lines.is_empty() => {
+                self.report = None;
+                self.status = Some("Nothing to clean up".to_string());
+            }
+            Ok(lines) => {
+                self.report = Some(lines);
+                self.confirming = ask;
+                self.status = None;
+            }
+        }
+    }
+
+    fn run_cleanup(&mut self, backend: &mut dyn BrowserBackend) {
+        match backend.prune_storage() {
+            Ok(lines) => {
+                self.report = Some(lines);
+                self.storage = backend.load_storage();
+                self.status = Some("Cleanup done".to_string());
+            }
+            Err(reason) => {
+                self.report = None;
+                self.status = Some(format!("Cleanup failed: {}", printable(&reason)));
+            }
+        }
     }
 
     fn begin_edit(&mut self, field: usize) {
@@ -2403,7 +2451,20 @@ impl SettingsState {
 
     /// Returns true when the key leaves the tab.
     fn handle_key(&mut self, code: KeyCode, backend: &mut dyn BrowserBackend) -> bool {
+        if self.confirming {
+            // Only an explicit `y` removes anything; every other key cancels.
+            self.confirming = false;
+            if code == KeyCode::Char('y') {
+                self.run_cleanup(backend);
+            } else {
+                self.report = None;
+                self.status = Some("Cleanup cancelled".to_string());
+            }
+            return false;
+        }
         match (&mut self.editing, code) {
+            (None, KeyCode::Char('p')) => self.preview_cleanup(backend, false),
+            (None, KeyCode::Char('c')) => self.preview_cleanup(backend, true),
             (Some(_), KeyCode::Esc) => {
                 self.editing = None;
                 self.status = None;
@@ -2537,14 +2598,20 @@ fn render_settings(frame: &mut Frame, body: Rect, state: &SettingsState) {
     if let Some(status) = &state.status {
         put(8, Line::from(truncate_right(&format!(" {status}"), width)));
     }
-    render_storage_section(&state.storage, body, &mut put);
+    render_storage_section(&state.storage, state.report.as_deref(), state.confirming, body, &mut put);
     if body.height > 0 {
         put(body.height - 1, Line::from(Span::styled(truncate_right(SETTINGS_HINT, width), dim)));
     }
 }
 
 /// The Storage section below the role settings: usage, policy, last cleanup, pins.
-fn render_storage_section(storage: &StorageView, body: Rect, put: &mut dyn FnMut(u16, Line<'static>)) {
+fn render_storage_section(
+    storage: &StorageView,
+    report: Option<&[String]>,
+    confirming: bool,
+    body: Rect,
+    put: &mut dyn FnMut(u16, Line<'static>),
+) {
     let width = usize::from(body.width);
     let bold = Style::new().add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(Color::DarkGray);
@@ -2557,6 +2624,22 @@ fn render_storage_section(storage: &StorageView, body: Rect, put: &mut dyn FnMut
         row = row.saturating_add(1);
     };
     line(" Storage".to_string(), bold);
+    if let Some(report) = report {
+        // Keep the confirmation prompt and the closing hint on screen however long the report is.
+        let reserved = usize::from(confirming);
+        let room = usize::from(last_row.saturating_sub(STORAGE_TOP_ROW + 1)).saturating_sub(reserved);
+        let shown = if report.len() > room { room.saturating_sub(1) } else { report.len() };
+        for text in &report[..shown] {
+            line(format!("   {text}"), Style::new());
+        }
+        if shown < report.len() {
+            line(format!("   … {} more", report.len() - shown), dim);
+        }
+        if confirming {
+            line(" Remove these? Press y to confirm, any other key cancels".to_string(), Style::new().fg(Color::Yellow));
+        }
+        return;
+    }
     if let Some(error) = &storage.error {
         line(format!(" {error}"), Style::new().fg(Color::Red));
         return;
@@ -3090,6 +3173,8 @@ impl Browser {
             editing: None,
             status: None,
             storage: backend.load_storage(),
+            report: None,
+            confirming: false,
         };
         self.tab = Tab::Settings;
     }
@@ -3356,6 +3441,8 @@ where
             editing: None,
             status: None,
             storage: StorageView::default(),
+            report: None,
+            confirming: false,
         },
         runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
         reviews: ReviewsState::new(model.project_name.clone()),
