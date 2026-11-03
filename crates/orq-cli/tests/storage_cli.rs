@@ -165,3 +165,16 @@ fn a_dry_run_leaves_an_interrupted_prunes_journal_untouched() {
     assert!(out.status.success(), "{}", text(&out));
     assert!(store.pending_removals().unwrap().is_empty(), "a real prune settles it");
 }
+
+#[test]
+fn status_reports_the_last_real_cleanup_and_a_dry_run_does_not_count() {
+    let s = Sandbox::new("last-cleanup");
+    s.failed_run("old-run", "2020-01-01T00:00:00Z", 100);
+    assert!(text(&s.orq(&["storage", "status"])).contains("last cleanup: never"));
+    s.orq(&["storage", "prune", "--dry-run"]);
+    assert!(text(&s.orq(&["storage", "status"])).contains("last cleanup: never"), "a preview is not a cleanup");
+    s.orq(&["storage", "prune"]);
+    let after = text(&s.orq(&["storage", "status"]));
+    assert!(after.contains("last cleanup:") && !after.contains("last cleanup: never"), "{after}");
+    assert!(after.contains("retention:") && after.contains("failed 30"), "the policy is shown: {after}");
+}

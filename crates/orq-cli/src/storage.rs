@@ -74,7 +74,51 @@ fn status() -> Result<(), String> {
     }
     let pinned = store.pinned().map_err(|e| e.to_string())?;
     println!("pinned runs: {}", if pinned.is_empty() { "none".to_string() } else { pinned.join(", ") });
+    println!("retention: {}", policy_summary(&policy(&roots)?));
+    println!("last cleanup: {}", last_cleanup(&roots).map_or("never".to_string(), format_time));
     Ok(())
+}
+
+fn policy_summary(p: &RetentionPolicy) -> String {
+    format!(
+        "merged {}d, closed {}d, failed {}d, logs {}d, temporary {}d, checkpoints {}d, metadata {}d",
+        p.merged_days, p.closed_days, p.failed_days, p.logs_days, p.temporary_days, p.checkpoint_days, p.metadata_days
+    )
+}
+
+/// Where the time of the last real cleanup is kept: beside the runs, never inside them, so it is never pruned.
+fn cleanup_stamp(roots: &StorageRoots) -> std::path::PathBuf {
+    roots.data.join("last-cleanup")
+}
+
+fn last_cleanup(roots: &StorageRoots) -> Option<u64> {
+    std::fs::read_to_string(cleanup_stamp(roots)).ok()?.trim().parse().ok()
+}
+
+fn record_cleanup(roots: &StorageRoots, at: u64) {
+    let stamp = cleanup_stamp(roots);
+    let tmp = stamp.with_extension("tmp");
+    // Best effort: failing to note the time must not turn a finished cleanup into an error.
+    if std::fs::write(&tmp, at.to_string()).is_ok() && std::fs::rename(&tmp, &stamp).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// `YYYY-MM-DD HH:MM UTC` of unix seconds.
+fn format_time(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    // Hinnant's civil-from-days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02} UTC", rem / 3_600, rem % 3_600 / 60)
 }
 
 fn list() -> Result<(), String> {
@@ -118,6 +162,7 @@ fn run_prune(dry_run: bool) -> Result<(), String> {
     // Facts are read again per run just before its files go: the world may have moved on since the preview.
     let current = |run_id: &str| collect_run_facts_for(&runs, &store, run_id).ok().flatten();
     let report = prune(&roots.data, &store, &policy, &the_plan, now, &current).map_err(|e| e.to_string())?;
+    record_cleanup(&roots, now);
     if !the_plan.candidates.is_empty() || !report.metadata_removed.is_empty() {
         println!("Removed {} file(s), freed {}.", report.removed.len(), human_bytes(report.freed));
     }
