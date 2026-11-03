@@ -149,9 +149,7 @@ impl ReviewLifecycle {
             return next;
         }
         next.state = seen.state;
-        if seen.state != ProviderState::Open {
-            next.gate = Gate::Resolved;
-        }
+        next.gate = if seen.state == ProviderState::Open { Gate::AwaitingHumanReview } else { Gate::Resolved };
         if seen.head_sha == self.reported_head_sha {
             next.stale = false;
             next.observed_head_sha = None;
