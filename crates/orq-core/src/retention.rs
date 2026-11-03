@@ -161,3 +161,89 @@ pub fn assess(policy: &RetentionPolicy, facts: &RunFacts, now: u64) -> Assessmen
         Assessment::Prunable(classes)
     }
 }
+
+/// One file a run left under the data root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub run_id: String,
+    pub class: ArtifactClass,
+    /// Path relative to the data root.
+    pub rel: std::path::PathBuf,
+    pub bytes: u64,
+}
+
+/// Lists the files Orq itself wrote for each run, by artifact class. Anything
+/// Orq does not recognise (other tools' files, worktrees, symlinks) is left
+/// out, so it can never be counted or pruned. Sorted by run, then path.
+pub fn inventory(data_root: &std::path::Path) -> std::io::Result<Vec<Artifact>> {
+    use std::path::{Path, PathBuf};
+
+    /// Everything under a recognised directory shares its class, except
+    /// leftover atomic-write temp files, which are always temporary.
+    fn walk(dir: &Path, rel: &Path, run_id: &str, class: ArtifactClass, out: &mut Vec<Artifact>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let Some(name) = entry.file_name().to_str().map(String::from) else { continue };
+            let rel = rel.join(&name);
+            if kind.is_dir() {
+                walk(&entry.path(), &rel, run_id, class, out)?;
+            } else if kind.is_file() {
+                let class = if is_temp_name(&name) { ArtifactClass::Temporary } else { class };
+                out.push(Artifact { run_id: run_id.to_string(), class, rel, bytes: entry.metadata()?.len() });
+            }
+        }
+        Ok(())
+    }
+
+    fn is_temp_name(name: &str) -> bool {
+        name.starts_with('.') && name.ends_with(".tmp")
+    }
+
+    let runs = data_root.join("runs");
+    let mut found = Vec::new();
+    let entries = match std::fs::read_dir(&runs) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let Some(run_id) = entry.file_name().to_str().map(String::from) else { continue };
+        if crate::storage::check_run_id(&run_id).is_err() || !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let run_dir = entry.path();
+        let rel_run = PathBuf::from("runs").join(&run_id);
+        for child in std::fs::read_dir(&run_dir)? {
+            let child = child?;
+            let kind = child.file_type()?;
+            let Some(name) = child.file_name().to_str().map(String::from) else { continue };
+            let rel = rel_run.join(&name);
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_file() {
+                let class = match name.as_str() {
+                    "events.jsonl" => Some(ArtifactClass::Log),
+                    "handoff.json" => Some(ArtifactClass::Checkpoint),
+                    "tests.json" | "review-rounds.json" => Some(ArtifactClass::Report),
+                    n if is_temp_name(n) => Some(ArtifactClass::Temporary),
+                    _ => None,
+                };
+                if let Some(class) = class {
+                    found.push(Artifact { run_id: run_id.clone(), class, rel, bytes: child.metadata()?.len() });
+                }
+            } else if kind.is_dir() {
+                let class = match name.as_str() {
+                    "review" => ArtifactClass::Report,
+                    "tmp" => ArtifactClass::Temporary,
+                    _ => continue,
+                };
+                walk(&child.path(), &rel, &run_id, class, &mut found)?;
+            }
+        }
+    }
+    found.sort_by(|a, b| (&a.run_id, &a.rel).cmp(&(&b.run_id, &b.rel)));
+    Ok(found)
+}
