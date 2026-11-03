@@ -50,6 +50,27 @@ fn an_outcome_that_is_present_but_not_text_is_malformed_while_null_means_absent(
 }
 
 #[test]
+fn an_empty_rounds_list_is_a_known_zero_and_a_rounds_value_that_is_not_a_list_is_malformed() {
+    let d = dir("rounds-edges");
+    let file = d.join("review-rounds.json");
+    let load = |body: &str| {
+        std::fs::write(&file, body).unwrap();
+        load_review_input(&file)
+    };
+
+    assert_eq!(load(r#"{"schema_version":1,"rounds":[]}"#).unwrap().rounds_observed, Some(0));
+    for rounds in ["null", "3", r#""three""#, "{}"] {
+        let result = load(&format!(r#"{{"schema_version":1,"rounds":{rounds}}}"#));
+        assert!(matches!(result, Err(InputError::Malformed(_))), "{rounds}: {result:?}");
+    }
+    for version in ["\"1\"", "null", "0", "1.5"] {
+        let result = load(&format!(r#"{{"schema_version":{version}}}"#));
+        assert!(matches!(result, Err(InputError::Malformed(_))), "{version}: {result:?}");
+    }
+    assert!(matches!(load(r#"{"rounds":[]}"#), Err(InputError::Malformed(_))), "a missing schema_version");
+}
+
+#[test]
 fn a_missing_malformed_unsupported_or_inaccessible_input_is_reported_not_guessed() {
     let d = dir("bad");
     assert_eq!(load_review_input(&d.join("nope.json")), Err(InputError::Missing));
