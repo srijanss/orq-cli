@@ -138,3 +138,17 @@ fn approval_and_auto_merge_flags_are_caught_in_short_and_assigned_forms() {
     // Commenting through the same subcommand stays allowed.
     assert_eq!(forbidden_provider_call("gh", &args(&["pr", "review", "12", "--comment", "-b", "looks fine"])), None);
 }
+
+#[test]
+fn ordinary_text_that_mentions_automerge_is_not_a_graphql_mutation() {
+    for call in [
+        ("gh", vec!["pr", "create", "--title", "Fix automerge documentation", "--body", "mergePullRequest is a mutation"]),
+        ("gh", vec!["repo", "view", "o/automerge"]),
+        ("gh", vec!["api", "graphql", "-f", "query={ repository(name: \"automerge\") { id } }"]),
+    ] {
+        assert_eq!(forbidden_provider_call(call.0, &args(&call.1)), None, "{} {:?}", call.0, call.1);
+    }
+    // A real mutation through `api graphql` is still refused.
+    let mutation = args(&["api", "graphql", "-f", "query=mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }"]);
+    assert!(forbidden_provider_call("gh", &mutation).is_some());
+}

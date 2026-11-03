@@ -62,9 +62,12 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
             }
         }
     }
-    let joined = args.join(" ").to_lowercase();
-    if FORBIDDEN_GRAPHQL.iter().any(|needle| joined.contains(needle)) {
-        return Some("a provider GraphQL mutation that merges or approves");
+    // Only a GraphQL mutation can merge; titles, bodies and queries may mention the words freely.
+    if positionals.starts_with(&["api", "graphql"]) {
+        let joined = args.join(" ").to_lowercase();
+        if joined.contains("mutation") && FORBIDDEN_GRAPHQL.iter().any(|needle| joined.contains(needle)) {
+            return Some("a provider GraphQL mutation that merges or approves");
+        }
     }
     None
 }
