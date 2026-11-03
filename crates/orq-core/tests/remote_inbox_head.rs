@@ -44,3 +44,16 @@ fn head_is_held_to_the_same_checks_as_get() {
     assert_eq!(call(&roots, "HEAD", "/api/reviews/nope", Some("Bearer tok")).0, 404);
     assert_eq!(call(&roots, "HEAD", "/api/other", Some("Bearer tok")).0, 404);
 }
+
+#[test]
+fn on_the_wire_a_head_response_has_zero_body_bytes_and_a_get_has_json() {
+    let roots = seeded("wire");
+    let peer: IpAddr = "127.0.0.1".parse().unwrap();
+    let ask = |method: &str, path: &str, auth: Option<&str>| {
+        handle(&roots, &RemoteConfig { token: "tok".into() }, OURS, "p", &Request { method, path, peer, authorization: auth })
+    };
+    for (path, auth) in [("/api/reviews", Some("Bearer tok")), ("/api/reviews", None), ("/api/reviews/nope", Some("Bearer tok"))] {
+        assert!(ask("HEAD", path, auth).body_bytes().is_empty(), "{path} {auth:?}");
+        assert!(serde_json::from_slice::<serde_json::Value>(&ask("GET", path, auth).body_bytes()).is_ok());
+    }
+}

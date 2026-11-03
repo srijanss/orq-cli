@@ -34,6 +34,18 @@ pub struct Response {
     pub body: Value,
 }
 
+impl Response {
+    /// The bytes to put on the wire: JSON, or nothing at all when the body is
+    /// absent (a HEAD answer). `Null` means "no body", never the text `null`.
+    pub fn body_bytes(&self) -> Vec<u8> {
+        if self.body.is_null() {
+            Vec::new()
+        } else {
+            self.body.to_string().into_bytes()
+        }
+    }
+}
+
 fn reply(status: u16, body: Value) -> Response {
     Response { status, body }
 }
