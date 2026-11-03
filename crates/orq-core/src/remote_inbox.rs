@@ -76,6 +76,15 @@ fn token_matches(expected: &str, header: Option<&str>) -> bool {
 }
 
 pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
+    let mut response = route(roots, config, project_id, project_name, request);
+    if request.method == "HEAD" {
+        // Same status as GET, never a body.
+        response.body = Value::Null;
+    }
+    response
+}
+
+fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
     if !peer_allowed(request.peer) {
         return error(403, "this address may not connect");
     }
