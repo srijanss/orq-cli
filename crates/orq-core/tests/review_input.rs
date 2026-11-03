@@ -59,8 +59,21 @@ fn mcp_and_project_files_are_never_orq_deletable_while_orq_data_is() {
     assert_eq!(classify(".tdd-features.json"), Ownership::Project);
     for mcp in [".tdd-state.json", ".tdd-review-findings.json", ".tdd-review-rounds.json", ".project-mcp", ".mcpctl.toml", ".mcp.json"] {
         assert_eq!(classify(mcp), Ownership::Mcp, "{mcp}");
-        assert!(!may_orq_delete(mcp), "{mcp}");
     }
-    assert!(!may_orq_delete(".tdd-features.json"));
     assert_eq!(classify("review.json"), Ownership::Unowned);
+}
+
+#[test]
+fn only_files_inside_an_orq_root_that_are_not_tool_files_may_be_deleted() {
+    let root = std::path::Path::new("/data/orq");
+    assert!(may_orq_delete(root, &root.join("runs/run-1/review.json")));
+    // Ordinary project files are not Orq's, wherever they are.
+    assert!(!may_orq_delete(root, std::path::Path::new("/repo/Cargo.toml")));
+    assert!(!may_orq_delete(root, std::path::Path::new("/repo/src/main.rs")));
+    // Tool files stay protected even inside the root, and the root itself is not a file to delete.
+    assert!(!may_orq_delete(root, &root.join(".tdd-state.json")));
+    assert!(!may_orq_delete(root, root));
+    // A path that climbs out of the root is refused.
+    assert!(!may_orq_delete(root, &root.join("../other/file")));
+    assert!(!may_orq_delete(root, &root.join("runs/../../escape")));
 }

@@ -1,6 +1,8 @@
 //! Who owns a file Orq may see in a project: Orq never deletes, moves or
 //! rewrites what the project or the TDD/MCP tooling owns.
 
+use std::path::{Component, Path};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
     /// Defined by the project (`.tdd-features.json`).
@@ -25,7 +27,13 @@ pub fn classify(name: &str) -> Ownership {
     Ownership::Unowned
 }
 
-/// Whether a generic Orq cleanup may delete the file. Project and MCP files never.
-pub fn may_orq_delete(name: &str) -> bool {
-    classify(name) == Ownership::Unowned
+/// Whether a generic Orq cleanup may delete `path`. Being unrecognised is not
+/// ownership: the path must lie inside `orq_root` (lexically, with no `..`),
+/// must not be the root itself, and must not be a project or MCP file.
+pub fn may_orq_delete(orq_root: &Path, path: &Path) -> bool {
+    let Ok(inside) = path.strip_prefix(orq_root) else { return false };
+    if inside.as_os_str().is_empty() || inside.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return false;
+    }
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| classify(name) == Ownership::Unowned)
 }
