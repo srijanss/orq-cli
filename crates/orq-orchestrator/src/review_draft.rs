@@ -67,7 +67,7 @@ const MAX_ISSUE_DIGITS: usize = 9;
 /// The number in an issue id such as `42` or `#42`; anything else is refused.
 pub fn issue_number(id: &str) -> Result<String, String> {
     let digits = id.strip_prefix('#').unwrap_or(id);
-    if !digits.is_empty() && digits.len() <= MAX_ISSUE_DIGITS && digits.bytes().all(|b| b.is_ascii_digit()) {
+    if !digits.is_empty() && digits.len() <= MAX_ISSUE_DIGITS && digits.bytes().all(|b| b.is_ascii_digit()) && digits.bytes().any(|b| b != b'0') {
         Ok(digits.to_string())
     } else {
         Err(format!("{id:?} is not an issue number such as 42 or #42"))

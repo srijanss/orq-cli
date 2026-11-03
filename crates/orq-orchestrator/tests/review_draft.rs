@@ -291,7 +291,7 @@ fn an_issue_id_is_checked_and_linked_once_at_the_end_of_the_description() {
 
     assert_eq!(issue_number("42").as_deref(), Ok("42"));
     assert_eq!(issue_number("#42").as_deref(), Ok("42"));
-    for bad in ["", "#", "4 2", "-1", "abc", "42\n", "#42 close", "1234567890123", "4\u{0662}"] {
+    for bad in ["", "#", "4 2", "-1", "abc", "42\n", "#42 close", "1234567890123", "4\u{0662}", "0", "#0", "000"] {
         assert!(issue_number(bad).is_err(), "{bad:?}");
     }
 
