@@ -18,13 +18,26 @@ fn program_name(program: &str) -> &str {
     Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program)
 }
 
+/// Whether a short-option cluster (without its dash) contains `a`. Parsing stops
+/// at an option that takes a value, since the rest of the cluster is that value.
+fn short_cluster_approves(cluster: &str) -> bool {
+    for flag in cluster.chars() {
+        match flag {
+            'a' => return true,
+            'b' | 'F' | 'R' | 'H' | 'X' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Why a call to a Git provider CLI is forbidden, or `None` when it is allowed.
 pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'static str> {
     if !PROVIDER_PROGRAMS.contains(&program_name(program)) {
         return None;
     }
     let mut positionals = Vec::new();
-    let mut short_flags = Vec::new();
+    let mut short_approve = false;
     let mut skip_value = false;
     for arg in args {
         if std::mem::take(&mut skip_value) {
@@ -40,7 +53,7 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
         }
         if arg.starts_with('-') {
             if !arg.starts_with("--") {
-                short_flags.push(arg.as_str());
+                short_approve |= short_cluster_approves(&arg[1..]);
             }
             skip_value = VALUE_FLAGS.contains(&arg.as_str());
             continue;
@@ -51,7 +64,7 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
         return Some("a provider subcommand that merges or approves");
     }
     // `-a` is the short form of `gh pr review --approve`, alone or clustered (`-ab`).
-    if positionals.starts_with(&["pr", "review"]) && short_flags.iter().any(|flag| flag.contains('a')) {
+    if positionals.starts_with(&["pr", "review"]) && short_approve {
         return Some("a provider flag that approves or automates a merge");
     }
     if positionals.first() == Some(&"api") {

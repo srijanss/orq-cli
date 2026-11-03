@@ -183,3 +183,17 @@ fn a_graphql_mutation_is_caught_wherever_the_endpoint_sits_among_the_options() {
         assert!(forbidden_provider_call("gh", &args(&call)).is_some(), "{call:?} must be forbidden");
     }
 }
+
+#[test]
+fn an_attached_short_option_value_is_not_mistaken_for_an_approval_flag() {
+    for call in [
+        vec!["pr", "review", "12", "--comment", "-bThanks"],
+        vec!["-Rowner/repo-a", "pr", "review", "12", "--comment"],
+        vec!["pr", "review", "12", "--comment", "-F", "notes.md"],
+    ] {
+        assert_eq!(forbidden_provider_call("gh", &args(&call)), None, "{call:?} must stay allowed");
+    }
+    for call in [vec!["pr", "review", "12", "-a"], vec!["pr", "review", "12", "-ab", "x"], vec!["pr", "review", "-ca", "12"]] {
+        assert!(forbidden_provider_call("gh", &args(&call)).is_some(), "{call:?} must be forbidden");
+    }
+}
