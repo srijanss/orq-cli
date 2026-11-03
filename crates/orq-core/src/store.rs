@@ -24,7 +24,7 @@ pub struct ReviewRecord {
 
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended.
-const MIGRATIONS: [&str; 2] = ["
+const MIGRATIONS: [&str; 3] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -50,6 +50,11 @@ const MIGRATIONS: [&str; 2] = ["
         last_error        TEXT,
         last_checked      INTEGER NOT NULL,
         PRIMARY KEY (run_id, reported_head_sha)
+    );
+", "
+    CREATE TABLE run_pins (
+        run_id    TEXT    NOT NULL PRIMARY KEY,
+        pinned_at INTEGER NOT NULL
     );
 "];
 
@@ -241,6 +246,29 @@ impl Store {
             lifecycles.push(lifecycle);
         }
         Ok(lifecycles)
+    }
+
+    /// Exempts a run from pruning until it is unpinned. Pinning twice is a no-op.
+    pub fn pin(&self, run_id: &str) -> Result<()> {
+        check_run_id(run_id)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        self.conn.execute("INSERT OR IGNORE INTO run_pins (run_id, pinned_at) VALUES (?1, ?2)", params![run_id, now]).map(drop).map_err(db)
+    }
+
+    pub fn unpin(&self, run_id: &str) -> Result<()> {
+        check_run_id(run_id)?;
+        self.conn.execute("DELETE FROM run_pins WHERE run_id = ?1", params![run_id]).map(drop).map_err(db)
+    }
+
+    pub fn is_pinned(&self, run_id: &str) -> Result<bool> {
+        self.conn.query_row("SELECT EXISTS (SELECT 1 FROM run_pins WHERE run_id = ?1)", params![run_id], |row| row.get(0)).map_err(db)
+    }
+
+    /// Every pinned run id, sorted.
+    pub fn pinned(&self) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare("SELECT run_id FROM run_pins ORDER BY run_id").map_err(db)?;
+        let rows = statement.query_map([], |row| row.get(0)).map_err(db)?;
+        rows.collect::<std::result::Result<Vec<String>, _>>().map_err(db)
     }
 
     /// Every stored report, oldest first.
