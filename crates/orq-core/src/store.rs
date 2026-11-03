@@ -76,10 +76,28 @@ impl Store {
     /// tightened, migrated or switched to WAL. A database that is not at the
     /// schema this Orq understands is refused.
     pub fn open_read_only(path: &Path) -> Result<Store> {
-        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(db)?;
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags).map_err(db)?;
         conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(db)?;
-        let store = Store { conn };
-        let version = store.schema_version()?;
+        let mut store = Store { conn };
+        let mut version = store.schema_version();
+        if version.is_err() {
+            // A WAL database in a directory nobody can write to cannot get its
+            // shared-memory file, so a normal reader fails. Fall back to an
+            // immutable view, which reads the main file only and writes nothing.
+            if let Some(utf8) = path.to_str() {
+                let uri = format!("file:{}?immutable=1", utf8.replace('%', "%25").replace('?', "%3f").replace('#', "%23"));
+                let uri_flags = flags | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+                if let Ok(conn) = Connection::open_with_flags(&uri, uri_flags) {
+                    let fallback = Store { conn };
+                    if let Ok(v) = fallback.schema_version() {
+                        store = fallback;
+                        version = Ok(v);
+                    }
+                }
+            }
+        }
+        let version = version?;
         if version != Self::LATEST_VERSION {
             return Err(Error::new(
                 ErrorKind::InvalidData,
