@@ -87,9 +87,17 @@ fn list() -> Result<(), String> {
 
 fn run_prune(dry_run: bool) -> Result<(), String> {
     let (roots, store, runs) = open()?;
-    let settled = reconcile(&roots.data, &store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
-    if !settled.completed.is_empty() || !settled.abandoned.is_empty() {
-        println!("Settled an interrupted prune: {} finished, {} left in place.", settled.completed.len(), settled.abandoned.len());
+    // A dry run changes nothing, not even the bookkeeping of an interrupted prune.
+    if dry_run {
+        let pending = store.pending_removals().map_err(|e| e.to_string())?.len();
+        if pending > 0 {
+            println!("{pending} removal(s) of an interrupted prune are pending; a real prune will settle them.");
+        }
+    } else {
+        let settled = reconcile(&roots.data, &store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
+        if !settled.completed.is_empty() || !settled.abandoned.is_empty() {
+            println!("Settled an interrupted prune: {} finished, {} left in place.", settled.completed.len(), settled.abandoned.len());
+        }
     }
     let policy = policy(&roots)?;
     let facts = collect_run_facts(&runs, &store).map_err(|e| e.to_string())?;

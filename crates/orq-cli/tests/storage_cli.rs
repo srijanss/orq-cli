@@ -145,3 +145,23 @@ fn run_without_pin_keeps_its_usage_error() {
     let out = s.orq(&["storage", "frobnicate"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out));
 }
+
+#[test]
+fn a_dry_run_leaves_an_interrupted_prunes_journal_untouched() {
+    let s = Sandbox::new("dry-journal");
+    // Opening the database through the CLI creates it; then plant an interrupted removal of a file that is gone.
+    assert!(s.orq(&["storage", "status"]).status.success());
+    let db = s.data_file("orq.db");
+    let store = orq_core::store::Store::open(&db).unwrap();
+    store.begin_removal("old-run", "runs/old-run/events.jsonl").unwrap();
+    drop(store);
+
+    let out = s.orq(&["storage", "prune", "--dry-run"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let store = orq_core::store::Store::open(&db).unwrap();
+    assert_eq!(store.pending_removals().unwrap().len(), 1, "a dry run must not settle the journal");
+
+    let out = s.orq(&["storage", "prune"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(store.pending_removals().unwrap().is_empty(), "a real prune settles it");
+}
