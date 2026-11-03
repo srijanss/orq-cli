@@ -111,6 +111,86 @@ pub fn open_run_pane(
     Ok(location)
 }
 
+/// One shared tab that several runs' log panes are tiled into as a golden spiral: the first run
+/// takes the tab's root pane and each further run splits the newest pane, alternating right and
+/// down so the existing pane keeps 61.8%.
+pub struct GridTab {
+    label: String,
+    /// The pane the next run splits, once the tab exists.
+    newest: Option<PaneLocation>,
+    next_direction: &'static str,
+}
+
+impl GridTab {
+    pub fn new(label: &str) -> Self {
+        GridTab { label: label.to_string(), newest: None, next_direction: "right" }
+    }
+}
+
+/// Puts the run's log into the grid `grid`, opening its tab on first use. A split Herdr refuses
+/// gives that run a tab of its own instead, and the grid carries on from the last pane in it.
+pub fn open_grid_pane(
+    herdr: &dyn HerdrCli,
+    grid: &mut GridTab,
+    workspace: Option<&str>,
+    cwd: &Path,
+    label: &str,
+    log: &Path,
+) -> Result<PaneLocation, String> {
+    let text = |value: &Path| value.to_string_lossy().into_owned();
+    let command = format!("tail -n +1 -f {}", shell_quote(&text(log)));
+    let rename = |pane: &PaneLocation| {
+        let _ = herdr.run(&["pane".into(), "rename".into(), pane.pane_id.clone(), label.to_string()]);
+    };
+    let Some(newest) = grid.newest.clone() else {
+        let mut create: Vec<String> = vec!["tab".into(), "create".into()];
+        if let Some(workspace) = workspace {
+            create.extend(["--workspace".to_string(), workspace.to_string()]);
+        }
+        create.extend(["--cwd".into(), text(cwd), "--label".into(), grid.label.clone(), "--no-focus".into()]);
+        let reply = herdr.run(&create).map_err(|err| format!("cannot open a Herdr tab: {err}"))?;
+        let location = parse_location(&reply)?;
+        rename(&location);
+        if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command]) {
+            let _ = herdr.run(&["tab".into(), "close".into(), location.tab_id.clone()]);
+            return Err(format!("cannot start the log viewer in the Herdr tab: {err}"));
+        }
+        grid.newest = Some(location.clone());
+        return Ok(location);
+    };
+    let split: Vec<String> = [
+        "pane", "split", "--pane", newest.pane_id.as_str(), "--direction", grid.next_direction, "--ratio", "0.618", "--cwd",
+        text(cwd).as_str(), "--no-focus",
+    ]
+    .iter()
+    .map(|part| part.to_string())
+    .collect();
+    let created = herdr.run(&split).map_err(|err| err.to_string()).and_then(|reply| parse_split(&reply, &newest));
+    let location = match created {
+        Ok(location) => location,
+        Err(_) => return open_run_pane(herdr, workspace, cwd, label, log),
+    };
+    rename(&location);
+    if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command]) {
+        let _ = herdr.run(&["pane".into(), "close".into(), location.pane_id.clone()]);
+        return Err(format!("cannot start the log viewer in the Herdr pane: {err}"));
+    }
+    grid.next_direction = if grid.next_direction == "right" { "down" } else { "right" };
+    grid.newest = Some(location.clone());
+    Ok(location)
+}
+
+fn parse_split(reply: &str, near: &PaneLocation) -> Result<PaneLocation, String> {
+    let bad = || "Herdr's reply did not name the new pane".to_string();
+    let value: serde_json::Value = serde_json::from_str(reply).map_err(|_| bad())?;
+    let pane = value.pointer("/result/pane").ok_or_else(bad)?;
+    let field = |name: &str, fallback: &str| {
+        pane.get(name).and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| fallback.to_string())
+    };
+    let pane_id = pane.get("pane_id").and_then(|v| v.as_str()).map(str::to_string).ok_or_else(bad)?;
+    Ok(PaneLocation { workspace_id: field("workspace_id", &near.workspace_id), tab_id: field("tab_id", &near.tab_id), pane_id })
+}
+
 fn parse_location(reply: &str) -> Result<PaneLocation, String> {
     let bad = || "Herdr's reply did not name the new pane".to_string();
     let value: serde_json::Value = serde_json::from_str(reply).map_err(|_| bad())?;

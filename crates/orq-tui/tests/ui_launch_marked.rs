@@ -196,3 +196,92 @@ fn the_outcome_lists_the_started_features_with_their_runs_and_the_failed_ones_wi
     assert!(has(&lines, "Started alpha (run-alpha), gamma (run-gamma)"), "{lines:?}");
     assert!(has(&lines, "failed beta: already running"), "{lines:?}");
 }
+
+/// Records which entry point the popup used for the launches.
+struct GridFake {
+    plain: Vec<String>,
+    grid: Vec<String>,
+}
+
+impl BrowserBackend for GridFake {
+    fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
+        let entry = |name: &str| BrowserEntry {
+            name: name.into(),
+            description: None,
+            status: "pending".into(),
+            depends_on: vec![],
+            test_file: None,
+        };
+        Ok(vec![entry("alpha"), entry("beta")])
+    }
+    fn promote(&mut self, _feature: &str) -> PromoteOutcome {
+        PromoteOutcome::Saved
+    }
+    fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
+        Ok(vec!["opus".into()])
+    }
+    fn start_launch(&mut self, feature: &str, _implementer: &str, _reviewer: &str) -> Box<dyn LaunchJob> {
+        self.plain.push(feature.into());
+        Box::new(Done(Some(Ok(format!("run-{feature}")))))
+    }
+    fn start_grid_launches(&mut self, features: &[String], _implementer: &str, _reviewer: &str) -> Vec<Box<dyn LaunchJob>> {
+        self.grid.extend(features.iter().cloned());
+        features.iter().map(|f| Box::new(Done(Some(Ok(format!("run-{f}"))))) as Box<dyn LaunchJob>).collect()
+    }
+}
+
+fn show_grid(backend: &mut GridFake, events: Vec<Event>) -> Vec<String> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
+    let buffer = terminal.backend().buffer();
+    (0..24u16)
+        .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+fn mark_both_and_open_picker() -> Vec<Event> {
+    vec![
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Down),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Char('L')),
+    ]
+}
+
+#[test]
+fn g_in_the_picker_of_several_features_places_their_panes_in_one_shared_grid_tab() {
+    let mut backend = GridFake { plain: vec![], grid: vec![] };
+    let mut events = mark_both_and_open_picker();
+    events.extend([key(KeyCode::Char('g')), key(KeyCode::Enter), key(KeyCode::Enter)]);
+
+    show_grid(&mut backend, events);
+
+    assert_eq!(backend.grid, ["alpha", "beta"]);
+    assert!(backend.plain.is_empty());
+}
+
+#[test]
+fn without_g_each_feature_still_gets_a_tab_of_its_own_and_the_picker_offers_the_grid() {
+    let mut backend = GridFake { plain: vec![], grid: vec![] };
+    let shown = show_grid(&mut backend, mark_both_and_open_picker());
+    assert!(has(&shown, "g grid tab: off"), "{shown:?}");
+
+    let mut events = mark_both_and_open_picker();
+    events.extend([key(KeyCode::Enter), key(KeyCode::Enter)]);
+    show_grid(&mut backend, events);
+
+    assert_eq!(backend.plain, ["alpha", "beta"]);
+    assert!(backend.grid.is_empty());
+}
+
+#[test]
+fn a_single_feature_has_no_grid_option() {
+    let mut backend = GridFake { plain: vec![], grid: vec![] };
+    let events = vec![key(KeyCode::Down), key(KeyCode::Char('L')), key(KeyCode::Char('g'))];
+
+    let shown = show_grid(&mut backend, events);
+
+    assert!(!has(&shown, "grid tab"), "{shown:?}");
+}

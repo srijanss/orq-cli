@@ -1390,8 +1390,26 @@ fn attach_pane(
     log: &Path,
     wait: std::time::Duration,
 ) -> Result<(), String> {
+    attach_pane_in(herdr, store, workspace, cwd, run_id, log, wait, None)
+}
+
+/// `attach_pane`, placing the log in the shared `grid` tab when there is one.
+#[allow(clippy::too_many_arguments)]
+fn attach_pane_in(
+    herdr: &dyn orq_herdr::HerdrCli,
+    store: &orq_orchestrator::RunStore,
+    workspace: Option<&str>,
+    cwd: &Path,
+    run_id: &str,
+    log: &Path,
+    wait: std::time::Duration,
+    grid: Option<&mut orq_herdr::GridTab>,
+) -> Result<(), String> {
     let label = format!("orq {run_id}");
-    let pane = orq_herdr::open_run_pane(herdr, workspace, cwd, &label, log)?;
+    let pane = match grid {
+        Some(grid) => orq_herdr::open_grid_pane(herdr, grid, workspace, cwd, &label, log)?,
+        None => orq_herdr::open_run_pane(herdr, workspace, cwd, &label, log)?,
+    };
     let pane = orq_orchestrator::PaneRef { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id };
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -1559,6 +1577,7 @@ state_root_override: Option<PathBuf>,
 feature: String,
 implementer: String,
 reviewer: String,
+    grid: Option<SharedGrid>,
 ) -> Result<String, String> {
     let repo = repo_root.as_deref().ok_or("the project is not known")?;
     let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
@@ -1588,7 +1607,8 @@ reviewer: String,
     let pane = match (launch_log(&stdout), state_root_override.clone().or_else(pipeline::state_root)) {
         (Some(log), Some(root)) => {
             let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
-            attach_pane(
+            let mut guard = grid.as_ref().map(|grid| grid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+            attach_pane_in(
                 &orq_herdr::HerdrBinary,
                 &orq_orchestrator::RunStore::new(&root),
                 workspace.as_deref(),
@@ -1596,6 +1616,7 @@ reviewer: String,
                 &run_id,
                 &log,
                 REGISTRATION_WAIT,
+                guard.as_deref_mut(),
             )
         }
         _ => Err("the run reported no log to follow".to_string()),
@@ -1605,6 +1626,9 @@ reviewer: String,
         Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
     })
 }
+
+/// The grid tab the launches of one popup batch share.
+type SharedGrid = std::sync::Arc<std::sync::Mutex<orq_herdr::GridTab>>;
 
 /// A launch running on a thread of its own; `poll` reports once it has finished.
 struct ThreadLaunch {
@@ -1651,6 +1675,32 @@ impl orq_tui::LaunchJob for ThreadLaunch {
     }
 }
 
+impl LedgerBackend {
+    fn sequenced_launches(
+        &self,
+        features: &[String],
+        implementer: &str,
+        reviewer: &str,
+        grid: Option<SharedGrid>,
+    ) -> Vec<Box<dyn orq_tui::LaunchJob>> {
+        let works = features
+            .iter()
+            .map(|feature| {
+                let repo_root = self.repo_root.clone();
+                let state_root = self.state_root_override.clone();
+                let grid = grid.clone();
+                let (feature, implementer, reviewer) = (feature.clone(), implementer.to_string(), reviewer.to_string());
+                Box::new(move || launch_run(repo_root, state_root, feature, implementer, reviewer, grid))
+                    as Box<dyn FnOnce() -> Result<String, String> + Send>
+            })
+            .collect();
+        ThreadLaunch::spawn_in_sequence(works)
+            .into_iter()
+            .map(|job| Box::new(job) as Box<dyn orq_tui::LaunchJob>)
+            .collect()
+    }
+}
+
 impl orq_tui::BrowserBackend for LedgerBackend {
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
@@ -1666,6 +1716,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             feature.to_string(),
             implementer.to_string(),
             reviewer.to_string(),
+            None,
         )
     }
 
@@ -1676,20 +1727,21 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         implementer: &str,
         reviewer: &str,
     ) -> Vec<Box<dyn orq_tui::LaunchJob>> {
-        let works = features
-            .iter()
-            .map(|feature| {
-                let repo_root = self.repo_root.clone();
-                let state_root = self.state_root_override.clone();
-                let (feature, implementer, reviewer) = (feature.clone(), implementer.to_string(), reviewer.to_string());
-                Box::new(move || launch_run(repo_root, state_root, feature, implementer, reviewer))
-                    as Box<dyn FnOnce() -> Result<String, String> + Send>
-            })
-            .collect();
-        ThreadLaunch::spawn_in_sequence(works)
-            .into_iter()
-            .map(|job| Box::new(job) as Box<dyn orq_tui::LaunchJob>)
-            .collect()
+        self.sequenced_launches(features, implementer, reviewer, None)
+    }
+
+    /// As `start_launches`, with every run's log pane in one tab tiled as a golden spiral.
+    fn start_grid_launches(
+        &mut self,
+        features: &[String],
+        implementer: &str,
+        reviewer: &str,
+    ) -> Vec<Box<dyn orq_tui::LaunchJob>> {
+        let grid = std::sync::Arc::new(std::sync::Mutex::new(orq_herdr::GridTab::new(&format!(
+            "feats: {}",
+            features.join(", ")
+        ))));
+        self.sequenced_launches(features, implementer, reviewer, Some(grid))
     }
 
     /// The launch waits for the run to register its Herdr pane, so it runs on a thread and the
@@ -1698,7 +1750,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let repo_root = self.repo_root.clone();
         let state_root = self.state_root_override.clone();
         let (feature, implementer, reviewer) = (feature.to_string(), implementer.to_string(), reviewer.to_string());
-        Box::new(ThreadLaunch::spawn(move || launch_run(repo_root, state_root, feature, implementer, reviewer)))
+        Box::new(ThreadLaunch::spawn(move || launch_run(repo_root, state_root, feature, implementer, reviewer, None)))
     }
 
     fn focus_run_pane(&mut self, run_id: &str) -> orq_tui::PaneFocus {

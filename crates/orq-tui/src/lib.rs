@@ -1584,6 +1584,12 @@ pub trait BrowserBackend {
         features.iter().map(|feature| self.start_launch(feature, implementer, reviewer)).collect()
     }
 
+    /// Like `start_launches`, but the runs' log panes share one grid tab. A backend without grids
+    /// keeps this default, which gives each run a tab of its own.
+    fn start_grid_launches(&mut self, features: &[String], implementer: &str, reviewer: &str) -> Vec<Box<dyn LaunchJob>> {
+        self.start_launches(features, implementer, reviewer)
+    }
+
     /// The user-level settings the Settings tab shows. Backends without
     /// settings keep this default, which says so.
     fn load_settings(&mut self) -> SettingsView {
@@ -2702,6 +2708,8 @@ struct LaunchPicker {
     profiles: Vec<String>,
     selected: usize,
     implementer: Option<String>,
+    /// Place the runs' log panes in one shared tab instead of a tab each.
+    grid: bool,
 }
 
 enum LaunchAction {
@@ -2718,6 +2726,7 @@ impl LaunchPicker {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.selected = (self.selected + 1).min(self.profiles.len().saturating_sub(1))
             }
+            KeyCode::Char('g') if self.features.len() > 1 => self.grid = !self.grid,
             KeyCode::Enter => {
                 if let Some(chosen) = self.profiles.get(self.selected).cloned() {
                     match self.implementer.take() {
@@ -2753,6 +2762,9 @@ impl LaunchPicker {
             lines.push(Line::from(Span::styled(format!("   {mark}{}", printable(profile)), style)));
         }
         lines.push(Line::from(""));
+        if self.features.len() > 1 {
+            lines.push(Line::from(format!(" g grid tab: {}", if self.grid { "on" } else { "off" })));
+        }
         lines.push(Line::from(" ↑↓ choose · Enter confirm · Esc cancel"));
         frame.render_widget(Paragraph::new(lines), area);
     }
@@ -3275,7 +3287,7 @@ impl Browser {
         match backend.launch_profiles() {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
-                self.launch = Some(LaunchPicker { features, skipped, profiles, selected: 0, implementer: None })
+                self.launch = Some(LaunchPicker { features, skipped, profiles, selected: 0, implementer: None, grid: false })
             }
             Err(reason) => self.notice = Some(reason),
         }
@@ -3513,12 +3525,17 @@ where
                         LaunchAction::Launch { implementer, reviewer } => {
                             let features = launch.features.clone();
                             let skipped = launch.skipped.clone();
+                            let grid = launch.grid;
                             browser.launch = None;
                             browser.notice = Some(match features.as_slice() {
                                 [one] => format!("Launching {one}…"),
                                 many => format!("Launching {} features…", many.len()),
                             });
-                            let jobs = backend.start_launches(&features, &implementer, &reviewer);
+                            let jobs = if grid {
+                                backend.start_grid_launches(&features, &implementer, &reviewer)
+                            } else {
+                                backend.start_launches(&features, &implementer, &reviewer)
+                            };
                             let running = features.into_iter().zip(jobs).collect();
                             browser.launching = Some(LaunchBatch { running, skipped, finished: Vec::new() });
                         }
