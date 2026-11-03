@@ -24,7 +24,7 @@ pub struct ReviewRecord {
 
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended.
-const MIGRATIONS: [&str; 3] = ["
+const MIGRATIONS: [&str; 4] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -55,6 +55,12 @@ const MIGRATIONS: [&str; 3] = ["
     CREATE TABLE run_pins (
         run_id    TEXT    NOT NULL PRIMARY KEY,
         pinned_at INTEGER NOT NULL
+    );
+", "
+    CREATE TABLE prune_journal (
+        rel      TEXT    NOT NULL PRIMARY KEY,
+        run_id   TEXT    NOT NULL,
+        begun_at INTEGER NOT NULL
     );
 "];
 
@@ -263,6 +269,37 @@ impl Store {
         let Some((state, checked, last_error)) = row else { return Ok(None) };
         let state = ProviderState::parse(&state).ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("stored review state {:?} is not recognised", state)))?;
         Ok(Some(crate::retention::ReviewFacts { state, observed_at: checked.max(0) as u64, last_error }))
+    }
+
+    /// Records, before a file is deleted, that it is about to be.
+    pub fn begin_removal(&self, run_id: &str, rel: &str) -> Result<()> {
+        check_run_id(run_id)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        self.conn.execute("INSERT OR IGNORE INTO prune_journal (rel, run_id, begun_at) VALUES (?1, ?2, ?3)", params![rel, run_id, now]).map(drop).map_err(db)
+    }
+
+    /// Removals begun and not finished, as `(run id, path relative to the data root)`, sorted by path.
+    pub fn pending_removals(&self) -> Result<Vec<(String, String)>> {
+        let mut statement = self.conn.prepare("SELECT run_id, rel FROM prune_journal ORDER BY rel").map_err(db)?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(db)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db)
+    }
+
+    /// Completes a removal: forgets the journal entry and any report index row that named the file.
+    pub fn finish_removal(&self, rel: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(db)?;
+        tx.execute("DELETE FROM reviews WHERE report_path = ?1", params![rel]).map_err(db)?;
+        tx.execute("DELETE FROM prune_journal WHERE rel = ?1", params![rel]).map_err(db)?;
+        tx.commit().map_err(db)
+    }
+
+    /// Forgets everything the database holds about a run's reviews.
+    pub fn remove_run_metadata(&self, run_id: &str) -> Result<()> {
+        check_run_id(run_id)?;
+        let tx = self.conn.unchecked_transaction().map_err(db)?;
+        tx.execute("DELETE FROM reviews WHERE run_id = ?1", params![run_id]).map_err(db)?;
+        tx.execute("DELETE FROM review_lifecycles WHERE run_id = ?1", params![run_id]).map_err(db)?;
+        tx.commit().map_err(db)
     }
 
     /// Exempts a run from pruning until it is unpinned. Pinning twice is a no-op.
