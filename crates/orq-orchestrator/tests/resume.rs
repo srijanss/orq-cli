@@ -106,3 +106,55 @@ fn only_the_stopped_runs_own_checkout_of_its_branch_can_be_resumed() {
         assert!(reason.contains(why), "{tag}: {reason}");
     }
 }
+
+fn stopped_run(store: &RunStore, repo: &Path, run_id: &str, at: &str) {
+    let record = RunRecord {
+        run_id: run_id.to_string(),
+        project_id: "repo-1".to_string(),
+        feature_id: "COM-02".to_string(),
+        remote: "origin".to_string(),
+        provider: "github".to_string(),
+        target_branch: "main".to_string(),
+        base_sha: git(repo, &["rev-parse", "main"]),
+        branch: "fix--COM-02".to_string(),
+        worktree: repo.join(".claude/worktrees/fix--COM-02"),
+        repository: "https://github.example/o/r".to_string(),
+        profiles: BTreeMap::new(),
+    };
+    store.create(&record).unwrap();
+    for kind in ["run.started", "run.failed"] {
+        store
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: format!("{run_id}-{kind}"),
+                run_id: run_id.to_string(),
+                project_id: "repo-1".to_string(),
+                feature_id: "COM-02".to_string(),
+                kind: kind.to_string(),
+                stage: None,
+                attempt: 1,
+                occurred_at: at.to_string(),
+                payload: serde_json::json!({}),
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn the_latest_run_is_the_one_that_started_last_not_the_one_with_the_larger_id() {
+    // Run ids are "run-<seconds>-<pid>": text order is wrong across pid widths and clock order wins.
+    let cases = [
+        ("pid-width", [("run-1700000000-999", "2026-01-01T00:00:00Z"), ("run-1700000000-1000", "2026-01-01T00:00:00Z")], "run-1700000000-1000"),
+        ("older-id-larger", [("run-1700000009-1", "2026-01-01T00:00:09Z"), ("run-1700000010-1", "2026-01-01T00:00:10Z")], "run-1700000010-1"),
+        ("clock-beats-id", [("run-1700000099-5", "2026-01-01T00:00:01Z"), ("run-1700000001-5", "2026-01-01T00:00:50Z")], "run-1700000001-5"),
+    ];
+    for (tag, runs, expected) in cases {
+        let w = world(&format!("latest-{tag}"), Tamper::None);
+        let store = RunStore::new(&w.repo.parent().unwrap().join("state2"));
+        for (id, at) in runs {
+            stopped_run(&store, &w.repo, id, at);
+        }
+        let plan = plan_resume(&store, &w.repo, "repo-1", "COM-02").expect(tag);
+        assert_eq!(plan.from.run_id, expected, "{tag}");
+    }
+}

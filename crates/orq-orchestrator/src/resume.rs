@@ -22,14 +22,19 @@ pub struct ResumePlan {
 
 /// The latest run of the feature, if it stopped in a way that can be picked up.
 pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: &str) -> Result<ResumePlan, String> {
-    let mut latest: Option<RunRecord> = None;
+    let mut latest: Option<(RunOrder, RunRecord)> = None;
     for run_id in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
         let Ok(record) = store.load(&run_id) else { continue };
-        if record.project_id == project_id && record.feature_id == feature_id && latest.as_ref().is_none_or(|l| l.run_id < record.run_id) {
-            latest = Some(record);
+        if record.project_id != project_id || record.feature_id != feature_id {
+            continue;
+        }
+        let started = store.events(&run_id).ok().and_then(|events| events.first().map(|e| e.occurred_at.clone())).unwrap_or_default();
+        let order = RunOrder { started, id: id_key(&run_id) };
+        if latest.as_ref().is_none_or(|(best, _)| *best < order) {
+            latest = Some((order, record));
         }
     }
-    let Some(from) = latest else { return Err(format!("{feature_id} has no earlier run to resume")) };
+    let Some((_, from)) = latest else { return Err(format!("{feature_id} has no earlier run to resume")) };
     let events = store.events(&from.run_id).map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
     match summarize_run(&events).phase {
         RunPhase::Failed | RunPhase::Blocked => {}
@@ -46,6 +51,18 @@ pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: 
     }
     let skip_implement = implement_finished(&events);
     Ok(ResumePlan { from, skip_implement })
+}
+
+/// When a run began (its first event; RFC 3339 UTC text sorts by time), then its id with number
+/// runs compared as numbers, since ids are `run-<seconds>-<pid>` and pids vary in width.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct RunOrder {
+    started: String,
+    id: Vec<(u64, String)>,
+}
+
+fn id_key(run_id: &str) -> Vec<(u64, String)> {
+    run_id.split('-').map(|part| (part.parse::<u64>().unwrap_or(0), part.to_string())).collect()
 }
 
 /// The agent session completed and nothing afterwards blocked on its result.
