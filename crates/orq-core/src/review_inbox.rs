@@ -15,6 +15,9 @@ pub struct InboxRow {
     pub run_id: String,
     pub feature: String,
     pub project: String,
+    /// Whether the review belongs to the project the user is in, decided by
+    /// project id (two projects may share a display name).
+    pub current: bool,
     pub status: String,
     pub risk: String,
     pub stale: bool,
@@ -79,6 +82,7 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
             run_id: record.run_id,
             feature: record.feature,
             project: if record.project == current_project_id { current_project_name.to_string() } else { display_project(&record.project) },
+            current: record.project == current_project_id,
             status,
             risk,
             stale: unknown || lifecycle.is_some_and(|l| l.stale),
