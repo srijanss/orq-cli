@@ -307,3 +307,66 @@ pub fn file_link(base_url: &str, sha: &str, path: &str, line: Option<u64>, exist
     let anchor = line.map(|l| format!("#L{l}")).unwrap_or_default();
     Some(format!("https://{base}/blob/{sha}/{}{anchor}", percent_encode(path)))
 }
+
+/// Where file links point: a repository page, the reviewed commit, and a check
+/// that a path exists in that commit's tree.
+pub struct LinkSource<'a> {
+    pub base_url: &'a str,
+    pub sha: &'a str,
+    pub exists: &'a dyn Fn(&str) -> bool,
+}
+
+fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::High => "high",
+        Severity::Medium => "medium",
+        Severity::Low => "low",
+        Severity::Unknown => "unknown",
+    }
+}
+
+/// Add risks, file risks and a per-round summary to a built report. The
+/// rounds are summarized from what was recorded; nothing is rerun.
+pub fn apply_intelligence(report: &mut serde_json::Value, files: &[ReportFile], rounds: &[Round], links: Option<&LinkSource>) {
+    use serde_json::json;
+    let classification = classify_files(files);
+    let changed: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    let risks: Vec<serde_json::Value> = attribute(rounds, files)
+        .iter()
+        .map(|a| {
+            let link = match (links, a.file.as_deref()) {
+                (Some(source), Some(path)) => file_link(source.base_url, source.sha, path.strip_prefix("./").unwrap_or(path), a.line, source.exists),
+                _ => None,
+            };
+            json!({
+                "id": a.id, "round": a.round, "severity": severity_name(a.severity), "category": a.category, "claim": a.claim,
+                "file": a.file, "line": a.line, "standing": a.standing.as_str(), "unresolved": a.unresolved,
+                "reference": a.reference.as_str(), "evidence": a.evidence, "link": link,
+            })
+        })
+        .collect();
+    let summaries: Vec<serde_json::Value> = rounds
+        .iter()
+        .map(|round| {
+            let each: Vec<AttributedFinding> = round.findings.iter().map(|f| attribute_one(round.number, f, &changed)).collect();
+            let count = |standing: Standing| each.iter().filter(|a| a.standing == standing).count();
+            json!({
+                "round": round.number, "summary": round.summary, "findings": each.len(),
+                "confirmed": count(Standing::Confirmed), "potential": count(Standing::Potential), "dismissed": count(Standing::Dismissed),
+                "unresolved": each.iter().filter(|a| a.unresolved).count(),
+            })
+        })
+        .collect();
+    report["risks"] = json!(risks);
+    report["rounds"] = json!(summaries);
+    report["file_risks"] = json!({
+        "files": classification.files.iter().map(|f| json!({"path": f.path, "category": f.category.as_str(), "level": f.level.as_str(), "evidence": f.evidence})).collect::<Vec<_>>(),
+        "omitted": classification.omitted,
+    });
+    if classification.omitted > 0 {
+        if let Some(gaps) = report["gaps"].as_array_mut() {
+            gaps.push(json!(format!("{} files were not classified because the change has more than {MAX_CLASSIFIED_FILES} files", classification.omitted)));
+        }
+        report["status"] = json!("incomplete");
+    }
+}

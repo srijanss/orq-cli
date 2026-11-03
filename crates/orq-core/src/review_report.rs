@@ -230,7 +230,45 @@ pub fn render_markdown(report: &Value) -> String {
         }
         _ => md.push_str(&format!("- Reason: {}\n", text(&report["review"]["reason"]))),
     }
-    md.push_str("\n## Risks\n\nNo findings are recorded in this report.\n");
+    md.push_str("\n## Risks\n\n");
+    if let Some(files) = report["file_risks"]["files"].as_array() {
+        md.push_str("Files needing attention:\n");
+        for file in files.iter().filter(|f| f["level"] != "low") {
+            md.push_str(&format!("- {} - {}, {} risk ({})\n", text(&file["path"]), text(&file["category"]), text(&file["level"]), text(&file["evidence"])));
+        }
+        md.push('\n');
+    }
+    match report["risks"].as_array().filter(|r| !r.is_empty()) {
+        None => md.push_str("No findings are recorded in this report.\n"),
+        Some(risks) => {
+            for risk in risks {
+                let place = match (risk["file"].as_str(), risk["line"].as_u64()) {
+                    (Some(_), Some(line)) => format!(" {}:{line}", text(&risk["file"])),
+                    (Some(_), None) => format!(" {}", text(&risk["file"])),
+                    _ => String::new(),
+                };
+                let state = if risk["unresolved"] == true { "unresolved" } else { "resolved" };
+                let outdated = if risk["reference"] == "outdated" { ", outdated reference" } else { "" };
+                md.push_str(&format!(
+                    "- [{}] {} {}{place}: {} ({}; {state}{outdated})\n",
+                    text(&risk["standing"]), text(&risk["severity"]), text(&risk["category"]), text(&risk["claim"]), text(&risk["evidence"])
+                ));
+                if let Some(link) = risk["link"].as_str() {
+                    md.push_str(&format!("  link: {}\n", text(&Value::String(link.to_string()))));
+                }
+            }
+        }
+    }
+    if let Some(rounds) = report["rounds"].as_array().filter(|r| !r.is_empty()) {
+        md.push_str("\nReview rounds:\n");
+        for round in rounds {
+            md.push_str(&format!(
+                "- Round {}: {} findings, {} confirmed, {} potential, {} dismissed, {} unresolved{}\n",
+                round["round"], round["findings"], round["confirmed"], round["potential"], round["dismissed"], round["unresolved"],
+                round["summary"].as_str().map_or(String::new(), |_| format!(" - {}", text(&round["summary"])))
+            ));
+        }
+    }
     let gaps = report["gaps"].as_array().cloned().unwrap_or_default();
     if !gaps.is_empty() {
         md.push_str("\n## Gaps\n\n");
