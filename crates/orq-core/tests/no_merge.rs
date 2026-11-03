@@ -197,3 +197,23 @@ fn an_attached_short_option_value_is_not_mistaken_for_an_approval_flag() {
         assert!(forbidden_provider_call("gh", &args(&call)).is_some(), "{call:?} must be forbidden");
     }
 }
+
+#[test]
+fn a_push_option_value_is_not_counted_as_the_remote_or_a_branch() {
+    let protected = args(&["main"]);
+    for push in [
+        vec!["push", "-o", "ci.skip", "origin"],
+        vec!["push", "--push-option", "ci.skip", "origin"],
+        vec!["push", "--receive-pack", "git-receive-pack", "origin"],
+        vec!["push", "--repo", "origin"],
+        vec!["push", "-o", "ci.skip", "origin", "main"],
+    ] {
+        assert!(forbidden_git_push(&args(&push), &protected).is_some(), "{push:?} must be forbidden");
+    }
+    for push in [
+        vec!["push", "-o", "ci.skip", "origin", "feat/x"],
+        vec!["push", "--push-option=ci.skip", "origin", "feat/x"],
+    ] {
+        assert_eq!(forbidden_git_push(&args(&push), &protected), None, "{push:?} must stay allowed");
+    }
+}

@@ -14,6 +14,9 @@ const FORBIDDEN_GRAPHQL: [&str; 4] = ["mergepullrequest", "enablepullrequestauto
 /// Flags of the provider CLIs whose next argument is a value, not a subcommand.
 const VALUE_FLAGS: [&str; 8] = ["--repo", "-R", "--hostname", "-H", "--method", "-X", "--header", "-F"];
 
+/// Options of the push command whose next argument is their value.
+const PUSH_VALUE_OPTIONS: [&str; 5] = ["-o", "--push-option", "--receive-pack", "--exec", "--repo"];
+
 fn program_name(program: &str) -> &str {
     Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program)
 }
@@ -95,7 +98,23 @@ pub fn forbidden_git_push(args: &[String], protected: &[String]) -> Option<&'sta
     if args.iter().any(|arg| arg == "--mirror" || arg == "--all") {
         return Some("a push of every ref");
     }
-    let mut positionals = args[1..].iter().filter(|arg| !arg.starts_with('-'));
+    // Options that take their value as the next argument must not have it counted as the remote or a refspec.
+    let mut operands = Vec::new();
+    let mut skip_value = false;
+    let mut options_ended = false;
+    for arg in &args[1..] {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        if !options_ended && arg == "--" {
+            options_ended = true;
+        } else if !options_ended && arg.starts_with('-') {
+            skip_value = PUSH_VALUE_OPTIONS.contains(&arg.as_str());
+        } else {
+            operands.push(arg);
+        }
+    }
+    let mut positionals = operands.into_iter();
     let _remote = positionals.next();
     let mut explicit = 0;
     for refspec in positionals {
