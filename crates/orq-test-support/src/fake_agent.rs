@@ -48,7 +48,16 @@ impl FakeAgent {
 
     /// The cwd and argv of the most recent invocation, if it was ever run.
     pub fn last_run(&self) -> Option<Run> {
-        let raw = fs::read(self.dir.join("record")).ok()?;
+        self.read_record("record")
+    }
+
+    /// The cwd and argv of the first invocation, if it was ever run.
+    pub fn first_run(&self) -> Option<Run> {
+        self.read_record("first")
+    }
+
+    fn read_record(&self, name: &str) -> Option<Run> {
+        let raw = fs::read(self.dir.join(name)).ok()?;
         let mut fields = raw
             .split(|byte| *byte == 0)
             .map(|field| String::from_utf8_lossy(field).into_owned())
@@ -157,7 +166,7 @@ impl FakeAgentBuilder {
         // The script locates its own directory via $0, so no path is embedded
         // in shell source and nothing needs quoting.
         let body = format!(
-            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\n{STEP_FUNCTIONS}{steps}{session}cat \"$dir/stdout\"\ncat \"$dir/stderr\" >&2\n{finish}\n",
+            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\n[ -e \"$dir/first\" ] || cp \"$dir/record\" \"$dir/first\"\n{STEP_FUNCTIONS}{steps}{session}cat \"$dir/stdout\"\ncat \"$dir/stderr\" >&2\n{finish}\n",
         );
         fs::write(&script, body).expect("write fake agent script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake agent");

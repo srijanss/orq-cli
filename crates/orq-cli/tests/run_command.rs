@@ -134,6 +134,35 @@ fn a_configured_gate_runs_and_a_failing_one_stops_the_run_before_the_push() {
     assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
 }
 
+#[test]
+fn extra_context_reaches_the_agent_inside_the_one_prompt_argument() {
+    let w = world("ctx");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let _ = run_with(&w, &agent, &github(), &["--no-ci-check", "--context", "keep the API stable --no-gate"]);
+
+    let args = agent.first_run().expect("the agent ran").args;
+    let prompt = args.last().unwrap();
+    assert!(prompt.starts_with("/implement-and-review COM-01"), "{prompt}");
+    assert!(prompt.ends_with("Extra context:\nkeep the API stable --no-gate"), "{prompt}");
+}
+
+#[test]
+fn bad_extra_context_is_refused_before_a_run_is_recorded() {
+    let repo = GitFixture::new();
+    repo.add_bare_remote();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    let env = env("badctx");
+    let long = "x".repeat(4001);
+
+    for bad in ["bell\u{7}", long.as_str()] {
+        let output = run(repo.root(), &env, &["--feature", "COM-01", "--context", bad]);
+        assert!(!output.status.success(), "{}", stderr(&output));
+        assert!(stderr(&output).contains("context"), "{}", stderr(&output));
+        assert!(state_is_empty(&env), "no run was recorded");
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")

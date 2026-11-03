@@ -27,6 +27,23 @@ pub struct ImplementRequest<'a> {
     pub feature: &'a str,
     pub implementer: ModelSpec,
     pub reviewer: ModelSpec,
+    /// Free text appended to the request for this run.
+    pub context: Option<&'a str>,
+}
+
+/// The longest extra context a run accepts, in characters.
+pub const MAX_CONTEXT_CHARS: usize = 4000;
+
+/// The context text as it goes into the prompt: `None` when blank, an error when it is too
+/// long or holds control characters other than newline and tab.
+pub fn checked_context(text: &str) -> Result<Option<&str>, AdapterError> {
+    let bad = text.chars().count() > MAX_CONTEXT_CHARS || text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t'));
+    if bad {
+        let shown: String = text.chars().take(40).collect();
+        return Err(AdapterError::InvalidValue { field: "context", value: shown });
+    }
+    let trimmed = text.trim();
+    Ok((!trimmed.is_empty()).then_some(trimmed))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +142,10 @@ impl HarnessAdapter for Claude {
             plain("reviewer thinking", thinking)?;
             prompt.push_str(" --thinking ");
             prompt.push_str(thinking);
+        }
+        if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
+            prompt.push_str("\n\nExtra context:\n");
+            prompt.push_str(context);
         }
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
         if let Some(thinking) = &request.implementer.thinking {

@@ -170,6 +170,7 @@ struct RunArgs {
     target: Option<String>,
     implementer: Option<String>,
     reviewer: Option<String>,
+    context: Option<String>,
     no_rebase: bool,
     no_gate: bool,
     no_ci_check: bool,
@@ -187,7 +188,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--no-gate" => parsed.no_gate = true,
             "--no-ci-check" => parsed.no_ci_check = true,
             "--detach" => parsed.detach = true,
-            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--run-id") => {
+            name @ ("--repo" | "--feature" | "--remote" | "--target" | "--implementer" | "--reviewer" | "--context" | "--run-id") => {
                 let value = iter.next()?;
                 match name {
                     "--run-id" => parsed.run_id = Some(value.to_str()?.to_string()),
@@ -196,6 +197,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
                     "--remote" => parsed.remote = Some(value.to_str()?.to_string()),
                     "--target" => parsed.target = Some(value.to_str()?.to_string()),
                     "--implementer" => parsed.implementer = Some(value.to_str()?.to_string()),
+                    "--context" => parsed.context = Some(value.to_str()?.to_string()),
                     _ => parsed.reviewer = Some(value.to_str()?.to_string()),
                 }
             }
@@ -261,6 +263,10 @@ fn run(args: &[OsString]) -> ExitCode {
     };
     // Checked before a detached launch spawns anything, so a bad settings file is an error the
     // caller sees, not a runner that exits unseen.
+    let context = match parsed.context.as_deref().map(orq_agents::checked_context).transpose() {
+        Ok(text) => text.flatten().map(str::to_string),
+        Err(err) => return fail(format!("{err}")),
+    };
     if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
         return fail(format!("run settings: {err}"));
     }
@@ -298,6 +304,7 @@ fn run(args: &[OsString]) -> ExitCode {
         gate: !parsed.no_gate,
         ci_check: !parsed.no_ci_check,
         run_id: parsed.run_id.as_deref(),
+        context: context.as_deref(),
     };
     match pipeline::execute(&options) {
         Ok(report) => {
@@ -1458,6 +1465,7 @@ reviewer: String,
         target: configured_target_branch(&project.root)?,
         implementer: implementer.clone(),
         reviewer: reviewer.clone(),
+        context: None,
     };
     request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
     // `orq run --detach` checks eligibility, starts the runner in a session of its own and

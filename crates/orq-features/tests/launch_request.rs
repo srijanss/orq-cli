@@ -40,6 +40,7 @@ fn request(implementer: &str, reviewer: &str) -> LaunchRequest {
         target: "main".to_string(),
         implementer: implementer.to_string(),
         reviewer: reviewer.to_string(),
+        context: None,
     }
 }
 
@@ -93,4 +94,17 @@ fn the_launch_arguments_are_the_detached_run_command_with_every_value_kept_whole
     .map(OsString::from)
     .collect();
     assert_eq!(args, expected);
+}
+
+#[test]
+fn extra_context_is_passed_whole_as_one_argument_before_the_detach_flag() {
+    let mut launch = request("sonnet", "kimi");
+    launch.context = Some("--feature x; echo hi".to_string());
+    let args = launch.args();
+    let at = args.iter().position(|a| a == "--context").expect("a context flag");
+    assert_eq!(args[at + 1], OsString::from("--feature x; echo hi"));
+    assert_eq!(args.last().unwrap(), &OsString::from("--detach"));
+
+    launch.context = Some("  ".to_string());
+    assert!(!launch.args().iter().any(|a| a == "--context"), "blank context adds nothing");
 }

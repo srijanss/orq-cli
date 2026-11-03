@@ -18,6 +18,8 @@ pub struct LaunchRequest {
     /// Model profile names, as `--implementer` and `--reviewer` take them.
     pub implementer: String,
     pub reviewer: String,
+    /// Free text for the implementer, passed whole as `--context`.
+    pub context: Option<String>,
 }
 
 impl LaunchRequest {
@@ -46,6 +48,10 @@ impl LaunchRequest {
         ] {
             args.push(flag.into());
             args.push(value.into());
+        }
+        if let Some(context) = self.context.as_ref().filter(|c| !c.trim().is_empty()) {
+            args.push("--context".into());
+            args.push(context.into());
         }
         args.push("--detach".into());
         args

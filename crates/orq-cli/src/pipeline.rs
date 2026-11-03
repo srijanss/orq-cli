@@ -27,6 +27,8 @@ pub struct Options<'a> {
     pub ci_check: bool,
     /// The id of a run whose launcher already announced it (a detached run); otherwise one is made.
     pub run_id: Option<&'a str>,
+    /// Checked free text appended to the implement request.
+    pub context: Option<&'a str>,
 }
 
 fn new_run_id() -> String {
@@ -317,6 +319,7 @@ fn stages(
             feature: options.feature,
             implementer: spec(&options.implementer),
             reviewer: spec(&options.reviewer),
+            context: options.context,
         })
         .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     let session = ImplementSession {
