@@ -162,3 +162,148 @@ pub fn classify_files(files: &[ReportFile]) -> Classification {
     classified.truncate(MAX_CLASSIFIED_FILES);
     Classification { files: classified, omitted }
 }
+
+use crate::review_input::{Finding, FindingStatus, Round, Severity, Verdict};
+
+/// How firmly the recorded evidence backs a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// A confirmed verdict, or a fix that was made for it.
+    Confirmed,
+    /// Raised, but not confirmed by the evidence recorded.
+    Potential,
+    /// Rejected after review.
+    Dismissed,
+}
+
+impl Standing {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Standing::Confirmed => "confirmed",
+            Standing::Potential => "potential",
+            Standing::Dismissed => "dismissed",
+        }
+    }
+}
+
+/// Whether the file a finding points at is part of the reported change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reference {
+    Changed,
+    /// The file is not in the changed set: the finding may describe older code.
+    Outdated,
+    NoFile,
+}
+
+impl Reference {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reference::Changed => "changed",
+            Reference::Outdated => "outdated",
+            Reference::NoFile => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributedFinding {
+    pub round: usize,
+    pub id: String,
+    pub severity: Severity,
+    pub category: String,
+    pub claim: String,
+    pub file: Option<String>,
+    pub line: Option<u64>,
+    pub standing: Standing,
+    pub unresolved: bool,
+    pub reference: Reference,
+    pub evidence: String,
+}
+
+fn attribute_one(round: usize, finding: &Finding, changed: &[&str]) -> AttributedFinding {
+    let standing = if finding.status == FindingStatus::Rejected {
+        Standing::Dismissed
+    } else if finding.verdict == Some(Verdict::Confirmed) || finding.status == FindingStatus::Fixed {
+        Standing::Confirmed
+    } else {
+        Standing::Potential
+    };
+    let unresolved = !matches!(finding.status, FindingStatus::Fixed | FindingStatus::Rejected);
+    let reference = match finding.file.as_deref() {
+        None => Reference::NoFile,
+        Some(file) if changed.contains(&file.strip_prefix("./").unwrap_or(file)) => Reference::Changed,
+        Some(_) => Reference::Outdated,
+    };
+    let verdict = match finding.verdict {
+        Some(Verdict::Confirmed) => "verdict confirmed",
+        Some(Verdict::Plausible) => "verdict plausible",
+        None => "no verdict recorded",
+    };
+    let status = match finding.status {
+        FindingStatus::Open => "open",
+        FindingStatus::Fixed => "fixed",
+        FindingStatus::Rejected => "rejected",
+        FindingStatus::Deferred => "deferred",
+        FindingStatus::Unknown => "status unknown",
+    };
+    AttributedFinding {
+        round,
+        id: finding.id.clone(),
+        severity: finding.severity,
+        category: finding.category.clone(),
+        claim: finding.claim.clone(),
+        file: finding.file.clone(),
+        line: finding.line,
+        standing,
+        unresolved,
+        reference,
+        evidence: format!("round {round}: {verdict}; {status}"),
+    }
+}
+
+/// Attribute every finding to the evidence recorded for it. A finding that
+/// recurs across rounds is reported once, at its latest state.
+pub fn attribute(rounds: &[Round], files: &[ReportFile]) -> Vec<AttributedFinding> {
+    let changed: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    let mut out: Vec<AttributedFinding> = Vec::new();
+    for round in rounds {
+        for finding in &round.findings {
+            let item = attribute_one(round.number, finding, &changed);
+            match out.iter_mut().find(|existing| existing.id == item.id) {
+                Some(existing) => *existing = item,
+                None => out.push(item),
+            }
+        }
+    }
+    out
+}
+
+fn percent_encode(path: &str) -> String {
+    let mut out = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// A link to a file at one commit, or `None` unless every part can be trusted:
+/// an https base, a full commit id, and a path that exists in that tree.
+pub fn file_link(base_url: &str, sha: &str, path: &str, line: Option<u64>, exists: &dyn Fn(&str) -> bool) -> Option<String> {
+    let base = base_url.strip_prefix("https://")?.trim_end_matches('/');
+    if base.is_empty() || base.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return None;
+    }
+    let plain = !path.is_empty() && !path.starts_with('/') && !path.chars().any(char::is_control) && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..");
+    if !plain || !exists(path) {
+        return None;
+    }
+    let anchor = line.map(|l| format!("#L{l}")).unwrap_or_default();
+    Some(format!("https://{base}/blob/{sha}/{}{anchor}", percent_encode(path)))
+}
