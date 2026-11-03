@@ -125,13 +125,19 @@ pub fn assess(policy: &RetentionPolicy, facts: &RunFacts, now: u64) -> Assessmen
     let Some(ended_at) = facts.ended_at else {
         return Assessment::Retained(Retained::NoEndTime);
     };
+    // Any review the run has, whatever way the run ended, protects it while it is open or unknown.
+    if let Some(review) = &facts.review {
+        if review.last_error.is_some() {
+            return Assessment::Retained(Retained::RemoteStateUncertain);
+        }
+        if review.state == ProviderState::Open {
+            return Assessment::Retained(Retained::UnresolvedReview);
+        }
+    }
     let report_days = if facts.state == RunState::Completed {
         let Some(review) = &facts.review else {
             return Assessment::Retained(Retained::RemoteStateUncertain);
         };
-        if review.last_error.is_some() {
-            return Assessment::Retained(Retained::RemoteStateUncertain);
-        }
         match review.state {
             ProviderState::Open => return Assessment::Retained(Retained::UnresolvedReview),
             ProviderState::Closed => {
