@@ -96,12 +96,9 @@ fn last_cleanup(roots: &StorageRoots) -> Option<u64> {
 }
 
 fn record_cleanup(roots: &StorageRoots, at: u64) {
-    let stamp = cleanup_stamp(roots);
-    let tmp = stamp.with_extension("tmp");
     // Best effort: failing to note the time must not turn a finished cleanup into an error.
-    if std::fs::write(&tmp, at.to_string()).is_ok() && std::fs::rename(&tmp, &stamp).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    // The write never follows a link planted in the data directory.
+    let _ = orq_core::storage::write_atomic(&roots.data, std::path::Path::new("last-cleanup"), at.to_string().as_bytes());
 }
 
 /// `YYYY-MM-DD HH:MM UTC` of unix seconds.
@@ -376,6 +373,20 @@ mod tests {
         ui_prune(&c, &previewed).unwrap();
         assert!(!c.roots.data.join("runs/shown-run/events.jsonl").exists());
         assert!(c.roots.data.join("runs/later-run/events.jsonl").exists(), "never shown, so never removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_stamp_is_never_written_through_a_planted_symlink() {
+        let c = ctx("symlink");
+        let outside = c.roots.state.join("precious.txt");
+        std::fs::write(&outside, "keep").unwrap();
+        std::os::unix::fs::symlink(&outside, c.roots.data.join("last-cleanup.tmp")).unwrap();
+        std::os::unix::fs::symlink(&outside, c.roots.data.join("last-cleanup")).unwrap();
+        let (_, previewed) = ui_preview(&c).unwrap();
+        ui_prune(&c, &previewed).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+        assert!(ui_view(&c).last_cleanup.is_some(), "the stamp replaces the link instead");
     }
 
     #[test]
