@@ -1489,6 +1489,9 @@ pub struct ReviewRow {
     pub status: String,
     /// The highest risk level in the report, or "-" when none is recorded.
     pub risk: String,
+    /// Whether the review belongs to the project the popup is open in, by
+    /// project identity rather than display name.
+    pub current: bool,
     /// Whether the report no longer matches the reviewed code.
     pub stale: bool,
 }
@@ -1977,7 +1980,7 @@ impl ReviewsState {
     /// The rows in the chosen project scope, before the other filters.
     fn in_scope(&self) -> Vec<&ReviewRow> {
         let Ok(rows) = &self.rows else { return Vec::new() };
-        rows.iter().filter(|r| self.all_projects || r.project == self.project).collect()
+        rows.iter().filter(|r| self.all_projects || r.current).collect()
     }
 
     /// The rows that pass every filter.

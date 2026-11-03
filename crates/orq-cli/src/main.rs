@@ -1617,7 +1617,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let rows = orq_core::review_inbox::inbox(&roots, &pipeline::project_id(&project), &project.name)?;
         Ok(rows
             .into_iter()
-            .map(|r| orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, stale: r.stale })
+            .map(|r| orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, current: r.current, stale: r.stale })
             .collect())
     }
 
