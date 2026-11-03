@@ -25,6 +25,41 @@ impl ProviderState {
     }
 }
 
+/// One provider review found for a run's branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub review_id: String,
+    pub url: String,
+    pub state: ProviderState,
+}
+
+/// Which review a run tracks, and the others found beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconciled {
+    pub primary: Option<Candidate>,
+    pub duplicates: Vec<Candidate>,
+}
+
+/// Pick the one review to track among duplicates. The recorded review wins
+/// while it is open or merged; otherwise open beats merged beats closed, and
+/// within a state the newest (highest numeric id) wins.
+pub fn reconcile(found: &[Candidate], recorded_id: Option<&str>) -> Reconciled {
+    let rank = |c: &Candidate| {
+        let state = match c.state {
+            ProviderState::Open => 2u8,
+            ProviderState::Merged => 1,
+            ProviderState::Closed => 0,
+        };
+        (state, c.review_id.parse::<u64>().unwrap_or(0), c.review_id.clone())
+    };
+    let recorded = recorded_id.and_then(|id| found.iter().position(|c| c.review_id == id && c.state != ProviderState::Closed));
+    let chosen = recorded.or_else(|| (0..found.len()).max_by_key(|&i| rank(&found[i])));
+    let Some(chosen) = chosen else { return Reconciled { primary: None, duplicates: Vec::new() } };
+    let mut duplicates: Vec<Candidate> = found.iter().enumerate().filter(|(i, _)| *i != chosen).map(|(_, c)| c.clone()).collect();
+    duplicates.sort_by(|a, b| rank(b).cmp(&rank(a)));
+    Reconciled { primary: Some(found[chosen].clone()), duplicates }
+}
+
 /// Whether the review still waits for a person.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
