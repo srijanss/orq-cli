@@ -12,6 +12,8 @@ pub struct ReviewInput {
     /// Rounds the file lists; `None` when it lists none (not "three").
     pub rounds_observed: Option<usize>,
     pub outcome: Option<String>,
+    /// The commit the review describes; `None` when the file names none.
+    pub head_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +21,8 @@ pub enum InputError {
     Missing,
     Inaccessible(String),
     Malformed(String),
+    /// Evidence that describes a different commit than the one reported.
+    Stale(String),
 }
 
 pub fn load_review_input(path: &Path) -> Result<ReviewInput, InputError> {
@@ -42,5 +46,15 @@ pub fn load_review_input(path: &Path) -> Result<ReviewInput, InputError> {
         Some(serde_json::Value::String(text)) => Some(text.clone()),
         Some(_) => return Err(InputError::Malformed("outcome is not text".to_string())),
     };
-    Ok(ReviewInput { rounds_observed, outcome })
+    let head_sha = optional_text(&value, "head_sha")?;
+    Ok(ReviewInput { rounds_observed, outcome, head_sha })
+}
+
+/// An optional text field: absent or null is `None`; any other type is malformed.
+pub(crate) fn optional_text(value: &serde_json::Value, key: &str) -> Result<Option<String>, InputError> {
+    match value.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(InputError::Malformed(format!("{key} is not text"))),
+    }
 }

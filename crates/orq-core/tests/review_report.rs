@@ -23,12 +23,12 @@ fn file(path: &str, added: Option<u64>, deleted: Option<u64>) -> ReportFile {
 }
 
 fn passed() -> TestEvidence {
-    TestEvidence { status: TestStatus::Passed, commands: vec![] }
+    TestEvidence { status: TestStatus::Passed, commands: vec![], head_sha: Some(HEAD.into()) }
 }
 
 #[test]
 fn a_complete_report_pins_the_head_and_never_invents_findings() {
-    let review = ReviewInput { rounds_observed: Some(2), outcome: Some("approved".into()) };
+    let review = ReviewInput { rounds_observed: Some(2), outcome: Some("approved".into()), head_sha: Some(HEAD.into()) };
     let report = build_report(&inputs(Ok(passed()), Ok(review), vec![file("a.rs", Some(3), Some(1)), file("b.bin", None, None)]));
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["head_sha"], HEAD);
@@ -59,15 +59,15 @@ fn missing_evidence_makes_the_report_incomplete_and_says_why() {
 
 #[test]
 fn an_unknown_round_count_stays_unknown() {
-    let review = ReviewInput { rounds_observed: None, outcome: None };
+    let review = ReviewInput { rounds_observed: None, outcome: None, head_sha: Some(HEAD.into()) };
     let report = build_report(&inputs(Ok(passed()), Ok(review), vec![]));
     assert!(report["review"]["rounds_observed"].is_null());
 }
 
 #[test]
 fn failed_tests_are_reported_as_failed_not_hidden() {
-    let tests = TestEvidence { status: TestStatus::Failed, commands: vec![] };
-    let report = build_report(&inputs(Ok(tests), Ok(ReviewInput { rounds_observed: Some(1), outcome: None }), vec![]));
+    let tests = TestEvidence { status: TestStatus::Failed, commands: vec![], head_sha: Some(HEAD.into()) };
+    let report = build_report(&inputs(Ok(tests), Ok(ReviewInput { rounds_observed: Some(1), outcome: None, head_sha: Some(HEAD.into()) }), vec![]));
     assert_eq!(report["tests"]["status"], "failed");
     assert_eq!(report["status"], "current");
 }

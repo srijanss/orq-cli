@@ -6,6 +6,7 @@ fn control_characters_in_paths_and_commands_never_reach_the_rendering() {
     let tests = TestEvidence {
         status: TestStatus::Passed,
         commands: vec![TestCommand { command: "run\u{1b}[2J\nfake".into(), exit_code: Some(0) }],
+        head_sha: None,
     };
     let report = build_report(&ReportInputs {
         run_id: "run-1".into(),

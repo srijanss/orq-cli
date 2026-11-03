@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use crate::review_input::{InputError, ReviewInput};
+use crate::review_input::{optional_text, InputError, ReviewInput};
 
 pub const REPORT_SCHEMA_VERSION: u64 = 1;
 
@@ -41,6 +41,8 @@ pub struct TestCommand {
 pub struct TestEvidence {
     pub status: TestStatus,
     pub commands: Vec<TestCommand>,
+    /// The commit the commands ran against; `None` when the file names none.
+    pub head_sha: Option<String>,
 }
 
 /// Reads the run's exported `tests.json`. The status comes from the recorded
@@ -69,7 +71,7 @@ pub fn load_test_evidence(path: &Path) -> Result<TestEvidence, InputError> {
     } else {
         TestStatus::Unknown
     };
-    Ok(TestEvidence { status, commands })
+    Ok(TestEvidence { status, commands, head_sha: optional_text(&value, "head_sha")? })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +99,7 @@ fn why(error: &InputError) -> String {
         InputError::Missing => "not provided".to_string(),
         InputError::Inaccessible(detail) => format!("could not be read: {detail}"),
         InputError::Malformed(detail) => format!("malformed: {detail}"),
+        InputError::Stale(detail) => detail.clone(),
     }
 }
 
@@ -104,26 +107,56 @@ fn why(error: &InputError) -> String {
 /// evidence were available; otherwise it is `incomplete`, with each gap named.
 pub fn build_report(inputs: &ReportInputs) -> Value {
     let mut gaps = Vec::new();
-    let (tests, tests_known) = match &inputs.tests {
-        Ok(evidence) => (
-            json!({
-                "status": evidence.status.as_str(),
-                "commands": evidence.commands.iter().map(|c| json!({"command": c.command, "exit_code": c.exit_code})).collect::<Vec<_>>(),
-            }),
-            matches!(evidence.status, TestStatus::Passed | TestStatus::Failed),
-        ),
+    // Evidence is only current for the commit it names: another commit's is
+    // stale (not shown), and evidence naming no commit cannot be verified.
+    let stale = |head: &Option<String>, what: &str| match head {
+        Some(named) if named != &inputs.head_sha => Some(InputError::Stale(format!("{what} belongs to commit {named}, not {}", inputs.head_sha))),
+        _ => None,
+    };
+    let tests_in = match &inputs.tests {
+        Ok(evidence) => stale(&evidence.head_sha, "test evidence").map_or(Ok(evidence), Err),
+        Err(error) => Err(error.clone()),
+    };
+    let (tests, tests_known) = match &tests_in {
+        Ok(evidence) => {
+            if evidence.head_sha.is_none() {
+                gaps.push("test evidence is not bound to a commit".to_string());
+            }
+            (
+                json!({
+                    "status": evidence.status.as_str(),
+                    "commands": evidence.commands.iter().map(|c| json!({"command": c.command, "exit_code": c.exit_code})).collect::<Vec<_>>(),
+                }),
+                matches!(evidence.status, TestStatus::Passed | TestStatus::Failed),
+            )
+        }
         Err(error) => {
-            gaps.push(format!("test evidence {}", why(error)));
+            gaps.push(match error {
+                InputError::Stale(_) => why(error),
+                _ => format!("test evidence {}", why(error)),
+            });
             (json!({"status": "unknown", "commands": [], "reason": why(error)}), false)
         }
     };
-    if inputs.tests.is_ok() && !tests_known {
+    if tests_in.is_ok() && !tests_known {
         gaps.push("test evidence does not show a result".to_string());
     }
-    let review = match &inputs.review {
-        Ok(input) => json!({"status": "available", "rounds_observed": input.rounds_observed, "outcome": input.outcome}),
+    let review_in = match &inputs.review {
+        Ok(input) => stale(&input.head_sha, "review details").map_or(Ok(input), Err),
+        Err(error) => Err(error.clone()),
+    };
+    let review = match &review_in {
+        Ok(input) => {
+            if input.head_sha.is_none() {
+                gaps.push("review details are not bound to a commit".to_string());
+            }
+            json!({"status": "available", "rounds_observed": input.rounds_observed, "outcome": input.outcome})
+        }
         Err(error) => {
-            gaps.push(format!("review details {}", why(error)));
+            gaps.push(match error {
+                InputError::Stale(_) => why(error),
+                _ => format!("review details {}", why(error)),
+            });
             json!({"status": "unavailable", "reason": why(error), "rounds_observed": null, "outcome": null})
         }
     };

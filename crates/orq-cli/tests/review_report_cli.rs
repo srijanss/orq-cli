@@ -72,7 +72,9 @@ fn show(sandbox: &Sandbox, run: &str, extra: &[&str]) -> (bool, String, String) 
     (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
-const PASSING: &str = r#"{"schema_version":1,"commands":[{"command":"cargo test","exit_code":0}]}"#;
+fn passing(head: &str) -> String {
+    format!(r#"{{"schema_version":1,"head_sha":"{head}","commands":[{{"command":"cargo test","exit_code":0}}]}}"#)
+}
 
 #[test]
 fn a_built_report_shows_the_final_commit_and_test_status_without_findings() {
@@ -81,8 +83,8 @@ fn a_built_report_shows_the_final_commit_and_test_status_without_findings() {
     let base = git(fixture.root(), &["rev-parse", "HEAD"]);
     std::fs::write(fixture.root().join("a.txt"), "one\ntwo\n").unwrap();
     let head = commit(fixture.root(), "add a");
-    sandbox.write_run_file("run-1", "tests.json", PASSING);
-    let review = sandbox.write_run_file("run-1", "review-input.json", r#"{"schema_version":1,"rounds_observed":2,"outcome":"approved"}"#);
+    sandbox.write_run_file("run-1", "tests.json", &passing(&head));
+    let review = sandbox.write_run_file("run-1", "review-input.json", &format!(r#"{{"schema_version":1,"head_sha":"{head}","rounds":[{{}},{{}}],"outcome":"approved"}}"#));
 
     let built = build(&sandbox, "run-1", fixture.root(), &base, &["--review-input", review.to_str().unwrap()]);
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
@@ -108,7 +110,7 @@ fn a_range_with_no_changes_reports_zero_files() {
     let sandbox = Sandbox::new("empty");
     let fixture = GitFixture::new();
     let head = git(fixture.root(), &["rev-parse", "HEAD"]);
-    sandbox.write_run_file("run-2", "tests.json", PASSING);
+    sandbox.write_run_file("run-2", "tests.json", &passing(&head));
     assert!(build(&sandbox, "run-2", fixture.root(), &head, &[]).status.success());
     let (_, json, _) = show(&sandbox, "run-2", &["--json"]);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -123,8 +125,8 @@ fn binary_and_renamed_files_are_reported_as_such() {
     let base = commit(fixture.root(), "seed");
     git(fixture.root(), &["mv", "old name.txt", "new name.txt"]);
     std::fs::write(fixture.root().join("blob.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
-    commit(fixture.root(), "rename and binary");
-    sandbox.write_run_file("run-3", "tests.json", PASSING);
+    let head = commit(fixture.root(), "rename and binary");
+    sandbox.write_run_file("run-3", "tests.json", &passing(&head));
     assert!(build(&sandbox, "run-3", fixture.root(), &base, &[]).status.success());
     let (_, text, _) = show(&sandbox, "run-3", &[]);
     assert!(text.contains("new name.txt (renamed from old name.txt)"), "{text}");
