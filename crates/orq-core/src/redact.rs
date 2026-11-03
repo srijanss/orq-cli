@@ -71,41 +71,38 @@ fn redact_json_lines(bytes: &[u8]) -> Option<Vec<u8>> {
         }
         serde_json::from_str(body).ok()
     };
-    let mut lines = Vec::new();
-    for line in text.split_inclusive('\n') {
-        let (body, newline) = match line.strip_suffix('\n') {
-            Some(body) => (body, "\n"),
-            None => (line, ""),
-        };
-        lines.push((body, newline, parse(body)));
-    }
-    if lines.iter().all(|(_, _, value)| value.is_none()) {
+    let split = |line: &'_ str| -> (usize, usize) {
+        let body_len = line.strip_suffix('\n').map_or(line.len(), str::len);
+        (body_len, line.len())
+    };
+    // First pass keeps nothing: it only decides whether any line is JSON.
+    if !text.split_inclusive('\n').any(|line| parse(&line[..split(line).0]).is_some()) {
         return None;
     }
+    // Second pass streams: only the current record and the offset where the
+    // pending plain span began are held.
     let mut out = Vec::with_capacity(bytes.len());
-    let mut span = String::new();
-    for (body, newline, value) in lines {
-        match value {
-            None => {
-                span.push_str(body);
-                span.push_str(newline);
+    let mut span_start = 0;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let (body_len, line_len) = split(line);
+        let body = &line[..body_len];
+        if let Some(mut value) = parse(body) {
+            if span_start < offset {
+                out.extend(redact(&text[span_start..offset]).into_bytes());
             }
-            Some(mut value) => {
-                if !span.is_empty() {
-                    out.extend(redact(&span).into_bytes());
-                    span.clear();
-                }
-                if redact_value(&mut value) {
-                    out.extend(serde_json::to_vec(&value).ok()?);
-                } else {
-                    out.extend(body.as_bytes());
-                }
-                out.extend(newline.as_bytes());
+            if redact_value(&mut value) {
+                out.extend(serde_json::to_vec(&value).ok()?);
+            } else {
+                out.extend(body.as_bytes());
             }
+            out.extend(line[body_len..].as_bytes());
+            span_start = offset + line_len;
         }
+        offset += line_len;
     }
-    if !span.is_empty() {
-        out.extend(redact(&span).into_bytes());
+    if span_start < offset {
+        out.extend(redact(&text[span_start..offset]).into_bytes());
     }
     Some(out)
 }
