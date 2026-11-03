@@ -1,4 +1,5 @@
 pub mod naming;
+pub mod no_merge;
 pub mod ownership;
 pub mod review_input;
 pub mod run;
