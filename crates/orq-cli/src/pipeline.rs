@@ -142,7 +142,7 @@ pub(crate) fn state_root() -> Option<PathBuf> {
     Some(base.join("orq"))
 }
 
-fn find_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = std::env::var_os("PATH")?;
     // Sessions run in the worktree, so the program must not depend on this process's cwd:

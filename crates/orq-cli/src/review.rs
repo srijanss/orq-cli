@@ -1,12 +1,13 @@
 //! `orq review build|show`: the deterministic review report, built from Git
-//! and the run's recorded evidence and kept in Orq's own storage. Nothing here
-//! contacts a provider.
+//! and the run's recorded evidence and kept in Orq's own storage. Only
+//! `refresh` contacts a provider, and it only reads.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use orq_core::review_input::load_review_input;
+use orq_core::review_lifecycle::ReviewLifecycle;
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
 use orq_core::storage::{check_run_id, write_atomic, StorageRoots};
 use orq_core::store::Store;
@@ -17,6 +18,7 @@ pub(crate) fn review(args: &[OsString]) -> ExitCode {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("build") => build(&args[1..]),
         Some("show") => show(&args[1..]),
+        Some("refresh") => refresh(&args[1..]),
         _ => usage_error(),
     }
 }
@@ -170,8 +172,103 @@ fn show(args: &[OsString]) -> ExitCode {
         println!("{}", String::from_utf8_lossy(&bytes));
     } else {
         print!("{}", render_markdown(&report));
+        match store.lifecycles_for_run(run_id) {
+            Ok(lifecycles) => lifecycles.iter().for_each(|l| print!("\n{}", describe(l))),
+            Err(err) => return fail(format!("cannot read the provider review state: {err}")),
+        }
     }
     ExitCode::SUCCESS
+}
+
+/// The provider side of a review, as plain lines.
+fn describe(lifecycle: &ReviewLifecycle) -> String {
+    let mut text = format!(
+        "Provider review {} ({}): {}\nstate: {}\ngate: {}\nreport head: {}\n",
+        lifecycle.review_id,
+        lifecycle.provider,
+        lifecycle.url,
+        lifecycle.state.as_str(),
+        lifecycle.gate.as_str(),
+        lifecycle.reported_head_sha,
+    );
+    if let (true, Some(seen)) = (lifecycle.stale, &lifecycle.observed_head_sha) {
+        text.push_str(&format!("stale: the provider shows {seen}, not the reported commit\n"));
+    }
+    if let Some(error) = &lifecycle.last_error {
+        text.push_str(&format!("last error: {error}\n"));
+    }
+    text
+}
+
+/// Look at the run's review on the provider (read-only) and keep what it shows.
+fn refresh(args: &[OsString]) -> ExitCode {
+    let [run] = args else { return usage_error() };
+    let Some(run_id) = run.to_str() else { return usage_error() };
+    if let Err(err) = check_run_id(run_id) {
+        return fail(format!("invalid run id: {err}"));
+    }
+    let roots = match roots() {
+        Ok(roots) => roots,
+        Err(err) => return fail(err),
+    };
+    let store = match Store::open(&roots.database()) {
+        Ok(store) => store,
+        Err(err) => return fail(format!("cannot open the review index: {err}")),
+    };
+    let reported = match store.reviews_for_run(run_id) {
+        Ok(records) => records.last().map(|r| r.head_sha.clone()),
+        Err(err) => return fail(format!("cannot read the review index: {err}")),
+    };
+    let Some(reported) = reported else { return fail(format!("no review report for run {run_id}: build one first with `orq review build`")) };
+
+    let Some(state_root) = pipeline::state_root() else { return fail("no state location: set XDG_STATE_HOME or HOME") };
+    let runs = orq_orchestrator::RunStore::new(&state_root);
+    let record = match runs.load(run_id) {
+        Ok(record) => record,
+        Err(err) => return fail(format!("cannot read run {run_id}: {err:?}")),
+    };
+    let cli = if record.provider == "gitlab" { "glab" } else { "gh" };
+    let Some(program) = pipeline::find_program(cli) else { return fail(format!("{cli} is not on PATH")) };
+    let observed = match orq_orchestrator::observe_review(&runs, run_id, &program, std::time::Duration::from_secs(60)) {
+        Ok(observed) => observed,
+        Err(err) => return fail(format!("cannot look at the review: {err:?}")),
+    };
+
+    let existing = match store.lifecycles_for_run(run_id) {
+        Ok(all) => all.into_iter().find(|l| l.reported_head_sha == reported),
+        Err(err) => return fail(format!("cannot read the provider review state: {err}")),
+    };
+    let (base, observation) = match observed {
+        Ok(seen) => {
+            let same_review = existing.as_ref().is_some_and(|l| l.review_id == seen.review.review_id);
+            let base = match existing {
+                Some(l) if same_review => l,
+                _ => ReviewLifecycle::associate(&record.provider, &seen.review.review_id, &seen.review.url, &reported),
+            };
+            if !seen.duplicates.is_empty() {
+                let ids: Vec<&str> = seen.duplicates.iter().map(|d| d.review_id.as_str()).collect();
+                eprintln!("note: other reviews exist for this branch ({}); tracking {}", ids.join(", "), seen.review.review_id);
+            }
+            (base, Ok(seen.observation))
+        }
+        Err(error) => {
+            let base = match existing {
+                Some(l) => l,
+                None => match orq_orchestrator::recorded_review(&runs, run_id) {
+                    Ok(Some(r)) => ReviewLifecycle::associate(&record.provider, &r.id, &r.url, &reported),
+                    _ => return fail(format!("the review could not be looked at: {error:?}")),
+                },
+            };
+            (base, Err(error))
+        }
+    };
+    let failed = observation.is_err();
+    let next = base.apply(observation);
+    if let Err(err) = store.save_lifecycle(run_id, &next) {
+        return fail(format!("cannot store the provider review state: {err}"));
+    }
+    print!("{}", describe(&next));
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
 /// The current UTC time as RFC 3339, without a date-time dependency.
