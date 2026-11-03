@@ -792,3 +792,29 @@ fn a_configured_notification_command_hears_how_the_run_ended_and_its_failure_cha
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stderr(&output).contains("notification"), "{}", stderr(&output));
 }
+
+fn notify_world(tag: &str, mode: Option<&str>) -> (World, PathBuf) {
+    let w = world(tag);
+    let heard = w.repo.root().join("heard.txt");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    let mut toml = format!("notify_cmd = [\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$NOTIFY_MESSAGE\\\" >> '{}'\"]\n", heard.display());
+    if let Some(mode) = mode {
+        toml.push_str(&format!("notify_on = \"{mode}\"\n"));
+    }
+    std::fs::write(w.repo.root().join(".orq/run.toml"), toml).unwrap();
+    (w, heard)
+}
+
+#[test]
+fn a_run_that_cannot_create_its_worktree_is_still_announced() {
+    let (w, heard) = notify_world("notifywt", None);
+    // A file where the worktrees' parent directory must go.
+    std::fs::write(w.repo.root().join(".claude"), "in the way").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert!(!output.status.success(), "{}", stderr(&output));
+    let heard = std::fs::read_to_string(&heard).expect("the notifier ran");
+    assert!(heard.starts_with("orq: COM-01 failed"), "{heard}");
+}
