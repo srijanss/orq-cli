@@ -155,3 +155,19 @@ fn deleting_relative_to_the_root_never_follows_a_symlink_even_if_swapped_in_afte
     assert!(delete_in_root(&root, std::path::Path::new("../repo/Cargo.toml")).is_err());
     assert!(outside.join("Cargo.toml").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_root_that_is_itself_a_symlink_is_refused() {
+    use orq_core::ownership::delete_in_root;
+
+    let d = dir("root-symlink");
+    let real = d.join("repo");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("Cargo.toml"), "x").unwrap();
+    let root = d.join("orq");
+    std::os::unix::fs::symlink(&real, &root).unwrap();
+
+    assert!(delete_in_root(&root, std::path::Path::new("Cargo.toml")).is_err());
+    assert!(real.join("Cargo.toml").exists());
+}

@@ -52,10 +52,14 @@ pub fn may_orq_delete(orq_root: &Path, path: &Path) -> bool {
 }
 
 /// Deletes the file `rel` (relative to `orq_root`) without ever trusting a
-/// path check made earlier: the root is opened once, each directory is opened
-/// relative to its parent handle refusing symlinks, and the file is unlinked
-/// relative to the final handle. A directory swapped for a symlink at any
-/// moment makes the deletion fail instead of escaping the root.
+/// path check made earlier: the root is opened once (a root that is itself a
+/// symlink is refused), each directory is opened relative to its parent handle
+/// refusing symlinks, and the file is unlinked relative to the final handle.
+/// A symlink swapped in for the root or any directory beneath it makes the
+/// deletion fail rather than be followed. Threat model: the ancestors *of* the
+/// root are trusted, and so are processes able to rename directories inside it
+/// (that needs the same privilege as Orq itself); a directory renamed out of
+/// the root after it was opened is still deleted from through its handle.
 #[cfg(unix)]
 pub fn delete_in_root(orq_root: &Path, rel: &Path) -> std::io::Result<()> {
     use rustix::fs::{open, openat, unlinkat, AtFlags, Mode, OFlags};
@@ -74,7 +78,7 @@ pub fn delete_in_root(orq_root: &Path, rel: &Path) -> std::io::Result<()> {
         return Err(denied("tool and project files are not Orq's to delete"));
     }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let mut dir = open(orq_root, flags, Mode::empty())?;
+    let mut dir = open(orq_root, flags | OFlags::NOFOLLOW, Mode::empty())?;
     for part in dirs {
         dir = openat(&dir, *part, flags | OFlags::NOFOLLOW, Mode::empty())?;
     }
