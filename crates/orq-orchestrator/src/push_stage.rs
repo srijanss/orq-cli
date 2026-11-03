@@ -28,6 +28,12 @@ pub fn push_run_branch(store: &RunStore, run_id: &str, log_path: &Path) -> Resul
         let reason = format!("the run branch {} is the target branch and is never pushed", record.branch);
         return fail(store, &record, reason, &log_name);
     }
+    // The human-only merge rule: a push may never update a protected branch, whatever the target is.
+    let protected = [record.target_branch.clone(), "main".to_string(), "master".to_string()];
+    let push_args = ["push".to_string(), record.remote.clone(), format!("HEAD:refs/heads/{}", record.branch)];
+    if let Some(why) = orq_core::no_merge::forbidden_git_push(&push_args, &protected) {
+        return fail(store, &record, format!("the run branch {} is refused: {why}", record.branch), &log_name);
+    }
     let worktree = record.worktree.as_path();
     // Only the run's own branch is published: a switched or detached HEAD is not.
     let head = git_raw(worktree, &["symbolic-ref", "-q", "HEAD"])?;

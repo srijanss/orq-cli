@@ -411,3 +411,14 @@ fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
     let command = logged.lines().find(|l| l.starts_with("$ git ")).unwrap();
     assert!(command.contains("forge.example") && !command.contains(" origin "), "{command}");
 }
+
+#[test]
+fn a_run_branch_named_like_a_protected_branch_is_refused_even_when_the_target_differs() {
+    let w = world("protected", "master", "develop", None);
+
+    let outcome = push_run_branch(&w.store, "run-1", &w.log).unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    assert!(git(&w.remote, &["branch", "--list", "master"]).is_empty(), "nothing was published");
+    assert_eq!(kinds(&w), ["stage.failed"]);
+}
