@@ -99,12 +99,24 @@ fn build(args: &[OsString]) -> ExitCode {
     // published or indexed, so a failed build leaves no half-visible report.
     let markdown = orq_core::redact::redact(&render_markdown(&report));
     let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
+    let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
     if let Err(err) = write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()) {
         return fail(format!("cannot store the readable report: {err}"));
     }
     let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
         Ok(record) => record,
-        Err(err) => return fail(format!("cannot store the review report: {err}")),
+        Err(err) => {
+            // Put the published pair back as it was: the old readable copy, or none.
+            match previous {
+                Some(old) => {
+                    let _ = write_atomic(&roots.data, Path::new(&markdown_path), &old);
+                }
+                None => {
+                    let _ = std::fs::remove_file(roots.data.join(&markdown_path));
+                }
+            }
+            return fail(format!("cannot store the review report: {err}"));
+        }
     };
     println!("{}", roots.data.join(&record.report_path).display());
     ExitCode::SUCCESS
