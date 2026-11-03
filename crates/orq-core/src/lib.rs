@@ -4,6 +4,7 @@ pub mod ownership;
 pub mod provider_observation;
 pub mod prune;
 pub mod redact;
+pub mod remote_inbox;
 pub mod retention;
 pub mod review_inbox;
 pub mod review_intelligence;

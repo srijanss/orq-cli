@@ -1,0 +1,152 @@
+//! A read-only view of the review inbox for a remote browser.
+//!
+//! This is the request handler only: it takes an already-parsed request and
+//! returns a JSON answer, reading the same stored reports Herdr shows. It has
+//! no way to change anything; merging happens at the provider, after
+//! following the link in the answer. Every request is read from storage afresh,
+//! so a lifecycle change shows on the next request.
+
+use std::net::{IpAddr, Ipv6Addr};
+
+use serde_json::{json, Value};
+
+use crate::review_inbox::{self, InboxDetail};
+use crate::storage::{check_run_id, StorageRoots};
+use crate::store::Store;
+
+pub struct RemoteConfig {
+    /// The shared secret a client sends as `Authorization: Bearer <token>`.
+    /// An empty token means nobody is authorised.
+    pub token: String,
+}
+
+pub struct Request<'a> {
+    pub method: &'a str,
+    /// The path without a query string.
+    pub path: &'a str,
+    /// The address the connection came from.
+    pub peer: IpAddr,
+    pub authorization: Option<&'a str>,
+}
+
+pub struct Response {
+    pub status: u16,
+    pub body: Value,
+}
+
+fn reply(status: u16, body: Value) -> Response {
+    Response { status, body }
+}
+
+fn error(status: u16, message: &str) -> Response {
+    reply(status, json!({ "error": message }))
+}
+
+/// Loopback and the Tailscale ranges only: 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+pub fn peer_allowed(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || (v4.octets()[0] == 100 && (64..=127).contains(&v4.octets()[1])),
+        IpAddr::V6(v6) => v6.is_loopback() || tailscale_v6(&v6) || v6.to_ipv4_mapped().is_some_and(|v4| peer_allowed(IpAddr::V4(v4))),
+    }
+}
+
+fn tailscale_v6(ip: &Ipv6Addr) -> bool {
+    ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0]
+}
+
+/// A provider link is passed on only when it is a plain `https` URL with a
+/// host, no credentials, no whitespace or control characters, and nothing that
+/// could break out of an attribute or a header.
+pub fn safe_link(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let bad_char = |c: char| c.is_control() || c.is_whitespace() || !c.is_ascii() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '\\');
+    if authority.is_empty() || authority.contains('@') || url.chars().any(bad_char) {
+        return None;
+    }
+    Some(url.to_string())
+}
+
+fn token_matches(expected: &str, header: Option<&str>) -> bool {
+    let Some(given) = header.and_then(|h| h.strip_prefix("Bearer ")) else { return false };
+    if expected.is_empty() || given.len() != expected.len() {
+        return false;
+    }
+    given.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+}
+
+pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
+    if !peer_allowed(request.peer) {
+        return error(403, "this address may not connect");
+    }
+    if !token_matches(&config.token, request.authorization) {
+        return error(401, "a valid bearer token is required");
+    }
+    if !matches!(request.method, "GET" | "HEAD") {
+        return error(405, "this view is read-only");
+    }
+    let path = request.path;
+    if path == "/api/reviews" {
+        return list(roots, project_id, project_name);
+    }
+    match path.strip_prefix("/api/reviews/") {
+        Some(run_id) if !run_id.contains('/') => one(roots, run_id),
+        _ => error(404, "not found"),
+    }
+}
+
+/// The newest stored lifecycle of `run_id` for the commit its report is about.
+struct Facts {
+    head: String,
+    observed: Option<String>,
+    link: Option<String>,
+    stale: bool,
+}
+
+fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
+    let store = Store::open_read_only(&roots.database()).ok()?;
+    let head = store.reviews_for_run(run_id).ok()?.pop()?.head_sha;
+    let lifecycle = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().rev().find(|l| l.reported_head_sha == head));
+    Some(Facts {
+        observed: lifecycle.as_ref().and_then(|l| l.observed_head_sha.clone()),
+        link: lifecycle.as_ref().and_then(|l| safe_link(&l.url)),
+        stale: lifecycle.as_ref().is_some_and(|l| l.stale),
+        head,
+    })
+}
+
+fn list(roots: &StorageRoots, project_id: &str, project_name: &str) -> Response {
+    let rows = match review_inbox::inbox(roots, project_id, project_name) {
+        Ok(rows) => rows,
+        Err(why) => return error(500, &why),
+    };
+    let reviews: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            let link = facts(roots, &row.run_id).and_then(|f| f.link);
+            json!({
+                "run_id": row.run_id, "feature": row.feature, "project": row.project, "current": row.current,
+                "status": row.status, "risk": row.risk, "stale": row.stale, "link": link,
+            })
+        })
+        .collect();
+    reply(200, json!({ "reviews": reviews }))
+}
+
+fn one(roots: &StorageRoots, run_id: &str) -> Response {
+    if check_run_id(run_id).is_err() {
+        return error(400, "invalid run id");
+    }
+    let InboxDetail { summary, risks, files, tests, rounds } = match review_inbox::detail(roots, run_id) {
+        Ok(detail) => detail,
+        Err(_) => return error(404, "no review report for this run"),
+    };
+    let Some(f) = facts(roots, run_id) else { return error(404, "no review report for this run") };
+    reply(
+        200,
+        json!({
+            "run_id": run_id, "reported_head_sha": f.head, "observed_head_sha": f.observed, "stale": f.stale, "link": f.link,
+            "summary": summary, "risks": risks, "files": files, "tests": tests, "rounds": rounds,
+        }),
+    )
+}
