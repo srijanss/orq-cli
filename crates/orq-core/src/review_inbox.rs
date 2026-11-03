@@ -93,13 +93,22 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
 
 /// The sections of the latest stored report of `run_id`.
 pub fn detail(roots: &StorageRoots, run_id: &str) -> Result<InboxDetail, String> {
+    detail_where(roots, run_id, |_| true)
+}
+
+/// The sections of the stored report of `run_id` written for `head_sha`.
+pub fn detail_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Result<InboxDetail, String> {
+    detail_where(roots, run_id, |record| record.head_sha == head_sha)
+}
+
+fn detail_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecord) -> bool) -> Result<InboxDetail, String> {
     check_run_id(run_id).map_err(|err| format!("invalid run id: {err}"))?;
     if !roots.database().exists() {
         return Err(format!("no review report for run {run_id}"));
     }
     let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
-    let record = records.last().ok_or_else(|| format!("no review report for run {run_id}"))?;
+    let record = records.iter().rev().find(|r| wanted(r)).ok_or_else(|| format!("no review report for run {run_id}"))?;
     let report = read_report(&roots.data, record).map_err(|why| format!("the report for run {run_id} is unreadable: {why}"))?;
     Ok(sections(&report))
 }
@@ -210,3 +219,4 @@ fn sections(report: &Value) -> InboxDetail {
         .collect();
     InboxDetail { summary, risks, files, tests, rounds }
 }
+

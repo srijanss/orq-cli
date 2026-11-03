@@ -141,11 +141,13 @@ fn one(roots: &StorageRoots, run_id: &str) -> Response {
     if check_run_id(run_id).is_err() {
         return error(400, "invalid run id");
     }
-    let InboxDetail { summary, risks, files, tests, rounds } = match review_inbox::detail(roots, run_id) {
+    // The commit is fixed first and the report is read for that very commit, so
+    // a report saved in between cannot be paired with another commit's facts.
+    let Some(f) = facts(roots, run_id) else { return error(404, "no review report for this run") };
+    let InboxDetail { summary, risks, files, tests, rounds } = match review_inbox::detail_at(roots, run_id, &f.head) {
         Ok(detail) => detail,
         Err(_) => return error(404, "no review report for this run"),
     };
-    let Some(f) = facts(roots, run_id) else { return error(404, "no review report for this run") };
     reply(
         200,
         json!({
