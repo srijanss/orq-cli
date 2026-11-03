@@ -8,6 +8,8 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, TransactionBehavior};
 
+use crate::storage::{check_head_sha, check_run_id, write_atomic};
+
 /// One stored review report, pinned to the head SHA it reviewed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewRecord {
@@ -91,6 +93,19 @@ impl Store {
             .map_err(db)
     }
 
+    /// Writes `report` to `runs/<run_id>/review/<head_sha>/review.json` under
+    /// `data_root` atomically, then indexes it. The file goes first, so the
+    /// index never points at a report that was not written.
+    pub fn save_review(&self, data_root: &Path, run_id: &str, project: &str, feature: &str, head_sha: &str, report: &[u8]) -> Result<ReviewRecord> {
+        check_run_id(run_id)?;
+        check_head_sha(head_sha)?;
+        let report_path = format!("runs/{run_id}/review/{head_sha}/review.json");
+        write_atomic(data_root, Path::new(&report_path), report)?;
+        let record = ReviewRecord { run_id: run_id.into(), project: project.into(), feature: feature.into(), head_sha: head_sha.into(), report_path };
+        self.record_review(&record)?;
+        Ok(record)
+    }
+
     pub fn reviews_for_run(&self, run_id: &str) -> Result<Vec<ReviewRecord>> {
         self.query("run_id = ?1", params![run_id])
     }
@@ -125,21 +140,6 @@ fn db(error: rusqlite::Error) -> Error {
     Error::other(error)
 }
 
-fn refuse(why: String) -> Error {
-    Error::new(ErrorKind::InvalidInput, why)
-}
-
-/// Run ids become directory names, so only a plain, short word is accepted.
-fn check_run_id(run_id: &str) -> Result<()> {
-    let plain = !run_id.is_empty() && run_id.len() <= 128 && run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if plain { Ok(()) } else { Err(refuse(format!("run id {run_id:?} is not a plain identifier"))) }
-}
-
-/// Head SHAs become directory names, so only lowercase hex of a real length is accepted.
-fn check_head_sha(head_sha: &str) -> Result<()> {
-    let hex = (7..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
-    if hex { Ok(()) } else { Err(refuse(format!("head sha {head_sha:?} is not lowercase hex"))) }
-}
 
 /// Creates the database file owner-only before SQLite can create it with the
 /// process umask; the WAL and shared-memory files inherit its mode.

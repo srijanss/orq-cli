@@ -108,6 +108,45 @@ pub fn write_atomic(root: &Path, rel: &Path, bytes: &[u8]) -> std::io::Result<()
     Ok(())
 }
 
+/// Run ids become directory names, so only a plain, short word is accepted.
+pub fn check_run_id(run_id: &str) -> std::io::Result<()> {
+    let plain = !run_id.is_empty() && run_id.len() <= 128 && run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if plain { Ok(()) } else { Err(Error::new(ErrorKind::InvalidInput, format!("run id {run_id:?} is not a plain identifier"))) }
+}
+
+/// Head SHAs become directory names, so only lowercase hex of a real length is accepted.
+pub fn check_head_sha(head_sha: &str) -> std::io::Result<()> {
+    let hex = (7..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+    if hex { Ok(()) } else { Err(Error::new(ErrorKind::InvalidInput, format!("head sha {head_sha:?} is not lowercase hex"))) }
+}
+
+/// The per-run files Orq writes besides review reports; each has one fixed name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFile {
+    Tests,
+    ReviewRounds,
+    Handoff,
+    Events,
+}
+
+impl RunFile {
+    pub fn file_name(self) -> &'static str {
+        match self {
+            RunFile::Tests => "tests.json",
+            RunFile::ReviewRounds => "review-rounds.json",
+            RunFile::Handoff => "handoff.json",
+            RunFile::Events => "events.jsonl",
+        }
+    }
+}
+
+/// Atomically writes one of a run's fixed files to `runs/<run_id>/` under `data_root`.
+#[cfg(unix)]
+pub fn save_run_file(data_root: &Path, run_id: &str, file: RunFile, bytes: &[u8]) -> std::io::Result<()> {
+    check_run_id(run_id)?;
+    write_atomic(data_root, &Path::new("runs").join(run_id).join(file.file_name()), bytes)
+}
+
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

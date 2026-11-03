@@ -1,0 +1,63 @@
+use std::path::PathBuf;
+
+use orq_core::storage::{save_run_file, RunFile};
+use orq_core::store::Store;
+
+const SHA: &str = "773a1660000000000000000000000000000000bb";
+
+fn scratch(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("orq-run-layout-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_saved_report_lands_under_its_head_sha_and_is_found_again_after_a_restart() {
+    let root = scratch("review");
+    let db = root.join("orq.db");
+    let saved = {
+        let store = Store::open(&db).unwrap();
+        store.save_review(&root, "r1", "alpha", "login", SHA, b"{\"findings\":[]}").unwrap()
+    };
+    assert_eq!(saved.report_path, format!("runs/r1/review/{SHA}/review.json"));
+    assert_eq!(std::fs::read(root.join(&saved.report_path)).unwrap(), b"{\"findings\":[]}");
+
+    let store = Store::open(&db).unwrap(); // a restarted Orq
+    let found = store.reviews_for_head_sha(SHA).unwrap();
+    assert_eq!(found, vec![saved.clone()]);
+    assert_eq!(std::fs::read(root.join(&found[0].report_path)).unwrap(), b"{\"findings\":[]}");
+
+    // A later report for the same run and head SHA replaces the file and the row.
+    store.save_review(&root, "r1", "alpha", "login", SHA, b"{\"findings\":[1]}").unwrap();
+    assert_eq!(store.reviews_for_run("r1").unwrap().len(), 1);
+    assert_eq!(std::fs::read(root.join(&saved.report_path)).unwrap(), b"{\"findings\":[1]}");
+}
+
+#[test]
+fn unsafe_run_ids_and_head_shas_write_nothing() {
+    let root = scratch("unsafe");
+    let store = Store::open(&root.join("orq.db")).unwrap();
+    assert!(store.save_review(&root, "../escape", "alpha", "login", SHA, b"x").is_err());
+    assert!(store.save_review(&root, "r1", "alpha", "login", "../../escape", b"x").is_err());
+    assert!(save_run_file(&root, "a/b", RunFile::Handoff, b"x").is_err());
+    assert!(!root.join("runs").exists(), "a refused write must not even create directories");
+    assert!(!root.parent().unwrap().join("escape").exists());
+}
+
+#[test]
+fn run_files_are_written_only_under_their_fixed_names() {
+    let root = scratch("files");
+    for (file, name) in [
+        (RunFile::Tests, "tests.json"),
+        (RunFile::ReviewRounds, "review-rounds.json"),
+        (RunFile::Handoff, "handoff.json"),
+        (RunFile::Events, "events.jsonl"),
+    ] {
+        save_run_file(&root, "r1", file, name.as_bytes()).unwrap();
+        assert_eq!(std::fs::read(root.join("runs/r1").join(name)).unwrap(), name.as_bytes());
+    }
+    let mut names: Vec<_> = std::fs::read_dir(root.join("runs/r1")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["events.jsonl", "handoff.json", "review-rounds.json", "tests.json"]);
+}
