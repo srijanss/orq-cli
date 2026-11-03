@@ -4,7 +4,8 @@
 //! one), so only the agent session is skipped, and only when it already finished.
 
 use crate::run_status::{summarize_run, RunPhase};
-use crate::store::{Event, RunRecord, RunStore};
+use crate::implement::{next_event_id, now_rfc3339};
+use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const IMPLEMENT_STAGE: &str = "implement_and_review";
 
@@ -51,4 +52,21 @@ fn implement_finished(events: &[Event]) -> bool {
         }
     }
     finished
+}
+
+/// Carry the finished agent session over to the resumed run, so a run resumed again after
+/// stopping later still knows the session is done.
+pub fn record_inherited_implement(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "stage.completed".to_string(),
+        stage: Some(IMPLEMENT_STAGE.to_string()),
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "resumed_from": from_run_id }),
+    })
 }

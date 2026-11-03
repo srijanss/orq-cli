@@ -291,7 +291,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().is_some_and(|r| r.skip_implement)));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str())));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
@@ -374,7 +374,7 @@ fn stages(
     settings: &orq_orchestrator::RunSettings,
     provider_cli: &str,
     logs: &Path,
-    implement_done: bool,
+    implement_inherited_from: Option<&str>,
 ) -> Result<Report, StoreError> {
     let run_id = record.run_id.as_str();
     let worktree = record.worktree.as_path();
@@ -395,7 +395,9 @@ fn stages(
         }
 
         // A resumed run whose agent session already finished goes on from the next stage.
-        if !implement_done {
+        if let Some(from) = implement_inherited_from {
+            orq_orchestrator::record_inherited_implement(store, record, from)?;
+        } else {
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let args = adapter
                 .implement_argv(&ImplementRequest {

@@ -148,3 +148,20 @@ fn resuming_is_refused_with_a_reason_when_there_is_nothing_to_pick_up() {
     assert_ne!(both.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&both.stderr).contains("cannot be combined"), "{}", String::from_utf8_lossy(&both.stderr));
 }
+
+#[test]
+fn a_run_resumed_twice_still_remembers_that_the_agent_finished() {
+    let w = world("twice");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
+    assert_eq!(run_with(&w, &second_agent, &["--resume"]).status.code(), Some(EXIT_FAILED), "the gate still fails");
+
+    set_gate(&w, "true");
+    let third = run_with(&w, &second_agent, &["--resume"]);
+
+    assert_eq!(third.status.code(), Some(0), "{}", String::from_utf8_lossy(&third.stderr));
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(!pushed.contains("again.txt"), "no agent session was started on either resume: {pushed}");
+}
