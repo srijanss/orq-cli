@@ -94,6 +94,8 @@ pub enum Retained {
     WorktreeInUse,
     UnresolvedReview,
     RemoteStateUncertain,
+    /// Orq has files for the run but no record of it, so nothing is known about it.
+    UnknownRun,
     NoEndTime,
     TooRecent,
 }
@@ -246,4 +248,135 @@ pub fn inventory(data_root: &std::path::Path) -> std::io::Result<Vec<Artifact>> 
     }
     found.sort_by(|a, b| (&a.run_id, &a.rel).cmp(&(&b.run_id, &b.rel)));
     Ok(found)
+}
+
+/// One file a prune would remove, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub artifact: Artifact,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub run_id: String,
+    pub why: Retained,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PrunePlan {
+    pub candidates: Vec<Candidate>,
+    /// Runs whose stored metadata is also past retention.
+    pub metadata: Vec<String>,
+    pub kept: Vec<Kept>,
+}
+
+impl PrunePlan {
+    pub fn total_bytes(&self) -> u64 {
+        self.candidates.iter().map(|c| c.artifact.bytes).sum()
+    }
+
+    /// The preview a person reads before anything is removed: each file with
+    /// its size and the reason, then what is being kept and why.
+    pub fn render(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.candidates.is_empty() && self.metadata.is_empty() {
+            lines.push("Nothing to prune.".to_string());
+        } else {
+            let runs: std::collections::BTreeSet<&str> = self.candidates.iter().map(|c| c.artifact.run_id.as_str()).collect();
+            lines.push(format!("{} file(s), {} across {} run(s):", self.candidates.len(), human_bytes(self.total_bytes()), runs.len()));
+            for c in &self.candidates {
+                lines.push(format!("  {}  {}  {}", c.artifact.rel.display(), human_bytes(c.artifact.bytes), c.reason));
+            }
+            for run in &self.metadata {
+                lines.push(format!("  metadata of run {run}  past its retention"));
+            }
+        }
+        if !self.kept.is_empty() {
+            lines.push("Kept:".to_string());
+            for k in &self.kept {
+                lines.push(format!("  {}  {}", k.run_id, k.why.describe()));
+            }
+        }
+        lines
+    }
+}
+
+impl Retained {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Retained::Active => "the run is still active",
+            Retained::AwaitingReview => "the run is waiting for human review",
+            Retained::Pinned => "the run is pinned",
+            Retained::WorktreeInUse => "the run's worktree is still in use",
+            Retained::UnresolvedReview => "its review is still open",
+            Retained::RemoteStateUncertain => "the review's remote state is unknown or out of date",
+            Retained::UnknownRun => "there is no record of the run",
+            Retained::NoEndTime => "the run has no recorded end time",
+            Retained::TooRecent => "not old enough yet",
+        }
+    }
+}
+
+impl ArtifactClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArtifactClass::Temporary => "temporary",
+            ArtifactClass::Log => "log",
+            ArtifactClass::Checkpoint => "checkpoint",
+            ArtifactClass::Report => "report",
+            ArtifactClass::Metadata => "metadata",
+        }
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Decides, for every file in the inventory, whether a prune would remove it.
+/// A file whose run has no facts is kept: nothing is known about it.
+pub fn plan(policy: &RetentionPolicy, facts: &std::collections::BTreeMap<String, RunFacts>, items: &[Artifact], now: u64) -> PrunePlan {
+    use std::collections::BTreeMap;
+    let mut plan = PrunePlan::default();
+    let mut assessed: BTreeMap<&str, Assessment> = BTreeMap::new();
+    for (run_id, run) in facts {
+        let assessment = assess(policy, run, now);
+        if matches!(&assessment, Assessment::Prunable(classes) if classes.contains(&ArtifactClass::Metadata)) {
+            plan.metadata.push(run_id.clone());
+        }
+        assessed.insert(run_id, assessment);
+    }
+    let mut kept: BTreeMap<&str, Retained> = BTreeMap::new();
+    for artifact in items {
+        let run_id = artifact.run_id.as_str();
+        match (facts.get(run_id), assessed.get(run_id)) {
+            (Some(run), Some(Assessment::Prunable(classes))) if classes.contains(&artifact.class) => {
+                let age = run.ended_at.map_or(0, |ended| now.saturating_sub(ended) / DAY_SECS);
+                plan.candidates.push(Candidate {
+                    artifact: artifact.clone(),
+                    reason: format!("{} run ended {age} days ago; its {} files are past retention", run.state.as_str(), artifact.class.as_str()),
+                });
+            }
+            (Some(_), Some(Assessment::Prunable(_))) => {}
+            (Some(_), Some(Assessment::Retained(why))) => {
+                kept.insert(run_id, *why);
+            }
+            _ => {
+                kept.insert(run_id, Retained::UnknownRun);
+            }
+        }
+    }
+    plan.kept = kept.into_iter().map(|(run_id, why)| Kept { run_id: run_id.to_string(), why }).collect();
+    plan
 }
