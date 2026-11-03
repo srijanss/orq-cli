@@ -32,7 +32,7 @@ fn rules() -> &'static [Rule] {
             rule(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=\-]{8,}", "${1}[REDACTED]"),
             // name = value, name: value for secret-looking names; the name stays.
             rule(
-                r#"(?i)\b([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_-]?key|credential|private[_-]?key)[A-Za-z0-9_\-]*)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"',;]+)"#,
+                r#"(?i)\b([A-Za-z0-9_\-]*(?:password|passwd|secret|token|api[_-]?key|credential|private[_-]?key)[A-Za-z0-9_\-]*)(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"',;]+)"#,
                 "${1}${2}[REDACTED]",
             ),
         ]
