@@ -293,6 +293,11 @@ impl Store {
         tx.commit().map_err(db)
     }
 
+    /// Gives up on a journaled removal that could not be carried out; the file stays and so does its index row.
+    pub fn abandon_removal(&self, rel: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM prune_journal WHERE rel = ?1", params![rel]).map(drop).map_err(db)
+    }
+
     /// Forgets everything the database holds about a run's reviews.
     pub fn remove_run_metadata(&self, run_id: &str) -> Result<()> {
         check_run_id(run_id)?;

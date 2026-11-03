@@ -2,6 +2,7 @@ pub mod naming;
 pub mod no_merge;
 pub mod ownership;
 pub mod provider_observation;
+pub mod prune;
 pub mod redact;
 pub mod retention;
 pub mod review_inbox;
