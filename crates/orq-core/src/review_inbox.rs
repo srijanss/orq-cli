@@ -108,23 +108,28 @@ pub fn detail(roots: &StorageRoots, run_id: &str) -> Result<InboxDetail, String>
 const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Reads a stored report. The path comes from the index, so it is checked on
-/// every read: it must sit under its own run's directory, resolve inside the
-/// data root, and not itself be a symlink.
+/// every read: it must sit under its own run's directory, and it is opened one
+/// component at a time from the data root without following a symlink at any
+/// step, so no directory swapped in underneath can lead outside it.
 fn read_report(data_root: &Path, record: &ReviewRecord) -> Result<Value, String> {
+    use rustix::fs::{open, openat, Mode, OFlags};
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    check_report_path(&record.run_id, &record.report_path).map_err(|_| "the stored report path is not valid".to_string())?;
-    let full = data_root.join(&record.report_path);
-    let root = data_root.canonicalize().map_err(|err| err.to_string())?;
-    let resolved = full.canonicalize().map_err(|err| err.to_string())?;
-    if !resolved.starts_with(&root) {
-        return Err("the stored report path is not valid".to_string());
+    use std::path::Component;
+    const NOT_VALID: &str = "the stored report path is not valid";
+    check_report_path(&record.run_id, &record.report_path).map_err(|_| NOT_VALID.to_string())?;
+    let parts: Vec<&std::ffi::OsStr> = Path::new(&record.report_path)
+        .components()
+        .filter_map(|c| if let Component::Normal(part) = c { Some(part) } else { None })
+        .collect();
+    let (name, dirs) = parts.split_last().ok_or_else(|| NOT_VALID.to_string())?;
+    let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut dir = open(data_root, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty()).map_err(|_| NOT_VALID.to_string())?;
+    for part in dirs {
+        dir = openat(&dir, *part, dir_flags, Mode::empty()).map_err(|_| NOT_VALID.to_string())?;
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&full)
+    let fd = openat(&dir, *name, OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW, Mode::empty())
         .map_err(|_| "the stored report cannot be opened".to_string())?;
+    let file = std::fs::File::from(fd);
     let mut bytes = Vec::new();
     file.take(MAX_REPORT_BYTES + 1).read_to_end(&mut bytes).map_err(|err| err.to_string())?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
