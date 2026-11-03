@@ -170,8 +170,17 @@ fn create_private_file(path: &Path) -> Result<()> {
     options.write(true).create(true).truncate(false);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // NOFOLLOW refuses a symlinked database instead of opening its target.
+        options.mode(0o600).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+        let file = options.open(path)?;
+        // A file that already existed keeps its old mode; tighten it
+        // (fchmod fails for a file owned by someone else).
+        if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
     }
+    #[cfg(not(unix))]
     options.open(path).map(drop)
 }

@@ -153,8 +153,28 @@ pub fn save_run_file(data_root: &Path, run_id: &str, file: RunFile, bytes: &[u8]
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        // Parents (such as ~/.local/share) may legitimately be symlinks; only
+        // the Orq directory itself is checked.
+        if let Some(parent) = dir.parent() {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        // A directory that already existed may be a symlink planted elsewhere
+        // or have loose permissions; refuse the first and tighten the second
+        // (chmod fails for a directory owned by someone else).
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() {
+            return Err(Error::new(ErrorKind::PermissionDenied, format!("{} is not a plain directory", dir.display())));
+        }
+        if meta.permissions().mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
     #[cfg(not(unix))]
     {

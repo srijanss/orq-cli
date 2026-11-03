@@ -60,3 +60,37 @@ fn creating_the_roots_uses_owner_only_permissions() {
     }
     roots.create_all().unwrap(); // idempotent
 }
+
+#[cfg(unix)]
+#[test]
+fn directories_that_already_exist_with_loose_permissions_are_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = scratch("tighten");
+    let roots = StorageRoots::resolve(&env(&[("HOME", base.to_str().unwrap())])).unwrap();
+    std::fs::create_dir_all(roots.runs()).unwrap();
+    std::fs::set_permissions(&roots.data, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(roots.runs(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    roots.create_all().unwrap();
+    for dir in [&roots.data, &roots.runs()] {
+        assert_eq!(std::fs::metadata(dir).unwrap().permissions().mode() & 0o777, 0o700, "{}", dir.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_orq_directory_is_refused_instead_of_followed() {
+    let base = scratch("symlinked");
+    let elsewhere = scratch("symlinked-elsewhere");
+    let roots = StorageRoots::resolve(&env(&[("HOME", base.to_str().unwrap())])).unwrap();
+    std::fs::create_dir_all(roots.data.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &roots.data).unwrap();
+    assert!(roots.create_all().is_err());
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing may be created behind the link");
+
+    // A symlinked subdirectory inside a real root is refused too.
+    let base = scratch("symlinked-sub");
+    let roots = StorageRoots::resolve(&env(&[("HOME", base.to_str().unwrap())])).unwrap();
+    std::fs::create_dir_all(&roots.data).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, roots.runs()).unwrap();
+    assert!(roots.create_all().is_err());
+}

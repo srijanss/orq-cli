@@ -63,6 +63,24 @@ fn the_database_file_is_owner_only() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn an_existing_database_with_loose_permissions_is_tightened_and_a_symlinked_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("loose");
+    let db = dir.join("orq.db");
+    std::fs::write(&db, b"").unwrap();
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+    Store::open(&db).unwrap();
+    assert_eq!(std::fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
+
+    let real = dir.join("real.db");
+    std::fs::write(&real, b"").unwrap();
+    let link = dir.join("link.db");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert!(Store::open(&link).is_err(), "a symlinked database must not be opened");
+}
+
 #[test]
 fn identifiers_that_could_name_a_path_outside_the_run_are_refused() {
     let store = Store::open(&scratch("ids").join("orq.db")).unwrap();
