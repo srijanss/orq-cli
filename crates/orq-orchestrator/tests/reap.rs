@@ -59,6 +59,7 @@ fn scenario(tag: &str, case: Case) -> Planned {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
+    fs::write(repo.join(".git/info/exclude"), "*.log\n").unwrap();
     let worktree = if case.inside_worktrees_dir { repo.join(".claude/worktrees/fix--COM-02") } else { root.join("elsewhere") };
     fs::create_dir_all(worktree.parent().unwrap()).unwrap();
     git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
@@ -170,18 +171,17 @@ fn a_plan_gone_stale_removes_nothing() {
             git(&p.worktree, &["add", "."]);
             git(&p.worktree, &["commit", "-q", "-m", "late"]);
         }),
-        ("ignored", |p| {
-            fs::write(p.worktree.join(".gitignore"), "*.log\n").unwrap();
-            git(&p.worktree, &["add", ".gitignore"]);
-            git(&p.worktree, &["commit", "-q", "-m", "ignore"]);
-            fs::write(p.worktree.join("keep.log"), "x\n").unwrap();
-        }),
+        // The ignore rule exists from the start (info/exclude), so only an ignored file appears later.
+        ("ignored", |p| fs::write(p.worktree.join("keep.log"), "x\n").unwrap()),
     ];
     for (tag, change) in changes {
         let planned = scenario(&format!("stale-{tag}"), GOOD);
         assert_eq!(planned.verdict, ReapVerdict::Reap);
         change(&planned);
-        assert!(reap_run(&planned.repo, &planned.item).is_err(), "{tag}: a stale plan must be refused");
+        let refused = reap_run(&planned.repo, &planned.item).expect_err("a stale plan must be refused");
+        if tag != "commit" {
+            assert!(format!("{refused:?}").contains("uncommitted"), "{tag}: {refused:?}");
+        }
         assert!(planned.worktree.exists(), "{tag}: the worktree stays");
         assert!(!git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(), "{tag}: the branch stays");
     }
