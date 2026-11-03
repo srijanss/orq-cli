@@ -20,6 +20,8 @@ pub struct LaunchRequest {
     pub reviewer: String,
     /// Free text for the implementer, passed whole as `--context`.
     pub context: Option<String>,
+    /// An issue the review closes, passed as `--issue`.
+    pub issue: Option<String>,
 }
 
 impl LaunchRequest {
@@ -52,6 +54,10 @@ impl LaunchRequest {
         if let Some(context) = self.context.as_ref().filter(|c| !c.trim().is_empty()) {
             args.push("--context".into());
             args.push(context.into());
+        }
+        if let Some(issue) = self.issue.as_ref().filter(|i| !i.trim().is_empty()) {
+            args.push("--issue".into());
+            args.push(issue.into());
         }
         args.push("--detach".into());
         args

@@ -41,6 +41,7 @@ fn request(implementer: &str, reviewer: &str) -> LaunchRequest {
         implementer: implementer.to_string(),
         reviewer: reviewer.to_string(),
         context: None,
+        issue: None,
     }
 }
 
@@ -107,4 +108,17 @@ fn extra_context_is_passed_whole_as_one_argument_before_the_detach_flag() {
 
     launch.context = Some("  ".to_string());
     assert!(!launch.args().iter().any(|a| a == "--context"), "blank context adds nothing");
+}
+
+#[test]
+fn an_issue_is_passed_as_its_own_argument_before_the_detach_flag() {
+    let mut launch = request("sonnet", "kimi");
+    launch.issue = Some("#42".to_string());
+    let args = launch.args();
+    let at = args.iter().position(|a| a == "--issue").expect("an issue flag");
+    assert_eq!(args[at + 1], OsString::from("#42"));
+    assert_eq!(args.last().unwrap(), &OsString::from("--detach"));
+
+    launch.issue = Some(" ".to_string());
+    assert!(!launch.args().iter().any(|a| a == "--issue"), "blank issue adds nothing");
 }

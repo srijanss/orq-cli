@@ -29,6 +29,8 @@ pub struct Options<'a> {
     pub run_id: Option<&'a str>,
     /// Checked free text appended to the implement request.
     pub context: Option<&'a str>,
+    /// A checked issue number; the review description then closes it.
+    pub issue: Option<&'a str>,
 }
 
 fn new_run_id() -> String {
@@ -363,6 +365,10 @@ fn stages(
         env: Vec::new(),
         cwd: worktree.to_path_buf(),
     })?;
+    let draft = match options.issue {
+        Some(number) => orq_orchestrator::link_issue(draft, number),
+        None => draft,
+    };
     let review = match create_review_request(store, run_id, &provider, &draft, Duration::from_secs(60))? {
         ReviewRequestOutcome::Created(review) | ReviewRequestOutcome::Adopted(review) => review,
         ReviewRequestOutcome::Failed { reason } => {

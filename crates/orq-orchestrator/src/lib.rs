@@ -37,7 +37,7 @@ pub use pane::{record_pane, run_pane, PaneRef};
 pub use outcome::{check_implement_outcome, ImplementCheck};
 pub use push_stage::{push_run_branch, PushOutcome};
 pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
-pub use review_draft::{draft_review_description, DraftSession, DraftSource, ReviewDraft};
+pub use review_draft::{draft_review_description, issue_number, link_issue, DraftSession, DraftSource, ReviewDraft};
 pub use review_observe::{observe_review, Observed};
 pub use retention_facts::{collect_run_facts, collect_run_facts_for};
 pub use review_request::{create_review_request, recorded_review, resolve_repository_url, ReviewRef, ReviewRequestOutcome};

@@ -171,6 +171,7 @@ struct RunArgs {
     implementer: Option<String>,
     reviewer: Option<String>,
     context: Option<String>,
+    issue: Option<String>,
     no_rebase: bool,
     no_gate: bool,
     no_ci_check: bool,
@@ -180,8 +181,8 @@ struct RunArgs {
 }
 
 /// The `orq run` flags that take a value; parsing and forwarding both read this list.
-const RUN_VALUE_FLAGS: [&str; 8] =
-    ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--run-id"];
+const RUN_VALUE_FLAGS: [&str; 9] =
+    ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--issue", "--run-id"];
 
 fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
     let mut parsed = RunArgs::default();
@@ -202,6 +203,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
                     "--target" => parsed.target = Some(value.to_str()?.to_string()),
                     "--implementer" => parsed.implementer = Some(value.to_str()?.to_string()),
                     "--context" => parsed.context = Some(value.to_str()?.to_string()),
+                    "--issue" => parsed.issue = Some(value.to_str()?.to_string()),
                     _ => parsed.reviewer = Some(value.to_str()?.to_string()),
                 }
             }
@@ -271,6 +273,10 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(text) => text.flatten().map(str::to_string),
         Err(err) => return fail(format!("{err}")),
     };
+    let issue = match parsed.issue.as_deref().map(orq_orchestrator::issue_number).transpose() {
+        Ok(number) => number,
+        Err(err) => return fail(format!("--issue: {err}")),
+    };
     if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
         return fail(format!("run settings: {err}"));
     }
@@ -309,6 +315,7 @@ fn run(args: &[OsString]) -> ExitCode {
         ci_check: !parsed.no_ci_check,
         run_id: parsed.run_id.as_deref(),
         context: context.as_deref(),
+        issue: issue.as_deref(),
     };
     match pipeline::execute(&options) {
         Ok(report) => {
@@ -1470,6 +1477,7 @@ reviewer: String,
         implementer: implementer.clone(),
         reviewer: reviewer.clone(),
         context: None,
+        issue: None,
     };
     request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
     // `orq run --detach` checks eligibility, starts the runner in a session of its own and
@@ -3075,7 +3083,7 @@ mod forwarding_tests {
 
     #[test]
     fn every_option_value_survives_forwarding_even_when_spelled_like_the_detach_flag() {
-        for flag in ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--run-id"] {
+        for flag in ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--issue", "--run-id"] {
             let args = os(&["run", flag, "--detach", "--detach"]);
             assert_eq!(super::without_detach_flag(&args), os(&["run", flag, "--detach"]), "{flag}");
         }

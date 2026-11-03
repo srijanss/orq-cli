@@ -284,3 +284,23 @@ fn a_provider_merge_call_is_refused_before_anything_is_launched() {
         other => panic!("expected a refusal fallback, got {other:?}"),
     }
 }
+
+#[test]
+fn an_issue_id_is_checked_and_linked_once_at_the_end_of_the_description() {
+    use orq_orchestrator::{issue_number, link_issue};
+
+    assert_eq!(issue_number("42").as_deref(), Ok("42"));
+    assert_eq!(issue_number("#42").as_deref(), Ok("42"));
+    for bad in ["", "#", "4 2", "-1", "abc", "42\n", "#42 close", "1234567890123", "4\u{0662}"] {
+        assert!(issue_number(bad).is_err(), "{bad:?}");
+    }
+
+    let draft = orq_orchestrator::ReviewDraft { title: "t".into(), body: "what changed".into(), source: DraftSource::Agent };
+    let linked = link_issue(draft.clone(), "42");
+    assert_eq!(linked.body, "what changed\n\nCloses #42");
+    assert_eq!((linked.title.as_str(), &linked.source), ("t", &DraftSource::Agent));
+    // Linking twice, or after the agent already wrote the line, adds nothing.
+    assert_eq!(link_issue(linked.clone(), "42").body, linked.body);
+    let empty = orq_orchestrator::ReviewDraft { body: String::new(), ..draft };
+    assert_eq!(link_issue(empty, "7").body, "Closes #7");
+}

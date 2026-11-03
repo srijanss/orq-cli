@@ -163,6 +163,35 @@ fn bad_extra_context_is_refused_before_a_run_is_recorded() {
     }
 }
 
+#[test]
+fn an_issue_id_closes_the_issue_from_the_review_description() {
+    let w = world("issue");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+
+    let _ = run_with(&w, &agent, &provider, &["--no-ci-check", "--issue", "#42"]);
+
+    let create = provider.calls().into_iter().find(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).expect("a review was created");
+    assert!(create.args.iter().any(|a| a.ends_with("\n\nCloses #42")), "{:?}", create.args);
+}
+
+#[test]
+fn a_bad_issue_id_is_refused_before_a_run_is_recorded() {
+    let repo = GitFixture::new();
+    repo.add_bare_remote();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    let env = env("badissue");
+
+    for flags in [&["--issue", "abc"][..], &["--issue", "4 2", "--detach"][..]] {
+        let mut args = vec!["--feature", "COM-01"];
+        args.extend_from_slice(flags);
+        let output = run(repo.root(), &env, &args);
+        assert!(!output.status.success(), "{}", stderr(&output));
+        assert!(stderr(&output).contains("issue"), "{}", stderr(&output));
+        assert!(state_is_empty(&env), "no run was recorded");
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")

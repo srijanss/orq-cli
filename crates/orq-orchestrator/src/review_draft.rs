@@ -61,6 +61,31 @@ pub struct ReviewDraft {
     pub source: DraftSource,
 }
 
+/// The most digits an issue number may have; a longer one is a typo, not an issue.
+const MAX_ISSUE_DIGITS: usize = 9;
+
+/// The number in an issue id such as `42` or `#42`; anything else is refused.
+pub fn issue_number(id: &str) -> Result<String, String> {
+    let digits = id.strip_prefix('#').unwrap_or(id);
+    if !digits.is_empty() && digits.len() <= MAX_ISSUE_DIGITS && digits.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(digits.to_string())
+    } else {
+        Err(format!("{id:?} is not an issue number such as 42 or #42"))
+    }
+}
+
+/// `draft` with a closing line for issue `number` (from [`issue_number`]) at the end of its
+/// description; a description that already ends with that line is left as it is.
+pub fn link_issue(mut draft: ReviewDraft, number: &str) -> ReviewDraft {
+    let line = format!("Closes #{number}");
+    let body = draft.body.trim_end();
+    if body.lines().last().is_some_and(|last| last.trim() == line) {
+        return draft;
+    }
+    draft.body = if body.is_empty() { line } else { format!("{body}\n\n{line}") };
+    draft
+}
+
 /// Draft the title and description for `run_id`. `drafter` receives the prompt
 /// (which carries the commit subjects) and returns the session to run.
 pub fn draft_review_description(
