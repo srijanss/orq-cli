@@ -22,6 +22,8 @@ const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 8000;
 /// More than any accepted draft needs; the rest of the output is read and dropped.
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// How much of a provider's listing is read; more than this is a failure, not a cut-off answer.
+const MAX_LISTING_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 8 * 1024;
 
 /// What a session wrote to stderr, kept bounded. `done` is set once the pipe is closed.
@@ -118,13 +120,14 @@ fn build_prompt(subjects: &[String]) -> String {
 
 /// Run the session and return its stdout, or why there is none.
 pub(crate) fn run_drafter(session: &DraftSession, timeout: Duration) -> Result<String, String> {
-    run_session(session, timeout, &Arc::new(StderrSink { bytes: Mutex::new(Vec::new()), done: AtomicBool::new(true) }))
+    run_session(session, timeout, &Arc::new(StderrSink { bytes: Mutex::new(Vec::new()), done: AtomicBool::new(true) }), MAX_OUTPUT_BYTES, false)
 }
 
-/// Like `run_drafter`, but a failure carries what the session wrote to stderr.
+/// Like `run_drafter`, but a failure carries what the session wrote to stderr, and output past
+/// the (larger) listing budget fails instead of being cut off.
 pub(crate) fn run_captured(session: &DraftSession, timeout: Duration) -> Result<String, SessionFailure> {
     let sink = Arc::new(StderrSink { bytes: Mutex::new(Vec::new()), done: AtomicBool::new(true) });
-    run_session(session, timeout, &sink).map_err(|reason| {
+    run_session(session, timeout, &sink, MAX_LISTING_BYTES, true).map_err(|reason| {
         // The session's group is dead, so its stderr pipe is closing; give the reader a moment.
         let wait = Instant::now() + Duration::from_secs(1);
         while !sink.done.load(Ordering::Acquire) && Instant::now() < wait {
@@ -135,7 +138,7 @@ pub(crate) fn run_captured(session: &DraftSession, timeout: Duration) -> Result<
     })
 }
 
-fn run_session(session: &DraftSession, timeout: Duration, stderr_sink: &Arc<StderrSink>) -> Result<String, String> {
+fn run_session(session: &DraftSession, timeout: Duration, stderr_sink: &Arc<StderrSink>, limit: usize, strict: bool) -> Result<String, String> {
     // The human-only merge rule: no provider call that merges or approves is ever started.
     if let Some(why) = orq_core::no_merge::forbidden_provider_call(&session.program, &session.args) {
         return Err(format!("refused: {why}"));
@@ -181,17 +184,19 @@ fn run_session(session: &DraftSession, timeout: Duration, stderr_sink: &Arc<Stde
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut kept = Vec::new();
+        let mut overflowed = false;
         let mut chunk = [0u8; 8192];
         loop {
             match stdout.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
+                    let room = limit.saturating_sub(kept.len());
+                    overflowed |= n > room;
                     kept.extend_from_slice(&chunk[..n.min(room)]);
                 }
             }
         }
-        let _ = sender.send(kept);
+        let _ = sender.send((kept, overflowed));
     });
 
     let deadline = Instant::now() + timeout;
@@ -216,7 +221,10 @@ fn run_session(session: &DraftSession, timeout: Duration, stderr_sink: &Arc<Stde
         return Err(format!("the drafting session failed ({status})"));
     }
     let remaining = deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1));
-    let bytes = receiver.recv_timeout(remaining).map_err(|_| "the drafting output could not be read".to_string())?;
+    let (bytes, overflowed) = receiver.recv_timeout(remaining).map_err(|_| "the drafting output could not be read".to_string())?;
+    if strict && overflowed {
+        return Err(format!("the provider's answer was larger than {limit} bytes"));
+    }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 

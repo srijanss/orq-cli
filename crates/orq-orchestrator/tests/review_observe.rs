@@ -171,3 +171,31 @@ fn a_repointed_remote_or_an_unknown_provider_is_a_local_error() {
     assert!(observe_review(&odd, "run-1", &provider.gh(), WAIT).is_err());
     assert!(observe_review(&odd, "no-such-run", &provider.gh(), WAIT).is_err());
 }
+
+fn padded_row(number: u32, state: &str, head: &str, padding: usize) -> String {
+    let url = format!("https://github.example/o/r/pull/{number}");
+    let pad = "x".repeat(padding);
+    format!(r#"{{"number":{number},"url":"{url}","state":"{state}","headRefOid":"{head}","isCrossRepository":false,"body":"{pad}"}}"#)
+}
+
+#[test]
+fn a_valid_listing_larger_than_the_draft_limit_is_read_whole() {
+    let store = world("big", "github", REPO);
+    record_created(&store, "7");
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[padded_row(7, "OPEN", NEW, 200 * 1024)])).build();
+    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap().unwrap();
+    assert_eq!(seen.review.review_id, "7");
+    assert_eq!(seen.observation.head_sha, NEW);
+}
+
+#[test]
+fn a_listing_beyond_the_observation_budget_is_unavailable_not_truncated() {
+    let store = world("huge", "github", REPO);
+    record_created(&store, "7");
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[padded_row(7, "OPEN", NEW, 6 * 1024 * 1024)])).build();
+    let outcome = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap();
+    match outcome {
+        Err(ObservationError::Unavailable(detail)) => assert!(detail.contains("larger"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+}
