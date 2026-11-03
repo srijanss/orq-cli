@@ -119,7 +119,11 @@ fn redact_value(value: &mut serde_json::Value) -> bool {
 pub fn redact(text: &str) -> String {
     let mut out = text.to_string();
     for rule in rules() {
-        out = rule.pattern.replace_all(&out, rule.replacement).into_owned();
+        // A rule that matches nothing returns the borrowed input; only a real
+        // replacement allocates a new buffer.
+        if let std::borrow::Cow::Owned(replaced) = rule.pattern.replace_all(&out, rule.replacement) {
+            out = replaced;
+        }
     }
     out
 }
