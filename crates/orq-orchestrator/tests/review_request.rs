@@ -672,11 +672,11 @@ fn a_merged_review_is_not_edited() {
 }
 
 #[test]
-fn a_failed_edit_still_adopts_the_review_and_records_why() {
+fn a_failed_edit_still_adopts_the_review_and_keeps_the_providers_words_out_of_the_log() {
     let w = world("update-fails", "github", "main");
     let provider = FakeProvider::builder()
         .reply(&["pr", "list"], &listing("gh", "number", "url", &[(5, "OPEN", "https://github.example/o/r/pull/5")]))
-        .fail(&["pr", "edit"], 1, "HTTP 403\n")
+        .fail(&["pr", "edit"], 1, "proxy https://user:s3cret@proxy.example failed\n")
         .build();
 
     let outcome = create_review_request(&w.store, "run-1", &provider.gh(), &draft(), WAIT).unwrap();
@@ -684,5 +684,5 @@ fn a_failed_edit_still_adopts_the_review_and_records_why() {
     assert!(matches!(&outcome, ReviewRequestOutcome::Adopted(r) if r.id == "5"), "{outcome:?}");
     assert_eq!(kinds(&w), ["stage.started", "review.adopted", "review.update_failed", "stage.completed"]);
     let event = w.store.events("run-1").unwrap().into_iter().find(|e| e.kind == "review.update_failed").unwrap();
-    assert!(event.payload.to_string().contains("HTTP 403"), "{}", event.payload);
+    assert!(!event.payload.to_string().contains("s3cret"), "{}", event.payload);
 }

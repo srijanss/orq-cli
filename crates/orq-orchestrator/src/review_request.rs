@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::outcome::git_raw;
-use crate::review_draft::{run_captured, run_drafter, DraftSession, ReviewDraft};
+use crate::review_draft::{run_drafter, DraftSession, ReviewDraft};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "review";
@@ -80,10 +80,10 @@ pub fn create_review_request(
             // An open review is brought up to date with the current draft; a merged one is history.
             // A refused edit does not fail the stage: the review exists and the run can go on.
             if open {
-                match run_captured(&session(update_args(kind, &review, draft, &repo)), timeout) {
+                match run_drafter(&session(update_args(kind, &review, draft, &repo)), timeout) {
                     Ok(_) => record_event(store, &record, UPDATED, serde_json::json!({ "id": review.id }))?,
-                    Err(failure) => {
-                        let reason = format!("{}: {}", failure.reason, failure.stderr.trim());
+                    // Only the session's own summary is kept; the provider's words can carry credentials.
+                    Err(reason) => {
                         record_event(store, &record, UPDATE_FAILED, serde_json::json!({ "id": review.id, "reason": reason }))?
                     }
                 }
