@@ -834,6 +834,8 @@ struct LedgerBackend {
     /// The settings as last loaded for the tab: saves are checked against
     /// this snapshot, so an outside edit is a conflict, not an overwrite.
     settings_snapshot: Option<orq_features::Settings>,
+    /// The cleanup plan last shown for confirmation; confirming runs exactly this.
+    previewed_cleanup: Option<orq_core::retention::PrunePlan>,
     /// The last generated proposal, kept so accepting names what was reviewed.
     staged: std::sync::Arc<std::sync::Mutex<Vec<orq_features::ReviewedCandidate>>>,
     /// Replaces the PATH lookup of the harness program (tests).
@@ -1173,6 +1175,7 @@ impl LedgerBackend {
             absent: false,
             settings_path,
             settings_snapshot: None,
+            previewed_cleanup: None,
             staged: Default::default(),
             program_override: None,
             log_dir_override: None,
@@ -1917,11 +1920,15 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     }
 
     fn preview_storage(&mut self) -> Result<Vec<String>, String> {
-        storage::ui_preview(&storage::open_ctx()?)
+        let (lines, plan) = storage::ui_preview(&storage::open_ctx()?)?;
+        self.previewed_cleanup = Some(plan);
+        Ok(lines)
     }
 
     fn prune_storage(&mut self) -> Result<Vec<String>, String> {
-        storage::ui_prune(&storage::open_ctx()?)
+        // Only what was previewed may be removed; a new preview is needed to add anything.
+        let plan = self.previewed_cleanup.take().ok_or_else(|| "preview the cleanup first".to_string())?;
+        storage::ui_prune(&storage::open_ctx()?, &plan)
     }
 
     fn load_settings(&mut self) -> orq_tui::SettingsView {

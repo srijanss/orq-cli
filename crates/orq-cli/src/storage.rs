@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use orq_core::prune::{prune, reconcile};
-use orq_core::retention::{human_bytes, inventory, plan, RetentionPolicy};
+use orq_core::retention::{human_bytes, inventory, plan, PrunePlan, RetentionPolicy};
 use orq_core::storage::{check_run_id, StorageRoots};
 use orq_core::store::Store;
 use orq_orchestrator::{collect_run_facts, collect_run_facts_for, RunStore};
@@ -258,22 +258,22 @@ pub(crate) fn ui_view(ctx: &Ctx) -> orq_tui::StorageView {
 }
 
 /// What a cleanup would remove, as lines to read; empty when there is nothing to remove.
-pub(crate) fn ui_preview(ctx: &Ctx) -> Result<Vec<String>, String> {
+pub(crate) fn ui_preview(ctx: &Ctx) -> Result<(Vec<String>, PrunePlan), String> {
     let policy = policy(&ctx.roots)?;
     let the_plan = ctx.plan(&policy, now())?;
     if the_plan.candidates.is_empty() && the_plan.metadata.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), the_plan));
     }
-    Ok(the_plan.render())
+    Ok((the_plan.render(), the_plan))
 }
 
-pub(crate) fn ui_prune(ctx: &Ctx) -> Result<Vec<String>, String> {
+/// Carries out exactly `previewed`, the plan the person confirmed. Each file is still checked
+/// afresh just before it goes, so the plan can only shrink, never grow.
+pub(crate) fn ui_prune(ctx: &Ctx, previewed: &PrunePlan) -> Result<Vec<String>, String> {
     reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
     let policy = policy(&ctx.roots)?;
-    let now = now();
-    let the_plan = ctx.plan(&policy, now)?;
-    let report = ctx.prune(&policy, &the_plan, now)?;
-    Ok(report_lines(&the_plan, &report))
+    let report = ctx.prune(&policy, previewed, now())?;
+    Ok(report_lines(previewed, &report))
 }
 
 #[cfg(test)]
@@ -343,7 +343,7 @@ mod tests {
     fn preview_lists_what_would_go_and_removes_nothing() {
         let c = ctx("preview");
         old_failed_run(&c, "old-run", 2048);
-        let lines = ui_preview(&c).unwrap();
+        let (lines, _) = ui_preview(&c).unwrap();
         assert!(lines.iter().any(|l| l.contains("runs/old-run/events.jsonl")), "{lines:?}");
         assert!(c.roots.data.join("runs/old-run/events.jsonl").exists());
         assert_eq!(ui_view(&c).last_cleanup, None, "a preview is not a cleanup");
@@ -352,17 +352,30 @@ mod tests {
     #[test]
     fn nothing_to_remove_gives_an_empty_preview() {
         let c = ctx("empty");
-        assert_eq!(ui_preview(&c).unwrap(), Vec::<String>::new());
+        assert_eq!(ui_preview(&c).unwrap().0, Vec::<String>::new());
     }
 
     #[test]
     fn prune_removes_reports_and_stamps_the_time() {
         let c = ctx("prune");
         old_failed_run(&c, "old-run", 2048);
-        let lines = ui_prune(&c).unwrap();
+        let (_, previewed) = ui_preview(&c).unwrap();
+        let lines = ui_prune(&c, &previewed).unwrap();
         assert!(lines.iter().any(|l| l.contains("Removed 1 file(s)") && l.contains("2.0 KiB")), "{lines:?}");
         assert!(!c.roots.data.join("runs/old-run/events.jsonl").exists());
         assert!(ui_view(&c).last_cleanup.is_some());
+    }
+
+    #[test]
+    fn cleanup_removes_only_what_the_confirmed_preview_showed() {
+        let c = ctx("confirmed");
+        old_failed_run(&c, "shown-run", 100);
+        let (_, previewed) = ui_preview(&c).unwrap();
+        // The confirmation is open while another run becomes eligible.
+        old_failed_run(&c, "later-run", 100);
+        ui_prune(&c, &previewed).unwrap();
+        assert!(!c.roots.data.join("runs/shown-run/events.jsonl").exists());
+        assert!(c.roots.data.join("runs/later-run/events.jsonl").exists(), "never shown, so never removed");
     }
 
     #[test]
@@ -371,6 +384,6 @@ mod tests {
         std::fs::write(c.roots.config_file(), "[retention]\nfailed_days = \"x\"").unwrap();
         assert!(ui_view(&c).error.is_some());
         assert!(ui_preview(&c).is_err());
-        assert!(ui_prune(&c).is_err());
+        assert!(ui_prune(&c, &PrunePlan::default()).is_err());
     }
 }
