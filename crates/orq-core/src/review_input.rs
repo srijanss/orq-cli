@@ -26,10 +26,7 @@ pub enum InputError {
 }
 
 pub fn load_review_input(path: &Path) -> Result<ReviewInput, InputError> {
-    let text = std::fs::read_to_string(path).map_err(|err| match err.kind() {
-        ErrorKind::NotFound => InputError::Missing,
-        _ => InputError::Inaccessible(err.to_string()),
-    })?;
+    let text = read_bounded(path)?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| InputError::Malformed(err.to_string()))?;
     match value.get("schema_version").and_then(serde_json::Value::as_u64) {
         Some(SCHEMA_VERSION) => {}
@@ -161,12 +158,28 @@ fn parse_finding(value: &serde_json::Value) -> Result<Finding, InputError> {
     })
 }
 
-/// The rounds and findings of an exported review. A file without `rounds` has none.
-pub fn load_review_findings(path: &Path) -> Result<Vec<Round>, InputError> {
-    let text = std::fs::read_to_string(path).map_err(|err| match err.kind() {
+/// The largest findings file that is read; a bigger one is refused, not parsed.
+pub const MAX_REVIEW_INPUT_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Read at most the limit plus one byte, so an oversized or endless source is
+/// detected without being held in memory.
+fn read_bounded(path: &Path) -> Result<String, InputError> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|err| match err.kind() {
         ErrorKind::NotFound => InputError::Missing,
         _ => InputError::Inaccessible(err.to_string()),
     })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REVIEW_INPUT_BYTES + 1).read_to_end(&mut bytes).map_err(|err| InputError::Inaccessible(err.to_string()))?;
+    if bytes.len() as u64 > MAX_REVIEW_INPUT_BYTES {
+        return Err(InputError::Malformed(format!("the review input is larger than {MAX_REVIEW_INPUT_BYTES} bytes")));
+    }
+    String::from_utf8(bytes).map_err(|err| InputError::Malformed(err.to_string()))
+}
+
+/// The rounds and findings of an exported review. A file without `rounds` has none.
+pub fn load_review_findings(path: &Path) -> Result<Vec<Round>, InputError> {
+    let text = read_bounded(path)?;
     let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| InputError::Malformed(err.to_string()))?;
     match value.get("schema_version").and_then(serde_json::Value::as_u64) {
         Some(SCHEMA_VERSION) => {}
