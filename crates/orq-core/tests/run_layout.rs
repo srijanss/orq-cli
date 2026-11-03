@@ -56,6 +56,26 @@ fn a_report_that_cannot_be_written_is_not_indexed() {
 }
 
 #[test]
+fn an_index_failure_after_the_report_was_written_is_reported_and_leaves_a_retryable_state() {
+    let root = scratch("index-fails");
+    let db = root.join("orq.db");
+    let store = Store::open(&db).unwrap();
+    // Make the index INSERT fail after the report file has been written.
+    let raw = rusqlite::Connection::open(&db).unwrap();
+    raw.execute_batch("CREATE TRIGGER refuse_index BEFORE INSERT ON reviews BEGIN SELECT RAISE(ABORT, 'index refused'); END;").unwrap();
+
+    assert!(store.save_review(&root, "r1", "alpha", "login", SHA, b"{\"v\":1}").is_err());
+    assert!(store.reviews_for_run("r1").unwrap().is_empty(), "no row may exist for the failed insert");
+    let report = root.join(format!("runs/r1/review/{SHA}/review.json"));
+    assert_eq!(std::fs::read(&report).unwrap(), b"{\"v\":1}", "the written report stays whole");
+
+    // Once the index accepts writes again, retrying the same save indexes it.
+    raw.execute_batch("DROP TRIGGER refuse_index;").unwrap();
+    store.save_review(&root, "r1", "alpha", "login", SHA, b"{\"v\":1}").unwrap();
+    assert_eq!(store.reviews_for_run("r1").unwrap().len(), 1);
+}
+
+#[test]
 fn run_files_are_written_only_under_their_fixed_names() {
     let root = scratch("files");
     for (file, name) in [
