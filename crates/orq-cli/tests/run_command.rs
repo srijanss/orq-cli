@@ -834,3 +834,29 @@ fn notify_on_failures_stays_quiet_for_a_clean_run_and_speaks_for_one_that_stops(
     let heard = std::fs::read_to_string(&heard).expect("a run that stops is announced");
     assert!(heard.starts_with("orq: COM-01 blocked") || heard.starts_with("orq: COM-01 failed"), "{heard}");
 }
+
+#[test]
+fn publish_pushes_the_checked_out_branch_and_opens_the_review_without_a_worktree_or_an_implement_session() {
+    let w = world("publish");
+    git(w.repo.root(), &["checkout", "--quiet", "-b", "topic"]);
+    std::fs::write(w.repo.root().join("topic.txt"), "work\n").unwrap();
+    git(w.repo.root(), &["add", "topic.txt"]);
+    git(w.repo.root(), &["-c", "user.name=Topic", "-c", "user.email=topic@example.invalid", "commit", "--quiet", "-m", "feat: the topic"]);
+    // The agent is only the description drafter here: it must not be asked to implement anything.
+    let agent = FakeAgent::builder().build();
+    let provider = github();
+
+    let output = run_with(&w, &agent, &provider, &["--publish", "--no-ci-check"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("review: {PR_URL}")), "{}", String::from_utf8_lossy(&output.stdout));
+    let pushed = Command::new("git").arg("-C").arg(&w.remote).args(["rev-parse", "--verify", "refs/heads/topic"]).output().unwrap();
+    assert!(pushed.status.success(), "the branch was pushed");
+    assert!(provider.calls().iter().any(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])));
+    assert!(!w.repo.root().join(".claude/worktrees").exists(), "no worktree was created");
+    let head = Command::new("git").arg("-C").arg(w.repo.root()).args(["symbolic-ref", "--short", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "topic");
+    // The only agent session is the description drafter, run in the repository itself.
+    let first = agent.first_run().expect("the drafter ran");
+    assert_eq!(first.args, agent.last_run().unwrap().args, "exactly one agent session");
+}

@@ -35,6 +35,8 @@ pub struct Options<'a> {
     /// whatever is left unnamed.
     pub mr_assignee: Option<&'a str>,
     pub mr_reviewer: Option<&'a str>,
+    /// Publish the branch checked out in the repository: no worktree and no implement session.
+    pub publish: bool,
 }
 
 fn new_run_id() -> String {
@@ -195,6 +197,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let settings = orq_orchestrator::load_run_settings(&options.project.root, &|name| std::env::var(name).ok())
         .map_err(|e| other(format!("run settings: {e}")))?;
     let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
+    let published = if options.publish { Some(published_branch(repo, options.target, &base_sha).map_err(other)?) } else { None };
     let naming = orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
         git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
             || repo.join(&n.worktree_dir).exists()
@@ -228,8 +231,8 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         .to_string(),
         target_branch: options.target.to_string(),
         base_sha: base_sha.clone(),
-        branch: naming.branch.clone(),
-        worktree: repo.join(&naming.worktree_dir),
+        branch: published.clone().unwrap_or_else(|| naming.branch.clone()),
+        worktree: if published.is_some() { repo.clone() } else { repo.join(&naming.worktree_dir) },
         repository,
         profiles: [
             ("implementer".to_string(), profile(&options.implementer)),
@@ -251,7 +254,8 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         }
     }
     let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
-    if let Err(err) = orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha) {
+    let created = if published.is_some() { Ok(()) } else { orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()) };
+    if let Err(err) = created {
         let released = finish(&store);
         let mut message = format!("cannot create the worktree: {err:?}");
         if let Err(lock) = released {
@@ -305,6 +309,28 @@ fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str,
     }
 }
 
+/// The branch `--publish` pushes: the one checked out in `repo`. It must be a real branch other
+/// than the target, carry commits the target lacks, and leave the working tree clean.
+fn published_branch(repo: &Path, target: &str, base_sha: &str) -> Result<String, String> {
+    let head = Command::new("git").arg("-C").arg(repo).args(["symbolic-ref", "--quiet", "--short", "HEAD"]).output().map_err(|e| e.to_string())?;
+    let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if !head.status.success() || branch.is_empty() {
+        return Err("nothing to publish: HEAD is detached; check out the branch to publish".to_string());
+    }
+    if branch == target {
+        return Err(format!("nothing to publish: {branch} is the target branch"));
+    }
+    let status = Command::new("git").arg("-C").arg(repo).args(["status", "--porcelain", "--untracked-files=no"]).output().map_err(|e| e.to_string())?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return Err("the working tree has uncommitted changes; commit or stash them before publishing".to_string());
+    }
+    let ahead = Command::new("git").arg("-C").arg(repo).args(["rev-list", "--count", &format!("{base_sha}..HEAD")]).output().map_err(|e| e.to_string())?;
+    if String::from_utf8_lossy(&ahead.stdout).trim() == "0" {
+        return Err(format!("nothing to publish: {branch} has no commits beyond {target}"));
+    }
+    Ok(branch)
+}
+
 fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreError> {
     Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None })
 }
@@ -320,43 +346,45 @@ fn stages(
     let run_id = record.run_id.as_str();
     let worktree = record.worktree.as_path();
 
-    let plan = match plan_setup(worktree, &settings.setup) {
-        Ok(plan) => plan,
-        Err(err) => return stopped(Ending::Failed, format!("setup: {err:?}")),
-    };
-    if let Err(failure) = run_setup(worktree, &plan.steps, &logs.join("setup.log")) {
-        return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));
-    }
-
     let Some(claude) = find_program(&options.implementer.harness) else {
         return stopped(Ending::Failed, format!("the {} harness is not on PATH", options.implementer.harness));
     };
     let Some(claude_program) = claude.to_str() else {
         return stopped(Ending::Failed, format!("the {} harness path is not valid UTF-8", options.implementer.harness));
     };
-    let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-    let args = adapter
-        .implement_argv(&ImplementRequest {
-            feature: options.feature,
-            implementer: spec(&options.implementer),
-            reviewer: spec(&options.reviewer),
-            context: options.context,
-        })
-        .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-    let session = ImplementSession {
-        program: claude_program,
-        args: &args,
-        env: &[],
-        cwd: worktree,
-        session_id: None,
-        log: &logs.join("implement.log"),
-        terminal: false,
-    };
-    if !run_implement_stage(store, run_id, &session)?.success {
-        return stopped(Ending::Failed, "the implement session failed");
-    }
-    if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
-        return stopped(Ending::Blocked, reason);
+    if !options.publish {
+        let plan = match plan_setup(worktree, &settings.setup) {
+            Ok(plan) => plan,
+            Err(err) => return stopped(Ending::Failed, format!("setup: {err:?}")),
+        };
+        if let Err(failure) = run_setup(worktree, &plan.steps, &logs.join("setup.log")) {
+            return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));
+        }
+
+        let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let args = adapter
+            .implement_argv(&ImplementRequest {
+                feature: options.feature,
+                implementer: spec(&options.implementer),
+                reviewer: spec(&options.reviewer),
+                context: options.context,
+            })
+            .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let session = ImplementSession {
+            program: claude_program,
+            args: &args,
+            env: &[],
+            cwd: worktree,
+            session_id: None,
+            log: &logs.join("implement.log"),
+            terminal: false,
+        };
+        if !run_implement_stage(store, run_id, &session)?.success {
+            return stopped(Ending::Failed, "the implement session failed");
+        }
+        if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+            return stopped(Ending::Blocked, reason);
+        }
     }
 
     if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
@@ -415,7 +443,9 @@ fn stages(
         },
     )?;
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
-    cleanup_worktree(store, run_id, ready, &ci)?;
+    if !options.publish {
+        cleanup_worktree(store, run_id, ready, &ci)?;
+    }
     if !ready {
         return Ok(Report {
             run_id: String::new(),
