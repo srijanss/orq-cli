@@ -37,6 +37,10 @@ pub fn load_review_input(path: &Path) -> Result<ReviewInput, InputError> {
             rounds.as_array().ok_or_else(|| InputError::Malformed("rounds is not a list".to_string()))?.len(),
         ),
     };
-    let outcome = value.get("outcome").and_then(serde_json::Value::as_str).map(str::to_string);
+    let outcome = match value.get("outcome") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(_) => return Err(InputError::Malformed("outcome is not text".to_string())),
+    };
     Ok(ReviewInput { rounds_observed, outcome })
 }

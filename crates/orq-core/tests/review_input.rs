@@ -38,6 +38,18 @@ fn an_input_without_a_rounds_list_has_an_unknown_round_count_not_three() {
 }
 
 #[test]
+fn an_outcome_that_is_present_but_not_text_is_malformed_while_null_means_absent() {
+    let d = dir("outcome");
+    let file = d.join("review-rounds.json");
+
+    std::fs::write(&file, r#"{"schema_version":1,"outcome":42}"#).unwrap();
+    assert!(matches!(load_review_input(&file), Err(InputError::Malformed(reason)) if reason.contains("outcome")));
+
+    std::fs::write(&file, r#"{"schema_version":1,"outcome":null}"#).unwrap();
+    assert_eq!(load_review_input(&file).unwrap().outcome, None);
+}
+
+#[test]
 fn a_missing_malformed_unsupported_or_inaccessible_input_is_reported_not_guessed() {
     let d = dir("bad");
     assert_eq!(load_review_input(&d.join("nope.json")), Err(InputError::Missing));
