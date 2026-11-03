@@ -37,6 +37,8 @@ pub struct Options<'a> {
     pub mr_reviewer: Option<&'a str>,
     /// Publish the branch checked out in the repository: no worktree and no implement session.
     pub publish: bool,
+    /// Continue the feature's latest stopped run: its branch and worktree are reused.
+    pub resume: bool,
 }
 
 fn new_run_id() -> String {
@@ -193,11 +195,22 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let repo = &options.project.root;
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
 
+    if options.resume && options.publish {
+        return Err(other("--resume and --publish cannot be combined"));
+    }
+
     // Read from the user's checkout, never from the agent's worktree.
     let settings = orq_orchestrator::load_run_settings(&options.project.root, &|name| std::env::var(name).ok())
         .map_err(|e| other(format!("run settings: {e}")))?;
     let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
     let published = if options.publish { Some(published_branch(repo, options.target, &base_sha).map_err(other)?) } else { None };
+    let store = RunStore::new(&root);
+    let project_id = project_id(options.project);
+    let resumed = if options.resume {
+        Some(orq_orchestrator::plan_resume(&store, &project_id, &slug(options.feature)).map_err(other)?)
+    } else {
+        None
+    };
     let naming = orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
         git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
             || repo.join(&n.worktree_dir).exists()
@@ -221,7 +234,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let run_id = options.run_id.map_or_else(new_run_id, str::to_string);
     let record = RunRecord {
         run_id: run_id.clone(),
-        project_id: project_id(options.project),
+        project_id,
         feature_id: slug(options.feature),
         remote: options.remote.to_string(),
         provider: match provider {
@@ -230,9 +243,17 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         }
         .to_string(),
         target_branch: options.target.to_string(),
-        base_sha: base_sha.clone(),
-        branch: published.clone().unwrap_or_else(|| naming.branch.clone()),
-        worktree: if published.is_some() { repo.clone() } else { repo.join(&naming.worktree_dir) },
+        base_sha: resumed.as_ref().map_or_else(|| base_sha.clone(), |r| r.from.base_sha.clone()),
+        branch: match (&published, &resumed) {
+            (Some(branch), _) => branch.clone(),
+            (None, Some(r)) => r.from.branch.clone(),
+            (None, None) => naming.branch.clone(),
+        },
+        worktree: match (&published, &resumed) {
+            (Some(_), _) => repo.clone(),
+            (None, Some(r)) => r.from.worktree.clone(),
+            (None, None) => repo.join(&naming.worktree_dir),
+        },
         repository,
         profiles: [
             ("implementer".to_string(), profile(&options.implementer)),
@@ -241,7 +262,6 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         .into_iter()
         .collect(),
     };
-    let store = RunStore::new(&root);
     match store.start_run(&record) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
@@ -254,7 +274,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         }
     }
     let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
-    let created = if published.is_some() { Ok(()) } else { orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()) };
+    let created = if published.is_some() || resumed.is_some() { Ok(()) } else { orq_git::create_run_worktree(repo, &naming.worktree_dir, &naming.branch, &base_sha).map(|_| ()) };
     if let Err(err) = created {
         let released = finish(&store);
         let mut message = format!("cannot create the worktree: {err:?}");
@@ -271,7 +291,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().is_some_and(|r| r.skip_implement)));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
@@ -354,6 +374,7 @@ fn stages(
     settings: &orq_orchestrator::RunSettings,
     provider_cli: &str,
     logs: &Path,
+    implement_done: bool,
 ) -> Result<Report, StoreError> {
     let run_id = record.run_id.as_str();
     let worktree = record.worktree.as_path();
@@ -373,29 +394,32 @@ fn stages(
             return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));
         }
 
-        let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-        let args = adapter
-            .implement_argv(&ImplementRequest {
-                feature: options.feature,
-                implementer: spec(&options.implementer),
-                reviewer: spec(&options.reviewer),
-                context: options.context,
-            })
-            .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-        let session = ImplementSession {
-            program: claude_program,
-            args: &args,
-            env: &[],
-            cwd: worktree,
-            session_id: None,
-            log: &logs.join("implement.log"),
-            terminal: false,
-        };
-        if !run_implement_stage(store, run_id, &session)?.success {
-            return stopped(Ending::Failed, "the implement session failed");
-        }
-        if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
-            return stopped(Ending::Blocked, reason);
+        // A resumed run whose agent session already finished goes on from the next stage.
+        if !implement_done {
+            let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            let args = adapter
+                .implement_argv(&ImplementRequest {
+                    feature: options.feature,
+                    implementer: spec(&options.implementer),
+                    reviewer: spec(&options.reviewer),
+                    context: options.context,
+                })
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            let session = ImplementSession {
+                program: claude_program,
+                args: &args,
+                env: &[],
+                cwd: worktree,
+                session_id: None,
+                log: &logs.join("implement.log"),
+                terminal: false,
+            };
+            if !run_implement_stage(store, run_id, &session)?.success {
+                return stopped(Ending::Failed, "the implement session failed");
+            }
+            if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+                return stopped(Ending::Blocked, reason);
+            }
         }
     }
 

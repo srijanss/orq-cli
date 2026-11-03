@@ -178,6 +178,7 @@ struct RunArgs {
     no_gate: bool,
     no_ci_check: bool,
     publish: bool,
+    resume: bool,
     detach: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
@@ -207,6 +208,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--no-gate" => parsed.no_gate = true,
             "--no-ci-check" => parsed.no_ci_check = true,
             "--publish" => parsed.publish = true,
+            "--resume" => parsed.resume = true,
             "--detach" => parsed.detach = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
@@ -339,6 +341,7 @@ fn run(args: &[OsString]) -> ExitCode {
         mr_assignee: parsed.mr_assignee.as_deref(),
         mr_reviewer: parsed.mr_reviewer.as_deref(),
         publish: parsed.publish,
+        resume: parsed.resume,
     };
     match pipeline::execute(&options) {
         Ok(report) => {
