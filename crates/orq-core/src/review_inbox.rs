@@ -40,11 +40,17 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
     }
     let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let records = store.all_reviews().map_err(|err| format!("cannot read the review index: {err}"))?;
+    // Later records replace earlier ones for the same run; runs keep the
+    // order they were first seen in.
     let mut latest: Vec<ReviewRecord> = Vec::new();
+    let mut position: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for record in records {
-        match latest.iter_mut().find(|r| r.run_id == record.run_id) {
-            Some(slot) => *slot = record,
-            None => latest.push(record),
+        match position.get(&record.run_id) {
+            Some(&at) => latest[at] = record,
+            None => {
+                position.insert(record.run_id.clone(), latest.len());
+                latest.push(record);
+            }
         }
     }
     let mut rows = Vec::new();
