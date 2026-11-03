@@ -92,3 +92,32 @@ pub fn prune(
     }
     Ok(report)
 }
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Journaled removals whose file is gone; the bookkeeping now agrees.
+    pub completed: Vec<String>,
+    /// Journaled removals whose file is still there; it stays, and so does its index row.
+    pub abandoned: Vec<String>,
+}
+
+/// Settles every removal the journal still lists, after an interruption. A file
+/// that is gone completes the removal; one that is still there is simply kept
+/// (the next plan decides about it afresh), as is anything that is not a plain
+/// path inside a run. Nothing is deleted here.
+pub fn reconcile(data_root: &Path, store: &Store) -> std::io::Result<Reconciled> {
+    let mut done = Reconciled::default();
+    for (run_id, rel) in store.pending_removals()? {
+        let path = Path::new(&rel);
+        let gone = inside_run(path, &run_id)
+            && matches!(std::fs::symlink_metadata(data_root.join(path)), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+        if gone {
+            store.finish_removal(&rel)?;
+            done.completed.push(rel);
+        } else {
+            store.abandon_removal(&rel)?;
+            done.abandoned.push(rel);
+        }
+    }
+    Ok(done)
+}
