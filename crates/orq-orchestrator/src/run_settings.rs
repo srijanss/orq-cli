@@ -164,15 +164,18 @@ fn forge(value: &str) -> Result<String, String> {
 }
 
 fn branch(value: &str) -> Result<String, String> {
-    let ok = !value.is_empty()
-        && !value.starts_with(['-', '/', '.'])
-        && !value.ends_with(['/', '.'])
-        && !value.contains("..")
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
-    if ok {
+    // Git's own rules for a branch name, plus: never an option, never padded.
+    let plain = !value.is_empty() && !value.starts_with('-') && value.trim() == value;
+    let git_accepts = plain
+        && std::process::Command::new("git")
+            .args(["check-ref-format", &format!("refs/heads/{value}")])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|out| out.status.success());
+    if git_accepts {
         Ok(value.to_string())
     } else {
-        Err("must be a plain branch name".to_string())
+        Err("must be a valid branch name".to_string())
     }
 }
 

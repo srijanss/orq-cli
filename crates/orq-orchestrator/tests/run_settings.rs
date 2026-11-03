@@ -85,6 +85,9 @@ fn bad_values_are_refused_and_say_where_they_came_from() {
     assert!(invalid("forge = \"bitbucket\"\n", "forge").contains(".orq/run.toml"));
     assert!(invalid("base_branch = \"-x\"\n", "dash").contains("base_branch"));
     assert!(invalid("base_branch = \"a b\"\n", "space").contains("base_branch"));
+    assert!(invalid("base_branch = \"release//next\"\n", "doubleslash").contains("base_branch"));
+    assert!(invalid("base_branch = \"release/.hidden\"\n", "dotcomponent").contains("base_branch"));
+    assert!(invalid("base_branch = \"release.lock\"\n", "lock").contains("base_branch"));
     assert!(invalid("gate = []\n", "emptygate").contains("gate"));
     assert!(invalid("gate = [\"\"]\n", "blankgate").contains("gate"));
     assert!(invalid("gate = \"make check\"\n", "stringgate").contains("gate"));
@@ -102,5 +105,15 @@ fn a_bad_environment_value_is_refused_by_name() {
     match load_run_settings(&r, &env) {
         Err(SettingsError::Invalid { source, .. }) => assert_eq!(source, "ORQ_GATE"),
         other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn branch_names_git_accepts_are_accepted() {
+    for name in ["release+fix", "feature/ünï", "v1.2", "team/x_y"] {
+        let r = repo(&format!("ok-{}", name.len()));
+        shared(&r, &format!("base_branch = \"{name}\"\n"));
+        let s = load_run_settings(&r, &no_env).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(s.base_branch.as_deref(), Some(name));
     }
 }
