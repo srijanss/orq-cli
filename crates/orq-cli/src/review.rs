@@ -99,6 +99,12 @@ fn build(args: &[OsString]) -> ExitCode {
     // published or indexed, so a failed build leaves no half-visible report.
     let markdown = orq_core::redact::redact(&render_markdown(&report));
     let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
+    // One publisher per run and commit at a time, so a rollback can never undo
+    // another build's successful publication.
+    let _lock = match lock_publication(&roots.data, &parsed.run_id, &diff.head_sha) {
+        Ok(lock) => lock,
+        Err(err) => return fail(format!("cannot lock the report directory: {err}")),
+    };
     let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
     if let Err(err) = write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()) {
         return fail(format!("cannot store the readable report: {err}"));
@@ -106,20 +112,27 @@ fn build(args: &[OsString]) -> ExitCode {
     let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
         Ok(record) => record,
         Err(err) => {
-            // Put the published pair back as it was: the old readable copy, or none.
-            match previous {
-                Some(old) => {
-                    let _ = write_atomic(&roots.data, Path::new(&markdown_path), &old);
-                }
-                None => {
-                    let _ = std::fs::remove_file(roots.data.join(&markdown_path));
-                }
-            }
-            return fail(format!("cannot store the review report: {err}"));
+            // Put the readable copy back as it was (the old one, or none).
+            let undo = match previous {
+                Some(old) => write_atomic(&roots.data, Path::new(&markdown_path), &old),
+                None => std::fs::remove_file(roots.data.join(&markdown_path)),
+            };
+            return match undo {
+                Ok(()) => fail(format!("cannot store the review report: {err}")),
+                Err(undo) => fail(format!("cannot store the review report: {err}; and restoring the previous readable report failed: {undo}")),
+            };
         }
     };
     println!("{}", roots.data.join(&record.report_path).display());
     ExitCode::SUCCESS
+}
+
+fn lock_publication(data_root: &Path, run_id: &str, head_sha: &str) -> std::io::Result<std::fs::File> {
+    let dir = data_root.join("runs").join(run_id).join("review").join(head_sha);
+    std::fs::create_dir_all(&dir)?;
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(".publish.lock"))?;
+    file.lock()?;
+    Ok(file)
 }
 
 fn show(args: &[OsString]) -> ExitCode {

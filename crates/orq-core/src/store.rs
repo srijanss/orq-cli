@@ -106,9 +106,22 @@ impl Store {
         check_run_id(run_id)?;
         check_head_sha(head_sha)?;
         let report_path = format!("runs/{run_id}/review/{head_sha}/review.json");
+        let full_path = data_root.join(&report_path);
+        let previous = std::fs::read(&full_path).ok();
         write_atomic(data_root, Path::new(&report_path), &crate::redact::redact_bytes(report))?;
         let record = ReviewRecord { run_id: run_id.into(), project: project.into(), feature: feature.into(), head_sha: head_sha.into(), report_path };
-        self.record_review(&record)?;
+        if let Err(error) = self.record_review(&record) {
+            // The index did not take the report: put the file back as it was so
+            // the file and the index still describe the same report.
+            let rollback = match previous {
+                Some(old) => write_atomic(data_root, Path::new(&record.report_path), &old),
+                None => std::fs::remove_file(&full_path),
+            };
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(undo) => Error::other(format!("{error}; and restoring the previous report failed: {undo}")),
+            });
+        }
         Ok(record)
     }
 
