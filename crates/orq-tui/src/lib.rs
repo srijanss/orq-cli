@@ -1491,6 +1491,16 @@ pub struct ReviewRow {
     pub risk: String,
 }
 
+/// The stored report of one review, as text lines per section of the detail view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewDetail {
+    pub summary: Vec<String>,
+    pub risks: Vec<String>,
+    pub files: Vec<String>,
+    pub tests: Vec<String>,
+    pub rounds: Vec<String>,
+}
+
 /// What asking Herdr to show a run's pane came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -1515,6 +1525,11 @@ pub trait BrowserBackend {
     /// The review inbox for the Reviews tab; the reason is shown when it cannot be read.
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
         Err("reviews are not available".into())
+    }
+
+    /// The stored report of `run_id` for the review detail; the reason is shown when it cannot be read.
+    fn load_review_detail(&mut self, _run_id: &str) -> Result<ReviewDetail, String> {
+        Err("review details are not available".into())
     }
 
     /// How many runs the last `load_runs` left out because their files could not be read.
@@ -1857,6 +1872,60 @@ const REVIEWS_HINT: &str = " ↑↓ move · r reload · Esc back ";
 struct ReviewsState {
     rows: Result<Vec<ReviewRow>, String>,
     selected: usize,
+    detail: Option<ReviewDetailView>,
+}
+
+const REVIEW_SECTIONS: [&str; 5] = ["Summary", "Risks", "Files", "Tests", "Review Rounds"];
+const REVIEW_DETAIL_HINT: &str = " ←→ section · ↑↓ PgUp/PgDn scroll · Esc back ";
+
+/// One open review: its report (or why it is unreadable), the section shown and the scroll in it.
+struct ReviewDetailView {
+    content: Result<ReviewDetail, String>,
+    section: usize,
+    scroll: usize,
+}
+
+impl ReviewDetailView {
+    fn lines(&self) -> &[String] {
+        match (&self.content, self.section) {
+            (Ok(d), 0) => &d.summary,
+            (Ok(d), 1) => &d.risks,
+            (Ok(d), 2) => &d.files,
+            (Ok(d), 3) => &d.tests,
+            (Ok(d), _) => &d.rounds,
+            (Err(_), _) => &[],
+        }
+    }
+
+    /// Rows for section text: the first row holds the section names, the last the hint.
+    fn visible(body: Rect) -> usize {
+        usize::from(body.height.saturating_sub(2))
+    }
+
+    fn select(&mut self, section: usize) {
+        self.section = section.min(REVIEW_SECTIONS.len() - 1);
+        self.scroll = 0;
+    }
+
+    fn scroll_by(&mut self, body: Rect, down: bool, page: bool) {
+        let visible = Self::visible(body);
+        let step = if page { visible.max(1) } else { 1 };
+        let max = self.lines().len().saturating_sub(visible);
+        self.scroll = if down { (self.scroll + step).min(max) } else { self.scroll.saturating_sub(step) };
+    }
+
+    /// The section whose name is under `column` (relative to the body), if any.
+    fn section_at(column: usize) -> Option<usize> {
+        let mut start = 0;
+        for (i, name) in REVIEW_SECTIONS.iter().enumerate() {
+            let end = start + name.len();
+            if (start..end).contains(&column) {
+                return Some(i);
+            }
+            start = end + 2;
+        }
+        None
+    }
 }
 
 impl ReviewsState {
@@ -1885,6 +1954,14 @@ impl ReviewsState {
             return;
         }
         let row = usize::from(press.y - body.y);
+        if let Some(detail) = &mut self.detail {
+            if row == 0 {
+                if let Some(section) = ReviewDetailView::section_at(usize::from(press.x - body.x)) {
+                    detail.select(section);
+                }
+            }
+            return;
+        }
         let visible = Self::visible(body);
         let index = self.offset(visible) + row;
         if row < visible && index < self.len() {
@@ -1893,7 +1970,43 @@ impl ReviewsState {
     }
 }
 
+fn render_review_detail(frame: &mut Frame, body: Rect, view: &ReviewDetailView) {
+    let width = usize::from(body.width);
+    let dim = Style::new().fg(Color::DarkGray);
+    let mut put = |row: u16, line: Line<'static>| {
+        if row < body.height {
+            frame.render_widget(Paragraph::new(line), Rect::new(body.x, body.y + row, body.width, 1));
+        }
+    };
+    let mut names = Vec::new();
+    for (i, name) in REVIEW_SECTIONS.iter().enumerate() {
+        if i > 0 {
+            names.push(Span::raw("  "));
+        }
+        let style = if i == view.section { Style::new().add_modifier(Modifier::REVERSED) } else { dim };
+        names.push(Span::styled(*name, style));
+    }
+    put(0, Line::from(names));
+    match &view.content {
+        Err(reason) => put(1, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
+        Ok(_) if view.lines().is_empty() => put(1, Line::from(Span::styled("Nothing recorded", dim))),
+        Ok(_) => {
+            let visible = ReviewDetailView::visible(body);
+            for (i, line) in view.lines().iter().skip(view.scroll).take(visible).enumerate() {
+                put(u16::try_from(i + 1).unwrap_or(u16::MAX), Line::from(truncate_right(&printable(line), width)));
+            }
+        }
+    }
+    if body.height > 0 {
+        put(body.height - 1, Line::from(Span::styled(truncate_right(REVIEW_DETAIL_HINT, width), dim)));
+    }
+}
+
 fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState) {
+    if let Some(view) = &state.detail {
+        render_review_detail(frame, body, view);
+        return;
+    }
     let width = usize::from(body.width);
     let dim = Style::new().fg(Color::DarkGray);
     let mut put = |row: u16, line: Line<'static>| {
@@ -2817,8 +2930,15 @@ impl Browser {
         self.tab = Tab::Runs;
     }
 
+    fn open_selected_review(&mut self, backend: &mut dyn BrowserBackend) {
+        let Ok(rows) = &self.reviews.rows else { return };
+        let Some(row) = rows.get(self.reviews.selected) else { return };
+        let content = backend.load_review_detail(&row.run_id);
+        self.reviews.detail = Some(ReviewDetailView { content, section: 0, scroll: 0 });
+    }
+
     fn open_reviews(&mut self, backend: &mut dyn BrowserBackend) {
-        self.reviews = ReviewsState { rows: backend.load_reviews(), selected: 0 };
+        self.reviews = ReviewsState { rows: backend.load_reviews(), selected: 0, detail: None };
         self.tab = Tab::Reviews;
     }
 
@@ -3022,7 +3142,7 @@ where
             status: None,
         },
         runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
-        reviews: ReviewsState { rows: Ok(Vec::new()), selected: 0 },
+        reviews: ReviewsState { rows: Ok(Vec::new()), selected: 0, detail: None },
         form: None,
         preview: None,
         picker: None,
@@ -3153,8 +3273,27 @@ where
                     dirty = true;
                     continue;
                 }
+                if browser.tab == Tab::Reviews && browser.reviews.detail.is_some() {
+                    let body = chrome_body(Rect::from((Position::ORIGIN, terminal.size()?)));
+                    if let Some(detail) = browser.reviews.detail.as_mut() {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Backspace => browser.reviews.detail = None,
+                            KeyCode::Right | KeyCode::Char('l') => detail.select(detail.section + 1),
+                            KeyCode::Left | KeyCode::Char('h') => detail.select(detail.section.saturating_sub(1)),
+                            KeyCode::Char(c @ '1'..='5') => detail.select(usize::from(c as u8 - b'1')),
+                            KeyCode::Down | KeyCode::Char('j') => detail.scroll_by(body, true, false),
+                            KeyCode::Up | KeyCode::Char('k') => detail.scroll_by(body, false, false),
+                            KeyCode::PageDown => detail.scroll_by(body, true, true),
+                            KeyCode::PageUp => detail.scroll_by(body, false, true),
+                            _ => {}
+                        }
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if browser.tab == Tab::Reviews {
                     match key.code {
+                        KeyCode::Enter => browser.open_selected_review(backend),
                         KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
                         KeyCode::Down | KeyCode::Char('j') => browser.reviews.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.reviews.move_by(false),
