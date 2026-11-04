@@ -428,8 +428,12 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             }
         }
     }
+    // A new harness continues the work from the handoff, so only an implementer on the same harness skips its finished session.
+    let inherited = resumed.as_ref().filter(|r| {
+        r.skip_implement && r.from.profiles.get("implementer").map(|p| &p.harness) == record.profiles.get("implementer").map(|p| &p.harness)
+    });
     // Carried over first thing: a run resumed again after failing early must still skip the agent.
-    if let Some(from) = resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()) {
+    if let Some(from) = inherited.map(|r| r.from.run_id.as_str()) {
         if let Err(err) = orq_orchestrator::record_inherited_implement(&store, &record, from) {
             let released = finish(&store);
             let message = format!("cannot record that the agent session already finished: {err:?}");
@@ -462,7 +466,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()), resumed.as_ref().and_then(|r| r.checkpoint.as_ref())));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, inherited.map(|r| r.from.run_id.as_str()), resumed.as_ref().and_then(|r| r.checkpoint.as_ref())));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
