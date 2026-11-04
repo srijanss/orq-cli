@@ -448,6 +448,7 @@ fn stages(
         notes.extend(orq_orchestrator::write_session_settings(worktree, &run_vars, settings.mcp_servers.as_deref()));
         let mcpctl = find_program("mcpctl");
         notes.extend(orq_orchestrator::setup_mcp_servers(worktree, settings.mcp_servers.as_deref().unwrap_or(&[]), &run_vars, mcpctl.as_deref()));
+        notes.extend(orq_orchestrator::record_orq_written(worktree));
     }
     let database_env = run_vars.as_slice();
     if !options.publish {
