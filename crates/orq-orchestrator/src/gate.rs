@@ -114,7 +114,11 @@ fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>,
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
-        match changed {
+        // A change to ruff's configuration can affect every file, so it checks the whole project.
+        let config_changed = changed.is_some_and(|changed| {
+            changed.iter().any(|path| matches!(path.rsplit('/').next(), Some("ruff.toml" | ".ruff.toml" | "pyproject.toml")))
+        });
+        match changed.filter(|_| !config_changed) {
             Some(changed) => {
                 let mut files: Vec<String> = changed.iter().filter(|path| path.ends_with(".py") && dir.join(path).is_file()).cloned().collect();
                 files.sort();

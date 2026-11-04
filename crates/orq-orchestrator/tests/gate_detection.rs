@@ -477,6 +477,13 @@ fn lint_adds_ruff_on_the_changed_python_files_before_pytest() {
 
     let whole = GateOptions { lint: true, ..GateOptions::default() };
     assert_eq!(with(&whole, &dir), run(&[&["uv", "run", "ruff", "check"], &["uv", "run", "pytest"]]));
+
+    // A change to ruff's own configuration can affect every file, so the whole project is checked.
+    for config in ["ruff.toml", ".ruff.toml", "pyproject.toml", "sub/ruff.toml"] {
+        let changed = [config.to_string(), "b.py".to_string()];
+        let linted = GateOptions { lint: true, changed: Some(&changed), ..GateOptions::default() };
+        assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "ruff", "check"], &["uv", "run", "pytest"]]), "{config}");
+    }
 }
 
 #[test]
