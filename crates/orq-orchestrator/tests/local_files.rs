@@ -133,6 +133,22 @@ fn a_file_that_cannot_be_kept_out_of_git_status_is_not_carried_into_the_worktree
 }
 
 #[test]
+fn a_file_name_with_glob_characters_is_excluded_literally_and_a_line_break_in_a_name_is_refused() {
+    let (repo, worktree) = checkout("glob-names");
+    fs::write(repo.root().join("secrets[prod].json"), "{}").unwrap();
+    fs::write(repo.root().join("secretsp.json"), "{}").unwrap();
+    let files = vec!["secrets[prod].json".to_string(), "a\nb".to_string()];
+
+    let found = carry_local_files(repo.root(), &worktree, Some(&files));
+
+    assert!(worktree.join("secrets[prod].json").exists());
+    assert!(!worktree.join("secretsp.json").exists());
+    let status = git_out(&worktree, &["status", "--porcelain"]);
+    assert!(!status.contains("secrets"), "{status}");
+    assert!(found.notes.iter().any(|n| n.contains("not a plain relative path")), "{:?}", found.notes);
+}
+
+#[test]
 fn mcpctl_config_is_copied_and_its_lock_file_is_kept_out_of_git_status() {
     let (repo, worktree) = checkout("mcpctl");
     fs::write(repo.root().join(".mcpctl.toml"), "[servers]\n").unwrap();

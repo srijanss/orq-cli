@@ -105,10 +105,26 @@ fn is_tracked(worktree: &Path, name: &str) -> bool {
 /// No `..`, no absolute path: only files inside the checkout can be carried.
 fn plain_relative(name: &str) -> bool {
     let path = Path::new(name);
-    !name.is_empty() && path.components().all(|part| matches!(part, Component::Normal(_)))
+    !name.is_empty() && !name.contains(['\n', '\r']) && path.components().all(|part| matches!(part, Component::Normal(_)))
 }
 
 /// Adds `name` to the repository's `info/exclude` unless git already ignores it.
+/// `name` as a gitignore pattern that matches only that file.
+fn escape_pattern(name: &str) -> String {
+    let mut pattern = String::new();
+    for c in name.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[' | ']') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    // A trailing space is dropped by git unless escaped.
+    if pattern.ends_with(' ') {
+        pattern.insert(pattern.len() - 1, '\\');
+    }
+    pattern
+}
+
 /// It succeeds only once git reports `name` as ignored.
 fn exclude_locally(worktree: &Path, name: &str) -> Result<(), String> {
     let git = |args: &[&str]| Command::new("git").arg("-C").arg(worktree).args(args).output();
@@ -128,7 +144,7 @@ fn exclude_locally(worktree: &Path, name: &str) -> Result<(), String> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("/{name}\n"));
+    text.push_str(&format!("/{}\n", escape_pattern(name)));
     path.parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::write(&path, text))
