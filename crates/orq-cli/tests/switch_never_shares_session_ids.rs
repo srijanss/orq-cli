@@ -67,3 +67,27 @@ fn the_latest_session_of_the_same_harness_wins_over_a_newer_one_of_another_harne
     assert_eq!(resumable_session(&store, "run-3", "pi").unwrap().as_deref(), Some("pi-sess-2"));
     assert_eq!(resumable_session(&store, "run-3", "claude").unwrap().as_deref(), Some("claude-sess-1"));
 }
+
+fn started_at(run: &str, stage: &str, attempt: u32, session: &str) -> Event {
+    let mut event = started(run, stage, session);
+    event.event_id = format!("{run}-{stage}-{attempt}");
+    event.attempt = attempt;
+    event
+}
+
+#[test]
+fn the_newest_session_of_the_same_harness_wins_over_an_older_one() {
+    let store = store("newest");
+    store.create(&record("run-1", "claude", "sonnet")).unwrap();
+    store.create(&record("run-2", "pi", "team/model")).unwrap();
+    store.create(&record("run-3", "claude", "opus")).unwrap();
+    store.append_event(&started_at("run-1", "implement_and_review", 1, "claude-old")).unwrap();
+    store.append_event(&started_at("run-1", "gate_fix", 1, "claude-carried-newer")).unwrap();
+    store.append_event(&started_at("run-2", "gate_fix", 1, "pi-newest")).unwrap();
+    store.append_event(&started_at("run-3", "ci_fix", 1, "claude-local-newest")).unwrap();
+    carry_session_references(&store, &store.load("run-2").unwrap(), "run-1").unwrap();
+    carry_session_references(&store, &store.load("run-3").unwrap(), "run-2").unwrap();
+
+    assert_eq!(resumable_session(&store, "run-3", "claude").unwrap().as_deref(), Some("claude-local-newest"));
+    assert_eq!(resumable_session(&store, "run-3", "pi").unwrap().as_deref(), Some("pi-newest"));
+}
