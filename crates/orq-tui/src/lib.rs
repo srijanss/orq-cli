@@ -1568,6 +1568,22 @@ pub trait BrowserBackend {
         PaneFocus::Failed("Herdr navigation is not available".into())
     }
 
+    /// Asks the running `run_id` to pause at its next stage boundary; `Ok` is what happened, `Err` why not.
+    fn pause_run(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("pausing runs is not available".into())
+    }
+
+    /// Checks that the paused `run_id` can be resumed; `Ok` names where it would continue, `Err` is
+    /// why its checkpoint no longer allows it.
+    fn resume_check(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("resuming runs is not available".into())
+    }
+
+    /// Resumes the paused `run_id` as a detached run; `Ok` is what happened, `Err` why it did not.
+    fn resume_run(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("resuming runs is not available".into())
+    }
+
     /// Opens the review request (MR/PR) of `run_id`; `Ok` is what happened, `Err` why it could not.
     fn open_review_link(&mut self, _run_id: &str) -> Result<String, String> {
         Err("opening links is not available".into())
@@ -2275,6 +2291,8 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: O
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
 const RUNS_HINT: &str = " ↑↓ move · Enter pane · o new pane · u open MR · y copy link · r reload · Esc ";
+const RUNS_HINT_PAUSE: &str = " ↑↓ move · Enter pane · u open MR · y copy link · p pause · r reload · Esc ";
+const RUNS_HINT_RESUME: &str = " ↑↓ move · Enter pane · u open MR · y copy link · c resume · r reload · Esc ";
 const RUNS_HINT_NO_LINK: &str = " ↑↓ move · Enter pane · o new pane · no review link yet · r reload · Esc ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
@@ -2283,6 +2301,8 @@ struct RunsState {
     selected: usize,
     /// Runs that were left out of `rows` because they could not be read.
     unreadable: usize,
+    /// The paused run whose resume waits for a `y`.
+    resuming: Option<String>,
 }
 
 impl RunsState {
@@ -2369,7 +2389,16 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
             Some(text) => Line::from(Span::styled(truncate_right(&printable(text), width), Style::new().fg(Color::Yellow))),
             None => {
                 let no_link = matches!(&state.rows, Ok(rows) if rows.get(state.selected).is_some_and(|run| !run.has_review_link));
-                let hint = if no_link { RUNS_HINT_NO_LINK } else { RUNS_HINT };
+                let status = match &state.rows {
+                    Ok(rows) => rows.get(state.selected).map(|run| run.status.as_str()),
+                    Err(_) => None,
+                };
+                let hint = match status {
+                    _ if no_link => RUNS_HINT_NO_LINK,
+                    Some("running") => RUNS_HINT_PAUSE,
+                    Some("paused") => RUNS_HINT_RESUME,
+                    _ => RUNS_HINT,
+                };
                 Line::from(Span::styled(truncate_right(hint, width), dim))
             }
         };
@@ -3326,10 +3355,49 @@ impl Browser {
         });
     }
 
+    fn selected_run(&self) -> Option<&RunRow> {
+        self.runs.rows.as_ref().ok().and_then(|rows| rows.get(self.runs.selected))
+    }
+
+    fn pause_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
+        let Some(run) = self.selected_run() else { return };
+        let (run_id, status) = (run.run_id.clone(), run.status.clone());
+        if status != "running" {
+            self.notice = Some(format!("{run_id} is {status}; only a running run can be paused"));
+            return;
+        }
+        self.notice = Some(match backend.pause_run(&run_id) {
+            Ok(message) | Err(message) => message,
+        });
+    }
+
+    /// `c` on a paused run: check its checkpoint, then wait for `y` before resuming.
+    fn ask_to_resume_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
+        let Some(run) = self.selected_run() else { return };
+        let (run_id, status) = (run.run_id.clone(), run.status.clone());
+        if status != "paused" {
+            self.notice = Some(format!("{run_id} is {status}; only a paused run can be resumed"));
+            return;
+        }
+        self.notice = Some(match backend.resume_check(&run_id) {
+            Ok(next) => {
+                self.runs.resuming = Some(run_id.clone());
+                format!("Resume {run_id} from {next}? y to confirm, any other key cancels")
+            }
+            Err(reason) => reason,
+        });
+    }
+
+    fn confirm_resume(&mut self, backend: &mut dyn BrowserBackend, run_id: &str) {
+        self.notice = Some(match backend.resume_run(run_id) {
+            Ok(message) | Err(message) => message,
+        });
+    }
+
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
         let rows = backend.load_runs();
         let unreadable = if rows.is_ok() { backend.unreadable_runs() } else { 0 };
-        self.runs = RunsState { rows, selected: 0, unreadable };
+        self.runs = RunsState { rows, selected: 0, unreadable, resuming: None };
         self.tab = Tab::Runs;
     }
 
@@ -3590,7 +3658,7 @@ where
             report: None,
             confirming: false,
         },
-        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0 },
+        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0, resuming: None },
         reviews: ReviewsState::new(model.project_name.clone()),
         form: None,
         preview: None,
@@ -3721,7 +3789,18 @@ where
                 }
                 if browser.tab == Tab::Runs {
                     browser.notice = None;
+                    if let Some(run_id) = browser.runs.resuming.take() {
+                        if key.code == KeyCode::Char('y') {
+                            browser.confirm_resume(backend, &run_id);
+                        } else {
+                            browser.notice = Some(format!("Did not resume {run_id}"));
+                        }
+                        dirty = true;
+                        continue;
+                    }
                     match key.code {
+                        KeyCode::Char('p') => browser.pause_selected_run(backend),
+                        KeyCode::Char('c') => browser.ask_to_resume_selected_run(backend),
                         KeyCode::Enter => browser.focus_selected_run(backend),
                         KeyCode::Char('o') => browser.reopen_selected_run(backend),
                         KeyCode::Char('u') => browser.review_link_of_selected_run(backend, false),

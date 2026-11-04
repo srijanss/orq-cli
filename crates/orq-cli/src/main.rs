@@ -1946,6 +1946,36 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         }
     }
 
+    fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
+        let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
+        orq_orchestrator::request_pause(&orq_orchestrator::RunStore::new(&root), run_id)?;
+        Ok(format!("Pause requested for {run_id}; it stops at the next stage boundary"))
+    }
+
+    fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
+        let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let checkpoint = orq_orchestrator::validate_checkpoint(&orq_orchestrator::RunStore::new(&root), repo, run_id)?;
+        Ok(printable(checkpoint.next_stage.as_deref().unwrap_or("the end")))
+    }
+
+    fn resume_run(&mut self, run_id: &str) -> Result<String, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        // The command validates again, so a checkpoint that went stale since the check is refused.
+        let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
+        let output = std::process::Command::new(exe)
+            .args(["run", "resume", run_id, "--yes", "--detach", "--repo"])
+            .arg(repo)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("cannot start orq run resume: {err}"))?;
+        if output.status.success() {
+            Ok(format!("Resumed {run_id}"))
+        } else {
+            Err(printable(String::from_utf8_lossy(&output.stderr).trim()))
+        }
+    }
+
     fn open_review_link(&mut self, run_id: &str) -> Result<String, String> {
         self.review_link(run_id, &open_url)
     }
@@ -3505,11 +3535,13 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     let mut run_id = None;
     let mut yes = false;
     let mut no_ci_check = false;
+    let mut detach = false;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
+            Some("--detach") => detach = true,
             Some("--no-ci-check") => no_ci_check = true,
             Some("--repo") => match iter.next() {
                 Some(value) => repo = PathBuf::from(value),
@@ -3555,6 +3587,9 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     }
     if no_ci_check {
         forwarded.push("--no-ci-check".into());
+    }
+    if detach {
+        forwarded.push("--detach".into());
     }
     run(&forwarded)
 }

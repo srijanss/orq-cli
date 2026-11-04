@@ -157,3 +157,21 @@ fn a_checkpoint_that_records_the_push_and_the_review_request_prevents_both_from_
     assert_eq!(count_calls(&w, &["pr", "create"]), 0);
     assert_eq!(count_calls(&w, &["pr", "list"]), 0);
 }
+
+#[test]
+fn a_detached_resume_returns_at_once_and_the_resumed_run_still_finishes() {
+    let agent = agent();
+    let w = world("detached", &agent);
+    let (run_id, store) = start_paused(&w);
+
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--detach", "--repo", w.repo.root().to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while count_calls(&w, &["pr", "create"]) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(count_calls(&w, &["pr", "create"]), 1);
+    assert_eq!(std::fs::read_to_string(w.base.join("gate-runs")).unwrap().lines().count(), 1);
+    assert_eq!(store.run_ids().unwrap().len(), 2);
+}
