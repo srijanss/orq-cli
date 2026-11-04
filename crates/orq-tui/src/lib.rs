@@ -2798,7 +2798,9 @@ impl LaunchPicker {
             lines.push(Line::from(format!(" Reviewer: {}", printable(reviewer))));
         }
         lines.push(Line::from(""));
-        let room = usize::from(area.height).saturating_sub(6).max(1);
+        // Title, blank, blank and the hint always show; the implementer, reviewer and grid lines sometimes.
+        let fixed = 4 + usize::from(self.implementer.is_some()) + usize::from(self.reviewer.is_some()) + usize::from(self.features.len() > 1);
+        let room = usize::from(area.height).saturating_sub(fixed).max(1);
         let first = self.selected.saturating_sub(room - 1);
         let choices = if self.reviewer.is_some() { &self.catalog } else { &self.profiles };
         for (index, profile) in choices.iter().enumerate().skip(first).take(room) {

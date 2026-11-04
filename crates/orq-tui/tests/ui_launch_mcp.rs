@@ -22,17 +22,20 @@ struct Fake {
     saved: Vec<Vec<String>>,
     save_result: Result<(), String>,
     launched: Vec<(String, String, String)>,
+    /// Every save and launch in the order it happened.
+    log: Vec<&'static str>,
 }
 
 impl BrowserBackend for Fake {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
-        Ok(vec![BrowserEntry {
-            name: "alpha".into(),
+        let entry = |name: &str| BrowserEntry {
+            name: name.into(),
             description: None,
             status: "pending".into(),
             depends_on: vec![],
             test_file: None,
-        }])
+        };
+        Ok(vec![entry("alpha"), entry("beta")])
     }
     fn promote(&mut self, _feature: &str) -> PromoteOutcome {
         PromoteOutcome::Saved
@@ -44,10 +47,12 @@ impl BrowserBackend for Fake {
         self.catalog.clone()
     }
     fn save_mcp_servers(&mut self, servers: &[String]) -> Result<(), String> {
+        self.log.push("save");
         self.saved.push(servers.to_vec());
         self.save_result.clone()
     }
     fn launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Result<String, String> {
+        self.log.push("launch");
         self.launched.push((feature.into(), implementer.into(), reviewer.into()));
         Ok("run-7".into())
     }
@@ -59,6 +64,7 @@ fn fake(catalog: &[&str]) -> Fake {
         saved: vec![],
         save_result: Ok(()),
         launched: vec![],
+        log: vec![],
     }
 }
 
@@ -104,6 +110,7 @@ fn space_marks_servers_and_enter_saves_them_then_launches() {
     let lines = show(&mut backend, events);
 
     assert_eq!(backend.saved, vec![vec!["project-mcp".to_string(), "outside-in-tdd-mcp".to_string()]]);
+    assert_eq!(backend.log, vec!["save", "launch"]);
     assert_eq!(backend.launched, vec![("alpha".to_string(), "opus".to_string(), "sonnet".to_string())]);
     assert!(has(&lines, "run-7"), "{lines:?}");
 }
@@ -173,4 +180,18 @@ fn esc_on_the_mcp_step_launches_nothing_and_saves_nothing() {
 
     assert!(backend.launched.is_empty());
     assert!(backend.saved.is_empty());
+}
+
+#[test]
+fn a_catalog_longer_than_the_screen_still_shows_the_hint_for_several_marked_features() {
+    let names: Vec<String> = (0..40).map(|i| format!("server-{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut backend = fake(&refs);
+    // Mark two features, then open the picker: the grid line is shown too.
+    let mut events = vec![key(KeyCode::Down), key(KeyCode::Char(' ')), key(KeyCode::Down), key(KeyCode::Char(' ')), key(KeyCode::Char('L'))];
+    events.extend([key(KeyCode::Enter), key(KeyCode::Down), key(KeyCode::Enter)]);
+
+    let lines = show(&mut backend, events);
+
+    assert!(has(&lines, "Space mark"), "{lines:?}");
 }
