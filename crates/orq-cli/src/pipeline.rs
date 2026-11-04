@@ -235,7 +235,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         None
     } else {
         Some(
-            orq_core::naming::run_naming(orq_core::naming::DEFAULT_BRANCH_PREFIX, options.feature, |n| {
+            orq_core::naming::run_naming(settings.branch_prefix.as_deref().unwrap_or(orq_core::naming::DEFAULT_BRANCH_PREFIX), options.feature, |n| {
                 git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
                     || repo.join(&n.worktree_dir).exists()
             })

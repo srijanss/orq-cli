@@ -249,3 +249,19 @@ fn the_run_model_comes_from_the_files_or_the_environment_and_must_be_a_plain_nam
     shared(&r, "model = \"anthropic/claude-sonnet-5-5:1m@x+y\"\n");
     assert_eq!(load_run_settings(&r, &no_env).unwrap().model.as_deref(), Some("anthropic/claude-sonnet-5-5:1m@x+y"));
 }
+
+#[test]
+fn the_branch_prefix_comes_from_the_files_or_the_environment_and_must_be_usable() {
+    let r = repo("prefix");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().branch_prefix, None);
+    shared(&r, "branch_prefix = \"feat/\"\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().branch_prefix.as_deref(), Some("feat/"));
+
+    let env = |key: &str| (key == "ORQ_BRANCH_PREFIX").then(|| "bug-".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().branch_prefix.as_deref(), Some("bug-"));
+
+    assert!(invalid("branch_prefix = 3\n", "prefixnum").contains("branch_prefix"));
+    assert!(invalid("branch_prefix = \"../x\"\n", "prefixdots").contains("branch_prefix"));
+    assert!(invalid("branch_prefix = \"-x\"\n", "prefixdash").contains("branch_prefix"));
+    assert!(invalid("branch_prefix = \"a b\"\n", "prefixspace").contains("branch_prefix"));
+}

@@ -50,6 +50,8 @@ pub struct RunSettings {
     pub db_name_template: Option<String>,
     /// The model for the implement session and the review draft; `None` leaves the chosen profile's own.
     pub model: Option<String>,
+    /// The prefix of a new run's branch (`fix--` when unset).
+    pub branch_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +93,7 @@ struct Layer {
     keep_test_db: Option<bool>,
     db_name_template: Option<String>,
     model: Option<String>,
+    branch_prefix: Option<String>,
 }
 
 impl Layer {
@@ -114,6 +117,7 @@ impl Layer {
             keep_test_db: self.keep_test_db.or(lower.keep_test_db),
             db_name_template: self.db_name_template.or(lower.db_name_template),
             model: self.model.or(lower.model),
+            branch_prefix: self.branch_prefix.or(lower.branch_prefix),
         }
     }
 }
@@ -144,6 +148,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         keep_test_db: merged.keep_test_db,
         db_name_template: merged.db_name_template,
         model: merged.model,
+        branch_prefix: merged.branch_prefix,
     })
 }
 
@@ -188,7 +193,10 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "mcp_servers" => layer.mcp_servers = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "test_db_drop_cmd" => layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "db_name_template" => layer.db_name_template = Some(value.as_str().ok_or_else(|| bad("must be a string"))?.to_string()),
-            "model" => layer.model = Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
+            "branch_prefix" => {
+                layer.branch_prefix = Some(branch_prefix(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?)
+            }
+            "model" => layer.model =Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
@@ -241,6 +249,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
         layer.db_name_template = Some(v.trim().to_string());
+    }
+    if let Some(v) = get("ORQ_BRANCH_PREFIX") {
+        layer.branch_prefix = Some(branch_prefix(v.trim()).map_err(|r| invalid("ORQ_BRANCH_PREFIX", r))?);
     }
     if let Some(v) = get("ORQ_MODEL") {
         layer.model = Some(model(v.trim()).map_err(|r| invalid("ORQ_MODEL", r))?);
@@ -307,6 +318,15 @@ pub fn model(value: &str) -> Result<String, String> {
         return Err("must be a model name: letters, digits and - _ . / : @ +, not starting with a dash".to_string());
     }
     Ok(value.to_string())
+}
+
+/// A branch prefix is checked by the same rule that names the branch, so a bad one stops the run before it starts.
+fn branch_prefix(value: &str) -> Result<String, String> {
+    if orq_core::naming::is_valid_prefix(value) {
+        Ok(value.to_string())
+    } else {
+        Err("must be a branch prefix such as fix-- or feat/ (letters, digits, . _ - and /)".to_string())
+    }
 }
 
 fn notify_on(value: &str) -> Result<String, String> {

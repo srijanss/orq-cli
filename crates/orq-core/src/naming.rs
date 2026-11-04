@@ -67,6 +67,11 @@ fn valid_feature_name(name: &str) -> bool {
         && valid_component(name)
 }
 
+/// Whether `prefix` can start a run branch name.
+pub fn is_valid_prefix(prefix: &str) -> bool {
+    valid_prefix(prefix)
+}
+
 fn valid_prefix(prefix: &str) -> bool {
     if prefix.is_empty() {
         return true;
