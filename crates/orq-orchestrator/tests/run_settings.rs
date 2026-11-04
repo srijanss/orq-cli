@@ -193,3 +193,25 @@ fn the_variables_that_name_test_databases_come_from_the_files_or_the_environment
     private(&r, "");
     assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Invalid { .. })));
 }
+
+#[test]
+fn the_test_database_drop_command_and_keep_flag_come_from_the_files_or_the_environment() {
+    let r = repo("dropcmd");
+    shared(&r, "test_db_drop_cmd = [\"mysql-drop\", \"--yes\"]\nkeep_test_db = false\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.test_db_drop_cmd, Some(vec!["mysql-drop".to_string(), "--yes".to_string()]));
+    assert_eq!(s.keep_test_db, Some(false));
+
+    let env = |key: &str| match key {
+        "ORQ_TEST_DB_DROP_CMD" => Some("[\"other\"]".to_string()),
+        "ORQ_KEEP_TEST_DB" => Some("1".to_string()),
+        _ => None,
+    };
+    let s = load_run_settings(&r, &env).unwrap();
+    assert_eq!((s.test_db_drop_cmd, s.keep_test_db), (Some(vec!["other".to_string()]), Some(true)));
+
+    assert!(invalid("test_db_drop_cmd = \"drop it\"\n", "dropstring").contains("test_db_drop_cmd"));
+    assert!(invalid("keep_test_db = \"yes\"\n", "keepstring").contains("keep_test_db"));
+    let bad = |key: &str| (key == "ORQ_KEEP_TEST_DB").then(|| "maybe".to_string());
+    assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_KEEP_TEST_DB"));
+}
