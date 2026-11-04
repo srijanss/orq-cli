@@ -175,3 +175,21 @@ fn the_variables_a_notifier_may_keep_are_a_setting() {
     assert!(invalid("notify_env = [\"1X\"]\n", "envdigit").contains("notify_env"));
     assert!(invalid("notify_env = [\"NOTIFY_MESSAGE\"]\n", "envmessage").contains("notify_env"));
 }
+
+#[test]
+fn the_variables_that_name_test_databases_come_from_the_files_or_the_environment_and_must_be_variable_names() {
+    let r = repo("test-db-vars");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().test_db_vars, None);
+
+    shared(&r, "test_db_vars = [\"DB_NAME\"]\n");
+    private(&r, "test_db_vars = [\"DB_NAME\", \"OTHER_DB\"]\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.test_db_vars, Some(vec!["DB_NAME".to_string(), "OTHER_DB".to_string()]));
+
+    let env = |name: &str| (name == "ORQ_TEST_DB_VARS").then(|| "[\"ENV_DB\"]".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().test_db_vars, Some(vec!["ENV_DB".to_string()]));
+
+    shared(&r, "test_db_vars = [\"not a name\"]\n");
+    private(&r, "");
+    assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Invalid { .. })));
+}

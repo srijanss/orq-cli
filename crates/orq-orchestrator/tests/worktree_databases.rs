@@ -1,0 +1,97 @@
+use std::fs;
+use std::path::PathBuf;
+
+use orq_orchestrator::derive_worktree_databases;
+
+fn main_checkout(tag: &str, dotenv: &str) -> PathBuf {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-worktree-db-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(".env"), dotenv).unwrap();
+    dir
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|name| name.to_string()).collect()
+}
+
+fn pairs(found: &orq_orchestrator::WorktreeDatabases) -> Vec<(&str, &str)> {
+    found.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
+#[test]
+fn each_variable_with_a_value_gets_the_main_name_plus_the_branch_slug() {
+    let main = main_checkout("plain", "DB_NAME=shop\nB2C_DB_NAME=\"shop_b2c\"\nDB_PWD=secret\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME", "B2C_DB_NAME"]), "fix--COM-01", true);
+
+    assert_eq!(pairs(&found), [("DB_NAME", "shop_fix_com_01"), ("B2C_DB_NAME", "shop_b2c_fix_com_01")]);
+    assert!(found.notes.is_empty(), "{:?}", found.notes);
+}
+
+#[test]
+fn the_last_assignment_wins_and_export_quotes_and_trailing_comments_are_understood() {
+    let main = main_checkout("syntax", "# DB_NAME=commented\nDB_NAME=old\nexport DB_NAME = 'shop'  # the main one\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME"]), "feat/x", true);
+
+    assert_eq!(pairs(&found), [("DB_NAME", "shop_feat_x")]);
+}
+
+#[test]
+fn a_variable_without_a_value_is_skipped_quietly_unless_the_repo_named_it() {
+    let main = main_checkout("missing", "OTHER=1\n");
+
+    let implicit = derive_worktree_databases(&main, &names(&["DB_NAME"]), "b", false);
+    let explicit = derive_worktree_databases(&main, &names(&["DB_NAME"]), "b", true);
+
+    assert!(implicit.env.is_empty() && implicit.notes.is_empty());
+    assert!(explicit.env.is_empty());
+    assert!(explicit.notes.iter().any(|n| n.contains("DB_NAME")), "{:?}", explicit.notes);
+}
+
+#[test]
+fn a_main_checkout_without_a_dotenv_file_isolates_nothing() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-worktree-db-{}-nofile", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let found = derive_worktree_databases(&dir, &names(&["DB_NAME"]), "b", false);
+
+    assert!(found.env.is_empty() && found.notes.is_empty());
+}
+
+#[test]
+fn a_long_branch_is_shortened_with_a_hash_so_the_test_database_name_fits_64_characters() {
+    let main = main_checkout("long", "DB_NAME=shop\n");
+    let branch = "fix--COM-01-a-very-long-feature-name-that-goes-on-and-on-and-on-forever";
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME"]), branch, true);
+
+    let value = &found.env[0].1;
+    assert!(format!("test_{value}").len() <= 64, "{value}");
+    assert!(value.starts_with("shop_fix_com_01"), "{value}");
+    let other = derive_worktree_databases(&main, &names(&["DB_NAME"]), &format!("{branch}-2"), true);
+    assert_ne!(found.env, other.env, "two long branches must not share a database");
+}
+
+#[test]
+fn a_main_name_with_no_room_for_a_suffix_is_skipped_with_a_note_that_leaves_out_the_value() {
+    let long = "x".repeat(58);
+    let main = main_checkout("roomless", &format!("DB_NAME={long}\n"));
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME"]), "b", false);
+
+    assert!(found.env.is_empty());
+    assert!(found.notes.iter().any(|n| n.contains("DB_NAME") && n.contains("too long") && !n.contains(&long)), "{:?}", found.notes);
+}
+
+#[test]
+fn a_value_that_is_not_a_plain_database_name_is_never_passed_on() {
+    let main = main_checkout("unsafe", "DB_NAME=shop;drop\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME"]), "b", true);
+
+    assert!(found.env.is_empty());
+    assert!(found.notes.iter().all(|n| !n.contains("drop")), "{:?}", found.notes);
+}

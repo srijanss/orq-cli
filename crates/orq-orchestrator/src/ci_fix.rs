@@ -99,7 +99,7 @@ pub fn run_ci_fix_loop(
         // The session's own result is not trusted: the gate and CI decide.
         run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
 
-        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts)? {
+        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts, &[])? {
             GateOutcome::Passed | GateOutcome::Skipped { .. } => {}
             GateOutcome::Failed { step, exit_code } => {
                 let reason = format!("the gate failed after CI fix attempt {fix_attempts}; nothing was pushed");

@@ -94,6 +94,16 @@ fn install_step(dir: &Path, notes: &mut Vec<String>) -> Option<Vec<String>> {
 /// Run `steps` in order with `worktree` as the working directory, appending
 /// each step's stdout and stderr to `log`. Stops at the first failure.
 pub fn run_setup(worktree: &Path, steps: &[Vec<String>], log: &Path) -> Result<(), SetupFailure> {
+    run_setup_with_env(worktree, steps, log, &[])
+}
+
+/// `run_setup`, with `env` added to what each step sees (the worktree's own database names).
+pub fn run_setup_with_env(
+    worktree: &Path,
+    steps: &[Vec<String>],
+    log: &Path,
+    env: &[(String, String)],
+) -> Result<(), SetupFailure> {
     let failure = |step: &[String], exit_code: Option<i32>, reason: String| SetupFailure {
         step: step.to_vec(),
         exit_code,
@@ -115,6 +125,7 @@ pub fn run_setup(worktree: &Path, steps: &[Vec<String>], log: &Path) -> Result<(
         let status = Command::new(program)
             .args(args)
             .current_dir(worktree)
+            .envs(env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err_out)

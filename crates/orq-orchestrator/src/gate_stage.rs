@@ -32,7 +32,19 @@ pub fn run_gate_stage(
     enabled: bool,
     log_path: &Path,
 ) -> Result<GateOutcome, StoreError> {
-    run_gate_attempt(store, run_id, gate, enabled, log_path, 1)
+    run_gate_stage_with_env(store, run_id, gate, enabled, log_path, &[])
+}
+
+/// `run_gate_stage`, with `env` added to what each step sees (the worktree's own database names).
+pub fn run_gate_stage_with_env(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    log_path: &Path,
+    env: &[(String, String)],
+) -> Result<GateOutcome, StoreError> {
+    run_gate_attempt(store, run_id, gate, enabled, log_path, 1, env)
 }
 
 /// One run of the gate, its events numbered `attempt`.
@@ -43,6 +55,7 @@ pub(crate) fn run_gate_attempt(
     enabled: bool,
     log_path: &Path,
     attempt: u32,
+    env: &[(String, String)],
 ) -> Result<GateOutcome, StoreError> {
     let record = store.load(run_id)?;
     let skip_reason = match gate {
@@ -64,7 +77,7 @@ pub(crate) fn run_gate_attempt(
 
     for (index, argv) in steps.iter().enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
-        let (exit_code, failure) = run_step(&record, argv, &log)?;
+        let (exit_code, failure) = run_step(&record, argv, &log, env)?;
         if let Some(failure) = failure {
             let reason = format!("gate step {} ({}) {failure}", index + 1, argv.first().map_or("", String::as_str));
             record_event(
@@ -82,7 +95,12 @@ pub(crate) fn run_gate_attempt(
 }
 
 /// Run one step; the second value is why it failed, if it did.
-fn run_step(record: &RunRecord, argv: &[String], log: &fs::File) -> Result<(Option<i32>, Option<String>), StoreError> {
+fn run_step(
+    record: &RunRecord,
+    argv: &[String],
+    log: &fs::File,
+    env: &[(String, String)],
+) -> Result<(Option<i32>, Option<String>), StoreError> {
     let Some((program, args)) = argv.split_first() else {
         return Ok((None, Some("is empty".to_string())));
     };
@@ -93,6 +111,7 @@ fn run_step(record: &RunRecord, argv: &[String], log: &fs::File) -> Result<(Opti
             command.env(name, value);
         }
     }
+    command.envs(env.iter().map(|(name, value)| (name, value)));
     command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log.try_clone()?);
     Ok(match command.status() {
         Ok(status) if status.success() => (status.code(), None),

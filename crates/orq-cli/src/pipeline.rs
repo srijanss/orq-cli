@@ -10,7 +10,7 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_stage, run_implement_stage, run_setup, wait_for_ci,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_stage_with_env, run_implement_stage, run_setup_with_env, wait_for_ci,
     CiOutcome, CiWaitConfig, DraftSession, GateOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
@@ -409,12 +409,21 @@ fn stages(
     let Some(claude_program) = claude.to_str() else {
         return stopped(Ending::Failed, format!("the {} harness path is not valid UTF-8", options.implementer.harness));
     };
+    let databases = {
+        let named = settings.test_db_vars.is_some();
+        let vars = settings.test_db_vars.clone().unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
+        orq_orchestrator::derive_worktree_databases(&options.project.root, &vars, &record.branch, named)
+    };
+    let database_env = databases.env.as_slice();
     if !options.publish {
         let plan = match plan_setup(worktree, &settings.setup) {
             Ok(plan) => plan,
             Err(err) => return stopped(Ending::Failed, format!("setup: {err:?}")),
         };
-        if let Err(failure) = run_setup(worktree, &plan.steps, &logs.join("setup.log")) {
+        if !databases.notes.is_empty() {
+            let _ = std::fs::write(logs.join("databases.log"), databases.notes.join("\n") + "\n");
+        }
+        if let Err(failure) = run_setup_with_env(worktree, &plan.steps, &logs.join("setup.log"), database_env) {
             return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));
         }
 
@@ -433,7 +442,7 @@ fn stages(
             let session = ImplementSession {
                 program: claude_program,
                 args: &args,
-                env: &[],
+                env: database_env,
                 cwd: worktree,
                 session_id: None,
                 log: &logs.join("implement.log"),
@@ -454,7 +463,7 @@ fn stages(
 
     let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     if let GateOutcome::Failed { step, exit_code } =
-        run_gate_stage(store, run_id, &gate, options.gate, &logs.join("gate.log"))?
+        run_gate_stage_with_env(store, run_id, &gate, options.gate, &logs.join("gate.log"), database_env)?
     {
         return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
     }

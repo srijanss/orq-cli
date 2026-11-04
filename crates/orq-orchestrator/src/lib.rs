@@ -26,6 +26,7 @@ mod run_settings;
 mod run_status;
 mod setup;
 mod store;
+mod worktree_databases;
 
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
@@ -33,7 +34,7 @@ pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use gate::{choose_gate, Gate, GateError};
 pub use gate_fix::{run_gate_with_fixes, FixSessionSpec, GateFixOutcome};
-pub use gate_stage::{run_gate_stage, GateOutcome};
+pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, GateOutcome};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use launch::record_launch;
 pub use pane::{record_pane, run_pane, PaneRef};
@@ -53,5 +54,6 @@ pub use review_request::{
 pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
 pub use run_settings::{load_run_settings, RunSettings, SettingsError};
 pub use run_status::{record_run_completed, summarize_run, RunPhase, RunSummary};
-pub use setup::{plan_setup, run_setup, SetupError, SetupFailure, SetupPlan};
+pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};
+pub use worktree_databases::{derive_worktree_databases, WorktreeDatabases};

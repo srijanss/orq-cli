@@ -46,7 +46,7 @@ pub fn run_gate_with_fixes(
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
-        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1)? {
+        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1, &[])? {
             GateOutcome::Passed => return Ok(GateFixOutcome::Passed { fix_attempts }),
             GateOutcome::Skipped { reason } => return Ok(GateFixOutcome::Skipped { reason }),
             GateOutcome::Failed { step, exit_code } => {
