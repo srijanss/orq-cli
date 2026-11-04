@@ -414,14 +414,21 @@ fn stages(
         let vars = settings.test_db_vars.clone().unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
         orq_orchestrator::derive_worktree_databases(&options.project.root, &vars, &record.branch, named)
     };
-    let database_env = databases.env.as_slice();
+    let mut run_vars = databases.env.clone();
+    let mut notes = databases.notes.clone();
+    if !options.publish {
+        let carried = orq_orchestrator::carry_local_files(&options.project.root, worktree, settings.local_files.as_deref());
+        run_vars.extend(carried.env);
+        notes.extend(carried.notes);
+    }
+    let database_env = run_vars.as_slice();
     if !options.publish {
         let plan = match plan_setup(worktree, &settings.setup) {
             Ok(plan) => plan,
             Err(err) => return stopped(Ending::Failed, format!("setup: {err:?}")),
         };
-        if !databases.notes.is_empty() {
-            let _ = std::fs::write(logs.join("databases.log"), databases.notes.join("\n") + "\n");
+        if !notes.is_empty() {
+            let _ = std::fs::write(logs.join("databases.log"), notes.join("\n") + "\n");
         }
         if let Err(failure) = run_setup_with_env(worktree, &plan.steps, &logs.join("setup.log"), database_env) {
             return stopped(Ending::Failed, format!("setup failed: {}", failure.reason));

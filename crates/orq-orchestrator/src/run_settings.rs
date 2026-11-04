@@ -36,6 +36,9 @@ pub struct RunSettings {
     /// Names of the variables in the main checkout's dotenv file that hold database names, each of
     /// which a run's worktree gets its own value for. `None` leaves the default (`DB_NAME`, `B2C_DB_NAME`).
     pub test_db_vars: Option<Vec<String>>,
+    /// The git-ignored files of the main checkout a run's worktree gets. `None` leaves the default
+    /// (the dotenv file, `.mcp.json`, `.mcpctl.toml`).
+    pub local_files: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +74,7 @@ struct Layer {
     notify_on: Option<String>,
     notify_env: Option<Vec<String>>,
     test_db_vars: Option<Vec<String>>,
+    local_files: Option<Vec<String>>,
 }
 
 impl Layer {
@@ -88,6 +92,7 @@ impl Layer {
             notify_on: self.notify_on.or(lower.notify_on),
             notify_env: self.notify_env.or(lower.notify_env),
             test_db_vars: self.test_db_vars.or(lower.test_db_vars),
+            local_files: self.local_files.or(lower.local_files),
         }
     }
 }
@@ -112,6 +117,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         notify_on: merged.notify_on,
         notify_env: merged.notify_env,
         test_db_vars: merged.test_db_vars,
+        local_files: merged.local_files,
     })
 }
 
@@ -152,6 +158,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "notify_on" => layer.notify_on = Some(notify_on(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             "notify_env" => layer.notify_env = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?),
             "test_db_vars" => layer.test_db_vars = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?),
+            "local_files" => layer.local_files = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -191,6 +198,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_TEST_DB_VARS") {
         layer.test_db_vars = Some(variable_names(&json("ORQ_TEST_DB_VARS", &v)?).map_err(|r| invalid("ORQ_TEST_DB_VARS", r))?);
+    }
+    if let Some(v) = get("ORQ_LOCAL_FILES") {
+        layer.local_files = Some(argv(&json("ORQ_LOCAL_FILES", &v)?).map_err(|r| invalid("ORQ_LOCAL_FILES", r))?);
     }
     for (name, assignee) in [("ORQ_MR_ASSIGNEE", true), ("ORQ_MR_REVIEWER", false)] {
         if let Some(v) = get(name) {
