@@ -87,7 +87,15 @@ fn merge_settings(worktree: &Path, env: &[(String, String)], approved: &[String]
     }
     std::fs::create_dir_all(worktree.join(".claude")).map_err(|err| format!("its directory could not be created ({:?})", err.kind()))?;
     let text = serde_json::to_string_pretty(&settings).map_err(|_| "it could not be serialised".to_string())?;
-    std::fs::write(&path, text + "\n").map_err(|err| format!("it could not be written ({:?})", err.kind()))
+    // The file may hold credentials: owner-only, whether it is new or already existed.
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all((text + "\n").as_bytes())
+    };
+    write().map_err(|err| format!("it could not be written ({:?})", err.kind()))
 }
 
 /// Runs `mcpctl setup --mcp <name>` in `worktree` for each of `servers`, with `env` added to the
@@ -100,7 +108,8 @@ pub fn setup_mcp_servers(worktree: &Path, servers: &[String], env: &[(String, St
         return vec!["mcpctl is not on PATH; the configured MCP servers were not set up".to_string()];
     };
     let mut notes = Vec::new();
-    for name in servers {
+    let mut seen = std::collections::HashSet::new();
+    for name in servers.iter().filter(|name| seen.insert(name.as_str())) {
         let done = Command::new(program)
             .args(["setup", "--mcp", name])
             .current_dir(worktree)

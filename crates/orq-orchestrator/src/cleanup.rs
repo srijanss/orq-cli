@@ -57,7 +57,7 @@ pub fn cleanup_worktree(
 }
 
 /// Ignored paths orq itself puts into a run's worktree; they are not the agent's work.
-const ORQ_WRITTEN: [&str; 5] = [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json", ".claude/"];
+const ORQ_WRITTEN: [&str; 4] = [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json"];
 
 pub(crate) enum UncommittedWork {
     Unreadable,
@@ -73,7 +73,9 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     let own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
             let path = path.trim_matches('"');
-            path == concat!(".", "env") || ORQ_WRITTEN.contains(&path)
+            // orq only ever links the dotenv file; a regular file of that name is the agent's own.
+            let dotenv_link = path == concat!(".", "env") && std::fs::symlink_metadata(worktree.join(path)).is_ok_and(|m| m.file_type().is_symlink());
+            dotenv_link || ORQ_WRITTEN.contains(&path)
         })
     };
     Ok(status.stdout.lines().any(|line| !line.trim().is_empty() && !own(line)).then_some(UncommittedWork::Present))

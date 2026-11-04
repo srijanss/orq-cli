@@ -49,6 +49,8 @@ fn the_runs_environment_and_mcp_servers_are_merged_into_the_worktrees_local_sess
     assert_eq!(settings["env"], serde_json::json!({"KEEP": "1", "DB_NAME": "secretdb_run1"}));
     assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["tdd", "docs"]));
     assert!(!git_out(&worktree, &["status", "--porcelain"]).contains("settings.local.json"), "must stay out of git status");
+    let mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(worktree.join(".claude/settings.local.json")).unwrap().permissions());
+    assert_eq!(mode & 0o777, 0o600, "owner-only, existing file included");
     assert!(notes.iter().all(|n| !n.contains("secretdb_run1")), "values are never logged: {notes:?}");
 }
 
@@ -87,6 +89,11 @@ fn mcpctl_sets_up_each_configured_server_in_the_worktree_and_a_missing_or_failin
     assert!(lines[0].ends_with("setup --mcp tdd run1"), "{log}");
     assert!(lines[0].starts_with(&worktree.display().to_string()), "run inside the worktree: {log}");
     assert!(notes.iter().any(|n| n.contains("bad")), "{notes:?}");
+
+    let again = vec!["tdd".to_string(), "tdd".to_string()];
+    let before = fs::read_to_string(&seen).unwrap().lines().count();
+    setup_mcp_servers(&worktree, &again, &[], Some(&tool));
+    assert_eq!(fs::read_to_string(&seen).unwrap().lines().count(), before + 1, "a repeated name is set up once");
 
     let missing = setup_mcp_servers(&worktree, &servers, &[], None);
     assert!(missing.iter().any(|n| n.contains("mcpctl")), "{missing:?}");
