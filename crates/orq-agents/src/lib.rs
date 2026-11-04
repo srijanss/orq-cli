@@ -146,6 +146,22 @@ pub fn explain_failure_argv(model: &str, name: Option<&str>, detail: &str, logs_
     Ok(argv)
 }
 
+/// The arguments of a one-shot Claude print session that sends `message` to the user's Claude app as a push
+/// notification. The message is one line without control characters.
+pub fn push_notification_argv(message: &str) -> Result<Vec<String>, AdapterError> {
+    if message.trim().is_empty() || message.chars().any(char::is_control) {
+        return Err(AdapterError::InvalidValue { field: "message", value: message.to_string() });
+    }
+    Ok(vec![
+        "-p".to_string(),
+        "--model".to_string(),
+        "haiku".to_string(),
+        "--allowedTools".to_string(),
+        "PushNotification".to_string(),
+        format!("Send exactly one push notification to the user with the PushNotification tool. The notification text is:\n{message}\nThen stop."),
+    ])
+}
+
 struct Claude;
 
 impl HarnessAdapter for Claude {

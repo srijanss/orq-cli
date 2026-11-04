@@ -439,3 +439,17 @@ fn the_remote_control_and_failure_explainer_switches_come_from_the_files_or_the_
     let bad = |key: &str| (key == "ORQ_EXPLAIN_FAILURES").then(|| "maybe".to_string());
     assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_EXPLAIN_FAILURES"));
 }
+
+#[test]
+fn the_claude_push_switch_comes_from_the_files_or_the_environment() {
+    let r = repo("claudepush");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().claude_push, None);
+    shared(&r, "claude_push = true\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().claude_push, Some(true));
+    let env = |key: &str| (key == "ORQ_CLAUDE_PUSH").then(|| "0".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().claude_push, Some(false));
+
+    assert!(invalid("claude_push = \"yes\"\n", "cpstr").contains("claude_push"));
+    let bad = |key: &str| (key == "ORQ_CLAUDE_PUSH").then(|| "maybe".to_string());
+    assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_CLAUDE_PUSH"));
+}

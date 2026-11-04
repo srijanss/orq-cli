@@ -395,13 +395,34 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
 /// Tell the configured notifier how a run ended. Best effort: a notifier that fails never
 /// changes how the run ended.
 fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str, ending: &str, detail: Option<&str>, url: Option<&str>) {
-    let Some(argv) = settings.notify_cmd.as_deref() else { return };
     if !orq_orchestrator::wants_notification(settings.notify_on.as_deref(), ending) {
         return;
     }
     let message = orq_orchestrator::notification_message(feature, ending, detail, url);
-    if let Err(err) = orq_orchestrator::send_notification_with(argv, cwd, &message, Duration::from_secs(30), settings.notify_env.as_deref().unwrap_or(&[])) {
-        eprintln!("orq: the notification command failed: {err}");
+    if let Some(argv) = settings.notify_cmd.as_deref() {
+        if let Err(err) = orq_orchestrator::send_notification_with(argv, cwd, &message, Duration::from_secs(30), settings.notify_env.as_deref().unwrap_or(&[])) {
+            eprintln!("orq: the notification command failed: {err}");
+        }
+    }
+    if settings.claude_push == Some(true) {
+        push_to_claude_app(cwd, &message);
+    }
+}
+
+/// Send `message` to the Claude app through a detached one-shot Claude session. Best effort: it never
+/// changes how the run ended, and the run does not wait for it.
+fn push_to_claude_app(cwd: &Path, message: &str) {
+    let Some(program) = find_program("claude") else { return };
+    let argv = match orq_agents::push_notification_argv(message) {
+        Ok(argv) => argv,
+        Err(err) => {
+            eprintln!("orq: cannot send the Claude push notification: {err:?}");
+            return;
+        }
+    };
+    let quiet = std::process::Stdio::null;
+    if let Err(err) = Command::new(program).args(&argv).current_dir(cwd).stdin(quiet()).stdout(quiet()).stderr(quiet()).spawn() {
+        eprintln!("orq: cannot send the Claude push notification: {err}");
     }
 }
 

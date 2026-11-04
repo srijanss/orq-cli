@@ -242,3 +242,14 @@ fn the_failure_explainer_is_a_remote_controllable_claude_session_told_the_failur
     let local = explain_failure_argv("opus", None, "d", "/l").unwrap();
     assert!(!local.iter().any(|a| a == "--remote-control"), "{local:?}");
 }
+
+#[test]
+fn the_push_session_is_a_print_session_allowed_only_the_push_tool_and_takes_one_line() {
+    use orq_agents::push_notification_argv;
+    let argv = push_notification_argv("orq: COM-02 failed").unwrap();
+    assert_eq!(&argv[..5], ["-p", "--model", "haiku", "--allowedTools", "PushNotification"]);
+    assert!(argv.last().unwrap().contains("orq: COM-02 failed"));
+    for bad in ["", "  ", "two\nlines", "bell\u{7}"] {
+        assert!(push_notification_argv(bad).is_err(), "{bad:?}");
+    }
+}

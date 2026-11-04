@@ -967,3 +967,40 @@ fn remote_control_off_with_the_explainer_on_starts_an_explainer_that_is_not_reac
     let explain = agent.last_run().unwrap().args;
     assert!(!explain.iter().any(|a| a == "--remote-control"), "{explain:?}");
 }
+
+fn push_session(agent: &FakeAgent) -> Option<Vec<String>> {
+    agent.last_run().map(|run| run.args).filter(|args| args.iter().any(|a| a == "PushNotification"))
+}
+
+#[test]
+fn claude_push_sends_the_run_end_to_the_claude_app_through_a_print_session() {
+    let w = world("claudepush");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "claude_push = true\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    wait_until("the push session", || push_session(&agent).is_some());
+    let args = push_session(&agent).unwrap();
+    assert!(args.iter().any(|a| a == "-p"), "{args:?}");
+    assert!(args.last().unwrap().contains("COM-01 review_ready"), "{args:?}");
+}
+
+#[test]
+fn claude_push_stays_off_unless_asked_for_and_follows_notify_on() {
+    let off = world("claudepushoff");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&off, &agent, &github(), &["--no-ci-check"]).status.code(), Some(0));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(push_session(&agent).is_none(), "off by default");
+
+    let quiet = world("claudepushquiet");
+    std::fs::create_dir_all(quiet.repo.root().join(".orq")).unwrap();
+    std::fs::write(quiet.repo.root().join(".orq/run.toml"), "claude_push = true\nnotify_on = \"failures\"\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&quiet, &agent, &github(), &["--no-ci-check"]).status.code(), Some(0));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(push_session(&agent).is_none(), "a clean run is not announced under notify_on = failures");
+}

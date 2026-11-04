@@ -51,6 +51,8 @@ pub struct RunSettings {
     pub auto_exit: Option<bool>,
     pub remote_control: Option<bool>,
     pub explain_failures: Option<bool>,
+    /// Also send a push notification to the Claude app when a run ends (off when unset).
+    pub claude_push: Option<bool>,
     /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
     pub db_name_template: Option<String>,
     /// The model for the implement session and the review draft; `None` leaves the chosen profile's own.
@@ -101,6 +103,7 @@ struct Layer {
     auto_exit: Option<bool>,
     remote_control: Option<bool>,
     explain_failures: Option<bool>,
+    claude_push: Option<bool>,
     db_name_template: Option<String>,
     model: Option<String>,
     branch_prefix: Option<String>,
@@ -129,6 +132,7 @@ impl Layer {
             auto_exit: self.auto_exit.or(lower.auto_exit),
             remote_control: self.remote_control.or(lower.remote_control),
             explain_failures: self.explain_failures.or(lower.explain_failures),
+            claude_push: self.claude_push.or(lower.claude_push),
             db_name_template: self.db_name_template.or(lower.db_name_template),
             model: self.model.or(lower.model),
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
@@ -164,6 +168,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         auto_exit: merged.auto_exit,
         remote_control: merged.remote_control,
         explain_failures: merged.explain_failures,
+        claude_push: merged.claude_push,
         db_name_template: merged.db_name_template,
         model: merged.model,
         branch_prefix: merged.branch_prefix,
@@ -275,6 +280,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "auto_exit" => layer.auto_exit = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             "remote_control" => layer.remote_control = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             "explain_failures" => layer.explain_failures = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
+            "claude_push" => layer.claude_push = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -356,6 +362,13 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
             "1" | "true" => true,
             "0" | "false" => false,
             _ => return Err(invalid("ORQ_EXPLAIN_FAILURES", "must be 1, 0, true or false")),
+        });
+    }
+    if let Some(v) = get("ORQ_CLAUDE_PUSH") {
+        layer.claude_push = Some(match v.trim() {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(invalid("ORQ_CLAUDE_PUSH", "must be 1, 0, true or false")),
         });
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {
