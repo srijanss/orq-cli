@@ -76,3 +76,35 @@ fn a_renamed_file_links_to_its_new_path() {
     let value = applied("github", "https://github.example/o/r", vec![file("new/name.rs", Some("old/name.rs"))], true, "old/name.rs");
     assert_eq!(value["file_risks"]["files"][0]["link"], format!("https://github.example/o/r/blob/{SHA}/new/name.rs"));
 }
+
+#[test]
+fn gitlab_group_named_blob_keeps_its_path() {
+    let value = applied("gitlab", "https://gitlab.example/blob/project", vec![file("a.rs", None)], true, "a.rs");
+    assert_eq!(value["file_risks"]["files"][0]["link"], format!("https://gitlab.example/blob/project/-/blob/{SHA}/a.rs"));
+}
+
+#[test]
+fn repository_base_rejects_credentials_and_odd_components() {
+    assert_eq!(repository_base("gitlab", "https://user:password@gitlab.example/g/r/-/merge_requests/3"), None);
+    assert_eq!(repository_base("github", "https://token@github.example/o/r/pull/1"), None);
+    assert_eq!(repository_base("github", "https://github.example/o/r?x=1/pull/1"), None);
+    assert_eq!(repository_base("github", "https://github.example/o/r#frag/pull/1"), None);
+    assert_eq!(repository_base("github", "https://github.example/o /r/pull/1"), None);
+    assert_eq!(repository_base("github", "https://github.example/o/r\u{1b}/pull/1"), None);
+}
+
+#[test]
+fn a_path_is_looked_up_once_however_often_it_is_named() {
+    let files = vec![file("a.rs", None)];
+    let calls = std::cell::Cell::new(0);
+    let exists = |p: &str| {
+        calls.set(calls.get() + 1);
+        p == "a.rs"
+    };
+    let mut value = report(&files, true);
+    let links = LinkSource { provider: "github", base_url: "https://github.example/o/r", sha: SHA, exists: &exists };
+    let findings: Vec<Finding> = ["x", "y", "z"].iter().map(|id| Finding { id: (*id).into(), ..finding("a.rs") }).collect();
+    apply_intelligence(&mut value, &files, &[Round { number: 1, summary: None, findings }], Some(&links));
+    assert_eq!(value["risks"].as_array().unwrap().len(), 3);
+    assert_eq!(calls.get(), 1);
+}

@@ -293,6 +293,10 @@ fn percent_encode(path: &str) -> String {
 /// A link to a file at one commit, or `None` unless every part can be trusted:
 /// an https base, a full commit id, and a path that exists in that tree.
 pub fn file_link(base_url: &str, sha: &str, path: &str, line: Option<u64>, exists: &dyn Fn(&str) -> bool) -> Option<String> {
+    link_for("github", base_url, sha, path, line, exists)
+}
+
+fn link_for(provider: &str, base_url: &str, sha: &str, path: &str, line: Option<u64>, exists: &dyn Fn(&str) -> bool) -> Option<String> {
     let base = base_url.strip_prefix("https://")?.trim_end_matches('/');
     if base.is_empty() || base.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return None;
@@ -305,7 +309,8 @@ pub fn file_link(base_url: &str, sha: &str, path: &str, line: Option<u64>, exist
         return None;
     }
     let anchor = line.map(|l| format!("#L{l}")).unwrap_or_default();
-    Some(format!("https://{base}/blob/{sha}/{}{anchor}", percent_encode(path)))
+    let route = if provider == "gitlab" { "-/blob" } else { "blob" };
+    Some(format!("https://{base}/{route}/{sha}/{}{anchor}", percent_encode(path)))
 }
 
 /// A link for one changed file, or the reason there is none.
@@ -317,8 +322,7 @@ fn provider_link(source: Option<&LinkSource>, current: bool, changed: &[&str], p
     if !changed.contains(&path) {
         return (None, Some("the file is not changed in this review".to_string()));
     }
-    match file_link(source.base_url, source.sha, path, line, source.exists) {
-        Some(link) if source.provider == "gitlab" => (Some(link.replacen("/blob/", "/-/blob/", 1)), None),
+    match link_for(source.provider, source.base_url, source.sha, path, line, source.exists) {
         Some(link) => (Some(link), None),
         None => (None, Some("the file cannot be linked at the reviewed commit".to_string())),
     }
@@ -335,7 +339,8 @@ pub fn repository_base(provider: &str, review_url: &str) -> Option<String> {
     let rest = review_url.strip_prefix("https://")?;
     let (repository, number) = rest.split_once(marker)?;
     let digits = number.split(['/', '?', '#']).next().unwrap_or("");
-    if repository.is_empty() || !repository.contains('/') || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    let clean = !repository.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\'));
+    if !clean || repository.is_empty() || !repository.contains('/') || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     Some(format!("https://{}", repository.trim_end_matches('/')))
@@ -364,6 +369,18 @@ fn severity_name(severity: Severity) -> &'static str {
 /// rounds are summarized from what was recorded; nothing is rerun.
 pub fn apply_intelligence(report: &mut serde_json::Value, files: &[ReportFile], rounds: &[Round], links: Option<&LinkSource>) {
     use serde_json::json;
+    // Each path is checked against the reviewed tree once, however often it is named.
+    let seen = std::cell::RefCell::new(std::collections::HashMap::<String, bool>::new());
+    let cached = |path: &str| -> bool {
+        if let Some(known) = seen.borrow().get(path) {
+            return *known;
+        }
+        let answer = links.is_some_and(|l| (l.exists)(path));
+        seen.borrow_mut().insert(path.to_string(), answer);
+        answer
+    };
+    let links = links.map(|l| LinkSource { provider: l.provider, base_url: l.base_url, sha: l.sha, exists: &cached });
+    let links = links.as_ref();
     let classification = classify_files(files);
     let changed: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     let current = report["status"] == "current";
