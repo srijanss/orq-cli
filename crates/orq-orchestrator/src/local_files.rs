@@ -80,6 +80,9 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
             // checkout are never written into one.
             if is_tracked(worktree, name) {
                 found.notes.push(format!("{name} is tracked by git in the worktree; the main checkout's values were not merged into it"));
+            } else if let Err(why) = exclude_locally(worktree, name) {
+                // Credentials must not land in a file git could offer for staging.
+                found.notes.push(format!("{name} was not merged: {why}"));
             } else if let Err(note) = merge_mcp_servers(&source, &target) {
                 found.notes.push(note);
             }

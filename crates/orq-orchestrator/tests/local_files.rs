@@ -216,3 +216,28 @@ fn a_symlinked_source_file_is_not_copied_and_a_symlinked_mcp_json_in_the_worktre
     assert_eq!(fs::read_to_string(&victim).unwrap(), original, "nothing is written through a symlink");
     assert_eq!(found.notes.iter().filter(|n| n.contains("symbolic link")).count(), 2, "{:?}", found.notes);
 }
+
+#[test]
+fn an_untracked_mcp_json_is_only_merged_into_once_git_ignores_it() {
+    let (repo, worktree) = checkout("merge-exclude");
+    let main_json = r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#;
+    let own = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
+    fs::write(repo.root().join(".mcp.json"), main_json).unwrap();
+    fs::write(worktree.join(".mcp.json"), own).unwrap();
+
+    carry_local_files(repo.root(), &worktree, None);
+    assert!(fs::read_to_string(worktree.join(".mcp.json")).unwrap().contains("s3cret"));
+    assert!(!git_out(&worktree, &["status", "--porcelain"]).contains(".mcp.json"), "merged file must be ignored");
+
+    let (repo, worktree) = checkout("merge-no-exclude");
+    fs::write(repo.root().join(".mcp.json"), main_json).unwrap();
+    fs::write(worktree.join(".mcp.json"), own).unwrap();
+    let exclude = repo.root().join(".git/info/exclude");
+    let _ = fs::remove_file(&exclude);
+    fs::create_dir_all(&exclude).unwrap();
+
+    let found = carry_local_files(repo.root(), &worktree, None);
+
+    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), own, "left unchanged when it cannot be ignored");
+    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("not merged")), "{:?}", found.notes);
+}
