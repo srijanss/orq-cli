@@ -113,7 +113,7 @@ fn after_a_switch_from_pi_to_claude_the_claude_session_continues_in_the_same_wor
     assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 
     let run = claude.first_run().expect("a claude implement session ran after the switch");
-    assert!(run.cwd.ends_with(paused.worktree.file_name().unwrap()), "same worktree: {} vs {}", run.cwd.display(), paused.worktree.display());
+    assert_eq!(run.cwd, paused.worktree, "claude must run in the paused run's own worktree");
     let prompt = run.args.join(" ");
     assert!(prompt.contains("--model sonnet"), "{prompt}");
     assert!(prompt.contains("Handoff from the previous session:"), "{prompt}");
