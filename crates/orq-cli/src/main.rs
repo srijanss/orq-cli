@@ -3563,7 +3563,7 @@ fn run_switch(args: &[OsString]) -> ExitCode {
     };
     match orq_orchestrator::request_model_switch(&orq_orchestrator::RunStore::new(&root), run_id, role, profile) {
         Ok(()) => {
-            println!("Switch requested for run {run_id}: {role} continues on {profile} when the run resumes.");
+            println!("Switch requested for run {}: {role} continues on {} when the run resumes.", printable(run_id), printable(profile));
             ExitCode::SUCCESS
         }
         Err(message) => fail(message),
