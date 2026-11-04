@@ -263,7 +263,7 @@ pub fn render_markdown(report: &Value) -> String {
         md.push_str("\nReview rounds:\n");
         for round in rounds {
             let line = match round["text"].as_str() {
-                Some(line) => line.to_string(),
+                Some(_) => text(&round["text"]),
                 None => format!(
                     "Round {}: {} findings, {} confirmed, {} potential, {} dismissed, {} unresolved",
                     round["round"], round["findings"], round["confirmed"], round["potential"], round["dismissed"], round["unresolved"]

@@ -50,6 +50,15 @@ fn each_round_counts_what_was_raised_fixed_rejected_and_deferred() {
 }
 
 #[test]
+fn stored_round_text_is_sanitized_like_every_other_report_field() {
+    let mut value = applied(vec![]);
+    value["rounds"] = serde_json::json!([{"round": 1, "text": "Round 1: ok\n- forged line \u{1b}[31mred", "summary": null}]);
+    let md = render_markdown(&value);
+    assert!(!md.contains('\u{1b}'), "{md:?}");
+    assert!(!md.contains("\n- forged line"), "{md:?}");
+}
+
+#[test]
 fn unknown_statuses_count_as_raised_but_are_never_invented_as_an_outcome() {
     let value = applied(vec![
         Round { number: 1, summary: None, findings: vec![finding("a", FindingStatus::Unknown), finding("b", FindingStatus::Unknown)] },
