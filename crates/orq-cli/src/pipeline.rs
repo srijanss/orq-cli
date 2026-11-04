@@ -127,6 +127,8 @@ pub enum Ending {
     ReviewReady,
     Blocked,
     Failed,
+    /// Stopped at a stage boundary because a pause was requested; the run can be resumed.
+    Paused,
 }
 
 impl Ending {
@@ -135,6 +137,7 @@ impl Ending {
             Ending::ReviewReady => "review_ready",
             Ending::Blocked => "blocked",
             Ending::Failed => "failed",
+            Ending::Paused => "paused",
         }
     }
 }
@@ -379,8 +382,11 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
             None => note,
         });
     }
-    if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
-        eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
+    // A paused run has not ended: its `run.paused` event is already recorded.
+    if report.ending != Ending::Paused {
+        if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
+            eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
+        }
     }
     if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
         explain_failure(options, &settings, &record, &logs, report.detail.as_deref().unwrap_or("the run failed"));
@@ -522,6 +528,14 @@ fn published_branch(repo: &Path, target: &str, base_sha: &str) -> Result<String,
     Ok(branch)
 }
 
+fn paused(next_stage: &str) -> Result<Report, StoreError> {
+    Ok(Report { run_id: String::new(), ending: Ending::Paused, detail: Some(format!("paused before {next_stage}")), review_url: None })
+}
+
+fn at_boundary(store: &RunStore, run_id: &str, done: &[&str], next: &str, push_ref: Option<&str>, review_ref: Option<&str>) -> Result<bool, StoreError> {
+    orq_orchestrator::pause_at_boundary(store, run_id, done, next, push_ref, review_ref)
+}
+
 fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreError> {
     Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None })
 }
@@ -628,6 +642,9 @@ fn stages(
         }
     }
 
+    if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
+        return paused("rebase");
+    }
     if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
         return stopped(Ending::Blocked, reason);
     }
@@ -670,6 +687,9 @@ fn stages(
         _ => {}
     }
 
+    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
+        return paused("push");
+    }
     let head_sha = match push_run_branch(store, run_id, &logs.join("push.log"))? {
         PushOutcome::Pushed { head_sha } => head_sha,
         PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
@@ -678,6 +698,9 @@ fn stages(
     let Some(provider) = find_program(provider_cli) else {
         return stopped(Ending::Failed, format!("{provider_cli} is not on PATH"));
     };
+    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push"], "review_request", Some(&record.branch), None)? {
+        return paused("review_request");
+    }
     let draft = draft_review_description(store, run_id, Duration::from_secs(120), |prompt| DraftSession {
         program: claude.to_string_lossy().into_owned(),
         args: match settings_or_flag_model(options, settings) {
@@ -706,6 +729,9 @@ fn stages(
         }
     };
 
+    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review.url))? {
+        return paused("ci");
+    }
     let ci = wait_for_ci(
         store,
         run_id,

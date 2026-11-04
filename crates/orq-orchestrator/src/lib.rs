@@ -32,7 +32,7 @@ mod setup;
 mod store;
 mod worktree_databases;
 
-pub use checkpoint::{latest_checkpoint, record_checkpoint, Checkpoint};
+pub use checkpoint::{latest_checkpoint, pause_at_boundary, record_checkpoint, Checkpoint};
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
