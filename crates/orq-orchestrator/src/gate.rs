@@ -103,31 +103,41 @@ fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<Stri
     }
     let mut pytest = argv(&["uv", "run", "pytest"]);
     if let (true, Some(changed)) = (django, changed) {
-        let apps = changed_tested_apps(dir, changed);
-        if apps.is_empty() {
-            return;
+        match changed_tested_apps(dir, changed) {
+            Some(targets) if targets.is_empty() => return,
+            Some(targets) => pytest.extend(targets),
+            None => {}
         }
-        pytest.extend(apps);
     }
     steps.push(pytest);
 }
 
-/// What to hand pytest for the changed Django apps that have tests, sorted: the app directory when it
-/// has a `tests` package, and its `tests.py` by name, which default discovery would not collect.
-fn changed_tested_apps(dir: &Path, changed: &[String]) -> Vec<String> {
+/// What to hand pytest for a change that touches only documentation and Django apps with tests, sorted:
+/// the app directory when it has a `tests` package, and its `tests.py` by name, which default discovery
+/// would not collect. `None` when anything else changed (dependencies, settings, an app without tests,
+/// root tests): that can affect any app, so the whole suite runs.
+fn changed_tested_apps(dir: &Path, changed: &[String]) -> Option<Vec<String>> {
     let mut targets = Vec::new();
     for path in changed {
-        let Some(app) = path.strip_prefix("src/").and_then(|rest| rest.split_once('/')).map(|(app, _)| format!("src/{app}")) else { continue };
-        if dir.join(&app).join("tests").is_dir() {
+        if [".md", ".rst", ".txt"].iter().any(|ext| path.ends_with(ext)) {
+            continue;
+        }
+        let app = path.strip_prefix("src/").and_then(|rest| rest.split_once('/')).map(|(app, _)| format!("src/{app}"))?;
+        let package = dir.join(&app).join("tests").is_dir();
+        let module = dir.join(&app).join("tests.py").is_file();
+        if !package && !module {
+            return None;
+        }
+        if package {
             targets.push(app.clone());
         }
-        if dir.join(&app).join("tests.py").is_file() {
+        if module {
             targets.push(format!("{app}/tests.py"));
         }
     }
     targets.sort();
     targets.dedup();
-    targets
+    Some(targets)
 }
 
 fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {

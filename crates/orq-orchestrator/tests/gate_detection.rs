@@ -232,22 +232,39 @@ fn a_django_project_checks_migrations_and_then_runs_pytest() {
 }
 
 #[test]
-fn a_changed_scope_runs_pytest_only_for_changed_apps_that_have_tests() {
+fn a_changed_scope_runs_pytest_only_for_the_changed_tested_apps() {
     let dir = django("django-scoped");
-    let changed = ["src/shop/views.py".to_string(), "src/blog/models.py".to_string(), "README.md".to_string()];
+    touch(&dir, "src/billing/tests/test_invoices.py", "");
+    let changed = ["src/shop/views.py".to_string(), "src/shop/urls.py".to_string(), "src/billing/models.py".to_string(), "README.md".to_string()];
 
     assert_eq!(
         choose_gate_scoped(&dir, None, Some(&changed)),
-        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/shop"]]))
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/billing", "src/shop"]]))
     );
 }
 
 #[test]
-fn a_changed_scope_with_no_tested_app_changed_still_checks_migrations() {
-    let dir = django("django-scoped-none");
-    let changed = ["src/blog/models.py".to_string()];
+fn a_changed_scope_of_only_documentation_still_checks_migrations_but_runs_no_tests() {
+    let dir = django("django-scoped-docs");
+    let changed = ["README.md".to_string(), "docs/setup.rst".to_string()];
 
     assert_eq!(choose_gate_scoped(&dir, None, Some(&changed)), Ok(run(&[MIGRATIONS])));
+}
+
+#[test]
+fn a_change_that_cannot_be_pinned_to_a_tested_app_runs_the_whole_suite() {
+    let full = run(&[MIGRATIONS, &["uv", "run", "pytest"]]);
+    for (tag, changed) in [
+        ("untested-app", vec!["src/blog/models.py"]),
+        ("dependencies", vec!["uv.lock"]),
+        ("settings", vec!["src/config/settings.py"]),
+        ("root-tests", vec!["tests/test_smoke.py"]),
+        ("mixed", vec!["src/shop/views.py", "pyproject.toml"]),
+    ] {
+        let dir = django(&format!("django-wide-{tag}"));
+        let changed: Vec<String> = changed.into_iter().map(String::from).collect();
+        assert_eq!(choose_gate_scoped(&dir, None, Some(&changed)), Ok(full.clone()), "{tag}");
+    }
 }
 
 #[test]
