@@ -113,7 +113,13 @@ pub fn assess(policy: &RetentionPolicy, facts: &RunFacts, now: u64) -> Assessmen
         return Assessment::Retained(Retained::Pinned);
     }
     match facts.state {
-        RunState::Queued | RunState::Preparing | RunState::Running | RunState::Blocked => {
+        RunState::Queued
+        | RunState::Preparing
+        | RunState::Running
+        | RunState::PauseRequested
+        | RunState::Pausing
+        | RunState::Paused
+        | RunState::Blocked => {
             return Assessment::Retained(Retained::Active)
         }
         RunState::ReviewReady => return Assessment::Retained(Retained::AwaitingReview),

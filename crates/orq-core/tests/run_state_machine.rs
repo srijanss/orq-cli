@@ -86,5 +86,6 @@ fn run_states_have_stable_snake_case_names() {
     for state in ALL {
         assert_eq!(RunState::parse(state.as_str()), Some(state));
     }
-    assert_eq!(RunState::parse("paused"), None);
+    assert_eq!(RunState::parse("paused"), Some(RunState::Paused));
+    assert_eq!(RunState::parse("sleeping"), None);
 }
