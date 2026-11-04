@@ -1600,18 +1600,52 @@ fn parse_mcp_catalog(text: &str) -> Vec<String> {
     names
 }
 
-/// The servers of the `mcpctl` catalog; none when `mcpctl` is not installed or cannot list.
+/// How long the picker waits for `mcpctl catalog list` before it goes without a catalog.
+const MCPCTL_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The servers of the `mcpctl` catalog; none when `mcpctl` is not installed.
 fn mcpctl_catalog() -> Result<Vec<String>, String> {
-    let Some(program) = pipeline::find_program("mcpctl") else { return Ok(Vec::new()) };
-    let out = std::process::Command::new(program)
+    match pipeline::find_program("mcpctl") {
+        Some(program) => mcpctl_catalog_with(&program, MCPCTL_LIST_TIMEOUT),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Runs `program catalog list` for at most `timeout`; a listing that has not finished by then is killed
+/// and reaped, and the catalog is taken to be empty so the popup is never held up by it.
+fn mcpctl_catalog_with(program: &Path, timeout: std::time::Duration) -> Result<Vec<String>, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(program)
         .args(["catalog", "list"])
         .stdin(std::process::Stdio::null())
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(|err| format!("cannot run mcpctl: {:?}", err.kind()))?;
-    if !out.status.success() {
+    let mut stdout = child.stdout.take().ok_or("cannot read mcpctl output")?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let Some(status) = status else { return Ok(Vec::new()) };
+    let text = reader.join().unwrap_or_default();
+    if !status.success() {
         return Err("mcpctl catalog list failed".to_string());
     }
-    Ok(parse_mcp_catalog(&String::from_utf8_lossy(&out.stdout)))
+    Ok(parse_mcp_catalog(&text))
 }
 
 /// Starts a detached run of `feature` and, when a pane can follow its log, opens one.
@@ -2848,6 +2882,37 @@ mod ledger_backend_tests {
         let text = "outside-in-tdd-mcp@0.2.3 (python, scaffold)\n  source: /a\nproject-mcp@1.2.1 (python, scaffold)\n  source: /b\n\nproject-mcp@1.3.0 (python)\n";
         assert_eq!(super::parse_mcp_catalog(text), vec!["outside-in-tdd-mcp".to_string(), "project-mcp".to_string()]);
         assert!(super::parse_mcp_catalog("").is_empty());
+    }
+
+    #[test]
+    fn a_catalog_listing_that_hangs_is_given_up_on_and_its_process_is_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-mcpctl-hang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("still-running");
+        let shim = dir.join("mcpctl");
+        std::fs::write(&shim, format!("#!/bin/sh\nsleep 2\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = super::mcpctl_catalog_with(&shim, std::time::Duration::from_millis(200));
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(result, Ok(Vec::new()));
+        std::thread::sleep(std::time::Duration::from_millis(2300));
+        assert!(!marker.exists(), "the listing process kept running");
+    }
+
+    #[test]
+    fn a_catalog_listing_that_answers_in_time_is_parsed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-mcpctl-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("mcpctl");
+        std::fs::write(&shim, "#!/bin/sh\necho 'one@1.0 (x)'\necho '  source: /s'\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(super::mcpctl_catalog_with(&shim, std::time::Duration::from_secs(5)), Ok(vec!["one".to_string()]));
     }
 
     #[test]
