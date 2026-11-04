@@ -22,6 +22,21 @@ pub struct RemoteConfig {
 
 /// Shortest token accepted from the token file.
 const MIN_TOKEN_LEN: usize = 32;
+/// The rules a token file's metadata must meet: a regular file, owned by the
+/// user running the server, and not accessible to anyone else.
+pub fn check_token_file_meta(is_file: bool, owner: u32, mode: u32, effective_uid: u32) -> Result<(), String> {
+    if !is_file {
+        return Err("the remote token file must be a regular file".into());
+    }
+    if owner != effective_uid {
+        return Err("the remote token file must belong to the user running the server".into());
+    }
+    if mode & 0o077 != 0 {
+        return Err("the remote token file must be readable by its owner only (chmod 600)".into());
+    }
+    Ok(())
+}
+
 /// Largest token file read; a bigger one is refused, never cut short.
 const MAX_TOKEN_FILE: u64 = 4096;
 
@@ -44,16 +59,8 @@ impl RemoteConfig {
             .open(&path)
             .map_err(|e| format!("cannot open the remote token file {}: {}", path.display(), e.kind()))?;
         let meta = file.metadata().map_err(|e| format!("cannot inspect the remote token file: {}", e.kind()))?;
-        if !meta.is_file() {
-            return Err("the remote token file must be a regular file".into());
-        }
         // SAFETY: geteuid has no preconditions and cannot fail.
-        if meta.uid() != unsafe { libc::geteuid() } {
-            return Err("the remote token file must belong to the user running the server".into());
-        }
-        if meta.mode() & 0o077 != 0 {
-            return Err("the remote token file must be readable by its owner only (chmod 600)".into());
-        }
+        check_token_file_meta(meta.is_file(), meta.uid(), meta.mode(), unsafe { libc::geteuid() })?;
         let mut text = String::new();
         file.take(MAX_TOKEN_FILE + 1).read_to_string(&mut text).map_err(|e| format!("cannot read the remote token file (is it text?): {}", e.kind()))?;
         if text.len() as u64 > MAX_TOKEN_FILE {

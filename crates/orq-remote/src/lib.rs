@@ -114,14 +114,25 @@ const LOG_PER_SECOND: u32 = 10;
 /// Logs the peer, method and a bounded, escaped path; never the Authorization
 /// header. Runs on a blocking thread, so a slow stderr cannot stall the workers.
 fn log_refusal(peer: std::net::IpAddr, method: &str, path: &str) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static WINDOW: AtomicU64 = AtomicU64::new(0);
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if WINDOW.swap(now, Ordering::Relaxed) != now {
-        COUNT.store(0, Ordering::Relaxed);
-    }
-    if COUNT.fetch_add(1, Ordering::Relaxed) >= u64::from(LOG_PER_SECOND) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    // The window start and its count change together under one lock.
+    static WINDOW: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
+    let allowed = {
+        let mut window = WINDOW.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        match *window {
+            Some((start, count)) if now.duration_since(start) < Duration::from_secs(1) => {
+                *window = Some((start, count.saturating_add(1)));
+                count < LOG_PER_SECOND
+            }
+            _ => {
+                *window = Some((now, 1));
+                true
+            }
+        }
+    };
+    if !allowed {
         return;
     }
     let shown: String = path.chars().take(100).flat_map(char::escape_default).collect();

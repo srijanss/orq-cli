@@ -83,3 +83,13 @@ fn an_oversized_token_file_is_refused_not_cut_short() {
     write(&roots, &"x".repeat(4096), 0o600);
     assert_eq!(RemoteConfig::load(&roots).unwrap().token.len(), 4096);
 }
+
+#[test]
+fn the_metadata_rules_refuse_a_foreign_owner_group_access_and_non_files() {
+    use orq_core::remote_inbox::check_token_file_meta as check;
+    assert!(check(true, 1000, 0o100600, 1000).is_ok());
+    assert!(check(true, 0, 0o100600, 1000).is_err(), "other owner");
+    assert!(check(true, 1000, 0o100640, 1000).is_err(), "group readable");
+    assert!(check(true, 1000, 0o100604, 1000).is_err(), "world readable");
+    assert!(check(false, 1000, 0o040600, 1000).is_err(), "not a file");
+}
