@@ -34,6 +34,8 @@ pub struct ImplementRequest<'a> {
     pub exit_marker: Option<&'a str>,
     /// The name the session is reachable under from the Claude app; `None` starts it without Remote Control.
     pub remote_control: Option<&'a str>,
+    /// Where an earlier session left the work, when this session continues one after a model switch.
+    pub handoff: Option<&'a str>,
 }
 
 /// The longest extra context a run accepts, in characters.
@@ -240,6 +242,10 @@ impl HarnessAdapter for Claude {
         if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
             prompt.push_str("\n\nExtra context:\n");
             prompt.push_str(context);
+        }
+        if let Some(handoff) = request.handoff.map(str::trim).filter(|h| !h.is_empty()) {
+            prompt.push_str("\n\nHandoff from the previous session:\n");
+            prompt.push_str(handoff);
         }
         if let Some(marker) = request.exit_marker {
             let quoted = marker_for_prompt(marker)?;

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::checkpoint::latest_checkpoint;
 use crate::store::{RunRecord, RunStore, StoreError};
@@ -16,7 +16,7 @@ pub const HANDOFF_FILE: &str = "handoff.json";
 const GATE_STAGE: &str = "verify";
 
 /// One feature of the plan and where it stands.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanItem {
     pub id: String,
     pub description: Option<String>,
@@ -24,7 +24,7 @@ pub struct PlanItem {
 }
 
 /// One file changed against the base.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffFile {
     pub path: String,
     pub old_path: Option<String>,
@@ -33,7 +33,7 @@ pub struct DiffFile {
 }
 
 /// The diff of the branch against its base.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffDiff {
     pub base_sha: String,
     pub head_sha: String,
@@ -41,7 +41,7 @@ pub struct HandoffDiff {
 }
 
 /// How the latest gate run ended: `passed`, `failed`, `skipped`, or `not_run`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateResult {
     pub outcome: String,
     pub reason: Option<String>,
@@ -49,7 +49,7 @@ pub struct GateResult {
     pub log: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handoff {
     pub schema_version: u32,
     pub from_run: String,
@@ -112,4 +112,49 @@ pub fn write_handoff(
     };
     let bytes = serde_json::to_vec_pretty(&handoff).map_err(|err| StoreError::Corrupt(err.to_string()))?;
     store.write_run_file(&record.run_id, HANDOFF_FILE, &bytes)
+}
+
+/// The handoff written for `run_id`, or none when that run began without a model switch. A file that
+/// is present but unreadable or not a handoff is an error: it is never taken for "no handoff".
+pub fn read_handoff(store: &RunStore, run_id: &str) -> Result<Option<Handoff>, StoreError> {
+    let Some(bytes) = store.read_run_file(run_id, HANDOFF_FILE)? else { return Ok(None) };
+    serde_json::from_slice(&bytes).map(Some).map_err(|err| StoreError::Corrupt(format!("{HANDOFF_FILE}: {err}")))
+}
+
+/// The prompt text that tells a new implementer session where the work stands. It is built from the
+/// record alone, so it serves a session on any harness: it names no session of the previous model and
+/// asks nothing of that model's conversation.
+pub fn handoff_prompt(handoff: &Handoff) -> String {
+    let mut out = String::from(
+        "You are continuing work another model started. You have no access to the previous session's conversation; \
+         the state below, and the repository itself, are all you have.\n",
+    );
+    out.push_str(&format!("\nFeature: {}\nBranch: {}\nCheckout: {}\n", handoff.feature_id, handoff.branch, handoff.worktree.display()));
+    out.push_str("\nPlan:\n");
+    for item in &handoff.plan {
+        match &item.description {
+            Some(description) => out.push_str(&format!("- {} ({}): {}\n", item.id, item.status, description)),
+            None => out.push_str(&format!("- {} ({})\n", item.id, item.status)),
+        }
+    }
+    out.push_str(&format!("\nChanged so far ({}..{}):\n", handoff.diff.base_sha, handoff.diff.head_sha));
+    for file in &handoff.diff.files {
+        match (file.added, file.deleted) {
+            (Some(added), Some(deleted)) => out.push_str(&format!("- {} (+{} -{})\n", file.path, added, deleted)),
+            _ => out.push_str(&format!("- {}\n", file.path)),
+        }
+    }
+    out.push_str(&format!("\nLatest test run: {}", handoff.gate.outcome));
+    if let Some(reason) = &handoff.gate.reason {
+        out.push_str(&format!(" ({reason})"));
+    }
+    if let Some(log) = &handoff.gate.log {
+        out.push_str(&format!("; log: {log}"));
+    }
+    out.push('\n');
+    out.push_str(&format!("\nCompleted stages: {}\n", handoff.completed_stages.join(", ")));
+    if let Some(next) = &handoff.next_stage {
+        out.push_str(&format!("Remaining: {next}\n"));
+    }
+    out
 }

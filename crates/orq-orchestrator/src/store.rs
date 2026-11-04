@@ -330,6 +330,20 @@ impl RunStore {
         Ok(target)
     }
 
+    /// The bytes of `name` in the run's directory, or none when the run has no such file.
+    pub fn read_run_file(&self, run_id: &str, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let dir = self.run_dir(run_id)?;
+        let plain = !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']);
+        if !plain {
+            return Err(StoreError::Corrupt(format!("{name:?} is not a plain file name")));
+        }
+        match fs::read(dir.join(name)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     /// Append one event to the run's `events.jsonl` as a single line. The
     /// run must already exist.
     pub fn append_event(&self, event: &Event) -> Result<(), StoreError> {

@@ -42,7 +42,7 @@ pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
 pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, GateFixOutcome};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, GateOutcome};
-pub use handoff::{write_handoff, DiffFile, GateResult, Handoff, HandoffDiff, PlanItem, HANDOFF_FILE};
+pub use handoff::{handoff_prompt, read_handoff, write_handoff, DiffFile, GateResult, Handoff, HandoffDiff, PlanItem, HANDOFF_FILE};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use launch::record_launch;
 pub use local_files::{carry_local_files, LocalFiles};

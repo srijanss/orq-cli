@@ -715,6 +715,10 @@ fn stages(
             // The session is asked to leave this file when it is finished, and is closed once it does.
             let marker_path = logs.join("implement.done");
             let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten();
+            // After a model switch the new session is told where the work stands, in words, never as the old conversation.
+            let handoff = orq_orchestrator::read_handoff(&store, &run_id)
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
+                .map(|h| orq_orchestrator::handoff_prompt(&h));
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     features: &features,
@@ -723,6 +727,7 @@ fn stages(
                     context: options.context,
                     exit_marker: marker,
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
+                    handoff: handoff.as_deref(),
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
