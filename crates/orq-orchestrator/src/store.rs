@@ -312,9 +312,12 @@ impl RunStore {
             return Err(StoreError::NotFound(run_id.to_string()));
         }
         let target = dir.join(name);
-        let temp = dir.join(format!(".{name}.tmp"));
+        // A name of its own per write, created exclusively: never a path another writer or a symlink holds.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = dir.join(format!(".{name}.{}.{unique}.tmp", std::process::id()));
         let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&temp)?;

@@ -265,14 +265,15 @@ fn write_handoff_record(
     from: &orq_orchestrator::RunRecord,
     project: &orq_git::Project,
 ) -> Result<(), String> {
-    let plan = orq_features::load_ledger(&orq_features::ledger_path(project))
-        .map(|entries| {
-            entries
-                .into_iter()
-                .map(|e| orq_orchestrator::PlanItem { id: e.feature_name, description: e.description, status: e.status.as_str().to_string() })
-                .collect()
-        })
-        .unwrap_or_default();
+    // A project without a ledger has no plan; a ledger that cannot be read or parsed is an error, not an empty plan.
+    let plan = match orq_features::load_ledger(&orq_features::ledger_path(project)) {
+        Ok(entries) => entries
+            .into_iter()
+            .map(|e| orq_orchestrator::PlanItem { id: e.feature_name, description: e.description, status: e.status.as_str().to_string() })
+            .collect(),
+        Err(orq_features::LedgerError::Missing { .. }) => Vec::new(),
+        Err(err) => return Err(format!("the feature ledger: {err:?}")),
+    };
     let evidence = orq_git::diff_evidence(&from.worktree, &from.base_sha, "HEAD").map_err(|e| format!("{e:?}"))?;
     let diff = orq_orchestrator::HandoffDiff {
         base_sha: evidence.base_sha,

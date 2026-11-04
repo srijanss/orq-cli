@@ -139,7 +139,7 @@ fn a_switch_writes_a_handoff_with_the_plan_the_diff_the_gate_and_the_checkout_bu
     assert!(plan.iter().any(|f| f["id"] == "COM-01" && f["status"] == "pending"), "{plan:?}");
     let files = handoff["diff"]["files"].as_array().expect("the diff against the base");
     assert!(files.iter().any(|f| f["path"] == "feature.txt"), "{files:?}");
-    assert!(handoff["gate"]["outcome"].is_string(), "{}", handoff["gate"]);
+    assert_eq!(handoff["gate"]["outcome"], "passed", "{}", handoff["gate"]);
     // A handoff carries state, not the conversation: no transcript or session ids.
     for key in ["transcript", "messages", "conversation", "session_id", "sessions"] {
         assert!(handoff.get(key).is_none(), "handoff must not hold {key}");
