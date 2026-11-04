@@ -101,16 +101,18 @@ pub fn detail_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Result<I
     detail_where(roots, run_id, |record| record.head_sha == head_sha)
 }
 
-/// The verified permalink of each risk of the latest stored report of `run_id`, in the order of
-/// `detail(..).risks`; `None` where the report verified none (or the link is not a web address).
-pub fn risk_links(roots: &StorageRoots, run_id: &str) -> Result<Vec<Option<String>>, String> {
+/// The sections of the latest stored report of `run_id` together with the verified permalink of each
+/// risk, read from one report so a link always belongs to the risk at its position. A link that is not
+/// a plain `https` address is dropped.
+pub fn detail_with_links(roots: &StorageRoots, run_id: &str) -> Result<(InboxDetail, Vec<Option<String>>), String> {
     let report = report_where(roots, run_id, |_| true)?;
-    Ok(report["risks"]
+    let links = report["risks"]
         .as_array()
         .into_iter()
         .flatten()
         .map(|r| r["link"].as_str().filter(|l| l.starts_with("https://") && !l.chars().any(|c| c.is_control() || c.is_whitespace())).map(str::to_string))
-        .collect())
+        .collect();
+    Ok((sections(&report), links))
 }
 
 fn detail_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecord) -> bool) -> Result<InboxDetail, String> {

@@ -1537,9 +1537,10 @@ pub trait BrowserBackend {
         Err("review details are not available".into())
     }
 
-    /// The verified permalink of each risk of `run_id`, in the order of the detail's risks; `None` where none was verified.
-    fn load_risk_links(&mut self, _run_id: &str) -> Vec<Option<String>> {
-        Vec::new()
+    /// The stored report of `run_id` with the verified permalink of each of its risks (same order, `None`
+    /// where none was verified), read from one report. The default has no links.
+    fn load_review_detail_with_links(&mut self, run_id: &str) -> Result<(ReviewDetail, Vec<Option<String>>), String> {
+        self.load_review_detail(run_id).map(|detail| (detail, Vec::new()))
     }
 
     /// Opens `url` in the browser; `Ok` is what happened, `Err` why it could not.
@@ -1989,12 +1990,13 @@ impl ReviewDetailView {
         self.risk_links.get(self.risk).and_then(|l| l.as_deref()).filter(|l| l.starts_with("https://") || l.starts_with("http://"))
     }
 
-    fn move_risk(&mut self, body: Rect, down: bool) {
+    fn move_risk(&mut self, body: Rect, down: bool, page: bool) {
         let count = self.lines().len();
         if count == 0 {
             return;
         }
-        self.risk = if down { (self.risk + 1).min(count - 1) } else { self.risk.saturating_sub(1) };
+        let step = if page { Self::visible(body).max(1) } else { 1 };
+        self.risk = if down { (self.risk + step).min(count - 1) } else { self.risk.saturating_sub(step) };
         let visible = Self::visible(body).max(1);
         if self.risk < self.scroll {
             self.scroll = self.risk;
@@ -3333,10 +3335,11 @@ impl Browser {
 
     fn open_selected_review(&mut self, backend: &mut dyn BrowserBackend) {
         let Some(run_id) = self.reviews.selected_run_id() else { return };
-        let content = backend.load_review_detail(&run_id);
-        // Links are paired with risks by position, so a list that does not match (a newer report landed
-        // between the two reads) is dropped rather than risk a link on the wrong row.
-        let mut risk_links = if content.is_ok() { backend.load_risk_links(&run_id) } else { Vec::new() };
+        let (content, mut risk_links) = match backend.load_review_detail_with_links(&run_id) {
+            Ok((detail, links)) => (Ok(detail), links),
+            Err(why) => (Err(why), Vec::new()),
+        };
+        // Links are paired with risks by position; a list that does not match is dropped.
         if content.as_ref().map_or(true, |d| d.risks.len() != risk_links.len()) {
             risk_links.clear();
         }
@@ -3748,10 +3751,12 @@ where
                             KeyCode::Right | KeyCode::Char('l') => detail.select(detail.section + 1),
                             KeyCode::Left | KeyCode::Char('h') => detail.select(detail.section.saturating_sub(1)),
                             KeyCode::Char(c @ '1'..='5') => detail.select(usize::from(c as u8 - b'1')),
-                            KeyCode::Down | KeyCode::Char('j') if detail.section == 1 => detail.move_risk(body, true),
-                            KeyCode::Up | KeyCode::Char('k') if detail.section == 1 => detail.move_risk(body, false),
+                            KeyCode::Down | KeyCode::Char('j') if detail.section == 1 => detail.move_risk(body, true, false),
+                            KeyCode::Up | KeyCode::Char('k') if detail.section == 1 => detail.move_risk(body, false, false),
                             KeyCode::Down | KeyCode::Char('j') => detail.scroll_by(body, true, false),
                             KeyCode::Up | KeyCode::Char('k') => detail.scroll_by(body, false, false),
+                            KeyCode::PageDown if detail.section == 1 => detail.move_risk(body, true, true),
+                            KeyCode::PageUp if detail.section == 1 => detail.move_risk(body, false, true),
                             KeyCode::PageDown => detail.scroll_by(body, true, true),
                             KeyCode::PageUp => detail.scroll_by(body, false, true),
                             _ => {}

@@ -38,16 +38,17 @@ impl BrowserBackend for Fake {
         Ok(vec![ReviewRow { run_id: "run-1".into(), feature: "APP-01".into(), project: "orq-cli".into(), status: "ready".into(), risk: "low".into(), current: true, stale: false }])
     }
     fn load_review_detail(&mut self, _run_id: &str) -> Result<ReviewDetail, String> {
-        Ok(ReviewDetail {
+        self.load_review_detail_with_links(_run_id).map(|(d, _)| d)
+    }
+    fn load_review_detail_with_links(&mut self, _run_id: &str) -> Result<(ReviewDetail, Vec<Option<String>>), String> {
+        let detail = ReviewDetail {
             summary: vec![],
             risks: vec!["high a.rs:1 first".into(), "low b.rs:2 second".into()],
             files: vec![],
             tests: vec![],
             rounds: vec![],
-        })
-    }
-    fn load_risk_links(&mut self, _run_id: &str) -> Vec<Option<String>> {
-        vec![Some("https://example.invalid/a.rs#L1".into()), None]
+        };
+        Ok((detail, vec![Some("https://example.invalid/a.rs#L1".into()), None]))
     }
     fn open_url(&mut self, url: &str) -> Result<String, String> {
         self.calls.borrow_mut().opened.push(url.into());

@@ -1997,8 +1997,9 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(orq_tui::ReviewDetail { summary: d.summary, risks: d.risks, files: d.files, tests: d.tests, rounds: d.rounds })
     }
 
-    fn load_risk_links(&mut self, run_id: &str) -> Vec<Option<String>> {
-        review_roots().and_then(|roots| orq_core::review_inbox::risk_links(&roots, run_id)).unwrap_or_default()
+    fn load_review_detail_with_links(&mut self, run_id: &str) -> Result<(orq_tui::ReviewDetail, Vec<Option<String>>), String> {
+        let (d, links) = orq_core::review_inbox::detail_with_links(&review_roots()?, run_id)?;
+        Ok((orq_tui::ReviewDetail { summary: d.summary, risks: d.risks, files: d.files, tests: d.tests, rounds: d.rounds }, links))
     }
 
     fn open_url(&mut self, url: &str) -> Result<String, String> {
