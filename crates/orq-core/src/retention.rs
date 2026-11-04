@@ -412,3 +412,31 @@ pub fn plan(policy: &RetentionPolicy, facts: &std::collections::BTreeMap<String,
     plan.kept = kept.into_iter().map(|(run_id, why)| Kept { run_id: run_id.to_string(), why }).collect();
     plan
 }
+
+/// Optional scheduled maintenance, read from `[storage_maintenance]`. `None` means it is off,
+/// which is the default; turning it on needs an interval in whole days.
+pub fn parse_maintenance_interval(text: &str) -> Result<Option<u64>, String> {
+    let doc: toml_edit::DocumentMut = text.parse().map_err(|_: toml_edit::TomlError| "the config file is not valid TOML".to_string())?;
+    let Some(item) = doc.get("storage_maintenance") else { return Ok(None) };
+    let table = item.as_table_like().ok_or("[storage_maintenance] must be a table")?;
+    let mut enabled = false;
+    let mut days = None;
+    for (key, value) in table.iter() {
+        match key {
+            "enabled" => enabled = value.as_bool().ok_or("storage_maintenance.enabled must be true or false")?,
+            "interval_days" => {
+                let n = value.as_integer().ok_or("storage_maintenance.interval_days must be a whole number of days")?;
+                days = Some(u64::try_from(n).map_err(|_| "storage_maintenance.interval_days must be at least 1")?);
+            }
+            _ => return Err("storage_maintenance has an unknown setting".to_string()),
+        }
+    }
+    if !enabled {
+        return Ok(None);
+    }
+    match days {
+        Some(d) if d >= 1 => Ok(Some(d.saturating_mul(86_400))),
+        Some(_) => Err("storage_maintenance.interval_days must be at least 1".to_string()),
+        None => Err("storage_maintenance.enabled needs storage_maintenance.interval_days".to_string()),
+    }
+}

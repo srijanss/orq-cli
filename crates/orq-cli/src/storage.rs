@@ -48,6 +48,7 @@ pub(crate) fn storage(args: &[OsString]) -> ExitCode {
         ["list"] => list(),
         ["prune"] => run_prune(false),
         ["prune", "--dry-run"] => run_prune(true),
+        ["maintain"] => maintain(),
         _ => return usage_error(),
     };
     match result {
@@ -126,32 +127,99 @@ fn list() -> Result<(), String> {
     Ok(())
 }
 
+/// Held while a prune runs; dropping it lets the next prune start.
+struct PruneLock {
+    _file: std::fs::File,
+}
+
+/// Takes the one prune lock without waiting; `None` when another prune holds it.
+fn try_lock_prune(roots: &StorageRoots) -> Result<Option<PruneLock>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::fd::AsRawFd;
+    // Never follows a link planted where the lock file goes.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(roots.data.join("prune.lock"))
+        .map_err(|e| format!("cannot open the prune lock: {e}"))?;
+    // SAFETY: the descriptor is owned by `file`, which outlives the call.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(Some(PruneLock { _file: file }))
+    } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err("cannot take the prune lock".to_string())
+    }
+}
+
+fn lock_prune(roots: &StorageRoots) -> Result<PruneLock, String> {
+    try_lock_prune(roots)?.ok_or_else(|| "another prune is running; try again when it has finished".to_string())
+}
+
+/// `orq storage maintain`: for a scheduler to call. Does nothing unless `[storage_maintenance]` is
+/// enabled, and then prunes at most once per interval, with exactly the plan `prune` would show.
+fn maintain() -> Result<(), String> {
+    let (roots, store, runs) = open()?;
+    let ctx = Ctx { roots, store, runs };
+    let text = match std::fs::read_to_string(ctx.roots.config_file()) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("cannot read {}: {err}", ctx.roots.config_file().display())),
+    };
+    let interval = orq_core::retention::parse_maintenance_interval(&text).map_err(|err| format!("{}: {err}", ctx.roots.config_file().display()))?;
+    let Some(interval) = interval else {
+        println!("Scheduled maintenance is off.");
+        return Ok(());
+    };
+    let Some(_lock) = try_lock_prune(&ctx.roots)? else {
+        println!("Skipped: another prune is running.");
+        return Ok(());
+    };
+    let now = now();
+    if last_cleanup(&ctx.roots).is_some_and(|last| now < last.saturating_add(interval)) {
+        println!("Maintenance not due yet.");
+        return Ok(());
+    }
+    prune_now(&ctx, now)
+}
+
 fn run_prune(dry_run: bool) -> Result<(), String> {
     let (roots, store, runs) = open()?;
     let ctx = Ctx { roots, store, runs };
+    let _lock = if dry_run { None } else { Some(lock_prune(&ctx.roots)?) };
     // A dry run changes nothing, not even the bookkeeping of an interrupted prune.
     if dry_run {
         let pending = ctx.store.pending_removals().map_err(|e| e.to_string())?.len();
         if pending > 0 {
             println!("{pending} removal(s) of an interrupted prune are pending; a real prune will settle them.");
         }
-    } else {
-        let settled = reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
-        if !settled.completed.is_empty() || !settled.abandoned.is_empty() {
-            println!("Settled an interrupted prune: {} finished, {} left in place.", settled.completed.len(), settled.abandoned.len());
-        }
+    }
+    if !dry_run {
+        return prune_now(&ctx, now());
     }
     let policy = policy(&ctx.roots)?;
-    let now = now();
-    let the_plan = ctx.plan(&policy, now)?;
+    let the_plan = ctx.plan(&policy, now())?;
     for line in the_plan.render() {
         println!("{line}");
     }
-    if dry_run {
-        if !the_plan.candidates.is_empty() {
-            println!("Dry run: nothing was removed.");
-        }
-        return Ok(());
+    if !the_plan.candidates.is_empty() {
+        println!("Dry run: nothing was removed.");
+    }
+    Ok(())
+}
+
+/// Settles an interrupted prune, then shows and carries out the plan. The caller holds the prune lock.
+fn prune_now(ctx: &Ctx, now: u64) -> Result<(), String> {
+    let settled = reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
+    if !settled.completed.is_empty() || !settled.abandoned.is_empty() {
+        println!("Settled an interrupted prune: {} finished, {} left in place.", settled.completed.len(), settled.abandoned.len());
+    }
+    let policy = policy(&ctx.roots)?;
+    let the_plan = ctx.plan(&policy, now)?;
+    for line in the_plan.render() {
+        println!("{line}");
     }
     let report = ctx.prune(&policy, &the_plan, now)?;
     for line in report_lines(&the_plan, &report) {
@@ -273,6 +341,7 @@ pub(crate) fn ui_preview(ctx: &Ctx) -> Result<(Vec<String>, PrunePlan), String> 
 /// Carries out exactly `previewed`, the plan the person confirmed. Each file is still checked
 /// afresh just before it goes, so the plan can only shrink, never grow.
 pub(crate) fn ui_prune(ctx: &Ctx, previewed: &PrunePlan) -> Result<Vec<String>, String> {
+    let _lock = lock_prune(&ctx.roots)?;
     reconcile(&ctx.roots.data, &ctx.store).map_err(|e| format!("cannot settle an interrupted prune: {e}"))?;
     let policy = policy(&ctx.roots)?;
     let report = ctx.prune(&policy, previewed, now())?;
