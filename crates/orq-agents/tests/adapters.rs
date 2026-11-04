@@ -288,3 +288,18 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
     let none = ImplementRequest { features: &[], ..request };
     assert!(matches!(claude.implement_argv(&none), Err(AdapterError::InvalidValue { .. })));
 }
+
+#[test]
+fn a_group_implement_request_asks_for_every_feature_to_be_completed_the_usual_way() {
+    let claude = adapter_for("claude").unwrap();
+    let request = ImplementRequest {
+        features: &["COM-01", "COM-02"],
+        implementer: spec("claude", "opus", None),
+        reviewer: spec("pi", "kimi-k3", None),
+        context: None,
+        exit_marker: None,
+        remote_control: None,
+    };
+    let prompt = claude.implement_argv(&request).unwrap().pop().unwrap();
+    assert!(prompt.contains("Complete every one of these features"), "{prompt}");
+}

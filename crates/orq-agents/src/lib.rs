@@ -215,7 +215,7 @@ impl HarnessAdapter for Claude {
             prompt.push_str(thinking);
         }
         if request.features.len() > 1 {
-            prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given.");
+            prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
         }
         if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
             prompt.push_str("\n\nExtra context:\n");

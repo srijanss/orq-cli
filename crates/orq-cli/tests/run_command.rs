@@ -1138,3 +1138,21 @@ fn claude_push_stays_off_unless_asked_for_and_follows_notify_on() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(push_session(&agent).is_none(), "a clean run is not announced under notify_on = failures");
 }
+
+#[test]
+fn a_group_run_is_announced_once_naming_every_feature_of_the_group() {
+    let (w, heard) = notify_world("notifygroup", None);
+    write_ledger(
+        w.repo.root(),
+        &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
+    );
+    let agent = FakeAgent::builder().write_file("one.txt", "1\n").commit("feat: COM-01").write_file("two.txt", "2\n").commit("feat: COM-02").build();
+
+    let output = run_selecting(&w, &agent, &github(), &["--group", "COM-02,COM-01"], &["--no-ci-check"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let heard = std::fs::read_to_string(&heard).expect("the notifier ran");
+    let lines: Vec<_> = heard.lines().collect();
+    assert_eq!(lines.len(), 1, "{heard}");
+    assert!(lines[0].starts_with("orq: COM-01,COM-02 review_ready"), "{heard}");
+}
