@@ -403,7 +403,20 @@ pub fn apply_intelligence(report: &mut serde_json::Value, files: &[ReportFile], 
         .map(|round| {
             let each: Vec<AttributedFinding> = round.findings.iter().map(|f| attribute_one(round.number, f, &changed)).collect();
             let count = |standing: Standing| each.iter().filter(|a| a.standing == standing).count();
+            let status = |s: FindingStatus| round.findings.iter().filter(|f| f.status == s).count();
+            let (fixed, rejected, deferred, open) = (status(FindingStatus::Fixed), status(FindingStatus::Rejected), status(FindingStatus::Deferred), status(FindingStatus::Open));
+            let parts: Vec<String> = [(fixed, "fixed"), (rejected, "rejected"), (deferred, "deferred"), (open, "open")]
+                .iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(n, label)| format!("{n} {label}"))
+                .collect();
+            let line = match (round.findings.len(), parts.is_empty()) {
+                (0, _) => format!("Round {}: no findings raised.", round.number),
+                (n, true) => format!("Round {}: {n} raised.", round.number),
+                (n, false) => format!("Round {}: {n} raised — {}.", round.number, parts.join(", ")),
+            };
             json!({
+                "text": line, "raised": each.len(), "fixed": fixed, "rejected": rejected, "deferred": deferred, "open": open,
                 "round": round.number, "summary": round.summary, "findings": each.len(),
                 "confirmed": count(Standing::Confirmed), "potential": count(Standing::Potential), "dismissed": count(Standing::Dismissed),
                 "unresolved": each.iter().filter(|a| a.unresolved).count(),

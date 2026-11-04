@@ -263,8 +263,8 @@ pub fn render_markdown(report: &Value) -> String {
         md.push_str("\nReview rounds:\n");
         for round in rounds {
             md.push_str(&format!(
-                "- Round {}: {} findings, {} confirmed, {} potential, {} dismissed, {} unresolved{}\n",
-                round["round"], round["findings"], round["confirmed"], round["potential"], round["dismissed"], round["unresolved"],
+                "- {}{}\n",
+                text(&round["text"]),
                 round["summary"].as_str().map_or(String::new(), |_| format!(" - {}", text(&round["summary"])))
             ));
         }
