@@ -119,7 +119,7 @@ fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<Stri
 fn changed_tested_apps(dir: &Path, changed: &[String]) -> Option<Vec<String>> {
     let mut targets = Vec::new();
     for path in changed {
-        if [".md", ".rst", ".txt"].iter().any(|ext| path.ends_with(ext)) {
+        if [".md", ".rst"].iter().any(|ext| path.ends_with(ext)) {
             continue;
         }
         let app = path.strip_prefix("src/").and_then(|rest| rest.split_once('/')).map(|(app, _)| format!("src/{app}"))?;

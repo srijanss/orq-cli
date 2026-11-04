@@ -260,6 +260,8 @@ fn a_change_that_cannot_be_pinned_to_a_tested_app_runs_the_whole_suite() {
         ("settings", vec!["src/config/settings.py"]),
         ("root-tests", vec!["tests/test_smoke.py"]),
         ("mixed", vec!["src/shop/views.py", "pyproject.toml"]),
+        ("requirements", vec!["requirements.txt"]),
+        ("requirements-with-app", vec!["src/shop/views.py", "constraints.txt"]),
     ] {
         let dir = django(&format!("django-wide-{tag}"));
         let changed: Vec<String> = changed.into_iter().map(String::from).collect();
