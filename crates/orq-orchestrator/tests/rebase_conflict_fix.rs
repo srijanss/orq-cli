@@ -86,6 +86,7 @@ fn run_agent(w: &World, script: &str) -> Result<ConflictFixOutcome, orq_orchestr
         session_id: None,
         log: &log,
         terminal: false,
+            exit_marker: None,
     };
     fix_rebase_conflicts(&w.store, "run-1", &session)
 }
@@ -185,6 +186,7 @@ fn a_session_that_cannot_start_keeps_the_run_blocked_and_records_the_failure() {
         session_id: None,
         log: &log,
         terminal: false,
+            exit_marker: None,
     };
 
     let outcome = fix_rebase_conflicts(&w.store, "run-1", &session).unwrap();
@@ -213,7 +215,7 @@ fn a_session_that_finishes_the_rebase_and_then_exits_nonzero_is_still_resolved()
 fn run_agent_in(w: &World, run_id: &str, cwd: &Path, script: &str) -> Result<ConflictFixOutcome, orq_orchestrator::StoreError> {
     let args = vec!["-c".to_string(), script.to_string()];
     let log = w.root.join(format!("{run_id}.log"));
-    let session = ImplementSession { program: "sh", args: &args, env: &[], cwd, session_id: None, log: &log, terminal: false };
+    let session = ImplementSession { program: "sh", args: &args, env: &[], cwd, session_id: None, log: &log, terminal: false, exit_marker: None };
     fix_rebase_conflicts(&w.store, run_id, &session)
 }
 

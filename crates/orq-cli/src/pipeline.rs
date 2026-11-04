@@ -467,12 +467,16 @@ fn stages(
         // recorded when the run began, so it survives a failure anywhere before here.
         if implement_inherited_from.is_none() {
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            // The session is asked to leave this file when it is finished, and is closed once it does.
+            let marker_path = logs.join("implement.done");
+            let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten().filter(|m| !m.contains(char::is_whitespace));
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     feature: options.feature,
                     implementer: spec(&implementer),
                     reviewer: spec(&options.reviewer),
                     context: options.context,
+                    exit_marker: marker,
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
@@ -483,6 +487,7 @@ fn stages(
                 session_id: None,
                 log: &logs.join("implement.log"),
                 terminal: false,
+                exit_marker: marker.map(std::path::Path::new),
             };
             if !run_implement_stage(store, run_id, &session)?.success {
                 return stopped(Ending::Failed, "the implement session failed");

@@ -81,6 +81,7 @@ pub fn run_gate_with_fixes_env(
                     session_id: spec.session_id.as_deref(),
                     log: &spec.log,
                     terminal: spec.terminal,
+            exit_marker: None,
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;

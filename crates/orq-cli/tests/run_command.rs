@@ -144,7 +144,8 @@ fn extra_context_reaches_the_agent_inside_the_one_prompt_argument() {
     let args = agent.first_run().expect("the agent ran").args;
     let prompt = args.last().unwrap();
     assert!(prompt.starts_with("/implement-and-review COM-01"), "{prompt}");
-    assert!(prompt.ends_with("Extra context:\nkeep the API stable --no-gate"), "{prompt}");
+    assert!(prompt.contains("Extra context:\nkeep the API stable --no-gate"), "{prompt}");
+    assert!(prompt.contains("implement.done"), "the session is asked for its exit marker: {prompt}");
 }
 
 #[test]

@@ -29,6 +29,8 @@ pub struct ImplementRequest<'a> {
     pub reviewer: ModelSpec,
     /// Free text appended to the request for this run.
     pub context: Option<&'a str>,
+    /// A file the session creates as its very last step, so orq can close it; `None` asks for nothing.
+    pub exit_marker: Option<&'a str>,
 }
 
 /// The longest extra context a run accepts, in characters.
@@ -146,6 +148,12 @@ impl HarnessAdapter for Claude {
         if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
             prompt.push_str("\n\nExtra context:\n");
             prompt.push_str(context);
+        }
+        if let Some(marker) = request.exit_marker {
+            plain("exit marker", marker)?;
+            prompt.push_str("\n\nAs your very last step, once everything is committed, create the empty file ");
+            prompt.push_str(marker);
+            prompt.push_str(" and then stop.");
         }
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
         if let Some(thinking) = &request.implementer.thinking {

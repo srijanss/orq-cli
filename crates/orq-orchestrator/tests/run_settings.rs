@@ -401,3 +401,18 @@ fn saving_mcp_servers_keeps_the_mode_under_a_restrictive_umask() {
         .unwrap();
     assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }
+
+#[test]
+fn the_session_auto_exit_switch_comes_from_the_files_or_the_environment() {
+    let r = repo("autoexit");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().auto_exit, None);
+    shared(&r, "auto_exit = false\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().auto_exit, Some(false));
+
+    let env = |key: &str| (key == "ORQ_AUTO_EXIT").then(|| "1".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().auto_exit, Some(true));
+
+    assert!(invalid("auto_exit = \"no\"\n", "autoexitstr").contains("auto_exit"));
+    let bad = |key: &str| (key == "ORQ_AUTO_EXIT").then(|| "maybe".to_string());
+    assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_AUTO_EXIT"));
+}

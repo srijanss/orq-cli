@@ -97,6 +97,7 @@ pub fn run_ci_fix_loop(
             session_id: spec.session_id.as_deref(),
             log: &spec.log,
             terminal: spec.terminal,
+            exit_marker: None,
         };
         // The session's own result is not trusted: the gate and CI decide.
         run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;

@@ -47,6 +47,8 @@ pub struct RunSettings {
     pub test_db_drop_cmd: Option<Vec<String>>,
     /// Leave the test databases of a finished run in place (`ORQ_KEEP_TEST_DB`).
     pub keep_test_db: Option<bool>,
+    /// Close the implement session once it has written its exit marker (on when unset).
+    pub auto_exit: Option<bool>,
     /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
     pub db_name_template: Option<String>,
     /// The model for the implement session and the review draft; `None` leaves the chosen profile's own.
@@ -94,6 +96,7 @@ struct Layer {
     mcp_servers: Option<Vec<String>>,
     test_db_drop_cmd: Option<Vec<String>>,
     keep_test_db: Option<bool>,
+    auto_exit: Option<bool>,
     db_name_template: Option<String>,
     model: Option<String>,
     branch_prefix: Option<String>,
@@ -119,6 +122,7 @@ impl Layer {
             mcp_servers: self.mcp_servers.or(lower.mcp_servers),
             test_db_drop_cmd: self.test_db_drop_cmd.or(lower.test_db_drop_cmd),
             keep_test_db: self.keep_test_db.or(lower.keep_test_db),
+            auto_exit: self.auto_exit.or(lower.auto_exit),
             db_name_template: self.db_name_template.or(lower.db_name_template),
             model: self.model.or(lower.model),
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
@@ -151,6 +155,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         mcp_servers: merged.mcp_servers,
         test_db_drop_cmd: merged.test_db_drop_cmd,
         keep_test_db: merged.keep_test_db,
+        auto_exit: merged.auto_exit,
         db_name_template: merged.db_name_template,
         model: merged.model,
         branch_prefix: merged.branch_prefix,
@@ -259,6 +264,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             }
             "model" => layer.model =Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
+            "auto_exit" => layer.auto_exit = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -320,6 +326,13 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_MODEL") {
         layer.model = Some(model(v.trim()).map_err(|r| invalid("ORQ_MODEL", r))?);
+    }
+    if let Some(v) = get("ORQ_AUTO_EXIT") {
+        layer.auto_exit = Some(match v.trim() {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(invalid("ORQ_AUTO_EXIT", "must be 1, 0, true or false")),
+        });
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {
         layer.keep_test_db = Some(match v.trim() {

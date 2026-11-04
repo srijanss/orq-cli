@@ -60,6 +60,7 @@ fn session<'a>(s: &'a Setup, args: &'a [String], env: &'a [(String, String)]) ->
         session_id: Some("sess-42"),
         log: &s.log,
         terminal: false,
+            exit_marker: None,
     }
 }
 

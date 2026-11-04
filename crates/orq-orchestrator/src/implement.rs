@@ -24,6 +24,9 @@ pub struct ImplementSession<'a> {
     pub log: &'a Path,
     /// Attach to the invoking terminal instead of capturing output in the log.
     pub terminal: bool,
+    /// A file the session writes as its last step: once it exists the session is closed by orq and the
+    /// stage counts as finished. A file already there when the session starts is removed first.
+    pub exit_marker: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,9 +92,14 @@ pub(crate) fn run_session_stage(
         command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     }
 
-    let (outcome, reason) = match command.status() {
-        Ok(status) if status.success() => (ImplementOutcome { success: true, exit_code: status.code() }, None),
-        Ok(status) => {
+    if let Some(marker) = session.exit_marker {
+        let _ = fs::remove_file(marker);
+    }
+    let status = command.spawn().and_then(|child| wait_for_session(child, session.exit_marker));
+    let (outcome, reason) = match status {
+        Ok(SessionEnd::Closed) => (ImplementOutcome { success: true, exit_code: Some(0) }, None),
+        Ok(SessionEnd::Exited(status)) if status.success() => (ImplementOutcome { success: true, exit_code: status.code() }, None),
+        Ok(SessionEnd::Exited(status)) => {
             let reason = match status.code() {
                 Some(code) => format!("{} exited with status {code}", session.program),
                 None => format!("{} was stopped by a signal", session.program),
@@ -109,6 +117,35 @@ pub(crate) fn run_session_stage(
     };
     store.append_event(&closing)?;
     Ok(outcome)
+}
+
+enum SessionEnd {
+    Exited(std::process::ExitStatus),
+    /// The marker appeared and orq closed the session.
+    Closed,
+}
+
+/// How long a session is given to end by itself once it has written its marker.
+const MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Waits for `child`; with a marker, closes it once the marker exists and a short grace has passed.
+fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>) -> std::io::Result<SessionEnd> {
+    let Some(marker) = marker else { return child.wait().map(SessionEnd::Exited) };
+    let mut seen: Option<std::time::Instant> = None;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(SessionEnd::Exited(status));
+        }
+        if marker.exists() {
+            let since = *seen.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= MARKER_GRACE {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(SessionEnd::Closed);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// Open a stage log for appending. Output can hold source and credentials, so

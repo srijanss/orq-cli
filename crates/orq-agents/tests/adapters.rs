@@ -33,6 +33,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         implementer: spec("claude", "opus", None),
         reviewer: spec("pi", "openai/gpt-6-astra", Some("medium")),
         context: None,
+        exit_marker: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(
@@ -59,6 +60,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         implementer: spec("pi", "kimi-k3", None),
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
+        exit_marker: None,
     };
     // The implementer model must belong to the adapter's own harness.
     assert!(matches!(claude.implement_argv(&request), Err(AdapterError::WrongHarness { .. })));
@@ -84,6 +86,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
         implementer: spec("claude", "sonnet", Some("high")),
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
+        exit_marker: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(&argv[..4], ["--model", "sonnet", "--effort", "high"]);
@@ -102,6 +105,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
         implementer: spec("claude", "opus", None),
         reviewer: spec("gemini", "flash", None),
         context: None,
+        exit_marker: None,
     };
     assert!(matches!(
         claude.implement_argv(&request),
@@ -117,6 +121,7 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         implementer: spec("claude", "opus", None),
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable\nand mention it in the MR"),
+        exit_marker: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(argv.len(), 3, "the context stays inside the one prompt argument");
@@ -153,4 +158,38 @@ fn context_limits_count_characters_and_allow_tabs_and_newlines() {
 
     assert_eq!(checked_context("a\tb\nc").unwrap(), Some("a\tb\nc"));
     assert_eq!(checked_context(" \n ").unwrap(), None);
+}
+
+#[test]
+fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
+    let claude = adapter_for("claude").unwrap();
+    let request = ImplementRequest {
+        feature: "COM-02",
+        implementer: spec("claude", "opus", None),
+        reviewer: spec("pi", "kimi-k3", None),
+        context: Some("keep the API stable"),
+        exit_marker: Some("/repo/.git/orq/exit-run-1"),
+    };
+
+    let argv = claude.implement_argv(&request).unwrap();
+
+    let prompt = argv.last().unwrap();
+    assert!(prompt.starts_with("/implement-and-review COM-02 --reviewer pi --model kimi-k3"), "{prompt}");
+    assert!(prompt.contains("Extra context:\nkeep the API stable"), "{prompt}");
+    assert!(prompt.ends_with("As your very last step, once everything is committed, create the empty file /repo/.git/orq/exit-run-1 and then stop."), "{prompt}");
+}
+
+#[test]
+fn an_exit_marker_with_whitespace_or_a_leading_dash_is_refused() {
+    let claude = adapter_for("claude").unwrap();
+    for bad in ["/a b", "-x", "/a\nb", ""] {
+        let request = ImplementRequest {
+            feature: "COM-02",
+            implementer: spec("claude", "opus", None),
+            reviewer: spec("pi", "kimi-k3", None),
+            context: None,
+            exit_marker: Some(bad),
+        };
+        assert!(claude.implement_argv(&request).is_err(), "{bad:?}");
+    }
 }
