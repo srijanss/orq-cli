@@ -93,3 +93,63 @@ pub fn check_run_eligibility<'a>(
         Err(Ineligible::UnmetDependencies(unmet))
     }
 }
+
+/// Why a group of features may not start one run together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupRefusal {
+    /// One member may not start, or has a dependency outside the group that is not completed.
+    Feature { id: String, reason: Ineligible },
+    /// These members wait on each other (or on a feature that does), so none can go first.
+    Cycle(Vec<String>),
+}
+
+impl std::fmt::Display for GroupRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupRefusal::Feature { id, reason } => write!(f, "feature {id} may not start a run: {reason}"),
+            GroupRefusal::Cycle(members) => write!(f, "these features depend on each other: {}", members.join(", ")),
+        }
+    }
+}
+
+impl std::error::Error for GroupRefusal {}
+
+/// The group's features in the order to implement them: each after the group members it depends
+/// on, and otherwise in the order given. Every member must be `pending`, and every dependency
+/// outside the group must be `completed`.
+pub fn order_run_group<'a>(ledger: &'a [FeatureEntry], ids: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    let mut members: Vec<&FeatureEntry> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let entry = ledger.iter().find(|e| &e.feature_name == id);
+        let refuse = |reason| GroupRefusal::Feature { id: id.clone(), reason };
+        let entry = entry.ok_or_else(|| refuse(Ineligible::NotFound))?;
+        if entry.status.known() != Some(FeatureStatus::Pending) {
+            return Err(refuse(Ineligible::NotPending { status: entry.status.as_str().to_string() }));
+        }
+        let unmet: Vec<UnmetDependency> = entry
+            .depends_on
+            .iter()
+            .filter(|dep| !ids.contains(dep))
+            .filter_map(|dep| match ledger.iter().find(|e| &e.feature_name == dep) {
+                Some(e) if e.status.known() == Some(FeatureStatus::Completed) => None,
+                Some(e) => Some(UnmetDependency { name: dep.clone(), status: Some(e.status.as_str().to_string()) }),
+                None => Some(UnmetDependency { name: dep.clone(), status: None }),
+            })
+            .collect();
+        if !unmet.is_empty() {
+            return Err(refuse(Ineligible::UnmetDependencies(unmet)));
+        }
+        members.push(entry);
+    }
+    let mut ordered: Vec<&FeatureEntry> = Vec::with_capacity(members.len());
+    while !members.is_empty() {
+        let next = members
+            .iter()
+            .position(|m| m.depends_on.iter().all(|dep| !ids.contains(dep) || ordered.iter().any(|o| &o.feature_name == dep)));
+        match next {
+            Some(index) => ordered.push(members.remove(index)),
+            None => return Err(GroupRefusal::Cycle(members.iter().map(|m| m.feature_name.clone()).collect())),
+        }
+    }
+    Ok(ordered)
+}
