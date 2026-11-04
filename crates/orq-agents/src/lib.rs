@@ -107,6 +107,20 @@ fn plain(field: &'static str, value: &str) -> Result<(), AdapterError> {
     }
 }
 
+/// An absolute path as it is written into a prompt: bare when it is plain, in double quotes when it holds
+/// spaces or other characters. Quotes, backticks, backslashes and control characters cannot be quoted safely.
+fn marker_for_prompt(marker: &str) -> Result<String, AdapterError> {
+    if plain("exit marker", marker).is_ok() && marker.starts_with('/') {
+        return Ok(marker.to_string());
+    }
+    let ok = marker.starts_with('/') && !marker.chars().any(|c| c.is_control() || matches!(c, '"' | '`' | '\\' | '$'));
+    if ok {
+        Ok(format!("\"{marker}\""))
+    } else {
+        Err(AdapterError::InvalidValue { field: "exit marker", value: marker.to_string() })
+    }
+}
+
 struct Claude;
 
 impl HarnessAdapter for Claude {
@@ -150,9 +164,9 @@ impl HarnessAdapter for Claude {
             prompt.push_str(context);
         }
         if let Some(marker) = request.exit_marker {
-            plain("exit marker", marker)?;
+            let quoted = marker_for_prompt(marker)?;
             prompt.push_str("\n\nAs your very last step, once everything is committed, create the empty file ");
-            prompt.push_str(marker);
+            prompt.push_str(&quoted);
             prompt.push_str(" and then stop.");
         }
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];

@@ -146,3 +146,17 @@ fn a_descendant_of_a_closed_session_does_not_outlive_the_stage() {
 
     assert!(!late.exists(), "a descendant kept running after the session was closed");
 }
+
+#[test]
+fn a_descendant_of_a_session_that_wrote_its_marker_and_exited_does_not_outlive_the_stage() {
+    let (store, root) = setup("exited");
+    let marker = root.join("worktree/done.marker");
+    let late = root.join("worktree/late-exit.txt");
+    let args = args(&format!("(sleep 2; touch {}) & touch {}", late.display(), marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+    assert!(outcome.success, "{outcome:?}");
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert!(!late.exists(), "a descendant kept running after the session exited");
+}

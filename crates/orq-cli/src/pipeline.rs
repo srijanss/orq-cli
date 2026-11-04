@@ -469,14 +469,7 @@ fn stages(
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
             let marker_path = logs.join("implement.done");
-            let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten().filter(|m| !m.contains(char::is_whitespace));
-            if settings.auto_exit != Some(false) && marker.is_none() {
-                use std::io::Write as _;
-                let note = format!("auto_exit is on but {} cannot be named in the prompt (it holds whitespace); the session is not closed automatically\n", marker_path.display());
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("databases.log")) {
-                    let _ = file.write_all(note.as_bytes());
-                }
-            }
+            let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten();
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     feature: options.feature,

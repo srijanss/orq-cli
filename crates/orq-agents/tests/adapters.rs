@@ -180,16 +180,20 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
 }
 
 #[test]
-fn an_exit_marker_with_whitespace_or_a_leading_dash_is_refused() {
+fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_refused() {
     let claude = adapter_for("claude").unwrap();
-    for bad in ["/a b", "-x", "/a\nb", ""] {
-        let request = ImplementRequest {
+    let ask = |marker: &str| {
+        claude.implement_argv(&ImplementRequest {
             feature: "COM-02",
             implementer: spec("claude", "opus", None),
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
-            exit_marker: Some(bad),
-        };
-        assert!(claude.implement_argv(&request).is_err(), "{bad:?}");
+            exit_marker: Some(marker),
+        })
+    };
+    let argv = ask("/my repo/.git/orq/exit").unwrap();
+    assert!(argv.last().unwrap().ends_with("create the empty file \"/my repo/.git/orq/exit\" and then stop."), "{argv:?}");
+    for bad in ["-x", "relative/path", "/a\nb", "", "/a\"b", "/a`b", "/a\\b"] {
+        assert!(ask(bad).is_err(), "{bad:?}");
     }
 }

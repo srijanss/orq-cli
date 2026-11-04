@@ -146,17 +146,13 @@ fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>, own_g
     let mut seen: Option<std::time::Instant> = None;
     loop {
         if let Some(status) = child.try_wait()? {
+            end_group(child.id(), own_group);
             return Ok(SessionEnd::Exited(status));
         }
         if marker.exists() {
             let since = *seen.get_or_insert_with(std::time::Instant::now);
             if since.elapsed() >= MARKER_GRACE {
-                #[cfg(unix)]
-                if own_group {
-                    // SAFETY: the child leads its own group, so its pid names that group.
-                    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-                }
-                let _ = own_group;
+                end_group(child.id(), own_group);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(SessionEnd::Closed);
@@ -164,6 +160,17 @@ fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>, own_g
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+/// Ends every process still in the session's own group, so none outlives the stage.
+fn end_group(leader: u32, own_group: bool) {
+    #[cfg(unix)]
+    if own_group {
+        // SAFETY: the session leads a group of its own, so its pid names that group.
+        unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = (leader, own_group);
 }
 
 /// Open a stage log for appending. Output can hold source and credentials, so
