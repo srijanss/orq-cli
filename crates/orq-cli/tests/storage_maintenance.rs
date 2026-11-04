@@ -198,3 +198,16 @@ fn a_fifo_planted_at_the_lock_path_cannot_hang_maintenance() {
     assert!(!status.success());
     assert!(s.data_file("runs/old-run/events.jsonl").exists());
 }
+
+#[test]
+fn the_off_and_not_due_paths_do_not_open_or_create_the_database() {
+    let s = Sandbox::new("nodb");
+    assert!(s.orq(&["storage", "maintain"]).status.success());
+    assert!(!s.data_file("orq.db").exists(), "disabled maintenance opened the database");
+
+    s.config(ON);
+    std::fs::write(s.data_file("last-cleanup"), "99999999999").unwrap();
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(text(&out).contains("not due"), "{}", text(&out));
+    assert!(!s.data_file("orq.db").exists(), "a not-due check opened the database");
+}

@@ -20,7 +20,10 @@ fn roots() -> Result<StorageRoots, String> {
 }
 
 pub(crate) fn open() -> Result<(StorageRoots, Store, RunStore), String> {
-    let roots = roots()?;
+    open_with(roots()?)
+}
+
+fn open_with(roots: StorageRoots) -> Result<(StorageRoots, Store, RunStore), String> {
     let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the Orq database: {err}"))?;
     let state = pipeline::state_root().ok_or_else(|| "no state location: set XDG_STATE_HOME or HOME".to_string())?;
     Ok((roots, store, RunStore::new(&state)))
@@ -173,27 +176,29 @@ fn lock_prune(roots: &StorageRoots) -> Result<PruneLock, String> {
 /// `orq storage maintain`: for a scheduler to call. Does nothing unless `[storage_maintenance]` is
 /// enabled, and then prunes at most once per interval, with exactly the plan `prune` would show.
 fn maintain() -> Result<(), String> {
-    let (roots, store, runs) = open()?;
-    let ctx = Ctx { roots, store, runs };
-    let text = match std::fs::read_to_string(ctx.roots.config_file()) {
+    // The common calls (off, busy, not due) stop before the database is opened.
+    let roots = roots()?;
+    let text = match std::fs::read_to_string(roots.config_file()) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(format!("cannot read {}: {err}", ctx.roots.config_file().display())),
+        Err(err) => return Err(format!("cannot read {}: {err}", roots.config_file().display())),
     };
-    let interval = orq_core::retention::parse_maintenance_interval(&text).map_err(|err| format!("{}: {err}", ctx.roots.config_file().display()))?;
+    let interval = orq_core::retention::parse_maintenance_interval(&text).map_err(|err| format!("{}: {err}", roots.config_file().display()))?;
     let Some(interval) = interval else {
         println!("Scheduled maintenance is off.");
         return Ok(());
     };
-    let Some(_lock) = try_lock_prune(&ctx.roots)? else {
+    let Some(_lock) = try_lock_prune(&roots)? else {
         println!("Skipped: another prune is running.");
         return Ok(());
     };
     let now = now();
-    if last_cleanup_checked(&ctx.roots)?.is_some_and(|last| now < last.saturating_add(interval)) {
+    if last_cleanup_checked(&roots)?.is_some_and(|last| now < last.saturating_add(interval)) {
         println!("Maintenance not due yet.");
         return Ok(());
     }
+    let (roots, store, runs) = open_with(roots)?;
+    let ctx = Ctx { roots, store, runs };
     prune_now(&ctx, now)?;
     // Without a recorded time the next call would prune again, so a failure to record is an error.
     if last_cleanup_checked(&ctx.roots)? != Some(now) {
