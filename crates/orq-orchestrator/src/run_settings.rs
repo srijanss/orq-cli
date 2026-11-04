@@ -14,6 +14,7 @@ const SHARED_FILE: &str = ".orq/run.toml";
 const PRIVATE_LABEL: &str = "orq/run.toml in the git directory";
 /// A CI wait longer than a day is a typo, not a wish.
 const MAX_CI_TIMEOUT_SECS: i64 = 86_400;
+const MAX_COMPACT_WINDOW: i64 = 10_000_000;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunSettings {
@@ -52,6 +53,8 @@ pub struct RunSettings {
     pub model: Option<String>,
     /// The prefix of a new run's branch (`fix--` when unset).
     pub branch_prefix: Option<String>,
+    /// The context size, in tokens, at which a run's sessions auto-compact; `None` leaves the harness's own.
+    pub compact_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +97,7 @@ struct Layer {
     db_name_template: Option<String>,
     model: Option<String>,
     branch_prefix: Option<String>,
+    compact_window: Option<u32>,
 }
 
 impl Layer {
@@ -118,6 +122,7 @@ impl Layer {
             db_name_template: self.db_name_template.or(lower.db_name_template),
             model: self.model.or(lower.model),
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
+            compact_window: self.compact_window.or(lower.compact_window),
         }
     }
 }
@@ -149,6 +154,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         db_name_template: merged.db_name_template,
         model: merged.model,
         branch_prefix: merged.branch_prefix,
+        compact_window: merged.compact_window,
     })
 }
 
@@ -193,6 +199,9 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "mcp_servers" => layer.mcp_servers = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "test_db_drop_cmd" => layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "db_name_template" => layer.db_name_template = Some(value.as_str().ok_or_else(|| bad("must be a string"))?.to_string()),
+            "compact_window" => {
+                layer.compact_window = Some(window(value.as_integer().ok_or_else(|| bad("must be a whole number"))?).map_err(|r| bad(&r))?)
+            }
             "branch_prefix" => {
                 layer.branch_prefix = Some(branch_prefix(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?)
             }
@@ -249,6 +258,10 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
         layer.db_name_template = Some(v.trim().to_string());
+    }
+    if let Some(v) = get("ORQ_COMPACT_WINDOW") {
+        let tokens: i64 = v.trim().parse().map_err(|_| invalid("ORQ_COMPACT_WINDOW", "must be a whole number"))?;
+        layer.compact_window = Some(window(tokens).map_err(|r| invalid("ORQ_COMPACT_WINDOW", r))?);
     }
     if let Some(v) = get("ORQ_BRANCH_PREFIX") {
         layer.branch_prefix = Some(branch_prefix(v.trim()).map_err(|r| invalid("ORQ_BRANCH_PREFIX", r))?);
@@ -368,6 +381,15 @@ fn argv(value: &serde_json::Value) -> Result<Vec<String>, String> {
 
 fn steps(value: &serde_json::Value) -> Result<Vec<Vec<String>>, String> {
     value.as_array().ok_or("must be a list of commands")?.iter().map(argv).collect()
+}
+
+/// A context size in tokens: positive, and no larger than any model's window.
+fn window(tokens: i64) -> Result<u32, String> {
+    if (1..=MAX_COMPACT_WINDOW).contains(&tokens) {
+        Ok(tokens as u32)
+    } else {
+        Err(format!("must be between 1 and {MAX_COMPACT_WINDOW} tokens"))
+    }
 }
 
 fn timeout(secs: i64) -> Result<Duration, String> {

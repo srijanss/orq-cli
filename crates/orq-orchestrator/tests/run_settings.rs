@@ -251,6 +251,24 @@ fn the_run_model_comes_from_the_files_or_the_environment_and_must_be_a_plain_nam
 }
 
 #[test]
+fn the_compact_window_comes_from_the_files_or_the_environment_and_must_be_a_sane_token_count() {
+    let r = repo("compact");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().compact_window, None);
+    shared(&r, "compact_window = 150000\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().compact_window, Some(150_000));
+
+    let env = |key: &str| (key == "ORQ_COMPACT_WINDOW").then(|| "200000".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().compact_window, Some(200_000));
+
+    assert!(invalid("compact_window = \"big\"\n", "compactstr").contains("compact_window"));
+    assert!(invalid("compact_window = 0\n", "compactzero").contains("compact_window"));
+    assert!(invalid("compact_window = -5\n", "compactneg").contains("compact_window"));
+    assert!(invalid("compact_window = 99999999999\n", "compacthuge").contains("compact_window"));
+    let bad_env = |key: &str| (key == "ORQ_COMPACT_WINDOW").then(|| "lots".to_string());
+    assert!(load_run_settings(&r, &bad_env).unwrap_err().to_string().contains("ORQ_COMPACT_WINDOW"));
+}
+
+#[test]
 fn the_branch_prefix_comes_from_the_files_or_the_environment_and_must_be_usable() {
     let r = repo("prefix");
     assert_eq!(load_run_settings(&r, &no_env).unwrap().branch_prefix, None);

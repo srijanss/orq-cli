@@ -435,6 +435,10 @@ fn stages(
         orq_orchestrator::derive_worktree_databases_with(&options.project.root, &vars, &record.branch, named, settings.db_name_template.as_deref())
     };
     let mut run_vars = databases.env.clone();
+    // Every session of the run, and its settings file, is told where to auto-compact.
+    if let Some(tokens) = settings.compact_window {
+        run_vars.push(("CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(), tokens.to_string()));
+    }
     let mut notes = databases.notes.clone();
     if !options.publish {
         let carried = orq_orchestrator::carry_local_files(&options.project.root, worktree, settings.local_files.as_deref());
@@ -544,7 +548,7 @@ fn stages(
             Some(model) => vec!["-p".to_string(), "--model".to_string(), model.to_string(), prompt.to_string()],
             None => vec!["-p".to_string(), prompt.to_string()],
         },
-        env: Vec::new(),
+        env: database_env.to_vec(),
         cwd: worktree.to_path_buf(),
     })?;
     let draft = match options.issue {
