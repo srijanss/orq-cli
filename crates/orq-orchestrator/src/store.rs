@@ -300,6 +300,33 @@ impl RunStore {
         Ok(())
     }
 
+    /// Write `name` (a plain file name) in the run's directory, readable by its owner only. The bytes
+    /// go to a temporary file that is renamed over `name`, so a reader never sees half a file.
+    pub fn write_run_file(&self, run_id: &str, name: &str, bytes: &[u8]) -> Result<PathBuf, StoreError> {
+        let dir = self.run_dir(run_id)?;
+        let plain = !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']);
+        if !plain {
+            return Err(StoreError::Corrupt(format!("{name:?} is not a plain file name")));
+        }
+        if !dir.join("run.json").is_file() {
+            return Err(StoreError::NotFound(run_id.to_string()));
+        }
+        let target = dir.join(name);
+        let temp = dir.join(format!(".{name}.tmp"));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&temp)?;
+        let written = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(err) = written.and_then(|_| fs::rename(&temp, &target)) {
+            let _ = fs::remove_file(&temp);
+            return Err(err.into());
+        }
+        Ok(target)
+    }
+
     /// Append one event to the run's `events.jsonl` as a single line. The
     /// run must already exist.
     pub fn append_event(&self, event: &Event) -> Result<(), StoreError> {

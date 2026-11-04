@@ -257,6 +257,35 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     execute_run(&adjusted)
 }
 
+/// Write `handoff.json` for `record`: the feature plan, the diff of the paused run's branch against its base, and the
+/// gate result it stopped with.
+fn write_handoff_record(
+    store: &RunStore,
+    record: &orq_orchestrator::RunRecord,
+    from: &orq_orchestrator::RunRecord,
+    project: &orq_git::Project,
+) -> Result<(), String> {
+    let plan = orq_features::load_ledger(&orq_features::ledger_path(project))
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|e| orq_orchestrator::PlanItem { id: e.feature_name, description: e.description, status: e.status.as_str().to_string() })
+                .collect()
+        })
+        .unwrap_or_default();
+    let evidence = orq_git::diff_evidence(&from.worktree, &from.base_sha, "HEAD").map_err(|e| format!("{e:?}"))?;
+    let diff = orq_orchestrator::HandoffDiff {
+        base_sha: evidence.base_sha,
+        head_sha: evidence.head_sha,
+        files: evidence
+            .files
+            .into_iter()
+            .map(|f| orq_orchestrator::DiffFile { path: f.path, old_path: f.old_path, added: f.added, deleted: f.deleted })
+            .collect(),
+    };
+    orq_orchestrator::write_handoff(store, record, &from.run_id, plan, diff).map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
 fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let repo = &options.project.root;
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
@@ -365,13 +394,21 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     }
     // A model that differs from the paused run's is a switch: record what it was and what it is.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
+        let mut switched = false;
         for (role, now) in &record.profiles {
             let Some(was) = from.profiles.get(role) else { continue };
             if was == now {
                 continue;
             }
+            switched = true;
             if let Err(err) = orq_orchestrator::record_model_switched(&store, &record, role, was, now) {
                 eprintln!("orq: cannot record the model switch of {run_id}: {err:?}");
+            }
+        }
+        // Whoever continues after a switch starts from state, not from the old conversation.
+        if switched {
+            if let Err(err) = write_handoff_record(&store, &record, from, options.project) {
+                eprintln!("orq: cannot write the handoff of {run_id}: {err}");
             }
         }
     }
