@@ -108,3 +108,25 @@ fn a_database_named_by_two_variables_is_dropped_once() {
     assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1, "one drop for one database");
     assert!(notes.is_empty(), "{notes:?}");
 }
+
+#[test]
+fn a_timed_out_drop_command_takes_the_processes_it_started_down_with_it() {
+    let _serial = serial();
+    let dir = scratch("group");
+    let marker = dir.join("late-marker");
+    let tool = dir.join("spawning-drop");
+    fs::write(&tool, format!("#!/bin/sh\n(sleep 2; echo late > '{}') &\nsleep 30\n", marker.display())).unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let notes = drop_test_databases_within(
+        &dir,
+        &pairs(&[("DB_NAME", "shop_fix_a")]),
+        Some(&[tool.display().to_string()]),
+        false,
+        std::time::Duration::from_millis(300),
+    );
+
+    assert!(notes.iter().any(|n| n.contains("timed out")), "{notes:?}");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!marker.exists(), "a descendant of the drop command outlived its timeout");
+}

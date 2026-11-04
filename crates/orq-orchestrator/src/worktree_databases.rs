@@ -147,14 +147,12 @@ pub fn drop_test_databases_within(
             notes.push(format!("no test_db_drop_cmd is configured; drop test database {test_name} manually"));
             continue;
         };
-        let child = Command::new(program)
-            .args(args)
-            .arg(&test_name)
-            .current_dir(main_checkout)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+        let mut command = Command::new(program);
+        command.args(args).arg(&test_name).current_dir(main_checkout).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // Its own process group, so a timeout can stop everything the command started.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let child = command.spawn();
         let mut child = match child {
             Ok(child) => child,
             Err(err) => {
@@ -174,6 +172,11 @@ pub fn drop_test_databases_within(
             Some(status) if status.success() => {}
             Some(status) => notes.push(format!("dropping test database {test_name} failed ({status}); drop it manually")),
             None => {
+                #[cfg(unix)]
+                if let Ok(group) = i32::try_from(child.id()) {
+                    // SAFETY: kill(2) with the negated id of the group this function created.
+                    unsafe { libc::kill(-group, libc::SIGKILL) };
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 notes.push(format!("dropping test database {test_name} timed out; drop it manually"));
