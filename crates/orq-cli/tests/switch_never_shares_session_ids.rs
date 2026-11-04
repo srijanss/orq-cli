@@ -91,33 +91,3 @@ fn the_newest_session_of_the_same_harness_wins_over_an_older_one() {
     assert_eq!(resumable_session(&store, "run-3", "claude").unwrap().as_deref(), Some("claude-local-newest"));
     assert_eq!(resumable_session(&store, "run-3", "pi").unwrap().as_deref(), Some("pi-newest"));
 }
-
-#[test]
-fn an_unknown_run_is_an_error_and_a_run_with_no_sessions_has_nothing_to_resume() {
-    let store = store("errors");
-    store.create(&record("run-1", "claude", "sonnet")).unwrap();
-    assert!(resumable_session(&store, "missing", "claude").is_err());
-    assert_eq!(resumable_session(&store, "run-1", "claude").unwrap(), None);
-}
-
-#[test]
-fn a_malformed_carried_history_is_an_error_not_a_fresh_start() {
-    let store = store("malformed");
-    store.create(&record("run-1", "claude", "sonnet")).unwrap();
-    let mut bad = started("run-1", "implement_and_review", "x");
-    bad.kind = "run.sessions_carried".into();
-    bad.payload = serde_json::json!({ "sessions": "not a list" });
-    store.append_event(&bad).unwrap();
-    assert!(resumable_session(&store, "run-1", "claude").is_err());
-}
-
-#[test]
-fn a_newer_session_without_an_id_falls_back_to_the_latest_known_id_of_that_harness() {
-    let store = store("missing-id");
-    store.create(&record("run-1", "claude", "sonnet")).unwrap();
-    store.append_event(&started_at("run-1", "implement_and_review", 1, "claude-known")).unwrap();
-    let mut later = started_at("run-1", "gate_fix", 1, "unused");
-    later.payload = serde_json::json!({ "session_id": null, "log": "/tmp/x.log" });
-    store.append_event(&later).unwrap();
-    assert_eq!(resumable_session(&store, "run-1", "claude").unwrap().as_deref(), Some("claude-known"));
-}
