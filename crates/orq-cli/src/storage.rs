@@ -121,7 +121,10 @@ fn read_stamp(roots: &StorageRoots) -> std::io::Result<Option<String>> {
         return Err(std::io::Error::other("the last-cleanup time is not a regular file"));
     }
     let mut bytes = Vec::new();
-    file.take(64).read_to_end(&mut bytes)?;
+    file.take(65).read_to_end(&mut bytes)?;
+    if bytes.len() > 64 {
+        return Err(std::io::Error::other("the last-cleanup time is longer than a time can be"));
+    }
     String::from_utf8(bytes).map(Some).map_err(|_| std::io::Error::other("the last-cleanup time is not text"))
 }
 

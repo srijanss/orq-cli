@@ -290,3 +290,15 @@ fn disabled_maintenance_creates_no_storage_directories() {
         assert!(!s.home.join(dir).exists(), "disabled maintenance created {dir}");
     }
 }
+
+#[test]
+fn a_cleanup_time_longer_than_the_limit_is_refused_not_truncated() {
+    let s = Sandbox::new("longstamp");
+    s.config(ON);
+    s.failed_run("old-run");
+    // A valid, long-expired time followed by junk past the 64-byte read limit.
+    std::fs::write(s.data_file("last-cleanup"), format!("1{}junk", " ".repeat(100))).unwrap();
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+}
