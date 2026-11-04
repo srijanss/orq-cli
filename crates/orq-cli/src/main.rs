@@ -452,7 +452,8 @@ fn load_model_config(
 /// output; configuration that cannot be read fails the command.
 /// `orq runs --repo <path> [--json]`: the runs of the repository's project, from the run store.
 /// `orq runs reap --repo <path> [--dry-run] [--yes]`: remove the local worktree and branch of
-/// every finished run whose review was merged or closed. Without `--yes` it only reports.
+/// every finished run whose review was merged or closed, then the private rebase refs no live run
+/// owns and the test databases of finished runs whose worktree is gone. Without `--yes` it only reports.
 fn reap(args: &[OsString]) -> ExitCode {
     let (mut repo, mut yes, mut dry) = (None, false, false);
     let mut words = args.iter();
@@ -517,6 +518,45 @@ fn reap(args: &[OsString]) -> ExitCode {
                     eprintln!("orq: {}: {err}", item.run_id);
                 }
             },
+        }
+    }
+    let orphans = match orq_orchestrator::plan_orphans(&store, &repo, &pipeline::project_id(&project)) {
+        Ok(orphans) => orphans,
+        Err(err) => {
+            eprintln!("orq: orphaned refs and databases not checked: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    for name in &orphans.refs {
+        if !yes {
+            println!("would remove ref\t{name}");
+        } else {
+            match orq_orchestrator::reap_orphan_ref(&repo, name) {
+                Ok(()) => println!("removed ref\t{name}"),
+                Err(err) => {
+                    failed = true;
+                    eprintln!("orq: {err}");
+                }
+            }
+        }
+    }
+    if !orphans.database_branches.is_empty() {
+        let settings = orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok());
+        for (run_id, branch) in &orphans.database_branches {
+            if !yes {
+                println!("would drop databases\t{run_id}\t{branch}");
+                continue;
+            }
+            match &settings {
+                Ok(settings) => {
+                    let notes = orq_orchestrator::reap_run_databases(&repo, branch, settings);
+                    println!("dropped databases\t{run_id}\t{branch}");
+                    for note in notes {
+                        eprintln!("orq: {run_id}: {note}");
+                    }
+                }
+                Err(err) => eprintln!("orq: {run_id}: test databases not dropped, run settings: {err}"),
+            }
         }
     }
     if failed {

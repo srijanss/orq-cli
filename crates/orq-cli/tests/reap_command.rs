@@ -43,3 +43,32 @@ fn reap_refuses_missing_repo_unknown_flags_and_contradictory_modes() {
         assert!(!out.status.success(), "{args:?} must be refused");
     }
 }
+
+#[test]
+fn reap_removes_an_orphaned_private_ref_only_with_yes() {
+    let (root, repo) = repo("orphan-ref");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&["update-ref", "refs/orq/rebase/aa/end", "HEAD"]);
+    let repo_arg = repo.to_str().unwrap();
+
+    let dry = reap(&root, &["--repo", repo_arg]);
+    assert!(dry.status.success());
+    assert_eq!(String::from_utf8_lossy(&dry.stdout), "would remove ref\trefs/orq/rebase/aa/end\n");
+    assert!(!git(&["for-each-ref", "refs/orq"]).is_empty(), "nothing is removed without --yes");
+
+    let done = reap(&root, &["--repo", repo_arg, "--yes"]);
+    assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "removed ref\trefs/orq/rebase/aa/end\n");
+    assert!(git(&["for-each-ref", "refs/orq"]).is_empty());
+}

@@ -198,3 +198,65 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     }
     Ok(())
 }
+
+/// What no run uses any more: private rebase refs and the branches whose test databases may remain.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Orphans {
+    /// Private rebase refs (`refs/orq/rebase/...`) that no run in a live state owns.
+    pub refs: Vec<String>,
+    /// `(run id, branch)` of finished runs whose worktree is gone, so nothing uses their test databases.
+    pub database_branches: Vec<(String, String)>,
+}
+
+/// A run keeps its refs and databases while it is running or its worktree is still there.
+fn in_use(store: &RunStore, record: &crate::store::RunRecord) -> bool {
+    if record.worktree.exists() {
+        return true;
+    }
+    match store.events(&record.run_id) {
+        Ok(events) => summarize_run(&events).phase == RunPhase::Running,
+        // Unreadable events: assume it is in use.
+        Err(_) => true,
+    }
+}
+
+/// Find the leftovers that no run owns. Anything uncertain counts as owned.
+pub fn plan_orphans(store: &RunStore, repo: &Path, project_id: &str) -> Result<Orphans, StoreError> {
+    let mut owned_refs = std::collections::BTreeSet::new();
+    let mut used_branches = std::collections::BTreeSet::new();
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for run_id in store.run_ids()? {
+        let Ok(record) = store.load(&run_id) else { continue };
+        let live = in_use(store, &record);
+        if live {
+            owned_refs.insert(crate::rebase::private_ref_name(&record.run_id));
+        }
+        if record.project_id == project_id {
+            if live {
+                used_branches.insert(record.branch.clone());
+            } else {
+                candidates.push((record.run_id.clone(), record.branch.clone()));
+            }
+        }
+    }
+    let listed = git_raw(repo, &["for-each-ref", "--format=%(refname)", "refs/orq/rebase/"])?;
+    if !listed.success {
+        return Err(StoreError::Corrupt(format!("the private refs could not be listed: {}", listed.stderr.trim())));
+    }
+    let refs = listed.stdout.lines().map(str::trim).filter(|name| !name.is_empty() && !owned_refs.contains(*name)).map(str::to_string).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let database_branches = candidates.into_iter().filter(|(_, branch)| !used_branches.contains(branch) && seen.insert(branch.clone())).collect();
+    Ok(Orphans { refs, database_branches })
+}
+
+/// Delete one orphaned private rebase ref. Anything else is refused.
+pub fn reap_orphan_ref(repo: &Path, name: &str) -> Result<(), StoreError> {
+    if !name.starts_with("refs/orq/rebase/") {
+        return Err(StoreError::Corrupt(format!("{name} is not a private rebase ref")));
+    }
+    let removed = git_raw(repo, &["update-ref", "-d", name])?;
+    if !removed.success {
+        return Err(StoreError::Corrupt(format!("the private ref {name} could not be deleted: {}", removed.stderr.trim())));
+    }
+    Ok(())
+}
