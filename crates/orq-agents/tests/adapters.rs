@@ -29,7 +29,7 @@ fn claude_and_pi_declare_different_capabilities_and_unknown_harnesses_are_refuse
 fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as_arguments() {
     let claude = adapter_for("claude").unwrap();
     let request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("claude", "opus", None),
         reviewer: spec("pi", "openai/gpt-6-astra", Some("medium")),
         context: None,
@@ -57,7 +57,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
     let claude = adapter_for("claude").unwrap();
     let pi = adapter_for("pi").unwrap();
     let mut request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("pi", "kimi-k3", None),
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
@@ -72,9 +72,10 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
     // Nothing from the feature id may turn into extra arguments or a second command.
     request.implementer = spec("claude", "opus", None);
     for bad in ["", "a b", "--help", "x;rm", "a\nb", "$(id)"] {
-        request.feature = bad;
+        let one = [bad];
+        let attempt = ImplementRequest { features: &one, ..request.clone() };
         assert!(
-            matches!(claude.implement_argv(&request), Err(AdapterError::InvalidValue { .. })),
+            matches!(claude.implement_argv(&attempt), Err(AdapterError::InvalidValue { .. })),
             "{bad:?}"
         );
     }
@@ -84,7 +85,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
 fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
     let claude = adapter_for("claude").unwrap();
     let request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("claude", "sonnet", Some("high")),
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
@@ -104,7 +105,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
 fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built() {
     let claude = adapter_for("claude").unwrap();
     let request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("claude", "opus", None),
         reviewer: spec("gemini", "flash", None),
         context: None,
@@ -121,7 +122,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
 fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refused() {
     let claude = adapter_for("claude").unwrap();
     let mut request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("claude", "opus", None),
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable\nand mention it in the MR"),
@@ -169,7 +170,7 @@ fn context_limits_count_characters_and_allow_tabs_and_newlines() {
 fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
     let claude = adapter_for("claude").unwrap();
     let request = ImplementRequest {
-        feature: "COM-02",
+        features: &["COM-02"],
         implementer: spec("claude", "opus", None),
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable"),
@@ -190,7 +191,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
     let claude = adapter_for("claude").unwrap();
     let ask = |marker: &str| {
         claude.implement_argv(&ImplementRequest {
-            feature: "COM-02",
+            features: &["COM-02"],
             implementer: spec("claude", "opus", None),
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
@@ -210,7 +211,7 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
     let claude = adapter_for("claude").unwrap();
     let ask = |name: Option<&str>| {
         claude.implement_argv(&ImplementRequest {
-            feature: "COM-02",
+            features: &["COM-02"],
             implementer: spec("claude", "opus", None),
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
@@ -255,4 +256,35 @@ fn push_session_is_a_print_session_with_only_the_push_tool_and_takes_one_line() 
     for bad in ["", "  ", "two\nlines", "bell\u{7}"] {
         assert!(push_notification_argv(bad).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_per_feature() {
+    let claude = adapter_for("claude").unwrap();
+    let request = ImplementRequest {
+        features: &["COM-01", "COM-02", "COM-03"],
+        implementer: spec("claude", "opus", None),
+        reviewer: spec("pi", "kimi-k3", None),
+        context: None,
+        exit_marker: None,
+        remote_control: None,
+    };
+    let argv = claude.implement_argv(&request).unwrap();
+    let prompt = &argv[2];
+    assert!(
+        prompt.starts_with("/implement-and-review COM-01 COM-02 COM-03 --reviewer pi --model kimi-k3"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("one commit per feature"), "{prompt}");
+
+    // A single feature asks for nothing extra, so its prompt is unchanged.
+    let single = ImplementRequest { features: &["COM-01"], ..request.clone() };
+    let argv = claude.implement_argv(&single).unwrap();
+    assert_eq!(argv[2], "/implement-and-review COM-01 --reviewer pi --model kimi-k3");
+
+    // Every id must stay a single plain argument, and there must be at least one.
+    let bad = ImplementRequest { features: &["COM-01", "x y"], ..request.clone() };
+    assert!(matches!(claude.implement_argv(&bad), Err(AdapterError::InvalidValue { .. })));
+    let none = ImplementRequest { features: &[], ..request };
+    assert!(matches!(claude.implement_argv(&none), Err(AdapterError::InvalidValue { .. })));
 }

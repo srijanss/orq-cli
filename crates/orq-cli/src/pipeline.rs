@@ -561,7 +561,7 @@ fn stages(
             let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten();
             let args = adapter
                 .implement_argv(&ImplementRequest {
-                    feature: options.feature,
+                    features: &[options.feature],
                     implementer: spec(&implementer),
                     reviewer: spec(&options.reviewer),
                     context: options.context,

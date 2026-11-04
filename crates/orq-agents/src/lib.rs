@@ -24,7 +24,8 @@ pub struct ModelSpec {
 /// What the implement stage asks an adapter to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplementRequest<'a> {
-    pub feature: &'a str,
+    /// The features to implement, in the order to do them; one for an ordinary run, several for a group.
+    pub features: &'a [&'a str],
     pub implementer: ModelSpec,
     pub reviewer: ModelSpec,
     /// Free text appended to the request for this run.
@@ -193,18 +194,28 @@ impl HarnessAdapter for Claude {
                 requested: request.implementer.harness.clone(),
             });
         }
-        plain("feature", request.feature)?;
+        if request.features.is_empty() {
+            return Err(AdapterError::InvalidValue { field: "feature", value: String::new() });
+        }
+        for feature in request.features {
+            plain("feature", feature)?;
+        }
         plain("implementer model", &request.implementer.model)?;
         adapter_for(&request.reviewer.harness)?;
         plain("reviewer model", &request.reviewer.model)?;
         let mut prompt = format!(
             "/implement-and-review {} --reviewer {} --model {}",
-            request.feature, request.reviewer.harness, request.reviewer.model
+            request.features.join(" "),
+            request.reviewer.harness,
+            request.reviewer.model
         );
         if let Some(thinking) = &request.reviewer.thinking {
             plain("reviewer thinking", thinking)?;
             prompt.push_str(" --thinking ");
             prompt.push_str(thinking);
+        }
+        if request.features.len() > 1 {
+            prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given.");
         }
         if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
             prompt.push_str("\n\nExtra context:\n");
