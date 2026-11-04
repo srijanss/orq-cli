@@ -2,8 +2,8 @@ use orq_core::review_inbox::detail_with_links;
 use orq_core::storage::StorageRoots;
 use orq_core::store::Store;
 
-fn roots() -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-risk-links-{}", std::process::id()));
+fn roots(tag: &str) -> StorageRoots {
+    let base = std::env::temp_dir().join(format!("orq-risk-links-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
@@ -14,7 +14,7 @@ const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[test]
 fn links_come_from_the_same_report_as_the_risks_and_only_safe_https_links_survive() {
-    let roots = roots();
+    let roots = roots("filter");
     let store = Store::open(&roots.database()).unwrap();
     let report = serde_json::json!({"status": "current", "risks": [
         {"severity": "high", "claim": "ok", "link": "https://example.invalid/a#L1"},
@@ -36,7 +36,7 @@ fn links_come_from_the_same_report_as_the_risks_and_only_safe_https_links_surviv
 
 #[test]
 fn an_unreadable_report_gives_no_links_and_an_error() {
-    let roots = roots();
+    let roots = roots("unreadable");
     assert!(detail_with_links(&roots, "run-1").is_err());
     assert!(detail_with_links(&roots, "../x").is_err());
 }
