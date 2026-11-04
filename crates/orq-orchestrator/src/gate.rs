@@ -120,6 +120,8 @@ fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>,
                 files.sort();
                 files.dedup();
                 if !files.is_empty() {
+                    // After `--` a name like `--output-file=x.py` is a file, not an option.
+                    ruff.push("--".to_string());
                     ruff.extend(files);
                     steps.push(ruff);
                 }

@@ -458,10 +458,10 @@ fn lint_adds_ruff_on_the_changed_python_files_before_pytest() {
     let dir = worktree("lint-python");
     touch(&dir, "uv.lock", "");
     touch(&dir, "pytest.ini", "");
-    let changed = ["src/a.py".to_string(), "README.md".to_string(), "b.py".to_string()];
+    let changed = ["src/a.py".to_string(), "README.md".to_string(), "b.py".to_string(), "--output-file=victim.py".to_string()];
 
     let linted = GateOptions { lint: true, changed: Some(&changed), ..GateOptions::default() };
-    assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "ruff", "check", "b.py", "src/a.py"], &["uv", "run", "pytest"]]));
+    assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "ruff", "check", "--", "--output-file=victim.py", "b.py", "src/a.py"], &["uv", "run", "pytest"]]));
 
     let docs_only = ["README.md".to_string()];
     let linted = GateOptions { lint: true, changed: Some(&docs_only), ..GateOptions::default() };
