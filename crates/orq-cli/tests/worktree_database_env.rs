@@ -150,3 +150,20 @@ fn keep_test_db_leaves_the_test_database_alone_without_failing_the_run() {
     assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
     assert!(!log.exists(), "nothing is dropped when the databases are kept: {:?}", std::fs::read_to_string(&log));
 }
+
+#[test]
+fn a_retained_worktree_keeps_its_test_database() {
+    let (w, log) = drop_world("retained", "");
+    let agent = FakeAgent::builder()
+        .write_file("feature.txt", "done\n")
+        .commit("feat: add the feature")
+        .write_file("stray.txt", "left uncommitted\n")
+        .build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let worktrees = String::from_utf8_lossy(&Command::new("git").arg("-C").arg(w.repo.root()).args(["worktree", "list"]).output().unwrap().stdout).into_owned();
+    assert!(worktrees.lines().count() > 1, "premise: the worktree is retained\n{worktrees}\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!log.exists(), "a retained worktree still uses its database: {:?}", std::fs::read_to_string(&log));
+}
