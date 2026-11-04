@@ -101,7 +101,23 @@ pub fn detail_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Result<I
     detail_where(roots, run_id, |record| record.head_sha == head_sha)
 }
 
+/// The verified permalink of each risk of the latest stored report of `run_id`, in the order of
+/// `detail(..).risks`; `None` where the report verified none (or the link is not a web address).
+pub fn risk_links(roots: &StorageRoots, run_id: &str) -> Result<Vec<Option<String>>, String> {
+    let report = report_where(roots, run_id, |_| true)?;
+    Ok(report["risks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| r["link"].as_str().filter(|l| l.starts_with("https://") && !l.chars().any(|c| c.is_control() || c.is_whitespace())).map(str::to_string))
+        .collect())
+}
+
 fn detail_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecord) -> bool) -> Result<InboxDetail, String> {
+    Ok(sections(&report_where(roots, run_id, wanted)?))
+}
+
+fn report_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecord) -> bool) -> Result<Value, String> {
     check_run_id(run_id).map_err(|err| format!("invalid run id: {err}"))?;
     if !roots.database().exists() {
         return Err(format!("no review report for run {run_id}"));
@@ -109,8 +125,7 @@ fn detail_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecor
     let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
     let record = records.iter().rev().find(|r| wanted(r)).ok_or_else(|| format!("no review report for run {run_id}"))?;
-    let report = read_report(&roots.data, record).map_err(|why| format!("the report for run {run_id} is unreadable: {why}"))?;
-    Ok(sections(&report))
+    read_report(&roots.data, record).map_err(|why| format!("the report for run {run_id} is unreadable: {why}"))
 }
 
 /// The most a stored report may be before it is refused.

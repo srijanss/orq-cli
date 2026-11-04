@@ -1997,6 +1997,18 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(orq_tui::ReviewDetail { summary: d.summary, risks: d.risks, files: d.files, tests: d.tests, rounds: d.rounds })
     }
 
+    fn load_risk_links(&mut self, run_id: &str) -> Vec<Option<String>> {
+        review_roots().and_then(|roots| orq_core::review_inbox::risk_links(&roots, run_id)).unwrap_or_default()
+    }
+
+    fn open_url(&mut self, url: &str) -> Result<String, String> {
+        open_url(url)
+    }
+
+    fn copy_url(&mut self, url: &str) -> Result<String, String> {
+        copy_text(url)
+    }
+
     fn unreadable_runs(&mut self) -> usize {
         self.unreadable_runs
     }

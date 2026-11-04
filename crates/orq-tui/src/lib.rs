@@ -1537,6 +1537,21 @@ pub trait BrowserBackend {
         Err("review details are not available".into())
     }
 
+    /// The verified permalink of each risk of `run_id`, in the order of the detail's risks; `None` where none was verified.
+    fn load_risk_links(&mut self, _run_id: &str) -> Vec<Option<String>> {
+        Vec::new()
+    }
+
+    /// Opens `url` in the browser; `Ok` is what happened, `Err` why it could not.
+    fn open_url(&mut self, _url: &str) -> Result<String, String> {
+        Err("opening links is not available".into())
+    }
+
+    /// Copies `url` to the clipboard; the messages work like `open_url`.
+    fn copy_url(&mut self, _url: &str) -> Result<String, String> {
+        Err("copying links is not available".into())
+    }
+
     /// How many runs the last `load_runs` left out because their files could not be read.
     fn unreadable_runs(&mut self) -> usize {
         0
@@ -1952,15 +1967,42 @@ fn next_option(options: &[String], current: &Option<String>) -> Option<String> {
 
 const REVIEW_SECTIONS: [&str; 5] = ["Summary", "Risks", "Files", "Tests", "Review Rounds"];
 const REVIEW_DETAIL_HINT: &str = " ←→ section · ↑↓ PgUp/PgDn scroll · Esc back ";
+const REVIEW_DETAIL_LINK_HINT: &str = " Enter open link · ←→ section · ↑↓ risk · Esc back ";
 
 /// One open review: its report (or why it is unreadable), the section shown and the scroll in it.
 struct ReviewDetailView {
     content: Result<ReviewDetail, String>,
     section: usize,
     scroll: usize,
+    /// The verified permalink of each risk, by position.
+    risk_links: Vec<Option<String>>,
+    /// The risk selected in the Risks section.
+    risk: usize,
 }
 
 impl ReviewDetailView {
+    /// The verified link of the selected risk, when the Risks section is shown and it has one.
+    fn selected_link(&self) -> Option<&str> {
+        if self.section != 1 {
+            return None;
+        }
+        self.risk_links.get(self.risk).and_then(|l| l.as_deref()).filter(|l| l.starts_with("https://") || l.starts_with("http://"))
+    }
+
+    fn move_risk(&mut self, body: Rect, down: bool) {
+        let count = self.lines().len();
+        if count == 0 {
+            return;
+        }
+        self.risk = if down { (self.risk + 1).min(count - 1) } else { self.risk.saturating_sub(1) };
+        let visible = Self::visible(body).max(1);
+        if self.risk < self.scroll {
+            self.scroll = self.risk;
+        } else if self.risk >= self.scroll + visible {
+            self.scroll = self.risk + 1 - visible;
+        }
+    }
+
     fn lines(&self) -> &[String] {
         match (&self.content, self.section) {
             (Ok(d), 0) => &d.summary,
@@ -1980,6 +2022,7 @@ impl ReviewDetailView {
     fn select(&mut self, section: usize) {
         self.section = section.min(REVIEW_SECTIONS.len() - 1);
         self.scroll = 0;
+        self.risk = 0;
     }
 
     fn scroll_by(&mut self, body: Rect, down: bool, page: bool) {
@@ -2170,12 +2213,16 @@ fn render_review_detail(frame: &mut Frame, body: Rect, view: &ReviewDetailView, 
         Ok(_) => {
             let visible = ReviewDetailView::visible(body);
             for (i, line) in view.lines().iter().skip(view.scroll).take(visible).enumerate() {
-                put(u16::try_from(i + 1).unwrap_or(u16::MAX), Line::from(truncate_right(&printable(line), width)));
+                let marked = view.section == 1 && view.scroll + i == view.risk;
+                let text = format!("{}{}", if marked { "› " } else if view.section == 1 { "  " } else { "" }, printable(line));
+                let style = if marked { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+                put(u16::try_from(i + 1).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&text, width), style)));
             }
         }
     }
     if body.height > 0 {
-        put(body.height - 1, review_footer(REVIEW_DETAIL_HINT, notice, width));
+        let hint = if view.selected_link().is_some() { REVIEW_DETAIL_LINK_HINT } else { REVIEW_DETAIL_HINT };
+        put(body.height - 1, review_footer(hint, notice, width));
     }
 }
 
@@ -3287,7 +3334,25 @@ impl Browser {
     fn open_selected_review(&mut self, backend: &mut dyn BrowserBackend) {
         let Some(run_id) = self.reviews.selected_run_id() else { return };
         let content = backend.load_review_detail(&run_id);
-        self.reviews.detail = Some(ReviewDetailView { content, section: 0, scroll: 0 });
+        // Links are paired with risks by position, so a list that does not match (a newer report landed
+        // between the two reads) is dropped rather than risk a link on the wrong row.
+        let mut risk_links = if content.is_ok() { backend.load_risk_links(&run_id) } else { Vec::new() };
+        if content.as_ref().map_or(true, |d| d.risks.len() != risk_links.len()) {
+            risk_links.clear();
+        }
+        self.reviews.detail = Some(ReviewDetailView { content, section: 0, scroll: 0, risk_links, risk: 0 });
+    }
+
+    /// Opens the selected risk's verified link; when the browser cannot be started the URL is copied instead.
+    fn open_selected_risk_link(&mut self, backend: &mut dyn BrowserBackend) {
+        let Some(url) = self.reviews.detail.as_ref().and_then(|d| d.selected_link()).map(str::to_string) else { return };
+        self.notice = Some(match backend.open_url(&url) {
+            Ok(message) => message,
+            Err(why) => match backend.copy_url(&url) {
+                Ok(copied) => format!("{why}; {copied}"),
+                Err(copy_why) => format!("{why}; {copy_why}"),
+            },
+        });
     }
 
     fn review_link_of_selected_review(&mut self, backend: &mut dyn BrowserBackend, copy: bool) {
@@ -3683,6 +3748,8 @@ where
                             KeyCode::Right | KeyCode::Char('l') => detail.select(detail.section + 1),
                             KeyCode::Left | KeyCode::Char('h') => detail.select(detail.section.saturating_sub(1)),
                             KeyCode::Char(c @ '1'..='5') => detail.select(usize::from(c as u8 - b'1')),
+                            KeyCode::Down | KeyCode::Char('j') if detail.section == 1 => detail.move_risk(body, true),
+                            KeyCode::Up | KeyCode::Char('k') if detail.section == 1 => detail.move_risk(body, false),
                             KeyCode::Down | KeyCode::Char('j') => detail.scroll_by(body, true, false),
                             KeyCode::Up | KeyCode::Char('k') => detail.scroll_by(body, false, false),
                             KeyCode::PageDown => detail.scroll_by(body, true, true),
@@ -3691,6 +3758,7 @@ where
                         }
                     }
                     match key.code {
+                        KeyCode::Enter => browser.open_selected_risk_link(backend),
                         KeyCode::Char('u') => browser.review_link_of_selected_review(backend, false),
                         KeyCode::Char('y') => browser.review_link_of_selected_review(backend, true),
                         _ => {}
