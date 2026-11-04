@@ -50,6 +50,28 @@ fn each_round_counts_what_was_raised_fixed_rejected_and_deferred() {
 }
 
 #[test]
+fn unknown_statuses_count_as_raised_but_are_never_invented_as_an_outcome() {
+    let value = applied(vec![
+        Round { number: 1, summary: None, findings: vec![finding("a", FindingStatus::Unknown), finding("b", FindingStatus::Unknown)] },
+        Round { number: 2, summary: None, findings: vec![finding("c", FindingStatus::Unknown), finding("d", FindingStatus::Fixed)] },
+    ]);
+    let rounds = value["rounds"].as_array().unwrap();
+    assert_eq!(rounds[0]["text"], "Round 1: 2 raised.");
+    assert_eq!((rounds[0]["fixed"].as_u64(), rounds[0]["rejected"].as_u64(), rounds[0]["deferred"].as_u64(), rounds[0]["open"].as_u64()), (Some(0), Some(0), Some(0), Some(0)));
+    assert_eq!(rounds[1]["text"], "Round 2: 2 raised — 1 fixed.");
+    let md = render_markdown(&value);
+    assert!(md.contains("- Round 1: 2 raised.") && md.contains("- Round 2: 2 raised — 1 fixed."), "{md}");
+}
+
+#[test]
+fn a_stored_report_without_round_text_still_renders_its_round_counts() {
+    let mut value = applied(vec![]);
+    value["rounds"] = serde_json::json!([{"round": 2, "summary": "older", "findings": 3, "confirmed": 1, "potential": 1, "dismissed": 1, "unresolved": 2}]);
+    let md = render_markdown(&value);
+    assert!(md.contains("Round 2: 3 findings, 1 confirmed, 1 potential, 1 dismissed, 2 unresolved - older"), "{md}");
+}
+
+#[test]
 fn the_markdown_report_lists_the_round_lines_and_an_unknown_count_is_not_invented() {
     let with_rounds = applied(vec![Round { number: 1, summary: None, findings: vec![finding("a", FindingStatus::Fixed)] }]);
     assert!(render_markdown(&with_rounds).contains("Round 1: 1 raised — 1 fixed."), "{}", render_markdown(&with_rounds));

@@ -262,9 +262,15 @@ pub fn render_markdown(report: &Value) -> String {
     if let Some(rounds) = report["rounds"].as_array().filter(|r| !r.is_empty()) {
         md.push_str("\nReview rounds:\n");
         for round in rounds {
+            let line = match round["text"].as_str() {
+                Some(line) => line.to_string(),
+                None => format!(
+                    "Round {}: {} findings, {} confirmed, {} potential, {} dismissed, {} unresolved",
+                    round["round"], round["findings"], round["confirmed"], round["potential"], round["dismissed"], round["unresolved"]
+                ),
+            };
             md.push_str(&format!(
-                "- {}{}\n",
-                text(&round["text"]),
+                "- {line}{}\n",
                 round["summary"].as_str().map_or(String::new(), |_| format!(" - {}", text(&round["summary"])))
             ));
         }
