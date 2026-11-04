@@ -81,3 +81,30 @@ fn every_harness_keeps_context_handoff_and_exit_marker_inside_the_one_prompt_arg
         assert!(adapter.implement_argv(&bad_marker).is_err(), "{harness}: a marker must be an absolute path");
     });
 }
+
+#[test]
+fn each_harness_names_the_skill_and_the_thinking_flag_its_own_way_and_only_claude_gets_remote_control() {
+    let features = ["COM-01"];
+    let with = |harness: &str, model: &str| ImplementRequest {
+        implementer: ModelSpec { thinking: Some("high".to_string()), ..spec(harness, model) },
+        remote_control: Some("my-session"),
+        ..request(harness, model, &features)
+    };
+
+    let pi = adapter_for("pi").unwrap().implement_argv(&with("pi", "team/model")).unwrap();
+    assert_eq!(&pi[..4], ["--model", "team/model", "--thinking", "high"], "{pi:?}");
+    assert_eq!(pi.len(), 5, "pi gets no remote control arguments: {pi:?}");
+    assert!(pi[4].starts_with("/skill:implement-and-review COM-01"), "{}", pi[4]);
+
+    let claude = adapter_for("claude").unwrap().implement_argv(&with("claude", "opus")).unwrap();
+    assert_eq!(&claude[..6], ["--model", "opus", "--effort", "high", "--remote-control", "my-session"], "{claude:?}");
+    assert!(claude[6].starts_with("/implement-and-review COM-01"), "{}", claude[6]);
+
+    for harness in ["claude", "pi"] {
+        let model = if harness == "claude" { "opus" } else { "team/model" };
+        for bad in ["--evil", "a b", ""] {
+            let request = ImplementRequest { implementer: ModelSpec { thinking: Some(bad.to_string()), ..spec(harness, model) }, ..request(harness, model, &features) };
+            assert!(adapter_for(harness).unwrap().implement_argv(&request).is_err(), "{harness}: thinking {bad:?}");
+        }
+    }
+}
