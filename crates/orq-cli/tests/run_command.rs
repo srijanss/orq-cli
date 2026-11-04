@@ -319,10 +319,16 @@ fn github() -> FakeProvider {
 }
 
 fn run_with(w: &World, agent: &FakeAgent, provider: &FakeProvider, extra: &[&str]) -> Output {
+    run_selecting(w, agent, provider, &["--feature", "COM-01"], extra)
+}
+
+/// As `run_with`, but the feature is chosen by `selection` (`--feature COM-01`, `--group COM-01`, ...).
+fn run_selecting(w: &World, agent: &FakeAgent, provider: &FakeProvider, selection: &[&str], extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
-        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])
+        .args(selection)
+        .args(["--remote", "origin", "--target", "main"])
         .args(extra)
         .env("XDG_CONFIG_HOME", &w.env.config)
         .env("XDG_STATE_HOME", &w.env.state)
@@ -551,6 +557,56 @@ fn a_detached_run_returns_at_once_while_the_run_goes_on_and_finishes_after_the_l
     assert!(kinds.contains(&"review.created"), "{kinds:?}");
     assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "the run branch was pushed");
     assert!(std::path::Path::new(&log).is_file(), "the run log exists at {log}");
+}
+
+#[test]
+fn a_group_of_one_runs_the_feature_to_review_ready_like_feature_does_attached_or_detached() {
+    let w = world("groupone");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_selecting(&w, &agent, &github(), &["--group", "COM-01"], &["--no-ci-check"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "the run branch was pushed");
+
+    // Detached, the launcher forwards --group to the runner it starts and the run finishes.
+    let w = world("groupone-detach");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = path_with(&agent, &provider, &w.tag);
+    let claude = std::env::split_paths(&path).next().unwrap().join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = -p ]; then printf 'Add the feature\\n\\nThe feature.\\n'; exit 0; fi\nexec '{}' \"$@\"\n",
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--group", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect(&stdout).to_string();
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    wait_until("the detached group run to complete", || {
+        store.events(&run_id).map(|e| e.iter().any(|e| e.kind == "worktree.removed")).unwrap_or(false)
+    });
+    let kinds: Vec<String> = store.events(&run_id).unwrap().into_iter().map(|e| e.kind).collect();
+    assert!(kinds.iter().any(|k| k == "review.created"), "{kinds:?}");
+    assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "the run branch was pushed");
 }
 
 #[test]
