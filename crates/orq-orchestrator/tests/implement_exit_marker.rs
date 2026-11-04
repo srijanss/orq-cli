@@ -105,3 +105,44 @@ fn a_marker_left_from_an_earlier_session_does_not_close_a_new_one_at_once() {
 
     assert_eq!(outcome.exit_code, Some(3), "the stale marker ended the session early");
 }
+
+fn session<'a>(root: &'a std::path::Path, args: &'a [String], marker: &'a std::path::Path) -> ImplementSession<'a> {
+    ImplementSession {
+        program: "sh",
+        args,
+        env: &[],
+        cwd: Box::leak(Box::new(root.join("worktree"))),
+        session_id: None,
+        log: Box::leak(Box::new(root.join("implement.log"))),
+        terminal: false,
+        exit_marker: Some(marker),
+    }
+}
+
+#[test]
+fn a_stale_marker_that_cannot_be_removed_fails_the_stage_instead_of_closing_the_new_session() {
+    let (store, root) = setup("unremovable");
+    let marker = root.join("worktree/done.marker");
+    fs::create_dir(&marker).unwrap();
+    let args = args("sleep 30");
+
+    let started = Instant::now();
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn a_descendant_of_a_closed_session_does_not_outlive_the_stage() {
+    let (store, root) = setup("descendant");
+    let marker = root.join("worktree/done.marker");
+    let late = root.join("worktree/late.txt");
+    let args = args(&format!("(sleep 2; touch {}) & touch {}; sleep 30", late.display(), marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+    assert!(outcome.success, "{outcome:?}");
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert!(!late.exists(), "a descendant kept running after the session was closed");
+}

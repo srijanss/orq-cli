@@ -135,6 +135,20 @@ fn a_configured_gate_runs_and_a_failing_one_stops_the_run_before_the_push() {
 }
 
 #[test]
+fn auto_exit_false_in_the_settings_file_asks_for_no_marker_and_keeps_the_sessions_own_exit_status() {
+    let w = world("noautoexit");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "auto_exit = false\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").exit_code(3).build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let args = agent.first_run().expect("the agent ran").args;
+    assert!(!args.last().unwrap().contains("implement.done"), "{args:?}");
+    assert_ne!(output.status.code(), Some(0), "the session's failing exit status stops the run: {}", stderr(&output));
+}
+
+#[test]
 fn extra_context_reaches_the_agent_inside_the_one_prompt_argument() {
     let w = world("ctx");
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();

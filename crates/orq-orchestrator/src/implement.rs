@@ -92,10 +92,22 @@ pub(crate) fn run_session_stage(
         command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     }
 
-    if let Some(marker) = session.exit_marker {
-        let _ = fs::remove_file(marker);
+    // A marker left by an earlier session must not close this one; if it cannot be cleared the stage fails.
+    let cleared = match session.exit_marker {
+        Some(marker) => match fs::remove_file(marker) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        },
+        None => Ok(()),
+    };
+    // A session that is closed by its marker runs in a process group of its own, so closing it ends its
+    // descendants too. A session on the terminal stays in the terminal's group.
+    let own_group = session.exit_marker.is_some() && !session.terminal;
+    #[cfg(unix)]
+    if own_group {
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
     }
-    let status = command.spawn().and_then(|child| wait_for_session(child, session.exit_marker));
+    let status = cleared.and_then(|()| command.spawn()).and_then(|child| wait_for_session(child, session.exit_marker, own_group));
     let (outcome, reason) = match status {
         Ok(SessionEnd::Closed) => (ImplementOutcome { success: true, exit_code: Some(0) }, None),
         Ok(SessionEnd::Exited(status)) if status.success() => (ImplementOutcome { success: true, exit_code: status.code() }, None),
@@ -129,7 +141,7 @@ enum SessionEnd {
 const MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Waits for `child`; with a marker, closes it once the marker exists and a short grace has passed.
-fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>) -> std::io::Result<SessionEnd> {
+fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>, own_group: bool) -> std::io::Result<SessionEnd> {
     let Some(marker) = marker else { return child.wait().map(SessionEnd::Exited) };
     let mut seen: Option<std::time::Instant> = None;
     loop {
@@ -139,6 +151,12 @@ fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>) -> st
         if marker.exists() {
             let since = *seen.get_or_insert_with(std::time::Instant::now);
             if since.elapsed() >= MARKER_GRACE {
+                #[cfg(unix)]
+                if own_group {
+                    // SAFETY: the child leads its own group, so its pid names that group.
+                    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+                }
+                let _ = own_group;
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(SessionEnd::Closed);
