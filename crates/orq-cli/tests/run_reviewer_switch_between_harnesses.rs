@@ -125,6 +125,9 @@ fn a_reviewer_on_pi_switches_to_claude_and_the_implement_session_named_pi_before
     request(&w, &run_id, "reviewer", "fast-claude");
     let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    // A paused run resumes after its agent session: the only session after it is the description draft, which names no reviewer.
+    let after = agent.last_run().expect("the agent ran").args.join(" ");
+    assert!(!after.contains("--reviewer") && !after.contains("team/model"), "{after}");
     let new_id = resumed_run(&store, &run_id);
     let profile = store.load(&new_id).unwrap().profiles["reviewer"].clone();
     assert_eq!((profile.harness.as_str(), profile.model.as_str()), ("claude", "sonnet"));
