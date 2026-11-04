@@ -439,7 +439,17 @@ fn reap(args: &[OsString]) -> ExitCode {
             orq_orchestrator::ReapVerdict::Keep(reason) => println!("keep\t{}\t{}\t{reason}", item.run_id, item.feature_id),
             orq_orchestrator::ReapVerdict::Reap if !yes => println!("would remove\t{}\t{}\t{}", item.run_id, item.feature_id, item.branch),
             orq_orchestrator::ReapVerdict::Reap => match orq_orchestrator::reap_run(&repo, item) {
-                Ok(()) => println!("removed\t{}\t{}\t{}", item.run_id, item.feature_id, item.branch),
+                Ok(()) => {
+                    println!("removed\t{}\t{}\t{}", item.run_id, item.feature_id, item.branch);
+                    match orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok()) {
+                        Ok(settings) => {
+                            for note in orq_orchestrator::reap_run_databases(&repo, &item.branch, &settings) {
+                                eprintln!("orq: {}: {note}", item.run_id);
+                            }
+                        }
+                        Err(err) => eprintln!("orq: {}: test databases not dropped, run settings: {err}", item.run_id),
+                    }
+                }
                 Err(err) => {
                     failed = true;
                     eprintln!("orq: {}: {err}", item.run_id);

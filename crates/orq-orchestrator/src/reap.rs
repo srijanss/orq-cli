@@ -149,6 +149,18 @@ pub(crate) fn checkout_problem(repo: &Path, worktree: &Path, branch: &str) -> Re
     Ok(None)
 }
 
+/// Drops the test databases a reaped run's branch gave its worktree, the way the end of a run does:
+/// the names are derived again from the main checkout's dotenv file and the run settings, then
+/// `test_db_drop_cmd` is run for each. Only notes come back; nothing here fails a reap.
+pub fn reap_run_databases(repo: &Path, branch: &str, settings: &crate::RunSettings) -> Vec<String> {
+    let named = settings.test_db_vars.is_some();
+    let vars = settings.test_db_vars.clone().unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
+    let databases = crate::derive_worktree_databases_with(repo, &vars, branch, named, settings.db_name_template.as_deref());
+    let mut notes = databases.notes;
+    notes.extend(crate::drop_test_databases(repo, &databases.names, settings.test_db_drop_cmd.as_deref(), settings.keep_test_db.unwrap_or(false)));
+    notes
+}
+
 pub(crate) fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
     let (Ok(repo), Ok(worktree)) = (repo.canonicalize(), worktree.canonicalize()) else { return false };
     worktree != repo && worktree.starts_with(repo.join(".claude").join("worktrees")) && worktree != repo.join(".claude").join("worktrees")
