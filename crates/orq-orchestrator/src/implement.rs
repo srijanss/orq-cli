@@ -101,11 +101,26 @@ pub(crate) fn run_session_stage(
         None => Ok(()),
     };
     // A session that is closed by its marker runs in a process group of its own, so closing it ends its
-    // descendants too. A session on the terminal stays in the terminal's group.
-    let own_group = session.exit_marker.is_some() && !session.terminal;
+    // descendants too. On the terminal it also takes the foreground, and orq takes it back afterwards.
+    let own_group = session.exit_marker.is_some();
     #[cfg(unix)]
     if own_group {
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+        if session.terminal {
+            // SAFETY: only async-signal-safe calls (signal, isatty, tcsetpgrp, getpid) run between fork and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::isatty(0) == 1 {
+                        // The new group is in the background until it takes the terminal; SIGTTOU is ignored meanwhile.
+                        let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+                        libc::tcsetpgrp(0, libc::getpid());
+                        libc::signal(libc::SIGTTOU, old);
+                    }
+                    Ok(())
+                });
+            }
+        }
     }
     let status = cleared.and_then(|()| command.spawn()).and_then(|child| wait_for_session(child, session.exit_marker, own_group));
     let (outcome, reason) = match status {
@@ -166,11 +181,28 @@ fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>, own_g
 fn end_group(leader: u32, own_group: bool) {
     #[cfg(unix)]
     if own_group {
+        take_back_terminal();
+    }
+    #[cfg(unix)]
+    if own_group {
         // SAFETY: the session leads a group of its own, so its pid names that group.
         unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
     }
     #[cfg(not(unix))]
     let _ = (leader, own_group);
+}
+
+/// Makes orq's own process group the terminal's foreground group again, when stdin is a terminal.
+#[cfg(unix)]
+fn take_back_terminal() {
+    // SAFETY: plain libc calls on orq's own process; SIGTTOU is ignored only for the duration of the call.
+    unsafe {
+        if libc::isatty(0) == 1 {
+            let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+            libc::tcsetpgrp(0, libc::getpgrp());
+            libc::signal(libc::SIGTTOU, old);
+        }
+    }
 }
 
 /// Open a stage log for appending. Output can hold source and credentials, so

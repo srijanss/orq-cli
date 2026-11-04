@@ -160,3 +160,23 @@ fn a_descendant_of_a_session_that_wrote_its_marker_and_exited_does_not_outlive_t
 
     assert!(!late.exists(), "a descendant kept running after the session exited");
 }
+
+fn terminal_session<'a>(root: &'a std::path::Path, args: &'a [String], marker: &'a std::path::Path) -> ImplementSession<'a> {
+    ImplementSession { terminal: true, ..session(root, args, marker) }
+}
+
+#[test]
+fn terminal_session_descendants_do_not_outlive_a_closed_or_exited_session() {
+    for (tag, tail) in [("term-closed", "sleep 30"), ("term-exited", "true")] {
+        let (store, root) = setup(tag);
+        let marker = root.join("worktree/done.marker");
+        let late = root.join("worktree/late.txt");
+        let args = args(&format!("(sleep 2; touch {}) & touch {}; {tail}", late.display(), marker.display()));
+
+        let outcome = run_implement_stage(&store, "run-1", &terminal_session(&root, &args, &marker)).unwrap();
+        assert!(outcome.success, "{tag}: {outcome:?}");
+        std::thread::sleep(Duration::from_secs(3));
+
+        assert!(!late.exists(), "{tag}: a descendant kept running");
+    }
+}
