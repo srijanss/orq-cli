@@ -421,3 +421,28 @@ fn a_changed_app_whose_tests_live_in_tests_py_gets_that_file_named_because_pytes
         Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/billing/tests.py", "src/shop"]]))
     );
 }
+
+#[test]
+fn a_scope_changes_neither_a_configured_gate_nor_a_project_that_is_not_django() {
+    let dir = django("django-scope-ignored");
+    let configured = ["make".to_string(), "check".to_string()];
+    let changed = ["src/shop/views.py".to_string()];
+    assert_eq!(choose_gate_scoped(&dir, Some(&configured), Some(&changed)), Ok(run(&[&["make", "check"]])));
+
+    let plain = worktree("plain-scope");
+    touch(&plain, "uv.lock", "");
+    touch(&plain, "pytest.ini", "");
+    assert_eq!(choose_gate_scoped(&plain, None, Some(&changed)), Ok(run(&[&["uv", "run", "pytest"]])));
+}
+
+#[test]
+fn changed_files_listed_in_any_order_and_repeatedly_name_each_app_once_in_sorted_order() {
+    let dir = django("django-order");
+    touch(&dir, "src/billing/tests/test_a.py", "");
+    let changed: Vec<String> = ["src/shop/b.py", "src/billing/a.py", "src/shop/a.py", "src/billing/b.py"].iter().map(|p| p.to_string()).collect();
+
+    assert_eq!(
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/billing", "src/shop"]]))
+    );
+}
