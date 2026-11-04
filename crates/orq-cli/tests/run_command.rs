@@ -610,6 +610,38 @@ fn a_group_of_one_runs_the_feature_to_review_ready_like_feature_does_attached_or
 }
 
 #[test]
+fn a_group_of_several_features_runs_once_on_the_first_features_branch_with_one_review_request() {
+    let w = world("groupmany");
+    write_ledger(
+        w.repo.root(),
+        &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
+    );
+    let agent = FakeAgent::builder()
+        .write_file("one.txt", "1\n")
+        .commit("feat: COM-01")
+        .write_file("two.txt", "2\n")
+        .commit("feat: COM-02")
+        .build();
+    let provider = github();
+
+    // Given out of order: the dependency decides.
+    let output = run_selecting(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let branches = git(&w.remote, &["branch", "--list"]);
+    assert!(branches.contains("fix--COM-01"), "{branches}");
+    assert!(!branches.contains("COM-02"), "one branch for the group: {branches}");
+    let prompt = agent.first_run().expect("the agent ran").args.last().cloned().unwrap();
+    assert!(prompt.starts_with("/implement-and-review COM-01 COM-02 "), "{prompt}");
+    let creates: Vec<_> = provider.calls().into_iter().filter(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).collect();
+    assert_eq!(creates.len(), 1, "one review request");
+    let title = creates[0].args.iter().skip_while(|a| *a != "--title").nth(1).cloned().expect("a title");
+    assert!(title.contains("COM-01") && title.contains("COM-02"), "{title}");
+}
+
+#[test]
 fn a_detached_run_that_may_not_start_is_refused_synchronously_and_launches_nothing() {
     let repo = GitFixture::new();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "completed")]);

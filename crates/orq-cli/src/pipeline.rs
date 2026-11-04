@@ -20,7 +20,8 @@ const GATE_FIX_ATTEMPTS: u32 = 2;
 
 pub struct Options<'a> {
     pub project: &'a orq_git::Project,
-    pub feature: &'a str,
+    /// The features of the run in the order to do them; the first names the branch and holds the lock.
+    pub features: &'a [String],
     pub remote: &'a str,
     pub target: &'a str,
     pub implementer: ResolvedModel,
@@ -226,7 +227,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let store = RunStore::new(&root);
     let project_id = project_id(options.project);
     let resumed = if options.resume {
-        Some(orq_orchestrator::plan_resume(&store, repo, &project_id, &slug(options.feature)).map_err(other)?)
+        Some(orq_orchestrator::plan_resume(&store, repo, &project_id, &slug(&options.features[0])).map_err(other)?)
     } else {
         None
     };
@@ -235,7 +236,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         None
     } else {
         Some(
-            orq_core::naming::run_naming(settings.branch_prefix.as_deref().unwrap_or(orq_core::naming::DEFAULT_BRANCH_PREFIX), options.feature, |n| {
+            orq_core::naming::run_naming(settings.branch_prefix.as_deref().unwrap_or(orq_core::naming::DEFAULT_BRANCH_PREFIX), &options.features[0], |n| {
                 git_ok(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", n.branch)])
                     || repo.join(&n.worktree_dir).exists()
             })
@@ -261,7 +262,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let record = RunRecord {
         run_id: run_id.clone(),
         project_id,
-        feature_id: slug(options.feature),
+        feature_id: slug(&options.features[0]),
         remote: options.remote.to_string(),
         provider: match provider {
             orq_git::Provider::GitHub => "github",
@@ -327,7 +328,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, "failed", Some(&message)) {
             eprintln!("orq: cannot record the end of {run_id}: {err:?}");
         }
-        announce(&settings, repo, &record.feature_id, "failed", Some(&message), None);
+        announce(&settings, repo, &options.features.join(","), "failed", Some(&message), None);
         return Err(other(message));
     }
 
@@ -358,7 +359,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
         explain_failure(options, &settings, &record, &logs, report.detail.as_deref().unwrap_or("the run failed"));
     }
-    announce(&settings, repo, &record.feature_id, report.ending.name(), report.detail.as_deref(), report.review_url.as_deref());
+    announce(&settings, repo, &options.features.join(","), report.ending.name(), report.detail.as_deref(), report.review_url.as_deref());
     Ok(report)
 }
 
@@ -499,6 +500,18 @@ fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreErr
     Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None })
 }
 
+/// A group's review request names every feature in its title and lists them in its description.
+fn group_draft(mut draft: orq_orchestrator::ReviewDraft, features: &[String]) -> orq_orchestrator::ReviewDraft {
+    if features.len() < 2 {
+        return draft;
+    }
+    let names = features.join(", ");
+    draft.title = format!("{names}: {}", draft.title).chars().take(120).collect();
+    let list: String = features.iter().map(|f| format!("- {f}\n")).collect();
+    draft.body = format!("Features in this review:\n{list}\n{}", draft.body);
+    draft
+}
+
 fn stages(
     store: &RunStore,
     record: &RunRecord,
@@ -555,13 +568,14 @@ fn stages(
         // A resumed run whose agent session already finished goes on from the next stage; that was
         // recorded when the run began, so it survives a failure anywhere before here.
         if implement_inherited_from.is_none() {
+            let features: Vec<&str> = options.features.iter().map(String::as_str).collect();
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
             let marker_path = logs.join("implement.done");
             let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten();
             let args = adapter
                 .implement_argv(&ImplementRequest {
-                    features: &[options.feature],
+                    features: &features,
                     implementer: spec(&implementer),
                     reviewer: spec(&options.reviewer),
                     context: options.context,
@@ -647,6 +661,7 @@ fn stages(
         env: database_env.to_vec(),
         cwd: worktree.to_path_buf(),
     })?;
+    let draft = group_draft(draft, options.features);
     let draft = match options.issue {
         Some(number) => orq_orchestrator::link_issue(draft, number),
         None => draft,

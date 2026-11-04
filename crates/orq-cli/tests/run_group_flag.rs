@@ -54,9 +54,22 @@ fn a_group_of_one_is_checked_exactly_like_a_single_feature() {
 }
 
 #[test]
-fn a_group_of_several_features_is_refused_until_grouped_runs_exist() {
-    let repo = repo_with(&["COM-01", "COM-02"]);
-    let output = run_args(repo.root(), &["--group", "COM-01,COM-02"]);
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
-    assert!(stderr(&output).contains("not supported yet"), "{}", stderr(&output));
+fn a_group_that_cannot_run_together_is_refused_by_member_before_anything_is_created() {
+    let repo = GitFixture::new();
+    write_ledger(
+        repo.root(),
+        &[
+            LedgerEntry::new("base", "pending"),
+            LedgerEntry::new("a", "pending").depends_on(&["base"]),
+            LedgerEntry::new("done", "completed"),
+            LedgerEntry::new("c", "pending"),
+            LedgerEntry::new("x", "pending").depends_on(&["y"]),
+            LedgerEntry::new("y", "pending").depends_on(&["x"]),
+        ],
+    );
+    for (group, mentions) in [("c,done", "done"), ("c,ghost", "ghost"), ("c,a", "unmet dependencies: base"), ("x,y", "depend on each other")] {
+        let output = run_args(repo.root(), &["--group", group]);
+        assert_eq!(output.status.code(), Some(20), "{group}: {}", stderr(&output));
+        assert!(stderr(&output).contains(mentions), "{group}: {}", stderr(&output));
+    }
 }

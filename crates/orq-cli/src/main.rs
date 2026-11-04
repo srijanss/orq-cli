@@ -293,9 +293,6 @@ fn run(args: &[OsString]) -> ExitCode {
         },
         (None, _) => None,
     };
-    if group.as_ref().is_some_and(|ids| ids.len() > 1) {
-        return group_error("--group: runs of several features are not supported yet".to_string());
-    }
     let feature = group.as_ref().and_then(|ids| ids.first().map(String::as_str)).or(parsed.feature.as_deref());
     let (Some(repo), Some(feature), Some(remote), Some(target)) =
         (parsed.repo.as_deref(), feature, parsed.remote.as_deref(), parsed.target.as_deref())
@@ -310,10 +307,24 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(entries) => entries,
         Err(err) => return fail(ledger_error_text(&err)),
     };
-    if let Err(err) = orq_features::check_run_eligibility(&ledger, feature) {
-        eprintln!("orq: feature {} may not start a run: {}", printable(feature), printable(&err.to_string()));
-        return ExitCode::from(EXIT_INELIGIBLE);
-    }
+    // The features of the run, in the order to do them: dependencies first for a group.
+    let features: Vec<String> = match &group {
+        Some(ids) => match orq_features::order_run_group(&ledger, ids) {
+            Ok(ordered) => ordered.into_iter().map(|entry| entry.feature_name.clone()).collect(),
+            Err(err) => {
+                eprintln!("orq: the group may not start a run: {}", printable(&err.to_string()));
+                return ExitCode::from(EXIT_INELIGIBLE);
+            }
+        },
+        None => {
+            if let Err(err) = orq_features::check_run_eligibility(&ledger, feature) {
+                eprintln!("orq: feature {} may not start a run: {}", printable(feature), printable(&err.to_string()));
+                return ExitCode::from(EXIT_INELIGIBLE);
+            }
+            vec![feature.to_string()]
+        }
+    };
+    let feature = features[0].as_str();
     let (profiles, reviewers) = match load_model_config(&project.root) {
         Ok(config) => config,
         Err(message) => return fail(message),
@@ -373,7 +384,7 @@ fn run(args: &[OsString]) -> ExitCode {
     }
     let options = pipeline::Options {
         project: &project,
-        feature,
+        features: &features,
         remote,
         target,
         implementer: models.implementer,
