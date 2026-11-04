@@ -20,6 +20,44 @@ pub struct RemoteConfig {
     pub token: String,
 }
 
+/// Shortest token accepted from the token file.
+const MIN_TOKEN_LEN: usize = 32;
+
+impl RemoteConfig {
+    /// Where the token lives: its own file in Orq's config directory.
+    pub fn token_path(roots: &StorageRoots) -> std::path::PathBuf {
+        roots.config.join("remote-token")
+    }
+
+    /// Reads the token file. It must be a regular file (not a link) that only
+    /// its owner can access, and hold a token of at least 32 characters. An
+    /// error never contains the token.
+    pub fn load(roots: &StorageRoots) -> Result<RemoteConfig, String> {
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let path = Self::token_path(roots);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&path)
+            .map_err(|e| format!("cannot open the remote token file {}: {}", path.display(), e.kind()))?;
+        let meta = file.metadata().map_err(|e| format!("cannot inspect the remote token file: {}", e.kind()))?;
+        if !meta.is_file() {
+            return Err("the remote token file must be a regular file".into());
+        }
+        if meta.mode() & 0o077 != 0 {
+            return Err("the remote token file must be readable by its owner only (chmod 600)".into());
+        }
+        let mut text = String::new();
+        file.take(4096).read_to_string(&mut text).map_err(|e| format!("cannot read the remote token file: {}", e.kind()))?;
+        let token = text.trim().to_string();
+        if token.len() < MIN_TOKEN_LEN || token.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(format!("the remote token must be at least {MIN_TOKEN_LEN} characters with no spaces"));
+        }
+        Ok(RemoteConfig { token })
+    }
+}
+
 pub struct Request<'a> {
     pub method: &'a str,
     /// The path without a query string.
@@ -97,10 +135,9 @@ pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, pro
 }
 
 fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
-    if !peer_allowed(request.peer) {
-        return error(403, "this address may not connect");
-    }
-    if !token_matches(&config.token, request.authorization) {
+    // A stranger's address and a bad token are refused identically, so a
+    // caller learns nothing about which check failed.
+    if !peer_allowed(request.peer) || !token_matches(&config.token, request.authorization) {
         return error(401, "a valid bearer token is required");
     }
     if !matches!(request.method, "GET" | "HEAD") {

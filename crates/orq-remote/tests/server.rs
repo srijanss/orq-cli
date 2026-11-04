@@ -89,7 +89,7 @@ fn a_connection_from_an_address_that_may_not_connect_is_refused() {
     };
     let server = Server::start(TcpListener::bind("0.0.0.0:0").unwrap(), state("peer")).unwrap();
     let reply = request(SocketAddr::new(ip, server.addr().port()), "GET", "/api/reviews", Some(TOKEN));
-    assert_eq!(reply.status, 403, "{}", reply.head);
+    assert_eq!(reply.status, 401, "{}", reply.head);
 }
 
 #[test]

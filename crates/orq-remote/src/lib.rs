@@ -82,6 +82,7 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
+    let (path_for_log, method_for_log) = (path.clone(), method.clone());
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
@@ -93,6 +94,11 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     .await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     let (code, body) = reply;
+    if code == 401 {
+        // The peer and a bounded, escaped path only; never the Authorization header.
+        let shown: String = path_for_log.chars().take(100).flat_map(char::escape_default).collect();
+        eprintln!("orq-remote: refused {} {} {shown}", peer.ip(), method_for_log);
+    }
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, body).into_response();
     let headers = response.headers_mut();

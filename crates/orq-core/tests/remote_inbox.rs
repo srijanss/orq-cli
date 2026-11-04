@@ -95,7 +95,7 @@ fn only_loopback_and_tailscale_peers_are_allowed() {
     let roots = roots("peer");
     seed(&roots, "https://github.com/o/r/pull/7");
     let auth = bearer();
-    assert_eq!(get(&roots, "/api/reviews", "8.8.8.8".parse().unwrap(), Some(&auth)).0, 403, "a good token does not open the door to a stranger");
+    assert_eq!(get(&roots, "/api/reviews", "8.8.8.8".parse().unwrap(), Some(&auth)).0, 401, "a good token does not open the door to a stranger");
 }
 
 #[test]
