@@ -332,3 +332,43 @@ fn saving_mcp_servers_outside_a_repository_fails() {
 
     assert!(orq_orchestrator::save_mcp_servers_setting(&dir, &["a".to_string()]).is_err());
 }
+
+#[test]
+fn saving_mcp_servers_never_writes_through_a_planted_temp_link() {
+    use std::os::unix::fs::symlink;
+    let r = repo("save-mcp-link");
+    private(&r, "base_branch = \"release\"\n");
+    let victim = r.join("victim.txt");
+    fs::write(&victim, "keep\n").unwrap();
+    symlink(&victim, r.join(format!(".git/orq/run.toml.{}.tmp", std::process::id()))).unwrap();
+
+    orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap();
+
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().mcp_servers, Some(vec!["a".to_string()]));
+}
+
+#[test]
+fn saving_mcp_servers_keeps_the_files_permissions_and_makes_a_new_file_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |r: &Path| fs::metadata(r.join(".git/orq/run.toml")).unwrap().permissions().mode() & 0o777;
+
+    let existing = repo("save-mcp-mode");
+    private(&existing, "base_branch = \"release\"\n");
+    fs::set_permissions(existing.join(".git/orq/run.toml"), fs::Permissions::from_mode(0o640)).unwrap();
+    orq_orchestrator::save_mcp_servers_setting(&existing, &["a".to_string()]).unwrap();
+    assert_eq!(mode(&existing), 0o640);
+
+    let fresh = repo("save-mcp-mode-new");
+    orq_orchestrator::save_mcp_servers_setting(&fresh, &["a".to_string()]).unwrap();
+    assert_eq!(mode(&fresh), 0o600);
+}
+
+#[test]
+fn saving_mcp_servers_leaves_no_temp_file_behind() {
+    let r = repo("save-mcp-clean");
+    orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap();
+
+    let names: Vec<String> = fs::read_dir(r.join(".git/orq")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, vec!["run.toml".to_string()]);
+}

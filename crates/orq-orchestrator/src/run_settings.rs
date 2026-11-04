@@ -175,10 +175,32 @@ pub fn save_mcp_servers_setting(repo: &Path, servers: &[String]) -> Result<(), S
     }
     doc["mcp_servers"] = toml_edit::value(array);
     std::fs::create_dir_all(&dir).map_err(|err| format!("{PRIVATE_LABEL}: {:?}", err.kind()))?;
-    let temp = dir.join(format!("run.toml.{}.tmp", std::process::id()));
-    std::fs::write(&temp, doc.to_string())
-        .and_then(|()| std::fs::rename(&temp, &path))
-        .map_err(|err| format!("{PRIVATE_LABEL}: {:?}", err.kind()))
+    // A new file is private; a file that exists keeps the permissions it has.
+    let mode = std::fs::metadata(&path).map(|meta| std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777).unwrap_or(0o600);
+    let fail = |err: std::io::Error| format!("{PRIVATE_LABEL}: {:?}", err.kind());
+    let (temp, mut file) = create_temp(&dir, mode).map_err(fail)?;
+    let written = std::io::Write::write_all(&mut file, doc.to_string().as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(fail)
+}
+
+/// A temporary file created exclusively beside the settings file, so a planted name or link is never
+/// written through; its permissions are set at creation.
+fn create_temp(dir: &Path, mode: u32) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut attempt = 0u32;
+    loop {
+        let temp = dir.join(format!("run.toml.{}.{attempt}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
