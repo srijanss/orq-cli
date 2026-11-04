@@ -63,8 +63,8 @@ fn the_chosen_profiles_are_checked_by_the_run_model_rules() {
     let configured = profiles("rules");
 
     assert_eq!(
-        request("gpt-6-astra", "kimi").validate(&configured, &open_policy()).unwrap_err(),
-        RunModelsError::ImplementerNotClaude { harness: "pi".into(), model: "openai/gpt-6-astra".into() }
+        request("gpt-6-astra", "kimi").validate(&configured, &open_policy()).unwrap().implementer.harness,
+        "pi"
     );
     assert_eq!(
         request("opus", "nope").validate(&configured, &open_policy()).unwrap_err(),

@@ -24,6 +24,10 @@ thinking = "medium"
 harness = "pi"
 model = "kimi-k3"
 
+[models.mystery]
+harness = "bogus"
+model = "m1"
+
 [roles]
 implementer = "opus"
 reviewer = "gpt-6-astra"
@@ -97,7 +101,7 @@ fn the_reviewer_comes_from_the_flag_then_tdd_config_then_roles_then_the_built_in
 }
 
 #[test]
-fn policy_errors_are_typed_for_unknown_names_non_claude_implementers_and_unlisted_reviewers() {
+fn policy_errors_are_typed_for_unknown_names_unknown_implementer_harnesses_and_unlisted_reviewers() {
     let configured = profiles("errors", USER);
     let none = config(None, None);
 
@@ -110,8 +114,8 @@ fn policy_errors_are_typed_for_unknown_names_non_claude_implementers_and_unliste
         Err(RunModelsError::UnknownProfile { .. })
     ));
     assert!(matches!(
-        resolve_run_models(&configured, &none, &pick(Some("kimi"), None)),
-        Err(RunModelsError::ImplementerNotClaude { .. })
+        resolve_run_models(&configured, &none, &pick(Some("mystery"), None)),
+        Err(RunModelsError::ImplementerHarnessUnknown { ref harness, .. }) if harness == "bogus"
     ));
 
     // allowedModels overrides everything, whichever source chose the reviewer.
@@ -126,4 +130,15 @@ fn policy_errors_are_typed_for_unknown_names_non_claude_implementers_and_unliste
         resolve_run_models(&configured, &default_unlisted, &pick(None, None)),
         Err(RunModelsError::ReviewerNotAllowed { .. })
     ));
+}
+
+#[test]
+fn a_pi_profile_is_accepted_as_the_implementer_from_the_flag_and_from_the_roles_table() {
+    let flagged = resolve_run_models(&profiles("pi-flag", USER), &config(None, None), &pick(Some("kimi"), None)).unwrap();
+    assert_eq!((flagged.implementer.harness.as_str(), flagged.implementer.model.as_str()), ("pi", "kimi-k3"));
+
+    let roles = USER.replace("implementer = \"opus\"", "implementer = \"gpt-6-astra\"");
+    let from_roles = resolve_run_models(&profiles("pi-role", &roles), &config(None, None), &pick(None, None)).unwrap();
+    assert_eq!(from_roles.implementer.harness, "pi");
+    assert_eq!(from_roles.implementer.thinking.as_deref(), Some("medium"));
 }

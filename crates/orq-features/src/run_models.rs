@@ -35,7 +35,8 @@ pub struct ResolvedModels {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunModelsError {
     UnknownProfile { role: &'static str, name: String },
-    ImplementerNotClaude { harness: String, model: String },
+    /// The implementer's profile names a harness no adapter exists for.
+    ImplementerHarnessUnknown { harness: String, model: String },
     ReviewerNotAllowed { model: String, allowed: Vec<String> },
 }
 
@@ -45,9 +46,9 @@ impl std::fmt::Display for RunModelsError {
             RunModelsError::UnknownProfile { role, name } => {
                 write!(f, "the {role} profile {name:?} is not defined in the model profiles")
             }
-            RunModelsError::ImplementerNotClaude { harness, model } => write!(
+            RunModelsError::ImplementerHarnessUnknown { harness, model } => write!(
                 f,
-                "the implementer must run on the claude harness, but {model} uses {harness}"
+                "the implementer model {model} uses the unknown harness {harness:?}; use claude or pi"
             ),
             RunModelsError::ReviewerNotAllowed { model, allowed } => write!(
                 f,
@@ -92,8 +93,8 @@ pub fn resolve_run_models(
             None => built_in(BUILT_IN_IMPLEMENTER),
         },
     };
-    if implementer.harness != "claude" {
-        return Err(RunModelsError::ImplementerNotClaude {
+    if orq_agents::adapter_for(&implementer.harness).is_err() {
+        return Err(RunModelsError::ImplementerHarnessUnknown {
             harness: implementer.harness,
             model: implementer.model,
         });
