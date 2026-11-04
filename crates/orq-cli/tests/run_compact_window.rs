@@ -58,13 +58,22 @@ fn github() -> FakeProvider {
 
 /// Runs `orq run`; every session the `claude` shim starts appends the window variable it sees to the returned file.
 fn run(w: &World) -> (Output, PathBuf) {
+    run_with_fix(w, "exit 0")
+}
+
+/// As `run`, but a session asked to repair a red gate runs `fix` in the worktree.
+fn run_with_fix(w: &World, fix: &str) -> (Output, PathBuf) {
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let provider = github();
     let seen = w.base.join("seen");
     let bin = w.base.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
-    std::fs::write(&claude, format!("#!/bin/sh\necho \"[${VARIABLE}]\" >> '{}'\nexec '{}' \"$@\"\n", seen.display(), agent.path().display())).unwrap();
+    std::fs::write(&claude, format!(
+            "#!/bin/sh\necho \"[${VARIABLE}]\" >> '{}'\ncase \"$*\" in *'local gate failed'*) {fix};; esac\nexec '{}' \"$@\"\n",
+            seen.display(),
+            agent.path().display()
+        )).unwrap();
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
@@ -125,4 +134,18 @@ fn an_unusable_window_is_refused_before_anything_starts() {
     assert_ne!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("compact_window"), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(lines(&seen).is_empty(), "no session was started");
+}
+
+#[test]
+fn the_repair_session_for_a_red_gate_is_told_the_window_too() {
+    let w = world("repair");
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"test\", \"-f\", \"fixed\"]\ncompact_window = 150000\n").unwrap();
+    let repair = "touch fixed; git add fixed; git -c user.name=t -c user.email=t@example.com commit -q -m 'fix: repair the gate'; exit 0";
+
+    let (out, seen) = run_with_fix(&w, repair);
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let seen = lines(&seen);
+    assert_eq!(seen.len(), 3, "the implement session, the repair session and the draft: {seen:?}");
+    assert!(seen.iter().all(|line| line == "[150000]"), "{seen:?}");
 }
