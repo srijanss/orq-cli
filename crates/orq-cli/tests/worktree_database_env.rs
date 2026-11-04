@@ -107,6 +107,55 @@ fn setup_the_agent_and_the_gate_all_see_the_databases_named_for_the_runs_branch(
     assert!(!stdout.contains("hunter2"), "no other value of the dotenv file is shown: {stdout}");
 }
 
+#[test]
+fn a_red_gate_starts_a_fix_session_and_both_it_and_the_rerun_gate_see_the_run_environment() {
+    let w = world("gate-fix");
+    std::fs::write(w.repo.root().join(".env"), "DB_NAME=shop\n").unwrap();
+    let (gate_seen, fix_seen) = (w.base.join("gate-seen"), w.base.join("fix-seen"));
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    // The gate is red until the fix session has created `fixed` in the worktree.
+    std::fs::write(
+        w.repo.root().join(".orq/run.toml"),
+        format!("gate = [\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$DB_NAME\\\" >> {}; test -f fixed\"]\n", gate_seen.display()),
+    )
+    .unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let bin = w.base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let provider = github();
+    // A fix session is told what failed; it repairs the worktree and records the database it saw.
+    std::fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*) printf '%s\\n' \"$DB_NAME\" >> '{}'; touch fixed; exit 0;; esac\nexec '{}' \"$@\"\n",
+            fix_seen.display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![bin, provider.bin_dir()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&gate_seen).unwrap(), "shop_fix_com_01\nshop_fix_com_01\n", "the gate ran twice");
+    assert_eq!(std::fs::read_to_string(&fix_seen).unwrap(), "shop_fix_com_01\n", "one fix session");
+}
+
 /// A drop tool that records the test database name it is asked to drop, and the directory it ran in.
 fn drop_tool(w: &World) -> (PathBuf, PathBuf) {
     let log = w.base.join("drops.log");

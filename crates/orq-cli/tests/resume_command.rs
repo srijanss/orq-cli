@@ -58,7 +58,8 @@ fn path_with(agent: &FakeAgent, provider: &FakeProvider, tag: &str) -> std::ffi:
     let _ = std::fs::remove_dir_all(&bin);
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
-    std::fs::write(&claude, format!("#!/bin/sh\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
+    // A session asked to repair a red gate changes nothing: these tests are about the implement session.
+    std::fs::write(&claude, format!("#!/bin/sh\ncase \"$*\" in *'local gate failed'*) exit 0;; esac\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));

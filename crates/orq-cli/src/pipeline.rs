@@ -10,10 +10,13 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_stage_with_env, run_implement_stage, run_setup_with_env, wait_for_ci,
-    CiOutcome, CiWaitConfig, DraftSession, GateOutcome, ImplementCheck, ImplementSession, PushOutcome,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci,
+    CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
+
+/// How many times a red gate is handed to a fix session before the run fails.
+const GATE_FIX_ATTEMPTS: u32 = 2;
 
 pub struct Options<'a> {
     pub project: &'a orq_git::Project,
@@ -473,8 +476,27 @@ fn stages(
     }
 
     let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-    if let GateOutcome::Failed { step, exit_code } =
-        run_gate_stage_with_env(store, run_id, &gate, options.gate, &logs.join("gate.log"), database_env)?
+    let gate_log = logs.join("gate.log");
+    let fix_model = spec(&options.implementer).model;
+    let fix_log = logs.join("gate-fix.log");
+    // A red gate gets a fix session with the run's environment, then runs again.
+    if let GateFixOutcome::Failed { step, exit_code, .. } =
+        run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, GATE_FIX_ATTEMPTS, database_env, |_, log| FixSessionSpec {
+            program: claude_program.to_string(),
+            args: vec![
+                "--model".to_string(),
+                fix_model.clone(),
+                format!(
+                    "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.",
+                    log.display()
+                ),
+            ],
+            env: database_env.to_vec(),
+            cwd: worktree.to_path_buf(),
+            session_id: None,
+            log: fix_log.clone(),
+            terminal: false,
+        })?
     {
         return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
     }
