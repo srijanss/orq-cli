@@ -174,29 +174,58 @@ fn an_unreadable_or_malformed_cleanup_time_stops_maintenance_instead_of_repeatin
     assert!(s.data_file("runs/old-run/events.jsonl").exists());
 }
 
+/// Runs `maintain`, killing it after ten seconds; `None` means it hung.
+fn maintain_within_timeout(s: &Sandbox) -> Option<std::process::ExitStatus> {
+    let mut child = s.command(&["storage", "maintain"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn mkfifo(path: &std::path::Path) {
+    let path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+}
+
 #[test]
 fn a_fifo_planted_at_the_lock_path_cannot_hang_maintenance() {
     let s = Sandbox::new("fifo");
     s.config(ON);
     s.failed_run("old-run");
-    let path = std::ffi::CString::new(s.data_file("prune.lock").to_str().unwrap()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-    let mut child = s.command(&["storage", "maintain"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    mkfifo(&s.data_file("prune.lock"));
+    let status = maintain_within_timeout(&s).expect("maintenance hung on a FIFO at the lock path");
+    assert!(!status.success());
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+}
+
+#[test]
+fn a_fifo_planted_at_the_cleanup_time_path_cannot_hang_maintenance_or_status() {
+    let s = Sandbox::new("stampfifo");
+    s.config(ON);
+    s.failed_run("old-run");
+    mkfifo(&s.data_file("last-cleanup"));
+    let status = maintain_within_timeout(&s).expect("maintenance hung on a FIFO at the cleanup time path");
+    assert!(!status.success());
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+    let mut child = s.command(&["storage", "status"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
     let started = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
+    while child.try_wait().unwrap().is_none() {
         if started.elapsed() > std::time::Duration::from_secs(10) {
             let _ = child.kill();
             let _ = child.wait();
-            break None;
+            panic!("storage status hung on a FIFO at the cleanup time path");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let status = status.expect("maintenance hung on a FIFO at the lock path");
-    assert!(!status.success());
-    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+    }
 }
 
 #[test]

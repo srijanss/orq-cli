@@ -96,16 +96,33 @@ fn cleanup_stamp(roots: &StorageRoots) -> std::path::PathBuf {
 }
 
 fn last_cleanup(roots: &StorageRoots) -> Option<u64> {
-    std::fs::read_to_string(cleanup_stamp(roots)).ok()?.trim().parse().ok()
+    read_stamp(roots).ok()??.trim().parse().ok()
 }
 
 /// Like `last_cleanup`, but tells "never cleaned up" (no file) from a time that cannot be read.
 fn last_cleanup_checked(roots: &StorageRoots) -> Result<Option<u64>, String> {
-    match std::fs::read_to_string(cleanup_stamp(roots)) {
-        Ok(text) => text.trim().parse().map(Some).map_err(|_| "the last-cleanup time is not a valid time; fix or remove it".to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    match read_stamp(roots) {
+        Ok(Some(text)) => text.trim().parse().map(Some).map_err(|_| "the last-cleanup time is not a valid time; fix or remove it".to_string()),
+        Ok(None) => Ok(None),
         Err(err) => Err(format!("cannot read the last-cleanup time: {err}")),
     }
+}
+
+/// Reads the stamp without following a link or blocking on a FIFO, and never more than a few bytes.
+fn read_stamp(roots: &StorageRoots) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(cleanup_stamp(roots)) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("the last-cleanup time is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(64).read_to_end(&mut bytes)?;
+    String::from_utf8(bytes).map(Some).map_err(|_| std::io::Error::other("the last-cleanup time is not text"))
 }
 
 fn record_cleanup(roots: &StorageRoots, at: u64) {
