@@ -254,7 +254,7 @@ pub fn reap_orphan_ref(repo: &Path, name: &str) -> Result<(), StoreError> {
     if !name.starts_with("refs/orq/rebase/") {
         return Err(StoreError::Corrupt(format!("{name} is not a private rebase ref")));
     }
-    let removed = git_raw(repo, &["update-ref", "-d", name])?;
+    let removed = git_raw(repo, &["update-ref", "--no-deref", "-d", name])?;
     if !removed.success {
         return Err(StoreError::Corrupt(format!("the private ref {name} could not be deleted: {}", removed.stderr.trim())));
     }

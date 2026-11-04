@@ -128,3 +128,16 @@ fn a_branch_a_present_worktree_still_uses_is_not_an_orphan_even_if_an_older_run_
 
     assert!(plan.database_branches.is_empty(), "{:?}", plan.database_branches);
 }
+
+#[test]
+fn a_symbolic_ref_in_the_private_namespace_is_removed_without_touching_what_it_points_at() {
+    let w = world("symbolic");
+    git(&w.repo, &["symbolic-ref", "refs/orq/rebase/aa/end", "refs/heads/main"]);
+
+    let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
+    assert_eq!(plan.refs, ["refs/orq/rebase/aa/end"]);
+    reap_orphan_ref(&w.repo, "refs/orq/rebase/aa/end").unwrap();
+
+    assert_eq!(git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(), 40, "the branch it pointed at survives");
+    assert!(refs(&w.repo).is_empty());
+}
