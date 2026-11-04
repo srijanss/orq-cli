@@ -34,7 +34,7 @@ pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
-pub use gate::{choose_gate, Gate, GateError};
+pub use gate::{choose_gate, choose_gate_scoped, Gate, GateError};
 pub use gate_fix::{run_gate_with_fixes, FixSessionSpec, GateFixOutcome};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, GateOutcome};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};

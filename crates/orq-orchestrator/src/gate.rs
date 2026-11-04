@@ -3,8 +3,8 @@
 //! mirroring the Bash orchestrator's detection (Python with uv, Node, Rust).
 //!
 //! Gates are lists of argv vectors, never shell strings, so nothing from a
-//! feature file or an agent is ever interpreted by a shell. Django projects
-//! and the optional lint/build steps are not detected yet.
+//! feature file or an agent is ever interpreted by a shell. The optional
+//! lint/build steps are not detected yet.
 
 use std::collections::HashSet;
 use std::fs;
@@ -41,6 +41,12 @@ const NOTHING_DETECTED: &str = "no local gate detected: no Cargo.toml, package.j
 /// The gate for `worktree`: `configured` (a non-empty argv) if given,
 /// otherwise whatever its Python, Node and Rust files call for, in that order.
 pub fn choose_gate(worktree: &Path, configured: Option<&[String]>) -> Result<Gate, GateError> {
+    choose_gate_scoped(worktree, configured, None)
+}
+
+/// Like [`choose_gate`]; with `changed` (paths relative to the worktree) a Django
+/// project runs pytest only for the changed apps that have tests.
+pub fn choose_gate_scoped(worktree: &Path, configured: Option<&[String]>, changed: Option<&[String]>) -> Result<Gate, GateError> {
     if let Some(argv) = configured.filter(|argv| !argv.is_empty()) {
         if argv[0].trim().is_empty() {
             return Err(GateError::EmptyProgram);
@@ -52,7 +58,7 @@ pub fn choose_gate(worktree: &Path, configured: Option<&[String]>) -> Result<Gat
     }
     let mut steps = Vec::new();
     let mut notes = Vec::new();
-    python_steps(worktree, &mut steps, &mut notes);
+    python_steps(worktree, changed, &mut steps, &mut notes);
     node_steps(worktree, &mut steps, &mut notes);
     rust_steps(worktree, &mut steps);
     if steps.is_empty() {
@@ -70,11 +76,8 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
-fn python_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
-    if dir.join("src/manage.py").is_file() {
-        notes.push("Django project (src/manage.py) is not supported yet; set a gate command to check it".to_string());
-        return;
-    }
+fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
+    let django = dir.join("src/manage.py").is_file();
     if !dir.join("uv.lock").is_file() {
         return;
     }
@@ -92,9 +95,33 @@ fn python_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String
     let pytest_configured = pytest_in_pyproject
         || dir.join("pytest.ini").is_file()
         || dir.join("tests").is_dir();
-    if pytest_configured {
-        steps.push(argv(&["uv", "run", "pytest"]));
+    if django {
+        steps.push(argv(&["uv", "run", "python", "src/manage.py", "makemigrations", "--check", "--dry-run"]));
     }
+    if !pytest_configured {
+        return;
+    }
+    let mut pytest = argv(&["uv", "run", "pytest"]);
+    if let (true, Some(changed)) = (django, changed) {
+        let apps = changed_tested_apps(dir, changed);
+        if apps.is_empty() {
+            return;
+        }
+        pytest.extend(apps);
+    }
+    steps.push(pytest);
+}
+
+/// The `src/<app>` directories holding a changed file that have tests of their own, sorted.
+fn changed_tested_apps(dir: &Path, changed: &[String]) -> Vec<String> {
+    let mut apps: Vec<String> = changed
+        .iter()
+        .filter_map(|path| path.strip_prefix("src/")?.split_once('/').map(|(app, _)| format!("src/{app}")))
+        .filter(|app| dir.join(app).join("tests").is_dir() || dir.join(app).join("tests.py").is_file())
+        .collect();
+    apps.sort();
+    apps.dedup();
+    apps
 }
 
 fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {

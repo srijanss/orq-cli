@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{choose_gate, Gate, GateError};
+use orq_orchestrator::{choose_gate, choose_gate_scoped, Gate, GateError};
 
 fn worktree(tag: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-gate-{}-{tag}", std::process::id()));
@@ -211,21 +211,43 @@ fn python_with_uv_runs_pytest_only_when_pytest_is_configured() {
     }
 }
 
-#[test]
-fn a_django_project_is_noted_as_unsupported_instead_of_run_half_way() {
-    let dir = worktree("django");
+const MIGRATIONS: &[&str] = &["uv", "run", "python", "src/manage.py", "makemigrations", "--check", "--dry-run"];
+
+fn django(tag: &str) -> PathBuf {
+    let dir = worktree(tag);
     touch(&dir, "uv.lock", "");
     touch(&dir, "src/manage.py", "");
     touch(&dir, "pytest.ini", "");
+    touch(&dir, "src/shop/tests/test_views.py", "");
+    touch(&dir, "src/blog/models.py", "");
+    dir
+}
+
+#[test]
+fn a_django_project_checks_migrations_and_then_runs_pytest() {
+    let dir = django("django");
     touch(&dir, "Cargo.toml", "[workspace]\n");
 
+    assert_eq!(choose_gate(&dir, None), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"], &["cargo", "test", "--workspace"]])));
+}
+
+#[test]
+fn a_changed_scope_runs_pytest_only_for_changed_apps_that_have_tests() {
+    let dir = django("django-scoped");
+    let changed = ["src/shop/views.py".to_string(), "src/blog/models.py".to_string(), "README.md".to_string()];
+
     assert_eq!(
-        choose_gate(&dir, None),
-        Ok(Gate::Steps {
-            steps: steps(&[&["cargo", "test", "--workspace"]]),
-            notes: vec!["Django project (src/manage.py) is not supported yet; set a gate command to check it".to_string()],
-        })
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/shop"]]))
     );
+}
+
+#[test]
+fn a_changed_scope_with_no_tested_app_changed_still_checks_migrations() {
+    let dir = django("django-scoped-none");
+    let changed = ["src/blog/models.py".to_string()];
+
+    assert_eq!(choose_gate_scoped(&dir, None, Some(&changed)), Ok(run(&[MIGRATIONS])));
 }
 
 #[test]
