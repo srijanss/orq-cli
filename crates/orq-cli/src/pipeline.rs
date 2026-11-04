@@ -412,7 +412,7 @@ fn stages(
     let databases = {
         let named = settings.test_db_vars.is_some();
         let vars = settings.test_db_vars.clone().unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
-        orq_orchestrator::derive_worktree_databases(&options.project.root, &vars, &record.branch, named)
+        orq_orchestrator::derive_worktree_databases_with(&options.project.root, &vars, &record.branch, named, settings.db_name_template.as_deref())
     };
     let mut run_vars = databases.env.clone();
     let mut notes = databases.notes.clone();

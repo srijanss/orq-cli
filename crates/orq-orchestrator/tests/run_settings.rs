@@ -215,3 +215,15 @@ fn the_test_database_drop_command_and_keep_flag_come_from_the_files_or_the_envir
     let bad = |key: &str| (key == "ORQ_KEEP_TEST_DB").then(|| "maybe".to_string());
     assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_KEEP_TEST_DB"));
 }
+
+#[test]
+fn the_database_name_template_comes_from_the_files_or_the_environment() {
+    let r = repo("dbtemplate");
+    shared(&r, "db_name_template = \"wt_{branch}__{name}\"\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().db_name_template.as_deref(), Some("wt_{branch}__{name}"));
+
+    let env = |key: &str| (key == "ORQ_DB_NAME_TEMPLATE").then(|| "{name}_x_{branch}".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().db_name_template.as_deref(), Some("{name}_x_{branch}"));
+
+    assert!(invalid("db_name_template = 3\n", "dbtemplatenum").contains("db_name_template"));
+}

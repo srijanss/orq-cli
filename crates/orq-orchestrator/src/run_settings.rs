@@ -46,6 +46,8 @@ pub struct RunSettings {
     pub test_db_drop_cmd: Option<Vec<String>>,
     /// Leave the test databases of a finished run in place (`ORQ_KEEP_TEST_DB`).
     pub keep_test_db: Option<bool>,
+    /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
+    pub db_name_template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,7 @@ struct Layer {
     mcp_servers: Option<Vec<String>>,
     test_db_drop_cmd: Option<Vec<String>>,
     keep_test_db: Option<bool>,
+    db_name_template: Option<String>,
 }
 
 impl Layer {
@@ -106,6 +109,7 @@ impl Layer {
             mcp_servers: self.mcp_servers.or(lower.mcp_servers),
             test_db_drop_cmd: self.test_db_drop_cmd.or(lower.test_db_drop_cmd),
             keep_test_db: self.keep_test_db.or(lower.keep_test_db),
+            db_name_template: self.db_name_template.or(lower.db_name_template),
         }
     }
 }
@@ -134,6 +138,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         mcp_servers: merged.mcp_servers,
         test_db_drop_cmd: merged.test_db_drop_cmd,
         keep_test_db: merged.keep_test_db,
+        db_name_template: merged.db_name_template,
     })
 }
 
@@ -177,6 +182,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "local_files" => layer.local_files = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "mcp_servers" => layer.mcp_servers = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "test_db_drop_cmd" => layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
+            "db_name_template" => layer.db_name_template = Some(value.as_str().ok_or_else(|| bad("must be a string"))?.to_string()),
             "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
@@ -226,6 +232,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_TEST_DB_DROP_CMD") {
         layer.test_db_drop_cmd = Some(argv(&json("ORQ_TEST_DB_DROP_CMD", &v)?).map_err(|r| invalid("ORQ_TEST_DB_DROP_CMD", r))?);
+    }
+    if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
+        layer.db_name_template = Some(v.trim().to_string());
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {
         layer.keep_test_db = Some(match v.trim() {
