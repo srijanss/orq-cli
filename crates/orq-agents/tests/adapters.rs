@@ -249,6 +249,8 @@ fn push_session_is_a_print_session_with_only_the_push_tool_and_takes_one_line() 
     let argv = push_notification_argv("orq: COM-02 failed").unwrap();
     assert_eq!(&argv[..7], ["-p", "--model", "haiku", "--allowedTools", "PushNotification", "--tools", "PushNotification"]);
     assert!(argv.contains(&"--disable-slash-commands".to_string()), "{argv:?}");
+    let at = argv.iter().position(|a| a == "--setting-sources").expect("project and local settings (hooks) are not loaded");
+    assert_eq!(argv[at + 1], "user");
     assert!(argv.last().unwrap().contains("orq: COM-02 failed"));
     for bad in ["", "  ", "two\nlines", "bell\u{7}"] {
         assert!(push_notification_argv(bad).is_err(), "{bad:?}");
