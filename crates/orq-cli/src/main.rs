@@ -3579,6 +3579,12 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
         (_, Err(reason)) => return fail(reason),
     };
+    // The pipeline continues the latest run of these features; refuse when that is another run.
+    match orq_orchestrator::plan_group_resume(&store, &repo, &record.project_id, &members) {
+        Ok(plan) if plan.from.run_id == run_id => {}
+        Ok(plan) => return fail(format!("cannot resume {}: {} is a later run of the same features; resume that one", printable(&run_id), printable(&plan.from.run_id))),
+        Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+    }
     let mut forwarded: Vec<OsString> = vec!["--repo".into(), repo.into_os_string(), "--remote".into(), record.remote.into(), "--target".into(), record.target_branch.into(), "--resume".into()];
     if members.len() > 1 {
         forwarded.extend(["--group".into(), members.join(",").into()]);

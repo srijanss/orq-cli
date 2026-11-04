@@ -89,3 +89,29 @@ fn an_invalid_checkpoint_is_refused_with_the_reason_and_the_run_stays_paused() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("HEAD moved"));
     assert_eq!(store.events("run-1").unwrap().len(), before);
 }
+
+#[test]
+fn a_paused_run_that_a_later_run_of_the_feature_superseded_is_refused() {
+    let (home, store, repo) = seed("stale", true);
+    let mut later = store.load("run-1").unwrap();
+    later.run_id = "run-2".into();
+    later.branch = "orq/run-2".into();
+    store.create(&later).unwrap();
+    store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: "e1".into(),
+            run_id: "run-2".into(),
+            project_id: "p".into(),
+            feature_id: "F".into(),
+            kind: "stage.started".into(),
+            stage: Some("implement".into()),
+            attempt: 1,
+            occurred_at: "2026-11-02T11:00:00Z".into(),
+            payload: serde_json::json!({}),
+        })
+        .unwrap();
+    let out = orq(&home, &["run", "resume", "run-1", "--yes", "--repo", repo.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("run-2"), "{}", String::from_utf8_lossy(&out.stderr));
+}

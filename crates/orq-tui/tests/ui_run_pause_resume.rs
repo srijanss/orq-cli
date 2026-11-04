@@ -19,6 +19,7 @@ struct Fake {
     status: &'static str,
     check: Option<Result<String, String>>,
     calls: Vec<String>,
+    no_link: bool,
 }
 
 impl BrowserBackend for Fake {
@@ -36,7 +37,7 @@ impl BrowserBackend for Fake {
             stage: Some("gate".into()),
             implementer_model: None,
             reviewer_model: None,
-            has_review_link: true,
+            has_review_link: !self.no_link,
         }])
     }
     fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
@@ -124,5 +125,13 @@ fn the_hint_offers_the_control_that_fits_the_run() {
     let mut backend = Fake { status: "running", ..Fake::default() };
     assert!(has(&show(&mut backend, open_runs()), "p pause"));
     let mut backend = Fake { status: "paused", ..Fake::default() };
+    assert!(has(&show(&mut backend, open_runs()), "c resume"));
+}
+
+#[test]
+fn the_pause_and_resume_hints_show_even_when_the_run_has_no_review_link() {
+    let mut backend = Fake { status: "running", no_link: true, ..Fake::default() };
+    assert!(has(&show(&mut backend, open_runs()), "p pause"));
+    let mut backend = Fake { status: "paused", no_link: true, ..Fake::default() };
     assert!(has(&show(&mut backend, open_runs()), "c resume"));
 }

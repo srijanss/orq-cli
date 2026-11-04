@@ -2394,9 +2394,9 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                     Err(_) => None,
                 };
                 let hint = match status {
-                    _ if no_link => RUNS_HINT_NO_LINK,
                     Some("running") => RUNS_HINT_PAUSE,
                     Some("paused") => RUNS_HINT_RESUME,
+                    _ if no_link => RUNS_HINT_NO_LINK,
                     _ => RUNS_HINT,
                 };
                 Line::from(Span::styled(truncate_right(hint, width), dim))

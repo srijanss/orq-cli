@@ -702,7 +702,7 @@ fn stages(
         }
     }
 
-    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
+    if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
         return paused("push");
     }
     let head_sha = match paused_at.filter(|_| done("push")) {
@@ -716,7 +716,7 @@ fn stages(
     let Some(provider) = find_program(provider_cli) else {
         return stopped(Ending::Failed, format!("{provider_cli} is not on PATH"));
     };
-    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push"], "review_request", Some(&record.branch), None)? {
+    if !done("review_request") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push"], "review_request", Some(&record.branch), None)? {
         return paused("review_request");
     }
     let existing = paused_at.and_then(|c| c.review_request_ref.clone());
