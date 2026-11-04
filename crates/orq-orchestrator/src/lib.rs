@@ -1,6 +1,7 @@
 //! Stage logic for a pipeline run: what each stage decides and does, kept
 //! apart from the CLI and the popup that drive it.
 
+mod checkpoint;
 mod ci_fix;
 mod ci_wait;
 mod cleanup;
@@ -31,6 +32,7 @@ mod setup;
 mod store;
 mod worktree_databases;
 
+pub use checkpoint::{latest_checkpoint, record_checkpoint, Checkpoint};
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
