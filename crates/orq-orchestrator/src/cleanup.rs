@@ -36,12 +36,10 @@ pub fn cleanup_worktree(
     }
     // Anything uncommitted is work that removal would lose: untracked files, and ignored
     // ones too, since `git worktree remove` deletes ignored files without --force.
-    let status = git_raw(&record.worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
-    if !status.success {
-        return keep(store, &record, "the worktree state could not be read".to_string(), true);
-    }
-    if !status.stdout.trim().is_empty() {
-        return keep(store, &record, "the worktree has uncommitted changes".to_string(), true);
+    match uncommitted_work(&record.worktree)? {
+        Some(UncommittedWork::Unreadable) => return keep(store, &record, "the worktree state could not be read".to_string(), true),
+        Some(UncommittedWork::Present) => return keep(store, &record, "the worktree has uncommitted changes".to_string(), true),
+        None => {}
     }
     let common = git_raw(&record.worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     if !common.success {
@@ -56,6 +54,29 @@ pub fn cleanup_worktree(
     }
     record_event(store, &record, "worktree.removed", serde_json::json!({ "worktree": worktree }))?;
     Ok(CleanupOutcome::Removed)
+}
+
+/// Ignored paths orq itself puts into a run's worktree; they are not the agent's work.
+const ORQ_WRITTEN: [&str; 5] = [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json", ".claude/"];
+
+pub(crate) enum UncommittedWork {
+    Unreadable,
+    Present,
+}
+
+/// Whether `worktree` holds anything uncommitted besides the ignored files orq wrote itself.
+pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork>, StoreError> {
+    let status = git_raw(worktree, &["status", "--porcelain", "--untracked-files=all", "--ignored"])?;
+    if !status.success {
+        return Ok(Some(UncommittedWork::Unreadable));
+    }
+    let own = |line: &str| {
+        line.strip_prefix("!! ").is_some_and(|path| {
+            let path = path.trim_matches('"');
+            path == concat!(".", "env") || ORQ_WRITTEN.contains(&path)
+        })
+    };
+    Ok(status.stdout.lines().any(|line| !line.trim().is_empty() && !own(line)).then_some(UncommittedWork::Present))
 }
 
 /// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.
