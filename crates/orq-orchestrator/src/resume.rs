@@ -84,6 +84,9 @@ pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, member
         RunPhase::Failed | RunPhase::Blocked => {}
         RunPhase::Running => return Err(format!("{} did not stop; it may still be running", from.run_id)),
         RunPhase::Completed => return Err(format!("{} ended with a review ready; there is nothing to resume", from.run_id)),
+        phase @ (RunPhase::PauseRequested | RunPhase::Paused) => {
+            return Err(format!("{} is {}; it is not a stopped run", from.run_id, phase.as_str()))
+        }
     }
     // The saved path is only trusted after it proves to be this repository's checkout of the
     // run's branch: the agent and the setup commands run there.

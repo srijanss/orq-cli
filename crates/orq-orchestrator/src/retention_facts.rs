@@ -41,6 +41,8 @@ fn facts_of(runs: &RunStore, store: &Store, run_id: &str, pinned: bool) -> Resul
         RunPhase::Blocked => RunState::Blocked,
         RunPhase::Failed => RunState::Failed,
         RunPhase::Completed => RunState::Completed,
+        RunPhase::PauseRequested => RunState::PauseRequested,
+        RunPhase::Paused => RunState::Paused,
     };
     let ended_at = events.last().and_then(|event| parse_rfc3339(&event.occurred_at));
     // Only a definite "not found" proves the worktree is gone; any other error leaves it unknown, so it counts as in use.

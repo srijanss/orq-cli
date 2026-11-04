@@ -35,6 +35,7 @@ fn main() -> ExitCode {
         (Some("storage"), _) => storage::storage(&args[1..]),
         (Some("run"), Some("pin")) => storage::pin(&args[2..], true),
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
+        (Some("run"), Some("pause")) => run_pause(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
@@ -587,12 +588,7 @@ fn runs(args: &[OsString]) -> ExitCode {
         Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
-    let phase = |phase: orq_orchestrator::RunPhase| match phase {
-        orq_orchestrator::RunPhase::Running => "running",
-        orq_orchestrator::RunPhase::Completed => "completed",
-        orq_orchestrator::RunPhase::Failed => "failed",
-        orq_orchestrator::RunPhase::Blocked => "blocked",
-    };
+    let phase = |phase: orq_orchestrator::RunPhase| phase.as_str();
     if json {
         let list: Vec<serde_json::Value> = listings
             .iter()
@@ -2031,13 +2027,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .map(|run| orq_tui::RunRow {
                 run_id: run.run_id,
                 feature: run.feature_id,
-                status: match run.phase {
-                    orq_orchestrator::RunPhase::Running => "running",
-                    orq_orchestrator::RunPhase::Completed => "completed",
-                    orq_orchestrator::RunPhase::Failed => "failed",
-                    orq_orchestrator::RunPhase::Blocked => "blocked",
-                }
-                .to_string(),
+                status: run.phase.as_str().to_string(),
                 stage: run.stage,
                 implementer_model: run.implementer_model,
                 reviewer_model: run.reviewer_model,
@@ -3488,5 +3478,21 @@ mod forwarding_tests {
             let args = os(&["run", flag, "--detach", "--detach"]);
             assert_eq!(super::without_detach_flag(&args), os(&["run", flag, "--detach"]), "{flag}");
         }
+    }
+}
+
+/// `orq run pause <run>`: ask a running run to stop at its next stage boundary.
+fn run_pause(args: &[OsString]) -> ExitCode {
+    let [run_id] = args else { return usage_error() };
+    let Some(run_id) = run_id.to_str() else { return usage_error() };
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    match orq_orchestrator::request_pause(&orq_orchestrator::RunStore::new(&root), run_id) {
+        Ok(()) => {
+            println!("Pause requested for run {run_id}; it stops at the next stage boundary.");
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(message),
     }
 }

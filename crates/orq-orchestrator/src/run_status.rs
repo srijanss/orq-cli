@@ -39,6 +39,52 @@ pub enum RunPhase {
     Failed,
     /// Waiting on a human, for example a rebase conflict.
     Blocked,
+    /// A pause was asked for; the run keeps going until it reaches a stage boundary.
+    PauseRequested,
+    /// The run stopped at a stage boundary and can be resumed.
+    Paused,
+}
+
+impl RunPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunPhase::Running => "running",
+            RunPhase::Completed => "completed",
+            RunPhase::Failed => "failed",
+            RunPhase::Blocked => "blocked",
+            RunPhase::PauseRequested => "pause_requested",
+            RunPhase::Paused => "paused",
+        }
+    }
+}
+
+/// Ask a running run to pause at its next stage boundary. Refused for any other phase, so a
+/// finished run is never marked as pausing.
+pub fn request_pause(store: &RunStore, run_id: &str) -> Result<(), String> {
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    let events = store.events(run_id).map_err(|e| e.to_string())?;
+    let phase = summarize_run(&events).phase;
+    match phase {
+        RunPhase::Running => {}
+        RunPhase::PauseRequested | RunPhase::Paused => {
+            return Err(format!("{run_id} is already {}", phase.as_str()));
+        }
+        other => return Err(format!("{run_id} is {}; only a running run can be paused", other.as_str())),
+    }
+    store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: next_event_id(run_id),
+            run_id: record.run_id,
+            project_id: record.project_id,
+            feature_id: record.feature_id,
+            kind: "run.pause_requested".to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: now_rfc3339(),
+            payload: serde_json::json!({}),
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +103,17 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
     let mut summary = RunSummary { phase: RunPhase::Running, stage: None, reason: None };
     for event in events {
         let phase = match event.kind.as_str() {
+            // A requested pause or a pause itself outlives the stages that finish around it.
+            "stage.started" | "stage.completed" | "stage.skipped"
+                if matches!(summary.phase, RunPhase::PauseRequested | RunPhase::Paused) =>
+            {
+                summary.stage = event.stage.clone();
+                continue;
+            }
             "stage.started" | "stage.completed" | "stage.skipped" => RunPhase::Running,
+            "run.pause_requested" if summary.phase == RunPhase::Running => RunPhase::PauseRequested,
+            "run.paused" if summary.phase == RunPhase::PauseRequested => RunPhase::Paused,
+            "run.resumed" if summary.phase == RunPhase::Paused => RunPhase::Running,
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
             "worktree.removed" => RunPhase::Completed,
