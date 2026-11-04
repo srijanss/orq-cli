@@ -78,8 +78,11 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
         } else if name == MCP_JSON {
             // Ignore rules cannot keep a tracked file out of a commit, so values from the main
             // checkout are never written into one.
-            if is_tracked(worktree, name) {
+            let tracked = is_tracked(worktree, name);
+            if tracked == Some(true) {
                 found.notes.push(format!("{name} is tracked by git in the worktree; the main checkout's values were not merged into it"));
+            } else if tracked.is_none() {
+                found.notes.push(format!("whether {name} is tracked by git could not be checked; the main checkout's values were not merged into it"));
             } else if let Err(why) = exclude_locally(worktree, name) {
                 // Credentials must not land in a file git could offer for staging.
                 found.notes.push(format!("{name} was not merged: {why}"));
@@ -125,14 +128,15 @@ fn crosses_symlink(root: &Path, name: &str) -> bool {
     false
 }
 
-/// Whether git tracks `name` in `worktree`. When git cannot say, the file counts as tracked.
-fn is_tracked(worktree: &Path, name: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(["ls-files", "--error-unmatch", "--", name])
-        .output()
-        .map_or(true, |out| out.status.success())
+/// Whether git tracks `name` in `worktree`: `Some(false)` only when git confirms that no such path
+/// is tracked (exit code 1); any other failure leaves it unknown.
+fn is_tracked(worktree: &Path, name: &str) -> Option<bool> {
+    let out = Command::new("git").arg("-C").arg(worktree).args(["ls-files", "--error-unmatch", "--", name]).output().ok()?;
+    match out.status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// No `..`, no absolute path: only files inside the checkout can be carried.

@@ -241,3 +241,19 @@ fn an_untracked_mcp_json_is_only_merged_into_once_git_ignores_it() {
     assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), own, "left unchanged when it cannot be ignored");
     assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("not merged")), "{:?}", found.notes);
 }
+
+#[test]
+fn a_git_failure_while_checking_whether_mcp_json_is_tracked_blocks_the_merge() {
+    let (repo, worktree) = checkout("tracked-check-fails");
+    let own = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
+    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+    fs::write(worktree.join(".mcp.json"), own).unwrap();
+    // A corrupt index makes git exit with a fatal error rather than "no such path".
+    let git_dir = std::path::PathBuf::from(git_out(&worktree, &["rev-parse", "--absolute-git-dir"]).trim());
+    fs::write(git_dir.join("index"), "not an index").unwrap();
+
+    let found = carry_local_files(repo.root(), &worktree, None);
+
+    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), own, "unchanged when tracking cannot be established");
+    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("could not be checked")), "{:?}", found.notes);
+}
