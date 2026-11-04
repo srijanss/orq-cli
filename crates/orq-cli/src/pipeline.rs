@@ -375,6 +375,12 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             }
         }
     }
+    // The sessions the paused run already ran stay queryable from the resumed run, whatever model it continues on.
+    if let Some(from) = resumed.as_ref().map(|r| r.from.run_id.as_str()) {
+        if let Err(err) = orq_orchestrator::carry_session_references(&store, &record, from) {
+            eprintln!("orq: cannot carry the sessions of {from} into {run_id}: {err:?}");
+        }
+    }
     // A paused run handed its checkout to this run; it no longer holds it.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
         let was_paused = store.events(&from.run_id).map(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::Paused).unwrap_or(false);

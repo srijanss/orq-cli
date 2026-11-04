@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use orq_orchestrator::RunStore;
+use orq_orchestrator::{carry_session_references, session_references, Event, RoleProfile, RunRecord, RunStore};
 use orq_test_support::{write_ledger, FakeAgent, FakeProvider, GitFixture, LedgerEntry};
 
 const PR_URL: &str = "https://github.example/o/r/pull/7";
@@ -254,4 +255,87 @@ fn a_resume_restores_the_model_the_run_was_started_with_after_the_setting_is_gon
     let out = resume(&w, &run_id);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(store.load(&resumed_run(&store, &run_id)).unwrap().profiles["implementer"].model, "haiku");
+}
+
+#[test]
+fn a_switch_keeps_the_sessions_already_run_queryable_with_their_harness_and_model() {
+    let agent = agent();
+    let w = world("sessions", &agent);
+    setup_profiles(&w);
+    let (run_id, store) = start_paused(&w);
+    let had = store.load(&run_id).unwrap().profiles["implementer"].clone();
+    let events_before = store.events(&run_id).unwrap().len();
+
+    request(&w, &run_id, "implementer", "slow-claude");
+    let out = resume(&w, &run_id);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let new_id = resumed_run(&store, &run_id);
+    let sessions = orq_orchestrator::session_references(&store, &new_id).unwrap();
+    let first = sessions.iter().find(|s| s.run_id == run_id && s.stage == "implement_and_review").expect("the paused run's implement session");
+    assert_eq!((first.role.as_str(), first.harness.as_str(), first.model.as_str()), ("implementer", had.harness.as_str(), had.model.as_str()));
+    // Nothing of the paused run's history was deleted or overwritten (only the switch request and the resume were added).
+    assert!(store.events(&run_id).unwrap().len() >= events_before);
+    assert_eq!(store.load(&run_id).unwrap().profiles["implementer"], had);
+}
+
+
+fn chain_record(id: &str, model: &str) -> RunRecord {
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        "implementer".to_string(),
+        RoleProfile { harness: "claude".into(), model: model.into(), thinking: None },
+    );
+    RunRecord {
+        run_id: id.into(),
+        project_id: "p".into(),
+        feature_id: "F".into(),
+        remote: "origin".into(),
+        provider: "github".into(),
+        target_branch: "main".into(),
+        base_sha: "a".repeat(40),
+        branch: "orq/x".into(),
+        worktree: std::path::PathBuf::from("/tmp/none"),
+        repository: String::new(),
+        profiles,
+    }
+}
+
+fn chain_session_started(run: &str, stage: &str, session: Option<&str>) -> Event {
+    Event {
+        schema_version: 1,
+        event_id: format!("{run}-{stage}"),
+        run_id: run.into(),
+        project_id: "p".into(),
+        feature_id: "F".into(),
+        kind: "stage.started".into(),
+        stage: Some(stage.into()),
+        attempt: 1,
+        occurred_at: "2026-11-02T10:00:00Z".into(),
+        payload: serde_json::json!({ "session_id": session, "log": "/tmp/x.log" }),
+    }
+}
+
+#[test]
+fn sessions_of_every_earlier_run_in_a_chain_stay_queryable_and_history_is_untouched() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-session-refs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = RunStore::new(&dir);
+    for (id, model) in [("run-1", "sonnet"), ("run-2", "opus"), ("run-3", "opus")] {
+        store.create(&chain_record(id, model)).unwrap();
+    }
+    store.append_event(&chain_session_started("run-1", "implement_and_review", Some("sess-1"))).unwrap();
+    store.append_event(&chain_session_started("run-2", "gate_fix", None)).unwrap();
+    let before = store.events("run-1").unwrap();
+
+    carry_session_references(&store, &store.load("run-2").unwrap(), "run-1").unwrap();
+    carry_session_references(&store, &store.load("run-3").unwrap(), "run-2").unwrap();
+
+    let refs = session_references(&store, "run-3").unwrap();
+    assert_eq!(refs.len(), 2, "{refs:?}");
+    assert_eq!((refs[0].run_id.as_str(), refs[0].stage.as_str(), refs[0].model.as_str(), refs[0].session_id.as_deref()), ("run-1", "implement_and_review", "sonnet", Some("sess-1")));
+    assert_eq!((refs[1].run_id.as_str(), refs[1].stage.as_str(), refs[1].model.as_str(), refs[1].session_id.as_deref()), ("run-2", "gate_fix", "opus", None));
+    assert_eq!(refs[0].harness, "claude");
+    assert_eq!(refs[0].role, "implementer");
+    assert_eq!(store.events("run-1").unwrap(), before);
 }
