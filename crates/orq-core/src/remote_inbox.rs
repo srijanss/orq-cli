@@ -22,6 +22,8 @@ pub struct RemoteConfig {
 
 /// Shortest token accepted from the token file.
 const MIN_TOKEN_LEN: usize = 32;
+/// Largest token file read; a bigger one is refused, never cut short.
+const MAX_TOKEN_FILE: u64 = 4096;
 
 impl RemoteConfig {
     /// Where the token lives: its own file in Orq's config directory.
@@ -45,11 +47,18 @@ impl RemoteConfig {
         if !meta.is_file() {
             return Err("the remote token file must be a regular file".into());
         }
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err("the remote token file must belong to the user running the server".into());
+        }
         if meta.mode() & 0o077 != 0 {
             return Err("the remote token file must be readable by its owner only (chmod 600)".into());
         }
         let mut text = String::new();
-        file.take(4096).read_to_string(&mut text).map_err(|e| format!("cannot read the remote token file: {}", e.kind()))?;
+        file.take(MAX_TOKEN_FILE + 1).read_to_string(&mut text).map_err(|e| format!("cannot read the remote token file (is it text?): {}", e.kind()))?;
+        if text.len() as u64 > MAX_TOKEN_FILE {
+            return Err(format!("the remote token file is larger than {MAX_TOKEN_FILE} bytes"));
+        }
         let token = text.trim().to_string();
         if token.len() < MIN_TOKEN_LEN || token.chars().any(|c| c.is_control() || c.is_whitespace()) {
             return Err(format!("the remote token must be at least {MIN_TOKEN_LEN} characters with no spaces"));

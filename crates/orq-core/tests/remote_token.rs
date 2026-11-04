@@ -33,9 +33,18 @@ fn a_missing_group_readable_short_empty_or_linked_token_file_is_refused_without_
     write(&roots, GOOD, 0o640);
     let why = RemoteConfig::load(&roots).err().unwrap();
     assert!(!why.contains(GOOD), "{why}");
-    write(&roots, "short", 0o600);
+    write(&roots, "SENTINELSHORT", 0o600);
     let why = RemoteConfig::load(&roots).err().unwrap();
-    assert!(!why.contains("short\n") || why.len() < 200, "{why}");
+    assert!(!why.contains("SENTINELSHORT"), "{why}");
+    write(&roots, &format!("{GOOD} SENTINELSPACE"), 0o600);
+    let why = RemoteConfig::load(&roots).err().unwrap();
+    assert!(!why.contains("SENTINELSPACE"), "{why}");
+    write(&roots, &format!("{GOOD}\u{7}"), 0o600);
+    assert!(RemoteConfig::load(&roots).is_err(), "control");
+    let path = RemoteConfig::token_path(&roots);
+    std::fs::write(&path, [0xffu8; 40]).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(RemoteConfig::load(&roots).is_err(), "not utf-8");
     write(&roots, "  \n", 0o600);
     assert!(RemoteConfig::load(&roots).is_err(), "empty");
 
@@ -63,4 +72,14 @@ fn a_stranger_and_a_wrong_token_get_exactly_the_same_refusal() {
     assert_eq!(stranger, wrong);
     assert_eq!(wrong, none);
     assert_eq!(stranger.0, 401);
+}
+
+#[test]
+fn an_oversized_token_file_is_refused_not_cut_short() {
+    let roots = roots("big");
+    write(&roots, &format!("{GOOD}{}", "x".repeat(5000)), 0o600);
+    assert!(RemoteConfig::load(&roots).is_err());
+    // Exactly at the limit is a long token, accepted.
+    write(&roots, &"x".repeat(4096), 0o600);
+    assert_eq!(RemoteConfig::load(&roots).unwrap().token.len(), 4096);
 }

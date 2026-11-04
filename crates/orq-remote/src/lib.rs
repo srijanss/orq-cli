@@ -82,11 +82,14 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
-    let (path_for_log, method_for_log) = (path.clone(), method.clone());
+
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
         let reply = remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request);
+        if reply.status == 401 {
+            log_refusal(peer.ip(), request.method, request.path);
+        }
         // Serializing a large report is work too, so it stays off the async workers.
         let body = reply.body_bytes();
         (reply.status, body)
@@ -94,11 +97,7 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     .await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     let (code, body) = reply;
-    if code == 401 {
-        // The peer and a bounded, escaped path only; never the Authorization header.
-        let shown: String = path_for_log.chars().take(100).flat_map(char::escape_default).collect();
-        eprintln!("orq-remote: refused {} {} {shown}", peer.ip(), method_for_log);
-    }
+
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, body).into_response();
     let headers = response.headers_mut();
@@ -106,4 +105,26 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     response
+}
+
+/// Most refusal lines written per second; the rest are dropped so unauthenticated
+/// traffic cannot turn into unlimited logging I/O.
+const LOG_PER_SECOND: u32 = 10;
+
+/// Logs the peer, method and a bounded, escaped path; never the Authorization
+/// header. Runs on a blocking thread, so a slow stderr cannot stall the workers.
+fn log_refusal(peer: std::net::IpAddr, method: &str, path: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WINDOW: AtomicU64 = AtomicU64::new(0);
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if WINDOW.swap(now, Ordering::Relaxed) != now {
+        COUNT.store(0, Ordering::Relaxed);
+    }
+    if COUNT.fetch_add(1, Ordering::Relaxed) >= u64::from(LOG_PER_SECOND) {
+        return;
+    }
+    let shown: String = path.chars().take(100).flat_map(char::escape_default).collect();
+    let method: String = method.chars().take(16).flat_map(char::escape_default).collect();
+    eprintln!("orq-remote: refused {peer} {method} {shown}");
 }
