@@ -55,6 +55,17 @@ pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionR
     Ok(all)
 }
 
+/// The session id a `harness` may continue: the latest one that same harness recorded. A session id
+/// belongs to the harness that issued it, so another harness (after a model switch) gets none and
+/// starts a fresh session from the handoff instead.
+pub fn resumable_session(store: &RunStore, run_id: &str, harness: &str) -> Result<Option<String>, StoreError> {
+    Ok(session_references(store, run_id)?
+        .into_iter()
+        .rev()
+        .filter(|r| r.harness == harness)
+        .find_map(|r| r.session_id))
+}
+
 /// Copy the sessions `from_run_id` knows into `record`'s run as a `run.sessions_carried` event.
 /// Only appends to the new run; the earlier run's records are left as they are.
 pub fn carry_session_references(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {

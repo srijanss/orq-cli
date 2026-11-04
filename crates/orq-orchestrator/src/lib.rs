@@ -46,7 +46,7 @@ pub use handoff::{handoff_prompt, read_handoff, write_handoff, DiffFile, GateRes
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
 pub use launch::record_launch;
 pub use local_files::{carry_local_files, LocalFiles};
-pub use session_references::{carry_session_references, session_references, SessionReference};
+pub use session_references::{carry_session_references, resumable_session, session_references, SessionReference};
 pub use session_settings::{exclude_worktrees_dir, setup_mcp_servers, write_session_settings};
 pub use orq_written::record_orq_written;
 pub use pane::{record_pane, run_pane, PaneRef};
