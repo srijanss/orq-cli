@@ -20,7 +20,7 @@ impl SummaryConfig {
     /// Reads the `[review_summary]` table of a config file. `None` means the
     /// summary is off, which is the default; turning it on needs a model.
     pub fn parse(text: &str) -> Result<Option<SummaryConfig>, String> {
-        let doc: toml_edit::DocumentMut = text.parse().map_err(|err| format!("the config file is not valid TOML: {err}"))?;
+        let doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| format!("the config file is not valid TOML ({})", err.message()))?;
         let Some(item) = doc.get("review_summary") else { return Ok(None) };
         let table = item.as_table_like().ok_or("[review_summary] must be a table")?;
         let mut enabled = false;

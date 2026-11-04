@@ -37,6 +37,7 @@ impl Sandbox {
         command.env("XDG_CONFIG_HOME", self.home.join("config"));
         command.env("XDG_CACHE_HOME", self.home.join("cache"));
         command.env("PATH", format!("{}:{}", self.home.join("bin").display(), std::env::var("PATH").unwrap()));
+        command.env("ORQ_REVIEW_SUMMARY_TIMEOUT_MS", "1500");
         command.env_remove("HERDR_ACTIVE_PANE_CWD");
         command.output().unwrap()
     }
@@ -97,4 +98,42 @@ fn a_failing_model_or_bad_config_still_builds_the_report_without_a_summary() {
     let value = report(&sandbox);
     assert!(value.get("generated_summary").is_none(), "{value}");
     assert!(value["gaps"].to_string().contains("review_summary"), "{value}");
+}
+
+fn enabled(tag: &str, body: &str) -> (serde_json::Value, std::time::Duration) {
+    let sandbox = Sandbox::new(tag);
+    sandbox.config("[review_summary]\nenabled = true\nmodel = \"haiku\"\n");
+    sandbox.fake_claude(body);
+    let started = std::time::Instant::now();
+    let value = report(&sandbox);
+    (value, started.elapsed())
+}
+
+#[test]
+fn a_descendant_holding_stdout_open_cannot_stall_the_report_past_the_timeout() {
+    let (value, took) = enabled("descendant", "sleep 20 &\necho 'late'\nexit 0");
+    assert!(took < std::time::Duration::from_secs(15), "took {took:?}");
+    assert!(value.get("generated_summary").is_none(), "{value}");
+}
+
+#[test]
+fn a_session_that_never_finishes_is_dropped_at_the_timeout() {
+    let (value, took) = enabled("hang", "sleep 20");
+    assert!(took < std::time::Duration::from_secs(15), "took {took:?}");
+    assert!(value.get("generated_summary").is_none(), "{value}");
+}
+
+#[test]
+fn output_past_the_size_limit_is_refused_rather_than_truncated() {
+    let (value, _) = enabled("big", "head -c 200000 /dev/zero | tr '\\0' 'x'");
+    assert!(value.get("generated_summary").is_none(), "{value}");
+}
+
+#[test]
+fn a_config_parse_error_does_not_copy_config_text_into_the_report() {
+    let sandbox = Sandbox::new("secret");
+    sandbox.config("token = \"SENTINEL-SECRET-VALUE\nmore = 1\n");
+    sandbox.fake_claude("echo nope");
+    let value = report(&sandbox);
+    assert!(!value.to_string().contains("SENTINEL-SECRET-VALUE"), "{value}");
 }

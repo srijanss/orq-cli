@@ -50,9 +50,12 @@ fn add_model_summary(roots: &StorageRoots, report: &mut serde_json::Value) {
     });
 }
 
-/// Runs the one-shot session in `cwd` (not the project), returning its stdout; killed after the timeout.
+/// Runs the one-shot session in `cwd` (not the project) and returns its stdout. The deadline covers the whole
+/// run, including a descendant that keeps stdout open after the session exits; output past the size limit is
+/// refused rather than truncated.
 fn run_summary_session(program: &Path, argv: &[String], cwd: &Path) -> Result<String, String> {
     use std::io::Read;
+    const MAX_OUTPUT: u64 = 64 * 1024;
     let mut child = std::process::Command::new(program)
         .args(argv)
         .current_dir(cwd)
@@ -62,28 +65,46 @@ fn run_summary_session(program: &Path, argv: &[String], cwd: &Path) -> Result<St
         .spawn()
         .map_err(|err| err.to_string())?;
     let mut stdout = child.stdout.take().ok_or("no output")?;
-    let reader = std::thread::spawn(move || {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // Detached on a timeout: it ends when the pipe closes, and nothing waits for it.
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut bytes);
-        bytes
+        let _ = stdout.by_ref().take(MAX_OUTPUT + 1).read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
     });
-    let deadline = std::time::Instant::now() + SUMMARY_TIMEOUT;
-    let status = loop {
-        match child.try_wait().map_err(|err| err.to_string())? {
-            Some(status) => break status,
-            None if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("the summary session timed out".to_string());
+    let deadline = std::time::Instant::now() + summary_timeout();
+    let outcome = (|| {
+        let status = loop {
+            match child.try_wait().map_err(|err| err.to_string())? {
+                Some(status) => break status,
+                None if std::time::Instant::now() >= deadline => return Err("the summary session timed out".to_string()),
+                None => std::thread::sleep(std::time::Duration::from_millis(25)),
             }
-            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let bytes = receiver.recv_timeout(left).map_err(|_| "the summary output did not finish in time".to_string())?;
+        if !status.success() {
+            return Err(format!("the summary session exited with {status}"));
         }
-    };
-    let bytes = reader.join().map_err(|_| "reader failed".to_string())?;
-    if !status.success() {
-        return Err(format!("the summary session exited with {status}"));
+        if bytes.len() as u64 > MAX_OUTPUT {
+            return Err("the summary output is too large".to_string());
+        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    })();
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    outcome
+}
+
+/// The session's time limit; `ORQ_REVIEW_SUMMARY_TIMEOUT_MS` shortens it for tests.
+fn summary_timeout() -> std::time::Duration {
+    std::env::var("ORQ_REVIEW_SUMMARY_TIMEOUT_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(SUMMARY_TIMEOUT)
 }
 
 fn roots() -> Result<StorageRoots, String> {
