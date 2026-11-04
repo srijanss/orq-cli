@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use orq_orchestrator::derive_worktree_databases;
+use orq_orchestrator::{derive_worktree_databases, derive_worktree_databases_with};
 
 fn main_checkout(tag: &str, dotenv: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-worktree-db-{}-{tag}", std::process::id()));
@@ -148,4 +148,35 @@ fn a_sqlite_file_url_keeps_its_directory_and_extension_and_a_url_without_a_datab
     assert_eq!(drop_names(&found), [("DB_FILE", "shop_fix_com_01")]);
     assert!(found.notes.iter().any(|n| n.contains("MEM")) && found.notes.iter().any(|n| n.contains("CACHE")), "{:?}", found.notes);
     assert!(found.notes.iter().all(|n| !n.contains("hunter2")), "no secret in a note: {:?}", found.notes);
+}
+
+#[test]
+fn a_name_template_places_the_main_name_and_the_branch_part_where_the_repo_wants_them() {
+    let main = main_checkout("template", "DB_NAME=shop\nDATABASE_URL=postgres://u@h/shop\n");
+
+    let found = derive_worktree_databases_with(&main, &names(&["DB_NAME", "DATABASE_URL"]), "fix--COM-01", true, Some("wt_{branch}__{name}"));
+
+    assert_eq!(pairs(&found), [("DB_NAME", "wt_fix_com_01__shop"), ("DATABASE_URL", "postgres://u@h/wt_fix_com_01__shop")]);
+    assert_eq!(drop_names(&found), [("DB_NAME", "wt_fix_com_01__shop"), ("DATABASE_URL", "wt_fix_com_01__shop")]);
+}
+
+#[test]
+fn a_template_without_the_branch_placeholder_or_with_odd_characters_isolates_nothing() {
+    let main = main_checkout("bad-template", "DB_NAME=shop\n");
+
+    for template in ["{name}_fixed", "{name}-{branch}", "{name}_{branch}; drop"] {
+        let found = derive_worktree_databases_with(&main, &names(&["DB_NAME"]), "b1", true, Some(template));
+        assert!(found.names.is_empty(), "{template}: {:?}", found.names);
+        assert!(found.notes.iter().any(|n| n.contains("db_name_template")), "{template}: {:?}", found.notes);
+    }
+}
+
+#[test]
+fn a_long_branch_still_fits_64_characters_with_a_template() {
+    let main = main_checkout("template-long", "DB_NAME=shop\n");
+
+    let found = derive_worktree_databases_with(&main, &names(&["DB_NAME"]), &format!("feature/{}", "x".repeat(80)), true, Some("wt_{branch}__{name}"));
+
+    let name = &found.names[0].1;
+    assert!(name.len() + "test_".len() <= 64 && name.ends_with("__shop") && name.starts_with("wt_"), "{name}");
 }

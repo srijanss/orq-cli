@@ -28,7 +28,17 @@ pub struct WorktreeDatabases {
 /// checkout's dotenv file gives a plain database name. `named_by_repo` is whether the repository
 /// chose `vars` itself; only then is a variable the file lacks worth a note.
 pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: &str, named_by_repo: bool) -> WorktreeDatabases {
+    derive_worktree_databases_with(main_checkout, vars, branch, named_by_repo, None)
+}
+
+/// The template a database name is built from when the repository sets none.
+const DEFAULT_TEMPLATE: &str = "{name}_{branch}";
+
+/// [`derive_worktree_databases`] with the shape of the new name chosen: `template` holds `{name}` (the
+/// main database name) and `{branch}` (the branch part) next to letters, digits and underscores.
+pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], branch: &str, named_by_repo: bool, template: Option<&str>) -> WorktreeDatabases {
     let mut found = WorktreeDatabases::default();
+    let template = template.unwrap_or(DEFAULT_TEMPLATE);
     let text = match std::fs::read_to_string(main_checkout.join(".env")) {
         Ok(text) => text,
         // No dotenv file simply means there is nothing to isolate.
@@ -38,6 +48,12 @@ pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: 
             return found;
         }
     };
+    // Without {branch} every worktree would share one database; anything else could not be a name.
+    let leftover = template.replace("{name}", "").replace("{branch}", "");
+    if !template.contains("{branch}") || !leftover.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        found.notes.push("db_name_template must contain {branch} and otherwise only letters, digits, underscores and {name}; the databases are not isolated".to_string());
+        return found;
+    }
     let slug = branch_slug(branch);
     for var in vars {
         let Some(main) = dotenv_value(&text, var) else {
@@ -54,8 +70,9 @@ pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: 
             }
         };
         let name = &target.name;
-        // "test_" + <main> + "_" + <branch part>
-        let room = MAX_DATABASE_NAME.saturating_sub(TEST_PREFIX.len() + name.len() + 1);
+        // "test_" + the template without its branch part
+        let fixed = template.replace("{name}", name).replace("{branch}", "").len();
+        let room = MAX_DATABASE_NAME.saturating_sub(TEST_PREFIX.len() + fixed);
         let part = if slug.len() <= room {
             slug.clone()
         } else {
@@ -67,7 +84,7 @@ pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: 
             }
             format!("{}_{hash}", &slug[..keep])
         };
-        let isolated = format!("{name}_{part}");
+        let isolated = template.replace("{name}", name).replace("{branch}", &part);
         found.env.push((var.clone(), format!("{}{isolated}{}", target.head, target.tail)));
         found.names.push((var.clone(), isolated));
     }
