@@ -123,6 +123,7 @@ fn config<'a>(w: &'a World, gate: &'a Gate, max_attempts: u32) -> CiFixConfig<'a
         gate_log: Box::leak(w.root.join("gate.log").into_boxed_path()),
         log_dir: Box::leak(w.worktree.join(".orq").into_boxed_path()),
         max_attempts,
+        env: &[],
     }
 }
 
@@ -475,4 +476,16 @@ fn a_failure_log_left_by_an_earlier_invocation_is_kept_and_the_loop_still_procee
         .collect();
     assert_eq!(seen.len(), 1);
     assert_eq!(fs::read_to_string(&seen[0]).unwrap(), "boom: build\n", "the session was given the fresh log");
+}
+
+#[test]
+fn the_gate_that_follows_a_ci_fix_runs_with_the_run_environment() {
+    let w = world("gate-env");
+    let gate = Gate::Steps { steps: vec![sh("test \"$TDD_DB\" = test_shop && test -f fixed")], notes: Vec::new() };
+    let env = vec![("TDD_DB".to_string(), "test_shop".to_string())];
+    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "touch fixed");
+
+    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &CiFixConfig { env: &env, ..config(&w, &gate, 1) }, &mut script).unwrap();
+
+    assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
 }

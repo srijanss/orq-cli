@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{run_gate_with_fixes, FixSessionSpec, Gate, GateFixOutcome, RunRecord, RunStore};
+use orq_orchestrator::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, Gate, GateFixOutcome, RunRecord, RunStore};
 
 struct World {
     store: RunStore,
@@ -258,4 +258,16 @@ fn an_unknown_run_is_an_error_and_no_fix_session_is_asked_for() {
 
     assert!(result.is_err());
     assert_eq!(*calls.borrow(), 0);
+}
+
+#[test]
+fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
+    let w = world("env");
+    let gate = Gate::Steps { steps: vec![sh("test \"$TDD_DB\" = test_shop && test -f fixed")], notes: Vec::new() };
+    let env = vec![("TDD_DB".to_string(), "test_shop".to_string())];
+
+    let outcome =
+        run_gate_with_fixes_env(&w.store, "run-1", &gate, true, &w.gate_log, 2, &env, |_, _| spec(&w, "touch fixed")).unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 }, "the first run failed only for want of the fix, not the variable");
 }

@@ -35,6 +35,8 @@ pub struct CiFixConfig<'a> {
     /// Where each attempt's failure log is written (created if missing).
     pub log_dir: &'a Path,
     pub max_attempts: u32,
+    /// Set for every gate run after a fix.
+    pub env: &'a [(String, String)],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +101,7 @@ pub fn run_ci_fix_loop(
         // The session's own result is not trusted: the gate and CI decide.
         run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
 
-        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts, &[])? {
+        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts, config.env)? {
             GateOutcome::Passed | GateOutcome::Skipped { .. } => {}
             GateOutcome::Failed { step, exit_code } => {
                 let reason = format!("the gate failed after CI fix attempt {fix_attempts}; nothing was pushed");

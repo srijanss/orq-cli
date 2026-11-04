@@ -42,11 +42,26 @@ pub fn run_gate_with_fixes(
     enabled: bool,
     gate_log: &Path,
     max_attempts: u32,
+    fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
+) -> Result<GateFixOutcome, StoreError> {
+    run_gate_with_fixes_env(store, run_id, gate, enabled, gate_log, max_attempts, &[], fixer)
+}
+
+/// Like [`run_gate_with_fixes`], with `env` set for every run of the gate.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gate_with_fixes_env(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    max_attempts: u32,
+    env: &[(String, String)],
     mut fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
-        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1, &[])? {
+        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1, env)? {
             GateOutcome::Passed => return Ok(GateFixOutcome::Passed { fix_attempts }),
             GateOutcome::Skipped { reason } => return Ok(GateFixOutcome::Skipped { reason }),
             GateOutcome::Failed { step, exit_code } => {
