@@ -3627,11 +3627,36 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         Ok(plan) => return fail(format!("cannot resume {}: {} is a later run of the same features; resume that one", printable(&run_id), printable(&plan.from.run_id))),
         Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
     }
+    let repo_root = repo.clone();
     let mut forwarded: Vec<OsString> = vec!["--repo".into(), repo.into_os_string(), "--remote".into(), record.remote.into(), "--target".into(), record.target_branch.into(), "--resume".into()];
     if members.len() > 1 {
         forwarded.extend(["--group".into(), members.join(",").into()]);
     } else {
         forwarded.extend(["--feature".into(), members[0].clone().into()]);
+    }
+    // Each role continues on the profile last requested for it, else on the profile it had.
+    let events = store.events(&run_id).unwrap_or_default();
+    let known = match load_model_config(&repo_root) {
+        Ok((profiles, _)) => profiles,
+        Err(message) => return fail(message),
+    };
+    for role in ["implementer", "reviewer"] {
+        let requested = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "run.model_switch_requested" && e.payload["role"] == role)
+            .and_then(|e| e.payload["profile"].as_str().map(str::to_string));
+        let name = requested.or_else(|| {
+            let had = record.profiles.get(role)?;
+            known
+                .profiles()
+                .iter()
+                .find(|p| p.harness == had.harness && p.model == had.model && p.thinking == had.thinking)
+                .map(|p| p.name.clone())
+        });
+        if let Some(name) = name {
+            forwarded.extend([format!("--{role}").into(), name.into()]);
+        }
     }
     if no_ci_check {
         forwarded.push("--no-ci-check".into());

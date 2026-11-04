@@ -330,6 +330,18 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
             return Err(other(message));
         }
     }
+    // A model that differs from the paused run's is a switch: record what it was and what it is.
+    if let Some(from) = resumed.as_ref().map(|r| &r.from) {
+        for (role, now) in &record.profiles {
+            let Some(was) = from.profiles.get(role) else { continue };
+            if was == now {
+                continue;
+            }
+            if let Err(err) = orq_orchestrator::record_model_switched(&store, &record, role, was, now) {
+                eprintln!("orq: cannot record the model switch of {run_id}: {err:?}");
+            }
+        }
+    }
     // A paused run handed its checkout to this run; it no longer holds it.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
         let was_paused = store.events(&from.run_id).map(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::Paused).unwrap_or(false);

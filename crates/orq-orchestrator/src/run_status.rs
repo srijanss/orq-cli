@@ -112,6 +112,28 @@ pub fn request_model_switch(store: &RunStore, run_id: &str, role: &str, profile:
         .map_err(|e| e.to_string())
 }
 
+/// Record that `role` of a resumed run continues on another profile than the paused run's.
+pub fn record_model_switched(
+    store: &RunStore,
+    record: &RunRecord,
+    role: &str,
+    from: &crate::store::RoleProfile,
+    to: &crate::store::RoleProfile,
+) -> Result<(), StoreError> {
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "run.model_switched".to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "role": role, "from": from, "to": to }),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
     pub phase: RunPhase,

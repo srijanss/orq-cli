@@ -61,7 +61,7 @@ pub use review_request::{
 };
 pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
 pub use run_settings::{load_run_settings, save_mcp_servers_setting, model as checked_model, RunSettings, SettingsError};
-pub use run_status::{record_run_completed, request_model_switch, request_pause, summarize_run, RunPhase, RunSummary};
+pub use run_status::{record_model_switched, record_run_completed, request_model_switch, request_pause, summarize_run, RunPhase, RunSummary};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};
 pub use worktree_databases::{derive_worktree_databases, derive_worktree_databases_with, drop_test_databases, drop_test_databases_within, WorktreeDatabases};
