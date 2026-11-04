@@ -113,7 +113,7 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
 }
 
 /// Whether any directory leading to `name` under `root` is a symbolic link.
-fn crosses_symlink(root: &Path, name: &str) -> bool {
+pub(crate) fn crosses_symlink(root: &Path, name: &str) -> bool {
     let mut path = root.to_path_buf();
     let mut parts = Path::new(name).components().peekable();
     while let Some(part) = parts.next() {
@@ -163,7 +163,7 @@ fn escape_pattern(name: &str) -> String {
 }
 
 /// It succeeds only once git reports `name` as ignored.
-fn exclude_locally(worktree: &Path, name: &str) -> Result<(), String> {
+pub(crate) fn exclude_locally(worktree: &Path, name: &str) -> Result<(), String> {
     let git = |args: &[&str]| Command::new("git").arg("-C").arg(worktree).args(args).output();
     let ignored = || git(&["check-ignore", "-q", "--", name]).is_ok_and(|out| out.status.success());
     if ignored() {
