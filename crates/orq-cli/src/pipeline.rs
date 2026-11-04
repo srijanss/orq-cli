@@ -421,14 +421,44 @@ fn push_to_claude_app(message: &str) {
         }
     };
     let quiet = std::process::Stdio::null;
-    // Outside the repository, so its instructions and settings do not reach the session, and in a process group
-    // of its own, so the end of the run's terminal session does not take it down.
+    let home = match private_session_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("orq: cannot send the Claude push notification: no private directory for the session: {err}");
+            return;
+        }
+    };
+    // In a directory made for this session alone, so no repository and no file planted in the shared temp
+    // dir supplies it instructions; project memory loading is also switched off. In a process group of its
+    // own, so the end of the run's terminal session does not take it down.
     let mut command = Command::new(program);
-    command.args(&argv).current_dir(std::env::temp_dir()).stdin(quiet()).stdout(quiet()).stderr(quiet());
+    command
+        .args(&argv)
+        .current_dir(&home)
+        .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1")
+        .stdin(quiet())
+        .stdout(quiet())
+        .stderr(quiet());
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     if let Err(err) = command.spawn() {
         eprintln!("orq: cannot send the Claude push notification: {err}");
     }
+}
+
+/// A new empty directory under the temp dir that only this user can enter. Created exclusively, so one
+/// somebody else made first is never reused.
+fn private_session_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    for attempt in 0..16u32 {
+        let dir = std::env::temp_dir().join(format!("orq-push-{}-{nanos}-{attempt}", std::process::id()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no unused directory name"))
 }
 
 /// The number `git rev-list --count` printed. A failed git or unreadable output is an error: an

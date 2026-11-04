@@ -986,6 +986,16 @@ fn claude_push_sends_the_run_end_to_the_claude_app_through_a_print_session() {
     let args = push_session(&agent).unwrap();
     assert!(args.iter().any(|a| a == "-p"), "{args:?}");
     assert!(args.last().unwrap().contains("COM-01 review_ready"), "{args:?}");
+
+    // The session starts in a directory made for it alone: not the shared temp dir (where anyone could plant
+    // a CLAUDE.md), not the repository, and closed to other users.
+    use std::os::unix::fs::PermissionsExt;
+    let cwd = agent.last_run().unwrap().cwd;
+    let shared = std::env::temp_dir();
+    assert_ne!(cwd.canonicalize().unwrap(), shared.canonicalize().unwrap(), "{cwd:?}");
+    assert!(cwd.canonicalize().unwrap().starts_with(shared.canonicalize().unwrap()), "{cwd:?}");
+    assert!(!cwd.starts_with(w.repo.root()), "{cwd:?}");
+    assert_eq!(std::fs::metadata(&cwd).unwrap().permissions().mode() & 0o777, 0o700, "{cwd:?}");
 }
 
 #[test]
