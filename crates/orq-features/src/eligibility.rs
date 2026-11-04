@@ -99,6 +99,8 @@ pub fn check_run_eligibility<'a>(
 pub enum GroupRefusal {
     /// One member may not start, or has a dependency outside the group that is not completed.
     Feature { id: String, reason: Ineligible },
+    /// The same feature is named more than once.
+    Duplicate(String),
     /// These members wait on each other (or on a feature that does), so none can go first.
     Cycle(Vec<String>),
 }
@@ -107,6 +109,7 @@ impl std::fmt::Display for GroupRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GroupRefusal::Feature { id, reason } => write!(f, "feature {id} may not start a run: {reason}"),
+            GroupRefusal::Duplicate(id) => write!(f, "feature {id} is named more than once"),
             GroupRefusal::Cycle(members) => write!(f, "these features depend on each other: {}", members.join(", ")),
         }
     }
@@ -118,6 +121,9 @@ impl std::error::Error for GroupRefusal {}
 /// on, and otherwise in the order given. Every member must be `pending`, and every dependency
 /// outside the group must be `completed`.
 pub fn order_run_group<'a>(ledger: &'a [FeatureEntry], ids: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    if let Some(index) = (1..ids.len()).find(|&i| ids[..i].contains(&ids[i])) {
+        return Err(GroupRefusal::Duplicate(ids[index].clone()));
+    }
     let mut members: Vec<&FeatureEntry> = Vec::with_capacity(ids.len());
     for id in ids {
         let entry = ledger.iter().find(|e| &e.feature_name == id);

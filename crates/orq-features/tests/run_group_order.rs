@@ -1,4 +1,4 @@
-use orq_features::{order_run_group, parse_ledger, GroupRefusal, Ineligible};
+use orq_features::{order_run_group, parse_ledger, GroupRefusal, Ineligible, UnmetDependency};
 
 fn ledger() -> Vec<orq_features::FeatureEntry> {
     parse_ledger(
@@ -44,39 +44,50 @@ fn a_dependency_outside_the_group_must_already_be_completed() {
     let ledger = ledger();
     // b depends on base, which is completed: fine.
     assert_eq!(names(&ledger, &["b"]), ["b"]);
+    let unmet = |ids: &[&str]| {
+        let ids: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+        order_run_group(&ledger, &ids)
+    };
     // a's dependency b is pending and outside the group.
-    let ids = vec!["a".to_string(), "c".to_string()];
-    match order_run_group(&ledger, &ids) {
-        Err(GroupRefusal::Feature { id, reason: Ineligible::UnmetDependencies(unmet) }) => {
-            assert_eq!(id, "a");
-            assert_eq!(unmet[0].name, "b");
-        }
-        other => panic!("{other:?}"),
-    }
-    let ids = vec!["needs-half".to_string()];
-    assert!(matches!(
-        order_run_group(&ledger, &ids),
-        Err(GroupRefusal::Feature { reason: Ineligible::UnmetDependencies(_), .. })
-    ));
-    let ids = vec!["needs-ghost".to_string()];
-    assert!(matches!(
-        order_run_group(&ledger, &ids),
-        Err(GroupRefusal::Feature { reason: Ineligible::UnmetDependencies(_), .. })
-    ));
+    assert_eq!(
+        unmet(&["a", "c"]),
+        Err(GroupRefusal::Feature {
+            id: "a".to_string(),
+            reason: Ineligible::UnmetDependencies(vec![UnmetDependency {
+                name: "b".to_string(),
+                status: Some("pending".to_string())
+            }]),
+        })
+    );
+    assert_eq!(
+        unmet(&["needs-half"]),
+        Err(GroupRefusal::Feature {
+            id: "needs-half".to_string(),
+            reason: Ineligible::UnmetDependencies(vec![UnmetDependency {
+                name: "half".to_string(),
+                status: Some("in_progress".to_string())
+            }]),
+        })
+    );
+    assert_eq!(
+        unmet(&["needs-ghost"]),
+        Err(GroupRefusal::Feature {
+            id: "needs-ghost".to_string(),
+            reason: Ineligible::UnmetDependencies(vec![UnmetDependency { name: "ghost".to_string(), status: None }]),
+        })
+    );
 }
 
 #[test]
-fn a_member_that_may_not_start_is_refused_by_name() {
+fn a_member_that_may_not_start_is_refused_by_name_with_its_status() {
     let ledger = ledger();
-    for (bad, expected_missing) in [("nope", true), ("done", false)] {
+    for (bad, reason) in [
+        ("nope", Ineligible::NotFound),
+        ("done", Ineligible::NotPending { status: "completed".to_string() }),
+        ("half", Ineligible::NotPending { status: "in_progress".to_string() }),
+    ] {
         let ids = vec!["c".to_string(), bad.to_string()];
-        match order_run_group(&ledger, &ids) {
-            Err(GroupRefusal::Feature { id, reason }) => {
-                assert_eq!(id, bad);
-                assert_eq!(reason == Ineligible::NotFound, expected_missing, "{reason:?}");
-            }
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(order_run_group(&ledger, &ids), Err(GroupRefusal::Feature { id: bad.to_string(), reason }));
     }
 }
 
@@ -92,4 +103,11 @@ fn a_dependency_cycle_inside_the_group_is_refused_and_names_its_members() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_repeated_feature_is_refused_instead_of_being_run_twice() {
+    let ledger = ledger();
+    let ids: Vec<String> = ["c", "b", "c"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(order_run_group(&ledger, &ids), Err(GroupRefusal::Duplicate("c".to_string())));
 }
