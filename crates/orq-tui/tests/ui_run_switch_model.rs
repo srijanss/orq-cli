@@ -117,3 +117,14 @@ fn the_hint_offers_the_switch_on_a_paused_run() {
     let mut backend = Fake { status: "paused", ..Fake::default() };
     assert!(has(&show(&mut backend, keys("")), "m switch model"));
 }
+
+#[test]
+fn the_typed_text_is_visible_at_80_columns_with_a_long_run_id() {
+    let mut backend = Fake { status: "paused", reply: Some(Ok(String::new())), ..Fake::default() };
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let _ = run_browser(&mut terminal, &model, &mut backend, &mut Script(keys("mimplementer fast").into()));
+    let buffer = terminal.backend().buffer();
+    let lines: Vec<String> = (0..24u16).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect();
+    assert!(has(&lines, "implementer fast"), "{lines:?}");
+}
