@@ -166,6 +166,9 @@ fn a_private_ref_that_cannot_be_deleted_is_reported_as_an_error() {
     let err = reap_run(&planned.repo, &planned.item).expect_err("a ref left behind must not pass silently");
 
     assert!(err.to_string().contains("private ref"), "{err}");
+    // Nothing else was removed, so the run is still planned and the reap can be retried.
+    assert!(planned.worktree.exists(), "the worktree stays");
+    assert!(!git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(), "the branch stays");
 }
 
 #[test]

@@ -180,6 +180,13 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     if let Some(problem) = worktree_problem(repo, &item.worktree, &item.branch, &item.tip)?.or(uncommitted_problem(&item.worktree)?) {
         return Err(StoreError::Corrupt(problem));
     }
+    // A rebase that died between its fetch and its cleanup leaves the run's private ref; nothing else uses it.
+    // It goes first: if it cannot be deleted the run is still whole and the reap can be retried.
+    let private = crate::rebase::private_ref_name(&item.run_id);
+    let removed_ref = git_raw(repo, &["update-ref", "-d", &private])?;
+    if !removed_ref.success {
+        return Err(StoreError::Corrupt(format!("the private ref {private} could not be deleted, nothing else was removed: {}", removed_ref.stderr.trim())));
+    }
     let worktree = item.worktree.to_string_lossy().into_owned();
     let removed = git_raw(repo, &["worktree", "remove", "--", &worktree])?;
     if !removed.success {
@@ -188,12 +195,6 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     let deleted = git_raw(repo, &["update-ref", "-d", &format!("refs/heads/{}", item.branch), &item.tip])?;
     if !deleted.success {
         return Err(StoreError::Corrupt(format!("the branch could not be deleted: {}", deleted.stderr.trim())));
-    }
-    // A rebase that died between its fetch and its cleanup leaves the run's private ref; nothing else uses it.
-    let private = crate::rebase::private_ref_name(&item.run_id);
-    let removed_ref = git_raw(repo, &["update-ref", "-d", &private])?;
-    if !removed_ref.success {
-        return Err(StoreError::Corrupt(format!("the worktree and branch are gone, but the private ref {private} could not be deleted: {}", removed_ref.stderr.trim())));
     }
     Ok(())
 }
