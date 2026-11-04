@@ -50,8 +50,8 @@ pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], bra
     };
     // Without {branch} every worktree would share one database; anything else could not be a name.
     let leftover = template.replace("{name}", "").replace("{branch}", "");
-    if !template.contains("{branch}") || !leftover.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        found.notes.push("db_name_template must contain {branch} and otherwise only letters, digits, underscores and {name}; the databases are not isolated".to_string());
+    if template.matches("{branch}").count() != 1 || !leftover.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        found.notes.push("db_name_template must contain {branch} exactly once and otherwise only letters, digits, underscores and {name}; the databases are not isolated".to_string());
         return found;
     }
     let slug = branch_slug(branch);
@@ -115,6 +115,16 @@ fn split_target(value: &str) -> Result<Target, &'static str> {
     };
     let rest = scheme_end + 3;
     let after = &value[rest..];
+    // An option such as `?dbname=prod` would override the database the path names.
+    if let Some(query_at) = after.find('?') {
+        let selects = after[query_at + 1..].split(['&', ';', '#']).any(|pair| {
+            let key = pair.split('=').next().unwrap_or("").to_ascii_lowercase();
+            matches!(key.as_str(), "dbname" | "database" | "db" | "service")
+        });
+        if selects {
+            return Err("selects its database in an option");
+        }
+    }
     if value[..scheme_end].to_ascii_lowercase().starts_with("sqlite") {
         let end = after.find(['?', '#']).unwrap_or(after.len());
         let path = &after[..end];

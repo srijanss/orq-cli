@@ -172,6 +172,27 @@ fn a_template_without_the_branch_placeholder_or_with_odd_characters_isolates_not
 }
 
 #[test]
+fn a_template_that_repeats_the_branch_placeholder_isolates_nothing() {
+    let main = main_checkout("template-twice", "DB_NAME=shop\n");
+
+    let found = derive_worktree_databases_with(&main, &names(&["DB_NAME"]), &format!("feature/{}", "x".repeat(80)), true, Some("{name}_{branch}_{branch}"));
+
+    assert!(found.names.is_empty() && found.env.is_empty(), "{:?}", found.names);
+    assert!(found.notes.iter().any(|n| n.contains("db_name_template")), "{:?}", found.notes);
+}
+
+#[test]
+fn a_url_whose_options_select_a_database_is_not_isolated() {
+    let main = main_checkout("url-override", "PG=postgres://u@h/shop?dbname=production\nPG2=postgres://u@h/shop?sslmode=disable&DBName=production\nOK=postgres://u@h/shop?sslmode=disable\n");
+
+    let found = derive_worktree_databases(&main, &names(&["PG", "PG2", "OK"]), "b1", true);
+
+    assert_eq!(drop_names(&found), [("OK", "shop_b1")]);
+    assert!(found.notes.iter().any(|n| n.contains("PG ")) && found.notes.iter().any(|n| n.contains("PG2")), "{:?}", found.notes);
+    assert!(found.notes.iter().all(|n| !n.contains("production")), "{:?}", found.notes);
+}
+
+#[test]
 fn a_long_branch_still_fits_64_characters_with_a_template() {
     let main = main_checkout("template-long", "DB_NAME=shop\n");
 
