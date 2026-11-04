@@ -1623,10 +1623,11 @@ fn mcpctl_catalog_with(program: &Path, timeout: std::time::Duration) -> Result<V
         .spawn()
         .map_err(|err| format!("cannot run mcpctl: {:?}", err.kind()))?;
     let mut stdout = child.stdout.take().ok_or("cannot read mcpctl output")?;
-    let reader = std::thread::spawn(move || {
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut text = String::new();
         let _ = stdout.read_to_string(&mut text);
-        text
+        let _ = sender.send(text);
     });
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
@@ -1641,7 +1642,10 @@ fn mcpctl_catalog_with(program: &Path, timeout: std::time::Duration) -> Result<V
         }
     };
     let Some(status) = status else { return Ok(Vec::new()) };
-    let text = reader.join().unwrap_or_default();
+    // The output is awaited only for what is left of the deadline: a process the listing started may hold
+    // the pipe open long after the listing itself ended.
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    let Ok(text) = received.recv_timeout(left) else { return Ok(Vec::new()) };
     if !status.success() {
         return Err("mcpctl catalog list failed".to_string());
     }
@@ -2901,6 +2905,23 @@ mod ledger_backend_tests {
         assert_eq!(result, Ok(Vec::new()));
         std::thread::sleep(std::time::Duration::from_millis(2300));
         assert!(!marker.exists(), "the listing process kept running");
+    }
+
+    #[test]
+    fn a_catalog_listing_whose_child_keeps_the_output_open_is_still_given_up_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-mcpctl-orphan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("mcpctl");
+        // The listing itself ends at once, but a background process keeps its output open.
+        std::fs::write(&shim, "#!/bin/sh\nsleep 2 &\necho 'one@1.0 (x)'\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = super::mcpctl_catalog_with(&shim, std::time::Duration::from_millis(300));
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert_eq!(result, Ok(Vec::new()));
     }
 
     #[test]

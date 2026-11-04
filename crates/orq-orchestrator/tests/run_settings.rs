@@ -340,11 +340,13 @@ fn saving_mcp_servers_never_writes_through_a_planted_temp_link() {
     private(&r, "base_branch = \"release\"\n");
     let victim = r.join("victim.txt");
     fs::write(&victim, "keep\n").unwrap();
-    symlink(&victim, r.join(format!(".git/orq/run.toml.{}.tmp", std::process::id()))).unwrap();
+    let planted = r.join(format!(".git/orq/run.toml.{}.0.tmp", std::process::id()));
+    symlink(&victim, &planted).unwrap();
 
     orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap();
 
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep\n");
+    assert!(fs::symlink_metadata(&planted).unwrap().file_type().is_symlink(), "the planted link was replaced");
     assert_eq!(load_run_settings(&r, &no_env).unwrap().mcp_servers, Some(vec!["a".to_string()]));
 }
 
@@ -371,4 +373,31 @@ fn saving_mcp_servers_leaves_no_temp_file_behind() {
 
     let names: Vec<String> = fs::read_dir(r.join(".git/orq")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, vec!["run.toml".to_string()]);
+}
+
+/// Run by `saving_mcp_servers_keeps_the_mode_under_a_restrictive_umask` in a child process, since a umask
+/// belongs to the whole process.
+#[test]
+fn restrictive_umask_child() {
+    if std::env::var_os("ORQ_UMASK_CHILD").is_none() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    unsafe { libc::umask(0o077) };
+    let r = repo("save-mcp-umask");
+    private(&r, "base_branch = \"release\"\n");
+    let path = r.join(".git/orq/run.toml");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+}
+
+#[test]
+fn saving_mcp_servers_keeps_the_mode_under_a_restrictive_umask() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["restrictive_umask_child", "--exact", "--nocapture"])
+        .env("ORQ_UMASK_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }

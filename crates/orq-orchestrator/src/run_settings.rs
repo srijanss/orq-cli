@@ -196,7 +196,14 @@ fn create_temp(dir: &Path, mode: u32) -> std::io::Result<(std::path::PathBuf, st
     loop {
         let temp = dir.join(format!("run.toml.{}.{attempt}.tmp", std::process::id()));
         match std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temp) {
-            Ok(file) => return Ok((temp, file)),
+            Ok(file) => {
+                // The mode given at creation is filtered by the umask, so it is set again outright.
+                if let Err(err) = file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(err);
+                }
+                return Ok((temp, file));
+            }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
             Err(err) => return Err(err),
         }
