@@ -145,14 +145,17 @@ struct PruneLock {
 fn try_lock_prune(roots: &StorageRoots) -> Result<Option<PruneLock>, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::fd::AsRawFd;
-    // Never follows a link planted where the lock file goes.
+    // Never follows a link planted where the lock file goes, and never waits on a pipe planted there.
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(roots.data.join("prune.lock"))
         .map_err(|e| format!("cannot open the prune lock: {e}"))?;
+    if !file.metadata().map_err(|e| format!("cannot inspect the prune lock: {e}"))?.is_file() {
+        return Err("the prune lock is not a regular file".to_string());
+    }
     // SAFETY: the descriptor is owned by `file`, which outlives the call.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
         Ok(Some(PruneLock { _file: file }))

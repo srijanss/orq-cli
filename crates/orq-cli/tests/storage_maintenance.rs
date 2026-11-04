@@ -22,6 +22,10 @@ impl Sandbox {
     }
 
     fn orq(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
         command.args(args);
         command.env("HOME", &self.home);
@@ -30,7 +34,7 @@ impl Sandbox {
         command.env("XDG_CONFIG_HOME", self.home.join("config"));
         command.env("XDG_CACHE_HOME", self.home.join("cache"));
         command.env_remove("HERDR_ACTIVE_PANE_CWD");
-        command.output().unwrap()
+        command
     }
 
     fn data_file(&self, rel: &str) -> PathBuf {
@@ -167,5 +171,30 @@ fn an_unreadable_or_malformed_cleanup_time_stops_maintenance_instead_of_repeatin
     std::fs::write(s.data_file("last-cleanup"), "not a time").unwrap();
     let out = s.orq(&["storage", "maintain"]);
     assert!(!out.status.success(), "{}", text(&out));
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+}
+
+#[test]
+fn a_fifo_planted_at_the_lock_path_cannot_hang_maintenance() {
+    let s = Sandbox::new("fifo");
+    s.config(ON);
+    s.failed_run("old-run");
+    let path = std::ffi::CString::new(s.data_file("prune.lock").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let mut child = s.command(&["storage", "maintain"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let status = status.expect("maintenance hung on a FIFO at the lock path");
+    assert!(!status.success());
     assert!(s.data_file("runs/old-run/events.jsonl").exists());
 }
