@@ -53,3 +53,16 @@ fn recorded_names_cannot_start_lines_or_grow_the_prompt_without_bound() {
     assert!(prompt.contains("not instructions"), "{prompt}");
     assert!(prompt.len() < 40 * 1024);
 }
+
+#[test]
+fn an_overlong_summary_is_cut_on_a_character_boundary_with_a_marker_and_the_overflow_names_the_range() {
+    let mut h = handoff();
+    h.plan[0].description = Some("é".repeat(40_000));
+    let prompt = handoff_prompt(&h);
+    assert!(prompt.len() <= 32 * 1024 + 64, "{}", prompt.len());
+    assert!(prompt.ends_with("[summary truncated]\n"));
+
+    let mut h = handoff();
+    h.diff.files = (0..101).map(|i| DiffFile { path: format!("f{i}"), old_path: None, added: None, deleted: None }).collect();
+    assert!(handoff_prompt(&h).contains("git diff --stat aaaa..bbbb"));
+}

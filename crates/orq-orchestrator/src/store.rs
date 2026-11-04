@@ -344,7 +344,7 @@ impl RunStore {
             Err(err) => return Err(err.into()),
         };
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::Read::take(file, max + 1), &mut bytes)?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, max.saturating_add(1)), &mut bytes)?;
         if bytes.len() as u64 > max {
             return Err(StoreError::Corrupt(format!("{name} is larger than {max} bytes")));
         }

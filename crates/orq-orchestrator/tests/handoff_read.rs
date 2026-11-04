@@ -55,6 +55,7 @@ fn an_unreadable_wrongly_shaped_or_oversized_handoff_is_an_error_and_file_names_
     store.write_run_file("run-2", HANDOFF_FILE, &vec![b' '; 5 * 1024 * 1024]).unwrap();
     assert!(read_handoff(&store, "run-2").is_err(), "an oversized file");
 
+    assert_eq!(store.read_run_file("run-2", "marker", u64::MAX).unwrap().as_deref(), Some(&b"x"[..]));
     for name in ["", ".hidden", "a/b", "a\\b"] {
         assert!(store.read_run_file("run-2", name, 10).is_err(), "{name:?}");
     }

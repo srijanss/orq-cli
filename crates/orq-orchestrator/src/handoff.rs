@@ -128,7 +128,15 @@ const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 /// Text on one line with control characters (newlines included) made visible, so a recorded name cannot
 /// start a line of its own or smuggle in terminal or NUL bytes.
 fn one_line(text: &str) -> String {
-    text.chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect()
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn truncate_to(mut text: String, max: usize) -> String {
@@ -169,7 +177,12 @@ pub fn handoff_prompt(handoff: &Handoff) -> String {
         }
     }
     if handoff.diff.files.len() > MAX_PROMPT_FILES {
-        out.push_str(&format!("- ... and {} more; `git diff --stat` lists them all\n", handoff.diff.files.len() - MAX_PROMPT_FILES));
+        out.push_str(&format!(
+                "- ... and {} more; `git diff --stat {}..{}` lists them all\n",
+                handoff.diff.files.len() - MAX_PROMPT_FILES,
+                one_line(&handoff.diff.base_sha),
+                one_line(&handoff.diff.head_sha)
+            ));
     }
     out.push_str(&format!("\nLatest test run: {}", one_line(&handoff.gate.outcome)));
     if let Some(reason) = &handoff.gate.reason {
