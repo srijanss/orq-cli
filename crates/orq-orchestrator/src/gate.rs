@@ -112,16 +112,22 @@ fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<Stri
     steps.push(pytest);
 }
 
-/// The `src/<app>` directories holding a changed file that have tests of their own, sorted.
+/// What to hand pytest for the changed Django apps that have tests, sorted: the app directory when it
+/// has a `tests` package, and its `tests.py` by name, which default discovery would not collect.
 fn changed_tested_apps(dir: &Path, changed: &[String]) -> Vec<String> {
-    let mut apps: Vec<String> = changed
-        .iter()
-        .filter_map(|path| path.strip_prefix("src/")?.split_once('/').map(|(app, _)| format!("src/{app}")))
-        .filter(|app| dir.join(app).join("tests").is_dir() || dir.join(app).join("tests.py").is_file())
-        .collect();
-    apps.sort();
-    apps.dedup();
-    apps
+    let mut targets = Vec::new();
+    for path in changed {
+        let Some(app) = path.strip_prefix("src/").and_then(|rest| rest.split_once('/')).map(|(app, _)| format!("src/{app}")) else { continue };
+        if dir.join(&app).join("tests").is_dir() {
+            targets.push(app.clone());
+        }
+        if dir.join(&app).join("tests.py").is_file() {
+            targets.push(format!("{app}/tests.py"));
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    targets
 }
 
 fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {

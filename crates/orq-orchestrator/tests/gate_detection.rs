@@ -392,3 +392,15 @@ fn manifests_that_cannot_be_read_are_reported_as_such_not_as_syntax_errors_or_ab
         );
     }
 }
+
+#[test]
+fn a_changed_app_whose_tests_live_in_tests_py_gets_that_file_named_because_pytest_would_not_collect_it() {
+    let dir = django("django-tests-py");
+    touch(&dir, "src/billing/tests.py", "");
+    let changed = ["src/billing/models.py".to_string(), "src/shop/views.py".to_string()];
+
+    assert_eq!(
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/billing/tests.py", "src/shop"]]))
+    );
+}
