@@ -121,3 +121,23 @@ fn the_list_of_carried_files_comes_from_the_repositorys_run_settings() {
     assert!(listing.lines().any(|f| f == "secrets.json"), "{listing}");
     assert!(!listing.lines().any(|f| f == ".env"), "{listing}");
 }
+
+#[test]
+fn the_worktrees_session_settings_carry_the_run_environment_and_approve_the_configured_mcp_servers() {
+    let w = world("session-settings");
+    std::fs::write(w.repo.root().join(".tdd-config.json"), "{}").unwrap();
+    std::fs::write(w.repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c"},"docs":{"command":"d"}}}"#).unwrap();
+    let gate_seen = w.base.join("settings-seen");
+    settings(&w, &format!("mcp_servers = [\"tdd\"]\ngate = [\"sh\", \"-c\", \"cat .claude/settings.local.json > {}\"]\n", gate_seen.display()));
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let seen: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&gate_seen).unwrap()).unwrap();
+    let config = w.repo.root().join(".tdd-config.json").display().to_string();
+    assert_eq!(seen["env"]["TDD_CONFIG_PATH"], config.as_str());
+    assert_eq!(seen["enabledMcpjsonServers"], serde_json::json!(["tdd"]));
+    let status = Command::new("git").arg("-C").arg(w.repo.root()).args(["status", "--porcelain"]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&status.stdout).contains(".claude"), "the worktrees directory must not show up");
+}
