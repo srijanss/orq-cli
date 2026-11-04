@@ -235,6 +235,7 @@ fn the_off_and_not_due_paths_do_not_open_or_create_the_database() {
     assert!(!s.data_file("orq.db").exists(), "disabled maintenance opened the database");
 
     s.config(ON);
+    std::fs::create_dir_all(s.data_file("")).unwrap();
     std::fs::write(s.data_file("last-cleanup"), "99999999999").unwrap();
     let out = s.orq(&["storage", "maintain"]);
     assert!(text(&out).contains("not due"), "{}", text(&out));
@@ -278,4 +279,14 @@ fn a_cleanup_time_that_cannot_be_recorded_stops_maintenance_before_it_deletes_an
     assert!(text(&out).contains("cannot record the cleanup time"), "{}", text(&out));
     assert!(s.data_file("runs/old-run/events.jsonl").exists(), "{}", text(&out));
     assert!(!s.data_file("last-cleanup").exists());
+}
+
+#[test]
+fn disabled_maintenance_creates_no_storage_directories() {
+    let s = Sandbox::new("nodirs");
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(out.status.success(), "{}", text(&out));
+    for dir in ["data", "state", "cache"] {
+        assert!(!s.home.join(dir).exists(), "disabled maintenance created {dir}");
+    }
 }

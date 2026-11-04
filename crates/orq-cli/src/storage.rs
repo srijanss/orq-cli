@@ -198,7 +198,8 @@ fn lock_prune(roots: &StorageRoots) -> Result<PruneLock, String> {
 /// enabled, and then prunes at most once per interval, with exactly the plan `prune` would show.
 fn maintain() -> Result<(), String> {
     // The common calls (off, busy, not due) stop before the database is opened.
-    let roots = roots()?;
+    // Nothing is created until maintenance is known to be on.
+    let roots = StorageRoots::resolve(&|name| std::env::var(name).ok()).map_err(|err| format!("cannot locate the Orq data directory: {err}"))?;
     let text = match std::fs::read_to_string(roots.config_file()) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -209,6 +210,7 @@ fn maintain() -> Result<(), String> {
         println!("Scheduled maintenance is off.");
         return Ok(());
     };
+    roots.create_all().map_err(|err| format!("cannot prepare the Orq data directory: {err}"))?;
     let Some(_lock) = try_lock_prune(&roots)? else {
         println!("Skipped: another prune is running.");
         return Ok(());
