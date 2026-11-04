@@ -195,3 +195,24 @@ fn the_list_of_carried_files_is_configurable_and_only_plain_relative_paths_are_a
     assert_eq!(found.notes.iter().filter(|n| n.contains("not a plain relative path")).count(), 2, "{:?}", found.notes);
     assert!(!worktree.parent().unwrap().join("outside").exists());
 }
+
+#[test]
+fn a_symlinked_source_file_is_not_copied_and_a_symlinked_mcp_json_in_the_worktree_is_not_written_through() {
+    let (repo, worktree) = checkout("leaf-symlinks");
+    let outside = repo.root().parent().unwrap().join(format!("outside-leaf-{}", std::process::id()));
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("stolen.json"), "{\"outside\":1}").unwrap();
+    let victim = outside.join("victim.json");
+    let original = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
+    fs::write(&victim, original).unwrap();
+    std::os::unix::fs::symlink(outside.join("stolen.json"), repo.root().join("secrets.json")).unwrap();
+    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+    std::os::unix::fs::symlink(&victim, worktree.join(".mcp.json")).unwrap();
+    let files = vec!["secrets.json".to_string(), ".mcp.json".to_string()];
+
+    let found = carry_local_files(repo.root(), &worktree, Some(&files));
+
+    assert!(fs::symlink_metadata(worktree.join("secrets.json")).is_err(), "a symlinked source is not copied");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), original, "nothing is written through a symlink");
+    assert_eq!(found.notes.iter().filter(|n| n.contains("symbolic link")).count(), 2, "{:?}", found.notes);
+}

@@ -66,8 +66,16 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
         }
         return;
     }
-    if std::fs::symlink_metadata(&target).is_ok() {
-        if name == MCP_JSON {
+    // Copying follows a symbolic link, so a linked source would carry a file from outside the checkout.
+    // (The dotenv file is itself linked, never copied.)
+    if name != DOTENV && std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        found.notes.push(format!("{name} is a symbolic link in the main checkout; it is not carried into the worktree"));
+        return;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if name == MCP_JSON && meta.file_type().is_symlink() {
+            found.notes.push(format!("{name} is a symbolic link in the worktree; the main checkout's values were not merged into it"));
+        } else if name == MCP_JSON {
             // Ignore rules cannot keep a tracked file out of a commit, so values from the main
             // checkout are never written into one.
             if is_tracked(worktree, name) {
