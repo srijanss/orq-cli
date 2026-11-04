@@ -137,3 +137,44 @@ fn a_config_parse_error_does_not_copy_config_text_into_the_report() {
     let value = report(&sandbox);
     assert!(!value.to_string().contains("SENTINEL-SECRET-VALUE"), "{value}");
 }
+
+fn alive(pid: &str) -> bool {
+    Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+#[test]
+fn a_timed_out_session_and_its_descendants_are_killed() {
+    let sandbox = Sandbox::new("cleanup");
+    sandbox.config("[review_summary]\nenabled = true\nmodel = \"haiku\"\n");
+    let pids = sandbox.home.join("pids.txt");
+    sandbox.fake_claude(&format!("sleep 30 &\necho $! > \"{}\"\nsleep 30", pids.display()));
+    report(&sandbox);
+    let pid = std::fs::read_to_string(&pids).unwrap().trim().to_string();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let still = alive(&pid);
+    if still {
+        let _ = Command::new("kill").arg(&pid).status();
+    }
+    assert!(!still, "descendant {pid} survived the timeout");
+}
+
+#[test]
+fn a_duplicate_key_error_does_not_copy_the_key_into_the_report() {
+    let sandbox = Sandbox::new("dupkey");
+    sandbox.config("\"SENTINEL-KEY\" = 1\n\"SENTINEL-KEY\" = 2\n");
+    sandbox.fake_claude("echo nope");
+    let value = report(&sandbox);
+    assert!(!value.to_string().contains("SENTINEL-KEY"), "{value}");
+}
+
+#[test]
+fn a_program_that_cannot_start_leaves_the_report_without_a_summary() {
+    let sandbox = Sandbox::new("nospawn");
+    sandbox.config("[review_summary]\nenabled = true\nmodel = \"haiku\"\n");
+    // Executable bit set but not a runnable program (no interpreter line, bad format).
+    let path = sandbox.home.join("bin/claude");
+    std::fs::write(&path, [0u8, 1, 2, 3]).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let value = report(&sandbox);
+    assert!(value.get("generated_summary").is_none(), "{value}");
+}

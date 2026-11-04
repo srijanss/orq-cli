@@ -56,7 +56,10 @@ fn add_model_summary(roots: &StorageRoots, report: &mut serde_json::Value) {
 fn run_summary_session(program: &Path, argv: &[String], cwd: &Path) -> Result<String, String> {
     use std::io::Read;
     const MAX_OUTPUT: u64 = 64 * 1024;
-    let mut child = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    // Its own process group, so everything the session started can be stopped together.
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
         .args(argv)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
@@ -91,10 +94,11 @@ fn run_summary_session(program: &Path, argv: &[String], cwd: &Path) -> Result<St
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     })();
-    if outcome.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    // Whatever the outcome, nothing the session started is left running.
+    // SAFETY: killpg only signals the group this function created; the leader is not yet reaped.
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+    let _ = child.kill();
+    let _ = child.wait();
     outcome
 }
 

@@ -20,7 +20,7 @@ impl SummaryConfig {
     /// Reads the `[review_summary]` table of a config file. `None` means the
     /// summary is off, which is the default; turning it on needs a model.
     pub fn parse(text: &str) -> Result<Option<SummaryConfig>, String> {
-        let doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| format!("the config file is not valid TOML ({})", err.message()))?;
+        let doc: toml_edit::DocumentMut = text.parse().map_err(|_: toml_edit::TomlError| "the config file is not valid TOML".to_string())?;
         let Some(item) = doc.get("review_summary") else { return Ok(None) };
         let table = item.as_table_like().ok_or("[review_summary] must be a table")?;
         let mut enabled = false;
@@ -29,7 +29,7 @@ impl SummaryConfig {
             match key {
                 "enabled" => enabled = value.as_bool().ok_or("review_summary.enabled must be true or false")?,
                 "model" => model = Some(value.as_str().ok_or("review_summary.model must be text")?.to_string()),
-                other => return Err(format!("{other} is not a review_summary setting")),
+                _ => return Err("review_summary has an unknown setting".to_string()),
             }
         }
         if !enabled {
