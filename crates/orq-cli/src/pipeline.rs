@@ -25,6 +25,9 @@ pub struct Options<'a> {
     pub target: &'a str,
     pub implementer: ResolvedModel,
     pub reviewer: ResolvedModel,
+    /// The model of the implement session, its fix sessions and the review draft; the run setting fills in
+    /// when it is not named, and either one replaces the implementer profile's own model.
+    pub model: Option<&'a str>,
     pub rebase: bool,
     pub gate: bool,
     pub ci_check: bool,
@@ -190,6 +193,19 @@ fn profile(model: &ResolvedModel) -> RoleProfile {
     RoleProfile { harness: model.harness.clone(), model: model.model.clone(), thinking: model.thinking.clone() }
 }
 
+/// The model the run was asked for, by flag or by setting.
+fn settings_or_flag_model<'a>(options: &'a Options<'_>, settings: &'a orq_orchestrator::RunSettings) -> Option<&'a str> {
+    options.model.or(settings.model.as_deref())
+}
+
+/// The implementer profile with the run's model in place of its own, when one was asked for.
+fn with_run_model(implementer: &ResolvedModel, options: &Options<'_>, settings: &orq_orchestrator::RunSettings) -> ResolvedModel {
+    match settings_or_flag_model(options, settings) {
+        Some(model) => ResolvedModel { model: model.to_string(), ..implementer.clone() },
+        None => implementer.clone(),
+    }
+}
+
 fn spec(model: &ResolvedModel) -> ModelSpec {
     ModelSpec { harness: model.harness.clone(), model: model.model.clone(), thinking: model.thinking.clone() }
 }
@@ -266,7 +282,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         },
         repository,
         profiles: [
-            ("implementer".to_string(), profile(&options.implementer)),
+            ("implementer".to_string(), profile(&with_run_model(&options.implementer, options, &settings))),
             ("reviewer".to_string(), profile(&options.reviewer)),
         ]
         .into_iter()
@@ -405,6 +421,7 @@ fn stages(
 ) -> Result<Report, StoreError> {
     let run_id = record.run_id.as_str();
     let worktree = record.worktree.as_path();
+    let implementer = with_run_model(&options.implementer, options, settings);
 
     let Some(claude) = find_program(&options.implementer.harness) else {
         return stopped(Ending::Failed, format!("the {} harness is not on PATH", options.implementer.harness));
@@ -448,7 +465,7 @@ fn stages(
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     feature: options.feature,
-                    implementer: spec(&options.implementer),
+                    implementer: spec(&implementer),
                     reviewer: spec(&options.reviewer),
                     context: options.context,
                 })
@@ -477,7 +494,7 @@ fn stages(
 
     let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
     let gate_log = logs.join("gate.log");
-    let fix_model = spec(&options.implementer).model;
+    let fix_model = implementer.model.clone();
     let fix_log = logs.join("gate-fix.log");
     // A red gate gets a fix session with the run's environment, then runs again. A published branch is
     // the user's own checkout: it is only checked, never edited by an agent.
@@ -523,7 +540,10 @@ fn stages(
     };
     let draft = draft_review_description(store, run_id, Duration::from_secs(120), |prompt| DraftSession {
         program: claude.to_string_lossy().into_owned(),
-        args: vec!["-p".to_string(), prompt.to_string()],
+        args: match settings_or_flag_model(options, settings) {
+            Some(model) => vec!["-p".to_string(), "--model".to_string(), model.to_string(), prompt.to_string()],
+            None => vec!["-p".to_string(), prompt.to_string()],
+        },
         env: Vec::new(),
         cwd: worktree.to_path_buf(),
     })?;

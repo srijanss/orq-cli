@@ -56,7 +56,7 @@ pub use review_request::{
     ReviewRequestOutcome,
 };
 pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
-pub use run_settings::{load_run_settings, RunSettings, SettingsError};
+pub use run_settings::{load_run_settings, model as checked_model, RunSettings, SettingsError};
 pub use run_status::{record_run_completed, summarize_run, RunPhase, RunSummary};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};

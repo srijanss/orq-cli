@@ -48,6 +48,8 @@ pub struct RunSettings {
     pub keep_test_db: Option<bool>,
     /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
     pub db_name_template: Option<String>,
+    /// The model for the implement session and the review draft; `None` leaves the chosen profile's own.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +90,7 @@ struct Layer {
     test_db_drop_cmd: Option<Vec<String>>,
     keep_test_db: Option<bool>,
     db_name_template: Option<String>,
+    model: Option<String>,
 }
 
 impl Layer {
@@ -110,6 +113,7 @@ impl Layer {
             test_db_drop_cmd: self.test_db_drop_cmd.or(lower.test_db_drop_cmd),
             keep_test_db: self.keep_test_db.or(lower.keep_test_db),
             db_name_template: self.db_name_template.or(lower.db_name_template),
+            model: self.model.or(lower.model),
         }
     }
 }
@@ -139,6 +143,7 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         test_db_drop_cmd: merged.test_db_drop_cmd,
         keep_test_db: merged.keep_test_db,
         db_name_template: merged.db_name_template,
+        model: merged.model,
     })
 }
 
@@ -183,6 +188,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "mcp_servers" => layer.mcp_servers = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "test_db_drop_cmd" => layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "db_name_template" => layer.db_name_template = Some(value.as_str().ok_or_else(|| bad("must be a string"))?.to_string()),
+            "model" => layer.model = Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
@@ -236,6 +242,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
         layer.db_name_template = Some(v.trim().to_string());
     }
+    if let Some(v) = get("ORQ_MODEL") {
+        layer.model = Some(model(v.trim()).map_err(|r| invalid("ORQ_MODEL", r))?);
+    }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {
         layer.keep_test_db = Some(match v.trim() {
             "1" | "true" => true,
@@ -288,6 +297,14 @@ fn variable_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
         }
     }
     Ok(names)
+}
+
+/// A model name is handed to the agent as one option value: never blank, never an option, one word.
+pub fn model(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_whitespace) {
+        return Err("must be a model name: one word that does not start with a dash".to_string());
+    }
+    Ok(value.to_string())
 }
 
 fn notify_on(value: &str) -> Result<String, String> {

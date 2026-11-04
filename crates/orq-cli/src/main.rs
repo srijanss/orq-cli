@@ -170,6 +170,7 @@ struct RunArgs {
     target: Option<String>,
     implementer: Option<String>,
     reviewer: Option<String>,
+    model: Option<String>,
     context: Option<String>,
     issue: Option<String>,
     mr_assignee: Option<String>,
@@ -185,13 +186,14 @@ struct RunArgs {
 }
 
 /// The `orq run` flags that take a value; parsing and forwarding both read this list.
-const RUN_VALUE_FLAGS: [&str; 11] = [
+const RUN_VALUE_FLAGS: [&str; 12] = [
     "--repo",
     "--feature",
     "--remote",
     "--target",
     "--implementer",
     "--reviewer",
+    "--model",
     "--context",
     "--issue",
     "--mr-assignee",
@@ -219,6 +221,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
                     "--remote" => parsed.remote = Some(value.to_str()?.to_string()),
                     "--target" => parsed.target = Some(value.to_str()?.to_string()),
                     "--implementer" => parsed.implementer = Some(value.to_str()?.to_string()),
+                    "--model" => parsed.model = Some(value.to_str()?.to_string()),
                     "--context" => parsed.context = Some(value.to_str()?.to_string()),
                     "--issue" => parsed.issue = Some(value.to_str()?.to_string()),
                     "--mr-assignee" => parsed.mr_assignee = Some(value.to_str()?.to_string()),
@@ -299,6 +302,9 @@ fn run(args: &[OsString]) -> ExitCode {
     if let Err(err) = orq_orchestrator::ReviewPeople::checked(parsed.mr_assignee.as_deref(), parsed.mr_reviewer.as_deref()) {
         return fail(format!("--mr-assignee/--mr-reviewer: {err}"));
     }
+    if let Some(Err(reason)) = parsed.model.as_deref().map(orq_orchestrator::checked_model) {
+        return fail(format!("--model: {reason}"));
+    }
     if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
         return fail(format!("run settings: {err}"));
     }
@@ -332,6 +338,7 @@ fn run(args: &[OsString]) -> ExitCode {
         target,
         implementer: models.implementer,
         reviewer: models.reviewer,
+        model: parsed.model.as_deref(),
         rebase: !parsed.no_rebase,
         gate: !parsed.no_gate,
         ci_check: !parsed.no_ci_check,

@@ -227,3 +227,19 @@ fn the_database_name_template_comes_from_the_files_or_the_environment() {
 
     assert!(invalid("db_name_template = 3\n", "dbtemplatenum").contains("db_name_template"));
 }
+
+#[test]
+fn the_run_model_comes_from_the_files_or_the_environment_and_must_be_a_plain_name() {
+    let r = repo("model");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().model, None);
+    shared(&r, "model = \"sonnet\"\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().model.as_deref(), Some("sonnet"));
+
+    let env = |key: &str| (key == "ORQ_MODEL").then(|| "opus".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().model.as_deref(), Some("opus"));
+
+    assert!(invalid("model = 3\n", "modelnum").contains("model"));
+    assert!(invalid("model = \"--dangerous\"\n", "modelopt").contains("model"));
+    assert!(invalid("model = \"two words\"\n", "modelspace").contains("model"));
+    assert!(invalid("model = \"\"\n", "modelblank").contains("model"));
+}
