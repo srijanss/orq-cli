@@ -10,7 +10,7 @@ mod storage;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run] | orq run pin|unpin <run-id> | orq run --repo <path> --feature <id> --remote <name> --target <branch> [--detach] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run] | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--detach] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -166,6 +166,8 @@ const EXIT_FAILED: u8 = 31;
 struct RunArgs {
     repo: Option<PathBuf>,
     feature: Option<String>,
+    /// `--group A,B,C`: several features for one run.
+    group: Option<String>,
     remote: Option<String>,
     target: Option<String>,
     implementer: Option<String>,
@@ -186,9 +188,10 @@ struct RunArgs {
 }
 
 /// The `orq run` flags that take a value; parsing and forwarding both read this list.
-const RUN_VALUE_FLAGS: [&str; 12] = [
+const RUN_VALUE_FLAGS: [&str; 13] = [
     "--repo",
     "--feature",
+    "--group",
     "--remote",
     "--target",
     "--implementer",
@@ -218,6 +221,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
                     "--run-id" => parsed.run_id = Some(value.to_str()?.to_string()),
                     "--repo" => parsed.repo = Some(PathBuf::from(value)),
                     "--feature" => parsed.feature = Some(value.to_str()?.to_string()),
+                    "--group" => parsed.group = Some(value.to_str()?.to_string()),
                     "--remote" => parsed.remote = Some(value.to_str()?.to_string()),
                     "--target" => parsed.target = Some(value.to_str()?.to_string()),
                     "--implementer" => parsed.implementer = Some(value.to_str()?.to_string()),
@@ -233,6 +237,29 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
         }
     }
     Some(parsed)
+}
+
+/// A `--group` value: feature ids separated by commas, each a plain word, none repeated.
+fn checked_group(text: &str) -> Result<Vec<String>, String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in text.split(',') {
+        let plain = !id.is_empty()
+            && !id.starts_with('-')
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '@' | '+'));
+        if !plain {
+            return Err(format!("{} is not a plain feature id", printable(id)));
+        }
+        if ids.iter().any(|seen| seen == id) {
+            return Err(format!("{} is listed twice", printable(id)));
+        }
+        ids.push(id.to_string());
+    }
+    Ok(ids)
+}
+
+fn group_error(message: String) -> ExitCode {
+    eprintln!("orq: {message}");
+    ExitCode::from(2)
 }
 
 /// The `orq run` arguments without the `--detach` flag. An option value that happens to be
@@ -257,8 +284,21 @@ fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
 /// feature may start and which models it would use, before anything is created.
 fn run(args: &[OsString]) -> ExitCode {
     let Some(parsed) = parse_run_args(args) else { return usage_error() };
+    // A group of one is the feature itself; several features wait for grouped runs.
+    let group = match (parsed.group.as_deref(), parsed.feature.as_deref()) {
+        (Some(_), Some(_)) => return group_error("--group and --feature cannot be given together".to_string()),
+        (Some(text), None) => match checked_group(text) {
+            Ok(ids) => Some(ids),
+            Err(reason) => return group_error(format!("--group: {reason}")),
+        },
+        (None, _) => None,
+    };
+    if group.as_ref().is_some_and(|ids| ids.len() > 1) {
+        return group_error("--group: runs of several features are not supported yet".to_string());
+    }
+    let feature = group.as_ref().and_then(|ids| ids.first().map(String::as_str)).or(parsed.feature.as_deref());
     let (Some(repo), Some(feature), Some(remote), Some(target)) =
-        (parsed.repo.as_deref(), parsed.feature.as_deref(), parsed.remote.as_deref(), parsed.target.as_deref())
+        (parsed.repo.as_deref(), feature, parsed.remote.as_deref(), parsed.target.as_deref())
     else {
         return usage_error();
     };
@@ -3376,7 +3416,7 @@ mod forwarding_tests {
 
     #[test]
     fn every_option_value_survives_forwarding_even_when_spelled_like_the_detach_flag() {
-        for flag in ["--repo", "--feature", "--remote", "--target", "--implementer", "--reviewer", "--context", "--issue", "--mr-assignee", "--mr-reviewer", "--run-id"] {
+        for flag in ["--repo", "--feature", "--group", "--remote", "--target", "--implementer", "--reviewer", "--context", "--issue", "--mr-assignee", "--mr-reviewer", "--run-id"] {
             let args = os(&["run", flag, "--detach", "--detach"]);
             assert_eq!(super::without_detach_flag(&args), os(&["run", flag, "--detach"]), "{flag}");
         }
