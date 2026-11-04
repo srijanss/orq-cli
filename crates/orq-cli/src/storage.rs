@@ -96,6 +96,15 @@ fn last_cleanup(roots: &StorageRoots) -> Option<u64> {
     std::fs::read_to_string(cleanup_stamp(roots)).ok()?.trim().parse().ok()
 }
 
+/// Like `last_cleanup`, but tells "never cleaned up" (no file) from a time that cannot be read.
+fn last_cleanup_checked(roots: &StorageRoots) -> Result<Option<u64>, String> {
+    match std::fs::read_to_string(cleanup_stamp(roots)) {
+        Ok(text) => text.trim().parse().map(Some).map_err(|_| "the last-cleanup time is not a valid time; fix or remove it".to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("cannot read the last-cleanup time: {err}")),
+    }
+}
+
 fn record_cleanup(roots: &StorageRoots, at: u64) {
     // Best effort: failing to note the time must not turn a finished cleanup into an error.
     // The write never follows a link planted in the data directory.
@@ -178,11 +187,16 @@ fn maintain() -> Result<(), String> {
         return Ok(());
     };
     let now = now();
-    if last_cleanup(&ctx.roots).is_some_and(|last| now < last.saturating_add(interval)) {
+    if last_cleanup_checked(&ctx.roots)?.is_some_and(|last| now < last.saturating_add(interval)) {
         println!("Maintenance not due yet.");
         return Ok(());
     }
-    prune_now(&ctx, now)
+    prune_now(&ctx, now)?;
+    // Without a recorded time the next call would prune again, so a failure to record is an error.
+    if last_cleanup_checked(&ctx.roots)? != Some(now) {
+        return Err("cleaned up, but could not record the time; scheduled maintenance will not run again until that is fixed".to_string());
+    }
+    Ok(())
 }
 
 fn run_prune(dry_run: bool) -> Result<(), String> {

@@ -152,3 +152,20 @@ fn an_invalid_maintenance_setting_is_refused_and_prunes_nothing() {
         assert!(s.data_file("runs/old-run/events.jsonl").exists());
     }
 }
+
+#[test]
+fn an_unreadable_or_malformed_cleanup_time_stops_maintenance_instead_of_repeating_it() {
+    let s = Sandbox::new("stamp");
+    s.config(ON);
+    s.failed_run("old-run");
+    std::fs::create_dir_all(s.data_file("last-cleanup")).unwrap();
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+
+    std::fs::remove_dir_all(s.data_file("last-cleanup")).unwrap();
+    std::fs::write(s.data_file("last-cleanup"), "not a time").unwrap();
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(s.data_file("runs/old-run/events.jsonl").exists());
+}
