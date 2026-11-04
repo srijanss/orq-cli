@@ -206,3 +206,30 @@ fn after_a_switch_to_a_new_harness_the_new_work_is_gated_again_and_pushed() {
     assert_eq!(remote.trim(), local.trim(), "the remote branch holds the pi commit");
     assert!(git(&w.remote, &["log", "--format=%s", &paused.branch]).contains("feat: pi continues the work"));
 }
+
+#[test]
+fn a_switch_whose_new_work_fails_the_gate_is_not_pushed() {
+    let agent = agent();
+    let pi = FakeAgent::builder().write_file("pi.txt", "from pi\n").commit("feat: pi continues the work").build();
+    let w = world("gate-fails", &agent, &pi);
+    std::fs::write(w.repo.root().join(".orq.toml"), PROFILES).unwrap();
+    let gate_runs = pausing_once_gate(&w);
+    // The gate passes (and pauses) on its first run and fails on every later one.
+    let script = w.base.join("gate.sh");
+    let text = std::fs::read_to_string(&script).unwrap().replace("exit 0\n", "[ \"$(wc -l < '__COUNT__')\" -eq 1 ] || { echo 'gate: pi work rejected' >&2; exit 1; }\nexit 0\n").replace("__COUNT__", &gate_runs.display().to_string());
+    std::fs::write(&script, text).unwrap();
+    let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+    assert_eq!(first.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&first.stdout), String::from_utf8_lossy(&first.stderr));
+    let store = RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let paused = store.load(&run_id).unwrap();
+
+    request(&w, &run_id, "implementer", "team-pi");
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()]);
+
+    assert_ne!(out.status.code(), Some(0), "a failing gate must fail the resumed run: {}", String::from_utf8_lossy(&out.stdout));
+    // A failing gate triggers fix attempts, so it runs more than once after the switch.
+    assert!(std::fs::read_to_string(&gate_runs).unwrap().lines().count() >= 2, "the pi work reached the gate");
+    let on_remote = Command::new("git").arg("-C").arg(&w.remote).args(["log", "--format=%s", &paused.branch]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&on_remote.stdout).contains("feat: pi continues the work"), "rejected work must not be pushed");
+}
