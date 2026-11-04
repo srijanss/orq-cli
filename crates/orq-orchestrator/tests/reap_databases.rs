@@ -36,6 +36,20 @@ fn a_reaped_runs_test_databases_are_dropped_by_the_names_its_branch_gave_them() 
 }
 
 #[test]
+fn a_missing_drop_command_and_a_failing_one_are_notes_that_name_the_test_database() {
+    let _serial = serial();
+    let (dir, _) = repo("nocmd", "test_db_vars = [\"DB_NAME\"]\n");
+    let settings = load_run_settings(&dir, &|_| None).unwrap();
+    let notes = reap_run_databases(&dir, "fix--COM-01", &settings);
+    assert!(notes.iter().any(|n| n.contains("test_shop_fix_com_01") && n.contains("manually")), "{notes:?}");
+
+    let (dir, _) = repo("failing", "test_db_vars = [\"DB_NAME\"]\ntest_db_drop_cmd = [\"/nonexistent/drop-tool\"]\n");
+    let settings = load_run_settings(&dir, &|_| None).unwrap();
+    let notes = reap_run_databases(&dir, "fix--COM-01", &settings);
+    assert!(notes.iter().any(|n| n.contains("test_shop_fix_com_01") && n.contains("manually")), "{notes:?}");
+}
+
+#[test]
 fn without_a_drop_command_or_with_keep_test_db_the_names_are_reported_not_dropped() {
     let _serial = serial();
     let (dir, log) = repo("keep","test_db_vars = [\"DB_NAME\"]\nkeep_test_db = true\ntest_db_drop_cmd = [\"TOOL\"]\n");

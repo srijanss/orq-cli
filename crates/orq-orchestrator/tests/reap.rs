@@ -155,6 +155,20 @@ fn reaping_a_run_also_removes_the_private_ref_a_crashed_rebase_left_behind() {
 }
 
 #[test]
+fn a_private_ref_that_cannot_be_deleted_is_reported_as_an_error() {
+    let planned = scenario("stuck-ref", GOOD);
+    let private = orq_orchestrator::private_ref_name(&planned.item.run_id);
+    git(&planned.repo, &["update-ref", &private, "HEAD"]);
+    // A held lock makes git refuse the deletion.
+    let lock = planned.repo.join(".git").join(format!("{private}.lock"));
+    fs::write(&lock, "").unwrap();
+
+    let err = reap_run(&planned.repo, &planned.item).expect_err("a ref left behind must not pass silently");
+
+    assert!(err.to_string().contains("private ref"), "{err}");
+}
+
+#[test]
 fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
     let cases = [
         ("open", Case { state: "OPEN", ..GOOD }, "not merged or closed"),
