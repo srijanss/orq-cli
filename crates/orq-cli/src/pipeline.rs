@@ -63,6 +63,16 @@ pub fn active_run(project: &orq_git::Project, feature: &str) -> Result<Option<St
     RunStore::new(&root).active_run(&project_id(project), &slug(feature)).map_err(|e| e.to_string())
 }
 
+/// The first of `features` that is held by a run, with that run's id.
+pub fn active_group_run(project: &orq_git::Project, features: &[String]) -> Result<Option<(String, String)>, String> {
+    for feature in features {
+        if let Some(run) = active_run(project, feature)? {
+            return Ok(Some((feature.clone(), run)));
+        }
+    }
+    Ok(None)
+}
+
 /// Start `orq run` again as a detached runner: a process group of its own, no terminal input,
 /// its output in the run's log. Returns the run id and the log path without waiting for the run.
 /// `args` are the `orq run` arguments, without `--detach`.
@@ -227,7 +237,8 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let store = RunStore::new(&root);
     let project_id = project_id(options.project);
     let resumed = if options.resume {
-        Some(orq_orchestrator::plan_resume(&store, repo, &project_id, &slug(&options.features[0])).map_err(other)?)
+        let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
+        Some(orq_orchestrator::plan_group_resume(&store, repo, &project_id, &members).map_err(other)?)
     } else {
         None
     };
@@ -289,7 +300,8 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
         .into_iter()
         .collect(),
     };
-    match store.start_run(&record) {
+    let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
+    match store.start_group_run(&record, &members) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
@@ -300,7 +312,21 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
             eprintln!("orq: cannot record the launch of {run_id}: {err}");
         }
     }
-    let finish = |store: &RunStore| store.finish_run(&record.project_id, &record.feature_id, &record.run_id);
+    let finish = |store: &RunStore| store.finish_group_run(&record.project_id, &members, &record.run_id);
+    // Which features this run is for, so that only a run of the same group can be resumed.
+    if members.len() > 1 {
+        if let Err(err) = orq_orchestrator::record_group(&store, &record, &members) {
+            let released = finish(&store);
+            let message = format!("cannot record the features of the group: {err:?}");
+            if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, "failed", Some(&message)) {
+                eprintln!("orq: cannot record the end of {run_id}: {err:?}");
+            }
+            if let Err(lock) = released {
+                eprintln!("orq: the feature locks of {run_id} were not released: {lock:?}");
+            }
+            return Err(other(message));
+        }
+    }
     // Carried over first thing: a run resumed again after failing early must still skip the agent.
     if let Some(from) = resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()) {
         if let Err(err) = orq_orchestrator::record_inherited_implement(&store, &record, from) {

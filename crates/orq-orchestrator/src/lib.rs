@@ -48,7 +48,7 @@ pub use outcome::{check_implement_outcome, ImplementCheck};
 pub use push_stage::{push_run_branch, PushOutcome};
 pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
 pub use review_draft::{draft_review_description, issue_number, link_issue, DraftSession, DraftSource, ReviewDraft};
-pub use resume::{plan_resume, record_inherited_implement, ResumePlan};
+pub use resume::{plan_group_resume, plan_resume, record_group, record_inherited_implement, ResumePlan};
 pub use reap::{plan_reap, reap_run, reap_run_databases, ReapItem, ReapVerdict};
 pub use review_observe::{observe_review, Observed};
 pub use retention_facts::{collect_run_facts, collect_run_facts_for};

@@ -691,6 +691,42 @@ fn a_detached_launch_of_a_feature_that_is_already_running_fails_with_the_reason_
     assert!(!env.state.join("orq/logs").exists(), "no log directory was created");
 }
 
+#[test]
+fn a_detached_group_is_refused_when_any_member_not_only_the_first_is_already_running() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
+    let env = env("detach-group-busy");
+    let inspected = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["project", "inspect", "--cwd"])
+        .arg(repo.root())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    let project: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
+    store
+        .start_run(&orq_orchestrator::RunRecord {
+            run_id: "run-active".into(),
+            project_id: project["id"].as_str().unwrap().to_string(),
+            feature_id: "COM-02".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "orq/run-active".into(),
+            worktree: PathBuf::from("/tmp/w"),
+            repository: String::new(),
+            profiles: Default::default(),
+        })
+        .unwrap();
+
+    let output = run(repo.root(), &env, &["--group", "COM-01,COM-02", "--detach"]);
+
+    assert_eq!(output.status.code(), Some(EXIT_BUSY), "{}", stderr(&output));
+    assert!(stderr(&output).contains("COM-02") && stderr(&output).contains("run-active"), "{}", stderr(&output));
+    assert_eq!(store.run_ids().unwrap(), ["run-active"], "no ghost run was recorded");
+}
+
 // Reads /proc, so it can only run where procfs exists.
 #[cfg(target_os = "linux")]
 #[test]

@@ -20,8 +20,43 @@ pub struct ResumePlan {
     pub skip_implement: bool,
 }
 
+const GROUP_EVENT: &str = "run.grouped";
+
+/// Note which features, in which order, a run was started for. A run without this note was of
+/// its own feature alone.
+pub fn record_group(store: &RunStore, record: &RunRecord, members: &[String]) -> Result<(), StoreError> {
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: GROUP_EVENT.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "features": members }),
+    })
+}
+
+/// The features a run was for, in order.
+fn members_of(record: &RunRecord, events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .find(|e| e.kind == GROUP_EVENT)
+        .and_then(|e| serde_json::from_value(e.payload["features"].clone()).ok())
+        .unwrap_or_else(|| vec![record.feature_id.clone()])
+}
+
 /// The latest run of the feature, if it stopped in a way that can be picked up.
 pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: &str) -> Result<ResumePlan, String> {
+    plan_group_resume(store, repo, project_id, &[feature_id.to_string()])
+}
+
+/// As [`plan_resume`] for a run of `members` (in order); the first names the run. The stopped run
+/// must have been for exactly these features, in this order.
+pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, members: &[String]) -> Result<ResumePlan, String> {
+    let feature_id = members.first().map(String::as_str).ok_or("a run needs a feature")?;
     let mut latest: Option<(RunOrder, RunRecord)> = None;
     for run_id in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
         let Ok(record) = store.load(&run_id) else { continue };
@@ -36,6 +71,15 @@ pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: 
     }
     let Some((_, from)) = latest else { return Err(format!("{feature_id} has no earlier run to resume")) };
     let events = store.events(&from.run_id).map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
+    let earlier = members_of(&from, &events);
+    if earlier != members {
+        return Err(format!(
+            "{} was a run of {}, not of {}; resume it with the same features in the same order",
+            from.run_id,
+            earlier.join(", "),
+            members.join(", ")
+        ));
+    }
     match summarize_run(&events).phase {
         RunPhase::Failed | RunPhase::Blocked => {}
         RunPhase::Running => return Err(format!("{} did not stop; it may still be running", from.run_id)),

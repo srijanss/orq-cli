@@ -131,9 +131,55 @@ impl RunStore {
 
     /// Create a run and take its project+feature lock.
     pub fn start_run(&self, record: &RunRecord) -> Result<(), StoreError> {
-        let lock = self.lock_path(&record.project_id, &record.feature_id)?;
         self.run_dir(&record.run_id)?;
-        let _guard = self.guard(&record.project_id, &record.feature_id)?;
+        self.take_lock(&record.project_id, &record.feature_id, &record.run_id)?;
+        if let Err(err) = self.create(record) {
+            let _ = fs::remove_file(self.lock_path(&record.project_id, &record.feature_id)?);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Create a run of several features and take the lock of each, `members` in order (the
+    /// record's own feature among them). If one is busy nothing is kept: the locks already
+    /// taken are released and no run is recorded.
+    pub fn start_group_run(&self, record: &RunRecord, members: &[String]) -> Result<(), StoreError> {
+        self.run_dir(&record.run_id)?;
+        let mut taken: Vec<&String> = Vec::new();
+        let undo = |store: &RunStore, taken: &[&String]| {
+            for id in taken {
+                let _ = store.finish_run(&record.project_id, id, &record.run_id);
+            }
+        };
+        for id in members {
+            if let Err(err) = self.take_lock(&record.project_id, id, &record.run_id) {
+                undo(self, &taken);
+                return Err(err);
+            }
+            taken.push(id);
+        }
+        if let Err(err) = self.create(record) {
+            undo(self, &taken);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Release the lock of every member that `run_id` owns. Every member is tried; the first
+    /// failure is returned afterwards.
+    pub fn finish_group_run(&self, project_id: &str, members: &[String], run_id: &str) -> Result<(), StoreError> {
+        let mut first = None;
+        for id in members {
+            if let Err(err) = self.finish_run(project_id, id, run_id) {
+                first.get_or_insert(err);
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    fn take_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
+        let lock = self.lock_path(project_id, feature_id)?;
+        let _guard = self.guard(project_id, feature_id)?;
         let locks = lock.parent().expect("lock path has a parent");
         fs::create_dir_all(locks)?;
         // The lock appears already holding the run id: write a private file,
@@ -147,7 +193,7 @@ impl RunStore {
         let (private, mut file) = loop {
             let private = locks.join(format!(
                 ".{}.{}.{}.tmp",
-                record.run_id,
+                run_id,
                 std::process::id(),
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
@@ -157,7 +203,7 @@ impl RunStore {
                 Err(err) => return Err(err.into()),
             }
         };
-        file.write_all(record.run_id.as_bytes())?;
+        file.write_all(run_id.as_bytes())?;
         drop(file);
         let linked = fs::hard_link(&private, &lock);
         let _ = fs::remove_file(&private);
@@ -168,10 +214,6 @@ impl RunStore {
                 return Err(StoreError::FeatureBusy { active_run_id });
             }
             Err(err) => return Err(err.into()),
-        }
-        if let Err(err) = self.create(record) {
-            let _ = fs::remove_file(&lock);
-            return Err(err);
         }
         Ok(())
     }

@@ -363,10 +363,10 @@ fn run(args: &[OsString]) -> ExitCode {
         if parsed.run_id.is_some() {
             return usage_error();
         }
-        match pipeline::active_run(&project, feature) {
+        match pipeline::active_group_run(&project, &features) {
             Ok(None) => {}
-            Ok(Some(active)) => {
-                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+            Ok(Some((busy, active))) => {
+                eprintln!("orq: feature {} already has an active run: {}", printable(&busy), printable(&active));
                 return ExitCode::from(EXIT_BUSY);
             }
             Err(message) => return fail(message),
@@ -418,7 +418,11 @@ fn run(args: &[OsString]) -> ExitCode {
             })
         }
         Err(pipeline::StartError::Busy(active)) => {
-            eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+            if features.len() > 1 {
+                eprintln!("orq: a feature of the group {} already has an active run: {}", printable(&features.join(",")), printable(&active));
+            } else {
+                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+            }
             ExitCode::from(EXIT_BUSY)
         }
         Err(pipeline::StartError::Other(message)) => fail(message),
