@@ -185,6 +185,8 @@ struct RunArgs {
     no_ci_check: bool,
     publish: bool,
     resume: bool,
+    /// Set by `orq run resume` when the implementer was switched: the run-level model setting no longer applies to it.
+    switched_implementer: bool,
     detach: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
@@ -217,6 +219,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--no-ci-check" => parsed.no_ci_check = true,
             "--publish" => parsed.publish = true,
             "--resume" => parsed.resume = true,
+            "--switched-implementer" => parsed.switched_implementer = true,
             "--detach" => parsed.detach = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
@@ -403,6 +406,7 @@ fn run(args: &[OsString]) -> ExitCode {
         mr_reviewer: parsed.mr_reviewer.as_deref(),
         publish: parsed.publish,
         resume: parsed.resume,
+        switched_implementer: parsed.switched_implementer,
     };
     match pipeline::execute(&options) {
         Ok(report) => {
@@ -3635,25 +3639,52 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         forwarded.extend(["--feature".into(), members[0].clone().into()]);
     }
     // Each role continues on the profile last requested for it, else on the profile it had.
-    let events = store.events(&run_id).unwrap_or_default();
-    let known = match load_model_config(&repo_root) {
-        Ok((profiles, _)) => profiles,
+    let events = match store.events(&run_id) {
+        Ok(events) => events,
+        Err(err) => return fail(format!("cannot resume {}: cannot read its events: {err}", printable(&run_id))),
+    };
+    let (known, reviewers) = match load_model_config(&repo_root) {
+        Ok(config) => config,
         Err(message) => return fail(message),
     };
+    let defaults = orq_features::resolve_run_models(&known, &reviewers, &orq_features::RunSelection { implementer: None, reviewer: None }).ok();
     for role in ["implementer", "reviewer"] {
         let requested = events
             .iter()
             .rev()
             .find(|e| e.kind == "run.model_switch_requested" && e.payload["role"] == role)
             .and_then(|e| e.payload["profile"].as_str().map(str::to_string));
-        let name = requested.or_else(|| {
-            let had = record.profiles.get(role)?;
-            known
-                .profiles()
-                .iter()
-                .find(|p| p.harness == had.harness && p.model == had.model && p.thinking == had.thinking)
-                .map(|p| p.name.clone())
-        });
+        let name = match requested {
+            Some(name) => {
+                if known.get(&name).is_none() {
+                    return fail(format!("cannot resume {}: the requested profile {} is no longer configured", printable(&run_id), printable(&name)));
+                }
+                if role == "implementer" {
+                    forwarded.push("--switched-implementer".into());
+                }
+                Some(name)
+            }
+            None => {
+                let Some(had) = record.profiles.get(role) else { continue };
+                let named = known
+                    .profiles()
+                    .iter()
+                    .find(|p| p.harness == had.harness && p.model == had.model && p.thinking == had.thinking)
+                    .map(|p| p.name.clone());
+                let default = defaults.as_ref().map(|d| if role == "implementer" { &d.implementer } else { &d.reviewer });
+                let is_default = default.is_some_and(|d| d.harness == had.harness && d.model == had.model && d.thinking == had.thinking);
+                // A profile that no configured name and no default stands for cannot be restored.
+                if named.is_none() && !is_default && !(role == "implementer" && had_run_model_override(&had.model, default)) {
+                    return fail(format!(
+                        "cannot resume {}: the {role} profile ({} {}) is no longer configured; request one with `orq run switch`",
+                        printable(&run_id),
+                        printable(&had.harness),
+                        printable(&had.model)
+                    ));
+                }
+                named
+            }
+        };
         if let Some(name) = name {
             forwarded.extend([format!("--{role}").into(), name.into()]);
         }
@@ -3665,4 +3696,10 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         forwarded.push("--detach".into());
     }
     run(&forwarded)
+}
+
+/// An implementer whose profile differs from the default only by model was started with a run-level
+/// model (`--model` or a setting); the setting still applies when the run resumes.
+fn had_run_model_override(had_model: &str, default: Option<&orq_features::ResolvedModel>) -> bool {
+    default.is_some_and(|d| d.model != had_model)
 }

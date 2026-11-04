@@ -177,3 +177,52 @@ fn both_roles_can_be_switched_independently_and_a_resume_without_requests_record
     assert!(store.events(&new_id).unwrap().iter().all(|e| e.kind != "run.model_switched"));
     assert_eq!(store.load(&new_id).unwrap().profiles, store.load(&run_id).unwrap().profiles);
 }
+
+#[test]
+fn a_run_setting_model_does_not_override_a_requested_implementer_profile() {
+    let agent = agent();
+    let w = world("setting", &agent);
+    setup_profiles(&w);
+    let (run_id, store) = start_paused(&w);
+    request(&w, &run_id, "implementer", "slow-claude");
+    let run_toml = w.repo.root().join(".orq/run.toml");
+    let mut text = std::fs::read_to_string(&run_toml).unwrap();
+    text.push_str("model = \"haiku\"\n");
+    std::fs::write(&run_toml, text).unwrap();
+
+    let out = resume(&w, &run_id);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(store.load(&resumed_run(&store, &run_id)).unwrap().profiles["implementer"].model, "opus");
+}
+
+#[test]
+fn a_profile_that_is_no_longer_configured_refuses_the_resume_and_starts_no_run() {
+    let agent = agent();
+    let w = world("gone", &agent);
+    setup_profiles(&w);
+    let (run_id, store) = start_paused(&w);
+    request(&w, &run_id, "reviewer", "team-pi");
+    std::fs::write(w.repo.root().join(".orq.toml"), "[models.fast-claude]\nharness = \"claude\"\nmodel = \"sonnet\"\n").unwrap();
+
+    let out = resume(&w, &run_id);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("team-pi") && err.contains("no longer configured"), "{err}");
+    assert_eq!(store.run_ids().unwrap().len(), 1);
+}
+
+#[test]
+fn an_unswitched_role_whose_profile_can_no_longer_be_found_refuses_the_resume() {
+    let agent = agent();
+    let w = world("lost", &agent);
+    std::fs::write(w.repo.root().join(".orq.toml"), PROFILES.to_string() + "\n[roles]\nreviewer = \"team-pi\"\n").unwrap();
+    let (run_id, store) = start_paused(&w);
+    assert_eq!(store.load(&run_id).unwrap().profiles["reviewer"].model, "team/model");
+    setup_profiles(&w);
+    std::fs::write(w.repo.root().join(".orq.toml"), "[models.fast-claude]\nharness = \"claude\"\nmodel = \"sonnet\"\n").unwrap();
+
+    let out = resume(&w, &run_id);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reviewer profile"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(store.run_ids().unwrap().len(), 1);
+}

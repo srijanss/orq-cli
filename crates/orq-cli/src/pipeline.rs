@@ -46,6 +46,8 @@ pub struct Options<'a> {
     pub publish: bool,
     /// Continue the feature's latest stopped run: its branch and worktree are reused.
     pub resume: bool,
+    /// The implementer was switched on resume: its profile's own model stands, not the run-level one.
+    pub switched_implementer: bool,
 }
 
 fn new_run_id() -> String {
@@ -214,6 +216,9 @@ fn settings_or_flag_model<'a>(options: &'a Options<'_>, settings: &'a orq_orches
 
 /// The implementer profile with the run's model in place of its own, when one was asked for.
 fn with_run_model(implementer: &ResolvedModel, options: &Options<'_>, settings: &orq_orchestrator::RunSettings) -> ResolvedModel {
+    if options.switched_implementer {
+        return implementer.clone();
+    }
     match settings_or_flag_model(options, settings) {
         Some(model) => ResolvedModel { model: model.to_string(), ..implementer.clone() },
         None => implementer.clone(),
