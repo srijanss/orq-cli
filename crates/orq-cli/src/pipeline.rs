@@ -463,10 +463,19 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         return Err(other(message));
     }
 
+    // New implementation work invalidates what the checkpoint recorded as done after it: the gate and the push
+    // must cover the new commits. Only the review request, already opened, is kept so it is not opened twice.
+    let checkpoint = resumed.as_ref().and_then(|r| r.checkpoint.clone()).map(|mut c| {
+        if resumed.as_ref().is_some_and(|r| r.skip_implement) && inherited.is_none() {
+            c.completed_stages.retain(|s| s == "review_request");
+            c.push_ref = None;
+        }
+        c
+    });
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, inherited.map(|r| r.from.run_id.as_str()), resumed.as_ref().and_then(|r| r.checkpoint.as_ref())));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, inherited.map(|r| r.from.run_id.as_str()), checkpoint.as_ref()));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {

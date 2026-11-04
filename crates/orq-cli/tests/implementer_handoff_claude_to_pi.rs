@@ -163,3 +163,46 @@ fn a_switch_to_another_profile_of_the_same_harness_keeps_the_finished_implement_
     assert!(before.args.join(" ").contains("/implement-and-review"));
     assert!(pi.last_run().is_none());
 }
+
+/// Like `pausing_gate`, but only the first run asks for a pause, so a resumed run is not paused again.
+fn pausing_once_gate(w: &World) -> PathBuf {
+    let count = pausing_gate(w);
+    let script = w.base.join("gate.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho run >> '{count}'\n[ \"$(wc -l < '{count}')\" -eq 1 ] && XDG_STATE_HOME='{state}' '{orq}' run pause \"$(ls '{state}/orq/runs')\" >'{pause_log}' 2>&1\nexit 0\n",
+            count = count.display(),
+            orq = env!("CARGO_BIN_EXE_orq"),
+            state = w.state.display(),
+            pause_log = w.base.join("pause.log").display()
+        ),
+    )
+    .unwrap();
+    count
+}
+
+#[test]
+fn after_a_switch_to_a_new_harness_the_new_work_is_gated_again_and_pushed() {
+    let agent = agent();
+    let pi = FakeAgent::builder().write_file("pi.txt", "from pi\n").commit("feat: pi continues the work").build();
+    let w = world("gate-again", &agent, &pi);
+    std::fs::write(w.repo.root().join(".orq.toml"), PROFILES).unwrap();
+    let gate_runs = pausing_once_gate(&w);
+    let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+    assert_eq!(first.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&first.stdout), String::from_utf8_lossy(&first.stderr));
+    let store = RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let paused = store.load(&run_id).unwrap();
+    assert_eq!(std::fs::read_to_string(&gate_runs).unwrap().lines().count(), 1);
+
+    request(&w, &run_id, "implementer", "team-pi");
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+
+    assert_eq!(std::fs::read_to_string(&gate_runs).unwrap().lines().count(), 2, "the pi work must pass the gate");
+    let local = git(w.repo.root(), &["rev-parse", &paused.branch]);
+    let remote = git(&w.remote, &["rev-parse", &paused.branch]);
+    assert_eq!(remote.trim(), local.trim(), "the remote branch holds the pi commit");
+    assert!(git(&w.remote, &["log", "--format=%s", &paused.branch]).contains("feat: pi continues the work"));
+}
