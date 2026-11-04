@@ -3,8 +3,8 @@
 //! mirroring the Bash orchestrator's detection (Python with uv, Node, Rust).
 //!
 //! Gates are lists of argv vectors, never shell strings, so nothing from a
-//! feature file or an agent is ever interpreted by a shell. The optional
-//! lint/build steps are not detected yet.
+//! feature file or an agent is ever interpreted by a shell. Lint and build
+//! steps are optional and come only from [`GateOptions`].
 
 use std::collections::HashSet;
 use std::fs;
@@ -44,9 +44,25 @@ pub fn choose_gate(worktree: &Path, configured: Option<&[String]>) -> Result<Gat
     choose_gate_scoped(worktree, configured, None)
 }
 
-/// Like [`choose_gate`]; with `changed` (paths relative to the worktree) a Django
-/// project runs pytest only for the changed apps that have tests.
+/// Which optional parts of the detected gate to include.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GateOptions<'a> {
+    /// Paths changed by the run, relative to the worktree. A Django project then runs pytest only for the
+    /// changed apps that have tests, and ruff checks only the changed Python files.
+    pub changed: Option<&'a [String]>,
+    /// ruff for Python, the package.json `lint` script, `cargo fmt --check` and clippy.
+    pub lint: bool,
+    /// The package.json `build` script.
+    pub build: bool,
+}
+
+/// Like [`choose_gate`], with a scope for Django projects.
 pub fn choose_gate_scoped(worktree: &Path, configured: Option<&[String]>, changed: Option<&[String]>) -> Result<Gate, GateError> {
+    choose_gate_with(worktree, configured, &GateOptions { changed, ..GateOptions::default() })
+}
+
+/// Like [`choose_gate`], with the optional steps `options` asks for. A configured gate ignores them.
+pub fn choose_gate_with(worktree: &Path, configured: Option<&[String]>, options: &GateOptions) -> Result<Gate, GateError> {
     if let Some(argv) = configured.filter(|argv| !argv.is_empty()) {
         if argv[0].trim().is_empty() {
             return Err(GateError::EmptyProgram);
@@ -58,9 +74,9 @@ pub fn choose_gate_scoped(worktree: &Path, configured: Option<&[String]>, change
     }
     let mut steps = Vec::new();
     let mut notes = Vec::new();
-    python_steps(worktree, changed, &mut steps, &mut notes);
-    node_steps(worktree, &mut steps, &mut notes);
-    rust_steps(worktree, &mut steps);
+    python_steps(worktree, options, &mut steps, &mut notes);
+    node_steps(worktree, options, &mut steps, &mut notes);
+    rust_steps(worktree, options, &mut steps);
     if steps.is_empty() {
         let reason = if notes.is_empty() {
             NOTHING_DETECTED.to_string()
@@ -76,7 +92,7 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
-fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
+fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
     let django = dir.join("src/manage.py").is_file();
     if !dir.join("uv.lock").is_file() {
         return;
@@ -95,6 +111,22 @@ fn python_steps(dir: &Path, changed: Option<&[String]>, steps: &mut Vec<Vec<Stri
     let pytest_configured = pytest_in_pyproject
         || dir.join("pytest.ini").is_file()
         || dir.join("tests").is_dir();
+    let changed = options.changed;
+    if options.lint {
+        let mut ruff = argv(&["uv", "run", "ruff", "check"]);
+        match changed {
+            Some(changed) => {
+                let mut files: Vec<String> = changed.iter().filter(|path| path.ends_with(".py")).cloned().collect();
+                files.sort();
+                files.dedup();
+                if !files.is_empty() {
+                    ruff.extend(files);
+                    steps.push(ruff);
+                }
+            }
+            None => steps.push(ruff),
+        }
+    }
     if django {
         steps.push(argv(&["uv", "run", "python", "src/manage.py", "makemigrations", "--check", "--dry-run"]));
     }
@@ -140,7 +172,7 @@ fn changed_tested_apps(dir: &Path, changed: &[String]) -> Option<Vec<String>> {
     Some(targets)
 }
 
-fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
+fn node_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
     let manifest = dir.join("package.json");
     if !manifest.is_file() {
         return;
@@ -192,8 +224,14 @@ fn node_steps(dir: &Path, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>)
     } else if dir.join("tsconfig.json").is_file() && dir.join("node_modules/.bin/tsc").is_file() {
         steps.push(argv(&["node_modules/.bin/tsc", "--noEmit"]));
     }
+    if options.lint && scripts.contains("lint") {
+        steps.push(argv(&[manager, "run", "lint"]));
+    }
     if scripts.contains("test") {
         steps.push(argv(&[manager, "run", "test"]));
+    }
+    if options.build && scripts.contains("build") {
+        steps.push(argv(&[manager, "run", "build"]));
     }
 }
 
@@ -202,8 +240,12 @@ fn is_npm_placeholder_test(command: &str) -> bool {
     command.trim() == r#"echo "Error: no test specified" && exit 1"#
 }
 
-fn rust_steps(dir: &Path, steps: &mut Vec<Vec<String>>) {
+fn rust_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>) {
     if dir.join("Cargo.toml").is_file() {
+        if options.lint {
+            steps.push(argv(&["cargo", "fmt", "--check"]));
+            steps.push(argv(&["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]));
+        }
         steps.push(argv(&["cargo", "test", "--workspace"]));
     }
 }

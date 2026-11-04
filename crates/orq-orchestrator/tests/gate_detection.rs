@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{choose_gate, choose_gate_scoped, Gate, GateError};
+use orq_orchestrator::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
 
 fn worktree(tag: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-gate-{}-{tag}", std::process::id()));
@@ -447,4 +447,66 @@ fn changed_files_listed_in_any_order_and_repeatedly_name_each_app_once_in_sorted
         choose_gate_scoped(&dir, None, Some(&changed)),
         Ok(run(&[MIGRATIONS, &["uv", "run", "pytest", "src/billing", "src/shop"]]))
     );
+}
+
+fn with(options: &GateOptions, dir: &Path) -> Gate {
+    choose_gate_with(dir, None, options).unwrap()
+}
+
+#[test]
+fn lint_adds_ruff_on_the_changed_python_files_before_pytest() {
+    let dir = worktree("lint-python");
+    touch(&dir, "uv.lock", "");
+    touch(&dir, "pytest.ini", "");
+    let changed = ["src/a.py".to_string(), "README.md".to_string(), "b.py".to_string()];
+
+    let linted = GateOptions { lint: true, changed: Some(&changed), ..GateOptions::default() };
+    assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "ruff", "check", "b.py", "src/a.py"], &["uv", "run", "pytest"]]));
+
+    let docs_only = ["README.md".to_string()];
+    let linted = GateOptions { lint: true, changed: Some(&docs_only), ..GateOptions::default() };
+    assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "pytest"]]));
+
+    let whole = GateOptions { lint: true, ..GateOptions::default() };
+    assert_eq!(with(&whole, &dir), run(&[&["uv", "run", "ruff", "check"], &["uv", "run", "pytest"]]));
+}
+
+#[test]
+fn lint_and_build_add_the_package_scripts_around_the_tests() {
+    let dir = worktree("lint-node");
+    touch(&dir, "package.json", r#"{"scripts": {"typecheck": "tsc", "lint": "eslint .", "test": "vitest run", "build": "vite build"}}"#);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+
+    let both = GateOptions { lint: true, build: true, ..GateOptions::default() };
+    assert_eq!(
+        with(&both, &dir),
+        run(&[&["npm", "run", "typecheck"], &["npm", "run", "lint"], &["npm", "run", "test"], &["npm", "run", "build"]])
+    );
+    let off = GateOptions::default();
+    assert_eq!(with(&off, &dir), run(&[&["npm", "run", "typecheck"], &["npm", "run", "test"]]));
+
+    touch(&dir, "package.json", r#"{"scripts": {"test": "vitest run"}}"#);
+    assert_eq!(with(&both, &dir), run(&[&["npm", "run", "test"]]), "scripts that do not exist are not run");
+}
+
+#[test]
+fn lint_adds_cargo_fmt_check_and_clippy_before_the_tests() {
+    let dir = worktree("lint-rust");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+
+    let linted = GateOptions { lint: true, build: true, ..GateOptions::default() };
+    assert_eq!(
+        with(&linted, &dir),
+        run(&[&["cargo", "fmt", "--check"], &["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], &["cargo", "test", "--workspace"]])
+    );
+}
+
+#[test]
+fn a_configured_gate_ignores_the_lint_and_build_options() {
+    let dir = worktree("lint-configured");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    let configured = ["make".to_string(), "check".to_string()];
+    let both = GateOptions { lint: true, build: true, ..GateOptions::default() };
+
+    assert_eq!(choose_gate_with(&dir, Some(&configured), &both), Ok(run(&[&["make", "check"]])));
 }
