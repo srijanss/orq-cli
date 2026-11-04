@@ -301,8 +301,10 @@ fn variable_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
 
 /// A model name is handed to the agent as one option value: never blank, never an option, one word.
 pub fn model(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_whitespace) {
-        return Err("must be a model name: one word that does not start with a dash".to_string());
+    // The same rule as the agent adapter's `plain` check, so a name accepted here never fails after the run exists.
+    let allowed = |c: char| c.is_ascii_alphanumeric() || "-_./:@+".contains(c);
+    if value.is_empty() || value.starts_with('-') || !value.chars().all(allowed) {
+        return Err("must be a model name: letters, digits and - _ . / : @ +, not starting with a dash".to_string());
     }
     Ok(value.to_string())
 }

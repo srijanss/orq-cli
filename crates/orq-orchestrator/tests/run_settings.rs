@@ -242,4 +242,10 @@ fn the_run_model_comes_from_the_files_or_the_environment_and_must_be_a_plain_nam
     assert!(invalid("model = \"--dangerous\"\n", "modelopt").contains("model"));
     assert!(invalid("model = \"two words\"\n", "modelspace").contains("model"));
     assert!(invalid("model = \"\"\n", "modelblank").contains("model"));
+    // The agent adapter's own rule applies, so nothing passes here that fails after the run is created.
+    assert!(invalid("model = \"foo$bar\"\n", "modeldollar").contains("model"));
+    assert!(invalid("model = \"a\\u0000b\"\n", "modelnul").contains("model"));
+    assert!(invalid("model = \"opus;rm\"\n", "modelsemi").contains("model"));
+    shared(&r, "model = \"anthropic/claude-sonnet-5-5:1m@x+y\"\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().model.as_deref(), Some("anthropic/claude-sonnet-5-5:1m@x+y"));
 }

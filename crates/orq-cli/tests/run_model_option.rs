@@ -57,6 +57,11 @@ fn github() -> FakeProvider {
 
 /// A `claude` that files each session under `with` (it was given the model) or `without`, then behaves as `agent`.
 fn run(w: &World, extra: &[&str], model: &str) -> (Output, PathBuf, PathBuf) {
+    run_with_fix(w, extra, model, "exit 0")
+}
+
+/// As `run`, but a session asked to repair a red gate runs `fix` in the worktree instead of the agent.
+fn run_with_fix(w: &World, extra: &[&str], model: &str, fix: &str) -> (Output, PathBuf, PathBuf) {
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let provider = github();
     let (with, without) = (w.base.join("with"), w.base.join("without"));
@@ -66,7 +71,7 @@ fn run(w: &World, extra: &[&str], model: &str) -> (Output, PathBuf, PathBuf) {
     std::fs::write(
         &claude,
         format!(
-            "#!/bin/sh\ncase \"$*\" in *'--model {model}'*) echo x >> '{}';; *) echo x >> '{}';; esac\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ncase \"$*\" in *'--model {model}'*) echo x >> '{}';; *) echo x >> '{}';; esac\ncase \"$*\" in *'local gate failed'*) {fix};; esac\nexec '{}' \"$@\"\n",
             with.display(),
             without.display(),
             agent.path().display()
@@ -135,4 +140,30 @@ fn a_model_that_could_be_an_option_is_refused_before_anything_starts() {
     assert_ne!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--model"), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!((sessions(&with), sessions(&without)), (0, 0), "no session was started");
+}
+
+#[test]
+fn the_repair_session_for_a_red_gate_runs_on_the_run_model_and_the_flag_wins() {
+    let w = world("fix");
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"test\", \"-f\", \"fixed\"]\nmodel = \"from-file\"\n").unwrap();
+    let repair = "touch fixed; git add fixed; git -c user.name=t -c user.email=t@example.com commit -q -m 'fix: repair the gate'; exit 0";
+
+    let (out, with, without) = run_with_fix(&w, &["--model", "from-flag"], "from-flag", repair);
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(sessions(&with), 3, "the implement session, the repair session and the draft");
+    assert_eq!(sessions(&without), 0, "no session ran on another model");
+}
+
+#[test]
+fn the_repair_sessions_use_the_model_setting_and_a_gate_they_cannot_fix_fails_the_run() {
+    let w = world("fix-red");
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"false\"]\nmodel = \"from-file\"\n").unwrap();
+
+    let (out, with, without) = run_with_fix(&w, &[], "from-file", "exit 0");
+
+    assert_eq!(out.status.code(), Some(31), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(sessions(&with) >= 2, "the implement session and at least one repair session were given the model");
+    assert_eq!(sessions(&without), 0, "no session ran on another model");
 }
