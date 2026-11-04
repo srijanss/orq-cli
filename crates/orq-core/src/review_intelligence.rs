@@ -308,9 +308,44 @@ pub fn file_link(base_url: &str, sha: &str, path: &str, line: Option<u64>, exist
     Some(format!("https://{base}/blob/{sha}/{}{anchor}", percent_encode(path)))
 }
 
+/// A link for one changed file, or the reason there is none.
+fn provider_link(source: Option<&LinkSource>, current: bool, changed: &[&str], path: &str, line: Option<u64>) -> (Option<String>, Option<String>) {
+    let Some(source) = source else { return (None, Some("no provider review is associated".to_string())) };
+    if !current {
+        return (None, Some("the report is not current".to_string()));
+    }
+    if !changed.contains(&path) {
+        return (None, Some("the file is not changed in this review".to_string()));
+    }
+    match file_link(source.base_url, source.sha, path, line, source.exists) {
+        Some(link) if source.provider == "gitlab" => (Some(link.replacen("/blob/", "/-/blob/", 1)), None),
+        Some(link) => (Some(link), None),
+        None => (None, Some("the file cannot be linked at the reviewed commit".to_string())),
+    }
+}
+
+/// The repository page behind a review URL, or `None` when the provider is
+/// unknown or the URL is not an https review page of that provider.
+pub fn repository_base(provider: &str, review_url: &str) -> Option<String> {
+    let marker = match provider {
+        "github" => "/pull/",
+        "gitlab" => "/-/merge_requests/",
+        _ => return None,
+    };
+    let rest = review_url.strip_prefix("https://")?;
+    let (repository, number) = rest.split_once(marker)?;
+    let digits = number.split(['/', '?', '#']).next().unwrap_or("");
+    if repository.is_empty() || !repository.contains('/') || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("https://{}", repository.trim_end_matches('/')))
+}
+
 /// Where file links point: a repository page, the reviewed commit, and a check
 /// that a path exists in that commit's tree.
 pub struct LinkSource<'a> {
+    /// `github` or `gitlab`; decides the shape of the link.
+    pub provider: &'a str,
     pub base_url: &'a str,
     pub sha: &'a str,
     pub exists: &'a dyn Fn(&str) -> bool,
@@ -331,17 +366,18 @@ pub fn apply_intelligence(report: &mut serde_json::Value, files: &[ReportFile], 
     use serde_json::json;
     let classification = classify_files(files);
     let changed: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    let current = report["status"] == "current";
     let risks: Vec<serde_json::Value> = attribute(rounds, files)
         .iter()
         .map(|a| {
-            let link = match (links, a.file.as_deref()) {
-                (Some(source), Some(path)) => file_link(source.base_url, source.sha, path.strip_prefix("./").unwrap_or(path), a.line, source.exists),
-                _ => None,
+            let (link, link_reason) = match a.file.as_deref() {
+                Some(path) => provider_link(links, current, &changed, path.strip_prefix("./").unwrap_or(path), a.line),
+                None => (None, Some("the finding names no file".to_string())),
             };
             json!({
                 "id": a.id, "round": a.round, "severity": severity_name(a.severity), "category": a.category, "claim": a.claim,
                 "file": a.file, "line": a.line, "standing": a.standing.as_str(), "unresolved": a.unresolved,
-                "reference": a.reference.as_str(), "evidence": a.evidence, "link": link,
+                "reference": a.reference.as_str(), "evidence": a.evidence, "link": link, "link_reason": link_reason,
             })
         })
         .collect();
@@ -360,7 +396,10 @@ pub fn apply_intelligence(report: &mut serde_json::Value, files: &[ReportFile], 
     report["risks"] = json!(risks);
     report["rounds"] = json!(summaries);
     report["file_risks"] = json!({
-        "files": classification.files.iter().map(|f| json!({"path": f.path, "category": f.category.as_str(), "level": f.level.as_str(), "evidence": f.evidence})).collect::<Vec<_>>(),
+        "files": classification.files.iter().map(|f| {
+            let (link, link_reason) = provider_link(links, current, &changed, &f.path, None);
+            json!({"path": f.path, "category": f.category.as_str(), "level": f.level.as_str(), "evidence": f.evidence, "link": link, "link_reason": link_reason})
+        }).collect::<Vec<_>>(),
         "omitted": classification.omitted,
     });
     if classification.omitted > 0 {

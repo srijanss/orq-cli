@@ -82,12 +82,12 @@ fn rounds_are_summarized_from_what_was_recorded_not_rerun() {
 #[test]
 fn links_appear_only_for_files_that_exist_at_the_reviewed_commit() {
     let exists = |p: &str| p == "src/a b.rs";
-    let links = LinkSource { base_url: "https://github.example/o/r", sha: SHA, exists: &exists };
-    let value = applied(
-        vec![file("src/a b.rs"), file("gone.rs")],
-        vec![round(1, None, vec![finding("a", FindingStatus::Open, None, Some("src/a b.rs")), finding("b", FindingStatus::Open, None, Some("gone.rs"))])],
-        Some(&links),
-    );
+    let links = LinkSource { provider: "github", base_url: "https://github.example/o/r", sha: SHA, exists: &exists };
+    let files = vec![file("src/a b.rs"), file("gone.rs")];
+    let rounds = vec![round(1, None, vec![finding("a", FindingStatus::Open, None, Some("src/a b.rs")), finding("b", FindingStatus::Open, None, Some("gone.rs"))])];
+    let mut value = report(files.clone());
+    value["status"] = serde_json::json!("current");
+    apply_intelligence(&mut value, &files, &rounds, Some(&links));
     let risks = value["risks"].as_array().unwrap();
     assert_eq!(risks[0]["link"], format!("https://github.example/o/r/blob/{SHA}/src/a%20b.rs#L4"));
     assert!(risks[1]["link"].is_null());

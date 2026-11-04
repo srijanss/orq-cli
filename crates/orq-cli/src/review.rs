@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use orq_core::review_input::{load_review_findings, load_review_input};
-use orq_core::review_intelligence::apply_intelligence;
+use orq_core::review_intelligence::{apply_intelligence, repository_base, LinkSource};
 use orq_core::review_lifecycle::ReviewLifecycle;
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
 use orq_core::storage::{check_run_id, write_atomic, StorageRoots};
@@ -89,15 +89,31 @@ fn build(args: &[OsString]) -> ExitCode {
         },
         generated_at: utc_now(),
     };
+    let store = match Store::open(&roots.database()) {
+        Ok(store) => store,
+        Err(err) => return fail(format!("cannot open the review index: {err}")),
+    };
     let mut report = build_report(&inputs);
+    let link_target = provider_link_target(&store, &parsed.run_id);
+    let exists = |path: &str| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project.root)
+            .args(["cat-file", "-e", &format!("{}:{path}", inputs.head_sha)])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let links = link_target.as_ref().map(|(provider, base)| LinkSource { provider, base_url: base, sha: &inputs.head_sha, exists: &exists });
     let rounds = match &parsed.review_input {
         None => Ok(Vec::new()),
         Some(path) => load_review_findings(path),
     };
     match rounds {
-        Ok(rounds) => apply_intelligence(&mut report, &inputs.files, &rounds, None),
+        Ok(rounds) => apply_intelligence(&mut report, &inputs.files, &rounds, links.as_ref()),
         Err(err) => {
-            apply_intelligence(&mut report, &inputs.files, &[], None);
+            apply_intelligence(&mut report, &inputs.files, &[], links.as_ref());
             if let Some(gaps) = report["gaps"].as_array_mut() {
                 gaps.push(serde_json::json!(format!("review findings could not be read ({err:?}), so no risks are listed")));
             }
@@ -107,10 +123,6 @@ fn build(args: &[OsString]) -> ExitCode {
     let json = match serde_json::to_vec_pretty(&report) {
         Ok(json) => json,
         Err(err) => return fail(err),
-    };
-    let store = match Store::open(&roots.database()) {
-        Ok(store) => store,
-        Err(err) => return fail(format!("cannot open the review index: {err}")),
     };
     // The readable copy goes first: if it cannot be written nothing is
     // published or indexed, so a failed build leaves no half-visible report.
@@ -142,6 +154,12 @@ fn build(args: &[OsString]) -> ExitCode {
     };
     println!("{}", roots.data.join(&record.report_path).display());
     ExitCode::SUCCESS
+}
+
+/// The provider and repository page of the run's associated review, when it has one.
+fn provider_link_target(store: &Store, run_id: &str) -> Option<(String, String)> {
+    let lifecycles = store.lifecycles_for_run(run_id).ok()?;
+    lifecycles.iter().find_map(|l| repository_base(&l.provider, &l.url).map(|base| (l.provider.clone(), base)))
 }
 
 fn lock_publication(data_root: &Path, run_id: &str, head_sha: &str) -> std::io::Result<std::fs::File> {
