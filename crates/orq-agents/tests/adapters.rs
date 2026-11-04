@@ -230,11 +230,15 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
 #[test]
 fn the_failure_explainer_is_a_remote_controllable_claude_session_told_the_failure_and_the_logs() {
     use orq_agents::explain_failure_argv;
-    let argv = explain_failure_argv("opus", "orq/com-02", "the gate failed at step test", "/repo/.git/orq/logs/run-1").unwrap();
+    let argv = explain_failure_argv("opus", Some("orq/com-02"), "the gate failed at step test", "/repo/.git/orq/logs/run-1").unwrap();
     assert_eq!(&argv[..4], ["--model", "opus", "--remote-control", "orq/com-02"]);
     let prompt = argv.last().unwrap();
     assert!(prompt.contains("the gate failed at step test") && prompt.contains("/repo/.git/orq/logs/run-1"), "{prompt}");
-    assert!(explain_failure_argv("-x", "orq/com-02", "d", "/l").is_err());
-    assert!(explain_failure_argv("opus", "a b", "d", "/l").is_err());
-    assert!(explain_failure_argv("opus", "orq/com-02", "bell\u{7}", "/l").is_err());
+    assert!(explain_failure_argv("-x", Some("orq/com-02"), "d", "/l").is_err());
+    assert!(explain_failure_argv("opus", Some("a b"), "d", "/l").is_err());
+    assert!(explain_failure_argv("opus", Some("orq/com-02"), "bell\u{7}", "/l").is_err());
+
+    // With Remote Control opted out the explainer is not reachable from the app either.
+    let local = explain_failure_argv("opus", None, "d", "/l").unwrap();
+    assert!(!local.iter().any(|a| a == "--remote-control"), "{local:?}");
 }

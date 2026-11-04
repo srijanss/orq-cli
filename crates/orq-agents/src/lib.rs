@@ -124,10 +124,12 @@ fn marker_for_prompt(marker: &str) -> Result<String, AdapterError> {
 }
 
 /// The arguments of a Claude session that explains why a run failed: it reads the run's logs, tells the
-/// user what went wrong and stays reachable from the Claude app under `name`.
-pub fn explain_failure_argv(model: &str, name: &str, detail: &str, logs_dir: &str) -> Result<Vec<String>, AdapterError> {
+/// user what went wrong and, when `name` is given, stays reachable from the Claude app under it.
+pub fn explain_failure_argv(model: &str, name: Option<&str>, detail: &str, logs_dir: &str) -> Result<Vec<String>, AdapterError> {
     plain("model", model)?;
-    plain("remote control name", name)?;
+    if let Some(name) = name {
+        plain("remote control name", name)?;
+    }
     checked_context(detail)?;
     if logs_dir.chars().any(char::is_control) {
         return Err(AdapterError::InvalidValue { field: "logs", value: logs_dir.to_string() });
@@ -135,7 +137,13 @@ pub fn explain_failure_argv(model: &str, name: &str, detail: &str, logs_dir: &st
     let prompt = format!(
         "An orq run of this worktree has failed: {detail}\n\nThe run's logs are in {logs_dir}. Read the relevant ones, explain in a few sentences what went wrong and what the user can do next. Do not change any files."
     );
-    Ok(vec!["--model".to_string(), model.to_string(), "--remote-control".to_string(), name.to_string(), prompt])
+    let mut argv = vec!["--model".to_string(), model.to_string()];
+    if let Some(name) = name {
+        argv.push("--remote-control".to_string());
+        argv.push(name.to_string());
+    }
+    argv.push(prompt);
+    Ok(argv)
 }
 
 struct Claude;

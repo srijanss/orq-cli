@@ -370,21 +370,23 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
     }
     let Some(program) = find_program("claude") else { return };
     let model = with_run_model(&options.implementer, options, settings).model;
-    let name = format!("{}-explain", record.branch);
+    // The explainer is reachable from the app only when the run's own session is.
+    let name = (settings.remote_control != Some(false)).then(|| format!("{}-explain", record.branch));
     let Some(logs_dir) = logs.to_str() else { return };
-    let argv = match orq_agents::explain_failure_argv(&model, &name, detail, logs_dir) {
+    let argv = match orq_agents::explain_failure_argv(&model, name.as_deref(), detail, logs_dir) {
         Ok(argv) => argv,
         Err(err) => {
             eprintln!("orq: cannot start the failure explainer: {err:?}");
             return;
         }
     };
-    let log = std::fs::File::create(logs.join("explain.log"));
+    // Output goes to the log; when the log cannot be opened it is dropped, never inherited from the runner.
     let mut command = Command::new(program);
     command.args(&argv).current_dir(&record.worktree).stdin(std::process::Stdio::null());
-    if let Ok(file) = log.and_then(|f| f.try_clone().map(|c| (f, c))) {
-        command.stdout(file.0).stderr(file.1);
-    }
+    match std::fs::File::create(logs.join("explain.log")).and_then(|f| f.try_clone().map(|c| (f, c))) {
+        Ok((out, err)) => command.stdout(out).stderr(err),
+        Err(_) => command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()),
+    };
     if let Err(err) = command.spawn() {
         eprintln!("orq: cannot start the failure explainer: {err}");
     }

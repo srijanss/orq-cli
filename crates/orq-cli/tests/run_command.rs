@@ -951,3 +951,19 @@ fn both_switches_off_in_the_settings_file_start_no_remote_control_and_no_explain
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(agent.last_run().unwrap().args, first, "no second session was started");
 }
+
+#[test]
+fn remote_control_off_with_the_explainer_on_starts_an_explainer_that_is_not_reachable_from_the_app() {
+    let w = world("explainer-local");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "remote_control = false\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").exit_code(3).build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_ne!(output.status.code(), Some(0), "{}", stderr(&output));
+    let first = agent.first_run().expect("the implement session ran").args;
+    wait_until("the explainer session", || agent.last_run().is_some_and(|run| run.args != first));
+    let explain = agent.last_run().unwrap().args;
+    assert!(!explain.iter().any(|a| a == "--remote-control"), "{explain:?}");
+}
