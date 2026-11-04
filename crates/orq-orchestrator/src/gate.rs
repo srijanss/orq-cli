@@ -116,7 +116,7 @@ fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>,
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
         match changed {
             Some(changed) => {
-                let mut files: Vec<String> = changed.iter().filter(|path| path.ends_with(".py")).cloned().collect();
+                let mut files: Vec<String> = changed.iter().filter(|path| path.ends_with(".py") && dir.join(path).is_file()).cloned().collect();
                 files.sort();
                 files.dedup();
                 if !files.is_empty() {

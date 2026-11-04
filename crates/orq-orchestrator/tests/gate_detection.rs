@@ -458,7 +458,11 @@ fn lint_adds_ruff_on_the_changed_python_files_before_pytest() {
     let dir = worktree("lint-python");
     touch(&dir, "uv.lock", "");
     touch(&dir, "pytest.ini", "");
-    let changed = ["src/a.py".to_string(), "README.md".to_string(), "b.py".to_string(), "--output-file=victim.py".to_string()];
+    for file in ["src/a.py", "b.py", "--output-file=victim.py"] {
+        touch(&dir, file, "");
+    }
+    // `gone.py` was deleted or renamed away by the run: ruff would fail on a path that no longer exists.
+    let changed = ["src/a.py".to_string(), "README.md".to_string(), "gone.py".to_string(), "b.py".to_string(), "--output-file=victim.py".to_string()];
 
     let linted = GateOptions { lint: true, changed: Some(&changed), ..GateOptions::default() };
     assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "ruff", "check", "--", "--output-file=victim.py", "b.py", "src/a.py"], &["uv", "run", "pytest"]]));
@@ -466,6 +470,10 @@ fn lint_adds_ruff_on_the_changed_python_files_before_pytest() {
     let docs_only = ["README.md".to_string()];
     let linted = GateOptions { lint: true, changed: Some(&docs_only), ..GateOptions::default() };
     assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "pytest"]]));
+
+    let only_deleted = ["gone.py".to_string()];
+    let linted = GateOptions { lint: true, changed: Some(&only_deleted), ..GateOptions::default() };
+    assert_eq!(with(&linted, &dir), run(&[&["uv", "run", "pytest"]]), "nothing left to lint");
 
     let whole = GateOptions { lint: true, ..GateOptions::default() };
     assert_eq!(with(&whole, &dir), run(&[&["uv", "run", "ruff", "check"], &["uv", "run", "pytest"]]));
