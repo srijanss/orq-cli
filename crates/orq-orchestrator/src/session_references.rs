@@ -22,16 +22,24 @@ pub struct SessionReference {
     pub session_id: Option<String>,
 }
 
-/// The sessions of `run_id` itself: one per started session stage, on the harness and model the run
-/// was created with.
-fn own_sessions(store: &RunStore, run_id: &str) -> Result<Vec<SessionReference>, StoreError> {
+/// Every session known to `run_id`: the ones carried in from earlier runs, then its own. A carried
+/// record that cannot be decoded is an error, never a silently shorter history.
+pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionReference>, StoreError> {
     let record = store.load(run_id)?;
-    let Some(profile) = record.profiles.get("implementer") else { return Ok(Vec::new()) };
-    Ok(store
-        .events(run_id)?
-        .into_iter()
-        .filter(|e| e.kind == "stage.started")
-        .filter_map(|e| {
+    let events = store.events(run_id)?;
+    let mut all = Vec::new();
+    for event in events.iter().filter(|e| e.kind == "run.sessions_carried") {
+        let sessions = event
+            .payload
+            .get("sessions")
+            .ok_or_else(|| StoreError::Corrupt(format!("{} has no sessions", event.event_id)))?;
+        let carried: Vec<SessionReference> = serde_json::from_value(sessions.clone())
+            .map_err(|err| StoreError::Corrupt(format!("{} sessions: {err}", event.event_id)))?;
+        all.extend(carried);
+    }
+    // The sessions of the run itself: one per started session stage, on the profile the run was created with.
+    if let Some(profile) = record.profiles.get("implementer") {
+        all.extend(events.iter().filter(|e| e.kind == "stage.started").filter_map(|e| {
             let stage = e.stage.clone().filter(|s| SESSION_STAGES.contains(&s.as_str()))?;
             Some(SessionReference {
                 run_id: run_id.to_string(),
@@ -42,21 +50,8 @@ fn own_sessions(store: &RunStore, run_id: &str) -> Result<Vec<SessionReference>,
                 model: profile.model.clone(),
                 session_id: e.payload.get("session_id").and_then(|s| s.as_str()).map(str::to_string),
             })
-        })
-        .collect())
-}
-
-/// Every session known to `run_id`: the ones carried in from earlier runs, then its own.
-pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionReference>, StoreError> {
-    let mut all = Vec::new();
-    for event in store.events(run_id)?.into_iter().filter(|e| e.kind == "run.sessions_carried") {
-        if let Some(sessions) = event.payload.get("sessions") {
-            if let Ok(carried) = serde_json::from_value::<Vec<SessionReference>>(sessions.clone()) {
-                all.extend(carried);
-            }
-        }
+        }));
     }
-    all.extend(own_sessions(store, run_id)?);
     Ok(all)
 }
 
