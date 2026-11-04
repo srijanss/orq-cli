@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use crate::outcome::git_raw;
 
 /// Ignored paths orq itself writes (or links) into a run's worktree.
-const CANDIDATES: [&str; 5] = [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json", concat!(".", "env")];
+const DOTENV: &str = concat!(".", "env");
+const CANDIDATES: [&str; 5] = [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json", DOTENV];
 const MANIFEST: &str = "orq-written.json";
 
 /// What `path` is now: a link's target, or a regular file's content hash. `None` for anything else.
@@ -18,10 +19,11 @@ fn fingerprint(worktree: &Path, name: &str) -> Option<String> {
     if meta.file_type().is_symlink() {
         return Some(format!("link:{}", std::fs::read_link(&path).ok()?.display()));
     }
-    if !meta.is_file() {
+    // orq only ever links the dotenv file; a regular file of that name is not orq's.
+    if !meta.is_file() || name == DOTENV {
         return None;
     }
-    let out = git_raw(worktree, &["hash-object", "--", name]).ok()?;
+    let out = git_raw(worktree, &["hash-object", "--no-filters", "--", name]).ok()?;
     out.success.then(|| format!("blob:{}", out.stdout.trim()))
 }
 
