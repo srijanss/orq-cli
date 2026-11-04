@@ -72,6 +72,11 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
         }
         return;
     }
+    // A copy git could offer for staging is worse than none: keep it out of git status first.
+    if let Err(why) = exclude_locally(worktree, name) {
+        found.notes.push(format!("{name} is not carried into the worktree: {why}"));
+        return;
+    }
     if let Some(parent) = target.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -80,9 +85,10 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
         found.notes.push(format!("{name} could not be carried into the worktree ({:?})", err.kind()));
         return;
     }
-    exclude_locally(worktree, name, found);
     if name == MCPCTL_TOML {
-        exclude_locally(worktree, MCPCTL_LOCK, found);
+        if let Err(why) = exclude_locally(worktree, MCPCTL_LOCK) {
+            found.notes.push(format!("{MCPCTL_LOCK} could not be kept out of git status: {why}"));
+        }
     }
 }
 
@@ -103,27 +109,31 @@ fn plain_relative(name: &str) -> bool {
 }
 
 /// Adds `name` to the repository's `info/exclude` unless git already ignores it.
-fn exclude_locally(worktree: &Path, name: &str, found: &mut LocalFiles) {
+/// It succeeds only once git reports `name` as ignored.
+fn exclude_locally(worktree: &Path, name: &str) -> Result<(), String> {
     let git = |args: &[&str]| Command::new("git").arg("-C").arg(worktree).args(args).output();
-    if git(&["check-ignore", "-q", "--", name]).is_ok_and(|out| out.status.success()) {
-        return;
+    let ignored = || git(&["check-ignore", "-q", "--", name]).is_ok_and(|out| out.status.success());
+    if ignored() {
+        return Ok(());
     }
-    let Some(path) = git(&["rev-parse", "--git-path", "info/exclude"]).ok().filter(|out| out.status.success()).map(|out| {
-        let printed = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-        if printed.is_absolute() { printed } else { worktree.join(printed) }
-    }) else {
-        found.notes.push(format!("{name} could not be kept out of git status: the local exclude was not found"));
-        return;
-    };
+    let path = git(&["rev-parse", "--git-path", "info/exclude"])
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            let printed = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            if printed.is_absolute() { printed } else { worktree.join(printed) }
+        })
+        .ok_or("the local exclude was not found")?;
     let mut text = std::fs::read_to_string(&path).unwrap_or_default();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
     text.push_str(&format!("/{name}\n"));
-    let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text));
-    if let Err(err) = written {
-        found.notes.push(format!("{name} could not be kept out of git status ({:?})", err.kind()));
-    }
+    path.parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, text))
+        .map_err(|err| format!("the local exclude could not be written ({:?})", err.kind()))?;
+    if ignored() { Ok(()) } else { Err("git does not ignore it after the local exclude was updated".to_string()) }
 }
 
 /// For each server both files describe, copies the main file's keys (its `env` entries among them)

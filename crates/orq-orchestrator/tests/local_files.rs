@@ -117,6 +117,22 @@ fn a_mcp_json_that_git_tracks_in_the_worktree_is_never_rewritten_with_the_main_c
 }
 
 #[test]
+fn a_file_that_cannot_be_kept_out_of_git_status_is_not_carried_into_the_worktree() {
+    let (repo, worktree) = checkout("no-exclude");
+    fs::write(repo.root().join("secrets.json"), "{\"k\":1}").unwrap();
+    // The local exclude cannot be written: a directory stands where the file belongs.
+    let exclude = repo.root().join(".git/info/exclude");
+    let _ = fs::remove_file(&exclude);
+    fs::create_dir_all(&exclude).unwrap();
+    let files = vec!["secrets.json".to_string()];
+
+    let found = carry_local_files(repo.root(), &worktree, Some(&files));
+
+    assert!(!worktree.join("secrets.json").exists(), "an unprotected copy must not be left behind");
+    assert!(found.notes.iter().any(|n| n.contains("secrets.json") && n.contains("not carried")), "{:?}", found.notes);
+}
+
+#[test]
 fn mcpctl_config_is_copied_and_its_lock_file_is_kept_out_of_git_status() {
     let (repo, worktree) = checkout("mcpctl");
     fs::write(repo.root().join(".mcpctl.toml"), "[servers]\n").unwrap();
