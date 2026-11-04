@@ -918,3 +918,36 @@ fn publish_refuses_a_checkout_it_cannot_publish_and_leaves_everything_alone() {
         assert!(!w.repo.root().join(".claude/worktrees").exists(), "{tag}: no worktree");
     }
 }
+
+#[test]
+fn the_implement_session_is_reachable_from_the_app_and_a_failed_run_starts_an_explainer_session() {
+    let w = world("explainer");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").exit_code(3).build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_ne!(output.status.code(), Some(0), "{}", stderr(&output));
+    let first = agent.first_run().expect("the implement session ran").args;
+    let at = first.iter().position(|a| a == "--remote-control").expect("remote control is on by default");
+    assert!(first[at + 1].starts_with("orq/") || !first[at + 1].is_empty(), "{first:?}");
+    wait_until("the explainer session", || agent.last_run().is_some_and(|run| run.args != first));
+    let explain = agent.last_run().unwrap().args;
+    assert!(explain.iter().any(|a| a == "--remote-control"), "{explain:?}");
+    assert!(explain.last().unwrap().contains("the implement session failed"), "{explain:?}");
+}
+
+#[test]
+fn both_switches_off_in_the_settings_file_start_no_remote_control_and_no_explainer() {
+    let w = world("noexplainer");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "remote_control = false\nexplain_failures = false\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").exit_code(3).build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_ne!(output.status.code(), Some(0), "{}", stderr(&output));
+    let first = agent.first_run().expect("the implement session ran").args;
+    assert!(!first.iter().any(|a| a == "--remote-control"), "{first:?}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(agent.last_run().unwrap().args, first, "no second session was started");
+}

@@ -34,6 +34,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         reviewer: spec("pi", "openai/gpt-6-astra", Some("medium")),
         context: None,
         exit_marker: None,
+        remote_control: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(
@@ -61,6 +62,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        remote_control: None,
     };
     // The implementer model must belong to the adapter's own harness.
     assert!(matches!(claude.implement_argv(&request), Err(AdapterError::WrongHarness { .. })));
@@ -87,6 +89,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        remote_control: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(&argv[..4], ["--model", "sonnet", "--effort", "high"]);
@@ -106,6 +109,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
         reviewer: spec("gemini", "flash", None),
         context: None,
         exit_marker: None,
+        remote_control: None,
     };
     assert!(matches!(
         claude.implement_argv(&request),
@@ -122,6 +126,7 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable\nand mention it in the MR"),
         exit_marker: None,
+        remote_control: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(argv.len(), 3, "the context stays inside the one prompt argument");
@@ -169,6 +174,7 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable"),
         exit_marker: Some("/repo/.git/orq/exit-run-1"),
+        remote_control: None,
     };
 
     let argv = claude.implement_argv(&request).unwrap();
@@ -189,6 +195,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
             exit_marker: Some(marker),
+            remote_control: None,
         })
     };
     let argv = ask("/my repo/.git/orq/exit").unwrap();
@@ -196,4 +203,38 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
     for bad in ["-x", "relative/path", "/a\nb", "", "/a\"b", "/a`b", "/a\\b"] {
         assert!(ask(bad).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_prompt() {
+    let claude = adapter_for("claude").unwrap();
+    let ask = |name: Option<&str>| {
+        claude.implement_argv(&ImplementRequest {
+            feature: "COM-02",
+            implementer: spec("claude", "opus", None),
+            reviewer: spec("pi", "kimi-k3", None),
+            context: None,
+            exit_marker: None,
+            remote_control: name,
+        })
+    };
+    let argv = ask(Some("orq/com-02")).unwrap();
+    assert_eq!(&argv[..4], ["--model", "opus", "--remote-control", "orq/com-02"]);
+    assert_eq!(argv.len(), 5);
+    assert!(!ask(None).unwrap().iter().any(|a| a == "--remote-control"));
+    for bad in ["", "-x", "a b", "a;b"] {
+        assert!(ask(Some(bad)).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn the_failure_explainer_is_a_remote_controllable_claude_session_told_the_failure_and_the_logs() {
+    use orq_agents::explain_failure_argv;
+    let argv = explain_failure_argv("opus", "orq/com-02", "the gate failed at step test", "/repo/.git/orq/logs/run-1").unwrap();
+    assert_eq!(&argv[..4], ["--model", "opus", "--remote-control", "orq/com-02"]);
+    let prompt = argv.last().unwrap();
+    assert!(prompt.contains("the gate failed at step test") && prompt.contains("/repo/.git/orq/logs/run-1"), "{prompt}");
+    assert!(explain_failure_argv("-x", "orq/com-02", "d", "/l").is_err());
+    assert!(explain_failure_argv("opus", "a b", "d", "/l").is_err());
+    assert!(explain_failure_argv("opus", "orq/com-02", "bell\u{7}", "/l").is_err());
 }

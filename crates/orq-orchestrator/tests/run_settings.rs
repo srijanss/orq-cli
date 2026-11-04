@@ -416,3 +416,26 @@ fn the_session_auto_exit_switch_comes_from_the_files_or_the_environment() {
     let bad = |key: &str| (key == "ORQ_AUTO_EXIT").then(|| "maybe".to_string());
     assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_AUTO_EXIT"));
 }
+
+#[test]
+fn the_remote_control_and_failure_explainer_switches_come_from_the_files_or_the_environment() {
+    let r = repo("remotectl");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!((s.remote_control, s.explain_failures), (None, None));
+    shared(&r, "remote_control = false\nexplain_failures = true\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!((s.remote_control, s.explain_failures), (Some(false), Some(true)));
+
+    let env = |key: &str| match key {
+        "ORQ_REMOTE_CONTROL" => Some("1".to_string()),
+        "ORQ_EXPLAIN_FAILURES" => Some("0".to_string()),
+        _ => None,
+    };
+    let s = load_run_settings(&r, &env).unwrap();
+    assert_eq!((s.remote_control, s.explain_failures), (Some(true), Some(false)));
+
+    assert!(invalid("remote_control = \"yes\"\n", "rcstr").contains("remote_control"));
+    assert!(invalid("explain_failures = 3\n", "efint").contains("explain_failures"));
+    let bad = |key: &str| (key == "ORQ_EXPLAIN_FAILURES").then(|| "maybe".to_string());
+    assert!(matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_EXPLAIN_FAILURES"));
+}

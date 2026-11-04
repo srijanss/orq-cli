@@ -355,8 +355,39 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
         eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
     }
+    if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
+        explain_failure(options, &settings, &record, &logs, report.detail.as_deref().unwrap_or("the run failed"));
+    }
     announce(&settings, repo, &record.feature_id, report.ending.name(), report.detail.as_deref(), report.review_url.as_deref());
     Ok(report)
+}
+
+/// Start a detached Claude session in the run's worktree that explains the failure and can be reached from
+/// the Claude app. Best effort: it never changes how the run ended and the run does not wait for it.
+fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettings, record: &RunRecord, logs: &Path, detail: &str) {
+    if options.implementer.harness != "claude" || !record.worktree.is_dir() {
+        return;
+    }
+    let Some(program) = find_program("claude") else { return };
+    let model = with_run_model(&options.implementer, options, settings).model;
+    let name = format!("{}-explain", record.branch);
+    let Some(logs_dir) = logs.to_str() else { return };
+    let argv = match orq_agents::explain_failure_argv(&model, &name, detail, logs_dir) {
+        Ok(argv) => argv,
+        Err(err) => {
+            eprintln!("orq: cannot start the failure explainer: {err:?}");
+            return;
+        }
+    };
+    let log = std::fs::File::create(logs.join("explain.log"));
+    let mut command = Command::new(program);
+    command.args(&argv).current_dir(&record.worktree).stdin(std::process::Stdio::null());
+    if let Ok(file) = log.and_then(|f| f.try_clone().map(|c| (f, c))) {
+        command.stdout(file.0).stderr(file.1);
+    }
+    if let Err(err) = command.spawn() {
+        eprintln!("orq: cannot start the failure explainer: {err}");
+    }
 }
 
 /// Tell the configured notifier how a run ended. Best effort: a notifier that fails never
@@ -477,6 +508,7 @@ fn stages(
                     reviewer: spec(&options.reviewer),
                     context: options.context,
                     exit_marker: marker,
+                    remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {

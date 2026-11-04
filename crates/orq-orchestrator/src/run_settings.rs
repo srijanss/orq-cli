@@ -49,6 +49,8 @@ pub struct RunSettings {
     pub keep_test_db: Option<bool>,
     /// Close the implement session once it has written its exit marker (on when unset).
     pub auto_exit: Option<bool>,
+    pub remote_control: Option<bool>,
+    pub explain_failures: Option<bool>,
     /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
     pub db_name_template: Option<String>,
     /// The model for the implement session and the review draft; `None` leaves the chosen profile's own.
@@ -97,6 +99,8 @@ struct Layer {
     test_db_drop_cmd: Option<Vec<String>>,
     keep_test_db: Option<bool>,
     auto_exit: Option<bool>,
+    remote_control: Option<bool>,
+    explain_failures: Option<bool>,
     db_name_template: Option<String>,
     model: Option<String>,
     branch_prefix: Option<String>,
@@ -123,6 +127,8 @@ impl Layer {
             test_db_drop_cmd: self.test_db_drop_cmd.or(lower.test_db_drop_cmd),
             keep_test_db: self.keep_test_db.or(lower.keep_test_db),
             auto_exit: self.auto_exit.or(lower.auto_exit),
+            remote_control: self.remote_control.or(lower.remote_control),
+            explain_failures: self.explain_failures.or(lower.explain_failures),
             db_name_template: self.db_name_template.or(lower.db_name_template),
             model: self.model.or(lower.model),
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
@@ -156,6 +162,8 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
         test_db_drop_cmd: merged.test_db_drop_cmd,
         keep_test_db: merged.keep_test_db,
         auto_exit: merged.auto_exit,
+        remote_control: merged.remote_control,
+        explain_failures: merged.explain_failures,
         db_name_template: merged.db_name_template,
         model: merged.model,
         branch_prefix: merged.branch_prefix,
@@ -265,6 +273,8 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             "model" => layer.model =Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
             "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             "auto_exit" => layer.auto_exit = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
+            "remote_control" => layer.remote_control = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
+            "explain_failures" => layer.explain_failures = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -332,6 +342,20 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
             "1" | "true" => true,
             "0" | "false" => false,
             _ => return Err(invalid("ORQ_AUTO_EXIT", "must be 1, 0, true or false")),
+        });
+    }
+    if let Some(v) = get("ORQ_REMOTE_CONTROL") {
+        layer.remote_control = Some(match v.trim() {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(invalid("ORQ_REMOTE_CONTROL", "must be 1, 0, true or false")),
+        });
+    }
+    if let Some(v) = get("ORQ_EXPLAIN_FAILURES") {
+        layer.explain_failures = Some(match v.trim() {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(invalid("ORQ_EXPLAIN_FAILURES", "must be 1, 0, true or false")),
         });
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {

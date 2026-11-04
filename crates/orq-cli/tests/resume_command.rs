@@ -84,7 +84,7 @@ fn run_with(w: &World, agent: &FakeAgent, extra: &[&str]) -> Output {
 
 fn set_gate(w: &World, command: &str) {
     std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
-    std::fs::write(w.repo.root().join(".orq/run.toml"), format!("gate = [\"{command}\"]\n")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), format!("gate = [\"{command}\"]\nexplain_failures = false\n")).unwrap();
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn a_resume_that_fails_in_setup_still_remembers_that_the_agent_finished() {
     assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
 
     // The resumed run stops in setup, before it reaches any stage.
-    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"true\"]\nsetup = [[\"false\"]]\n").unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"true\"]\nsetup = [[\"false\"]]\nexplain_failures = false\n").unwrap();
     let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
     assert_eq!(run_with(&w, &second_agent, &["--resume"]).status.code(), Some(EXIT_FAILED), "setup fails");
 

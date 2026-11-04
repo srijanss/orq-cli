@@ -31,6 +31,8 @@ pub struct ImplementRequest<'a> {
     pub context: Option<&'a str>,
     /// A file the session creates as its very last step, so orq can close it; `None` asks for nothing.
     pub exit_marker: Option<&'a str>,
+    /// The name the session is reachable under from the Claude app; `None` starts it without Remote Control.
+    pub remote_control: Option<&'a str>,
 }
 
 /// The longest extra context a run accepts, in characters.
@@ -121,6 +123,21 @@ fn marker_for_prompt(marker: &str) -> Result<String, AdapterError> {
     }
 }
 
+/// The arguments of a Claude session that explains why a run failed: it reads the run's logs, tells the
+/// user what went wrong and stays reachable from the Claude app under `name`.
+pub fn explain_failure_argv(model: &str, name: &str, detail: &str, logs_dir: &str) -> Result<Vec<String>, AdapterError> {
+    plain("model", model)?;
+    plain("remote control name", name)?;
+    checked_context(detail)?;
+    if logs_dir.chars().any(char::is_control) {
+        return Err(AdapterError::InvalidValue { field: "logs", value: logs_dir.to_string() });
+    }
+    let prompt = format!(
+        "An orq run of this worktree has failed: {detail}\n\nThe run's logs are in {logs_dir}. Read the relevant ones, explain in a few sentences what went wrong and what the user can do next. Do not change any files."
+    );
+    Ok(vec!["--model".to_string(), model.to_string(), "--remote-control".to_string(), name.to_string(), prompt])
+}
+
 struct Claude;
 
 impl HarnessAdapter for Claude {
@@ -174,6 +191,11 @@ impl HarnessAdapter for Claude {
             plain("implementer thinking", thinking)?;
             argv.push("--effort".to_string());
             argv.push(thinking.clone());
+        }
+        if let Some(name) = request.remote_control {
+            plain("remote control name", name)?;
+            argv.push("--remote-control".to_string());
+            argv.push(name.to_string());
         }
         argv.push(prompt);
         Ok(argv)
