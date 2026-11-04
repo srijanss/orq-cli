@@ -62,7 +62,11 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
     }
     if std::fs::symlink_metadata(&target).is_ok() {
         if name == MCP_JSON {
-            if let Err(note) = merge_mcp_servers(&source, &target) {
+            // Ignore rules cannot keep a tracked file out of a commit, so values from the main
+            // checkout are never written into one.
+            if is_tracked(worktree, name) {
+                found.notes.push(format!("{name} is tracked by git in the worktree; the main checkout's values were not merged into it"));
+            } else if let Err(note) = merge_mcp_servers(&source, &target) {
                 found.notes.push(note);
             }
         }
@@ -80,6 +84,16 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
     if name == MCPCTL_TOML {
         exclude_locally(worktree, MCPCTL_LOCK, found);
     }
+}
+
+/// Whether git tracks `name` in `worktree`. When git cannot say, the file counts as tracked.
+fn is_tracked(worktree: &Path, name: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["ls-files", "--error-unmatch", "--", name])
+        .output()
+        .map_or(true, |out| out.status.success())
 }
 
 /// No `..`, no absolute path: only files inside the checkout can be carried.

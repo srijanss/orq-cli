@@ -95,6 +95,27 @@ fn mcp_json_is_copied_when_missing_and_merged_per_server_when_the_worktree_gener
     assert_eq!(merged["mcpServers"]["other"]["command"], "x");
 }
 
+fn commit_all(dir: &Path) {
+    git_out(dir, &["add", "-A"]);
+    git_out(dir, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base"]);
+}
+
+#[test]
+fn a_mcp_json_that_git_tracks_in_the_worktree_is_never_rewritten_with_the_main_checkouts_values() {
+    let repo = GitFixture::new();
+    let tracked = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
+    fs::write(repo.root().join(".mcp.json"), tracked).unwrap();
+    commit_all(repo.root());
+    let worktree = repo.add_linked_worktree("tracked-mcp");
+    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+
+    let found = carry_local_files(repo.root(), &worktree, None);
+
+    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), tracked);
+    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("tracked")), "{:?}", found.notes);
+    assert!(found.notes.iter().all(|n| !n.contains("s3cret")));
+}
+
 #[test]
 fn mcpctl_config_is_copied_and_its_lock_file_is_kept_out_of_git_status() {
     let (repo, worktree) = checkout("mcpctl");
