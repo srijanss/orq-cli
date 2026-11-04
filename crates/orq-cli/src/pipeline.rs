@@ -330,6 +330,15 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
             return Err(other(message));
         }
     }
+    // A paused run handed its checkout to this run; it no longer holds it.
+    if let Some(from) = resumed.as_ref().map(|r| &r.from) {
+        let was_paused = store.events(&from.run_id).map(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::Paused).unwrap_or(false);
+        if was_paused {
+            if let Err(err) = orq_orchestrator::supersede_paused(&store, from, &run_id) {
+                eprintln!("orq: cannot mark {} as resumed: {err:?}", from.run_id);
+            }
+        }
+    }
     // Carried over first thing: a run resumed again after failing early must still skip the agent.
     if let Some(from) = resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()) {
         if let Err(err) = orq_orchestrator::record_inherited_implement(&store, &record, from) {

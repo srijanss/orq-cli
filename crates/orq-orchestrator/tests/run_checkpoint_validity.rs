@@ -100,3 +100,20 @@ fn only_a_paused_run_can_be_validated() {
         .unwrap();
     assert!(validate_checkpoint(&store, &repo, "run-1").unwrap_err().contains("only a paused run"));
 }
+
+#[test]
+fn a_paused_run_with_a_valid_checkpoint_can_be_planned_for_resume_and_is_then_superseded() {
+    let (store, repo, _wt) = paused("plan");
+    let plan = orq_orchestrator::plan_group_resume(&store, &repo, "p", &["F".to_string()]).unwrap();
+    assert_eq!(plan.from.run_id, "run-1");
+    orq_orchestrator::supersede_paused(&store, &plan.from, "run-2").unwrap();
+    let events = store.events("run-1").unwrap();
+    assert_eq!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Completed);
+
+    // A checkout that moved is refused, and the run stays paused.
+    let (store, repo, wt2) = paused("plan-moved");
+    git(&wt2, &["commit", "-q", "--allow-empty", "-m", "later"]);
+    let err = orq_orchestrator::plan_group_resume(&store, &repo, "p", &["F".to_string()]).unwrap_err();
+    assert!(err.contains("HEAD moved"), "{err}");
+    assert_eq!(orq_orchestrator::summarize_run(&store.events("run-1").unwrap()).phase, orq_orchestrator::RunPhase::Paused);
+}

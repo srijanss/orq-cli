@@ -48,6 +48,36 @@ fn members_of(record: &RunRecord, events: &[Event]) -> Vec<String> {
         .unwrap_or_else(|| vec![record.feature_id.clone()])
 }
 
+/// The features a run was for, in order.
+pub fn run_members(store: &RunStore, run_id: &str) -> Result<Vec<String>, String> {
+    let record = store.load(run_id).map_err(|e| format!("cannot read {run_id}: {e:?}"))?;
+    let events = store.events(run_id).map_err(|e| format!("cannot read the events of {run_id}: {e:?}"))?;
+    Ok(members_of(&record, &events))
+}
+
+/// A paused run was continued as `new_run_id`: the paused run is resumed and then ended, so it no
+/// longer holds the checkout it handed over.
+pub fn supersede_paused(store: &RunStore, from: &RunRecord, new_run_id: &str) -> Result<(), StoreError> {
+    for (kind, payload) in [
+        ("run.resumed", serde_json::json!({ "resumed_as": new_run_id })),
+        ("run.completed", serde_json::json!({ "ending": "resumed", "reason": format!("continued as {new_run_id}") })),
+    ] {
+        store.append_event(&Event {
+            schema_version: 1,
+            event_id: next_event_id(&from.run_id),
+            run_id: from.run_id.clone(),
+            project_id: from.project_id.clone(),
+            feature_id: from.feature_id.clone(),
+            kind: kind.to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: now_rfc3339(),
+            payload,
+        })?;
+    }
+    Ok(())
+}
+
 /// The latest run of the feature, if it stopped in a way that can be picked up.
 pub fn plan_resume(store: &RunStore, repo: &Path, project_id: &str, feature_id: &str) -> Result<ResumePlan, String> {
     plan_group_resume(store, repo, project_id, &[feature_id.to_string()])
@@ -84,9 +114,11 @@ pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, member
         RunPhase::Failed | RunPhase::Blocked => {}
         RunPhase::Running => return Err(format!("{} did not stop; it may still be running", from.run_id)),
         RunPhase::Completed => return Err(format!("{} ended with a review ready; there is nothing to resume", from.run_id)),
-        phase @ (RunPhase::PauseRequested | RunPhase::Paused) => {
-            return Err(format!("{} is {}; it is not a stopped run", from.run_id, phase.as_str()))
+        RunPhase::Paused => {
+            // A paused run continues only from a checkpoint that still describes its checkout.
+            crate::checkpoint::validate_checkpoint(store, repo, &from.run_id)?;
         }
+        phase @ RunPhase::PauseRequested => return Err(format!("{} is {}; it has not paused yet", from.run_id, phase.as_str())),
     }
     // The saved path is only trusted after it proves to be this repository's checkout of the
     // run's branch: the agent and the setup commands run there.

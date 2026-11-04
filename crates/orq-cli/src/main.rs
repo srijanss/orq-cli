@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         (Some("run"), Some("pin")) => storage::pin(&args[2..], true),
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
         (Some("run"), Some("pause")) => run_pause(&args[2..]),
+        (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
@@ -3495,4 +3496,60 @@ fn run_pause(args: &[OsString]) -> ExitCode {
         }
         Err(message) => fail(message),
     }
+}
+
+/// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
+/// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
+/// not paused, or when the checkpoint no longer matches the checkout.
+fn run_resume(args: &[OsString]) -> ExitCode {
+    let mut run_id = None;
+    let mut yes = false;
+    let mut repo = PathBuf::from(".");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_str() {
+            Some("--yes") => yes = true,
+            Some("--repo") => match iter.next() {
+                Some(value) => repo = PathBuf::from(value),
+                None => return usage_error(),
+            },
+            Some(id) if !id.starts_with('-') && run_id.is_none() => run_id = Some(id.to_string()),
+            _ => return usage_error(),
+        }
+    }
+    let Some(run_id) = run_id else { return usage_error() };
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    let store = orq_orchestrator::RunStore::new(&root);
+    let checkpoint = match orq_orchestrator::validate_checkpoint(&store, &repo, &run_id) {
+        Ok(checkpoint) => checkpoint,
+        Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+    };
+    let next = checkpoint.next_stage.as_deref().unwrap_or("the end");
+    if !yes {
+        use std::io::{BufRead, IsTerminal, Write};
+        if !std::io::stdin().is_terminal() {
+            return fail("resuming needs confirmation: pass --yes");
+        }
+        eprint!("Resume {} from {}? [y/N] ", printable(&run_id), printable(next));
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        if std::io::stdin().lock().read_line(&mut answer).is_err() || !matches!(answer.trim(), "y" | "Y" | "yes") {
+            eprintln!("orq: not resumed");
+            return ExitCode::FAILURE;
+        }
+    }
+    let (record, members) = match (store.load(&run_id), orq_orchestrator::run_members(&store, &run_id)) {
+        (Ok(record), Ok(members)) => (record, members),
+        (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
+        (_, Err(reason)) => return fail(reason),
+    };
+    let mut forwarded: Vec<OsString> = vec!["--repo".into(), repo.into_os_string(), "--remote".into(), record.remote.into(), "--target".into(), record.target_branch.into(), "--resume".into()];
+    if members.len() > 1 {
+        forwarded.extend(["--group".into(), members.join(",").into()]);
+    } else {
+        forwarded.extend(["--feature".into(), members[0].clone().into()]);
+    }
+    run(&forwarded)
 }
