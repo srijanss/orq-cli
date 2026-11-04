@@ -107,28 +107,20 @@ fn setup_the_agent_and_the_gate_all_see_the_databases_named_for_the_runs_branch(
     assert!(!stdout.contains("hunter2"), "no other value of the dotenv file is shown: {stdout}");
 }
 
-#[test]
-fn a_red_gate_starts_a_fix_session_and_both_it_and_the_rerun_gate_see_the_run_environment() {
-    let w = world("gate-fix");
-    std::fs::write(w.repo.root().join(".env"), "DB_NAME=shop\n").unwrap();
-    let (gate_seen, fix_seen) = (w.base.join("gate-seen"), w.base.join("fix-seen"));
-    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
-    // The gate is red until the fix session has created `fixed` in the worktree.
-    std::fs::write(
-        w.repo.root().join(".orq/run.toml"),
-        format!("gate = [\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$DB_NAME\\\" >> {}; test -f fixed\"]\n", gate_seen.display()),
-    )
-    .unwrap();
-    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+/// A `claude` for a world whose gate is red until `fixed` exists. A fix session (asked about the
+/// failed gate) must be headless (`-p`); it records the database it saw, creates `fixed`, and commits
+/// it only if `commit`. Any other session behaves as `agent`.
+fn fixing_path(w: &World, agent: &FakeAgent, provider: &FakeProvider, fix_seen: &Path, commit: bool) -> std::ffi::OsString {
     let bin = w.base.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let provider = github();
-    // A fix session is told what failed; it repairs the worktree and records the database it saw.
+    let commit = if commit { "git add fixed; git -c user.name=t -c user.email=t@example.invalid commit -q -m 'fix: repair the gate'; " } else { "" };
     std::fs::write(
         bin.join("claude"),
         format!(
-            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*) printf '%s\\n' \"$DB_NAME\" >> '{}'; touch fixed; exit 0;; esac\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*) case \" $* \" in *' -p '*) ;; *) exit 3;; esac; printf '%s\\n' \"$DB_NAME\" >> '{}'; touch fixed; {commit}exit 0;; esac\n[ -e '{}' ] && exit 0\n: > '{}'\nexec '{}' \"$@\"\n",
             fix_seen.display(),
+            w.base.join("implemented").display(),
+            w.base.join("implemented").display(),
             agent.path().display()
         ),
     )
@@ -136,24 +128,95 @@ fn a_red_gate_starts_a_fix_session_and_both_it_and_the_rerun_gate_see_the_run_en
     std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::join_paths(dirs).unwrap()
+}
 
-    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+/// A world whose gate records the database it sees on every run and is red until `fixed` exists.
+fn red_gate_world(tag: &str) -> (World, PathBuf, PathBuf) {
+    let w = world(tag);
+    std::fs::write(w.repo.root().join(".env"), "DB_NAME=shop\n").unwrap();
+    let (gate_seen, fix_seen) = (w.base.join("gate-seen"), w.base.join("fix-seen"));
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(
+        w.repo.root().join(".orq/run.toml"),
+        format!("gate = [\"sh\", \"-c\", \"printf '%s\\\\n' \\\"$DB_NAME\\\" >> {}; test -f fixed\"]\n", gate_seen.display()),
+    )
+    .unwrap();
+    (w, gate_seen, fix_seen)
+}
+
+fn run_with_path(w: &World, path: std::ffi::OsString, extra: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .args(extra)
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)
         .env("ORQ_FORGE", "gh")
         .env("GIT_SSH_COMMAND", &w.ssh)
-        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env("PATH", path)
         .env_remove("HERDR_ACTIVE_PANE_CWD")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_red_gate_starts_a_headless_fix_session_and_both_it_and_the_rerun_gate_see_the_run_environment() {
+    let (w, gate_seen, fix_seen) = red_gate_world("gate-fix");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = fixing_path(&w, &agent, &provider, &fix_seen, true);
+
+    let out = run_with_path(&w, path, &[]);
 
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(out.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(std::fs::read_to_string(&gate_seen).unwrap(), "shop_fix_com_01\nshop_fix_com_01\n", "the gate ran twice");
     assert_eq!(std::fs::read_to_string(&fix_seen).unwrap(), "shop_fix_com_01\n", "one fix session");
+    let branch = git_out(w.repo.root(), &["branch", "--list", "fix--COM-*"]).trim().trim_start_matches(['*', '+', ' ']).to_string();
+    let tree = git_out(w.repo.root(), &["ls-tree", "-r", "--name-only", &branch]);
+    assert!(tree.contains("fixed"), "the repair is part of the branch: {tree}");
+}
+
+#[test]
+fn a_repair_left_uncommitted_blocks_the_run_instead_of_publishing_the_unfixed_commit() {
+    let (w, _gate_seen, fix_seen) = red_gate_world("gate-fix-uncommitted");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = fixing_path(&w, &agent, &provider, &fix_seen, false);
+
+    let out = run_with_path(&w, path, &[]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_ne!(out.status.code(), Some(0), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stdout.contains("state: blocked") && stderr.contains("uncommitted"), "{stdout}\n{stderr}");
+    assert!(!stdout.contains(PR_URL), "no review was opened: {stdout}");
+}
+
+#[test]
+fn publishing_an_existing_branch_never_starts_a_fix_session() {
+    let (w, _gate_seen, fix_seen) = red_gate_world("gate-fix-publish");
+    git(w.repo.root(), &["checkout", "--quiet", "-b", "topic"]);
+    std::fs::write(w.repo.root().join("topic.txt"), "work\n").unwrap();
+    git(w.repo.root(), &["add", "topic.txt"]);
+    git(w.repo.root(), &["-c", "user.name=Topic", "-c", "user.email=topic@example.invalid", "commit", "--quiet", "-m", "feat: the topic"]);
+    let agent = FakeAgent::builder().build();
+    let provider = github();
+    let path = fixing_path(&w, &agent, &provider, &fix_seen, true);
+    let head = git_out(w.repo.root(), &["rev-parse", "HEAD"]);
+
+    let out = run_with_path(&w, path, &["--publish"]);
+
+    assert_ne!(out.status.code(), Some(0), "the gate is red: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(!fix_seen.exists(), "no agent was asked to edit the user's checkout");
+    assert_eq!(head, git_out(w.repo.root(), &["rev-parse", "HEAD"]), "the checkout is untouched");
 }
 
 /// A drop tool that records the test database name it is asked to drop, and the directory it ran in.

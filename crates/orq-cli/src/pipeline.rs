@@ -479,11 +479,14 @@ fn stages(
     let gate_log = logs.join("gate.log");
     let fix_model = spec(&options.implementer).model;
     let fix_log = logs.join("gate-fix.log");
-    // A red gate gets a fix session with the run's environment, then runs again.
-    if let GateFixOutcome::Failed { step, exit_code, .. } =
-        run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, GATE_FIX_ATTEMPTS, database_env, |_, log| FixSessionSpec {
+    // A red gate gets a fix session with the run's environment, then runs again. A published branch is
+    // the user's own checkout: it is only checked, never edited by an agent.
+    let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
+    let gate_outcome =
+        run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, log| FixSessionSpec {
             program: claude_program.to_string(),
             args: vec![
+                "-p".to_string(),
                 "--model".to_string(),
                 fix_model.clone(),
                 format!(
@@ -496,9 +499,18 @@ fn stages(
             session_id: None,
             log: fix_log.clone(),
             terminal: false,
-        })?
-    {
-        return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
+        })?;
+    match gate_outcome {
+        GateFixOutcome::Failed { step, exit_code, .. } => {
+            return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
+        }
+        // A repair that was not committed would leave the pushed commit unfixed.
+        GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {
+            if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+                return stopped(Ending::Blocked, reason);
+            }
+        }
+        _ => {}
     }
 
     let head_sha = match push_run_branch(store, run_id, &logs.join("push.log"))? {

@@ -263,11 +263,14 @@ fn an_unknown_run_is_an_error_and_no_fix_session_is_asked_for() {
 #[test]
 fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
     let w = world("env");
-    let gate = Gate::Steps { steps: vec![sh("test \"$TDD_DB\" = test_shop && test -f fixed")], notes: Vec::new() };
+    // The gate notes the variable on every run, so the first (failing) run is checked as well as the rerun.
+    let gate = Gate::Steps { steps: vec![sh("echo \"[$TDD_DB]\" >> seen_db && test -f fixed")], notes: Vec::new() };
     let env = vec![("TDD_DB".to_string(), "test_shop".to_string())];
 
     let outcome =
         run_gate_with_fixes_env(&w.store, "run-1", &gate, true, &w.gate_log, 2, &env, |_, _| spec(&w, "touch fixed")).unwrap();
 
-    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 }, "the first run failed only for want of the fix, not the variable");
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+    let seen = std::fs::read_to_string(w.worktree.join("seen_db")).unwrap();
+    assert_eq!(seen, "[test_shop]\n[test_shop]\n", "both gate runs got the variable");
 }
