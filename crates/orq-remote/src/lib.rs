@@ -15,6 +15,9 @@ use axum::Router;
 use orq_core::remote_inbox::{self, RemoteConfig};
 use orq_core::storage::StorageRoots;
 
+/// How long a stop waits for requests in flight before cutting connections.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Everything a request needs besides the request itself.
 pub struct ServerState {
     pub roots: StorageRoots,
@@ -35,18 +38,26 @@ impl Server {
     pub fn start(listener: TcpListener, state: Arc<ServerState>) -> std::io::Result<Server> {
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_io().build()?;
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::spawn(move || {
             runtime.block_on(async move {
                 let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
                 let app = Router::new().fallback(answer).with_state(state);
-                let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-                    .with_graceful_shutdown(async move {
-                        let _ = stopped.await;
-                    })
-                    .await;
+                let (drained, drain) = tokio::sync::oneshot::channel::<()>();
+                let serving = tokio::spawn(async move {
+                    let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                        .with_graceful_shutdown(async move {
+                            let _ = drain.await;
+                        })
+                        .await;
+                });
+                let _ = stopped.await;
+                let _ = drained.send(());
+                // Connections that are still open after the grace period are cut.
+                let _ = tokio::time::timeout(SHUTDOWN_GRACE, serving).await;
             });
+            runtime.shutdown_timeout(SHUTDOWN_GRACE);
         });
         Ok(Server { addr, stop: Some(stop), thread: Some(thread) })
     }
@@ -74,12 +85,15 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
-        remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request)
+        let reply = remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request);
+        // Serializing a large report is work too, so it stays off the async workers.
+        let body = reply.body_bytes();
+        (reply.status, body)
     })
     .await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-    let body = reply.body_bytes();
-    let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let (code, body) = reply;
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
