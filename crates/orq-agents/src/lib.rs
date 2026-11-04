@@ -210,49 +210,7 @@ impl HarnessAdapter for Claude {
     }
 
     fn implement_argv(&self, request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError> {
-        if request.implementer.harness != "claude" {
-            return Err(AdapterError::WrongHarness {
-                adapter: "claude",
-                requested: request.implementer.harness.clone(),
-            });
-        }
-        if request.features.is_empty() {
-            return Err(AdapterError::InvalidValue { field: "feature", value: String::new() });
-        }
-        for feature in request.features {
-            plain("feature", feature)?;
-        }
-        plain("implementer model", &request.implementer.model)?;
-        adapter_for(&request.reviewer.harness)?;
-        plain("reviewer model", &request.reviewer.model)?;
-        let mut prompt = format!(
-            "/implement-and-review {} --reviewer {} --model {}",
-            request.features.join(" "),
-            request.reviewer.harness,
-            request.reviewer.model
-        );
-        if let Some(thinking) = &request.reviewer.thinking {
-            plain("reviewer thinking", thinking)?;
-            prompt.push_str(" --thinking ");
-            prompt.push_str(thinking);
-        }
-        if request.features.len() > 1 {
-            prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
-        }
-        if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
-            prompt.push_str("\n\nExtra context:\n");
-            prompt.push_str(context);
-        }
-        if let Some(handoff) = request.handoff.map(str::trim).filter(|h| !h.is_empty()) {
-            prompt.push_str("\n\nHandoff from the previous session:\n");
-            prompt.push_str(&handoff.replace('\0', " "));
-        }
-        if let Some(marker) = request.exit_marker {
-            let quoted = marker_for_prompt(marker)?;
-            prompt.push_str("\n\nAs your very last step, once everything is committed, create the empty file ");
-            prompt.push_str(&quoted);
-            prompt.push_str(" and then stop.");
-        }
+        let prompt = implement_prompt("claude", "/implement-and-review", request)?;
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
         if let Some(thinking) = &request.implementer.thinking {
             plain("implementer thinking", thinking)?;
@@ -269,6 +227,53 @@ impl HarnessAdapter for Claude {
     }
 }
 
+/// The one prompt argument of an implementer session on `harness`, after checking everything the
+/// request puts into it. `command` is how that harness names the implement-and-review skill. Every
+/// adapter builds its prompt here so they all refuse the same unsafe values.
+fn implement_prompt(harness: &'static str, command: &str, request: &ImplementRequest<'_>) -> Result<String, AdapterError> {
+    if request.implementer.harness != harness {
+        return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
+    }
+    if request.features.is_empty() {
+        return Err(AdapterError::InvalidValue { field: "feature", value: String::new() });
+    }
+    for feature in request.features {
+        plain("feature", feature)?;
+    }
+    plain("implementer model", &request.implementer.model)?;
+    adapter_for(&request.reviewer.harness)?;
+    plain("reviewer model", &request.reviewer.model)?;
+    let mut prompt = format!(
+        "{command} {} --reviewer {} --model {}",
+        request.features.join(" "),
+        request.reviewer.harness,
+        request.reviewer.model
+    );
+    if let Some(thinking) = &request.reviewer.thinking {
+        plain("reviewer thinking", thinking)?;
+        prompt.push_str(" --thinking ");
+        prompt.push_str(thinking);
+    }
+    if request.features.len() > 1 {
+        prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
+    }
+    if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
+        prompt.push_str("\n\nExtra context:\n");
+        prompt.push_str(context);
+    }
+    if let Some(handoff) = request.handoff.map(str::trim).filter(|h| !h.is_empty()) {
+        prompt.push_str("\n\nHandoff from the previous session:\n");
+        prompt.push_str(&handoff.replace('\0', " "));
+    }
+    if let Some(marker) = request.exit_marker {
+        let quoted = marker_for_prompt(marker)?;
+        prompt.push_str("\n\nAs your very last step, once everything is committed, create the empty file ");
+        prompt.push_str(&quoted);
+        prompt.push_str(" and then stop.");
+    }
+    Ok(prompt)
+}
+
 struct Pi;
 
 impl HarnessAdapter for Pi {
@@ -280,7 +285,16 @@ impl HarnessAdapter for Pi {
         &[Capability::PrintMode]
     }
 
-    fn implement_argv(&self, _request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError> {
-        Err(AdapterError::Unsupported { adapter: "pi", what: "implementing features" })
+    fn implement_argv(&self, request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError> {
+        let prompt = implement_prompt("pi", "/skill:implement-and-review", request)?;
+        let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
+        if let Some(thinking) = &request.implementer.thinking {
+            plain("implementer thinking", thinking)?;
+            argv.push("--thinking".to_string());
+            argv.push(thinking.clone());
+        }
+        // pi has no Remote Control: `remote_control` is a Claude-only capability and is not passed on.
+        argv.push(prompt);
+        Ok(argv)
     }
 }

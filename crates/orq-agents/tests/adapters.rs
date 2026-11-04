@@ -68,8 +68,9 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
     };
     // The implementer model must belong to the adapter's own harness.
     assert!(matches!(claude.implement_argv(&request), Err(AdapterError::WrongHarness { .. })));
-    // pi does not implement features yet.
-    assert!(matches!(pi.implement_argv(&request), Err(AdapterError::Unsupported { .. })));
+    // pi serves its own models, and refuses another harness's.
+    assert!(pi.implement_argv(&request).is_ok());
+    assert!(matches!(pi.implement_argv(&ImplementRequest { implementer: spec("claude", "opus", None), ..request.clone() }), Err(AdapterError::WrongHarness { .. })));
 
     // Nothing from the feature id may turn into extra arguments or a second command.
     request.implementer = spec("claude", "opus", None);
