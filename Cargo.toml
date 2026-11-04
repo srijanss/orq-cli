@@ -8,6 +8,7 @@ members = [
     "crates/orq-git",
     "crates/orq-herdr",
     "crates/orq-orchestrator",
+    "crates/orq-remote",
     "crates/orq-tui",
     "crates/orq-test-support",
 ]
