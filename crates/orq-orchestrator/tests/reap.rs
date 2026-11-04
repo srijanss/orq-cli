@@ -140,6 +140,21 @@ fn a_finished_run_whose_review_is_merged_and_fully_pushed_is_reaped_worktree_and
 }
 
 #[test]
+fn reaping_a_run_also_removes_the_private_ref_a_crashed_rebase_left_behind() {
+    let planned = scenario("leftover-ref", GOOD);
+    let private = orq_orchestrator::private_ref_name(&planned.item.run_id);
+    let other = orq_orchestrator::private_ref_name("some-other-run");
+    for name in [&private, &other] {
+        git(&planned.repo, &["update-ref", name, "HEAD"]);
+    }
+
+    reap_run(&planned.repo, &planned.item).unwrap();
+
+    let left = git(&planned.repo, &["for-each-ref", "--format=%(refname)", "refs/orq"]);
+    assert_eq!(left, other, "only the reaped run's own ref goes");
+}
+
+#[test]
 fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
     let cases = [
         ("open", Case { state: "OPEN", ..GOOD }, "not merged or closed"),

@@ -177,5 +177,7 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     if !deleted.success {
         return Err(StoreError::Corrupt(format!("the branch could not be deleted: {}", deleted.stderr.trim())));
     }
+    // A rebase that died between its fetch and its cleanup leaves the run's private ref; nothing else uses it.
+    let _ = git_raw(repo, &["update-ref", "-d", &crate::rebase::private_ref_name(&item.run_id)])?;
     Ok(())
 }
