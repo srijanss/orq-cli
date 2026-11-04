@@ -245,7 +245,7 @@ impl HarnessAdapter for Claude {
         }
         if let Some(handoff) = request.handoff.map(str::trim).filter(|h| !h.is_empty()) {
             prompt.push_str("\n\nHandoff from the previous session:\n");
-            prompt.push_str(handoff);
+            prompt.push_str(&handoff.replace('\0', " "));
         }
         if let Some(marker) = request.exit_marker {
             let quoted = marker_for_prompt(marker)?;

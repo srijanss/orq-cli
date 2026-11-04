@@ -40,3 +40,22 @@ fn a_written_handoff_is_read_back_unchanged_and_a_run_without_one_has_none() {
     store.write_run_file("run-2", HANDOFF_FILE, b"{not json").unwrap();
     assert!(read_handoff(&store, "run-2").is_err());
 }
+
+#[test]
+fn an_unreadable_wrongly_shaped_or_oversized_handoff_is_an_error_and_file_names_are_plain() {
+    let (store, _) = store("errors");
+    let dir = store.write_run_file("run-2", "marker", b"x").unwrap().parent().unwrap().to_path_buf();
+    std::fs::create_dir(dir.join(HANDOFF_FILE)).unwrap();
+    assert!(read_handoff(&store, "run-2").is_err(), "a directory is not an absent handoff");
+    std::fs::remove_dir(dir.join(HANDOFF_FILE)).unwrap();
+
+    store.write_run_file("run-2", HANDOFF_FILE, b"{\"schema_version\":1}").unwrap();
+    assert!(read_handoff(&store, "run-2").is_err(), "valid JSON of the wrong shape");
+
+    store.write_run_file("run-2", HANDOFF_FILE, &vec![b' '; 5 * 1024 * 1024]).unwrap();
+    assert!(read_handoff(&store, "run-2").is_err(), "an oversized file");
+
+    for name in ["", ".hidden", "a/b", "a\\b"] {
+        assert!(store.read_run_file("run-2", name, 10).is_err(), "{name:?}");
+    }
+}
