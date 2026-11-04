@@ -77,8 +77,11 @@ fn judge(
         return Ok(keep("the run is pinned"));
     }
     let Ok(events) = store.events(&record.run_id) else { return Ok(keep("the run's events cannot be read")) };
-    if summarize_run(&events).phase == RunPhase::Running {
-        return Ok(keep("the run is still running"));
+    match summarize_run(&events).phase {
+        RunPhase::Running => return Ok(keep("the run is still running")),
+        // A paused run is waiting to be resumed from its worktree.
+        RunPhase::PauseRequested | RunPhase::Paused => return Ok(keep("the run is paused and can be resumed")),
+        _ => {}
     }
     if !within_worktrees_dir(repo, &record.worktree) {
         return Ok(keep("the worktree is not under .claude/worktrees of the repository"));
@@ -215,7 +218,7 @@ fn in_use(store: &RunStore, record: &crate::store::RunRecord) -> bool {
         return true;
     }
     match store.events(&record.run_id) {
-        Ok(events) => summarize_run(&events).phase == RunPhase::Running,
+        Ok(events) => matches!(summarize_run(&events).phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused),
         // Unreadable events: assume it is in use.
         Err(_) => true,
     }

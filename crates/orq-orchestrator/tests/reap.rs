@@ -36,10 +36,12 @@ struct Case {
     detached_ahead: bool,
     /// The provider CLI fails instead of answering.
     provider_fails: bool,
+    /// The run was paused at a stage boundary instead of ending.
+    paused: bool,
 }
 
 const GOOD: Case =
-    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false, provider_fails: false };
+    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false, provider_fails: false, paused: false };
 
 struct Planned {
     verdict: ReapVerdict,
@@ -106,6 +108,24 @@ fn scenario(tag: &str, case: Case) -> Planned {
             payload: serde_json::json!({ "url": "https://github.example/o/r/pull/7", "id": "7", "provider": "github" }),
         })
         .unwrap();
+    if case.paused {
+        for kind in ["run.pause_requested", "run.paused"] {
+            store
+                .append_event(&Event {
+                    schema_version: 1,
+                    event_id: format!("e-{kind}"),
+                    run_id: record.run_id.clone(),
+                    project_id: record.project_id.clone(),
+                    feature_id: record.feature_id.clone(),
+                    kind: kind.to_string(),
+                    stage: None,
+                    attempt: 1,
+                    occurred_at: "2026-01-01T00:00:01Z".to_string(),
+                    payload: serde_json::json!({}),
+                })
+                .unwrap();
+        }
+    }
     if case.finished {
         record_run_completed(&store, &record, "review_ready", None).unwrap();
     }
@@ -177,6 +197,7 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
         ("open", Case { state: "OPEN", ..GOOD }, "not merged or closed"),
         ("pinned", Case { pinned: true, ..GOOD }, "pinned"),
         ("running", Case { finished: false, ..GOOD }, "still running"),
+        ("paused", Case { finished: false, paused: true, ..GOOD }, "paused"),
         ("dirty", Case { dirty: true, ..GOOD }, "uncommitted"),
         ("unpushed", Case { pushed: false, ..GOOD }, "not pushed"),
         ("outside", Case { inside_worktrees_dir: false, ..GOOD }, "not under"),
