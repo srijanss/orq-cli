@@ -107,3 +107,45 @@ fn a_value_that_is_not_a_plain_database_name_is_never_passed_on() {
     assert!(found.env.is_empty());
     assert!(found.notes.iter().all(|n| !n.contains("drop")), "{:?}", found.notes);
 }
+
+fn drop_names(found: &orq_orchestrator::WorktreeDatabases) -> Vec<(&str, &str)> {
+    found.names.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
+#[test]
+fn the_database_in_a_url_variable_is_renamed_and_everything_else_in_the_url_is_kept() {
+    let main = main_checkout("url", "DATABASE_URL=postgres://app:s3cret@db.local:5432/shop?sslmode=disable\nMYSQL_URL='mysql://root@127.0.0.1/shop_b2c'\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DATABASE_URL", "MYSQL_URL"]), "fix--COM-01", true);
+
+    assert_eq!(
+        pairs(&found),
+        [
+            ("DATABASE_URL", "postgres://app:s3cret@db.local:5432/shop_fix_com_01?sslmode=disable"),
+            ("MYSQL_URL", "mysql://root@127.0.0.1/shop_b2c_fix_com_01"),
+        ]
+    );
+    assert_eq!(drop_names(&found), [("DATABASE_URL", "shop_fix_com_01"), ("MYSQL_URL", "shop_b2c_fix_com_01")]);
+    assert!(found.notes.is_empty(), "{:?}", found.notes);
+}
+
+#[test]
+fn a_plain_name_is_also_the_name_to_drop() {
+    let main = main_checkout("names", "DB_NAME=shop\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DB_NAME"]), "fix--COM-01", true);
+
+    assert_eq!(drop_names(&found), [("DB_NAME", "shop_fix_com_01")]);
+}
+
+#[test]
+fn a_sqlite_file_url_keeps_its_directory_and_extension_and_a_url_without_a_database_is_left_alone() {
+    let main = main_checkout("sqlite", "DB_FILE=sqlite:///var/data/shop.sqlite3\nMEM=sqlite:///:memory:\nCACHE=redis://:hunter2@cache:6379\n");
+
+    let found = derive_worktree_databases(&main, &names(&["DB_FILE", "MEM", "CACHE"]), "fix--COM-01", true);
+
+    assert_eq!(pairs(&found), [("DB_FILE", "sqlite:///var/data/shop_fix_com_01.sqlite3")]);
+    assert_eq!(drop_names(&found), [("DB_FILE", "shop_fix_com_01")]);
+    assert!(found.notes.iter().any(|n| n.contains("MEM")) && found.notes.iter().any(|n| n.contains("CACHE")), "{:?}", found.notes);
+    assert!(found.notes.iter().all(|n| !n.contains("hunter2")), "no secret in a note: {:?}", found.notes);
+}

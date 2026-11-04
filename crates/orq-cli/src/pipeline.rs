@@ -528,7 +528,7 @@ fn stages(
         // The test databases go with the worktree; a kept worktree may still need them.
         if cleanup_worktree(store, run_id, ready, &ci)? == orq_orchestrator::CleanupOutcome::Removed {
             let keep = settings.keep_test_db.unwrap_or(false);
-            let dropped = orq_orchestrator::drop_test_databases(&options.project.root, &databases.env, settings.test_db_drop_cmd.as_deref(), keep);
+            let dropped = orq_orchestrator::drop_test_databases(&options.project.root, &databases.names,settings.test_db_drop_cmd.as_deref(), keep);
             if !dropped.is_empty() {
                 use std::io::Write;
                 let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("databases.log"));

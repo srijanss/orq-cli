@@ -16,7 +16,11 @@ const MIN_KEPT_SLUG: usize = 4;
 /// The environment a worktree gets, and why anything expected is missing from it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorktreeDatabases {
+    /// The value each variable gets in the worktree: a database name, or the main value (a URL) with
+    /// its database name replaced.
     pub env: Vec<(String, String)>,
+    /// Per variable, just the new database name; this is what is dropped when the run ends.
+    pub names: Vec<(String, String)>,
     pub notes: Vec<String>,
 }
 
@@ -42,12 +46,16 @@ pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: 
             }
             continue;
         };
-        if !main.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            found.notes.push(format!("{var} is not a plain database name; its database is not isolated"));
-            continue;
-        }
+        let target = match split_target(&main) {
+            Ok(target) => target,
+            Err(why) => {
+                found.notes.push(format!("{var} {why}; its database is not isolated"));
+                continue;
+            }
+        };
+        let name = &target.name;
         // "test_" + <main> + "_" + <branch part>
-        let room = MAX_DATABASE_NAME.saturating_sub(TEST_PREFIX.len() + main.len() + 1);
+        let room = MAX_DATABASE_NAME.saturating_sub(TEST_PREFIX.len() + name.len() + 1);
         let part = if slug.len() <= room {
             slug.clone()
         } else {
@@ -59,9 +67,67 @@ pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: 
             }
             format!("{}_{hash}", &slug[..keep])
         };
-        found.env.push((var.clone(), format!("{main}_{part}")));
+        let isolated = format!("{name}_{part}");
+        found.env.push((var.clone(), format!("{}{isolated}{}", target.head, target.tail)));
+        found.names.push((var.clone(), isolated));
     }
     found
+}
+
+/// A main value split around the database name in it: `head + name + tail` is the value again.
+struct Target {
+    head: String,
+    name: String,
+    tail: String,
+}
+
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Finds the database name in a plain name, a `scheme://…/name?options` URL, or a sqlite file URL
+/// (where the name is the file's stem). The error is a reason that never repeats any of the value.
+fn split_target(value: &str) -> Result<Target, &'static str> {
+    let scheme_end = value.find("://").filter(|&at| at > 0 && value[..at].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')));
+    let Some(scheme_end) = scheme_end else {
+        return if is_plain_name(value) {
+            Ok(Target { head: String::new(), name: value.to_string(), tail: String::new() })
+        } else {
+            Err("is not a plain database name")
+        };
+    };
+    let rest = scheme_end + 3;
+    let after = &value[rest..];
+    if value[..scheme_end].to_ascii_lowercase().starts_with("sqlite") {
+        let end = after.find(['?', '#']).unwrap_or(after.len());
+        let path = &after[..end];
+        if path.is_empty() || path.contains(":memory:") {
+            return Err("is an in-memory sqlite database");
+        }
+        let file_at = path.rfind('/').map_or(0, |at| at + 1);
+        let file = &path[file_at..];
+        let (stem, extension) = match file.rfind('.') {
+            Some(dot) if dot > 0 => (&file[..dot], &file[dot..]),
+            _ => (file, ""),
+        };
+        if !is_plain_name(stem) {
+            return Err("is not a plain database name");
+        }
+        return Ok(Target { head: value[..rest + file_at].to_string(), name: stem.to_string(), tail: format!("{extension}{}", &after[end..]) });
+    }
+    let Some(slash) = after.find(['/', '?', '#']).filter(|&at| after[at..].starts_with('/')) else {
+        return Err("names no database");
+    };
+    let from = rest + slash + 1;
+    let path = &value[from..];
+    let end = path.find(['?', '#']).unwrap_or(path.len());
+    if path[..end].is_empty() {
+        return Err("names no database");
+    }
+    if !is_plain_name(&path[..end]) {
+        return Err("is not a plain database name");
+    }
+    Ok(Target { head: value[..from].to_string(), name: path[..end].to_string(), tail: path[end..].to_string() })
 }
 
 /// Lowercase letters and digits, every other run of characters one underscore.
