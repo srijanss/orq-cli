@@ -87,6 +87,18 @@ fn a_main_name_with_no_room_for_a_suffix_is_skipped_with_a_note_that_leaves_out_
 }
 
 #[test]
+fn a_dotenv_file_that_exists_but_cannot_be_read_is_reported_instead_of_silently_isolating_nothing() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-worktree-db-{}-unreadable", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join(".env")).unwrap();
+
+    let found = derive_worktree_databases(&dir, &names(&["DB_NAME"]), "b", false);
+
+    assert!(found.env.is_empty());
+    assert!(found.notes.iter().any(|n| n.contains("dotenv") && n.contains("not isolated")), "{:?}", found.notes);
+}
+
+#[test]
 fn a_value_that_is_not_a_plain_database_name_is_never_passed_on() {
     let main = main_checkout("unsafe", "DB_NAME=shop;drop\n");
 

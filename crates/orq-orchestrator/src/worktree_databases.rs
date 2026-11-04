@@ -25,8 +25,14 @@ pub struct WorktreeDatabases {
 /// chose `vars` itself; only then is a variable the file lacks worth a note.
 pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: &str, named_by_repo: bool) -> WorktreeDatabases {
     let mut found = WorktreeDatabases::default();
-    let Ok(text) = std::fs::read_to_string(main_checkout.join(".env")) else {
-        return found;
+    let text = match std::fs::read_to_string(main_checkout.join(".env")) {
+        Ok(text) => text,
+        // No dotenv file simply means there is nothing to isolate.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return found,
+        Err(err) => {
+            found.notes.push(format!("the main checkout's dotenv file cannot be read ({:?}); its databases are not isolated", err.kind()));
+            return found;
+        }
     };
     let slug = branch_slug(branch);
     for var in vars {
