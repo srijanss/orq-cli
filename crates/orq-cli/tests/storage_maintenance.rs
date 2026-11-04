@@ -211,3 +211,17 @@ fn the_off_and_not_due_paths_do_not_open_or_create_the_database() {
     assert!(text(&out).contains("not due"), "{}", text(&out));
     assert!(!s.data_file("orq.db").exists(), "a not-due check opened the database");
 }
+
+#[test]
+fn maintenance_runs_again_once_the_interval_has_passed() {
+    let s = Sandbox::new("due");
+    s.config(ON);
+    s.failed_run("old-run");
+    // A cleanup at the start of the epoch is long past a one-day interval.
+    std::fs::write(s.data_file("last-cleanup"), "1").unwrap();
+    let out = s.orq(&["storage", "maintain"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!s.data_file("runs/old-run/events.jsonl").exists(), "{}", text(&out));
+    let stamp: u64 = std::fs::read_to_string(s.data_file("last-cleanup")).unwrap().trim().parse().unwrap();
+    assert!(stamp > 1_000_000_000, "the cleanup time was not renewed: {stamp}");
+}
