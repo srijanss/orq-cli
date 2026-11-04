@@ -131,20 +131,21 @@ impl RunStore {
 
     /// Create a run and take its project+feature lock.
     pub fn start_run(&self, record: &RunRecord) -> Result<(), StoreError> {
-        self.run_dir(&record.run_id)?;
-        self.take_lock(&record.project_id, &record.feature_id, &record.run_id)?;
-        if let Err(err) = self.create(record) {
-            let _ = fs::remove_file(self.lock_path(&record.project_id, &record.feature_id)?);
-            return Err(err);
-        }
-        Ok(())
+        self.start_group_run(record, std::slice::from_ref(&record.feature_id))
     }
 
-    /// Create a run of several features and take the lock of each, `members` in order (the
-    /// record's own feature among them). If one is busy nothing is kept: the locks already
-    /// taken are released and no run is recorded.
+    /// Create a run of several features and take the lock of each, `members` in order. The
+    /// record's own feature must be among them, and none may repeat. If a start fails nothing
+    /// is kept: the locks already taken are released (each only if this run still owns it) and
+    /// no run is recorded.
     pub fn start_group_run(&self, record: &RunRecord, members: &[String]) -> Result<(), StoreError> {
         self.run_dir(&record.run_id)?;
+        if !members.contains(&record.feature_id) {
+            return Err(StoreError::Corrupt(format!("the group does not include {}", record.feature_id)));
+        }
+        if let Some(repeated) = members.iter().enumerate().find(|(i, id)| members[..*i].contains(id)).map(|(_, id)| id) {
+            return Err(StoreError::Corrupt(format!("{repeated} is in the group twice")));
+        }
         let mut taken: Vec<&String> = Vec::new();
         let undo = |store: &RunStore, taken: &[&String]| {
             for id in taken {

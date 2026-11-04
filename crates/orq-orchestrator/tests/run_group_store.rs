@@ -129,3 +129,46 @@ fn a_run_of_one_feature_resumes_as_that_feature_and_not_as_a_group() {
     let err = orq_orchestrator::plan_group_resume(&store, &repo, "repo-1", &members(&["a", "b"])).unwrap_err();
     assert!(err.contains("run-1"), "{err}");
 }
+
+fn no_locks(store: &RunStore, ids: &[&str]) {
+    for id in ids {
+        assert_eq!(store.active_run("repo-1", id).unwrap(), None, "lock of {id}");
+    }
+}
+
+#[test]
+fn failed_start_of_a_group_without_its_own_feature_or_without_members_locks_nothing() {
+    let store = store("members");
+    for group in [members(&[]), members(&["b", "c"]), members(&["a", "b", "a"])] {
+        assert!(store.start_group_run(&record("run-1", "a"), &group).is_err(), "{group:?}");
+        no_locks(&store, &["a", "b", "c"]);
+        assert!(store.run_ids().unwrap().is_empty(), "{group:?} recorded a run");
+    }
+}
+
+#[test]
+fn failed_start_on_a_later_invalid_member_releases_the_earlier_locks() {
+    let store = store("invalid");
+    let err = store.start_group_run(&record("run-1", "a"), &members(&["a", "b", "../c"]));
+    assert!(matches!(err, Err(StoreError::InvalidRunId(_))), "{err:?}");
+    no_locks(&store, &["a", "b"]);
+    assert!(store.run_ids().unwrap().is_empty());
+}
+
+#[test]
+fn failed_start_when_the_run_cannot_be_created_keeps_the_existing_run_and_releases_every_lock() {
+    let store = store("create");
+    store.start_run(&record("run-1", "z")).unwrap();
+    store.finish_run("repo-1", "z", "run-1").unwrap();
+    // run-1 already exists, so creating it again fails once every lock is held.
+    let err = store.start_group_run(&record("run-1", "a"), &members(&["a", "b"]));
+    assert!(matches!(err, Err(StoreError::AlreadyExists(_))), "{err:?}");
+    no_locks(&store, &["a", "b"]);
+    assert_eq!(store.load("run-1").unwrap().feature_id, "z", "the existing run is untouched");
+    // A single-feature start fails the same way and keeps an unrelated lock.
+    store.start_run(&record("run-2", "other")).unwrap();
+    let err = store.start_run(&record("run-1", "a"));
+    assert!(matches!(err, Err(StoreError::AlreadyExists(_))), "{err:?}");
+    no_locks(&store, &["a"]);
+    assert_eq!(store.active_run("repo-1", "other").unwrap().as_deref(), Some("run-2"));
+}
