@@ -264,4 +264,11 @@ fn the_branch_prefix_comes_from_the_files_or_the_environment_and_must_be_usable(
     assert!(invalid("branch_prefix = \"../x\"\n", "prefixdots").contains("branch_prefix"));
     assert!(invalid("branch_prefix = \"-x\"\n", "prefixdash").contains("branch_prefix"));
     assert!(invalid("branch_prefix = \"a b\"\n", "prefixspace").contains("branch_prefix"));
+
+    // A bad value from the environment names the variable; an empty prefix is a choice, not "unset".
+    let bad_env = |key: &str| (key == "ORQ_BRANCH_PREFIX").then(|| "../x".to_string());
+    assert!(load_run_settings(&r, &bad_env).unwrap_err().to_string().contains("ORQ_BRANCH_PREFIX"));
+    let r = repo("prefix-empty");
+    shared(&r, "branch_prefix = \"\"\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().branch_prefix.as_deref(), Some(""));
 }

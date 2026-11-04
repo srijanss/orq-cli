@@ -110,6 +110,17 @@ fn without_a_setting_the_branch_keeps_the_default_prefix() {
 }
 
 #[test]
+fn an_empty_prefix_names_the_branch_after_the_feature_alone() {
+    let w = world("empty");
+    settings(&w, "branch_prefix = \"\"\n");
+
+    let out = run(&w);
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(branches(&w).lines().any(|b| b == "COM-01"), "{}", branches(&w));
+}
+
+#[test]
 fn an_unusable_prefix_is_refused_before_anything_is_created() {
     let w = world("bad");
     settings(&w, "branch_prefix = \"../x\"\n");
