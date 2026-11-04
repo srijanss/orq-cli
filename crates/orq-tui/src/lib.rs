@@ -2296,10 +2296,6 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: O
 
 const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
-const RUNS_HINT: &str = " ↑↓ move · Enter pane · o new pane · u open MR · y copy link · r reload · Esc ";
-const RUNS_HINT_PAUSE: &str = " ↑↓ move · Enter pane · u open MR · y copy link · p pause · r reload · Esc ";
-const RUNS_HINT_RESUME: &str = " ↑↓ move · Enter pane · u open MR · y copy link · c resume · m switch model · r reload · Esc ";
-const RUNS_HINT_NO_LINK: &str = " ↑↓ move · Enter pane · o new pane · no review link yet · r reload · Esc ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
 struct RunsState {
@@ -2401,13 +2397,15 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                     Ok(rows) => rows.get(state.selected).map(|run| run.status.as_str()),
                     Err(_) => None,
                 };
-                let hint = match status {
-                    Some("running") => RUNS_HINT_PAUSE,
-                    Some("paused") => RUNS_HINT_RESUME,
-                    _ if no_link => RUNS_HINT_NO_LINK,
-                    _ => RUNS_HINT,
+                let control = match status {
+                    Some("running") => " · p pause",
+                    Some("paused") => " · c resume · m switch model",
+                    _ if no_link => " · o new pane",
+                    _ => " · o new pane",
                 };
-                Line::from(Span::styled(truncate_right(hint, width), dim))
+                let link = if no_link { " · no review link yet" } else { " · u open MR · y copy link" };
+                let hint = format!(" ↑↓ move · Enter pane{control}{link} · r reload · Esc ");
+                Line::from(Span::styled(truncate_right(&hint, width), dim))
             }
         };
         put(body.height - 1, last);
