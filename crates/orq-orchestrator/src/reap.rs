@@ -210,7 +210,8 @@ pub struct Orphans {
 
 /// A run keeps its refs and databases while it is running or its worktree is still there.
 fn in_use(store: &RunStore, record: &crate::store::RunRecord) -> bool {
-    if record.worktree.exists() {
+    // Only a confirmed absence frees the run's leftovers; a failed check keeps them.
+    if record.worktree.try_exists().unwrap_or(true) {
         return true;
     }
     match store.events(&record.run_id) {
@@ -225,8 +226,14 @@ pub fn plan_orphans(store: &RunStore, repo: &Path, project_id: &str) -> Result<O
     let mut owned_refs = std::collections::BTreeSet::new();
     let mut used_branches = std::collections::BTreeSet::new();
     let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut unreadable = false;
     for run_id in store.run_ids()? {
-        let Ok(record) = store.load(&run_id) else { continue };
+        let Ok(record) = store.load(&run_id) else {
+            // A record that cannot be read still keeps its ref, and the branch it used is unknown.
+            owned_refs.insert(crate::rebase::private_ref_name(&run_id));
+            unreadable = true;
+            continue;
+        };
         let live = in_use(store, &record);
         if live {
             owned_refs.insert(crate::rebase::private_ref_name(&record.run_id));
@@ -245,6 +252,8 @@ pub fn plan_orphans(store: &RunStore, repo: &Path, project_id: &str) -> Result<O
     }
     let refs = listed.stdout.lines().map(str::trim).filter(|name| !name.is_empty() && !owned_refs.contains(*name)).map(str::to_string).collect();
     let mut seen = std::collections::BTreeSet::new();
+    // With a record unreadable, no branch is known to be unused.
+    let candidates = if unreadable { Vec::new() } else { candidates };
     let database_branches = candidates.into_iter().filter(|(_, branch)| !used_branches.contains(branch) && seen.insert(branch.clone())).collect();
     Ok(Orphans { refs, database_branches })
 }

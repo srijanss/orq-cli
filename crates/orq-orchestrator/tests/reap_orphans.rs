@@ -141,3 +141,51 @@ fn a_symbolic_ref_in_the_private_namespace_is_removed_without_touching_what_it_p
     assert_eq!(git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(), 40, "the branch it pointed at survives");
     assert!(refs(&w.repo).is_empty());
 }
+
+fn run_dir(w: &World, run_id: &str) -> PathBuf {
+    w.repo.parent().unwrap().join("state/runs").join(run_id)
+}
+
+#[test]
+fn uncertain_ownership_from_an_unreadable_record_keeps_its_ref_and_withholds_database_cleanup() {
+    let w = world("uncertain-record");
+    fs::write(run_dir(&w, "run-kept").join("run.json"), "{ not json").unwrap();
+    let owned = private_ref_name("run-kept");
+    git(&w.repo, &["update-ref", &owned, "HEAD"]);
+
+    let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
+
+    assert!(plan.refs.is_empty(), "{:?}", plan.refs);
+    assert!(plan.database_branches.is_empty(), "run-gone's branch may be the unreadable run's: {:?}", plan.database_branches);
+}
+
+#[test]
+fn uncertain_ownership_from_unreadable_events_counts_as_in_use() {
+    let w = world("uncertain-events");
+    let events = run_dir(&w, "run-gone").join("events.jsonl");
+    fs::remove_file(&events).unwrap();
+    fs::create_dir(&events).unwrap();
+    git(&w.repo, &["update-ref", &private_ref_name("run-gone"), "HEAD"]);
+
+    let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
+
+    assert!(plan.refs.is_empty(), "{:?}", plan.refs);
+    assert!(plan.database_branches.is_empty(), "{:?}", plan.database_branches);
+}
+
+#[test]
+fn uncertain_existence_of_a_worktree_counts_as_in_use() {
+    let w = world("uncertain-worktree");
+    // A path below a plain file cannot be inspected: that is not the same as being gone.
+    let file = w.repo.join("plain-file");
+    fs::write(&file, "x").unwrap();
+    let blocked = record("run-blocked", "fix--blocked", file.join("worktree"));
+    w.store.create(&blocked).unwrap();
+    record_run_completed(&w.store, &blocked, "review_ready", None).unwrap();
+    git(&w.repo, &["update-ref", &private_ref_name("run-blocked"), "HEAD"]);
+
+    let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
+
+    assert!(plan.refs.is_empty(), "{:?}", plan.refs);
+    assert_eq!(plan.database_branches, [("run-gone".to_string(), "fix--gone".to_string())]);
+}
