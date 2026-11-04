@@ -193,6 +193,15 @@ fn a_url_whose_options_select_a_database_is_not_isolated() {
 }
 
 #[test]
+fn a_url_option_name_that_is_percent_encoded_is_not_trusted() {
+    let main = main_checkout("url-encoded", "PG=postgres://u@h/shop?%64bname=production\n");
+
+    let found = derive_worktree_databases(&main, &names(&["PG"]), "b1", true);
+
+    assert!(found.names.is_empty() && found.notes.iter().any(|n| n.contains("PG")), "{:?}", found.notes);
+}
+
+#[test]
 fn a_long_branch_still_fits_64_characters_with_a_template() {
     let main = main_checkout("template-long", "DB_NAME=shop\n");
 

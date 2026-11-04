@@ -119,7 +119,8 @@ fn split_target(value: &str) -> Result<Target, &'static str> {
     if let Some(query_at) = after.find('?') {
         let selects = after[query_at + 1..].split(['&', ';', '#']).any(|pair| {
             let key = pair.split('=').next().unwrap_or("").to_ascii_lowercase();
-            matches!(key.as_str(), "dbname" | "database" | "db" | "service")
+            // An encoded name could decode to any of them, so it is not trusted either.
+            key.contains('%') || matches!(key.as_str(), "dbname" | "database" | "db" | "service")
         });
         if selects {
             return Err("selects its database in an option");
