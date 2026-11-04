@@ -54,6 +54,12 @@ pub fn carry_local_files(main_checkout: &Path, worktree: &Path, files: Option<&[
 
 fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut LocalFiles) {
     let (source, target) = (main.join(name), worktree.join(name));
+    // A symbolic link in a parent directory could lead a read or a write outside either checkout.
+    if let Some(root) = [main, worktree].into_iter().find(|root| crosses_symlink(root, name)) {
+        let which = if root == main { "main checkout" } else { "worktree" };
+        found.notes.push(format!("{name} is not carried into the worktree: a directory on its path in the {which} is a symbolic link"));
+        return;
+    }
     if std::fs::symlink_metadata(&source).is_err() {
         if chosen || name == DOTENV {
             found.notes.push(format!("{name} does not exist in the main checkout; nothing to carry over"));
@@ -90,6 +96,22 @@ fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut
             found.notes.push(format!("{MCPCTL_LOCK} could not be kept out of git status: {why}"));
         }
     }
+}
+
+/// Whether any directory leading to `name` under `root` is a symbolic link.
+fn crosses_symlink(root: &Path, name: &str) -> bool {
+    let mut path = root.to_path_buf();
+    let mut parts = Path::new(name).components().peekable();
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            break;
+        }
+        path.push(part);
+        if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether git tracks `name` in `worktree`. When git cannot say, the file counts as tracked.

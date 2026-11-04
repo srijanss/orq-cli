@@ -149,6 +149,26 @@ fn a_file_name_with_glob_characters_is_excluded_literally_and_a_line_break_in_a_
 }
 
 #[test]
+fn a_symlinked_directory_in_either_checkout_cannot_carry_a_file_outside_of_it() {
+    let (repo, worktree) = checkout("symlinks");
+    let outside = repo.root().parent().unwrap().join(format!("outside-{}", std::process::id()));
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secrets.json"), "{\"outside\":1}").unwrap();
+    // The worktree's "config" leads out of it; the main checkout's "linked" leads into the outside.
+    std::os::unix::fs::symlink(&outside, worktree.join("config")).unwrap();
+    fs::create_dir_all(repo.root().join("config")).unwrap();
+    fs::write(repo.root().join("config/secrets.json"), "{\"main\":1}").unwrap();
+    std::os::unix::fs::symlink(&outside, repo.root().join("linked")).unwrap();
+    let files = vec!["config/secrets.json".to_string(), "linked/secrets.json".to_string()];
+
+    let found = carry_local_files(repo.root(), &worktree, Some(&files));
+
+    assert_eq!(fs::read_to_string(outside.join("secrets.json")).unwrap(), "{\"outside\":1}", "nothing is written outside the worktree");
+    assert!(!worktree.join("linked").exists(), "nothing is read from outside the main checkout");
+    assert_eq!(found.notes.iter().filter(|n| n.contains("symbolic link")).count(), 2, "{:?}", found.notes);
+}
+
+#[test]
 fn mcpctl_config_is_copied_and_its_lock_file_is_kept_out_of_git_status() {
     let (repo, worktree) = checkout("mcpctl");
     fs::write(repo.root().join(".mcpctl.toml"), "[servers]\n").unwrap();
