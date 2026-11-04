@@ -118,8 +118,14 @@ fn after_a_switch_from_pi_to_claude_the_claude_session_continues_in_the_same_wor
     assert!(prompt.contains("--model sonnet"), "{prompt}");
     assert!(prompt.contains("Handoff from the previous session:"), "{prompt}");
     assert!(prompt.contains("COM-01"), "{prompt}");
+    // The handoff carries what pi did, not only a heading: its checkout and the file it changed.
+    assert!(prompt.contains(&format!("Checkout: {}", paused.worktree.display())), "{prompt}");
+    assert!(prompt.contains("- feature.txt (+1 -0)"), "{prompt}");
     let log = git(w.repo.root(), &["log", "--format=%s", &paused.branch]);
     assert!(log.contains("feat: claude continues the work"), "the claude commit lands on the run's branch: {log}");
+    assert!(log.contains("feat: pi starts the feature"), "pi's commit is kept under claude's: {log}");
+    assert_eq!(git(w.repo.root(), &["show", &format!("{}:feature.txt", paused.branch)]), "done\n");
+    assert_eq!(git(w.repo.root(), &["show", &format!("{}:claude.txt", paused.branch)]), "from claude\n");
     let resumed = store.run_ids().unwrap().into_iter().find(|id| *id != run_id).expect("a resumed run");
     assert_eq!(store.load(&resumed).unwrap().branch, paused.branch);
 }
