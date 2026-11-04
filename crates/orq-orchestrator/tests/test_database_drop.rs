@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::drop_test_databases;
+use orq_orchestrator::{drop_test_databases, drop_test_databases_within};
 
 fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
     items.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
@@ -65,4 +65,24 @@ fn keeping_no_command_an_unsafe_name_and_a_failing_command_are_notes_never_failu
     assert!(missing.iter().any(|n| n.contains("test_shop_fix_a")), "{missing:?}");
 
     assert!(drop_test_databases(&dir, &[], Some(&command), false).is_empty(), "no databases, nothing said");
+}
+
+#[test]
+fn a_drop_command_that_hangs_is_stopped_and_becomes_a_manual_cleanup_note() {
+    let dir = scratch("hang");
+    let tool = dir.join("hang-drop");
+    fs::write(&tool, "#!/bin/sh\nsleep 30\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let started = std::time::Instant::now();
+
+    let notes = drop_test_databases_within(
+        &dir,
+        &pairs(&[("DB_NAME", "shop_fix_a")]),
+        Some(&[tool.display().to_string()]),
+        false,
+        std::time::Duration::from_millis(300),
+    );
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "must not wait for the command");
+    assert!(notes.iter().any(|n| n.contains("test_shop_fix_a") && n.contains("timed out") && n.contains("manually")), "{notes:?}");
 }

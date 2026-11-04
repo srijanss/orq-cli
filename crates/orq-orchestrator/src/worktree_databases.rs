@@ -107,16 +107,35 @@ fn dotenv_value(text: &str, name: &str) -> Option<String> {
     found
 }
 
+/// How long one drop command may run before it is stopped.
+const DROP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Drops the test database (`test_<name>`) behind each per-worktree database name of `databases`,
 /// by running `drop_cmd` with the test database's name appended, from `main_checkout`. Nothing here
 /// fails a run: every problem is a note that names the database so it can be dropped by hand.
 /// `keep` leaves them all in place (`KEEP_TEST_DB`); without a command nothing can be dropped.
 pub fn drop_test_databases(main_checkout: &Path, databases: &[(String, String)], drop_cmd: Option<&[String]>, keep: bool) -> Vec<String> {
+    drop_test_databases_within(main_checkout, databases, drop_cmd, keep, DROP_TIMEOUT)
+}
+
+/// [`drop_test_databases`] with a chosen limit on each command; a command still running at the limit
+/// is killed and noted. A database two variables name is dropped once.
+pub fn drop_test_databases_within(
+    main_checkout: &Path,
+    databases: &[(String, String)],
+    drop_cmd: Option<&[String]>,
+    keep: bool,
+    limit: std::time::Duration,
+) -> Vec<String> {
     use std::process::{Command, Stdio};
     let mut notes = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for (var, name) in databases {
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.is_empty() {
             notes.push(format!("{var} is not a plain database name; its test database was not dropped"));
+            continue;
+        }
+        if !seen.insert(name.as_str()) {
             continue;
         }
         let test_name = format!("{TEST_PREFIX}{name}");
@@ -128,18 +147,37 @@ pub fn drop_test_databases(main_checkout: &Path, databases: &[(String, String)],
             notes.push(format!("no test_db_drop_cmd is configured; drop test database {test_name} manually"));
             continue;
         };
-        let done = Command::new(program)
+        let child = Command::new(program)
             .args(args)
             .arg(&test_name)
             .current_dir(main_checkout)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
-        match done {
-            Ok(status) if status.success() => {}
-            Ok(status) => notes.push(format!("dropping test database {test_name} failed ({status}); drop it manually")),
-            Err(err) => notes.push(format!("dropping test database {test_name} could not be started ({:?}); drop it manually", err.kind())),
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(err) => {
+                notes.push(format!("dropping test database {test_name} could not be started ({:?}); drop it manually", err.kind()));
+                continue;
+            }
+        };
+        let deadline = std::time::Instant::now() + limit;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+                _ => break None,
+            }
+        };
+        match status {
+            Some(status) if status.success() => {}
+            Some(status) => notes.push(format!("dropping test database {test_name} failed ({status}); drop it manually")),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                notes.push(format!("dropping test database {test_name} timed out; drop it manually"));
+            }
         }
     }
     notes

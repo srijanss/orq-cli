@@ -60,4 +60,4 @@ pub use run_settings::{load_run_settings, RunSettings, SettingsError};
 pub use run_status::{record_run_completed, summarize_run, RunPhase, RunSummary};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};
-pub use worktree_databases::{derive_worktree_databases, drop_test_databases, WorktreeDatabases};
+pub use worktree_databases::{derive_worktree_databases, drop_test_databases, drop_test_databases_within, WorktreeDatabases};
