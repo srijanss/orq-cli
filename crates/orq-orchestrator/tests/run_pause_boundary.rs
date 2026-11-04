@@ -66,3 +66,19 @@ fn a_requested_pause_records_a_checkpoint_and_pauses_at_the_boundary() {
     // Already paused: a second boundary call is a no-op.
     assert!(!pause_at_boundary(&store, "run-1", &["implement"], "push", None, None).unwrap());
 }
+
+#[test]
+fn pausing_one_run_leaves_another_run_unchanged() {
+    let (store, _) = setup("iso");
+    let mut other = store.load("run-1").unwrap();
+    other.run_id = "run-2".into();
+    other.branch = "orq/run-2".into();
+    store.create(&other).unwrap();
+    let before = store.events("run-2").unwrap().len();
+    request_pause(&store, "run-1").unwrap();
+    assert!(pause_at_boundary(&store, "run-1", &["implement"], "gate", None, None).unwrap());
+    assert_eq!(store.events("run-2").unwrap().len(), before);
+    assert_eq!(summarize_run(&store.events("run-2").unwrap()).phase, RunPhase::Running);
+    assert!(latest_checkpoint(&store, "run-2").unwrap().is_none());
+    assert!(!pause_at_boundary(&store, "run-2", &["implement"], "gate", None, None).unwrap());
+}
