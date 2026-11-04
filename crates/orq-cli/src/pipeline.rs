@@ -405,13 +405,13 @@ fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str,
         }
     }
     if settings.claude_push == Some(true) {
-        push_to_claude_app(cwd, &message);
+        push_to_claude_app(&message);
     }
 }
 
 /// Send `message` to the Claude app through a detached one-shot Claude session. Best effort: it never
 /// changes how the run ended, and the run does not wait for it.
-fn push_to_claude_app(cwd: &Path, message: &str) {
+fn push_to_claude_app(message: &str) {
     let Some(program) = find_program("claude") else { return };
     let argv = match orq_agents::push_notification_argv(message) {
         Ok(argv) => argv,
@@ -421,7 +421,12 @@ fn push_to_claude_app(cwd: &Path, message: &str) {
         }
     };
     let quiet = std::process::Stdio::null;
-    if let Err(err) = Command::new(program).args(&argv).current_dir(cwd).stdin(quiet()).stdout(quiet()).stderr(quiet()).spawn() {
+    // Outside the repository, so its instructions and settings do not reach the session, and in a process group
+    // of its own, so the end of the run's terminal session does not take it down.
+    let mut command = Command::new(program);
+    command.args(&argv).current_dir(std::env::temp_dir()).stdin(quiet()).stdout(quiet()).stderr(quiet());
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    if let Err(err) = command.spawn() {
         eprintln!("orq: cannot send the Claude push notification: {err}");
     }
 }
