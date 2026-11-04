@@ -158,6 +158,29 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
     })
 }
 
+/// Saves `servers` as the `mcp_servers` setting in the private file of the repository at `repo`,
+/// keeping its other keys and comments. A file that is not valid TOML is left untouched.
+pub fn save_mcp_servers_setting(repo: &Path, servers: &[String]) -> Result<(), String> {
+    let dir = git_dir(repo).ok_or_else(|| format!("{} is not in a git repository", repo.display()))?.join("orq");
+    let path = dir.join("run.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("{PRIVATE_LABEL}: {:?}", err.kind())),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|err| format!("{PRIVATE_LABEL} is not valid TOML and was left untouched: {err}"))?;
+    let mut array = toml_edit::Array::new();
+    for server in servers {
+        array.push(server.as_str());
+    }
+    doc["mcp_servers"] = toml_edit::value(array);
+    std::fs::create_dir_all(&dir).map_err(|err| format!("{PRIVATE_LABEL}: {:?}", err.kind()))?;
+    let temp = dir.join(format!("run.toml.{}.tmp", std::process::id()));
+    std::fs::write(&temp, doc.to_string())
+        .and_then(|()| std::fs::rename(&temp, &path))
+        .map_err(|err| format!("{PRIVATE_LABEL}: {:?}", err.kind()))
+}
+
 fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
     let got = git_raw(repo, &["rev-parse", "--git-dir"]).ok()?;
     let line = got.stdout.lines().next()?.trim();

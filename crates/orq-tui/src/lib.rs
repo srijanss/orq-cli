@@ -1562,6 +1562,17 @@ pub trait BrowserBackend {
         Err("copying links is not available".into())
     }
 
+    /// The MCP servers of the catalog the launch picker offers after the reviewer; an error or an
+    /// empty list skips that step.
+    fn mcp_catalog(&mut self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Saves the servers chosen in the launch picker as the `mcp_servers` setting.
+    fn save_mcp_servers(&mut self, _servers: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Model profile names the launch picker offers.
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         Err("launching runs is not available".into())
@@ -2708,6 +2719,11 @@ struct LaunchPicker {
     profiles: Vec<String>,
     selected: usize,
     implementer: Option<String>,
+    /// The catalog's servers, offered after the reviewer; empty skips that step.
+    catalog: Vec<String>,
+    /// Set once the reviewer is chosen and the servers are being picked.
+    reviewer: Option<String>,
+    marked: HashSet<String>,
     /// Place the runs' log panes in one shared tab instead of a tab each.
     grid: bool,
 }
@@ -2715,7 +2731,7 @@ struct LaunchPicker {
 enum LaunchAction {
     None,
     Cancel,
-    Launch { implementer: String, reviewer: String },
+    Launch { implementer: String, reviewer: String, mcp: Vec<String> },
 }
 
 impl LaunchPicker {
@@ -2724,17 +2740,36 @@ impl LaunchPicker {
             KeyCode::Esc => return LaunchAction::Cancel,
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = (self.selected + 1).min(self.profiles.len().saturating_sub(1))
+                let rows = if self.reviewer.is_some() { self.catalog.len() } else { self.profiles.len() };
+                self.selected = (self.selected + 1).min(rows.saturating_sub(1))
             }
             KeyCode::Char('g') if self.features.len() > 1 => self.grid = !self.grid,
+            KeyCode::Char(' ') if self.reviewer.is_some() => {
+                if let Some(server) = self.catalog.get(self.selected) {
+                    if !self.marked.remove(server) {
+                        self.marked.insert(server.clone());
+                    }
+                }
+            }
             KeyCode::Enter => {
+                if let Some(reviewer) = self.reviewer.clone() {
+                    let mcp = self.catalog.iter().filter(|s| self.marked.contains(*s)).cloned().collect();
+                    let implementer = self.implementer.clone().unwrap_or_default();
+                    return LaunchAction::Launch { implementer, reviewer, mcp };
+                }
                 if let Some(chosen) = self.profiles.get(self.selected).cloned() {
-                    match self.implementer.take() {
+                    match self.implementer.clone() {
                         None => {
                             self.implementer = Some(chosen);
                             self.selected = 0;
                         }
-                        Some(implementer) => return LaunchAction::Launch { implementer, reviewer: chosen },
+                        Some(implementer) if self.catalog.is_empty() => {
+                            return LaunchAction::Launch { implementer, reviewer: chosen, mcp: Vec::new() }
+                        }
+                        Some(_) => {
+                            self.reviewer = Some(chosen);
+                            self.selected = 0;
+                        }
                     }
                 }
             }
@@ -2744,7 +2779,13 @@ impl LaunchPicker {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let step = if self.implementer.is_none() { "implementer" } else { "reviewer" };
+        let step = if self.implementer.is_none() {
+            "implementer"
+        } else if self.reviewer.is_none() {
+            "reviewer"
+        } else {
+            "MCP servers"
+        };
         let what = match self.features.as_slice() {
             [one] => printable(one),
             many => format!("{} features", many.len()),
@@ -2753,19 +2794,29 @@ impl LaunchPicker {
         if let Some(implementer) = &self.implementer {
             lines.push(Line::from(format!(" Implementer: {}", printable(implementer))));
         }
+        if let Some(reviewer) = &self.reviewer {
+            lines.push(Line::from(format!(" Reviewer: {}", printable(reviewer))));
+        }
         lines.push(Line::from(""));
-        let room = usize::from(area.height).saturating_sub(5).max(1);
+        let room = usize::from(area.height).saturating_sub(6).max(1);
         let first = self.selected.saturating_sub(room - 1);
-        for (index, profile) in self.profiles.iter().enumerate().skip(first).take(room) {
+        let choices = if self.reviewer.is_some() { &self.catalog } else { &self.profiles };
+        for (index, profile) in choices.iter().enumerate().skip(first).take(room) {
             let mark = if index == self.selected { "▸ " } else { "  " };
             let style = if index == self.selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
-            lines.push(Line::from(Span::styled(format!("   {mark}{}", printable(profile)), style)));
+            let tick = if self.reviewer.is_none() { "" } else if self.marked.contains(profile) { "[x] " } else { "[ ] " };
+            lines.push(Line::from(Span::styled(format!("   {mark}{tick}{}", printable(profile)), style)));
         }
         lines.push(Line::from(""));
         if self.features.len() > 1 {
             lines.push(Line::from(format!(" g grid tab: {}", if self.grid { "on" } else { "off" })));
         }
-        lines.push(Line::from(" ↑↓ choose · Enter confirm · Esc cancel"));
+        let hint = if self.reviewer.is_some() {
+            " ↑↓ move · Space mark · Enter launch (none marked keeps the setting) · Esc cancel"
+        } else {
+            " ↑↓ choose · Enter confirm · Esc cancel"
+        };
+        lines.push(Line::from(hint));
         frame.render_widget(Paragraph::new(lines), area);
     }
 }
@@ -3287,7 +3338,18 @@ impl Browser {
         match backend.launch_profiles() {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
-                self.launch = Some(LaunchPicker { features, skipped, profiles, selected: 0, implementer: None, grid: false })
+                let catalog = backend.mcp_catalog().unwrap_or_default();
+                self.launch = Some(LaunchPicker {
+                    features,
+                    skipped,
+                    profiles,
+                    selected: 0,
+                    implementer: None,
+                    catalog,
+                    reviewer: None,
+                    marked: HashSet::new(),
+                    grid: false,
+                })
             }
             Err(reason) => self.notice = Some(reason),
         }
@@ -3522,7 +3584,15 @@ where
                 if let Some(launch) = browser.launch.as_mut() {
                     match launch.handle_key(key.code) {
                         LaunchAction::Cancel => browser.launch = None,
-                        LaunchAction::Launch { implementer, reviewer } => {
+                        LaunchAction::Launch { implementer, reviewer, mcp } => {
+                            if !mcp.is_empty() {
+                                if let Err(reason) = backend.save_mcp_servers(&mcp) {
+                                    browser.launch = None;
+                                    browser.notice = Some(reason);
+                                    dirty = true;
+                                    continue;
+                                }
+                            }
                             let features = launch.features.clone();
                             let skipped = launch.skipped.clone();
                             let grid = launch.grid;

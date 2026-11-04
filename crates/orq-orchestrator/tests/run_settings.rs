@@ -290,3 +290,45 @@ fn the_branch_prefix_comes_from_the_files_or_the_environment_and_must_be_usable(
     shared(&r, "branch_prefix = \"\"\n");
     assert_eq!(load_run_settings(&r, &no_env).unwrap().branch_prefix.as_deref(), Some(""));
 }
+
+#[test]
+fn saving_mcp_servers_writes_the_private_file_keeping_its_other_keys_and_comments() {
+    let r = repo("save-mcp");
+    private(&r, "# mine\nbase_branch = \"release\"\n");
+
+    orq_orchestrator::save_mcp_servers_setting(&r, &["project-mcp".to_string(), "outside-in-tdd-mcp".to_string()]).unwrap();
+
+    let text = fs::read_to_string(r.join(".git/orq/run.toml")).unwrap();
+    assert!(text.contains("# mine") && text.contains("base_branch"), "{text}");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.mcp_servers, Some(vec!["project-mcp".to_string(), "outside-in-tdd-mcp".to_string()]));
+    assert_eq!(s.base_branch.as_deref(), Some("release"));
+}
+
+#[test]
+fn saving_mcp_servers_creates_the_private_file_and_replaces_an_earlier_choice() {
+    let r = repo("save-mcp-new");
+    orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap();
+    orq_orchestrator::save_mcp_servers_setting(&r, &["b".to_string()]).unwrap();
+
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().mcp_servers, Some(vec!["b".to_string()]));
+}
+
+#[test]
+fn a_malformed_private_file_is_left_untouched_when_saving_mcp_servers() {
+    let r = repo("save-mcp-bad");
+    private(&r, "not = [toml");
+
+    let err = orq_orchestrator::save_mcp_servers_setting(&r, &["a".to_string()]).unwrap_err();
+
+    assert!(err.contains("run.toml"), "{err}");
+    assert_eq!(fs::read_to_string(r.join(".git/orq/run.toml")).unwrap(), "not = [toml");
+}
+
+#[test]
+fn saving_mcp_servers_outside_a_repository_fails() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-run-settings-{}-nogit", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+
+    assert!(orq_orchestrator::save_mcp_servers_setting(&dir, &["a".to_string()]).is_err());
+}

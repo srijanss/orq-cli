@@ -1587,6 +1587,33 @@ fn agent_setting(model: Option<orq_features::AgentProfile>) -> orq_tui::AgentSet
         .unwrap_or_default()
 }
 
+/// The MCP names in the output of `mcpctl catalog list`: one `name@version (…)` line each, with
+/// indented detail lines under it.
+fn parse_mcp_catalog(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in text.lines().filter(|line| !line.starts_with(char::is_whitespace)) {
+        let name = line.split(['@', ' ']).next().unwrap_or("");
+        if !name.is_empty() && !names.iter().any(|seen| seen == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// The servers of the `mcpctl` catalog; none when `mcpctl` is not installed or cannot list.
+fn mcpctl_catalog() -> Result<Vec<String>, String> {
+    let Some(program) = pipeline::find_program("mcpctl") else { return Ok(Vec::new()) };
+    let out = std::process::Command::new(program)
+        .args(["catalog", "list"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("cannot run mcpctl: {:?}", err.kind()))?;
+    if !out.status.success() {
+        return Err("mcpctl catalog list failed".to_string());
+    }
+    Ok(parse_mcp_catalog(&String::from_utf8_lossy(&out.stdout)))
+}
+
 /// Starts a detached run of `feature` and, when a pane can follow its log, opens one.
 fn launch_run(
 repo_root: Option<PathBuf>,
@@ -1719,6 +1746,16 @@ impl LedgerBackend {
 }
 
 impl orq_tui::BrowserBackend for LedgerBackend {
+    fn mcp_catalog(&mut self) -> Result<Vec<String>, String> {
+        mcpctl_catalog()
+    }
+
+    fn save_mcp_servers(&mut self, servers: &[String]) -> Result<(), String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+        orq_orchestrator::save_mcp_servers_setting(&project.root, servers)
+    }
+
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
@@ -2804,6 +2841,13 @@ mod ledger_backend_tests {
         );
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_mcp_catalog_names_are_read_from_the_list_output() {
+        let text = "outside-in-tdd-mcp@0.2.3 (python, scaffold)\n  source: /a\nproject-mcp@1.2.1 (python, scaffold)\n  source: /b\n\nproject-mcp@1.3.0 (python)\n";
+        assert_eq!(super::parse_mcp_catalog(text), vec!["outside-in-tdd-mcp".to_string(), "project-mcp".to_string()]);
+        assert!(super::parse_mcp_catalog("").is_empty());
     }
 
     #[test]
