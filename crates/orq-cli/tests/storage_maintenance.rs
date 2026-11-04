@@ -225,3 +225,28 @@ fn maintenance_runs_again_once_the_interval_has_passed() {
     let stamp: u64 = std::fs::read_to_string(s.data_file("last-cleanup")).unwrap().trim().parse().unwrap();
     assert!(stamp > 1_000_000_000, "the cleanup time was not renewed: {stamp}");
 }
+
+#[test]
+fn a_cleanup_time_that_cannot_be_recorded_stops_maintenance_before_it_deletes_anything() {
+    use std::os::unix::process::CommandExt;
+    let s = Sandbox::new("norecord");
+    s.config(ON);
+    s.failed_run("old-run");
+    // Create the database and lock first, so that only writing the cleanup time can hit the limit.
+    assert!(s.orq(&["storage", "status"]).status.success());
+    std::fs::write(s.data_file("prune.lock"), "").unwrap();
+    let mut command = s.command(&["storage", "maintain"]);
+    // No file may grow: a new file's first write fails. SIGXFSZ is ignored so the write returns an error.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+        });
+    }
+    let out = command.output().unwrap();
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("cannot record the cleanup time"), "{}", text(&out));
+    assert!(s.data_file("runs/old-run/events.jsonl").exists(), "{}", text(&out));
+    assert!(!s.data_file("last-cleanup").exists());
+}

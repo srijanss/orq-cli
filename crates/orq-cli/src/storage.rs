@@ -110,8 +110,12 @@ fn last_cleanup_checked(roots: &StorageRoots) -> Result<Option<u64>, String> {
 
 fn record_cleanup(roots: &StorageRoots, at: u64) {
     // Best effort: failing to note the time must not turn a finished cleanup into an error.
-    // The write never follows a link planted in the data directory.
-    let _ = orq_core::storage::write_atomic(&roots.data, std::path::Path::new("last-cleanup"), at.to_string().as_bytes());
+    let _ = record_cleanup_checked(roots, at);
+}
+
+/// The write never follows a link planted in the data directory.
+fn record_cleanup_checked(roots: &StorageRoots, at: u64) -> std::io::Result<()> {
+    orq_core::storage::write_atomic(&roots.data, std::path::Path::new("last-cleanup"), at.to_string().as_bytes())
 }
 
 /// `YYYY-MM-DD HH:MM UTC` of unix seconds.
@@ -197,13 +201,12 @@ fn maintain() -> Result<(), String> {
         println!("Maintenance not due yet.");
         return Ok(());
     }
+    // The attempt is recorded before anything is opened or deleted: if it cannot be, nothing is
+    // removed, so a broken record can never let maintenance delete again and again.
+    record_cleanup_checked(&roots, now).map_err(|e| format!("cannot record the cleanup time ({e}); nothing was removed"))?;
     let (roots, store, runs) = open_with(roots)?;
     let ctx = Ctx { roots, store, runs };
     prune_now(&ctx, now)?;
-    // Without a recorded time the next call would prune again, so a failure to record is an error.
-    if last_cleanup_checked(&ctx.roots)? != Some(now) {
-        return Err("cleaned up, but could not record the time; scheduled maintenance will not run again until that is fixed".to_string());
-    }
     Ok(())
 }
 
