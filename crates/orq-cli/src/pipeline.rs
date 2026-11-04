@@ -18,6 +18,7 @@ use orq_orchestrator::{
 /// How many times a red gate is handed to a fix session before the run fails.
 const GATE_FIX_ATTEMPTS: u32 = 2;
 
+#[derive(Clone)]
 pub struct Options<'a> {
     pub project: &'a orq_git::Project,
     /// The features of the run in the order to do them; the first names the branch and holds the lock.
@@ -46,8 +47,9 @@ pub struct Options<'a> {
     pub publish: bool,
     /// Continue the feature's latest stopped run: its branch and worktree are reused.
     pub resume: bool,
-    /// The implementer was switched on resume: its profile's own model stands, not the run-level one.
-    pub switched_implementer: bool,
+    /// On resume: the role continues on the profile named for it; otherwise on the paused run's own.
+    pub switch_implementer: bool,
+    pub switch_reviewer: bool,
 }
 
 fn new_run_id() -> String {
@@ -216,7 +218,8 @@ fn settings_or_flag_model<'a>(options: &'a Options<'_>, settings: &'a orq_orches
 
 /// The implementer profile with the run's model in place of its own, when one was asked for.
 fn with_run_model(implementer: &ResolvedModel, options: &Options<'_>, settings: &orq_orchestrator::RunSettings) -> ResolvedModel {
-    if options.switched_implementer {
+    // A resumed run's implementer is already the effective one: the paused run's, or the switched-to.
+    if options.resume {
         return implementer.clone();
     }
     match settings_or_flag_model(options, settings) {
@@ -230,6 +233,31 @@ fn spec(model: &ResolvedModel) -> ModelSpec {
 }
 
 pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
+    if !options.resume {
+        return execute_run(options);
+    }
+    // A resumed run keeps the paused run's profiles exactly, unless a switch named another for a role.
+    let mut adjusted = options.clone();
+    if let Some(root) = state_root() {
+        let store = RunStore::new(&root);
+        let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
+        if let Ok(plan) = orq_orchestrator::plan_group_resume(&store, &options.project.root, &project_id(options.project), &members) {
+            let stored = |role: &str, named: &ResolvedModel| match plan.from.profiles.get(role) {
+                Some(p) => ResolvedModel { harness: p.harness.clone(), model: p.model.clone(), thinking: p.thinking.clone() },
+                None => named.clone(),
+            };
+            if !options.switch_implementer {
+                adjusted.implementer = stored("implementer", &options.implementer);
+            }
+            if !options.switch_reviewer {
+                adjusted.reviewer = stored("reviewer", &options.reviewer);
+            }
+        }
+    }
+    execute_run(&adjusted)
+}
+
+fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let repo = &options.project.root;
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
 

@@ -212,17 +212,46 @@ fn a_profile_that_is_no_longer_configured_refuses_the_resume_and_starts_no_run()
 }
 
 #[test]
-fn an_unswitched_role_whose_profile_can_no_longer_be_found_refuses_the_resume() {
+fn an_unswitched_role_keeps_its_stored_profile_even_when_the_configuration_no_longer_has_it() {
     let agent = agent();
     let w = world("lost", &agent);
     std::fs::write(w.repo.root().join(".orq.toml"), PROFILES.to_string() + "\n[roles]\nreviewer = \"team-pi\"\n").unwrap();
     let (run_id, store) = start_paused(&w);
-    assert_eq!(store.load(&run_id).unwrap().profiles["reviewer"].model, "team/model");
-    setup_profiles(&w);
+    let before = store.load(&run_id).unwrap().profiles;
+    assert_eq!(before["reviewer"].model, "team/model");
     std::fs::write(w.repo.root().join(".orq.toml"), "[models.fast-claude]\nharness = \"claude\"\nmodel = \"sonnet\"\n").unwrap();
 
     let out = resume(&w, &run_id);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("reviewer profile"), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(store.run_ids().unwrap().len(), 1);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(store.load(&resumed_run(&store, &run_id)).unwrap().profiles, before);
+}
+
+#[test]
+fn a_run_level_model_and_a_switch_both_survive_further_resumes() {
+    let agent = agent();
+    let w = world("chain", &agent);
+    setup_profiles(&w);
+    let run_toml = w.repo.root().join(".orq/run.toml");
+    let (run_id, store) = {
+        // The run starts with a run-level model, which the stored implementer profile records.
+        let (id, store) = {
+            let count = pausing_gate(&w);
+            let _ = count;
+            let mut text = std::fs::read_to_string(&run_toml).unwrap();
+            text.push_str("model = \"haiku\"\n");
+            std::fs::write(&run_toml, text).unwrap();
+            let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+            assert_eq!(first.status.code(), Some(0), "{}", String::from_utf8_lossy(&first.stderr));
+            let store = RunStore::new(&w.state.join("orq"));
+            (store.run_ids().unwrap()[0].clone(), store)
+        };
+        (id, store)
+    };
+    assert_eq!(store.load(&run_id).unwrap().profiles["implementer"].model, "haiku");
+    // The setting goes away; the resume still continues on the model the run was started with.
+    let text = std::fs::read_to_string(&run_toml).unwrap().replace("model = \"haiku\"\n", "");
+    std::fs::write(&run_toml, text).unwrap();
+    let out = resume(&w, &run_id);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(store.load(&resumed_run(&store, &run_id)).unwrap().profiles["implementer"].model, "haiku");
 }
