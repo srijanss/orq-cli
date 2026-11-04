@@ -87,6 +87,31 @@ pub fn request_pause(store: &RunStore, run_id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Record that a paused run's `role` should continue on `profile`. Only a paused run, which sits at
+/// a safe checkpoint, accepts the request; any other run is refused and nothing is recorded.
+pub fn request_model_switch(store: &RunStore, run_id: &str, role: &str, profile: &str) -> Result<(), String> {
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    let events = store.events(run_id).map_err(|e| e.to_string())?;
+    let phase = summarize_run(&events).phase;
+    if phase != RunPhase::Paused {
+        return Err(format!("{run_id} is {}; only a paused run can switch models", phase.as_str()));
+    }
+    store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: next_event_id(run_id),
+            run_id: record.run_id,
+            project_id: record.project_id,
+            feature_id: record.feature_id,
+            kind: "run.model_switch_requested".to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: now_rfc3339(),
+            payload: serde_json::json!({ "role": role, "profile": profile }),
+        })
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
     pub phase: RunPhase,

@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         (Some("run"), Some("pin")) => storage::pin(&args[2..], true),
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
         (Some("run"), Some("pause")) => run_pause(&args[2..]),
+        (Some("run"), Some("switch")) => run_switch(&args[2..]),
         (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
@@ -3522,6 +3523,47 @@ fn run_pause(args: &[OsString]) -> ExitCode {
     match orq_orchestrator::request_pause(&orq_orchestrator::RunStore::new(&root), run_id) {
         Ok(()) => {
             println!("Pause requested for run {run_id}; it stops at the next stage boundary.");
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(message),
+    }
+}
+
+/// `orq run switch <run> --role implementer|reviewer --profile <name> [--repo <path>]`: record that a
+/// paused run continues its role on another model profile. Nothing is recorded for a run that is not
+/// paused, an unknown role or a profile the model configuration does not define.
+fn run_switch(args: &[OsString]) -> ExitCode {
+    let (mut run_id, mut role, mut profile, mut repo) = (None, None, None, PathBuf::from("."));
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_str() {
+            Some("--role") => role = iter.next().and_then(|v| v.to_str()),
+            Some("--profile") => profile = iter.next().and_then(|v| v.to_str()),
+            Some("--repo") => match iter.next() {
+                Some(value) => repo = PathBuf::from(value),
+                None => return usage_error(),
+            },
+            Some(id) if !id.starts_with('-') && run_id.is_none() => run_id = Some(id),
+            _ => return usage_error(),
+        }
+    }
+    let (Some(run_id), Some(role), Some(profile)) = (run_id, role, profile) else { return usage_error() };
+    if !matches!(role, "implementer" | "reviewer") {
+        return fail(format!("unknown role {}: use implementer or reviewer", printable(role)));
+    }
+    let (profiles, _) = match load_model_config(&repo) {
+        Ok(config) => config,
+        Err(message) => return fail(message),
+    };
+    if profiles.get(profile).is_none() {
+        return fail(format!("the profile {} is not defined in the model profiles", printable(profile)));
+    }
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    match orq_orchestrator::request_model_switch(&orq_orchestrator::RunStore::new(&root), run_id, role, profile) {
+        Ok(()) => {
+            println!("Switch requested for run {run_id}: {role} continues on {profile} when the run resumes.");
             ExitCode::SUCCESS
         }
         Err(message) => fail(message),
