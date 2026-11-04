@@ -11,6 +11,7 @@ pub mod review_intelligence;
 pub mod review_lifecycle;
 pub mod review_report;
 pub mod review_input;
+pub mod review_summary;
 pub mod run;
 pub mod stage;
 pub mod storage;

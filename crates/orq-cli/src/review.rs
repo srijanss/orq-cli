@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use orq_core::review_input::{load_review_findings, load_review_input};
 use orq_core::review_intelligence::{apply_intelligence, repository_base, LinkSource};
 use orq_core::review_lifecycle::ReviewLifecycle;
+use orq_core::review_summary::{apply_model_summary, SummaryConfig};
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
 use orq_core::storage::{check_run_id, write_atomic, StorageRoots};
 use orq_core::store::Store;
@@ -22,6 +23,67 @@ pub(crate) fn review(args: &[OsString]) -> ExitCode {
         Some("refresh") => refresh(&args[1..]),
         _ => usage_error(),
     }
+}
+
+/// How long the optional summary session may run before it is dropped.
+const SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Adds the generated summary when the config enables it. Off by default; a bad config is a named gap and a
+/// failed model run changes nothing, so the report always builds.
+fn add_model_summary(roots: &StorageRoots, report: &mut serde_json::Value) {
+    let Ok(text) = std::fs::read_to_string(roots.config_file()) else { return };
+    let config = match SummaryConfig::parse(&text) {
+        Ok(Some(config)) => config,
+        Ok(None) => return,
+        Err(err) => {
+            if let Some(gaps) = report["gaps"].as_array_mut() {
+                gaps.push(serde_json::json!(format!("review_summary config ignored: {err}")));
+            }
+            return;
+        }
+    };
+    let Some(program) = pipeline::find_program("claude") else { return };
+    let model = config.model.clone();
+    apply_model_summary(report, &model, &|evidence| {
+        let argv = orq_agents::summary_argv(&model, evidence).map_err(|err| format!("{err:?}"))?;
+        run_summary_session(&program, &argv, &roots.data)
+    });
+}
+
+/// Runs the one-shot session in `cwd` (not the project), returning its stdout; killed after the timeout.
+fn run_summary_session(program: &Path, argv: &[String], cwd: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(program)
+        .args(argv)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + SUMMARY_TIMEOUT;
+    let status = loop {
+        match child.try_wait().map_err(|err| err.to_string())? {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the summary session timed out".to_string());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+    let bytes = reader.join().map_err(|_| "reader failed".to_string())?;
+    if !status.success() {
+        return Err(format!("the summary session exited with {status}"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn roots() -> Result<StorageRoots, String> {
@@ -120,6 +182,7 @@ fn build(args: &[OsString]) -> ExitCode {
             report["status"] = serde_json::json!("incomplete");
         }
     }
+    add_model_summary(&roots, &mut report);
     let json = match serde_json::to_vec_pretty(&report) {
         Ok(json) => json,
         Err(err) => return fail(err),
