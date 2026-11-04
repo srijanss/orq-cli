@@ -18,6 +18,8 @@ pub struct ResumePlan {
     pub from: RunRecord,
     /// The agent session ended well in that run and left a commit, so it is not started again.
     pub skip_implement: bool,
+    /// For a paused run: where it stopped and what it had already done (and pushed or opened).
+    pub checkpoint: Option<crate::checkpoint::Checkpoint>,
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -110,13 +112,14 @@ pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, member
             members.join(", ")
         ));
     }
+    let mut checkpoint = None;
     match summarize_run(&events).phase {
         RunPhase::Failed | RunPhase::Blocked => {}
         RunPhase::Running => return Err(format!("{} did not stop; it may still be running", from.run_id)),
         RunPhase::Completed => return Err(format!("{} ended with a review ready; there is nothing to resume", from.run_id)),
         RunPhase::Paused => {
             // A paused run continues only from a checkpoint that still describes its checkout.
-            crate::checkpoint::validate_checkpoint(store, repo, &from.run_id)?;
+            checkpoint = Some(crate::checkpoint::validate_checkpoint(store, repo, &from.run_id)?);
         }
         phase @ RunPhase::PauseRequested => return Err(format!("{} is {}; it has not paused yet", from.run_id, phase.as_str())),
     }
@@ -129,7 +132,7 @@ pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, member
         return Err(format!("{}: {problem}; finish or abort a stopped rebase, or start a new run", from.run_id));
     }
     let skip_implement = implement_finished(&events);
-    Ok(ResumePlan { from, skip_implement })
+    Ok(ResumePlan { from, skip_implement, checkpoint })
 }
 
 /// When a run began (its first event; RFC 3339 UTC text sorts by time), then its id with number

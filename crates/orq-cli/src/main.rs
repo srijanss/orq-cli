@@ -3504,11 +3504,13 @@ fn run_pause(args: &[OsString]) -> ExitCode {
 fn run_resume(args: &[OsString]) -> ExitCode {
     let mut run_id = None;
     let mut yes = false;
+    let mut no_ci_check = false;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
+            Some("--no-ci-check") => no_ci_check = true,
             Some("--repo") => match iter.next() {
                 Some(value) => repo = PathBuf::from(value),
                 None => return usage_error(),
@@ -3550,6 +3552,9 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         forwarded.extend(["--group".into(), members.join(",").into()]);
     } else {
         forwarded.extend(["--feature".into(), members[0].clone().into()]);
+    }
+    if no_ci_check {
+        forwarded.push("--no-ci-check".into());
     }
     run(&forwarded)
 }

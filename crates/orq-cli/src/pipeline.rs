@@ -373,7 +373,7 @@ pub fn execute(options: &Options<'_>) -> Result<Report, StartError> {
     let logs = root.join("logs").join(&run_id);
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str())));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, resumed.as_ref().filter(|r| r.skip_implement).map(|r| r.from.run_id.as_str()), resumed.as_ref().and_then(|r| r.checkpoint.as_ref())));
     let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
@@ -569,8 +569,12 @@ fn stages(
     provider_cli: &str,
     logs: &Path,
     implement_inherited_from: Option<&str>,
+    paused_at: Option<&orq_orchestrator::Checkpoint>,
 ) -> Result<Report, StoreError> {
     let run_id = record.run_id.as_str();
+    // A run continued from a pause does not redo what the checkpoint records as done: the push and
+    // the review request are outward-facing and must happen once.
+    let done = |stage: &str| paused_at.is_some_and(|c| c.completed_stages.iter().any(|d| d == stage));
     let worktree = record.worktree.as_path();
     let implementer = with_run_model(&options.implementer, options, settings);
 
@@ -651,57 +655,62 @@ fn stages(
         }
     }
 
-    if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
-        return paused("rebase");
-    }
-    if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
-        return stopped(Ending::Blocked, reason);
-    }
+    if !done("gate") {
+        if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
+            return paused("rebase");
+        }
+        if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
+            return stopped(Ending::Blocked, reason);
+        }
 
-    let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-    let gate_log = logs.join("gate.log");
-    let fix_model = implementer.model.clone();
-    let fix_log = logs.join("gate-fix.log");
-    // A red gate gets a fix session with the run's environment, then runs again. A published branch is
-    // the user's own checkout: it is only checked, never edited by an agent.
-    let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
-    let gate_outcome =
-        run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, log| FixSessionSpec {
-            program: claude_program.to_string(),
-            args: vec![
-                "-p".to_string(),
-                "--model".to_string(),
-                fix_model.clone(),
-                format!(
-                    "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.",
-                    log.display()
-                ),
-            ],
-            env: database_env.to_vec(),
-            cwd: worktree.to_path_buf(),
-            session_id: None,
-            log: fix_log.clone(),
-            terminal: false,
-        })?;
-    match gate_outcome {
-        GateFixOutcome::Failed { step, exit_code, .. } => {
-            return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
-        }
-        // A repair that was not committed would leave the pushed commit unfixed.
-        GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {
-            if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
-                return stopped(Ending::Blocked, reason);
+        let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let gate_log = logs.join("gate.log");
+        let fix_model = implementer.model.clone();
+        let fix_log = logs.join("gate-fix.log");
+        // A red gate gets a fix session with the run's environment, then runs again. A published branch is
+        // the user's own checkout: it is only checked, never edited by an agent.
+        let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
+        let gate_outcome =
+            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, log| FixSessionSpec {
+                program: claude_program.to_string(),
+                args: vec![
+                    "-p".to_string(),
+                    "--model".to_string(),
+                    fix_model.clone(),
+                    format!(
+                        "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.",
+                        log.display()
+                    ),
+                ],
+                env: database_env.to_vec(),
+                cwd: worktree.to_path_buf(),
+                session_id: None,
+                log: fix_log.clone(),
+                terminal: false,
+            })?;
+        match gate_outcome {
+            GateFixOutcome::Failed { step, exit_code, .. } => {
+                return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
             }
+            // A repair that was not committed would leave the pushed commit unfixed.
+            GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {
+                if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+                    return stopped(Ending::Blocked, reason);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
         return paused("push");
     }
-    let head_sha = match push_run_branch(store, run_id, &logs.join("push.log"))? {
-        PushOutcome::Pushed { head_sha } => head_sha,
-        PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
+    let head_sha = match paused_at.filter(|_| done("push")) {
+        Some(checkpoint) => checkpoint.head_sha.clone(),
+        None => match push_run_branch(store, run_id, &logs.join("push.log"))? {
+            PushOutcome::Pushed { head_sha } => head_sha,
+            PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
+        },
     };
 
     let Some(provider) = find_program(provider_cli) else {
@@ -710,35 +719,42 @@ fn stages(
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push"], "review_request", Some(&record.branch), None)? {
         return paused("review_request");
     }
-    let draft = draft_review_description(store, run_id, Duration::from_secs(120), |prompt| DraftSession {
-        program: claude.to_string_lossy().into_owned(),
-        args: match settings_or_flag_model(options, settings) {
-            Some(model) => vec!["-p".to_string(), "--model".to_string(), model.to_string(), prompt.to_string()],
-            None => vec!["-p".to_string(), prompt.to_string()],
-        },
-        env: database_env.to_vec(),
-        cwd: worktree.to_path_buf(),
-    })?;
-    let draft = group_draft(draft, options.features);
-    let draft = match options.issue {
-        Some(number) => orq_orchestrator::link_issue(draft, number),
-        None => draft,
-    };
-    let people = match orq_orchestrator::ReviewPeople::checked(
-        options.mr_assignee.or(settings.mr_assignee.as_deref()),
-        options.mr_reviewer.or(settings.mr_reviewer.as_deref()),
-    ) {
-        Ok(people) => people,
-        Err(reason) => return stopped(Ending::Failed, reason),
-    };
-    let review = match create_review_request_with(store, run_id, &provider, &draft, &people, Duration::from_secs(60))? {
-        ReviewRequestOutcome::Created(review) | ReviewRequestOutcome::Adopted(review) => review,
-        ReviewRequestOutcome::Failed { reason } => {
-            return stopped(Ending::Failed, format!("review request failed: {reason}"))
+    let existing = paused_at.and_then(|c| c.review_request_ref.clone());
+    let review_url = match existing {
+        Some(url) => url,
+        None => {
+                let draft = draft_review_description(store, run_id, Duration::from_secs(120), |prompt| DraftSession {
+                    program: claude.to_string_lossy().into_owned(),
+                    args: match settings_or_flag_model(options, settings) {
+                        Some(model) => vec!["-p".to_string(), "--model".to_string(), model.to_string(), prompt.to_string()],
+                        None => vec!["-p".to_string(), prompt.to_string()],
+                    },
+                    env: database_env.to_vec(),
+                    cwd: worktree.to_path_buf(),
+                })?;
+                let draft = group_draft(draft, options.features);
+                let draft = match options.issue {
+                    Some(number) => orq_orchestrator::link_issue(draft, number),
+                    None => draft,
+                };
+                let people = match orq_orchestrator::ReviewPeople::checked(
+                    options.mr_assignee.or(settings.mr_assignee.as_deref()),
+                    options.mr_reviewer.or(settings.mr_reviewer.as_deref()),
+                ) {
+                    Ok(people) => people,
+                    Err(reason) => return stopped(Ending::Failed, reason),
+                };
+                let created = match create_review_request_with(store, run_id, &provider, &draft, &people, Duration::from_secs(60))? {
+                    ReviewRequestOutcome::Created(review) | ReviewRequestOutcome::Adopted(review) => review.url,
+                    ReviewRequestOutcome::Failed { reason } => {
+                        return stopped(Ending::Failed, format!("review request failed: {reason}"))
+                    }
+                };
+            created
         }
     };
 
-    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review.url))? {
+    if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
     }
     let ci = wait_for_ci(
@@ -771,10 +787,10 @@ fn stages(
             run_id: String::new(),
             ending: Ending::Failed,
             detail: Some(format!("CI did not pass: {ci:?}")),
-            review_url: Some(review.url),
+            review_url: Some(review_url),
         });
     }
-    Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review.url) })
+    Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url) })
 }
 
 #[cfg(test)]
