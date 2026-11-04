@@ -13,6 +13,20 @@ pub enum Capability {
     PrintMode,
 }
 
+impl Capability {
+    /// The name events and logs use for this capability.
+    pub fn name(self) -> &'static str {
+        match self {
+            Capability::ResumeSession => "resume_session",
+            Capability::RemoteControl => "remote_control",
+            Capability::PushNotification => "push_notification",
+            Capability::AutoCompact => "auto_compact",
+            Capability::McpPreapproval => "mcp_preapproval",
+            Capability::PrintMode => "print_mode",
+        }
+    }
+}
+
 /// A resolved harness, model and thinking level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {

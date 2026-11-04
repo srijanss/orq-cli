@@ -134,6 +134,22 @@ pub fn record_model_switched(
     })
 }
 
+/// A stage needed `capability` and `harness` does not have it, so the stage went on without it.
+pub fn record_capability_skipped(store: &RunStore, record: &RunRecord, stage: &str, harness: &str, capability: &str) -> Result<(), StoreError> {
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "capability.skipped".to_string(),
+        stage: Some(stage.to_string()),
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "harness": harness, "capability": capability }),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
     pub phase: RunPhase,

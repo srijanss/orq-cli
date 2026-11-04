@@ -732,6 +732,14 @@ fn stages(
             let handoff = orq_orchestrator::read_handoff(&store, &run_id)
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
                 .map(|h| orq_orchestrator::handoff_prompt(&h));
+            // Remote control is asked for unless the project turned it off; a harness without it runs without and says so.
+            let wants_remote_control = settings.remote_control != Some(false);
+            if wants_remote_control && !adapter.supports(orq_agents::Capability::RemoteControl) {
+                let capability = orq_agents::Capability::RemoteControl.name();
+                if let Err(err) = orq_orchestrator::record_capability_skipped(&store, &record, "implement_and_review", &options.implementer.harness, capability) {
+                    eprintln!("orq: cannot record the skipped {capability} of {run_id}: {err:?}");
+                }
+            }
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     features: &features,
