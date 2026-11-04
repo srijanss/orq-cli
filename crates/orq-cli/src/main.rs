@@ -1967,6 +1967,23 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(printable(checkpoint.next_stage.as_deref().unwrap_or("the end")))
     }
 
+    fn switch_model(&mut self, run_id: &str, role: &str, profile: &str) -> Result<String, String> {
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        // The command checks the profile exists and that the run is paused.
+        let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
+        let output = std::process::Command::new(exe)
+            .args(["run", "switch", run_id, "--role", role, "--profile", profile, "--repo"])
+            .arg(repo)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("cannot start orq run switch: {err}"))?;
+        if output.status.success() {
+            Ok(format!("Switch of {role} to {profile} recorded for {run_id}; resume to apply it"))
+        } else {
+            Err(printable(String::from_utf8_lossy(&output.stderr).trim()))
+        }
+    }
+
     fn resume_run(&mut self, run_id: &str) -> Result<String, String> {
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         // The command validates again, so a checkpoint that went stale since the check is refused.

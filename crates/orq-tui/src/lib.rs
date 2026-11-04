@@ -1584,6 +1584,12 @@ pub trait BrowserBackend {
         Err("resuming runs is not available".into())
     }
 
+    /// Records that the paused `run_id` continues its `role` on `profile`; `Ok` is what happened,
+    /// `Err` why not (an unknown profile, or a run that is not paused).
+    fn switch_model(&mut self, _run_id: &str, _role: &str, _profile: &str) -> Result<String, String> {
+        Err("switching models is not available".into())
+    }
+
     /// Opens the review request (MR/PR) of `run_id`; `Ok` is what happened, `Err` why it could not.
     fn open_review_link(&mut self, _run_id: &str) -> Result<String, String> {
         Err("opening links is not available".into())
@@ -2292,7 +2298,7 @@ const RUNS_TAB: &str = "Runs";
 const RUNS_FILE: &str = "runs";
 const RUNS_HINT: &str = " ↑↓ move · Enter pane · o new pane · u open MR · y copy link · r reload · Esc ";
 const RUNS_HINT_PAUSE: &str = " ↑↓ move · Enter pane · u open MR · y copy link · p pause · r reload · Esc ";
-const RUNS_HINT_RESUME: &str = " ↑↓ move · Enter pane · u open MR · y copy link · c resume · r reload · Esc ";
+const RUNS_HINT_RESUME: &str = " ↑↓ move · Enter pane · u open MR · y copy link · c resume · m switch model · r reload · Esc ";
 const RUNS_HINT_NO_LINK: &str = " ↑↓ move · Enter pane · o new pane · no review link yet · r reload · Esc ";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
@@ -2303,6 +2309,8 @@ struct RunsState {
     unreadable: usize,
     /// The paused run whose resume waits for a `y`.
     resuming: Option<String>,
+    /// The run and the "role profile" text typed so far while picking a model switch.
+    switching: Option<(String, String)>,
 }
 
 impl RunsState {
@@ -3388,6 +3396,45 @@ impl Browser {
         });
     }
 
+    /// `m` on a paused run: start typing "role profile", Enter records it, Esc cancels.
+    fn ask_to_switch_selected_run(&mut self) {
+        let Some(run) = self.selected_run() else { return };
+        let (run_id, status) = (run.run_id.clone(), run.status.clone());
+        if status != "paused" {
+            self.notice = Some(format!("{run_id} is {status}; only a paused run can switch models"));
+            return;
+        }
+        self.notice = Some(format!("Switch {run_id}: type role and profile, Enter to record, Esc cancels: "));
+        self.runs.switching = Some((run_id, String::new()));
+    }
+
+    fn switch_key(&mut self, backend: &mut dyn BrowserBackend, key: KeyCode) {
+        let Some((run_id, mut text)) = self.runs.switching.take() else { return };
+        match key {
+            KeyCode::Esc => self.notice = Some(format!("Did not switch {run_id}")),
+            KeyCode::Enter => {
+                let mut words = text.split_whitespace();
+                self.notice = Some(match (words.next(), words.next(), words.next()) {
+                    (Some(role), Some(profile), None) => match backend.switch_model(&run_id, role, profile) {
+                        Ok(message) | Err(message) => message,
+                    },
+                    _ => "type a role and a profile, e.g. implementer fast-claude".to_string(),
+                });
+            }
+            code => {
+                match code {
+                    KeyCode::Char(c) => text.push(c),
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    _ => {}
+                }
+                self.notice = Some(format!("Switch {run_id}: type role and profile, Enter to record, Esc cancels: {text}"));
+                self.runs.switching = Some((run_id, text));
+            }
+        }
+    }
+
     fn confirm_resume(&mut self, backend: &mut dyn BrowserBackend, run_id: &str) {
         self.notice = Some(match backend.resume_run(run_id) {
             Ok(message) | Err(message) => message,
@@ -3397,7 +3444,7 @@ impl Browser {
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
         let rows = backend.load_runs();
         let unreadable = if rows.is_ok() { backend.unreadable_runs() } else { 0 };
-        self.runs = RunsState { rows, selected: 0, unreadable, resuming: None };
+        self.runs = RunsState { rows, selected: 0, unreadable, resuming: None, switching: None };
         self.tab = Tab::Runs;
     }
 
@@ -3658,7 +3705,7 @@ where
             report: None,
             confirming: false,
         },
-        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0, resuming: None },
+        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0, resuming: None, switching: None },
         reviews: ReviewsState::new(model.project_name.clone()),
         form: None,
         preview: None,
@@ -3789,6 +3836,11 @@ where
                 }
                 if browser.tab == Tab::Runs {
                     browser.notice = None;
+                    if browser.runs.switching.is_some() {
+                        browser.switch_key(backend, key.code);
+                        dirty = true;
+                        continue;
+                    }
                     if let Some(run_id) = browser.runs.resuming.take() {
                         if key.code == KeyCode::Char('y') {
                             browser.confirm_resume(backend, &run_id);
@@ -3801,6 +3853,7 @@ where
                     match key.code {
                         KeyCode::Char('p') => browser.pause_selected_run(backend),
                         KeyCode::Char('c') => browser.ask_to_resume_selected_run(backend),
+                        KeyCode::Char('m') => browser.ask_to_switch_selected_run(),
                         KeyCode::Enter => browser.focus_selected_run(backend),
                         KeyCode::Char('o') => browser.reopen_selected_run(backend),
                         KeyCode::Char('u') => browser.review_link_of_selected_run(backend, false),
