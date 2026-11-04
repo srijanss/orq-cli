@@ -342,19 +342,16 @@ fn sessions_of_every_earlier_run_in_a_chain_stay_queryable_and_history_is_untouc
 
 #[test]
 fn a_carried_history_that_cannot_be_decoded_is_an_error_not_an_empty_history() {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-session-refs-bad-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = RunStore::new(&dir);
-    store.create(&chain_record("run-1", "sonnet")).unwrap();
-    let mut bad = chain_session_started("run-1", "x", None);
-    bad.event_id = "bad".into();
-    bad.kind = "run.sessions_carried".into();
-    bad.stage = None;
-    bad.payload = serde_json::json!({ "sessions": [{ "run_id": "run-0" }] });
-    store.append_event(&bad).unwrap();
-    assert!(session_references(&store, "run-1").is_err());
-    bad.event_id = "bad2".into();
-    bad.payload = serde_json::json!({});
-    store.append_event(&bad).unwrap();
-    assert!(session_references(&store, "run-1").is_err());
+    for (tag, payload) in [("malformed", serde_json::json!({ "sessions": [{ "run_id": "run-0" }] })), ("missing", serde_json::json!({}))] {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-session-refs-bad-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = RunStore::new(&dir);
+        store.create(&chain_record("run-1", "sonnet")).unwrap();
+        let mut bad = chain_session_started("run-1", "x", None);
+        bad.kind = "run.sessions_carried".into();
+        bad.stage = None;
+        bad.payload = payload;
+        store.append_event(&bad).unwrap();
+        assert!(matches!(session_references(&store, "run-1"), Err(orq_orchestrator::StoreError::Corrupt(_))), "{tag}");
+    }
 }
