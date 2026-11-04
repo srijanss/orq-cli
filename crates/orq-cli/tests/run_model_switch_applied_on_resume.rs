@@ -227,7 +227,7 @@ fn an_unswitched_role_keeps_its_stored_profile_even_when_the_configuration_no_lo
 }
 
 #[test]
-fn a_run_level_model_and_a_switch_both_survive_further_resumes() {
+fn a_resume_restores_the_model_the_run_was_started_with_after_the_setting_is_gone() {
     let agent = agent();
     let w = world("chain", &agent);
     setup_profiles(&w);
