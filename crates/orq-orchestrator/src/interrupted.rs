@@ -36,3 +36,22 @@ pub fn reconcile_interrupted(store: &RunStore, run_id: &str, alive: &dyn Fn(u32)
     })?;
     Ok(true)
 }
+
+/// Whether the process `pid` is alive, read from a procfs mounted at `proc_root`. Only a procfs that
+/// answers for itself (`self` exists) and has no entry for `pid` counts as dead; a missing procfs
+/// or an entry that cannot be inspected is "unknown", which reads as alive so a live run is never
+/// taken over.
+pub fn process_is_alive_in(proc_root: &std::path::Path, pid: u32) -> bool {
+    if !proc_root.join("self").exists() {
+        return true;
+    }
+    match std::fs::metadata(proc_root.join(pid.to_string())) {
+        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+        Ok(_) => true,
+    }
+}
+
+/// [`process_is_alive_in`] over the system's `/proc`.
+pub fn process_is_alive(pid: u32) -> bool {
+    process_is_alive_in(std::path::Path::new("/proc"), pid)
+}

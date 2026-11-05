@@ -103,7 +103,7 @@ pub fn plan_group_resume(store: &RunStore, repo: &Path, project_id: &str, member
     }
     let Some((_, from)) = latest else { return Err(format!("{feature_id} has no earlier run to resume")) };
     // A run killed mid-flight never recorded an ending: if its process is gone, it is a failed run.
-    crate::interrupted::reconcile_interrupted(store, &from.run_id, &process_is_alive)
+    crate::interrupted::reconcile_interrupted(store, &from.run_id, &crate::interrupted::process_is_alive)
         .map_err(|e| format!("cannot reconcile {}: {e:?}", from.run_id))?;
     let events = store.events(&from.run_id).map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
     let earlier = members_of(&from, &events);
@@ -178,9 +178,4 @@ pub fn record_inherited_implement(store: &RunStore, record: &RunRecord, from_run
         occurred_at: now_rfc3339(),
         payload: serde_json::json!({ "resumed_from": from_run_id }),
     })
-}
-
-/// Whether a process with this id exists (Linux: its `/proc` entry).
-fn process_is_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
 }

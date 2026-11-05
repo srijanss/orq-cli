@@ -50,3 +50,16 @@ fn a_run_killed_after_a_pause_was_requested_is_marked_failed_too() {
     assert!(reconcile_interrupted(&store, "run-1", &|_pid| false).unwrap());
     assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Failed);
 }
+
+#[test]
+fn a_process_is_dead_only_when_procfs_is_there_and_has_no_entry_for_it() {
+    let root = orq_test_support::process_temp_dir().join(format!("orq-fake-proc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // No procfs here (as on macOS): liveness is unknown, which must never read as dead.
+    assert!(orq_orchestrator::process_is_alive_in(&root, 77));
+    std::fs::create_dir_all(root.join("self")).unwrap();
+    assert!(!orq_orchestrator::process_is_alive_in(&root, 77), "procfs without an entry: gone");
+    std::fs::create_dir_all(root.join("77")).unwrap();
+    assert!(orq_orchestrator::process_is_alive_in(&root, 77));
+}
