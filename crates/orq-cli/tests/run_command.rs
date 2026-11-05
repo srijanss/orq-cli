@@ -357,6 +357,22 @@ fn a_run_that_succeeds_ends_at_review_ready_and_prints_the_run_id_state_and_url(
 }
 
 #[test]
+fn a_foreground_run_records_its_owner_so_a_killed_one_can_be_recovered() {
+    let w = world("foreground-owner");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let run_id = stdout.lines().find_map(|l| l.strip_prefix("run: ")).expect(&stdout).to_string();
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    let launched = store.events(&run_id).unwrap().into_iter().find(|e| e.kind == "run.launched");
+    let launched = launched.expect("a foreground run records run.launched too");
+    assert!(launched.payload.get("pid").and_then(|p| p.as_u64()).is_some(), "{:?}", launched.payload);
+}
+
+#[test]
 fn an_agent_that_leaves_no_commit_blocks_the_run_and_nothing_is_pushed() {
     let w = world("nocommit");
     let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();

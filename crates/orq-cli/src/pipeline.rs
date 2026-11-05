@@ -372,11 +372,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
     }
-    if options.run_id.is_some() {
-        let log = root.join("logs").join(&run_id).join("runner.log");
-        if let Err(err) = record_launch(&store, &run_id, std::process::id(), &log) {
-            eprintln!("orq: cannot record the launch of {run_id}: {err}");
-        }
+    // Every run names its owner process (detached or not), so a killed one can be told from a live one.
+    let log = root.join("logs").join(&run_id).join("runner.log");
+    if let Err(err) = record_launch(&store, &run_id, std::process::id(), &log) {
+        eprintln!("orq: cannot record the launch of {run_id}: {err}");
     }
     let finish = |store: &RunStore| store.finish_group_run(&record.project_id, &members, &record.run_id);
     // Which features this run is for, so that only a run of the same group can be resumed.
