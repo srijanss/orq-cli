@@ -2117,8 +2117,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     fn discard_run(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
-        let members = orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, repo).map_err(|message| printable(&message))?;
-        let reopened = reopen_discarded(repo, &members);
+        let reopened = discard_and_reopen(&root, run_id, repo).map_err(|message| printable(&message))?;
         Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(";{note}")).unwrap_or_default()))
     }
 
@@ -4088,17 +4087,32 @@ fn run_stop(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// Put the features of a discarded run, which nothing continues any more, back to `pending`, and say
-/// which were. A ledger that cannot be updated is only warned about: the run is already gone.
-fn reopen_discarded(repo: &Path, members: &[String]) -> String {
-    let path = match orq_git::resolve_project(repo) {
-        Ok(project) => orq_features::ledger_path(&project),
+/// Discard `run_id`, putting the features nothing continues any more back to `pending` in `repo`'s
+/// ledger before their locks are released, and say which were.
+fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, String> {
+    let mut note = String::new();
+    orq_orchestrator::discard_run_then(&orq_orchestrator::RunStore::new(root), run_id, repo, &mut |project_id, features| {
+        note = reopen_discarded(repo, project_id, features);
+    })?;
+    Ok(note)
+}
+
+/// Put the features of a discarded run back to `pending`, and say which were. Only the ledger of
+/// the run's own project is touched: another repository may have features of the same names. A
+/// ledger that cannot be updated is only warned about: the run is going regardless.
+fn reopen_discarded(repo: &Path, project_id: &str, members: &[String]) -> String {
+    let project = match orq_git::resolve_project(repo) {
+        Ok(project) => project,
         Err(err) => {
             eprintln!("orq: cannot find the feature ledger of {}: {err:?}", repo.display());
             return String::new();
         }
     };
-    match orq_features::reopen_features(&path, members) {
+    if pipeline::project_id(&project) != project_id {
+        eprintln!("orq: {} is not the project of the run; its features are left as they are", repo.display());
+        return String::new();
+    }
+    match orq_features::reopen_features(&orq_features::ledger_path(&project), members) {
         Ok(reopened) if reopened.is_empty() => String::new(),
         Ok(reopened) => format!(" {} {} pending again.", printable(&reopened.join(", ")), if reopened.len() == 1 { "is" } else { "are" }),
         Err(err) => {
@@ -4134,9 +4148,9 @@ fn run_discard(args: &[OsString]) -> ExitCode {
     let Some(root) = pipeline::state_root() else {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
-    match orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, &repo) {
-        Ok(members) => {
-            println!("Discarded run {}.{}", printable(run_id), reopen_discarded(&repo, &members));
+    match discard_and_reopen(&root, run_id, &repo) {
+        Ok(note) => {
+            println!("Discarded run {}.{note}", printable(run_id));
             ExitCode::SUCCESS
         }
         Err(message) => fail(printable(&message)),

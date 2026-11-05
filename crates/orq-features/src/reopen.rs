@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use orq_core::FeatureStatus;
@@ -23,13 +24,13 @@ pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, Str
             Err(LedgerError::Missing { .. }) => return Ok(Vec::new()),
             Err(err) => return Err(format!("cannot read {}: {err:?}", path.display())),
         };
-        let reopened: Vec<String> = names
+        let in_progress: HashSet<&str> = loaded
+            .entries()
             .iter()
-            .filter(|name| {
-                loaded.entries().iter().any(|e| &e.feature_name == *name && e.status == LedgerStatus::Known(FeatureStatus::InProgress))
-            })
-            .cloned()
+            .filter(|e| e.status == LedgerStatus::Known(FeatureStatus::InProgress))
+            .map(|e| e.feature_name.as_str())
             .collect();
+        let reopened: Vec<String> = names.iter().filter(|name| in_progress.contains(name.as_str())).cloned().collect();
         if reopened.is_empty() {
             return Ok(reopened);
         }

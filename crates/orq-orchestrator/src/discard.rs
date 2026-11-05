@@ -12,9 +12,15 @@ use crate::store::{RunStore, StoreError};
 /// its feature locks, its logs and its record. A run whose worktree is already gone keeps its
 /// branch: it cannot be shown to belong to `repo`. Only a failed or blocked run, which has ended, can be discarded. Every check
 /// happens before anything is removed, and the record goes last, so a failure part-way can be
-/// retried. `repo` is the repository the run's worktree belongs to. Returns the run's features, which
-/// nothing continues any more.
+/// retried. `repo` is the repository the run's worktree belongs to. Returns the run's features.
 pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Vec<String>, String> {
+    discard_run_then(store, run_id, repo, &mut |_, _| {})
+}
+
+/// [`discard_run`], calling `orphaned(project_id, features)` once the worktree is gone and before any
+/// lock is released, with the run's features that no other run holds: nothing continues those, and
+/// no new run can take them while the call runs.
+pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<Vec<String>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
@@ -83,6 +89,18 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Vec<St
     // and a branch name), so no branch is deleted; only the run's own records go.
     // Release each member's lock on its own, so one benign outcome cannot hide another's failure.
     let members = members_of(&record, &events);
+    let mut ours = Vec::new();
+    for member in &members {
+        match store.active_run(&record.project_id, member) {
+            Ok(None) => ours.push(member.clone()),
+            Ok(Some(owner)) if owner == run_id => ours.push(member.clone()),
+            Ok(Some(_)) => {}
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    if !ours.is_empty() {
+        orphaned(&record.project_id, &ours);
+    }
     for member in &members {
         match store.finish_group_run(&record.project_id, std::slice::from_ref(member), run_id) {
             // A lock that is gone, or already held by another run, is not this run's to release.

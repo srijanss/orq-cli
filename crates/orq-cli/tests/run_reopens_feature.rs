@@ -126,6 +126,37 @@ fn reopen_a_run_that_committed_leaves_its_feature_as_the_agent_left_it() {
     assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress");
 }
 
+/// A failing run with `explain_failures` off, so no explainer session starts after it.
+fn failing_world(tag: &str, agent: &FakeAgent) -> World {
+    let w = world(tag, agent);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "explain_failures = false\n").unwrap();
+    w
+}
+
+#[test]
+fn reopen_a_run_that_fails_without_a_commit_puts_its_feature_back_to_pending() {
+    let agent = FakeAgent::builder().exit_code(3).build();
+    let w = failing_world("failed-no-commit", &agent);
+
+    let output = run(&w, &github());
+
+    assert!(text(&output.stdout).contains("failed"), "{}\n{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "pending", "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "in_progress");
+}
+
+#[test]
+fn reopen_a_run_that_fails_after_committing_leaves_its_feature_in_progress() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "half\n").commit("wip").exit_code(3).build();
+    let w = failing_world("failed-committed", &agent);
+
+    let output = run(&w, &github());
+
+    assert!(text(&output.stdout).contains("failed"), "{}\n{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress", "the commit is work a resume continues");
+}
+
 fn event(kind: &str) -> Event {
     Event {
         schema_version: 1,
@@ -141,46 +172,105 @@ fn event(kind: &str) -> Event {
     }
 }
 
-#[test]
-fn reopen_discarding_a_blocked_run_puts_its_feature_back_to_pending() {
-    let home = orq_test_support::process_temp_dir().join(format!("orq-run-reopen-{}-discard", std::process::id()));
+/// The id `orq` files the runs of `repo` under.
+fn project_id(repo: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["project", "inspect", "--cwd"])
+        .arg(repo)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    let project: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    project["id"].as_str().unwrap().to_string()
+}
+
+struct Discard {
+    repo: GitFixture,
+    home: PathBuf,
+    store: RunStore,
+    project_id: String,
+}
+
+fn record(run_id: &str, project_id: &str, branch: &str, worktree: PathBuf) -> RunRecord {
+    RunRecord {
+        run_id: run_id.into(),
+        project_id: project_id.into(),
+        feature_id: "COM-01".into(),
+        remote: "origin".into(),
+        provider: "github".into(),
+        target_branch: "main".into(),
+        base_sha: "abc".into(),
+        branch: branch.into(),
+        worktree,
+        repository: String::new(),
+        profiles: BTreeMap::new(),
+    }
+}
+
+/// A blocked run-1 of COM-01, filed under the project of a repository whose ledger has COM-01 and
+/// COM-02 in progress and COM-03 completed. `with_worktree` false leaves the run without a worktree.
+fn blocked_run(tag: &str, with_worktree: bool) -> Discard {
+    let home = orq_test_support::process_temp_dir().join(format!("orq-run-reopen-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let repo = GitFixture::new();
     write_ledger(
         repo.root(),
         &[LedgerEntry::new("COM-01", "in_progress"), LedgerEntry::new("COM-02", "in_progress"), LedgerEntry::new("COM-03", "completed")],
     );
-    let worktree = repo.add_linked_worktree("orq-run-1");
+    let worktree = if with_worktree { repo.add_linked_worktree("orq-run-1") } else { home.join("gone") };
+    let project_id = project_id(repo.root());
     let store = RunStore::new(&home.join("orq"));
-    store
-        .start_run(&RunRecord {
-            run_id: "run-1".into(),
-            project_id: "p".into(),
-            feature_id: "COM-01".into(),
-            remote: "origin".into(),
-            provider: "github".into(),
-            target_branch: "main".into(),
-            base_sha: "abc".into(),
-            branch: "orq-run-1".into(),
-            worktree,
-            repository: String::new(),
-            profiles: BTreeMap::new(),
-        })
-        .unwrap();
+    store.start_run(&record("run-1", &project_id, "orq-run-1", worktree)).unwrap();
     store.append_event(&event("stage.started")).unwrap();
     store.append_event(&event("run.blocked")).unwrap();
+    Discard { repo, home, store, project_id }
+}
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+fn discard(d: &Discard, repo: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "discard", "run-1", "--yes", "--repo"])
-        .arg(repo.root())
-        .env("XDG_STATE_HOME", &home)
+        .arg(repo)
+        .env("XDG_STATE_HOME", &d.home)
         .env_remove("TDD_FEATURES_PATH")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn reopen_discarding_a_blocked_run_puts_its_feature_back_to_pending() {
+    let d = blocked_run("discard", true);
+
+    let output = discard(&d, d.repo.root());
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(status_of(repo.root(), "COM-01"), "pending");
-    assert_eq!(status_of(repo.root(), "COM-02"), "in_progress", "a feature outside the run is left alone");
-    assert_eq!(status_of(repo.root(), "COM-03"), "completed");
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "pending");
+    assert_eq!(status_of(d.repo.root(), "COM-02"), "in_progress", "a feature outside the run is left alone");
+    assert_eq!(status_of(d.repo.root(), "COM-03"), "completed");
     assert!(text(&output.stdout).contains("COM-01") && text(&output.stdout).contains("pending"), "{}", text(&output.stdout));
+}
+
+#[test]
+fn reopen_discarding_with_another_repository_leaves_that_ledger_alone() {
+    let d = blocked_run("discard-elsewhere", false);
+    let other = GitFixture::new();
+    write_ledger(other.root(), &[LedgerEntry::new("COM-01", "in_progress")]);
+
+    let output = discard(&d, other.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(other.root(), "COM-01"), "in_progress", "another project's feature of the same name is not reset");
+    assert!(!text(&output.stdout).contains("pending"), "{}", text(&output.stdout));
+}
+
+#[test]
+fn reopen_discarding_leaves_a_feature_another_run_now_holds_in_progress() {
+    let d = blocked_run("discard-taken", true);
+    d.store.finish_run(&d.project_id, "COM-01", "run-1").unwrap();
+    d.store.start_run(&record("run-2", &d.project_id, "orq-run-2", d.home.join("w2"))).unwrap();
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "in_progress", "run-2 is working on it");
+    assert_eq!(d.store.active_run(&d.project_id, "COM-01").unwrap().as_deref(), Some("run-2"));
 }

@@ -509,7 +509,6 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
         .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, inherited.map(|r| r.from.run_id.as_str()), checkpoint.as_ref()));
-    let released = finish(&store);
     let mut report = match outcome {
         Ok(mut report) => {
             report.run_id = run_id;
@@ -517,6 +516,14 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         }
         Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None },
     };
+    // Reopened while the run still holds the locks, so a run launched next is never reset.
+    if matches!(report.ending, Ending::Blocked | Ending::Failed) && !has_commits(&record) {
+        // Nothing was built, so nothing continues the features: they may be launched again.
+        if let Err(err) = orq_features::reopen_features(&orq_features::ledger_path(options.project), options.features) {
+            eprintln!("orq: cannot put {} back to pending: {err}", options.features.join(","));
+        }
+    }
+    let released = finish(&store);
     // A lock left behind blocks the next run of the feature, so it is never reported as success.
     if let Err(lock) = released {
         report.ending = Ending::Failed;
@@ -530,12 +537,6 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if report.ending != Ending::Paused {
         if let Err(err) = orq_orchestrator::record_run_completed(&store, &record, report.ending.name(), report.detail.as_deref()) {
             eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
-        }
-    }
-    if matches!(report.ending, Ending::Blocked | Ending::Failed) && !has_commits(&record) {
-        // Nothing was built, so nothing continues the features: they may be launched again.
-        if let Err(err) = orq_features::reopen_features(&orq_features::ledger_path(options.project), options.features) {
-            eprintln!("orq: cannot put {} back to pending: {err}", options.features.join(","));
         }
     }
     if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
