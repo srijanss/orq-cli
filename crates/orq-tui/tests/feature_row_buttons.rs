@@ -20,6 +20,23 @@ impl EventSource for Script {
 #[derive(Default)]
 struct Fake {
     calls: Vec<String>,
+    /// The runs as the fake's store holds them; `None` until first read, then `runs()`.
+    store: Option<Vec<RunRow>>,
+    /// Why a resume check refuses, when it does.
+    refuse_resume: Option<String>,
+    /// What stop, resume and discard fail with, when they do.
+    fail_with: Option<String>,
+}
+
+impl Fake {
+    fn store(&mut self) -> &mut Vec<RunRow> {
+        self.store.get_or_insert_with(runs)
+    }
+    fn set_status(&mut self, run_id: &str, status: &str) {
+        if let Some(run) = self.store().iter_mut().find(|run| run.run_id == run_id) {
+            run.status = status.into();
+        }
+    }
 }
 
 fn entry(name: &str, status: &str) -> BrowserEntry {
@@ -67,31 +84,45 @@ impl BrowserBackend for Fake {
     }
     fn feature_runs(&mut self) -> Vec<RunRow> {
         self.calls.push("feature_runs".into());
-        runs()
+        self.store().clone()
     }
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         self.calls.push("load_runs".into());
-        Ok(runs())
+        Ok(self.store().clone())
     }
 
     fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("pause {run_id}"));
+        self.set_status(run_id, "pause_requested");
         Ok(format!("Pause requested for {run_id}"))
     }
     fn stop_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("stop {run_id}"));
+        if let Some(why) = self.fail_with.clone() {
+            return Err(why);
+        }
         Ok(format!("Stopped {run_id}"))
     }
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("check {run_id}"));
+        if let Some(why) = self.refuse_resume.clone() {
+            return Err(why);
+        }
         Ok("where it stopped".into())
     }
     fn resume_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("resume {run_id}"));
+        if let Some(why) = self.fail_with.clone() {
+            return Err(why);
+        }
         Ok(format!("Resumed {run_id}"))
     }
     fn discard_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("discard {run_id}"));
+        if let Some(why) = self.fail_with.clone() {
+            return Err(why);
+        }
+        self.store().retain(|run| run.run_id != run_id);
         Ok(format!("Discarded {run_id}"))
     }
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
@@ -237,4 +268,41 @@ fn stopping_from_the_orchestrations_tab_reads_the_runs_once_for_the_list_and_the
         .count();
     assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?} {screen:#?}", backend.calls);
     assert_eq!(after_stop, 1, "one read of the runs serves both: {:?}", backend.calls);
+}
+
+#[test]
+fn a_refused_resume_check_shows_why_and_asks_nothing_so_y_resumes_nothing() {
+    let screen = show(&mut Fake::default(), vec![]);
+    let mut backend = Fake { refuse_resume: Some("run-3 cannot resume: its base moved".into()), ..Fake::default() };
+    let after = show(&mut backend, vec![click(button_at(&screen, "charlie", "[Resume]")), key('y')]);
+    assert!(!backend.calls.contains(&"resume run-3".to_string()), "{:?}", backend.calls);
+    assert!(after.iter().any(|line| line.contains("its base moved")), "{after:#?}");
+}
+
+#[test]
+fn a_failed_stop_resume_or_discard_is_shown_without_its_control_characters_and_the_row_keeps_its_buttons() {
+    let screen = show(&mut Fake::default(), vec![]);
+    for (feature, button, call) in
+        [("bravo", "[Stop]", "stop run-2"), ("charlie", "[Resume]", "resume run-3"), ("echo", "[Discard]", "discard run-5")]
+    {
+        let mut backend = Fake { fail_with: Some("it failed: \u{1b}[2Jdisk full".into()), ..Fake::default() };
+        let after = show(&mut backend, vec![click(button_at(&screen, feature, button)), key('y')]);
+        assert!(backend.calls.contains(&call.to_string()), "{:?}", backend.calls);
+        assert!(after.iter().any(|line| line.contains("disk full")), "{feature}: {after:#?}");
+        assert!(!after.iter().any(|line| line.contains('\u{1b}')), "{feature}: no raw escape reaches the screen");
+        assert!(button_line(&after, feature).1.contains(button), "{feature} still offers {button}: {after:#?}");
+    }
+}
+
+#[test]
+fn a_rows_buttons_follow_its_run_after_a_pause_or_a_discard() {
+    let screen = show(&mut Fake::default(), vec![]);
+
+    let paused = show(&mut Fake::default(), vec![click(button_at(&screen, "bravo", "[Pause]"))]);
+    let (_, bravo) = button_line(&paused, "bravo");
+    assert!(bravo.contains("[Stop]") && !bravo.contains("[Pause]"), "a pause pending leaves only Stop: {bravo:?}");
+
+    let discarded = show(&mut Fake::default(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]);
+    let (_, echo) = button_line(&discarded, "echo");
+    assert!(ALL.iter().all(|label| !echo.contains(label)), "a discarded run leaves no button: {echo:?}");
 }
