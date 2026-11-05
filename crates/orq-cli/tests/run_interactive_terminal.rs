@@ -32,7 +32,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A repository with a pushed `main` and a pending COM-01, and a `claude` that writes whether its
-/// stdin was a terminal to `seen` before it runs `agent`.
+/// stdin and its stdout were each a terminal to `seen` before it runs `agent`.
 fn world(tag: &str, agent: &FakeAgent) -> World {
     let root = orq_test_support::process_temp_dir().join(format!("orq-run-tty-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -53,7 +53,7 @@ fn world(tag: &str, agent: &FakeAgent) -> World {
     std::fs::write(
         &claude,
         format!(
-            "#!/bin/sh\nif [ -t 0 ] && [ -t 1 ]; then t=tty; else t=none; fi\necho \"$t $PWD\" >> '{seen}'\nexec '{agent}' \"$@\"\n",
+            "#!/bin/sh\ni=-; o=-; [ -t 0 ] && i=t; [ -t 1 ] && o=t\necho \"$i$o $PWD\" >> '{seen}'\nexec '{agent}' \"$@\"\n",
             seen = seen.display(),
             agent = agent.path().display()
         ),
@@ -183,15 +183,18 @@ sys.exit(os.waitstatus_to_exitcode(status))
 }
 
 /// Whether the implement session, the first `claude` started in the run's worktree, had a
-/// terminal: "tty" or "none". Later headless calls (the review draft, the push notification) are
+/// terminal: "tty" when both its input and output were the terminal, "none" when neither was, and
+/// otherwise which one was. Later headless calls (the review draft, the push notification) are
 /// left out.
 fn seen(w: &World) -> String {
     let calls = std::fs::read_to_string(&w.seen).unwrap_or_default();
-    calls
-        .lines()
-        .find(|line| line.contains("/.claude/worktrees/"))
-        .and_then(|line| line.split(' ').next())
-        .map_or_else(|| format!("no implement session: {calls:?}"), str::to_string)
+    match calls.lines().find(|line| line.contains("/.claude/worktrees/")).and_then(|line| line.split(' ').next()) {
+        Some("tt") => "tty".to_string(),
+        Some("--") => "none".to_string(),
+        Some("t-") => "only its input was the terminal".to_string(),
+        Some("-t") => "only its output was the terminal".to_string(),
+        _ => format!("no implement session: {calls:?}"),
+    }
 }
 
 #[test]
