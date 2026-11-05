@@ -816,3 +816,27 @@ fn a_hook_rejection_is_not_retried_even_when_its_message_names_a_network_error()
     assert_eq!(pushes_seen(&w), 1, "the remote answered; asking again repeats its hook");
     assert!(waits.borrow().is_empty());
 }
+
+#[test]
+fn a_huge_backoff_is_capped_instead_of_overflowing() {
+    let w = world("retry-huge", "fix--COM-02", "main", Some("origin"));
+    flaky_transport(&w, 100);
+    let waits = std::cell::RefCell::new(Vec::new());
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 4,
+        base: std::time::Duration::from_secs(u64::MAX / 2),
+    };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
+            .unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    assert_eq!(waits.borrow().len(), 3);
+    assert!(
+        waits.borrow().iter().all(|d| *d <= std::time::Duration::from_secs(60)),
+        "no wait is longer than a minute: {:?}",
+        waits.borrow()
+    );
+    assert_eq!(kinds(&w), ["stage.started", "stage.failed"], "the stage is not left started");
+}

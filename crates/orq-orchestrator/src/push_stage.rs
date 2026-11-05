@@ -28,6 +28,9 @@ pub struct RetryPolicy {
     pub base: std::time::Duration,
 }
 
+/// No wait between pushes is longer than this, whatever the policy asks for.
+const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Default for RetryPolicy {
     fn default() -> Self {
         RetryPolicy {
@@ -176,7 +179,11 @@ pub fn push_run_branch_with(
         if !again {
             break pushed;
         }
-        let wait = policy.base * 2u32.saturating_pow(attempt - 1);
+        let wait = policy
+            .base
+            .checked_mul(2u32.saturating_pow(attempt - 1))
+            .unwrap_or(MAX_WAIT)
+            .min(MAX_WAIT);
         writeln!(
             log,
             "attempt {attempt} failed on the network; trying again in {}s",
