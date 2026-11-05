@@ -425,6 +425,40 @@ fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes()
 }
 
 #[test]
+fn a_run_that_failed_after_opening_the_review_resumes_without_repeating_the_agent_or_the_review() {
+    let w = world("no-replay");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let first = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+    let output = run_with(&w, &agent, &first, &[]);
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{}", stderr(&output));
+    assert!(first.calls().iter().any(|c| c.args.starts_with(&["pr".into(), "create".into()])), "the first run opened the review");
+    let pushed = git(&w.remote, &["rev-parse", "fix--COM-01"]);
+
+    // The review now exists on the forge; a second agent and provider must show nothing is redone.
+    let second_agent = FakeAgent::builder().write_file("again.txt", "x\n").commit("feat: again").build();
+    let second = FakeProvider::builder()
+        .reply(&["pr", "list"], &format!("[{{\"number\":7,\"url\":\"{PR_URL}\",\"state\":\"OPEN\",\"isCrossRepository\":false}}]\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .build();
+    let output = run_with(&w, &second_agent, &second, &["--no-ci-check", "--resume"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
+    assert!(drafts_only, "the finished implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    assert!(!w.repo.root().join("again.txt").exists(), "no new work was committed");
+    assert!(!second.calls().iter().any(|c| c.args.starts_with(&["pr".into(), "create".into()])), "no second review: {:?}", second.calls());
+    assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01"]), pushed, "the pushed branch is untouched");
+    assert!(stdout.contains(PR_URL), "{stdout}");
+}
+
+#[test]
 fn an_agent_that_leaves_no_commit_blocks_the_run_and_nothing_is_pushed() {
     let w = world("nocommit");
     let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
