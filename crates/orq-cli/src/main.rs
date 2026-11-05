@@ -3790,7 +3790,7 @@ fn run_stop(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     let store = orq_orchestrator::RunStore::new(&root);
-    match orq_orchestrator::stop_run(&store, run_id, &orq_orchestrator::process_is_alive, &orq_orchestrator::terminate_process, &std::thread::sleep) {
+    match orq_orchestrator::stop_run(&store, run_id, &orq_orchestrator::owner_state, &orq_orchestrator::terminate_process, &std::thread::sleep) {
         Ok(()) => {
             println!("Stopped run {}; resume it with `orq run resume {}`.", printable(run_id), printable(run_id));
             ExitCode::SUCCESS

@@ -1,6 +1,7 @@
 //! Stopping a live run: end the process that owns it and record the run as failed, so it can be
 //! resumed like any other failed run.
 
+use std::path::Path;
 use std::time::Duration;
 
 use crate::implement::{next_event_id, now_rfc3339};
@@ -10,6 +11,47 @@ use crate::store::{Event, RunStore};
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const POLLS_PER_SIGNAL: u32 = 30;
 
+/// What is known about the recorded owner of a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerState {
+    /// The recorded process is executing: same pid, same start time, not a zombie.
+    Running,
+    /// The recorded process is gone: no such pid, a different process holds it now, or it is an
+    /// unreaped zombie.
+    Exited,
+    /// Its identity cannot be established (no procfs, unreadable or unparsable stat).
+    Unknown,
+}
+
+/// [`OwnerState`] of `pid` against the recorded `start` ticks, read from `<proc_root>/<pid>/stat`.
+/// Unlike a liveness check it fails closed: anything it cannot read is `Unknown`, never alive.
+pub fn owner_state_in(proc_root: &Path, pid: u32, start: u64) -> OwnerState {
+    if !proc_root.join("self").exists() {
+        return OwnerState::Unknown;
+    }
+    let stat = match std::fs::read_to_string(proc_root.join(pid.to_string()).join("stat")) {
+        Ok(stat) => stat,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return OwnerState::Exited,
+        Err(_) => return OwnerState::Unknown,
+    };
+    // `comm` (field 2) may contain spaces and parentheses, so count from the last ')'.
+    let Some(after_comm) = stat.rfind(')').map(|i| &stat[i + 1..]) else { return OwnerState::Unknown };
+    let mut fields = after_comm.split_whitespace();
+    let state = fields.next();
+    let Some(ticks) = fields.nth(18).and_then(|t| t.parse::<u64>().ok()) else { return OwnerState::Unknown };
+    match state {
+        Some("Z" | "X" | "x") => OwnerState::Exited,
+        Some(_) if ticks != start => OwnerState::Exited,
+        Some(_) => OwnerState::Running,
+        None => OwnerState::Unknown,
+    }
+}
+
+/// [`owner_state_in`] over the system's `/proc`.
+pub fn owner_state(pid: u32, start: u64) -> OwnerState {
+    owner_state_in(Path::new("/proc"), pid, start)
+}
+
 /// End the owner process of `run_id` and append `run.failed`. Only a running (or pause-requested)
 /// run can be stopped. The owner is signalled only when its recorded pid is a single real process
 /// and its recorded start time identifies it, so a reused pid is never hit. `signal(pid, force)`
@@ -18,7 +60,7 @@ const POLLS_PER_SIGNAL: u32 = 30;
 pub fn stop_run(
     store: &RunStore,
     run_id: &str,
-    alive: &dyn Fn(u32, Option<u64>) -> bool,
+    probe: &dyn Fn(u32, u64) -> OwnerState,
     signal: &dyn Fn(u32, bool) -> Result<(), String>,
     sleep: &dyn Fn(Duration),
 ) -> Result<(), String> {
@@ -45,12 +87,18 @@ pub fn stop_run(
             .get("start_ticks")
             .and_then(|t| t.as_u64())
             .ok_or_else(|| format!("cannot verify the owner of {run_id}; refusing to signal pid {pid}"))?;
-        if alive(pid, Some(start)) {
-            signal(pid, false)?;
-            if !exited(pid, start, alive, sleep) {
-                signal(pid, true)?;
-                if !exited(pid, start, alive, sleep) {
-                    return Err(format!("the owner of {run_id} (pid {pid}) is still running"));
+        match probe(pid, start) {
+            OwnerState::Exited => {}
+            OwnerState::Unknown => {
+                return Err(format!("cannot verify the owner of {run_id}; refusing to signal pid {pid}"));
+            }
+            OwnerState::Running => {
+                signal(pid, false)?;
+                if !exited(pid, start, probe, sleep) {
+                    signal(pid, true)?;
+                    if !exited(pid, start, probe, sleep) {
+                        return Err(format!("the owner of {run_id} (pid {pid}) is still running"));
+                    }
                 }
             }
         }
@@ -74,16 +122,16 @@ pub fn stop_run(
 fn exited(
     pid: u32,
     start: u64,
-    alive: &dyn Fn(u32, Option<u64>) -> bool,
+    probe: &dyn Fn(u32, u64) -> OwnerState,
     sleep: &dyn Fn(Duration),
 ) -> bool {
     for _ in 0..POLLS_PER_SIGNAL {
-        if !alive(pid, Some(start)) {
+        if probe(pid, start) == OwnerState::Exited {
             return true;
         }
         sleep(POLL_INTERVAL);
     }
-    !alive(pid, Some(start))
+    probe(pid, start) == OwnerState::Exited
 }
 
 /// Send SIGTERM (or SIGKILL when `force`) to the single process `pid`.
