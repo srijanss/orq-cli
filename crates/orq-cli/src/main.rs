@@ -384,10 +384,8 @@ fn run(args: &[OsString]) -> ExitCode {
             }
             Err(message) => return fail(message),
         }
-        if parsed.check {
-            println!("state: ready");
-            return ExitCode::SUCCESS;
-        }
+    }
+    if parsed.detach {
         let forwarded = without_detach_flag(args);
         return match pipeline::launch_detached(&forwarded) {
             Ok((run_id, log)) => {
@@ -425,6 +423,20 @@ fn run(args: &[OsString]) -> ExitCode {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
         },
     };
+    // Every refusal the run itself makes before it starts, and nothing started.
+    if parsed.check {
+        return match pipeline::check(&options) {
+            Ok(()) => {
+                println!("state: ready");
+                ExitCode::SUCCESS
+            }
+            Err(pipeline::StartError::Busy(active)) => {
+                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
+                ExitCode::from(EXIT_BUSY)
+            }
+            Err(pipeline::StartError::Other(message)) => fail(message),
+        };
+    }
     match pipeline::execute(&options) {
         Ok(report) => {
             println!("run: {}", report.run_id);

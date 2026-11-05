@@ -289,10 +289,19 @@ fn write_handoff_record(
     orq_orchestrator::write_handoff(store, record, &from.run_id, plan, diff).map(|_| ()).map_err(|e| format!("{e:?}"))
 }
 
-fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
-    let repo = &options.project.root;
-    let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
+/// What a run learns from the checks it makes before it fetches, records or names anything.
+struct Preflight {
+    settings: orq_orchestrator::RunSettings,
+    resumed: Option<orq_orchestrator::ResumePlan>,
+    naming: Option<orq_core::naming::RunNaming>,
+    provider: orq_git::Provider,
+    repository: String,
+}
 
+/// The refusals a run makes before it starts anything: shared by the run itself and by
+/// `orq run --check`, so a check that says ready is one the run would not refuse here.
+fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, StartError> {
+    let repo = &options.project.root;
     if options.resume && options.publish {
         return Err(other("--resume and --publish cannot be combined"));
     }
@@ -300,18 +309,14 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // Read from the user's checkout, never from the agent's worktree.
     let settings = orq_orchestrator::load_run_settings(&options.project.root, &|name| std::env::var(name).ok())
         .map_err(|e| other(format!("run settings: {e}")))?;
-    let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
-    let published = if options.publish { Some(published_branch(repo, options.target, &base_sha).map_err(other)?) } else { None };
-    let store = RunStore::new(&root);
-    let project_id = project_id(options.project);
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-        Some(orq_orchestrator::plan_group_resume(&store, repo, &project_id, &members).map_err(other)?)
+        Some(orq_orchestrator::plan_group_resume(store, repo, &project_id(options.project), &members).map_err(other)?)
     } else {
         None
     };
     // A resumed or published run names nothing new, so it must not need a free name either.
-    let naming = if published.is_some() || resumed.is_some() {
+    let naming = if options.publish || resumed.is_some() {
         None
     } else {
         Some(
@@ -336,6 +341,23 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // Pinned now: the session's worktree can repoint the remote later, and provider calls must
     // still only reach the host the user chose.
     let repository = orq_orchestrator::resolve_repository_url(repo, options.remote).map_err(|e| other(format!("{e:?}")))?;
+    Ok(Preflight { settings, resumed, naming, provider, repository })
+}
+
+/// Every refusal [`execute`] makes before it fetches or records anything, with nothing started.
+pub fn check(options: &Options<'_>) -> Result<(), StartError> {
+    let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
+    preflight(options, &RunStore::new(&root)).map(|_| ())
+}
+
+fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
+    let repo = &options.project.root;
+    let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
+    let store = RunStore::new(&root);
+    let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store)?;
+    let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
+    let published = if options.publish { Some(published_branch(repo, options.target, &base_sha).map_err(other)?) } else { None };
+    let project_id = project_id(options.project);
 
     let run_id = options.run_id.map_or_else(new_run_id, str::to_string);
     let record = RunRecord {
