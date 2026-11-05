@@ -16,7 +16,12 @@ pub fn wants_notification(on: Option<&str>, ending: &str) -> bool {
 }
 
 /// One redacted line saying how the run for `feature` ended, with the review's address if any.
-pub fn notification_message(feature: &str, ending: &str, detail: Option<&str>, url: Option<&str>) -> String {
+pub fn notification_message(
+    feature: &str,
+    ending: &str,
+    detail: Option<&str>,
+    url: Option<&str>,
+) -> String {
     let mut text = format!("orq: {feature} {ending}");
     match (detail.filter(|d| !d.trim().is_empty()), url) {
         (Some(detail), Some(url)) => text.push_str(&format!(": {detail} ({url})")),
@@ -24,19 +29,35 @@ pub fn notification_message(feature: &str, ending: &str, detail: Option<&str>, u
         (None, Some(url)) => text.push_str(&format!(": {url}")),
         (None, None) => {}
     }
-    let flat: String = orq_core::redact::redact(&text).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat: String = orq_core::redact::redact(&text)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     flat.chars().take(MAX_MESSAGE_CHARS).collect()
 }
 
 /// Start the notifier `argv` in `cwd` with `message` in `NOTIFY_MESSAGE` and wait up to `timeout`.
-pub fn send_notification(argv: &[String], cwd: &Path, message: &str, timeout: Duration) -> Result<(), String> {
+pub fn send_notification(
+    argv: &[String],
+    cwd: &Path,
+    message: &str,
+    timeout: Duration,
+) -> Result<(), String> {
     send_notification_with(argv, cwd, message, timeout, &[])
 }
 
 /// Like `send_notification`, and the variables named in `keep` (a webhook address or token the
 /// notifier needs) are passed through as well; every other variable stays out of its reach.
-pub fn send_notification_with(argv: &[String], cwd: &Path, message: &str, timeout: Duration, keep: &[String]) -> Result<(), String> {
-    let (program, args) = argv.split_first().ok_or("the notification command is empty")?;
+pub fn send_notification_with(
+    argv: &[String],
+    cwd: &Path,
+    message: &str,
+    timeout: Duration,
+    keep: &[String],
+) -> Result<(), String> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or("the notification command is empty")?;
     let session = DraftSession {
         program: program.clone(),
         args: args.to_vec(),
@@ -63,8 +84,13 @@ const KEPT_VARIABLES: [&str; 12] = [
 ];
 
 fn notifier_env(message: &str, keep: &[String]) -> Vec<(String, String)> {
-    let names = KEPT_VARIABLES.iter().copied().chain(keep.iter().map(String::as_str));
-    let mut env: Vec<(String, String)> = names.filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v))).collect();
+    let names = KEPT_VARIABLES
+        .iter()
+        .copied()
+        .chain(keep.iter().map(String::as_str));
+    let mut env: Vec<(String, String)> = names
+        .filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v)))
+        .collect();
     env.push(("NOTIFY_MESSAGE".to_string(), message.to_string()));
     env
 }

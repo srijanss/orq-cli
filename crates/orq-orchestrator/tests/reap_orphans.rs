@@ -3,17 +3,30 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{plan_orphans, private_ref_name, reap_orphan_ref, record_run_completed, RunRecord, RunStore};
+use orq_orchestrator::{
+    plan_orphans, private_ref_name, reap_orphan_ref, record_run_completed, RunRecord, RunStore,
+};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -40,7 +53,8 @@ struct World {
 
 /// Runs: `kept` (worktree present), `gone` (finished, worktree removed), `busy` (still running, worktree removed).
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-orphans-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-orphans-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
@@ -63,7 +77,10 @@ fn world(tag: &str) -> World {
 }
 
 fn refs(repo: &Path) -> Vec<String> {
-    git(repo, &["for-each-ref", "--format=%(refname)", "refs/orq"]).lines().map(str::to_string).collect()
+    git(repo, &["for-each-ref", "--format=%(refname)", "refs/orq"])
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
@@ -102,7 +119,10 @@ fn only_a_private_rebase_ref_can_be_removed_as_an_orphan() {
     git(&w.repo, &["update-ref", "refs/orq/other/thing", "HEAD"]);
     assert!(reap_orphan_ref(&w.repo, "refs/orq/other/thing").is_err());
     assert!(reap_orphan_ref(&w.repo, "refs/heads/main").is_err());
-    assert_eq!(git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(), 40);
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(),
+        40
+    );
     assert_eq!(refs(&w.repo), ["refs/orq/other/thing"]);
 }
 
@@ -113,7 +133,10 @@ fn the_databases_of_a_finished_run_whose_worktree_is_gone_are_orphans() {
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
 
     // `kept` still has its worktree; `busy` may still be using its databases.
-    assert_eq!(plan.database_branches, [("run-gone".to_string(), "fix--gone".to_string())]);
+    assert_eq!(
+        plan.database_branches,
+        [("run-gone".to_string(), "fix--gone".to_string())]
+    );
 }
 
 #[test]
@@ -126,19 +149,30 @@ fn a_branch_a_present_worktree_still_uses_is_not_an_orphan_even_if_an_older_run_
 
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
 
-    assert!(plan.database_branches.is_empty(), "{:?}", plan.database_branches);
+    assert!(
+        plan.database_branches.is_empty(),
+        "{:?}",
+        plan.database_branches
+    );
 }
 
 #[test]
 fn a_symbolic_ref_in_the_private_namespace_is_removed_without_touching_what_it_points_at() {
     let w = world("symbolic");
-    git(&w.repo, &["symbolic-ref", "refs/orq/rebase/aa/end", "refs/heads/main"]);
+    git(
+        &w.repo,
+        &["symbolic-ref", "refs/orq/rebase/aa/end", "refs/heads/main"],
+    );
 
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
     assert_eq!(plan.refs, ["refs/orq/rebase/aa/end"]);
     reap_orphan_ref(&w.repo, "refs/orq/rebase/aa/end").unwrap();
 
-    assert_eq!(git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(), 40, "the branch it pointed at survives");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "--verify", "refs/heads/main"]).len(),
+        40,
+        "the branch it pointed at survives"
+    );
     assert!(refs(&w.repo).is_empty());
 }
 
@@ -156,7 +190,11 @@ fn uncertain_ownership_from_an_unreadable_record_keeps_its_ref_and_withholds_dat
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
 
     assert!(plan.refs.is_empty(), "{:?}", plan.refs);
-    assert!(plan.database_branches.is_empty(), "run-gone's branch may be the unreadable run's: {:?}", plan.database_branches);
+    assert!(
+        plan.database_branches.is_empty(),
+        "run-gone's branch may be the unreadable run's: {:?}",
+        plan.database_branches
+    );
 }
 
 #[test]
@@ -165,12 +203,19 @@ fn uncertain_ownership_from_unreadable_events_counts_as_in_use() {
     let events = run_dir(&w, "run-gone").join("events.jsonl");
     fs::remove_file(&events).unwrap();
     fs::create_dir(&events).unwrap();
-    git(&w.repo, &["update-ref", &private_ref_name("run-gone"), "HEAD"]);
+    git(
+        &w.repo,
+        &["update-ref", &private_ref_name("run-gone"), "HEAD"],
+    );
 
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
 
     assert!(plan.refs.is_empty(), "{:?}", plan.refs);
-    assert!(plan.database_branches.is_empty(), "{:?}", plan.database_branches);
+    assert!(
+        plan.database_branches.is_empty(),
+        "{:?}",
+        plan.database_branches
+    );
 }
 
 #[test]
@@ -182,10 +227,16 @@ fn uncertain_existence_of_a_worktree_counts_as_in_use() {
     let blocked = record("run-blocked", "fix--blocked", file.join("worktree"));
     w.store.create(&blocked).unwrap();
     record_run_completed(&w.store, &blocked, "review_ready", None).unwrap();
-    git(&w.repo, &["update-ref", &private_ref_name("run-blocked"), "HEAD"]);
+    git(
+        &w.repo,
+        &["update-ref", &private_ref_name("run-blocked"), "HEAD"],
+    );
 
     let plan = plan_orphans(&w.store, &w.repo, "repo-1").unwrap();
 
     assert!(plan.refs.is_empty(), "{:?}", plan.refs);
-    assert_eq!(plan.database_branches, [("run-gone".to_string(), "fix--gone".to_string())]);
+    assert_eq!(
+        plan.database_branches,
+        [("run-gone".to_string(), "fix--gone".to_string())]
+    );
 }

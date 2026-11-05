@@ -14,15 +14,25 @@ const WORKTREES_DIR: &str = ".claude/worktrees";
 /// Merges `env` into the `env` object of the worktree's `.claude/settings.local.json` and approves
 /// MCP servers in `enabledMcpjsonServers`: those of `servers` that `.mcp.json` declares, or every
 /// server it declares when `servers` is `None`. Other keys and earlier entries are kept.
-pub fn write_session_settings(worktree: &Path, env: &[(String, String)], servers: Option<&[String]>) -> Vec<String> {
+pub fn write_session_settings(
+    worktree: &Path,
+    env: &[(String, String)],
+    servers: Option<&[String]>,
+) -> Vec<String> {
     let mut notes = Vec::new();
     let declared = declared_servers(worktree, &mut notes);
     let approved: Vec<String> = match servers {
         Some(wanted) => {
             for name in wanted.iter().filter(|name| !declared.contains(name)) {
-                notes.push(format!("MCP server {name} is not declared in .mcp.json; it was not approved"));
+                notes.push(format!(
+                    "MCP server {name} is not declared in .mcp.json; it was not approved"
+                ));
             }
-            wanted.iter().filter(|name| declared.contains(name)).cloned().collect()
+            wanted
+                .iter()
+                .filter(|name| declared.contains(name))
+                .cloned()
+                .collect()
         }
         None => declared.clone(),
     };
@@ -43,12 +53,19 @@ fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<String> {
     let text = match std::fs::read_to_string(worktree.join(".mcp.json")) {
         Ok(text) => text,
         Err(_) => {
-            notes.push("there is no readable .mcp.json in the worktree; no MCP server was approved".to_string());
+            notes.push(
+                "there is no readable .mcp.json in the worktree; no MCP server was approved"
+                    .to_string(),
+            );
             return Vec::new();
         }
     };
     match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(json) => json.get("mcpServers").and_then(|v| v.as_object()).map(|servers| servers.keys().cloned().collect()).unwrap_or_default(),
+        Ok(json) => json
+            .get("mcpServers")
+            .and_then(|v| v.as_object())
+            .map(|servers| servers.keys().cloned().collect())
+            .unwrap_or_default(),
         Err(_) => {
             notes.push(".mcp.json is not valid JSON; no MCP server was approved".to_string());
             Vec::new()
@@ -56,42 +73,62 @@ fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<String> {
     }
 }
 
-fn merge_settings(worktree: &Path, env: &[(String, String)], approved: &[String]) -> Result<(), String> {
+fn merge_settings(
+    worktree: &Path,
+    env: &[(String, String)],
+    approved: &[String],
+) -> Result<(), String> {
     let path = worktree.join(SETTINGS);
-    if crosses_symlink(worktree, SETTINGS) || std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+    if crosses_symlink(worktree, SETTINGS)
+        || std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink())
+    {
         return Err("it is, or lies behind, a symbolic link".to_string());
     }
     // The file holds the run's environment: git must not offer it for staging.
     exclude_locally(worktree, SETTINGS)?;
     let mut settings = match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<serde_json::Value>(&text).map_err(|_| "it is not valid JSON".to_string())?,
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|_| "it is not valid JSON".to_string())?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(err) => return Err(format!("it could not be read ({:?})", err.kind())),
     };
     let root = settings.as_object_mut().ok_or("it is not a JSON object")?;
     if !env.is_empty() {
         let table = root.entry("env").or_insert_with(|| serde_json::json!({}));
-        let table = table.as_object_mut().ok_or("its env is not a JSON object")?;
+        let table = table
+            .as_object_mut()
+            .ok_or("its env is not a JSON object")?;
         for (key, value) in env {
             table.insert(key.clone(), serde_json::Value::String(value.clone()));
         }
     }
     if !approved.is_empty() {
-        let list = root.entry("enabledMcpjsonServers").or_insert_with(|| serde_json::json!([]));
-        let list = list.as_array_mut().ok_or("its enabledMcpjsonServers is not a JSON array")?;
+        let list = root
+            .entry("enabledMcpjsonServers")
+            .or_insert_with(|| serde_json::json!([]));
+        let list = list
+            .as_array_mut()
+            .ok_or("its enabledMcpjsonServers is not a JSON array")?;
         for name in approved {
             if !list.iter().any(|item| item.as_str() == Some(name)) {
                 list.push(serde_json::Value::String(name.clone()));
             }
         }
     }
-    std::fs::create_dir_all(worktree.join(".claude")).map_err(|err| format!("its directory could not be created ({:?})", err.kind()))?;
-    let text = serde_json::to_string_pretty(&settings).map_err(|_| "it could not be serialised".to_string())?;
+    std::fs::create_dir_all(worktree.join(".claude"))
+        .map_err(|err| format!("its directory could not be created ({:?})", err.kind()))?;
+    let text = serde_json::to_string_pretty(&settings)
+        .map_err(|_| "it could not be serialised".to_string())?;
     // The file may hold credentials: owner-only, whether it is new or already existed.
     let write = || -> std::io::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.write_all((text + "\n").as_bytes())
     };
@@ -100,12 +137,19 @@ fn merge_settings(worktree: &Path, env: &[(String, String)], approved: &[String]
 
 /// Runs `mcpctl setup --mcp <name>` in `worktree` for each of `servers`, with `env` added to the
 /// environment. `mcpctl` is the program, `None` when it is not installed.
-pub fn setup_mcp_servers(worktree: &Path, servers: &[String], env: &[(String, String)], mcpctl: Option<&Path>) -> Vec<String> {
+pub fn setup_mcp_servers(
+    worktree: &Path,
+    servers: &[String],
+    env: &[(String, String)],
+    mcpctl: Option<&Path>,
+) -> Vec<String> {
     if servers.is_empty() {
         return Vec::new();
     }
     let Some(program) = mcpctl else {
-        return vec!["mcpctl is not on PATH; the configured MCP servers were not set up".to_string()];
+        return vec![
+            "mcpctl is not on PATH; the configured MCP servers were not set up".to_string(),
+        ];
     };
     let mut notes = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -120,8 +164,13 @@ pub fn setup_mcp_servers(worktree: &Path, servers: &[String], env: &[(String, St
             .status();
         match done {
             Ok(status) if status.success() => {}
-            Ok(status) => notes.push(format!("mcpctl setup for MCP server {name} failed ({status})")),
-            Err(err) => notes.push(format!("mcpctl setup for MCP server {name} could not be started ({:?})", err.kind())),
+            Ok(status) => notes.push(format!(
+                "mcpctl setup for MCP server {name} failed ({status})"
+            )),
+            Err(err) => notes.push(format!(
+                "mcpctl setup for MCP server {name} could not be started ({:?})",
+                err.kind()
+            )),
         }
     }
     notes
@@ -130,5 +179,7 @@ pub fn setup_mcp_servers(worktree: &Path, servers: &[String], env: &[(String, St
 /// Keeps the directory run worktrees live in out of the main checkout's git status, through the local
 /// exclude only. `None` when done (or already ignored); otherwise the note.
 pub fn exclude_worktrees_dir(main_checkout: &Path) -> Option<String> {
-    exclude_locally(main_checkout, WORKTREES_DIR).err().map(|why| format!("{WORKTREES_DIR} could not be kept out of git status: {why}"))
+    exclude_locally(main_checkout, WORKTREES_DIR)
+        .err()
+        .map(|why| format!("{WORKTREES_DIR} could not be kept out of git status: {why}"))
 }

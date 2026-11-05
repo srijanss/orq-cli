@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{run_implement_stage, ImplementSession, RoleProfile, RunRecord, RunStore, StoreError};
+use orq_orchestrator::{
+    run_implement_stage, ImplementSession, RoleProfile, RunRecord, RunStore, StoreError,
+};
 
 fn root(tag: &str) -> PathBuf {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-implement-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-implement-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -15,7 +18,11 @@ fn record(run_id: &str) -> RunRecord {
     let mut profiles = BTreeMap::new();
     profiles.insert(
         "implementer".to_string(),
-        RoleProfile { harness: "claude".to_string(), model: "opus".to_string(), thinking: None },
+        RoleProfile {
+            harness: "claude".to_string(),
+            model: "opus".to_string(),
+            thinking: None,
+        },
     );
     RunRecord {
         run_id: run_id.to_string(),
@@ -48,10 +55,18 @@ fn setup(tag: &str) -> Setup {
     store.create(&record("run-1")).unwrap();
     let cwd = root.join("worktree");
     fs::create_dir_all(&cwd).unwrap();
-    Setup { store, cwd, log: root.join("implement.log") }
+    Setup {
+        store,
+        cwd,
+        log: root.join("implement.log"),
+    }
 }
 
-fn session<'a>(s: &'a Setup, args: &'a [String], env: &'a [(String, String)]) -> ImplementSession<'a> {
+fn session<'a>(
+    s: &'a Setup,
+    args: &'a [String],
+    env: &'a [(String, String)],
+) -> ImplementSession<'a> {
     ImplementSession {
         program: "sh",
         args,
@@ -60,12 +75,17 @@ fn session<'a>(s: &'a Setup, args: &'a [String], env: &'a [(String, String)]) ->
         session_id: Some("sess-42"),
         log: &s.log,
         terminal: false,
-            exit_marker: None,
+        exit_marker: None,
     }
 }
 
 fn kinds(store: &RunStore) -> Vec<String> {
-    store.events("run-1").unwrap().into_iter().map(|e| e.kind).collect()
+    store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect()
 }
 
 #[test]
@@ -78,11 +98,21 @@ fn a_finished_session_records_start_and_completion_with_its_session_log_and_exit
     assert!(outcome.success);
     assert_eq!(outcome.exit_code, Some(0));
     let events = s.store.events("run-1").unwrap();
-    assert_eq!(events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["stage.started", "stage.completed"]);
+    assert_eq!(
+        events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        ["stage.started", "stage.completed"]
+    );
     for event in &events {
         assert_eq!(event.stage.as_deref(), Some("implement_and_review"));
         assert_eq!(event.attempt, 1);
-        assert_eq!((event.run_id.as_str(), event.project_id.as_str(), event.feature_id.as_str()), ("run-1", "repo-1", "COM-02"));
+        assert_eq!(
+            (
+                event.run_id.as_str(),
+                event.project_id.as_str(),
+                event.feature_id.as_str()
+            ),
+            ("run-1", "repo-1", "COM-02")
+        );
         assert_eq!(event.payload["session_id"], "sess-42");
         assert_eq!(event.payload["log"], s.log.to_str().unwrap());
     }
@@ -91,8 +121,14 @@ fn a_finished_session_records_start_and_completion_with_its_session_log_and_exit
 
     // Run in the worktree, with both streams captured in the log.
     let log = fs::read_to_string(&s.log).unwrap();
-    assert!(log.contains(fs::canonicalize(&s.cwd).unwrap().to_str().unwrap()), "{log}");
-    assert!(log.contains("out-ok\n") && log.contains("err-ok\n"), "{log}");
+    assert!(
+        log.contains(fs::canonicalize(&s.cwd).unwrap().to_str().unwrap()),
+        "{log}"
+    );
+    assert!(
+        log.contains("out-ok\n") && log.contains("err-ok\n"),
+        "{log}"
+    );
 }
 
 #[cfg(unix)]
@@ -119,7 +155,10 @@ fn an_existing_open_log_is_tightened_and_keeps_its_contents() {
 
     run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
 
-    assert_eq!(fs::metadata(&s.log).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(&s.log).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     assert_eq!(fs::read_to_string(&s.log).unwrap(), "earlier\nlater\n");
 }
 
@@ -151,7 +190,14 @@ fn a_session_killed_by_a_signal_is_failed_without_an_exit_code_and_says_so() {
     assert_eq!(kinds(&s.store), ["stage.started", "stage.failed"]);
     let failed = &s.store.events("run-1").unwrap()[1];
     assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
-    assert!(failed.payload["reason"].as_str().unwrap().contains("signal"), "{}", failed.payload);
+    assert!(
+        failed.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("signal"),
+        "{}",
+        failed.payload
+    );
 }
 
 #[test]
@@ -168,7 +214,10 @@ fn a_program_that_cannot_start_is_a_failed_stage_without_an_exit_code() {
     assert_eq!(kinds(&s.store), ["stage.started", "stage.failed"]);
     let failed = &s.store.events("run-1").unwrap()[1];
     assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
-    assert!(failed.payload["reason"].as_str().unwrap().contains("orq-no-such-harness"));
+    assert!(failed.payload["reason"]
+        .as_str()
+        .unwrap()
+        .contains("orq-no-such-harness"));
 }
 
 #[test]
@@ -176,7 +225,10 @@ fn the_session_sees_only_the_required_environment_plus_what_it_is_given() {
     let s = setup("env");
     // Cargo sets this for the test process; it must not reach the session.
     assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
-    let args = argv(&["-c", r#"echo "manifest=[$CARGO_MANIFEST_DIR]"; echo "given=[$ORQ_GIVEN]"; echo "path=[${PATH:+set}]""#]);
+    let args = argv(&[
+        "-c",
+        r#"echo "manifest=[$CARGO_MANIFEST_DIR]"; echo "given=[$ORQ_GIVEN]"; echo "path=[${PATH:+set}]""#,
+    ]);
     let given = [("ORQ_GIVEN".to_string(), "yes".to_string())];
 
     run_implement_stage(&s.store, "run-1", &session(&s, &args, &given)).unwrap();

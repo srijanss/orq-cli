@@ -21,8 +21,13 @@ pub enum GateOutcome {
     Passed,
     /// `step` is the zero-based index; `exit_code` is `None` when the step
     /// could not be started or was killed by a signal.
-    Failed { step: usize, exit_code: Option<i32> },
-    Skipped { reason: String },
+    Failed {
+        step: usize,
+        exit_code: Option<i32>,
+    },
+    Skipped {
+        reason: String,
+    },
 }
 
 pub fn run_gate_stage(
@@ -64,7 +69,13 @@ pub(crate) fn run_gate_attempt(
         Gate::Steps { .. } => None,
     };
     if let Some(reason) = skip_reason {
-        record_event(store, &record, "stage.skipped", attempt, serde_json::json!({ "reason": reason }))?;
+        record_event(
+            store,
+            &record,
+            "stage.skipped",
+            attempt,
+            serde_json::json!({ "reason": reason }),
+        )?;
         return Ok(GateOutcome::Skipped { reason });
     }
     let Gate::Steps { steps, .. } = gate else {
@@ -73,13 +84,23 @@ pub(crate) fn run_gate_attempt(
 
     let mut log = open_log(log_path)?;
     let log_name = log_path.to_string_lossy().into_owned();
-    record_event(store, &record, "stage.started", attempt, serde_json::json!({ "log": log_name, "steps": steps.len() }))?;
+    record_event(
+        store,
+        &record,
+        "stage.started",
+        attempt,
+        serde_json::json!({ "log": log_name, "steps": steps.len() }),
+    )?;
 
     for (index, argv) in steps.iter().enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
         let (exit_code, failure) = run_step(&record, argv, &log, env)?;
         if let Some(failure) = failure {
-            let reason = format!("gate step {} ({}) {failure}", index + 1, argv.first().map_or("", String::as_str));
+            let reason = format!(
+                "gate step {} ({}) {failure}",
+                index + 1,
+                argv.first().map_or("", String::as_str)
+            );
             record_event(
                 store,
                 &record,
@@ -87,10 +108,19 @@ pub(crate) fn run_gate_attempt(
                 attempt,
                 serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name }),
             )?;
-            return Ok(GateOutcome::Failed { step: index, exit_code });
+            return Ok(GateOutcome::Failed {
+                step: index,
+                exit_code,
+            });
         }
     }
-    record_event(store, &record, "stage.completed", attempt, serde_json::json!({ "exit_code": 0, "log": log_name }))?;
+    record_event(
+        store,
+        &record,
+        "stage.completed",
+        attempt,
+        serde_json::json!({ "exit_code": 0, "log": log_name }),
+    )?;
     Ok(GateOutcome::Passed)
 }
 
@@ -112,7 +142,10 @@ fn run_step(
         }
     }
     command.envs(env.iter().map(|(name, value)| (name, value)));
-    command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log.try_clone()?);
+    command
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log.try_clone()?);
     Ok(match command.status() {
         Ok(status) if status.success() => (status.code(), None),
         Ok(status) => match status.code() {

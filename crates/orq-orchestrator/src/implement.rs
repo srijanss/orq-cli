@@ -79,7 +79,10 @@ pub(crate) fn run_session_stage(
     store.append_event(&event("stage.started", serde_json::json!({})))?;
 
     let mut command = Command::new(session.program);
-    command.args(session.args).current_dir(session.cwd).env_clear();
+    command
+        .args(session.args)
+        .current_dir(session.cwd)
+        .env_clear();
     for name in REQUIRED_ENV {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -87,9 +90,15 @@ pub(crate) fn run_session_stage(
     }
     command.envs(session.env.iter().map(|(name, value)| (name, value)));
     if session.terminal {
-        command.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
     } else {
-        command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        command
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
     }
 
     // A marker left by an earlier session must not close this one; if it cannot be cleared the stage fails.
@@ -122,25 +131,54 @@ pub(crate) fn run_session_stage(
             }
         }
     }
-    let status = cleared.and_then(|()| command.spawn()).and_then(|child| wait_for_session(child, session.exit_marker, own_group));
+    let status = cleared
+        .and_then(|()| command.spawn())
+        .and_then(|child| wait_for_session(child, session.exit_marker, own_group));
     let (outcome, reason) = match status {
-        Ok(SessionEnd::Closed) => (ImplementOutcome { success: true, exit_code: Some(0) }, None),
-        Ok(SessionEnd::Exited(status)) if status.success() => (ImplementOutcome { success: true, exit_code: status.code() }, None),
+        Ok(SessionEnd::Closed) => (
+            ImplementOutcome {
+                success: true,
+                exit_code: Some(0),
+            },
+            None,
+        ),
+        Ok(SessionEnd::Exited(status)) if status.success() => (
+            ImplementOutcome {
+                success: true,
+                exit_code: status.code(),
+            },
+            None,
+        ),
         Ok(SessionEnd::Exited(status)) => {
             let reason = match status.code() {
                 Some(code) => format!("{} exited with status {code}", session.program),
                 None => format!("{} was stopped by a signal", session.program),
             };
-            (ImplementOutcome { success: false, exit_code: status.code() }, Some(reason))
+            (
+                ImplementOutcome {
+                    success: false,
+                    exit_code: status.code(),
+                },
+                Some(reason),
+            )
         }
         Err(err) => (
-            ImplementOutcome { success: false, exit_code: None },
+            ImplementOutcome {
+                success: false,
+                exit_code: None,
+            },
             Some(format!("could not start {}: {err}", session.program)),
         ),
     };
     let closing = match reason {
-        None => event("stage.completed", serde_json::json!({ "exit_code": outcome.exit_code })),
-        Some(reason) => event("stage.failed", serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason })),
+        None => event(
+            "stage.completed",
+            serde_json::json!({ "exit_code": outcome.exit_code }),
+        ),
+        Some(reason) => event(
+            "stage.failed",
+            serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason }),
+        ),
     };
     store.append_event(&closing)?;
     Ok(outcome)
@@ -156,8 +194,14 @@ enum SessionEnd {
 const MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Waits for `child`; with a marker, closes it once the marker exists and a short grace has passed.
-fn wait_for_session(mut child: std::process::Child, marker: Option<&Path>, own_group: bool) -> std::io::Result<SessionEnd> {
-    let Some(marker) = marker else { return child.wait().map(SessionEnd::Exited) };
+fn wait_for_session(
+    mut child: std::process::Child,
+    marker: Option<&Path>,
+    own_group: bool,
+) -> std::io::Result<SessionEnd> {
+    let Some(marker) = marker else {
+        return child.wait().map(SessionEnd::Exited);
+    };
     let mut seen: Option<std::time::Instant> = None;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -216,14 +260,20 @@ pub(crate) fn open_log(path: &Path) -> std::io::Result<fs::File> {
 /// `open_log`, running `between` after the path is inspected and before it is
 /// opened, so a test can swap the path at exactly that point.
 fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::File> {
-    let refuse = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is {what}", path.display()));
+    let refuse = |what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is {what}", path.display()),
+        )
+    };
     let mut open = fs::OpenOptions::new();
     open.append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         // No symlink is followed, and a FIFO swapped in cannot block the open.
-        open.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        open.mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     match fs::symlink_metadata(path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -251,19 +301,28 @@ fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::Fil
         }
         // Without no-follow opening and handle identity checks an existing file cannot be trusted.
         #[cfg(not(unix))]
-        Ok(_) => Err(refuse("an existing file, which cannot be opened safely on this platform")),
+        Ok(_) => Err(refuse(
+            "an existing file, which cannot be opened safely on this platform",
+        )),
     }
 }
 
 pub(crate) fn next_event_id(run_id: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    format!("{run_id}-{nanos}-{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!(
+        "{run_id}-{nanos}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// The current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
 pub(crate) fn now_rfc3339() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Civil date from days since 1970-01-01 (Hinnant's algorithm).
     let z = days + 719_468;
@@ -275,7 +334,12 @@ pub(crate) fn now_rfc3339() -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3_600, rem % 3_600 / 60, rem % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -297,12 +361,18 @@ mod tests {
         std::thread::spawn(move || {
             let swap = || {
                 fs::remove_file(&path).unwrap();
-                assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+                assert!(Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success());
             };
             let _ = sender.send(open_log_with(&path, swap).is_err());
         });
 
-        let refused = receiver.recv_timeout(Duration::from_secs(5)).expect("open_log blocked on the FIFO");
+        let refused = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("open_log blocked on the FIFO");
 
         assert!(refused);
     }

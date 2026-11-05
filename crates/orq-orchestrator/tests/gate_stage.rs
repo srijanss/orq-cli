@@ -12,7 +12,8 @@ struct World {
 }
 
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-gate-stage-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-gate-stage-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
@@ -33,7 +34,12 @@ fn world(tag: &str) -> World {
         })
         .unwrap();
     let log = root.join("gate.log");
-    World { store, root, worktree, log }
+    World {
+        store,
+        root,
+        worktree,
+        log,
+    }
 }
 
 fn sh(script: &str) -> Vec<String> {
@@ -41,11 +47,19 @@ fn sh(script: &str) -> Vec<String> {
 }
 
 fn steps(list: Vec<Vec<String>>) -> Gate {
-    Gate::Steps { steps: list, notes: Vec::new() }
+    Gate::Steps {
+        steps: list,
+        notes: Vec::new(),
+    }
 }
 
 fn kinds(w: &World) -> Vec<(String, Option<String>)> {
-    w.store.events("run-1").unwrap().into_iter().map(|e| (e.kind, e.stage)).collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.kind, e.stage))
+        .collect()
 }
 
 fn verify(kind: &str) -> (String, Option<String>) {
@@ -57,7 +71,10 @@ fn a_passing_gate_runs_every_step_in_the_worktree_and_logs_their_output() {
     let w = world("pass");
     // The output words are spelled so they never appear in the argv echoed to the log.
     let second_ran = w.root.join("second-ran");
-    let gate = steps(vec![sh("echo fir\"\"st; pwd"), sh(&format!("echo sec\"\"ond; touch {}", second_ran.display()))]);
+    let gate = steps(vec![
+        sh("echo fir\"\"st; pwd"),
+        sh(&format!("echo sec\"\"ond; touch {}", second_ran.display())),
+    ]);
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
@@ -66,8 +83,14 @@ fn a_passing_gate_runs_every_step_in_the_worktree_and_logs_their_output() {
     let log = fs::read_to_string(&w.log).unwrap();
     assert!(log.contains("first") && log.contains("second"), "{log}");
     let worktree = fs::canonicalize(&w.worktree).unwrap();
-    assert!(log.contains(worktree.to_str().unwrap()), "steps run in the worktree: {log}");
-    assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.completed")]);
+    assert!(
+        log.contains(worktree.to_str().unwrap()),
+        "steps run in the worktree: {log}"
+    );
+    assert_eq!(
+        kinds(&w),
+        [verify("stage.started"), verify("stage.completed")]
+    );
     let done = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(done.payload["exit_code"], 0);
     assert_eq!(done.payload["log"], w.log.to_str().unwrap());
@@ -77,11 +100,21 @@ fn a_passing_gate_runs_every_step_in_the_worktree_and_logs_their_output() {
 fn a_failing_step_stops_the_gate_and_records_its_exit_code() {
     let w = world("fail");
     let marker = w.root.join("third-ran");
-    let gate = steps(vec![sh("echo ok"), sh("echo bro\"\"ken >&2; exit 3"), sh(&format!("touch {}", marker.display()))]);
+    let gate = steps(vec![
+        sh("echo ok"),
+        sh("echo bro\"\"ken >&2; exit 3"),
+        sh(&format!("touch {}", marker.display())),
+    ]);
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
-    assert_eq!(outcome, GateOutcome::Failed { step: 1, exit_code: Some(3) });
+    assert_eq!(
+        outcome,
+        GateOutcome::Failed {
+            step: 1,
+            exit_code: Some(3)
+        }
+    );
     assert!(!marker.exists(), "later steps do not run");
     let log = fs::read_to_string(&w.log).unwrap();
     assert!(log.contains("\nbroken\n"), "stderr is logged: {log}");
@@ -89,7 +122,14 @@ fn a_failing_step_stops_the_gate_and_records_its_exit_code() {
     assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.failed")]);
     let failed = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(failed.payload["exit_code"], 3);
-    assert!(failed.payload["reason"].as_str().unwrap().contains("step 2"), "{}", failed.payload);
+    assert!(
+        failed.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("step 2"),
+        "{}",
+        failed.payload
+    );
 }
 
 #[test]
@@ -99,18 +139,31 @@ fn a_step_that_cannot_start_fails_the_gate_without_an_exit_code() {
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
-    assert_eq!(outcome, GateOutcome::Failed { step: 0, exit_code: None });
+    assert_eq!(
+        outcome,
+        GateOutcome::Failed {
+            step: 0,
+            exit_code: None
+        }
+    );
     assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.failed")]);
 }
 
 #[test]
 fn a_skipped_gate_records_why_and_runs_nothing() {
     let w = world("skipped");
-    let gate = Gate::Skipped { reason: "no local gate detected".to_string() };
+    let gate = Gate::Skipped {
+        reason: "no local gate detected".to_string(),
+    };
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
-    assert_eq!(outcome, GateOutcome::Skipped { reason: "no local gate detected".to_string() });
+    assert_eq!(
+        outcome,
+        GateOutcome::Skipped {
+            reason: "no local gate detected".to_string()
+        }
+    );
     assert_eq!(kinds(&w), [verify("stage.skipped")]);
     let event = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(event.payload["reason"], "no local gate detected");
@@ -125,7 +178,9 @@ fn a_disabled_gate_is_skipped_and_its_steps_never_run() {
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, false, &w.log).unwrap();
 
-    let GateOutcome::Skipped { reason } = outcome else { panic!("expected skipped, got {outcome:?}") };
+    let GateOutcome::Skipped { reason } = outcome else {
+        panic!("expected skipped, got {outcome:?}")
+    };
     assert!(reason.contains("disabled"), "{reason}");
     assert!(!marker.exists());
     assert_eq!(kinds(&w), [verify("stage.skipped")]);
@@ -141,7 +196,10 @@ fn the_gate_log_is_owner_only() {
 
     run_gate_stage(&w.store, "run-1", &steps(vec![sh("echo x")]), true, &w.log).unwrap();
 
-    assert_eq!(fs::metadata(&w.log).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(&w.log).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[cfg(unix)]
@@ -153,7 +211,13 @@ fn a_log_path_that_is_a_symlink_is_refused_and_its_target_untouched() {
     std::os::unix::fs::symlink(&target, &w.log).unwrap();
     let marker = w.root.join("ran");
 
-    let result = run_gate_stage(&w.store, "run-1", &steps(vec![sh(&format!("touch {}", marker.display()))]), true, &w.log);
+    let result = run_gate_stage(
+        &w.store,
+        "run-1",
+        &steps(vec![sh(&format!("touch {}", marker.display()))]),
+        true,
+        &w.log,
+    );
 
     assert!(result.is_err());
     assert_eq!(fs::read_to_string(&target).unwrap(), "precious\n");

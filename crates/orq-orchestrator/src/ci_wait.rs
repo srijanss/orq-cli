@@ -19,7 +19,8 @@ const PAGE: usize = 100;
 /// listing well inside the output cap of one provider call.
 const GITLAB_PAGE: usize = 30;
 /// Keeps only what the verdict reads; a full page of raw check runs would not fit the output cap.
-const CHECK_RUN_FIELDS: &str = "{total_count, check_runs: [.check_runs[] | {name, status, conclusion}]}";
+const CHECK_RUN_FIELDS: &str =
+    "{total_count, check_runs: [.check_runs[] | {name, status, conclusion}]}";
 /// The `--jq` projection of the commit-status answer: only what the verdict reads,
 /// so a long status list still fits the output cap.
 const STATUS_FIELDS: &str = "{state, total_count, statuses: [.statuses[] | {state, context}]}";
@@ -81,21 +82,36 @@ pub fn wait_for_ci(
 ) -> Result<CiOutcome, StoreError> {
     let record = store.load(run_id)?;
     if !config.enabled {
-        record_event(store, &record, "stage.skipped", serde_json::json!({ "reason": "disabled" }))?;
+        record_event(
+            store,
+            &record,
+            "stage.skipped",
+            serde_json::json!({ "reason": "disabled" }),
+        )?;
         return Ok(CiOutcome::Skipped);
     }
     let kind = match record.provider.as_str() {
         "github" => Kind::GitHub,
         "gitlab" => Kind::GitLab,
-        other => return Err(StoreError::Corrupt(format!("the provider {other} has no CI to wait for"))),
+        other => {
+            return Err(StoreError::Corrupt(format!(
+                "the provider {other} has no CI to wait for"
+            )))
+        }
     };
     let repo = repository_url(&record)?;
     let Some(calls) = poll_calls(kind, &repo, head_sha) else {
         let reason = "the repository or commit cannot be addressed safely".to_string();
-        let payload = serde_json::json!({ "result": "errored", "reason": reason, "head_sha": head_sha });
+        let payload =
+            serde_json::json!({ "result": "errored", "reason": reason, "head_sha": head_sha });
         return fail(store, &record, payload, CiOutcome::Errored { reason });
     };
-    record_event(store, &record, "stage.started", serde_json::json!({ "provider": record.provider, "head_sha": head_sha }))?;
+    record_event(
+        store,
+        &record,
+        "stage.started",
+        serde_json::json!({ "provider": record.provider, "head_sha": head_sha }),
+    )?;
 
     let sessions: Vec<DraftSession> = calls
         .into_iter()
@@ -118,7 +134,12 @@ pub fn wait_for_ci(
         let verdict = poll_once(&sessions, kind, head_sha, config, deadline);
         match verdict {
             Verdict::Passed => {
-                record_event(store, &record, "stage.completed", serde_json::json!({ "result": "passed", "head_sha": head_sha }))?;
+                record_event(
+                    store,
+                    &record,
+                    "stage.completed",
+                    serde_json::json!({ "result": "passed", "head_sha": head_sha }),
+                )?;
                 return Ok(CiOutcome::Passed);
             }
             Verdict::Failed(failing) => {
@@ -134,13 +155,24 @@ pub fn wait_for_ci(
             }
             Verdict::Pending | Verdict::Empty => failures = 0,
         }
-        std::thread::sleep(config.poll_interval.max(MIN_POLL_INTERVAL).min(deadline.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            config
+                .poll_interval
+                .max(MIN_POLL_INTERVAL)
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
 /// One poll: every call is made in turn and the answers are combined. A red or unreadable
 /// answer ends the poll early, since nothing the later calls say could change it.
-fn poll_once(sessions: &[DraftSession], kind: Kind, head_sha: &str, config: &CiWaitConfig, deadline: Instant) -> Verdict {
+fn poll_once(
+    sessions: &[DraftSession],
+    kind: Kind,
+    head_sha: &str,
+    config: &CiWaitConfig,
+    deadline: Instant,
+) -> Verdict {
     let mut verdicts = Vec::new();
     for (index, session) in sessions.iter().enumerate() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -169,35 +201,69 @@ fn poll_once(sessions: &[DraftSession], kind: Kind, head_sha: &str, config: &CiW
 /// The read-only API calls that list the checks of one commit. Everything that ends up in the
 /// request path is checked first, since it comes from a remote url and a recorded sha.
 fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>> {
-    let sha_ok = (40..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| c.is_ascii_hexdigit());
+    let sha_ok =
+        (40..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| c.is_ascii_hexdigit());
     let (_, rest) = repo.split_once("://")?;
     let (host, path) = rest.split_once('/')?;
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    let safe = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'));
-    if !sha_ok || !safe(host) || !safe(path) || path.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+    let safe = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'))
+    };
+    if !sha_ok
+        || !safe(host)
+        || !safe(path)
+        || path
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+    {
         return None;
     }
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match kind {
         Kind::GitHub => vec![
-            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}"), "--jq", CHECK_RUN_FIELDS]),
+            strings(&[
+                "api",
+                "--hostname",
+                host,
+                &format!("repos/{path}/commits/{head_sha}/check-runs?per_page={PAGE}"),
+                "--jq",
+                CHECK_RUN_FIELDS,
+            ]),
             // Older integrations report through commit statuses, which check runs do not include.
-            strings(&["api", "--hostname", host, &format!("repos/{path}/commits/{head_sha}/status"), "--jq", STATUS_FIELDS]),
+            strings(&[
+                "api",
+                "--hostname",
+                host,
+                &format!("repos/{path}/commits/{head_sha}/status"),
+                "--jq",
+                STATUS_FIELDS,
+            ]),
         ],
         Kind::GitLab => {
             let project = path.replace('/', "%2F");
-            vec![strings(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}")])]
+            vec![strings(&[
+                "api",
+                "--hostname",
+                host,
+                &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}"),
+            ])]
         }
     })
 }
 
 fn github_verdict(text: &str) -> Verdict {
-    let unusable = |why: &str| Verdict::Unusable(format!("the check-run listing is unusable: {why}"));
+    let unusable =
+        |why: &str| Verdict::Unusable(format!("the check-run listing is unusable: {why}"));
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
         return unusable("not json");
     };
-    let (Some(total), Some(runs)) = (value.get("total_count").and_then(|t| t.as_u64()), value.get("check_runs").and_then(|r| r.as_array())) else {
+    let (Some(total), Some(runs)) = (
+        value.get("total_count").and_then(|t| t.as_u64()),
+        value.get("check_runs").and_then(|r| r.as_array()),
+    ) else {
         return unusable("no check runs");
     };
     if total as usize > runs.len() {
@@ -209,9 +275,17 @@ fn github_verdict(text: &str) -> Verdict {
         let status = run.get("status").and_then(|s| s.as_str());
         let conclusion = run.get("conclusion").and_then(|c| c.as_str());
         match (status, conclusion) {
-            (Some("queued" | "in_progress" | "waiting" | "pending" | "requested"), _) => pending = true,
+            (Some("queued" | "in_progress" | "waiting" | "pending" | "requested"), _) => {
+                pending = true
+            }
             (Some("completed"), Some("success" | "neutral" | "skipped")) => {}
-            (Some("completed"), Some("failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" | "stale")) => {
+            (
+                Some("completed"),
+                Some(
+                    "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure"
+                    | "stale",
+                ),
+            ) => {
                 if failing.len() < MAX_FAILING_NAMES {
                     failing.push(name.unwrap_or_else(|| "unnamed check".to_string()));
                 }
@@ -253,7 +327,12 @@ fn github_status_verdict(text: &str) -> Verdict {
         "failure" | "error" => {
             let mut failing: Vec<String> = statuses
                 .iter()
-                .filter(|s| matches!(s.get("state").and_then(|s| s.as_str()), Some("failure" | "error")))
+                .filter(|s| {
+                    matches!(
+                        s.get("state").and_then(|s| s.as_str()),
+                        Some("failure" | "error")
+                    )
+                })
                 .filter_map(|s| s.get("context").and_then(|c| c.as_str()).map(clean_name))
                 .take(MAX_FAILING_NAMES)
                 .collect();
@@ -267,8 +346,10 @@ fn github_status_verdict(text: &str) -> Verdict {
 }
 
 fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
-    let unusable = |why: &str| Verdict::Unusable(format!("the pipeline listing is unusable: {why}"));
-    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+    let unusable =
+        |why: &str| Verdict::Unusable(format!("the pipeline listing is unusable: {why}"));
+    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim())
+    else {
         return unusable("not a json array");
     };
     if rows.len() >= GITLAB_PAGE {
@@ -277,8 +358,14 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
     // The newest pipeline for exactly this commit is the one that counts.
     // Every row for it must be well formed: a row that cannot be read might be the newest.
     let mut matching = Vec::new();
-    for row in rows.iter().filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha)) {
-        let (Some(id), Some(status)) = (row.get("id").and_then(|i| i.as_u64()), row.get("status").and_then(|s| s.as_str())) else {
+    for row in rows
+        .iter()
+        .filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha))
+    {
+        let (Some(id), Some(status)) = (
+            row.get("id").and_then(|i| i.as_u64()),
+            row.get("status").and_then(|s| s.as_str()),
+        ) else {
             return unusable("a pipeline for the commit has no readable id or status");
         };
         matching.push((id, status));
@@ -288,22 +375,38 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
         None => Verdict::Pending,
         Some((_, "success")) => Verdict::Passed,
         Some((id, "failed" | "canceled")) => Verdict::Failed(vec![format!("pipeline {id}")]),
-        Some((_, "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled")) => Verdict::Pending,
+        Some((
+            _,
+            "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled",
+        )) => Verdict::Pending,
         Some(_) => unusable("a pipeline has an unrecognised state"),
     }
 }
 
 /// A check's name is the provider's text: stripped of control characters and bounded.
 fn clean_name(name: &str) -> String {
-    name.chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect()
+    name.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect()
 }
 
-fn fail(store: &RunStore, record: &RunRecord, payload: serde_json::Value, outcome: CiOutcome) -> Result<CiOutcome, StoreError> {
+fn fail(
+    store: &RunStore,
+    record: &RunRecord,
+    payload: serde_json::Value,
+    outcome: CiOutcome,
+) -> Result<CiOutcome, StoreError> {
     record_event(store, record, "stage.failed", payload)?;
     Ok(outcome)
 }
 
-fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+fn record_event(
+    store: &RunStore,
+    record: &RunRecord,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -326,49 +429,94 @@ mod tests {
         format!("{{\"total_count\":{total},\"check_runs\":[{rows}]}}")
     }
     fn run(name: &str, status: &str, conclusion: &str) -> String {
-        let c = if conclusion.is_empty() { "null".to_string() } else { format!("\"{conclusion}\"") };
+        let c = if conclusion.is_empty() {
+            "null".to_string()
+        } else {
+            format!("\"{conclusion}\"")
+        };
         format!("{{\"name\":\"{name}\",\"status\":\"{status}\",\"conclusion\":{c}}}")
     }
 
     #[test]
     fn github_all_completed_successfully_passes() {
-        let text = runs(&[run("a", "completed", "success"), run("b", "completed", "skipped")].join(","), 2);
+        let text = runs(
+            &[
+                run("a", "completed", "success"),
+                run("b", "completed", "skipped"),
+            ]
+            .join(","),
+            2,
+        );
         assert_eq!(github_verdict(&text), Verdict::Passed);
     }
 
     #[test]
     fn github_a_failed_run_fails_even_while_others_are_pending() {
-        let text = runs(&[run("a", "in_progress", ""), run("b", "completed", "failure")].join(","), 2);
-        assert_eq!(github_verdict(&text), Verdict::Failed(vec!["b".to_string()]));
+        let text = runs(
+            &[
+                run("a", "in_progress", ""),
+                run("b", "completed", "failure"),
+            ]
+            .join(","),
+            2,
+        );
+        assert_eq!(
+            github_verdict(&text),
+            Verdict::Failed(vec!["b".to_string()])
+        );
     }
 
     #[test]
     fn github_unfinished_or_absent_runs_keep_waiting() {
-        assert_eq!(github_verdict(&runs(&run("a", "queued", ""), 1)), Verdict::Pending);
+        assert_eq!(
+            github_verdict(&runs(&run("a", "queued", ""), 1)),
+            Verdict::Pending
+        );
         assert_eq!(github_verdict(&runs("", 0)), Verdict::Empty);
     }
 
     #[test]
     fn github_an_unusable_answer_is_never_green() {
         assert!(matches!(github_verdict("not json"), Verdict::Unusable(_)));
-        assert!(matches!(github_verdict(&runs(&run("a", "completed", "success"), 150)), Verdict::Unusable(_)));
-        assert!(matches!(github_verdict(&runs(&run("a", "completed", "mystery"), 1)), Verdict::Unusable(_)));
-        assert!(matches!(github_verdict(&runs(&run("a", "wobbling", ""), 1)), Verdict::Unusable(_)));
+        assert!(matches!(
+            github_verdict(&runs(&run("a", "completed", "success"), 150)),
+            Verdict::Unusable(_)
+        ));
+        assert!(matches!(
+            github_verdict(&runs(&run("a", "completed", "mystery"), 1)),
+            Verdict::Unusable(_)
+        ));
+        assert!(matches!(
+            github_verdict(&runs(&run("a", "wobbling", ""), 1)),
+            Verdict::Unusable(_)
+        ));
     }
 
     const SHA: &str = "abc";
 
     fn pipelines(rows: &[(u64, &str, &str)]) -> String {
-        let parts: Vec<String> =
-            rows.iter().map(|(id, sha, st)| format!("{{\"id\":{id},\"sha\":\"{sha}\",\"status\":\"{st}\"}}")).collect();
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|(id, sha, st)| format!("{{\"id\":{id},\"sha\":\"{sha}\",\"status\":\"{st}\"}}"))
+            .collect();
         format!("[{}]", parts.join(","))
     }
 
     #[test]
     fn gitlab_the_latest_pipeline_for_the_sha_decides() {
-        let text = pipelines(&[(5, SHA, "success"), (9, SHA, "failed"), (12, "other", "success")]);
-        assert_eq!(gitlab_verdict(&text, SHA), Verdict::Failed(vec!["pipeline 9".to_string()]));
-        assert_eq!(gitlab_verdict(&pipelines(&[(9, SHA, "success")]), SHA), Verdict::Passed);
+        let text = pipelines(&[
+            (5, SHA, "success"),
+            (9, SHA, "failed"),
+            (12, "other", "success"),
+        ]);
+        assert_eq!(
+            gitlab_verdict(&text, SHA),
+            Verdict::Failed(vec!["pipeline 9".to_string()])
+        );
+        assert_eq!(
+            gitlab_verdict(&pipelines(&[(9, SHA, "success")]), SHA),
+            Verdict::Passed
+        );
     }
 
     #[test]
@@ -381,9 +529,15 @@ mod tests {
 
     #[test]
     fn gitlab_running_or_absent_pipelines_keep_waiting_and_odd_ones_are_unusable() {
-        assert_eq!(gitlab_verdict(&pipelines(&[(9, SHA, "running")]), SHA), Verdict::Pending);
+        assert_eq!(
+            gitlab_verdict(&pipelines(&[(9, SHA, "running")]), SHA),
+            Verdict::Pending
+        );
         assert_eq!(gitlab_verdict("[]", SHA), Verdict::Pending);
-        assert!(matches!(gitlab_verdict(&pipelines(&[(9, SHA, "manual")]), SHA), Verdict::Unusable(_)));
+        assert!(matches!(
+            gitlab_verdict(&pipelines(&[(9, SHA, "manual")]), SHA),
+            Verdict::Unusable(_)
+        ));
         assert!(matches!(gitlab_verdict("{}", SHA), Verdict::Unusable(_)));
     }
 }

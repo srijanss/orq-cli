@@ -9,12 +9,20 @@ use std::time::{Duration, Instant};
 use orq_orchestrator::{run_implement_stage, ImplementSession, RoleProfile, RunRecord, RunStore};
 
 fn setup(tag: &str) -> (RunStore, PathBuf) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-exit-marker-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-exit-marker-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("worktree")).unwrap();
     let store = RunStore::new(&root.join("state"));
     let mut profiles = BTreeMap::new();
-    profiles.insert("implementer".to_string(), RoleProfile { harness: "claude".to_string(), model: "opus".to_string(), thinking: None });
+    profiles.insert(
+        "implementer".to_string(),
+        RoleProfile {
+            harness: "claude".to_string(),
+            model: "opus".to_string(),
+            thinking: None,
+        },
+    );
     store
         .create(&RunRecord {
             run_id: "run-1".to_string(),
@@ -56,9 +64,18 @@ fn a_session_that_wrote_its_marker_but_keeps_running_is_closed_and_counts_as_fin
     let started = Instant::now();
     let outcome = run_implement_stage(&store, "run-1", &session).unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
     assert!(outcome.success, "{outcome:?}");
-    let kinds: Vec<String> = store.events("run-1").unwrap().into_iter().map(|e| e.kind).collect();
+    let kinds: Vec<String> = store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
     assert_eq!(kinds, ["stage.started", "stage.completed"]);
 }
 
@@ -103,10 +120,18 @@ fn a_marker_left_from_an_earlier_session_does_not_close_a_new_one_at_once() {
 
     let outcome = run_implement_stage(&store, "run-1", &session).unwrap();
 
-    assert_eq!(outcome.exit_code, Some(3), "the stale marker ended the session early");
+    assert_eq!(
+        outcome.exit_code,
+        Some(3),
+        "the stale marker ended the session early"
+    );
 }
 
-fn session<'a>(root: &'a std::path::Path, args: &'a [String], marker: &'a std::path::Path) -> ImplementSession<'a> {
+fn session<'a>(
+    root: &'a std::path::Path,
+    args: &'a [String],
+    marker: &'a std::path::Path,
+) -> ImplementSession<'a> {
     ImplementSession {
         program: "sh",
         args,
@@ -138,13 +163,20 @@ fn a_descendant_of_a_closed_session_does_not_outlive_the_stage() {
     let (store, root) = setup("descendant");
     let marker = root.join("worktree/done.marker");
     let late = root.join("worktree/late.txt");
-    let args = args(&format!("(sleep 2; touch {}) & touch {}; sleep 30", late.display(), marker.display()));
+    let args = args(&format!(
+        "(sleep 2; touch {}) & touch {}; sleep 30",
+        late.display(),
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
     assert!(outcome.success, "{outcome:?}");
     std::thread::sleep(Duration::from_secs(3));
 
-    assert!(!late.exists(), "a descendant kept running after the session was closed");
+    assert!(
+        !late.exists(),
+        "a descendant kept running after the session was closed"
+    );
 }
 
 #[test]
@@ -152,17 +184,31 @@ fn a_descendant_of_a_session_that_wrote_its_marker_and_exited_does_not_outlive_t
     let (store, root) = setup("exited");
     let marker = root.join("worktree/done.marker");
     let late = root.join("worktree/late-exit.txt");
-    let args = args(&format!("(sleep 2; touch {}) & touch {}", late.display(), marker.display()));
+    let args = args(&format!(
+        "(sleep 2; touch {}) & touch {}",
+        late.display(),
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
     assert!(outcome.success, "{outcome:?}");
     std::thread::sleep(Duration::from_secs(3));
 
-    assert!(!late.exists(), "a descendant kept running after the session exited");
+    assert!(
+        !late.exists(),
+        "a descendant kept running after the session exited"
+    );
 }
 
-fn terminal_session<'a>(root: &'a std::path::Path, args: &'a [String], marker: &'a std::path::Path) -> ImplementSession<'a> {
-    ImplementSession { terminal: true, ..session(root, args, marker) }
+fn terminal_session<'a>(
+    root: &'a std::path::Path,
+    args: &'a [String],
+    marker: &'a std::path::Path,
+) -> ImplementSession<'a> {
+    ImplementSession {
+        terminal: true,
+        ..session(root, args, marker)
+    }
 }
 
 #[test]
@@ -171,9 +217,14 @@ fn terminal_session_descendants_do_not_outlive_a_closed_or_exited_session() {
         let (store, root) = setup(tag);
         let marker = root.join("worktree/done.marker");
         let late = root.join("worktree/late.txt");
-        let args = args(&format!("(sleep 2; touch {}) & touch {}; {tail}", late.display(), marker.display()));
+        let args = args(&format!(
+            "(sleep 2; touch {}) & touch {}; {tail}",
+            late.display(),
+            marker.display()
+        ));
 
-        let outcome = run_implement_stage(&store, "run-1", &terminal_session(&root, &args, &marker)).unwrap();
+        let outcome =
+            run_implement_stage(&store, "run-1", &terminal_session(&root, &args, &marker)).unwrap();
         assert!(outcome.success, "{tag}: {outcome:?}");
         std::thread::sleep(Duration::from_secs(3));
 

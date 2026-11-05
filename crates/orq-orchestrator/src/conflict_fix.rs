@@ -24,7 +24,9 @@ pub fn fix_rebase_conflicts(
 ) -> Result<ConflictFixOutcome, StoreError> {
     let record = store.load(run_id)?;
     if !rebase_in_progress(&record)? {
-        return Err(StoreError::Corrupt("the worktree is not in the middle of a rebase".to_string()));
+        return Err(StoreError::Corrupt(
+            "the worktree is not in the middle of a rebase".to_string(),
+        ));
     }
     // The commit the rebase is replaying onto, read before the session can touch it.
     let onto = rebase_onto(&record)?;
@@ -32,7 +34,12 @@ pub fn fix_rebase_conflicts(
     run_session_stage(store, run_id, session, FIX_STAGE, 1)?;
     let still_rebasing = rebase_in_progress(&record)?;
     if !still_rebasing && completed_onto(&record, &onto)? {
-        record_event(store, &record, "rebase.completed", serde_json::json!({ "resolved_by": "session", "target_sha": onto }))?;
+        record_event(
+            store,
+            &record,
+            "rebase.completed",
+            serde_json::json!({ "resolved_by": "session", "target_sha": onto }),
+        )?;
         return Ok(ConflictFixOutcome::Resolved);
     }
     let reason = if still_rebasing {
@@ -51,7 +58,12 @@ pub fn fix_rebase_conflicts(
             record.worktree.display()
         )
     };
-    record_event(store, &record, "run.blocked", serde_json::json!({ "reason": reason }))?;
+    record_event(
+        store,
+        &record,
+        "run.blocked",
+        serde_json::json!({ "reason": reason }),
+    )?;
     Ok(ConflictFixOutcome::StillBlocked { reason })
 }
 
@@ -62,17 +74,33 @@ fn completed_onto(record: &RunRecord, onto: &str) -> Result<bool, StoreError> {
     if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
         return Ok(false);
     }
-    let unmerged = git_raw(&record.worktree, &["diff", "--name-only", "--diff-filter=U"])?;
+    let unmerged = git_raw(
+        &record.worktree,
+        &["diff", "--name-only", "--diff-filter=U"],
+    )?;
     if !unmerged.success || !unmerged.stdout.trim().is_empty() {
         return Ok(false);
     }
-    if !git_raw(&record.worktree, &["merge-base", "--is-ancestor", onto, "HEAD"])?.success {
+    if !git_raw(
+        &record.worktree,
+        &["merge-base", "--is-ancestor", onto, "HEAD"],
+    )?
+    .success
+    {
         return Ok(false);
     }
     // The run only reaches a conflict with work of its own: a branch that sits
     // on the target with nothing past it has lost that work.
-    let ahead = git_raw(&record.worktree, &["rev-list", "--count", &format!("{onto}..HEAD")])?;
-    Ok(ahead.success && ahead.stdout.trim().parse::<u32>().is_ok_and(|count| count > 0))
+    let ahead = git_raw(
+        &record.worktree,
+        &["rev-list", "--count", &format!("{onto}..HEAD")],
+    )?;
+    Ok(ahead.success
+        && ahead
+            .stdout
+            .trim()
+            .parse::<u32>()
+            .is_ok_and(|count| count > 0))
 }
 
 fn rebase_onto(record: &RunRecord) -> Result<String, StoreError> {
@@ -88,14 +116,19 @@ fn rebase_onto(record: &RunRecord) -> Result<String, StoreError> {
             }
         }
     }
-    Err(StoreError::Corrupt("could not tell which commit the rebase is replaying onto".to_string()))
+    Err(StoreError::Corrupt(
+        "could not tell which commit the rebase is replaying onto".to_string(),
+    ))
 }
 
 fn rebase_in_progress(record: &RunRecord) -> Result<bool, StoreError> {
     for name in ["rebase-merge", "rebase-apply"] {
         let path = git_raw(&record.worktree, &["rev-parse", "--git-path", name])?;
         if !path.success {
-            return Err(StoreError::Corrupt(format!("git rev-parse failed: {}", path.stderr.trim())));
+            return Err(StoreError::Corrupt(format!(
+                "git rev-parse failed: {}",
+                path.stderr.trim()
+            )));
         }
         // `--git-path` is relative to the directory git was started in.
         if record.worktree.join(path.stdout.trim()).exists() {

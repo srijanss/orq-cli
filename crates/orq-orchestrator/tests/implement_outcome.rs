@@ -7,13 +7,24 @@ use orq_orchestrator::{check_implement_outcome, ImplementCheck, RunRecord, RunSt
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -27,7 +38,8 @@ fn world(tag: &str) -> World {
 }
 
 fn world_with_base(tag: &str, base_override: Option<&str>) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-outcome-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-outcome-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
@@ -62,7 +74,12 @@ fn commit_change(w: &World, name: &str) {
 }
 
 fn blocked_events(w: &World) -> Vec<orq_orchestrator::Event> {
-    w.store.events("run-1").unwrap().into_iter().filter(|e| e.kind == "run.blocked").collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "run.blocked")
+        .collect()
 }
 
 #[test]
@@ -83,7 +100,9 @@ fn no_new_commits_blocks_the_run_with_the_reason_and_keeps_the_worktree() {
 
     let check = check_implement_outcome(&w.store, "run-1").unwrap();
 
-    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    let ImplementCheck::Blocked { reason } = check else {
+        panic!("expected blocked, got {check:?}")
+    };
     assert!(reason.contains("no new commits"), "{reason}");
     let events = blocked_events(&w);
     assert_eq!(events.len(), 1);
@@ -101,20 +120,31 @@ fn uncommitted_changes_block_the_run_even_with_new_commits() {
 
     let check = check_implement_outcome(&w.store, "run-1").unwrap();
 
-    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    let ImplementCheck::Blocked { reason } = check else {
+        panic!("expected blocked, got {check:?}")
+    };
     assert!(reason.contains("uncommitted"), "{reason}");
     assert_eq!(blocked_events(&w).len(), 1);
-    assert_eq!(fs::read_to_string(w.worktree.join("a.txt")).unwrap(), "edited\n", "changes are left alone");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("a.txt")).unwrap(),
+        "edited\n",
+        "changes are left alone"
+    );
 }
 
 #[test]
 fn a_dirty_worktree_is_blocked_without_needing_the_base_commit() {
-    let w = world_with_base("dirty-badbase", Some("0000000000000000000000000000000000000000"));
+    let w = world_with_base(
+        "dirty-badbase",
+        Some("0000000000000000000000000000000000000000"),
+    );
     fs::write(w.worktree.join("a.txt"), "edited\n").unwrap();
 
     let check = check_implement_outcome(&w.store, "run-1").unwrap();
 
-    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    let ImplementCheck::Blocked { reason } = check else {
+        panic!("expected blocked, got {check:?}")
+    };
     assert!(reason.contains("uncommitted"), "{reason}");
     assert_eq!(blocked_events(&w).len(), 1);
 }
@@ -128,14 +158,27 @@ fn changes_inside_a_submodule_block_even_when_its_ignore_setting_hides_them() {
     fs::write(sub.join("s.txt"), "s\n").unwrap();
     git(&sub, &["add", "."]);
     git(&sub, &["commit", "-q", "-m", "sub"]);
-    git(&w.worktree, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.to_str().unwrap(), "vendor"]);
+    git(
+        &w.worktree,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.to_str().unwrap(),
+            "vendor",
+        ],
+    );
     git(&w.worktree, &["commit", "-q", "-m", "add submodule"]);
     git(&w.worktree, &["config", "submodule.vendor.ignore", "all"]);
     fs::write(w.worktree.join("vendor/s.txt"), "edited\n").unwrap();
 
     let check = check_implement_outcome(&w.store, "run-1").unwrap();
 
-    let ImplementCheck::Blocked { reason } = check else { panic!("expected blocked, got {check:?}") };
+    let ImplementCheck::Blocked { reason } = check else {
+        panic!("expected blocked, got {check:?}")
+    };
     assert!(reason.contains("uncommitted"), "{reason}");
 }
 
@@ -165,7 +208,14 @@ fn a_missing_base_commit_in_a_clean_worktree_is_an_error_and_records_nothing() {
 #[test]
 fn a_failure_to_record_the_block_is_an_error_not_a_silent_block() {
     let w = world("append-fails");
-    let events = w.worktree.parent().unwrap().join("state").join("runs").join("run-1").join("events.jsonl");
+    let events = w
+        .worktree
+        .parent()
+        .unwrap()
+        .join("state")
+        .join("runs")
+        .join("run-1")
+        .join("events.jsonl");
     let _ = fs::remove_file(&events);
     fs::create_dir_all(&events).unwrap();
 

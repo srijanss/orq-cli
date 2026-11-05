@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use orq_orchestrator::{plan_reap, reap_run, record_run_completed, Event, ReapVerdict, RunRecord, RunStore};
+use orq_orchestrator::{
+    plan_reap, reap_run, record_run_completed, Event, ReapVerdict, RunRecord, RunStore,
+};
 use orq_test_support::FakeProvider;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -12,13 +14,24 @@ const OTHER: &str = "3333333333333333333333333333333333333333";
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -40,8 +53,17 @@ struct Case {
     paused: bool,
 }
 
-const GOOD: Case =
-    Case { state: "MERGED", pushed: true, dirty: false, pinned: false, finished: true, inside_worktrees_dir: true, detached_ahead: false, provider_fails: false, paused: false };
+const GOOD: Case = Case {
+    state: "MERGED",
+    pushed: true,
+    dirty: false,
+    pinned: false,
+    finished: true,
+    inside_worktrees_dir: true,
+    detached_ahead: false,
+    provider_fails: false,
+    paused: false,
+};
 
 struct Planned {
     verdict: ReapVerdict,
@@ -51,20 +73,38 @@ struct Planned {
 }
 
 fn scenario(tag: &str, case: Case) -> Planned {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-reap-{}-{tag}", std::process::id()));
+    let root =
+        orq_test_support::process_temp_dir().join(format!("orq-reap-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["remote", "add", "origin", "https://github.example/o/r.git"]);
+    git(
+        &repo,
+        &["remote", "add", "origin", "https://github.example/o/r.git"],
+    );
     fs::write(repo.join("a.txt"), "a\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
     fs::write(repo.join(".git/info/exclude"), "*.log\n").unwrap();
-    let worktree = if case.inside_worktrees_dir { repo.join(".claude/worktrees/fix--COM-02") } else { root.join("elsewhere") };
+    let worktree = if case.inside_worktrees_dir {
+        repo.join(".claude/worktrees/fix--COM-02")
+    } else {
+        root.join("elsewhere")
+    };
     fs::create_dir_all(worktree.parent().unwrap()).unwrap();
-    git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-02",
+            worktree.to_str().unwrap(),
+        ],
+    );
     fs::write(worktree.join("mine.txt"), "mine\n").unwrap();
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
@@ -135,16 +175,37 @@ fn scenario(tag: &str, case: Case) -> Planned {
         case.state
     );
     let provider = if case.provider_fails {
-        FakeProvider::builder().fail(&["pr", "list"], 1, "HTTP 502: Bad Gateway\n").build()
+        FakeProvider::builder()
+            .fail(&["pr", "list"], 1, "HTTP 502: Bad Gateway\n")
+            .build()
     } else {
-        FakeProvider::builder().reply(&["pr", "list"], &format!("{row}\n")).build()
+        FakeProvider::builder()
+            .reply(&["pr", "list"], &format!("{row}\n"))
+            .build()
     };
     let gh = provider.gh();
-    let pinned = if case.pinned { vec!["run-1".to_string()] } else { Vec::new() };
-    let items = plan_reap(&store, &repo, "repo-1", &pinned, &|_| Some(gh.clone()), WAIT).unwrap();
+    let pinned = if case.pinned {
+        vec!["run-1".to_string()]
+    } else {
+        Vec::new()
+    };
+    let items = plan_reap(
+        &store,
+        &repo,
+        "repo-1",
+        &pinned,
+        &|_| Some(gh.clone()),
+        WAIT,
+    )
+    .unwrap();
     assert_eq!(items.len(), 1, "{items:?}");
     let item = items.into_iter().next().unwrap();
-    Planned { verdict: item.verdict.clone(), repo, worktree, item }
+    Planned {
+        verdict: item.verdict.clone(),
+        repo,
+        worktree,
+        item,
+    }
 }
 
 #[test]
@@ -170,7 +231,10 @@ fn reaping_a_run_also_removes_the_private_ref_a_crashed_rebase_left_behind() {
 
     reap_run(&planned.repo, &planned.item).unwrap();
 
-    let left = git(&planned.repo, &["for-each-ref", "--format=%(refname)", "refs/orq"]);
+    let left = git(
+        &planned.repo,
+        &["for-each-ref", "--format=%(refname)", "refs/orq"],
+    );
     assert_eq!(left, other, "only the reaped run's own ref goes");
 }
 
@@ -183,26 +247,94 @@ fn a_private_ref_that_cannot_be_deleted_is_reported_as_an_error() {
     let lock = planned.repo.join(".git").join(format!("{private}.lock"));
     fs::write(&lock, "").unwrap();
 
-    let err = reap_run(&planned.repo, &planned.item).expect_err("a ref left behind must not pass silently");
+    let err = reap_run(&planned.repo, &planned.item)
+        .expect_err("a ref left behind must not pass silently");
 
     assert!(err.to_string().contains("private ref"), "{err}");
     // Nothing else was removed, so the run is still planned and the reap can be retried.
     assert!(planned.worktree.exists(), "the worktree stays");
-    assert!(!git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(), "the branch stays");
+    assert!(
+        !git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(),
+        "the branch stays"
+    );
 }
 
 #[test]
 fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
     let cases = [
-        ("open", Case { state: "OPEN", ..GOOD }, "not merged or closed"),
-        ("pinned", Case { pinned: true, ..GOOD }, "pinned"),
-        ("running", Case { finished: false, ..GOOD }, "still running"),
-        ("paused", Case { finished: false, paused: true, ..GOOD }, "paused"),
-        ("dirty", Case { dirty: true, ..GOOD }, "uncommitted"),
-        ("unpushed", Case { pushed: false, ..GOOD }, "not pushed"),
-        ("outside", Case { inside_worktrees_dir: false, ..GOOD }, "not under"),
-        ("detached", Case { detached_ahead: true, ..GOOD }, "not on the branch"),
-        ("providerdown", Case { provider_fails: true, ..GOOD }, "could not be checked"),
+        (
+            "open",
+            Case {
+                state: "OPEN",
+                ..GOOD
+            },
+            "not merged or closed",
+        ),
+        (
+            "pinned",
+            Case {
+                pinned: true,
+                ..GOOD
+            },
+            "pinned",
+        ),
+        (
+            "running",
+            Case {
+                finished: false,
+                ..GOOD
+            },
+            "still running",
+        ),
+        (
+            "paused",
+            Case {
+                finished: false,
+                paused: true,
+                ..GOOD
+            },
+            "paused",
+        ),
+        (
+            "dirty",
+            Case {
+                dirty: true,
+                ..GOOD
+            },
+            "uncommitted",
+        ),
+        (
+            "unpushed",
+            Case {
+                pushed: false,
+                ..GOOD
+            },
+            "not pushed",
+        ),
+        (
+            "outside",
+            Case {
+                inside_worktrees_dir: false,
+                ..GOOD
+            },
+            "not under",
+        ),
+        (
+            "detached",
+            Case {
+                detached_ahead: true,
+                ..GOOD
+            },
+            "not on the branch",
+        ),
+        (
+            "providerdown",
+            Case {
+                provider_fails: true,
+                ..GOOD
+            },
+            "could not be checked",
+        ),
     ];
     for (tag, case, why) in cases {
         let planned = scenario(tag, case);
@@ -218,24 +350,35 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
 fn a_plan_gone_stale_removes_nothing() {
     // Work that lands after the plan was made: an ignored scratch file, an uncommitted edit, a new commit.
     let changes: [(&str, fn(&Planned)); 3] = [
-        ("untracked", |p| fs::write(p.worktree.join("late.txt"), "x\n").unwrap()),
+        ("untracked", |p| {
+            fs::write(p.worktree.join("late.txt"), "x\n").unwrap()
+        }),
         ("commit", |p| {
             fs::write(p.worktree.join("late.txt"), "x\n").unwrap();
             git(&p.worktree, &["add", "."]);
             git(&p.worktree, &["commit", "-q", "-m", "late"]);
         }),
         // The ignore rule exists from the start (info/exclude), so only an ignored file appears later.
-        ("ignored", |p| fs::write(p.worktree.join("keep.log"), "x\n").unwrap()),
+        ("ignored", |p| {
+            fs::write(p.worktree.join("keep.log"), "x\n").unwrap()
+        }),
     ];
     for (tag, change) in changes {
         let planned = scenario(&format!("stale-{tag}"), GOOD);
         assert_eq!(planned.verdict, ReapVerdict::Reap);
         change(&planned);
-        let refused = reap_run(&planned.repo, &planned.item).expect_err("a stale plan must be refused");
+        let refused =
+            reap_run(&planned.repo, &planned.item).expect_err("a stale plan must be refused");
         if tag != "commit" {
-            assert!(format!("{refused:?}").contains("uncommitted"), "{tag}: {refused:?}");
+            assert!(
+                format!("{refused:?}").contains("uncommitted"),
+                "{tag}: {refused:?}"
+            );
         }
         assert!(planned.worktree.exists(), "{tag}: the worktree stays");
-        assert!(!git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(), "{tag}: the branch stays");
+        assert!(
+            !git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty(),
+            "{tag}: the branch stays"
+        );
     }
 }

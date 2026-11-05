@@ -7,13 +7,24 @@ use orq_orchestrator::{cleanup_worktree, CiOutcome, CleanupOutcome, RunRecord, R
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -25,7 +36,8 @@ struct World {
 
 /// A repository on `main` with a linked worktree on `fix--COM-02` holding one commit of its own.
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-cleanup-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-cleanup-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
@@ -35,7 +47,17 @@ fn world(tag: &str) -> World {
     git(&repo, &["commit", "-q", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
     let worktree = root.join("worktree");
-    git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-02",
+            worktree.to_str().unwrap(),
+        ],
+    );
     fs::write(worktree.join("mine.txt"), "mine\n").unwrap();
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
@@ -56,11 +78,20 @@ fn world(tag: &str) -> World {
             profiles: BTreeMap::new(),
         })
         .unwrap();
-    World { store, repo, worktree }
+    World {
+        store,
+        repo,
+        worktree,
+    }
 }
 
 fn kinds(w: &World) -> Vec<String> {
-    w.store.events("run-1").unwrap().into_iter().map(|e| e.kind).collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect()
 }
 
 #[test]
@@ -72,8 +103,14 @@ fn a_review_ready_run_with_ci_disabled_has_its_worktree_removed_and_its_branch_k
     assert_eq!(outcome, CleanupOutcome::Removed);
     assert!(!w.worktree.exists(), "the worktree directory is gone");
     let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
-    assert!(!listed.contains(w.worktree.to_str().unwrap()), "no longer registered: {listed}");
-    git(&w.repo, &["rev-parse", "--verify", "refs/heads/fix--COM-02"]);
+    assert!(
+        !listed.contains(w.worktree.to_str().unwrap()),
+        "no longer registered: {listed}"
+    );
+    git(
+        &w.repo,
+        &["rev-parse", "--verify", "refs/heads/fix--COM-02"],
+    );
     assert_eq!(kinds(&w), ["worktree.removed"]);
 }
 
@@ -90,16 +127,32 @@ fn a_run_whose_ci_passed_has_its_worktree_removed() {
 #[test]
 fn a_run_whose_ci_did_not_pass_keeps_its_worktree() {
     for (tag, ci) in [
-        ("ci-red", CiOutcome::Failed { failing: vec!["build".to_string()] }),
+        (
+            "ci-red",
+            CiOutcome::Failed {
+                failing: vec!["build".to_string()],
+            },
+        ),
         ("ci-timeout", CiOutcome::TimedOut),
-        ("ci-error", CiOutcome::Errored { reason: "provider down".to_string() }),
+        (
+            "ci-error",
+            CiOutcome::Errored {
+                reason: "provider down".to_string(),
+            },
+        ),
     ] {
         let w = world(tag);
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &ci).unwrap();
 
-        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{tag}: {outcome:?}");
-        assert!(w.worktree.join("mine.txt").exists(), "{tag}: the worktree is untouched");
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert!(
+            w.worktree.join("mine.txt").exists(),
+            "{tag}: the worktree is untouched"
+        );
         assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
     }
 }
@@ -110,7 +163,10 @@ fn a_run_that_did_not_reach_review_ready_keeps_its_worktree() {
 
     let outcome = cleanup_worktree(&w.store, "run-1", false, &CiOutcome::Skipped).unwrap();
 
-    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, CleanupOutcome::Kept { .. }),
+        "{outcome:?}"
+    );
     assert!(w.worktree.join("mine.txt").exists());
 }
 
@@ -124,24 +180,47 @@ fn a_worktree_holding_an_ignored_file_is_kept_with_it_intact() {
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
-    assert_eq!(fs::read_to_string(w.worktree.join("local.env")).unwrap(), "SECRET=1\n");
+    assert!(
+        matches!(outcome, CleanupOutcome::Kept { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("local.env")).unwrap(),
+        "SECRET=1\n"
+    );
     assert_eq!(kinds(&w), ["worktree.kept"]);
 }
 
 #[test]
 fn a_locked_worktree_is_kept_registered_with_its_branch() {
     let w = world("locked");
-    git(&w.repo, &["worktree", "lock", "--reason", "in use", w.worktree.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "in use",
+            w.worktree.to_str().unwrap(),
+        ],
+    );
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("expected Kept, got {outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("expected Kept, got {outcome:?}")
+    };
     assert!(reason.contains("would not remove"), "{reason}");
     assert!(w.worktree.join("mine.txt").exists());
     let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
-    assert!(listed.contains(w.worktree.to_str().unwrap()), "still registered: {listed}");
-    git(&w.repo, &["rev-parse", "--verify", "refs/heads/fix--COM-02"]);
+    assert!(
+        listed.contains(w.worktree.to_str().unwrap()),
+        "still registered: {listed}"
+    );
+    git(
+        &w.repo,
+        &["rev-parse", "--verify", "refs/heads/fix--COM-02"],
+    );
     assert_eq!(kinds(&w), ["worktree.kept"]);
 }
 
@@ -152,9 +231,15 @@ fn a_worktree_directory_that_is_already_gone_is_kept_with_a_recorded_reason() {
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed);
 
-    assert!(matches!(outcome, Ok(CleanupOutcome::Kept { .. })), "{outcome:?}");
+    assert!(
+        matches!(outcome, Ok(CleanupOutcome::Kept { .. })),
+        "{outcome:?}"
+    );
     assert_eq!(kinds(&w), ["worktree.kept"]);
-    git(&w.repo, &["rev-parse", "--verify", "refs/heads/fix--COM-02"]);
+    git(
+        &w.repo,
+        &["rev-parse", "--verify", "refs/heads/fix--COM-02"],
+    );
 }
 
 #[test]
@@ -165,8 +250,15 @@ fn a_worktree_with_uncommitted_changes_is_kept_with_them_intact() {
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{tag}: {outcome:?}");
-        assert_eq!(fs::read_to_string(w.worktree.join(edit)).unwrap(), "unsaved work\n", "{tag}");
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(w.worktree.join(edit)).unwrap(),
+            "unsaved work\n",
+            "{tag}"
+        );
         assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
     }
 }
@@ -208,7 +300,15 @@ fn cleanup_events_of_a_failed_run_leave_its_summary_failed_with_the_reason() {
 fn cleanup_events_of_a_run_with_red_ci_do_not_complete_it() {
     let w = world("summary-ci-red");
 
-    cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Failed { failing: vec!["build".to_string()] }).unwrap();
+    cleanup_worktree(
+        &w.store,
+        "run-1",
+        true,
+        &CiOutcome::Failed {
+            failing: vec!["build".to_string()],
+        },
+    )
+    .unwrap();
 
     assert_ne!(summary(&w).phase, orq_orchestrator::RunPhase::Completed);
 }
@@ -217,7 +317,10 @@ fn cleanup_events_of_a_run_with_red_ci_do_not_complete_it() {
 fn cleanup_events_of_a_successful_run_complete_it_whether_removed_or_kept_dirty() {
     let removed = world("summary-removed");
     cleanup_worktree(&removed.store, "run-1", true, &CiOutcome::Passed).unwrap();
-    assert_eq!(summary(&removed).phase, orq_orchestrator::RunPhase::Completed);
+    assert_eq!(
+        summary(&removed).phase,
+        orq_orchestrator::RunPhase::Completed
+    );
 
     let dirty = world("summary-dirty");
     fs::write(dirty.worktree.join("scratch.txt"), "unsaved\n").unwrap();

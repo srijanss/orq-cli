@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use orq_orchestrator::{list_runs, record_pane, run_pane, PaneRef, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-run-pane-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-run-pane-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     RunStore::new(&root)
 }
@@ -26,7 +27,11 @@ fn record(run_id: &str) -> RunRecord {
 }
 
 fn pane(tab: &str) -> PaneRef {
-    PaneRef { workspace_id: "w1".into(), tab_id: tab.into(), pane_id: format!("{tab}:p1") }
+    PaneRef {
+        workspace_id: "w1".into(),
+        tab_id: tab.into(),
+        pane_id: format!("{tab}:p1"),
+    }
 }
 
 #[test]

@@ -26,10 +26,18 @@ pub struct FixSessionSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateFixOutcome {
     /// The gate passed, after `fix_attempts` fix sessions.
-    Passed { fix_attempts: u32 },
-    Skipped { reason: String },
+    Passed {
+        fix_attempts: u32,
+    },
+    Skipped {
+        reason: String,
+    },
     /// Still red after `fix_attempts` fix sessions; the run has failed.
-    Failed { fix_attempts: u32, step: usize, exit_code: Option<i32> },
+    Failed {
+        fix_attempts: u32,
+        step: usize,
+        exit_code: Option<i32>,
+    },
 }
 
 /// Run the gate; while it fails and fewer than `max_attempts` fixes were tried,
@@ -44,7 +52,16 @@ pub fn run_gate_with_fixes(
     max_attempts: u32,
     fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
 ) -> Result<GateFixOutcome, StoreError> {
-    run_gate_with_fixes_env(store, run_id, gate, enabled, gate_log, max_attempts, &[], fixer)
+    run_gate_with_fixes_env(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        max_attempts,
+        &[],
+        fixer,
+    )
 }
 
 /// Like [`run_gate_with_fixes`], with `env` set for every run of the gate.
@@ -61,15 +78,34 @@ pub fn run_gate_with_fixes_env(
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
-        match run_gate_attempt(store, run_id, gate, enabled, gate_log, fix_attempts + 1, env)? {
+        match run_gate_attempt(
+            store,
+            run_id,
+            gate,
+            enabled,
+            gate_log,
+            fix_attempts + 1,
+            env,
+        )? {
             GateOutcome::Passed => return Ok(GateFixOutcome::Passed { fix_attempts }),
             GateOutcome::Skipped { reason } => return Ok(GateFixOutcome::Skipped { reason }),
             GateOutcome::Failed { step, exit_code } => {
                 if fix_attempts >= max_attempts {
                     let record = store.load(run_id)?;
-                    let reason = format!("the gate is still failing after {fix_attempts} fix attempt(s)");
-                    record_event(store, &record, "run.failed", fix_attempts + 1, serde_json::json!({ "reason": reason, "log": gate_log.to_string_lossy() }))?;
-                    return Ok(GateFixOutcome::Failed { fix_attempts, step, exit_code });
+                    let reason =
+                        format!("the gate is still failing after {fix_attempts} fix attempt(s)");
+                    record_event(
+                        store,
+                        &record,
+                        "run.failed",
+                        fix_attempts + 1,
+                        serde_json::json!({ "reason": reason, "log": gate_log.to_string_lossy() }),
+                    )?;
+                    return Ok(GateFixOutcome::Failed {
+                        fix_attempts,
+                        step,
+                        exit_code,
+                    });
                 }
                 fix_attempts += 1;
                 let spec = fixer(fix_attempts, gate_log);
@@ -81,7 +117,7 @@ pub fn run_gate_with_fixes_env(
                     session_id: spec.session_id.as_deref(),
                     log: &spec.log,
                     terminal: spec.terminal,
-            exit_marker: None,
+                    exit_marker: None,
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;

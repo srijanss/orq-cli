@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use orq_orchestrator::{request_pause, summarize_run, Event, RunPhase, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-pause-req-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-pause-req-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     store
@@ -50,24 +51,46 @@ fn phase(store: &RunStore) -> RunPhase {
 #[test]
 fn only_a_running_run_can_be_asked_to_pause() {
     let s = store("running");
-    add(&s, "stage.started", Some("implement"), serde_json::json!({}));
+    add(
+        &s,
+        "stage.started",
+        Some("implement"),
+        serde_json::json!({}),
+    );
     request_pause(&s, "run-1").unwrap();
     assert_eq!(phase(&s), RunPhase::PauseRequested);
     // Asking twice is refused, not silently recorded again.
-    assert!(request_pause(&s, "run-1").unwrap_err().contains("pause_requested"));
-    assert_eq!(s.events("run-1").unwrap().iter().filter(|e| e.kind == "run.pause_requested").count(), 1);
+    assert!(request_pause(&s, "run-1")
+        .unwrap_err()
+        .contains("pause_requested"));
+    assert_eq!(
+        s.events("run-1")
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "run.pause_requested")
+            .count(),
+        1
+    );
 
     for (tag, kind, payload) in [
         ("failed", "run.failed", serde_json::json!({"reason": "x"})),
         ("blocked", "run.blocked", serde_json::json!({"reason": "x"})),
-        ("done", "run.completed", serde_json::json!({"ending": "review_ready"})),
+        (
+            "done",
+            "run.completed",
+            serde_json::json!({"ending": "review_ready"}),
+        ),
     ] {
         let s = store(tag);
         add(&s, kind, None, payload);
         let before = s.events("run-1").unwrap().len();
         let reason = request_pause(&s, "run-1").unwrap_err();
         assert!(reason.contains("only a running run"), "{tag}: {reason}");
-        assert_eq!(s.events("run-1").unwrap().len(), before, "{tag}: nothing is recorded");
+        assert_eq!(
+            s.events("run-1").unwrap().len(),
+            before,
+            "{tag}: nothing is recorded"
+        );
     }
     assert!(request_pause(&s, "nope").is_err());
 }
@@ -87,6 +110,11 @@ fn a_requested_pause_survives_the_stages_that_finish_before_the_boundary() {
     add(&s, "run.resumed", None, serde_json::json!({}));
     assert_eq!(phase(&s), RunPhase::Running);
     request_pause(&s, "run-1").unwrap();
-    add(&s, "stage.failed", Some("rebase"), serde_json::json!({"reason": "boom"}));
+    add(
+        &s,
+        "stage.failed",
+        Some("rebase"),
+        serde_json::json!({"reason": "boom"}),
+    );
     assert_eq!(phase(&s), RunPhase::Failed);
 }

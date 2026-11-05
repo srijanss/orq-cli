@@ -27,7 +27,12 @@ pub struct WorktreeDatabases {
 /// The per-worktree database names for `branch`: one entry per variable of `vars` that the main
 /// checkout's dotenv file gives a plain database name. `named_by_repo` is whether the repository
 /// chose `vars` itself; only then is a variable the file lacks worth a note.
-pub fn derive_worktree_databases(main_checkout: &Path, vars: &[String], branch: &str, named_by_repo: bool) -> WorktreeDatabases {
+pub fn derive_worktree_databases(
+    main_checkout: &Path,
+    vars: &[String],
+    branch: &str,
+    named_by_repo: bool,
+) -> WorktreeDatabases {
     derive_worktree_databases_with(main_checkout, vars, branch, named_by_repo, None)
 }
 
@@ -36,7 +41,13 @@ const DEFAULT_TEMPLATE: &str = "{name}_{branch}";
 
 /// [`derive_worktree_databases`] with the shape of the new name chosen: `template` holds `{name}` (the
 /// main database name) and `{branch}` (the branch part) next to letters, digits and underscores.
-pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], branch: &str, named_by_repo: bool, template: Option<&str>) -> WorktreeDatabases {
+pub fn derive_worktree_databases_with(
+    main_checkout: &Path,
+    vars: &[String],
+    branch: &str,
+    named_by_repo: bool,
+    template: Option<&str>,
+) -> WorktreeDatabases {
     let mut found = WorktreeDatabases::default();
     let template = template.unwrap_or(DEFAULT_TEMPLATE);
     let text = match std::fs::read_to_string(main_checkout.join(".env")) {
@@ -50,7 +61,11 @@ pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], bra
     };
     // Without {branch} every worktree would share one database; anything else could not be a name.
     let leftover = template.replace("{name}", "").replace("{branch}", "");
-    if template.matches("{branch}").count() != 1 || !leftover.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    if template.matches("{branch}").count() != 1
+        || !leftover
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         found.notes.push("db_name_template must contain {branch} exactly once and otherwise only letters, digits, underscores and {name}; the databases are not isolated".to_string());
         return found;
     }
@@ -65,13 +80,18 @@ pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], bra
         let target = match split_target(&main) {
             Ok(target) => target,
             Err(why) => {
-                found.notes.push(format!("{var} {why}; its database is not isolated"));
+                found
+                    .notes
+                    .push(format!("{var} {why}; its database is not isolated"));
                 continue;
             }
         };
         let name = &target.name;
         // "test_" + the template without its branch part
-        let fixed = template.replace("{name}", name).replace("{branch}", "").len();
+        let fixed = template
+            .replace("{name}", name)
+            .replace("{branch}", "")
+            .len();
         let room = MAX_DATABASE_NAME.saturating_sub(TEST_PREFIX.len() + fixed);
         let part = if slug.len() <= room {
             slug.clone()
@@ -79,13 +99,18 @@ pub fn derive_worktree_databases_with(main_checkout: &Path, vars: &[String], bra
             let hash = stable_hash(branch).to_string();
             let keep = room.saturating_sub(1 + hash.len());
             if keep < MIN_KEPT_SLUG {
-                found.notes.push(format!("{var} is too long to add a branch suffix; its database is not isolated"));
+                found.notes.push(format!(
+                    "{var} is too long to add a branch suffix; its database is not isolated"
+                ));
                 continue;
             }
             format!("{}_{hash}", &slug[..keep])
         };
         let isolated = template.replace("{name}", name).replace("{branch}", &part);
-        found.env.push((var.clone(), format!("{}{isolated}{}", target.head, target.tail)));
+        found.env.push((
+            var.clone(),
+            format!("{}{isolated}{}", target.head, target.tail),
+        ));
         found.names.push((var.clone(), isolated));
     }
     found
@@ -105,10 +130,19 @@ fn is_plain_name(name: &str) -> bool {
 /// Finds the database name in a plain name, a `scheme://…/name?options` URL, or a sqlite file URL
 /// (where the name is the file's stem). The error is a reason that never repeats any of the value.
 fn split_target(value: &str) -> Result<Target, &'static str> {
-    let scheme_end = value.find("://").filter(|&at| at > 0 && value[..at].chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')));
+    let scheme_end = value.find("://").filter(|&at| {
+        at > 0
+            && value[..at]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    });
     let Some(scheme_end) = scheme_end else {
         return if is_plain_name(value) {
-            Ok(Target { head: String::new(), name: value.to_string(), tail: String::new() })
+            Ok(Target {
+                head: String::new(),
+                name: value.to_string(),
+                tail: String::new(),
+            })
         } else {
             Err("is not a plain database name")
         };
@@ -126,7 +160,10 @@ fn split_target(value: &str) -> Result<Target, &'static str> {
             return Err("selects its database in an option");
         }
     }
-    if value[..scheme_end].to_ascii_lowercase().starts_with("sqlite") {
+    if value[..scheme_end]
+        .to_ascii_lowercase()
+        .starts_with("sqlite")
+    {
         let end = after.find(['?', '#']).unwrap_or(after.len());
         let path = &after[..end];
         if path.is_empty() || path.contains(":memory:") {
@@ -141,9 +178,16 @@ fn split_target(value: &str) -> Result<Target, &'static str> {
         if !is_plain_name(stem) {
             return Err("is not a plain database name");
         }
-        return Ok(Target { head: value[..rest + file_at].to_string(), name: stem.to_string(), tail: format!("{extension}{}", &after[end..]) });
+        return Ok(Target {
+            head: value[..rest + file_at].to_string(),
+            name: stem.to_string(),
+            tail: format!("{extension}{}", &after[end..]),
+        });
     }
-    let Some(slash) = after.find(['/', '?', '#']).filter(|&at| after[at..].starts_with('/')) else {
+    let Some(slash) = after
+        .find(['/', '?', '#'])
+        .filter(|&at| after[at..].starts_with('/'))
+    else {
         return Err("names no database");
     };
     let from = rest + slash + 1;
@@ -155,7 +199,11 @@ fn split_target(value: &str) -> Result<Target, &'static str> {
     if !is_plain_name(&path[..end]) {
         return Err("is not a plain database name");
     }
-    Ok(Target { head: value[..from].to_string(), name: path[..end].to_string(), tail: path[end..].to_string() })
+    Ok(Target {
+        head: value[..from].to_string(),
+        name: path[..end].to_string(),
+        tail: path[end..].to_string(),
+    })
 }
 
 /// Lowercase letters and digits, every other run of characters one underscore.
@@ -173,7 +221,9 @@ fn branch_slug(branch: &str) -> String {
 
 /// FNV-1a: the same branch always gets the same suffix, whatever the platform or release.
 fn stable_hash(text: &str) -> u32 {
-    text.bytes().fold(0x811c_9dc5_u32, |hash, byte| (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193))
+    text.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// The value of the last `[export] NAME = value` line, without quotes or a trailing ` # comment`.
@@ -181,9 +231,17 @@ fn dotenv_value(text: &str, name: &str) -> Option<String> {
     let mut found = None;
     for line in text.lines() {
         let line = line.trim_start();
-        let line = line.strip_prefix("export").filter(|rest| rest.starts_with([' ', '\t'])).unwrap_or(line).trim_start();
-        let Some(rest) = line.strip_prefix(name) else { continue };
-        let Some(value) = rest.trim_start().strip_prefix('=') else { continue };
+        let line = line
+            .strip_prefix("export")
+            .filter(|rest| rest.starts_with([' ', '\t']))
+            .unwrap_or(line)
+            .trim_start();
+        let Some(rest) = line.strip_prefix(name) else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
         let value = value.trim();
         let value = match value.find(" #").or_else(|| value.find("\t#")) {
             Some(at) if !value.starts_with(['"', '\'']) => value[..at].trim_end(),
@@ -208,7 +266,12 @@ const DROP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// by running `drop_cmd` with the test database's name appended, from `main_checkout`. Nothing here
 /// fails a run: every problem is a note that names the database so it can be dropped by hand.
 /// `keep` leaves them all in place (`KEEP_TEST_DB`); without a command nothing can be dropped.
-pub fn drop_test_databases(main_checkout: &Path, databases: &[(String, String)], drop_cmd: Option<&[String]>, keep: bool) -> Vec<String> {
+pub fn drop_test_databases(
+    main_checkout: &Path,
+    databases: &[(String, String)],
+    drop_cmd: Option<&[String]>,
+    keep: bool,
+) -> Vec<String> {
     drop_test_databases_within(main_checkout, databases, drop_cmd, keep, DROP_TIMEOUT)
 }
 
@@ -226,7 +289,9 @@ pub fn drop_test_databases_within(
     let mut seen = std::collections::HashSet::new();
     for (var, name) in databases {
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.is_empty() {
-            notes.push(format!("{var} is not a plain database name; its test database was not dropped"));
+            notes.push(format!(
+                "{var} is not a plain database name; its test database was not dropped"
+            ));
             continue;
         }
         if !seen.insert(name.as_str()) {
@@ -238,11 +303,19 @@ pub fn drop_test_databases_within(
             continue;
         }
         let Some((program, args)) = drop_cmd.and_then(|cmd| cmd.split_first()) else {
-            notes.push(format!("no test_db_drop_cmd is configured; drop test database {test_name} manually"));
+            notes.push(format!(
+                "no test_db_drop_cmd is configured; drop test database {test_name} manually"
+            ));
             continue;
         };
         let mut command = Command::new(program);
-        command.args(args).arg(&test_name).current_dir(main_checkout).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        command
+            .args(args)
+            .arg(&test_name)
+            .current_dir(main_checkout)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         // Its own process group, so a timeout can stop everything the command started.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
@@ -258,13 +331,17 @@ pub fn drop_test_databases_within(
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
                 _ => break None,
             }
         };
         match status {
             Some(status) if status.success() => {}
-            Some(status) => notes.push(format!("dropping test database {test_name} failed ({status}); drop it manually")),
+            Some(status) => notes.push(format!(
+                "dropping test database {test_name} failed ({status}); drop it manually"
+            )),
             None => {
                 #[cfg(unix)]
                 if let Ok(group) = i32::try_from(child.id()) {
@@ -273,7 +350,9 @@ pub fn drop_test_databases_within(
                 }
                 let _ = child.kill();
                 let _ = child.wait();
-                notes.push(format!("dropping test database {test_name} timed out; drop it manually"));
+                notes.push(format!(
+                    "dropping test database {test_name} timed out; drop it manually"
+                ));
             }
         }
     }

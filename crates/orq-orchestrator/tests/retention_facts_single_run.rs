@@ -12,11 +12,21 @@ struct Fixture {
 }
 
 fn fixture(tag: &str) -> Fixture {
-    let base = orq_test_support::process_temp_dir().join(format!("orq-facts1-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir()
+        .join(format!("orq-facts1-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+    let roots = StorageRoots {
+        data: base.join("data"),
+        config: base.join("config"),
+        state: base.join("state"),
+        cache: base.join("cache"),
+    };
     roots.create_all().unwrap();
-    Fixture { runs: RunStore::new(&base.join("runs-state")), store: Store::open(&roots.database()).unwrap(), base }
+    Fixture {
+        runs: RunStore::new(&base.join("runs-state")),
+        store: Store::open(&roots.database()).unwrap(),
+        base,
+    }
 }
 
 fn add_failed_run(f: &Fixture, run_id: &str, worktree: &Path) {
@@ -58,15 +68,29 @@ fn one_runs_facts_equal_what_the_full_collection_says_about_it() {
     f.store.pin("run-2").unwrap();
     let all = collect_run_facts(&f.runs, &f.store).unwrap();
     for id in ["run-1", "run-2"] {
-        let one = collect_run_facts_for(&f.runs, &f.store, id).unwrap().expect("the run is known");
+        let one = collect_run_facts_for(&f.runs, &f.store, id)
+            .unwrap()
+            .expect("the run is known");
         let from_all = &all[id];
-        assert_eq!((one.state, one.ended_at, one.pinned, one.worktree_in_use), (from_all.state, from_all.ended_at, from_all.pinned, from_all.worktree_in_use));
+        assert_eq!(
+            (one.state, one.ended_at, one.pinned, one.worktree_in_use),
+            (
+                from_all.state,
+                from_all.ended_at,
+                from_all.pinned,
+                from_all.worktree_in_use
+            )
+        );
     }
 }
 
 #[test]
 fn an_unknown_or_unsafe_run_id_has_no_facts() {
     let f = fixture("unknown");
-    assert!(collect_run_facts_for(&f.runs, &f.store, "no-such-run").unwrap().is_none());
-    assert!(collect_run_facts_for(&f.runs, &f.store, "../escape").unwrap().is_none());
+    assert!(collect_run_facts_for(&f.runs, &f.store, "no-such-run")
+        .unwrap()
+        .is_none());
+    assert!(collect_run_facts_for(&f.runs, &f.store, "../escape")
+        .unwrap()
+        .is_none());
 }

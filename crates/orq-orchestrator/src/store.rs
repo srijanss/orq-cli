@@ -58,7 +58,9 @@ pub enum StoreError {
     InvalidRunId(String),
     AlreadyExists(String),
     /// Another run of the same project and feature is still active.
-    FeatureBusy { active_run_id: String },
+    FeatureBusy {
+        active_run_id: String,
+    },
     NotFound(String),
     Io(std::io::Error),
     Corrupt(String),
@@ -93,13 +95,17 @@ pub struct RunStore {
 
 impl RunStore {
     pub fn new(root: &Path) -> Self {
-        RunStore { root: root.to_path_buf() }
+        RunStore {
+            root: root.to_path_buf(),
+        }
     }
 
     fn run_dir(&self, run_id: &str) -> Result<PathBuf, StoreError> {
         let valid = !run_id.is_empty()
             && !run_id.starts_with('.')
-            && run_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            && run_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
         if !valid {
             return Err(StoreError::InvalidRunId(run_id.to_string()));
         }
@@ -138,13 +144,27 @@ impl RunStore {
     /// record's own feature must be among them, and none may repeat. If a start fails nothing
     /// is kept: the locks already taken are released (each only if this run still owns it) and
     /// no run is recorded.
-    pub fn start_group_run(&self, record: &RunRecord, members: &[String]) -> Result<(), StoreError> {
+    pub fn start_group_run(
+        &self,
+        record: &RunRecord,
+        members: &[String],
+    ) -> Result<(), StoreError> {
         self.run_dir(&record.run_id)?;
         if !members.contains(&record.feature_id) {
-            return Err(StoreError::Corrupt(format!("the group does not include {}", record.feature_id)));
+            return Err(StoreError::Corrupt(format!(
+                "the group does not include {}",
+                record.feature_id
+            )));
         }
-        if let Some(repeated) = members.iter().enumerate().find(|(i, id)| members[..*i].contains(id)).map(|(_, id)| id) {
-            return Err(StoreError::Corrupt(format!("{repeated} is in the group twice")));
+        if let Some(repeated) = members
+            .iter()
+            .enumerate()
+            .find(|(i, id)| members[..*i].contains(id))
+            .map(|(_, id)| id)
+        {
+            return Err(StoreError::Corrupt(format!(
+                "{repeated} is in the group twice"
+            )));
         }
         let mut taken: Vec<&String> = Vec::new();
         let undo = |store: &RunStore, taken: &[&String]| {
@@ -168,7 +188,12 @@ impl RunStore {
 
     /// Release the lock of every member that `run_id` owns. Every member is tried; the first
     /// failure is returned afterwards.
-    pub fn finish_group_run(&self, project_id: &str, members: &[String], run_id: &str) -> Result<(), StoreError> {
+    pub fn finish_group_run(
+        &self,
+        project_id: &str,
+        members: &[String],
+        run_id: &str,
+    ) -> Result<(), StoreError> {
         let mut first = None;
         for id in members {
             if let Err(err) = self.finish_run(project_id, id, run_id) {
@@ -178,7 +203,12 @@ impl RunStore {
         first.map_or(Ok(()), Err)
     }
 
-    fn take_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
+    fn take_lock(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        run_id: &str,
+    ) -> Result<(), StoreError> {
         let lock = self.lock_path(project_id, feature_id)?;
         let _guard = self.guard(project_id, feature_id)?;
         let locks = lock.parent().expect("lock path has a parent");
@@ -198,9 +228,17 @@ impl RunStore {
                 std::process::id(),
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
-            match fs::OpenOptions::new().write(true).create_new(true).open(&private) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&private)
+            {
                 Ok(file) => break (private, file),
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempts < 100_000 => attempts += 1,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::AlreadyExists && attempts < 100_000 =>
+                {
+                    attempts += 1
+                }
                 Err(err) => return Err(err.into()),
             }
         };
@@ -211,7 +249,10 @@ impl RunStore {
         match linked {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                let active_run_id = fs::read_to_string(&lock).unwrap_or_default().trim().to_string();
+                let active_run_id = fs::read_to_string(&lock)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
                 return Err(StoreError::FeatureBusy { active_run_id });
             }
             Err(err) => return Err(err.into()),
@@ -220,7 +261,11 @@ impl RunStore {
     }
 
     /// The run that currently holds the project+feature lock, if any.
-    pub fn active_run(&self, project_id: &str, feature_id: &str) -> Result<Option<String>, StoreError> {
+    pub fn active_run(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+    ) -> Result<Option<String>, StoreError> {
         let lock = self.lock_path(project_id, feature_id)?;
         match fs::read_to_string(&lock) {
             Ok(owner) => Ok(Some(owner.trim().to_string())),
@@ -230,7 +275,12 @@ impl RunStore {
     }
 
     /// Release the feature lock when the run ends; only its owner may.
-    pub fn finish_run(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<(), StoreError> {
+    pub fn finish_run(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        run_id: &str,
+    ) -> Result<(), StoreError> {
         let lock = self.lock_path(project_id, feature_id)?;
         // Held across the ownership check and the removal, and by every start,
         // so a duplicate release cannot remove a newer owner's lock.
@@ -243,7 +293,9 @@ impl RunStore {
             Err(err) => return Err(err.into()),
         };
         if owner != run_id {
-            return Err(StoreError::FeatureBusy { active_run_id: owner });
+            return Err(StoreError::FeatureBusy {
+                active_run_id: owner,
+            });
         }
         fs::remove_file(&lock)?;
         Ok(())
@@ -256,7 +308,11 @@ impl RunStore {
         let dir = self.root.join("guards").join(project_id);
         fs::create_dir_all(&dir)?;
         let name = path.file_stem().expect("lock path has a name").to_owned();
-        let file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(name))?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join(name))?;
         file.lock()?;
         Ok(file)
     }
@@ -265,19 +321,26 @@ impl RunStore {
         for part in [project_id, feature_id] {
             let valid = !part.is_empty()
                 && !part.starts_with('.')
-                && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
             if !valid {
                 return Err(StoreError::InvalidRunId(part.to_string()));
             }
         }
-        Ok(self.root.join("locks").join(project_id).join(format!("{feature_id}.lock")))
+        Ok(self
+            .root
+            .join("locks")
+            .join(project_id)
+            .join(format!("{feature_id}.lock")))
     }
 
     /// Write `run.json` for a new run, atomically; refuse to replace one.
     pub fn create(&self, record: &RunRecord) -> Result<(), StoreError> {
         let dir = self.run_dir(&record.run_id)?;
         // Serialize first: a record that cannot be written must not claim the id.
-        let json = serde_json::to_vec_pretty(record).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        let json = serde_json::to_vec_pretty(record)
+            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
         fs::create_dir_all(dir.parent().expect("run dir has a parent"))?;
         match fs::create_dir(&dir) {
             Ok(()) => {}
@@ -302,11 +365,18 @@ impl RunStore {
 
     /// Write `name` (a plain file name) in the run's directory, readable by its owner only. The bytes
     /// go to a temporary file that is renamed over `name`, so a reader never sees half a file.
-    pub fn write_run_file(&self, run_id: &str, name: &str, bytes: &[u8]) -> Result<PathBuf, StoreError> {
+    pub fn write_run_file(
+        &self,
+        run_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf, StoreError> {
         let dir = self.run_dir(run_id)?;
         let plain = !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']);
         if !plain {
-            return Err(StoreError::Corrupt(format!("{name:?} is not a plain file name")));
+            return Err(StoreError::Corrupt(format!(
+                "{name:?} is not a plain file name"
+            )));
         }
         if !dir.join("run.json").is_file() {
             return Err(StoreError::NotFound(run_id.to_string()));
@@ -332,11 +402,18 @@ impl RunStore {
 
     /// The bytes of `name` in the run's directory, or none when the run has no such file. A file longer
     /// than `max` bytes is an error, and is never read in full.
-    pub fn read_run_file(&self, run_id: &str, name: &str, max: u64) -> Result<Option<Vec<u8>>, StoreError> {
+    pub fn read_run_file(
+        &self,
+        run_id: &str,
+        name: &str,
+        max: u64,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
         let dir = self.run_dir(run_id)?;
         let plain = !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\']);
         if !plain {
-            return Err(StoreError::Corrupt(format!("{name:?} is not a plain file name")));
+            return Err(StoreError::Corrupt(format!(
+                "{name:?} is not a plain file name"
+            )));
         }
         let file = match fs::File::open(dir.join(name)) {
             Ok(file) => file,
@@ -344,9 +421,14 @@ impl RunStore {
             Err(err) => return Err(err.into()),
         };
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::Read::take(file, max.saturating_add(1)), &mut bytes)?;
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(file, max.saturating_add(1)),
+            &mut bytes,
+        )?;
         if bytes.len() as u64 > max {
-            return Err(StoreError::Corrupt(format!("{name} is larger than {max} bytes")));
+            return Err(StoreError::Corrupt(format!(
+                "{name} is larger than {max} bytes"
+            )));
         }
         Ok(Some(bytes))
     }
@@ -358,9 +440,13 @@ impl RunStore {
         if !dir.join("run.json").is_file() {
             return Err(StoreError::NotFound(event.run_id.clone()));
         }
-        let mut line = serde_json::to_vec(event).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        let mut line =
+            serde_json::to_vec(event).map_err(|err| StoreError::Corrupt(err.to_string()))?;
         line.push(b'\n');
-        let mut file = fs::OpenOptions::new().create(true).append(true).open(dir.join("events.jsonl"))?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("events.jsonl"))?;
         // One write call so concurrent appenders cannot interleave a line.
         file.write_all(&line)?;
         file.sync_data()?;
@@ -382,7 +468,9 @@ impl RunStore {
         text.lines()
             .enumerate()
             .map(|(index, line)| {
-                serde_json::from_str(line).map_err(|err| StoreError::Corrupt(format!("events.jsonl line {}: {err}", index + 1)))
+                serde_json::from_str(line).map_err(|err| {
+                    StoreError::Corrupt(format!("events.jsonl line {}: {err}", index + 1))
+                })
             })
             .collect()
     }

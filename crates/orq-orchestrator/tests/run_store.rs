@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use orq_orchestrator::{Event, RoleProfile, RunRecord, RunStore, StoreError};
 
 fn root(tag: &str) -> PathBuf {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-store-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-store-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -77,13 +78,19 @@ fn a_run_record_is_stored_under_runs_and_read_back_unchanged() {
     store.create(&original).unwrap();
 
     // Exactly the spec layout, with no temporary file left beside it.
-    assert_eq!(names(&root.join("runs").join("run-1")), vec!["run.json".to_string()]);
+    assert_eq!(
+        names(&root.join("runs").join("run-1")),
+        vec!["run.json".to_string()]
+    );
     assert_eq!(store.load("run-1").unwrap(), original);
 
     // The inputs are immutable: a second create never replaces them.
     let mut other = record("run-1");
     other.base_sha = "f".repeat(40);
-    assert!(matches!(store.create(&other), Err(StoreError::AlreadyExists(_))));
+    assert!(matches!(
+        store.create(&other),
+        Err(StoreError::AlreadyExists(_))
+    ));
     assert_eq!(store.load("run-1").unwrap(), original);
 }
 
@@ -91,15 +98,31 @@ fn a_run_record_is_stored_under_runs_and_read_back_unchanged() {
 fn run_ids_that_could_leave_the_store_are_refused_before_anything_is_written() {
     let root = root("ids");
     let store = RunStore::new(&root);
-    for bad in ["", ".", "..", "../escape", "a/b", "a\\b", "with space", "nul\0byte", ".hidden"] {
+    for bad in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "a/b",
+        "a\\b",
+        "with space",
+        "nul\0byte",
+        ".hidden",
+    ] {
         assert!(
             matches!(store.create(&record(bad)), Err(StoreError::InvalidRunId(_))),
             "{bad:?}"
         );
-        assert!(matches!(store.load(bad), Err(StoreError::InvalidRunId(_))), "{bad:?}");
+        assert!(
+            matches!(store.load(bad), Err(StoreError::InvalidRunId(_))),
+            "{bad:?}"
+        );
     }
     assert!(!root.join("runs").exists());
-    assert!(matches!(store.load("run-missing"), Err(StoreError::NotFound(_))));
+    assert!(matches!(
+        store.load("run-missing"),
+        Err(StoreError::NotFound(_))
+    ));
 }
 
 #[test]
@@ -113,7 +136,10 @@ fn events_are_appended_one_json_line_each_and_read_back_in_order() {
     store.append_event(&first).unwrap();
     store.append_event(&second).unwrap();
 
-    assert_eq!(store.events("run-1").unwrap(), vec![first.clone(), second.clone()]);
+    assert_eq!(
+        store.events("run-1").unwrap(),
+        vec![first.clone(), second.clone()]
+    );
 
     // The spec's envelope, one object per line, embedded newlines escaped.
     let text = fs::read_to_string(root.join("runs/run-1/events.jsonl")).unwrap();
@@ -121,15 +147,25 @@ fn events_are_appended_one_json_line_each_and_read_back_in_order() {
     assert_eq!(lines.len(), 2);
     let value: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     for field in [
-        "schema_version", "event_id", "run_id", "project_id", "feature_id", "type", "stage", "attempt",
-        "occurred_at", "payload",
+        "schema_version",
+        "event_id",
+        "run_id",
+        "project_id",
+        "feature_id",
+        "type",
+        "stage",
+        "attempt",
+        "occurred_at",
+        "payload",
     ] {
         assert!(value.get(field).is_some(), "missing {field}");
     }
     assert_eq!(value["type"], "run.created");
 
     // Appending never rewrites what is there.
-    store.append_event(&event("run-1", "e3", "stage.finished", 1)).unwrap();
+    store
+        .append_event(&event("run-1", "e3", "stage.finished", 1))
+        .unwrap();
     let after = fs::read_to_string(root.join("runs/run-1/events.jsonl")).unwrap();
     assert!(after.starts_with(&text));
     assert_eq!(store.events("run-1").unwrap().len(), 3);
@@ -150,12 +186,16 @@ fn events_for_unknown_runs_or_with_damaged_lines_are_reported_not_skipped() {
     store.create(&record("run-1")).unwrap();
     assert_eq!(store.events("run-1").unwrap(), vec![]);
 
-    store.append_event(&event("run-1", "e1", "run.created", 0)).unwrap();
+    store
+        .append_event(&event("run-1", "e1", "run.created", 0))
+        .unwrap();
     let path = root.join("runs/run-1/events.jsonl");
     let mut text = fs::read_to_string(&path).unwrap();
     text.push_str("{\"event_id\": \"torn\n");
     fs::write(&path, text).unwrap();
-    assert!(matches!(store.events("run-1"), Err(StoreError::Corrupt(why)) if why.contains("line 2")));
+    assert!(
+        matches!(store.events("run-1"), Err(StoreError::Corrupt(why)) if why.contains("line 2"))
+    );
 }
 
 #[test]
@@ -192,16 +232,25 @@ fn finishing_a_run_frees_the_feature_and_only_its_owner_can_free_it() {
         store.finish_run("repo-1", "COM-02", "run-2"),
         Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == "run-1"
     ));
-    assert!(matches!(store.start_run(&record("run-3")), Err(StoreError::FeatureBusy { .. })));
+    assert!(matches!(
+        store.start_run(&record("run-3")),
+        Err(StoreError::FeatureBusy { .. })
+    ));
 
     store.finish_run("repo-1", "COM-02", "run-1").unwrap();
     store.start_run(&record("run-3")).unwrap();
     // Releasing twice is harmless for the next owner's lock.
     assert!(store.finish_run("repo-1", "COM-02", "run-1").is_err());
-    assert!(matches!(store.start_run(&record("run-5")), Err(StoreError::FeatureBusy { .. })));
+    assert!(matches!(
+        store.start_run(&record("run-5")),
+        Err(StoreError::FeatureBusy { .. })
+    ));
 
     // Nothing but the lock file is left in the locks directory.
-    assert_eq!(names(&root.join("locks/repo-1")), vec!["COM-02.lock".to_string()]);
+    assert_eq!(
+        names(&root.join("locks/repo-1")),
+        vec!["COM-02.lock".to_string()]
+    );
 }
 
 #[cfg(unix)]
@@ -226,8 +275,17 @@ fn a_planted_symlink_at_the_old_temporary_name_is_never_written_through() {
     store.start_run(&record("run-1")).unwrap();
 
     assert_eq!(fs::read_to_string(&outside).unwrap(), "precious");
-    assert_eq!(fs::read_to_string(locks.join(".run-1.".to_string() + &std::process::id().to_string() + ".1.tmp")).unwrap(), "stale");
-    assert_eq!(fs::read_to_string(locks.join("COM-02.lock")).unwrap(), "run-1");
+    assert_eq!(
+        fs::read_to_string(
+            locks.join(".run-1.".to_string() + &std::process::id().to_string() + ".1.tmp")
+        )
+        .unwrap(),
+        "stale"
+    );
+    assert_eq!(
+        fs::read_to_string(locks.join("COM-02.lock")).unwrap(),
+        "run-1"
+    );
 }
 
 #[test]
@@ -237,7 +295,11 @@ fn a_duplicate_release_never_frees_the_next_owners_lock() {
     let root = root("release-race");
     let store = Arc::new(RunStore::new(&root));
     for round in 0..200 {
-        let (a, b, c) = (format!("a-{round}"), format!("b-{round}"), format!("c-{round}"));
+        let (a, b, c) = (
+            format!("a-{round}"),
+            format!("b-{round}"),
+            format!("c-{round}"),
+        );
         store.start_run(&record(&a)).unwrap();
 
         let gate = Arc::new(Barrier::new(3));
@@ -262,7 +324,10 @@ fn a_duplicate_release_never_frees_the_next_owners_lock() {
                 Err(other) => panic!("{other:?}"),
             }
         };
-        let released: usize = releasers.into_iter().map(|h| h.join().unwrap() as usize).sum();
+        let released: usize = releasers
+            .into_iter()
+            .map(|h| h.join().unwrap() as usize)
+            .sum();
         assert_eq!(released, 1, "exactly one release of {a} succeeds");
         assert!(started, "{b} starts once {a} is released");
 

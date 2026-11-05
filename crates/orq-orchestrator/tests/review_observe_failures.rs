@@ -14,13 +14,24 @@ fn world(tag: &str, provider: &str, repository: &str) -> RunStore {
 }
 
 fn world_at(tag: &str, provider: &str, repository: &str, remote_url: &str) -> RunStore {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-review-obs-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-review-obs-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
-    let out = std::process::Command::new("git").arg("-C").arg(&worktree).args(["init", "-q", "-b", "main"]).output().unwrap();
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["init", "-q", "-b", "main"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
-    let out = std::process::Command::new("git").arg("-C").arg(&worktree).args(["remote", "add", "origin", remote_url]).output().unwrap();
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["remote", "add", "origin", remote_url])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let store = RunStore::new(&root.join("state"));
     store
@@ -61,16 +72,25 @@ fn record_created(store: &RunStore, id: &str) {
         .unwrap();
 }
 
-
 #[test]
 fn a_provider_that_hangs_is_given_up_on_promptly() {
     let store = world("hang", "github", REPO);
     record_created(&store, "7");
-    let provider = FakeProvider::builder().reply_slowly(&["pr", "list"], "[]", 20_000).build();
+    let provider = FakeProvider::builder()
+        .reply_slowly(&["pr", "list"], "[]", 20_000)
+        .build();
     let started = std::time::Instant::now();
-    let outcome = observe_review(&store, "run-1", &provider.gh(), Duration::from_millis(400)).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(8), "{:?}", started.elapsed());
-    assert!(matches!(outcome, Err(ObservationError::Unavailable(ref d)) if d.contains("timed out")), "{outcome:?}");
+    let outcome =
+        observe_review(&store, "run-1", &provider.gh(), Duration::from_millis(400)).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(outcome, Err(ObservationError::Unavailable(ref d)) if d.contains("timed out")),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -79,7 +99,10 @@ fn a_missing_provider_program_is_unavailable() {
     record_created(&store, "7");
     let nowhere = std::path::Path::new("/nonexistent/orq-test/gh");
     let outcome = observe_review(&store, "run-1", nowhere, WAIT).unwrap();
-    assert!(matches!(outcome, Err(ObservationError::Unavailable(_))), "{outcome:?}");
+    assert!(
+        matches!(outcome, Err(ObservationError::Unavailable(_))),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -87,10 +110,14 @@ fn oversized_stderr_is_bounded_and_still_classified() {
     let store = world("noisy", "github", REPO);
     record_created(&store, "7");
     let stderr = format!("HTTP 403: Forbidden\n{}", "noise ".repeat(100_000));
-    let provider = FakeProvider::builder().fail(&["pr", "list"], 1, &stderr).build();
+    let provider = FakeProvider::builder()
+        .fail(&["pr", "list"], 1, &stderr)
+        .build();
     let outcome = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap();
     match outcome {
-        Err(ObservationError::PermissionDenied(detail)) => assert!(detail.chars().count() <= 600, "{}", detail.len()),
+        Err(ObservationError::PermissionDenied(detail)) => {
+            assert!(detail.chars().count() <= 600, "{}", detail.len())
+        }
         other => panic!("{other:?}"),
     }
 }

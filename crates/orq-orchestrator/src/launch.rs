@@ -5,8 +5,13 @@ use std::path::Path;
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunStore, StoreError};
 
-/// Record `run.launched` for `run_id`: the runner's process id and the log its output goes to.
-pub fn record_launch(store: &RunStore, run_id: &str, pid: u32, log: &Path) -> Result<(), StoreError> {
+/// Record `run.launched` for `run_id`: the runner's process id, its start time and the log its output goes to.
+pub fn record_launch(
+    store: &RunStore,
+    run_id: &str,
+    pid: u32,
+    log: &Path,
+) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
     store.append_event(&Event {
         schema_version: 1,
@@ -18,6 +23,11 @@ pub fn record_launch(store: &RunStore, run_id: &str, pid: u32, log: &Path) -> Re
         stage: None,
         attempt: 1,
         occurred_at: now_rfc3339(),
-        payload: serde_json::json!({ "pid": pid, "log": log.to_string_lossy() }),
+        payload: serde_json::json!({
+            "pid": pid,
+            "log": log.to_string_lossy(),
+            // Tells this process from a later one that reuses the pid; absent where there is no procfs.
+            "start_ticks": crate::interrupted::process_start_ticks_in(Path::new("/proc"), pid),
+        }),
     })
 }

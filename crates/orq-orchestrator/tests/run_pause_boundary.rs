@@ -2,15 +2,38 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
-use orq_orchestrator::{latest_checkpoint, pause_at_boundary, request_pause, summarize_run, Event, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{
+    latest_checkpoint, pause_at_boundary, request_pause, summarize_run, Event, RunPhase, RunRecord,
+    RunStore,
+};
 
 fn setup(tag: &str) -> (RunStore, PathBuf) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-pause-bnd-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-pause-bnd-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let repo = root.join("wt");
     std::fs::create_dir_all(&repo).unwrap();
-    for args in [&["init", "-q"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]] {
-        assert!(Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
     }
     let store = RunStore::new(&root.join("state"));
     store
@@ -56,7 +79,9 @@ fn without_a_request_the_boundary_does_nothing() {
 fn a_requested_pause_records_a_checkpoint_and_pauses_at_the_boundary() {
     let (store, _) = setup("req");
     request_pause(&store, "run-1").unwrap();
-    assert!(pause_at_boundary(&store, "run-1", &["implement", "gate"], "push", None, None).unwrap());
+    assert!(
+        pause_at_boundary(&store, "run-1", &["implement", "gate"], "push", None, None).unwrap()
+    );
     let events = store.events("run-1").unwrap();
     assert_eq!(summarize_run(&events).phase, RunPhase::Paused);
     let checkpoint = latest_checkpoint(&store, "run-1").unwrap().unwrap();
@@ -78,7 +103,10 @@ fn pausing_one_run_leaves_another_run_unchanged() {
     request_pause(&store, "run-1").unwrap();
     assert!(pause_at_boundary(&store, "run-1", &["implement"], "gate", None, None).unwrap());
     assert_eq!(store.events("run-2").unwrap().len(), before);
-    assert_eq!(summarize_run(&store.events("run-2").unwrap()).phase, RunPhase::Running);
+    assert_eq!(
+        summarize_run(&store.events("run-2").unwrap()).phase,
+        RunPhase::Running
+    );
     assert!(latest_checkpoint(&store, "run-2").unwrap().is_none());
     assert!(!pause_at_boundary(&store, "run-2", &["implement"], "gate", None, None).unwrap());
 }

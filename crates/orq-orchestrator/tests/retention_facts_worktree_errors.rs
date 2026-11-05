@@ -17,9 +17,15 @@ impl Drop for Restore<'_> {
 
 #[test]
 fn a_worktree_that_cannot_be_inspected_is_treated_as_in_use() {
-    let base = orq_test_support::process_temp_dir().join(format!("orq-wt-err-{}", std::process::id()));
+    let base =
+        orq_test_support::process_temp_dir().join(format!("orq-wt-err-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+    let roots = StorageRoots {
+        data: base.join("data"),
+        config: base.join("config"),
+        state: base.join("state"),
+        cache: base.join("cache"),
+    };
     roots.create_all().unwrap();
     let store = Store::open(&roots.database()).unwrap();
     let runs = RunStore::new(&base.join("runs-state"));
@@ -46,5 +52,8 @@ fn a_worktree_that_cannot_be_inspected_is_treated_as_in_use() {
         return; // running with privileges that ignore directory permissions
     }
     let all = collect_run_facts(&runs, &store).unwrap();
-    assert!(all["run-1"].worktree_in_use, "only NotFound proves the worktree is gone");
+    assert!(
+        all["run-1"].worktree_in_use,
+        "only NotFound proves the worktree is gone"
+    );
 }

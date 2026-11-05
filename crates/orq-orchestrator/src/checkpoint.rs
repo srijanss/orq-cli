@@ -24,7 +24,11 @@ pub struct Checkpoint {
 }
 
 /// Appends `checkpoint` to the events of `run_id`.
-pub fn record_checkpoint(store: &RunStore, run_id: &str, checkpoint: &Checkpoint) -> Result<(), StoreError> {
+pub fn record_checkpoint(
+    store: &RunStore,
+    run_id: &str,
+    checkpoint: &Checkpoint,
+) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
     store.append_event(&Event {
         schema_version: 1,
@@ -43,7 +47,11 @@ pub fn record_checkpoint(store: &RunStore, run_id: &str, checkpoint: &Checkpoint
 /// The most recent checkpoint of `run_id`, if one was recorded.
 pub fn latest_checkpoint(store: &RunStore, run_id: &str) -> Result<Option<Checkpoint>, StoreError> {
     let events = store.events(run_id)?;
-    Ok(events.iter().rev().find(|e| e.kind == KIND).and_then(|e| serde_json::from_value(e.payload.clone()).ok()))
+    Ok(events
+        .iter()
+        .rev()
+        .find(|e| e.kind == KIND)
+        .and_then(|e| serde_json::from_value(e.payload.clone()).ok()))
 }
 
 /// Called by the runner between stages. When a pause was requested, records a checkpoint (the stages
@@ -58,7 +66,9 @@ pub fn pause_at_boundary(
     review_request_ref: Option<&str>,
 ) -> Result<bool, StoreError> {
     let events = store.events(run_id)?;
-    if crate::run_status::summarize_run(&events).phase != crate::run_status::RunPhase::PauseRequested {
+    if crate::run_status::summarize_run(&events).phase
+        != crate::run_status::RunPhase::PauseRequested
+    {
         return Ok(false);
     }
     let record = store.load(run_id)?;
@@ -69,7 +79,10 @@ pub fn pause_at_boundary(
         .output()
         .map_err(StoreError::from)?;
     if !head.status.success() {
-        return Err(StoreError::Corrupt(format!("cannot read HEAD of {}", record.worktree.display())));
+        return Err(StoreError::Corrupt(format!(
+            "cannot read HEAD of {}",
+            record.worktree.display()
+        )));
     }
     let checkpoint = Checkpoint {
         completed_stages: completed_stages.iter().map(|s| s.to_string()).collect(),
@@ -99,35 +112,62 @@ pub fn pause_at_boundary(
 /// Whether a paused run can be resumed from its latest checkpoint: the run is paused, the worktree
 /// is the run's own checkout of its branch, HEAD is where the pause left it and no rebase is under
 /// way. The error is the reason; nothing is changed either way.
-pub fn validate_checkpoint(store: &RunStore, repo: &std::path::Path, run_id: &str) -> Result<Checkpoint, String> {
-    let events = store.events(run_id).map_err(|e| format!("cannot read the run: {e:?}"))?;
+pub fn validate_checkpoint(
+    store: &RunStore,
+    repo: &std::path::Path,
+    run_id: &str,
+) -> Result<Checkpoint, String> {
+    let events = store
+        .events(run_id)
+        .map_err(|e| format!("cannot read the run: {e:?}"))?;
     let phase = crate::run_status::summarize_run(&events).phase;
     if phase != crate::run_status::RunPhase::Paused {
-        return Err(format!("{run_id} is {}; only a paused run can be resumed", phase.as_str()));
+        return Err(format!(
+            "{run_id} is {}; only a paused run can be resumed",
+            phase.as_str()
+        ));
     }
     let checkpoint = latest_checkpoint(store, run_id)
         .map_err(|e| format!("cannot read the checkpoint: {e:?}"))?
         .ok_or_else(|| format!("{run_id} has no checkpoint"))?;
-    let record = store.load(run_id).map_err(|e| format!("cannot read the run: {e:?}"))?;
+    let record = store
+        .load(run_id)
+        .map_err(|e| format!("cannot read the run: {e:?}"))?;
     if checkpoint.worktree != record.worktree || checkpoint.branch != record.branch {
         return Err("the checkpoint does not match the run's branch and worktree".to_string());
     }
     if !checkpoint.worktree.is_dir() {
-        return Err(format!("the worktree {} no longer exists", checkpoint.worktree.display()));
+        return Err(format!(
+            "the worktree {} no longer exists",
+            checkpoint.worktree.display()
+        ));
     }
     if !crate::reap::within_worktrees_dir(repo, &checkpoint.worktree) {
-        return Err(format!("{} is not under the repository's worktrees directory", checkpoint.worktree.display()));
+        return Err(format!(
+            "{} is not under the repository's worktrees directory",
+            checkpoint.worktree.display()
+        ));
     }
-    if let Some(problem) = crate::reap::checkout_problem(repo, &checkpoint.worktree, &checkpoint.branch).map_err(|e| format!("cannot inspect the worktree: {e:?}"))? {
+    if let Some(problem) =
+        crate::reap::checkout_problem(repo, &checkpoint.worktree, &checkpoint.branch)
+            .map_err(|e| format!("cannot inspect the worktree: {e:?}"))?
+    {
         return Err(problem);
     }
-    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&checkpoint.worktree).args(args).output();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&checkpoint.worktree)
+            .args(args)
+            .output()
+    };
     let head = git(&["rev-parse", "HEAD"]).map_err(|e| format!("cannot run git: {e}"))?;
     if String::from_utf8_lossy(&head.stdout).trim() != checkpoint.head_sha {
         return Err("HEAD moved since the run was paused".to_string());
     }
     for marker in ["rebase-merge", "rebase-apply"] {
-        let path = git(&["rev-parse", "--path-format=absolute", "--git-path", marker]).map_err(|e| format!("cannot run git: {e}"))?;
+        let path = git(&["rev-parse", "--path-format=absolute", "--git-path", marker])
+            .map_err(|e| format!("cannot run git: {e}"))?;
         if std::path::Path::new(String::from_utf8_lossy(&path.stdout).trim()).exists() {
             return Err("a rebase is in progress in the worktree".to_string());
         }

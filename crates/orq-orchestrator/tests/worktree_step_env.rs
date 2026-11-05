@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use orq_orchestrator::{run_gate_stage_with_env, run_setup_with_env, Gate, GateOutcome, RunRecord, RunStore};
+use orq_orchestrator::{
+    run_gate_stage_with_env, run_setup_with_env, Gate, GateOutcome, RunRecord, RunStore,
+};
 
 fn dir(tag: &str) -> PathBuf {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-step-env-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-step-env-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("worktree")).unwrap();
     root
@@ -24,13 +27,23 @@ fn a_setup_step_sees_the_worktrees_database_names() {
     let root = dir("setup");
     let worktree = root.join("worktree");
 
-    run_setup_with_env(&worktree, &[sh("printf %s \"$DB_NAME\" > seen.txt")], &root.join("setup.log"), &env()).unwrap();
+    run_setup_with_env(
+        &worktree,
+        &[sh("printf %s \"$DB_NAME\" > seen.txt")],
+        &root.join("setup.log"),
+        &env(),
+    )
+    .unwrap();
 
-    assert_eq!(fs::read_to_string(worktree.join("seen.txt")).unwrap(), "shop_fix_com_01");
+    assert_eq!(
+        fs::read_to_string(worktree.join("seen.txt")).unwrap(),
+        "shop_fix_com_01"
+    );
 }
 
 #[test]
-fn a_gate_step_sees_the_worktrees_database_names_and_still_nothing_else_of_the_callers_environment() {
+fn a_gate_step_sees_the_worktrees_database_names_and_still_nothing_else_of_the_callers_environment()
+{
     let root = dir("gate");
     let worktree = root.join("worktree");
     let store = RunStore::new(&root.join("state"));
@@ -49,11 +62,19 @@ fn a_gate_step_sees_the_worktrees_database_names_and_still_nothing_else_of_the_c
             profiles: BTreeMap::new(),
         })
         .unwrap();
-    let gate = Gate::Steps { steps: vec![sh("printf %s \"$DB_NAME|${CARGO_HOME-unset}\" > seen.txt")], notes: Vec::new() };
+    let gate = Gate::Steps {
+        steps: vec![sh("printf %s \"$DB_NAME|${CARGO_HOME-unset}\" > seen.txt")],
+        notes: Vec::new(),
+    };
     std::env::set_var("CARGO_HOME", "/must-not-leak");
 
-    let outcome = run_gate_stage_with_env(&store, "run-1", &gate, true, &root.join("gate.log"), &env()).unwrap();
+    let outcome =
+        run_gate_stage_with_env(&store, "run-1", &gate, true, &root.join("gate.log"), &env())
+            .unwrap();
 
     assert_eq!(outcome, GateOutcome::Passed);
-    assert_eq!(fs::read_to_string(worktree.join("seen.txt")).unwrap(), "shop_fix_com_01|unset");
+    assert_eq!(
+        fs::read_to_string(worktree.join("seen.txt")).unwrap(),
+        "shop_fix_com_01|unset"
+    );
 }

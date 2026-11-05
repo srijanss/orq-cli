@@ -69,7 +69,12 @@ pub fn request_pause(store: &RunStore, run_id: &str) -> Result<(), String> {
         RunPhase::PauseRequested | RunPhase::Paused => {
             return Err(format!("{run_id} is already {}", phase.as_str()));
         }
-        other => return Err(format!("{run_id} is {}; only a running run can be paused", other.as_str())),
+        other => {
+            return Err(format!(
+                "{run_id} is {}; only a running run can be paused",
+                other.as_str()
+            ))
+        }
     }
     store
         .append_event(&Event {
@@ -89,12 +94,20 @@ pub fn request_pause(store: &RunStore, run_id: &str) -> Result<(), String> {
 
 /// Record that a paused run's `role` should continue on `profile`. Only a paused run, which sits at
 /// a safe checkpoint, accepts the request; any other run is refused and nothing is recorded.
-pub fn request_model_switch(store: &RunStore, run_id: &str, role: &str, profile: &str) -> Result<(), String> {
+pub fn request_model_switch(
+    store: &RunStore,
+    run_id: &str,
+    role: &str,
+    profile: &str,
+) -> Result<(), String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
     if phase != RunPhase::Paused {
-        return Err(format!("{run_id} is {}; only a paused run can switch models", phase.as_str()));
+        return Err(format!(
+            "{run_id} is {}; only a paused run can switch models",
+            phase.as_str()
+        ));
     }
     store
         .append_event(&Event {
@@ -135,7 +148,13 @@ pub fn record_model_switched(
 }
 
 /// A stage needed `capability` and `harness` does not have it, so the stage went on without it.
-pub fn record_capability_skipped(store: &RunStore, record: &RunRecord, stage: &str, harness: &str, capability: &str) -> Result<(), StoreError> {
+pub fn record_capability_skipped(
+    store: &RunStore,
+    record: &RunRecord,
+    stage: &str,
+    harness: &str,
+    capability: &str,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -163,7 +182,11 @@ pub struct RunSummary {
 /// run's state wins, so a stage that starts again after a failure is running again; unknown
 /// event kinds are ignored so newer writers do not break older readers.
 pub fn summarize_run(events: &[Event]) -> RunSummary {
-    let mut summary = RunSummary { phase: RunPhase::Running, stage: None, reason: None };
+    let mut summary = RunSummary {
+        phase: RunPhase::Running,
+        stage: None,
+        reason: None,
+    };
     for event in events {
         let phase = match event.kind.as_str() {
             // A requested pause or a pause itself outlives the stages that finish around it.
@@ -190,7 +213,8 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             // Cleanup keeps the worktree of an unsuccessful run too: that says nothing about how
             // the run ended, so it never overrides a failure or a block, nor an unsuccessful run.
             "worktree.kept" => {
-                let unsuccessful = event.payload.get("run_succeeded").and_then(|v| v.as_bool()) == Some(false);
+                let unsuccessful =
+                    event.payload.get("run_succeeded").and_then(|v| v.as_bool()) == Some(false);
                 if unsuccessful || matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked) {
                     continue;
                 }
@@ -200,9 +224,11 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
         };
         summary.phase = phase;
         summary.reason = match phase {
-            RunPhase::Failed | RunPhase::Blocked => {
-                event.payload.get("reason").and_then(|r| r.as_str()).map(str::to_string)
-            }
+            RunPhase::Failed | RunPhase::Blocked => event
+                .payload
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(str::to_string),
             _ => None,
         };
         if event.kind.starts_with("stage.") {

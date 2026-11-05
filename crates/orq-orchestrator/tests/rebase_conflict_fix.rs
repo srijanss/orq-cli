@@ -4,18 +4,30 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use orq_orchestrator::{
-    fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome, ImplementSession, RebaseOutcome, RunRecord, RunStore,
+    fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome, ImplementSession, RebaseOutcome,
+    RunRecord, RunStore,
 };
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -28,14 +40,37 @@ struct World {
 /// A run whose branch conflicts with the target on `a.txt`; the rebase has
 /// already stopped, so the worktree is mid-rebase when `conflicted` is true.
 fn world(tag: &str, conflicted: bool) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-conflict-fix-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-conflict-fix-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let remote = root.join("remote.git");
-    git(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
     let worktree = root.join("worktree");
-    git(&root, &["clone", "-q", remote.to_str().unwrap(), worktree.to_str().unwrap()]);
-    for (key, value) in [("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            worktree.to_str().unwrap(),
+        ],
+    );
+    for (key, value) in [
+        ("user.name", "t"),
+        ("user.email", "t@example.com"),
+        ("commit.gpgsign", "false"),
+    ] {
         git(&worktree, &["config", key, value]);
     }
     fs::write(worktree.join("a.txt"), "a\n").unwrap();
@@ -47,7 +82,15 @@ fn world(tag: &str, conflicted: bool) -> World {
     fs::write(worktree.join("a.txt"), "mine\n").unwrap();
     git(&worktree, &["commit", "-q", "-am", "edit a"]);
     let other = root.join("other");
-    git(&root, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
     fs::write(other.join("a.txt"), "theirs\n").unwrap();
     git(&other, &["commit", "-q", "-am", "target a"]);
     git(&other, &["push", "-q", "origin", "HEAD:main"]);
@@ -72,7 +115,11 @@ fn world(tag: &str, conflicted: bool) -> World {
         let outcome = rebase_onto_target(&store, "run-1", true).unwrap();
         assert!(matches!(outcome, RebaseOutcome::Conflict { .. }));
     }
-    World { store, root, worktree }
+    World {
+        store,
+        root,
+        worktree,
+    }
 }
 
 fn run_agent(w: &World, script: &str) -> Result<ConflictFixOutcome, orq_orchestrator::StoreError> {
@@ -86,39 +133,64 @@ fn run_agent(w: &World, script: &str) -> Result<ConflictFixOutcome, orq_orchestr
         session_id: None,
         log: &log,
         terminal: false,
-            exit_marker: None,
+        exit_marker: None,
     };
     fix_rebase_conflicts(&w.store, "run-1", &session)
 }
 
 fn kinds(w: &World) -> Vec<(String, Option<String>)> {
-    w.store.events("run-1").unwrap().into_iter().map(|e| (e.kind, e.stage)).collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.kind, e.stage))
+        .collect()
 }
 
 #[test]
 fn a_session_that_finishes_the_rebase_unblocks_the_run() {
     let w = world("resolved", true);
 
-    let outcome = run_agent(&w, "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue").unwrap();
+    let outcome = run_agent(
+        &w,
+        "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue",
+    )
+    .unwrap();
 
     assert_eq!(outcome, ConflictFixOutcome::Resolved);
-    assert_eq!(git(&w.worktree, &["symbolic-ref", "HEAD"]), "refs/heads/fix--COM-02");
-    assert_eq!(fs::read_to_string(w.worktree.join("a.txt")).unwrap(), "merged\n");
+    assert_eq!(
+        git(&w.worktree, &["symbolic-ref", "HEAD"]),
+        "refs/heads/fix--COM-02"
+    );
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("a.txt")).unwrap(),
+        "merged\n"
+    );
     let events = kinds(&w);
-    assert_eq!(events.last().unwrap(), &("rebase.completed".to_string(), Some("rebase".to_string())));
+    assert_eq!(
+        events.last().unwrap(),
+        &("rebase.completed".to_string(), Some("rebase".to_string()))
+    );
     assert!(events.contains(&("stage.started".to_string(), Some("rebase_fix".to_string()))));
     let target = git(&w.root.join("remote.git"), &["rev-parse", "main"]);
     let completed = w.store.events("run-1").unwrap().pop().unwrap();
-    assert_eq!(completed.payload["target_sha"], target.as_str(), "the captured target is recorded");
+    assert_eq!(
+        completed.payload["target_sha"],
+        target.as_str(),
+        "the captured target is recorded"
+    );
 }
 
 #[test]
-fn a_session_that_leaves_the_conflict_keeps_the_worktree_mid_rebase_and_the_run_blocked_with_a_hint() {
+fn a_session_that_leaves_the_conflict_keeps_the_worktree_mid_rebase_and_the_run_blocked_with_a_hint(
+) {
     let w = world("unresolved", true);
 
     let outcome = run_agent(&w, "true").unwrap();
 
-    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else {
+        panic!("expected blocked, got {outcome:?}")
+    };
     assert!(reason.contains("git rebase --continue"), "{reason}");
     assert!(reason.contains(w.worktree.to_str().unwrap()), "{reason}");
     assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"));
@@ -130,15 +202,26 @@ fn a_session_that_leaves_the_conflict_keeps_the_worktree_mid_rebase_and_the_run_
 
 #[test]
 fn a_session_that_aborts_or_quits_the_rebase_does_not_count_as_resolved() {
-    for (tag, script) in [("abort", "git rebase --abort"), ("quit", "git rebase --quit")] {
+    for (tag, script) in [
+        ("abort", "git rebase --abort"),
+        ("quit", "git rebase --quit"),
+    ] {
         let w = world(tag, true);
 
         let outcome = run_agent(&w, script).unwrap();
 
-        let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("{tag}: expected blocked, got {outcome:?}") };
-        assert!(reason.contains(w.worktree.to_str().unwrap()), "{tag}: {reason}");
+        let ConflictFixOutcome::StillBlocked { reason } = outcome else {
+            panic!("{tag}: expected blocked, got {outcome:?}")
+        };
+        assert!(
+            reason.contains(w.worktree.to_str().unwrap()),
+            "{tag}: {reason}"
+        );
         let events = kinds(&w);
-        assert!(!events.iter().any(|(kind, _)| kind == "rebase.completed"), "{tag}: {events:?}");
+        assert!(
+            !events.iter().any(|(kind, _)| kind == "rebase.completed"),
+            "{tag}: {events:?}"
+        );
         assert_eq!(events.last().unwrap().0, "run.blocked", "{tag}");
     }
 }
@@ -153,7 +236,9 @@ fn a_session_that_resets_the_run_branch_to_the_target_has_lost_the_work_and_is_n
     )
     .unwrap();
 
-    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else {
+        panic!("expected blocked, got {outcome:?}")
+    };
     assert!(reason.contains(w.worktree.to_str().unwrap()), "{reason}");
     assert!(!event_kinds(&w).contains(&"rebase.completed".to_string()));
 }
@@ -168,9 +253,19 @@ fn a_failing_session_with_the_conflict_left_keeps_the_run_blocked_and_records_th
 
     let outcome = run_agent(&w, "exit 3").unwrap();
 
-    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else {
+        panic!("expected blocked, got {outcome:?}")
+    };
     assert!(reason.contains("git rebase --continue"), "{reason}");
-    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "run.blocked"]);
+    assert_eq!(
+        event_kinds(&w),
+        [
+            "run.blocked",
+            "stage.started",
+            "stage.failed",
+            "run.blocked"
+        ]
+    );
     assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"));
 }
 
@@ -186,14 +281,24 @@ fn a_session_that_cannot_start_keeps_the_run_blocked_and_records_the_failure() {
         session_id: None,
         log: &log,
         terminal: false,
-            exit_marker: None,
+        exit_marker: None,
     };
 
     let outcome = fix_rebase_conflicts(&w.store, "run-1", &session).unwrap();
 
-    let ConflictFixOutcome::StillBlocked { reason } = outcome else { panic!("expected blocked, got {outcome:?}") };
+    let ConflictFixOutcome::StillBlocked { reason } = outcome else {
+        panic!("expected blocked, got {outcome:?}")
+    };
     assert!(reason.contains("git rebase --continue"), "{reason}");
-    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "run.blocked"]);
+    assert_eq!(
+        event_kinds(&w),
+        [
+            "run.blocked",
+            "stage.started",
+            "stage.failed",
+            "run.blocked"
+        ]
+    );
     assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"));
 }
 
@@ -208,14 +313,36 @@ fn a_session_that_finishes_the_rebase_and_then_exits_nonzero_is_still_resolved()
     .unwrap();
 
     assert_eq!(outcome, ConflictFixOutcome::Resolved);
-    assert_eq!(event_kinds(&w), ["run.blocked", "stage.started", "stage.failed", "rebase.completed"]);
+    assert_eq!(
+        event_kinds(&w),
+        [
+            "run.blocked",
+            "stage.started",
+            "stage.failed",
+            "rebase.completed"
+        ]
+    );
 }
 
 /// Like `run_agent`, for another run and worktree.
-fn run_agent_in(w: &World, run_id: &str, cwd: &Path, script: &str) -> Result<ConflictFixOutcome, orq_orchestrator::StoreError> {
+fn run_agent_in(
+    w: &World,
+    run_id: &str,
+    cwd: &Path,
+    script: &str,
+) -> Result<ConflictFixOutcome, orq_orchestrator::StoreError> {
     let args = vec!["-c".to_string(), script.to_string()];
     let log = w.root.join(format!("{run_id}.log"));
-    let session = ImplementSession { program: "sh", args: &args, env: &[], cwd, session_id: None, log: &log, terminal: false, exit_marker: None };
+    let session = ImplementSession {
+        program: "sh",
+        args: &args,
+        env: &[],
+        cwd,
+        session_id: None,
+        log: &log,
+        terminal: false,
+        exit_marker: None,
+    };
     fix_rebase_conflicts(&w.store, run_id, &session)
 }
 
@@ -223,17 +350,32 @@ fn run_agent_in(w: &World, run_id: &str, cwd: &Path, script: &str) -> Result<Con
 fn restart_rebase_with(w: &World, flag: &str) {
     git(&w.worktree, &["rebase", "--abort"]);
     git(&w.worktree, &["fetch", "-q", "origin"]);
-    let out = Command::new("git").arg("-C").arg(&w.worktree).args(["rebase", flag, "origin/main"]).output().unwrap();
-    assert!(!out.status.success(), "the rebase must stop on the conflict");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&w.worktree)
+        .args(["rebase", flag, "origin/main"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "the rebase must stop on the conflict"
+    );
 }
 
 #[test]
 fn the_apply_backend_is_resolved_the_same_way() {
     let w = world("apply", true);
     restart_rebase_with(&w, "--apply");
-    assert!(w.worktree.join(".git/rebase-apply").is_dir() && !w.worktree.join(".git/rebase-merge").exists());
+    assert!(
+        w.worktree.join(".git/rebase-apply").is_dir()
+            && !w.worktree.join(".git/rebase-merge").exists()
+    );
 
-    let outcome = run_agent(&w, "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue").unwrap();
+    let outcome = run_agent(
+        &w,
+        "printf 'merged\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue",
+    )
+    .unwrap();
 
     assert_eq!(outcome, ConflictFixOutcome::Resolved);
 }
@@ -254,7 +396,11 @@ fn missing_or_empty_onto_metadata_is_an_error_and_no_session_starts() {
 
         assert!(result.is_err(), "{tag}");
         assert!(!marker.exists(), "{tag}: the session must not start");
-        assert_eq!(w.store.events("run-1").unwrap().len(), events_before, "{tag}: nothing recorded");
+        assert_eq!(
+            w.store.events("run-1").unwrap().len(),
+            events_before,
+            "{tag}: nothing recorded"
+        );
     }
 }
 
@@ -262,10 +408,29 @@ fn missing_or_empty_onto_metadata_is_an_error_and_no_session_starts() {
 fn a_linked_worktree_is_resolved_through_its_own_git_dir() {
     let w = world("linked", false);
     let second = w.root.join("second");
-    git(&w.worktree, &["worktree", "add", "-q", "-b", "fix--COM-03", second.to_str().unwrap(), "fix--COM-02"]);
+    git(
+        &w.worktree,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-03",
+            second.to_str().unwrap(),
+            "fix--COM-02",
+        ],
+    );
     git(&second, &["fetch", "-q", "origin"]);
-    let out = Command::new("git").arg("-C").arg(&second).args(["rebase", "origin/main"]).output().unwrap();
-    assert!(!out.status.success(), "the rebase must stop on the conflict");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&second)
+        .args(["rebase", "origin/main"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "the rebase must stop on the conflict"
+    );
     let mut record = w.store.load("run-1").unwrap();
     record.run_id = "run-2".to_string();
     record.branch = "fix--COM-03".to_string();
@@ -281,7 +446,10 @@ fn a_linked_worktree_is_resolved_through_its_own_git_dir() {
     .unwrap();
 
     assert_eq!(outcome, ConflictFixOutcome::Resolved);
-    assert_eq!(git(&second, &["symbolic-ref", "HEAD"]), "refs/heads/fix--COM-03");
+    assert_eq!(
+        git(&second, &["symbolic-ref", "HEAD"]),
+        "refs/heads/fix--COM-03"
+    );
 }
 
 #[test]

@@ -15,7 +15,10 @@ use std::path::Path;
 pub enum Gate {
     /// Run these argv steps in order in the worktree; the gate fails if any
     /// step fails. `notes` records stacks that were seen but skipped.
-    Steps { steps: Vec<Vec<String>>, notes: Vec<String> },
+    Steps {
+        steps: Vec<Vec<String>>,
+        notes: Vec<String>,
+    },
     /// No gate: the run continues, with the reason recorded.
     Skipped { reason: String },
 }
@@ -29,7 +32,9 @@ pub enum GateError {
 impl std::fmt::Display for GateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GateError::EmptyProgram => write!(f, "the configured gate command has no program to run"),
+            GateError::EmptyProgram => {
+                write!(f, "the configured gate command has no program to run")
+            }
         }
     }
 }
@@ -57,12 +62,27 @@ pub struct GateOptions<'a> {
 }
 
 /// Like [`choose_gate`], with a scope for Django projects.
-pub fn choose_gate_scoped(worktree: &Path, configured: Option<&[String]>, changed: Option<&[String]>) -> Result<Gate, GateError> {
-    choose_gate_with(worktree, configured, &GateOptions { changed, ..GateOptions::default() })
+pub fn choose_gate_scoped(
+    worktree: &Path,
+    configured: Option<&[String]>,
+    changed: Option<&[String]>,
+) -> Result<Gate, GateError> {
+    choose_gate_with(
+        worktree,
+        configured,
+        &GateOptions {
+            changed,
+            ..GateOptions::default()
+        },
+    )
 }
 
 /// Like [`choose_gate`], with the optional steps `options` asks for. A configured gate ignores them.
-pub fn choose_gate_with(worktree: &Path, configured: Option<&[String]>, options: &GateOptions) -> Result<Gate, GateError> {
+pub fn choose_gate_with(
+    worktree: &Path,
+    configured: Option<&[String]>,
+    options: &GateOptions,
+) -> Result<Gate, GateError> {
     if let Some(argv) = configured.filter(|argv| !argv.is_empty()) {
         if argv[0].trim().is_empty() {
             return Err(GateError::EmptyProgram);
@@ -92,7 +112,12 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| word.to_string()).collect()
 }
 
-fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
+fn python_steps(
+    dir: &Path,
+    options: &GateOptions,
+    steps: &mut Vec<Vec<String>>,
+    notes: &mut Vec<String>,
+) {
     let django = dir.join("src/manage.py").is_file();
     if !dir.join("uv.lock").is_file() {
         return;
@@ -104,23 +129,38 @@ fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>,
             .ok()
             .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
         {
-            Some(doc) => pytest_in_pyproject = doc.get("tool").and_then(|tool| tool.get("pytest")).is_some(),
-            None => notes.push("pyproject.toml could not be read as TOML; settings in it were ignored".to_string()),
+            Some(doc) => {
+                pytest_in_pyproject = doc
+                    .get("tool")
+                    .and_then(|tool| tool.get("pytest"))
+                    .is_some()
+            }
+            None => notes.push(
+                "pyproject.toml could not be read as TOML; settings in it were ignored".to_string(),
+            ),
         }
     }
-    let pytest_configured = pytest_in_pyproject
-        || dir.join("pytest.ini").is_file()
-        || dir.join("tests").is_dir();
+    let pytest_configured =
+        pytest_in_pyproject || dir.join("pytest.ini").is_file() || dir.join("tests").is_dir();
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
         // A change to ruff's configuration can affect every file, so it checks the whole project.
         let config_changed = changed.is_some_and(|changed| {
-            changed.iter().any(|path| matches!(path.rsplit('/').next(), Some("ruff.toml" | ".ruff.toml" | "pyproject.toml")))
+            changed.iter().any(|path| {
+                matches!(
+                    path.rsplit('/').next(),
+                    Some("ruff.toml" | ".ruff.toml" | "pyproject.toml")
+                )
+            })
         });
         match changed.filter(|_| !config_changed) {
             Some(changed) => {
-                let mut files: Vec<String> = changed.iter().filter(|path| path.ends_with(".py") && dir.join(path).is_file()).cloned().collect();
+                let mut files: Vec<String> = changed
+                    .iter()
+                    .filter(|path| path.ends_with(".py") && dir.join(path).is_file())
+                    .cloned()
+                    .collect();
                 files.sort();
                 files.dedup();
                 if !files.is_empty() {
@@ -134,7 +174,15 @@ fn python_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>,
         }
     }
     if django {
-        steps.push(argv(&["uv", "run", "python", "src/manage.py", "makemigrations", "--check", "--dry-run"]));
+        steps.push(argv(&[
+            "uv",
+            "run",
+            "python",
+            "src/manage.py",
+            "makemigrations",
+            "--check",
+            "--dry-run",
+        ]));
     }
     if !pytest_configured {
         return;
@@ -160,7 +208,10 @@ fn changed_tested_apps(dir: &Path, changed: &[String]) -> Option<Vec<String>> {
         if [".md", ".rst"].iter().any(|ext| path.ends_with(ext)) {
             continue;
         }
-        let app = path.strip_prefix("src/").and_then(|rest| rest.split_once('/')).map(|(app, _)| format!("src/{app}"))?;
+        let app = path
+            .strip_prefix("src/")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(app, _)| format!("src/{app}"))?;
         let package = dir.join(&app).join("tests").is_dir();
         let module = dir.join(&app).join("tests.py").is_file();
         if !package && !module {
@@ -178,7 +229,12 @@ fn changed_tested_apps(dir: &Path, changed: &[String]) -> Option<Vec<String>> {
     Some(targets)
 }
 
-fn node_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>, notes: &mut Vec<String>) {
+fn node_steps(
+    dir: &Path,
+    options: &GateOptions,
+    steps: &mut Vec<Vec<String>>,
+    notes: &mut Vec<String>,
+) {
     let manifest = dir.join("package.json");
     if !manifest.is_file() {
         return;
@@ -207,7 +263,9 @@ fn node_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>, n
             scripts
                 .iter()
                 .filter(|(name, command)| {
-                    command.as_str().is_some_and(|text| name.as_str() != "test" || !is_npm_placeholder_test(text))
+                    command.as_str().is_some_and(|text| {
+                        name.as_str() != "test" || !is_npm_placeholder_test(text)
+                    })
                 })
                 .map(|(name, _)| name.as_str())
                 .collect()
@@ -250,7 +308,15 @@ fn rust_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>) {
     if dir.join("Cargo.toml").is_file() {
         if options.lint {
             steps.push(argv(&["cargo", "fmt", "--check"]));
-            steps.push(argv(&["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]));
+            steps.push(argv(&[
+                "cargo",
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ]));
         }
         steps.push(argv(&["cargo", "test", "--workspace"]));
     }

@@ -25,7 +25,9 @@ pub enum SetupError {
 impl std::fmt::Display for SetupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SetupError::EmptyProgram => write!(f, "a configured setup command has no program to run"),
+            SetupError::EmptyProgram => {
+                write!(f, "a configured setup command has no program to run")
+            }
         }
     }
 }
@@ -46,14 +48,22 @@ impl std::fmt::Display for SetupFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Arguments can carry tokens, so only the program is ever shown.
         let program = self.step.first().map(String::as_str).unwrap_or("");
-        write!(f, "setup step {program:?} failed: {} (log: {})", self.reason, self.log.display())
+        write!(
+            f,
+            "setup step {program:?} failed: {} (log: {})",
+            self.reason,
+            self.log.display()
+        )
     }
 }
 
 impl std::error::Error for SetupFailure {}
 
 pub fn plan_setup(worktree: &Path, configured: &[Vec<String>]) -> Result<SetupPlan, SetupError> {
-    if configured.iter().any(|step| step.first().is_none_or(|program| program.trim().is_empty())) {
+    if configured
+        .iter()
+        .any(|step| step.first().is_none_or(|program| program.trim().is_empty()))
+    {
         return Err(SetupError::EmptyProgram);
     }
     let mut steps = configured.to_vec();
@@ -85,7 +95,9 @@ fn install_step(dir: &Path, notes: &mut Vec<String>) -> Option<Vec<String>> {
     } else if dir.join("package-lock.json").is_file() {
         argv(&["npm", "ci"])
     } else {
-        notes.push("package.json found but no lockfile; dependencies were not installed".to_string());
+        notes.push(
+            "package.json found but no lockfile; dependencies were not installed".to_string(),
+        );
         return None;
     };
     Some(step)
@@ -116,12 +128,23 @@ pub fn run_setup_with_env(
         .open(log)
         .map_err(|err| failure(&[], None, format!("could not open the log: {err}")))?;
     for step in steps {
-        let Some((program, args)) = step.split_first().filter(|(program, _)| !program.trim().is_empty()) else {
-            return Err(failure(step, None, "the step has no program to run".to_string()));
+        let Some((program, args)) = step
+            .split_first()
+            .filter(|(program, _)| !program.trim().is_empty())
+        else {
+            return Err(failure(
+                step,
+                None,
+                "the step has no program to run".to_string(),
+            ));
         };
         let _ = writeln!(file, "$ {program} ({} arguments)", args.len());
-        let out = file.try_clone().map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
-        let err_out = file.try_clone().map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
+        let out = file
+            .try_clone()
+            .map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
+        let err_out = file
+            .try_clone()
+            .map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
         let status = Command::new(program)
             .args(args)
             .current_dir(worktree)

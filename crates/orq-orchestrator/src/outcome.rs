@@ -16,21 +16,46 @@ pub enum ImplementCheck {
     Blocked { reason: String },
 }
 
-pub fn check_implement_outcome(store: &RunStore, run_id: &str) -> Result<ImplementCheck, StoreError> {
+pub fn check_implement_outcome(
+    store: &RunStore,
+    run_id: &str,
+) -> Result<ImplementCheck, StoreError> {
     let record = store.load(run_id)?;
     let worktree = record.worktree.as_path();
-    let dirty = git(worktree, &["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"])?;
+    let dirty = git(
+        worktree,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    )?;
     // The history is only walked for a clean worktree: a dirty one is blocked
     // whatever the commits are.
     let (reason, commits) = if !dirty.trim().is_empty() {
         (Some("the worktree has uncommitted changes".to_string()), 0)
     } else {
-        let count = git(worktree, &["rev-list", "--count", &format!("{}..HEAD", record.base_sha)])?;
-        let commits: u32 =
-            count.trim().parse().map_err(|_| StoreError::Corrupt(format!("unexpected commit count {count:?}")))?;
-        (if commits == 0 { Some("the implementer made no new commits".to_string()) } else { None }, commits)
+        let count = git(
+            worktree,
+            &["rev-list", "--count", &format!("{}..HEAD", record.base_sha)],
+        )?;
+        let commits: u32 = count
+            .trim()
+            .parse()
+            .map_err(|_| StoreError::Corrupt(format!("unexpected commit count {count:?}")))?;
+        (
+            if commits == 0 {
+                Some("the implementer made no new commits".to_string())
+            } else {
+                None
+            },
+            commits,
+        )
     };
-    let Some(reason) = reason else { return Ok(ImplementCheck::Ready { commits }) };
+    let Some(reason) = reason else {
+        return Ok(ImplementCheck::Ready { commits });
+    };
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(run_id),
@@ -49,7 +74,11 @@ pub fn check_implement_outcome(store: &RunStore, run_id: &str) -> Result<Impleme
 fn git(worktree: &Path, args: &[&str]) -> Result<String, StoreError> {
     let out = git_raw(worktree, args)?;
     if !out.success {
-        return Err(StoreError::Corrupt(format!("git {} failed: {}", args[0], out.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "git {} failed: {}",
+            args[0],
+            out.stderr.trim()
+        )));
     }
     Ok(out.stdout)
 }

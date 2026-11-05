@@ -46,7 +46,9 @@ pub fn plan_reap(
 ) -> Result<Vec<ReapItem>, StoreError> {
     let mut items = Vec::new();
     for run_id in store.run_ids()? {
-        let Ok(record) = store.load(&run_id) else { continue };
+        let Ok(record) = store.load(&run_id) else {
+            continue;
+        };
         if record.project_id != project_id {
             continue;
         }
@@ -58,7 +60,15 @@ pub fn plan_reap(
             tip: String::new(),
             verdict: ReapVerdict::Reap,
         };
-        item.verdict = judge(store, repo, pinned, program_for, timeout, &record, &mut item.tip)?;
+        item.verdict = judge(
+            store,
+            repo,
+            pinned,
+            program_for,
+            timeout,
+            &record,
+            &mut item.tip,
+        )?;
         items.push(item);
     }
     Ok(items)
@@ -76,18 +86,32 @@ fn judge(
     if pinned.iter().any(|p| p == &record.run_id) {
         return Ok(keep("the run is pinned"));
     }
-    let Ok(events) = store.events(&record.run_id) else { return Ok(keep("the run's events cannot be read")) };
+    let Ok(events) = store.events(&record.run_id) else {
+        return Ok(keep("the run's events cannot be read"));
+    };
     match summarize_run(&events).phase {
         RunPhase::Running => return Ok(keep("the run is still running")),
         // A paused run is waiting to be resumed from its worktree.
-        RunPhase::PauseRequested | RunPhase::Paused => return Ok(keep("the run is paused and can be resumed")),
+        RunPhase::PauseRequested | RunPhase::Paused => {
+            return Ok(keep("the run is paused and can be resumed"))
+        }
         _ => {}
     }
     if !within_worktrees_dir(repo, &record.worktree) {
-        return Ok(keep("the worktree is not under .claude/worktrees of the repository"));
+        return Ok(keep(
+            "the worktree is not under .claude/worktrees of the repository",
+        ));
     }
     let branch_ref = format!("refs/heads/{}", record.branch);
-    let resolved = git_raw(repo, &["rev-parse", "--verify", "--quiet", &format!("{branch_ref}^{{commit}}")])?;
+    let resolved = git_raw(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{branch_ref}^{{commit}}"),
+        ],
+    )?;
     if !resolved.success {
         return Ok(keep("the local branch cannot be found"));
     }
@@ -95,16 +119,25 @@ fn judge(
     if let Some(problem) = worktree_problem(repo, &record.worktree, &record.branch, tip)? {
         return Ok(ReapVerdict::Keep(problem));
     }
-    let Some(program) = program_for(&record.provider) else { return Ok(keep("no provider CLI to ask about the review")) };
+    let Some(program) = program_for(&record.provider) else {
+        return Ok(keep("no provider CLI to ask about the review"));
+    };
     let observed = match observe_review(store, &record.run_id, &program, timeout)? {
         Ok(observed) => observed,
-        Err(error) => return Ok(ReapVerdict::Keep(format!("the review could not be checked: {}", error.describe()))),
+        Err(error) => {
+            return Ok(ReapVerdict::Keep(format!(
+                "the review could not be checked: {}",
+                error.describe()
+            )))
+        }
     };
     if observed.observation.state == ProviderState::Open {
         return Ok(keep("the review is not merged or closed"));
     }
     if observed.observation.head_sha != *tip {
-        return Ok(keep("the branch has commits that were not pushed to the review"));
+        return Ok(keep(
+            "the branch has commits that were not pushed to the review",
+        ));
     }
     if let Some(problem) = uncommitted_problem(&record.worktree)? {
         return Ok(ReapVerdict::Keep(problem));
@@ -116,7 +149,9 @@ fn judge(
 fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
     use crate::cleanup::{uncommitted_work, UncommittedWork};
     Ok(match uncommitted_work(worktree)? {
-        Some(UncommittedWork::Unreadable) => Some("the worktree state could not be read".to_string()),
+        Some(UncommittedWork::Unreadable) => {
+            Some("the worktree state could not be read".to_string())
+        }
         Some(UncommittedWork::Present) => Some("the worktree has uncommitted changes".to_string()),
         None => None,
     })
@@ -124,7 +159,12 @@ fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
 
 /// Why the worktree is not, verifiably, the checkout of `branch` at `tip` of this repository.
 /// Removing a worktree on another commit or branch could discard the only copy of its commits.
-fn worktree_problem(repo: &Path, worktree: &Path, branch: &str, tip: &str) -> Result<Option<String>, StoreError> {
+fn worktree_problem(
+    repo: &Path,
+    worktree: &Path,
+    branch: &str,
+    tip: &str,
+) -> Result<Option<String>, StoreError> {
     if let Some(problem) = checkout_problem(repo, worktree, branch)? {
         return Ok(Some(problem));
     }
@@ -136,18 +176,34 @@ fn worktree_problem(repo: &Path, worktree: &Path, branch: &str, tip: &str) -> Re
 }
 
 /// Why the worktree is not, verifiably, a checkout of `branch` belonging to this repository.
-pub(crate) fn checkout_problem(repo: &Path, worktree: &Path, branch: &str) -> Result<Option<String>, StoreError> {
+pub(crate) fn checkout_problem(
+    repo: &Path,
+    worktree: &Path,
+    branch: &str,
+) -> Result<Option<String>, StoreError> {
     let common = |dir: &Path| -> Result<Option<PathBuf>, StoreError> {
-        let out = git_raw(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-        Ok(out.success.then(|| PathBuf::from(out.stdout.trim())).and_then(|p| p.canonicalize().ok()))
+        let out = git_raw(
+            dir,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        Ok(out
+            .success
+            .then(|| PathBuf::from(out.stdout.trim()))
+            .and_then(|p| p.canonicalize().ok()))
     };
     match (common(repo)?, common(worktree)?) {
         (Some(a), Some(b)) if a == b => {}
-        _ => return Ok(Some("the worktree does not belong to this repository".to_string())),
+        _ => {
+            return Ok(Some(
+                "the worktree does not belong to this repository".to_string(),
+            ))
+        }
     }
     let head = git_raw(worktree, &["symbolic-ref", "--quiet", "HEAD"])?;
     if !head.success || head.stdout.trim() != format!("refs/heads/{branch}") {
-        return Ok(Some("the worktree is not on the branch of the run".to_string()));
+        return Ok(Some(
+            "the worktree is not on the branch of the run".to_string(),
+        ));
     }
     Ok(None)
 }
@@ -157,16 +213,34 @@ pub(crate) fn checkout_problem(repo: &Path, worktree: &Path, branch: &str) -> Re
 /// `test_db_drop_cmd` is run for each. Only notes come back; nothing here fails a reap.
 pub fn reap_run_databases(repo: &Path, branch: &str, settings: &crate::RunSettings) -> Vec<String> {
     let named = settings.test_db_vars.is_some();
-    let vars = settings.test_db_vars.clone().unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
-    let databases = crate::derive_worktree_databases_with(repo, &vars, branch, named, settings.db_name_template.as_deref());
+    let vars = settings
+        .test_db_vars
+        .clone()
+        .unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
+    let databases = crate::derive_worktree_databases_with(
+        repo,
+        &vars,
+        branch,
+        named,
+        settings.db_name_template.as_deref(),
+    );
     let mut notes = databases.notes;
-    notes.extend(crate::drop_test_databases(repo, &databases.names, settings.test_db_drop_cmd.as_deref(), settings.keep_test_db.unwrap_or(false)));
+    notes.extend(crate::drop_test_databases(
+        repo,
+        &databases.names,
+        settings.test_db_drop_cmd.as_deref(),
+        settings.keep_test_db.unwrap_or(false),
+    ));
     notes
 }
 
 pub(crate) fn within_worktrees_dir(repo: &Path, worktree: &Path) -> bool {
-    let (Ok(repo), Ok(worktree)) = (repo.canonicalize(), worktree.canonicalize()) else { return false };
-    worktree != repo && worktree.starts_with(repo.join(".claude").join("worktrees")) && worktree != repo.join(".claude").join("worktrees")
+    let (Ok(repo), Ok(worktree)) = (repo.canonicalize(), worktree.canonicalize()) else {
+        return false;
+    };
+    worktree != repo
+        && worktree.starts_with(repo.join(".claude").join("worktrees"))
+        && worktree != repo.join(".claude").join("worktrees")
 }
 
 /// Remove the worktree and the local branch of a run judged [`ReapVerdict::Reap`]. Does nothing
@@ -176,11 +250,23 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
         return Ok(());
     }
     // The plan may be minutes old: look again, right before anything is removed.
-    let current = git_raw(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}^{{commit}}", item.branch)])?;
+    let current = git_raw(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{}^{{commit}}", item.branch),
+        ],
+    )?;
     if !current.success || current.stdout.trim() != item.tip {
-        return Err(StoreError::Corrupt("the branch moved since the plan was made".to_string()));
+        return Err(StoreError::Corrupt(
+            "the branch moved since the plan was made".to_string(),
+        ));
     }
-    if let Some(problem) = worktree_problem(repo, &item.worktree, &item.branch, &item.tip)?.or(uncommitted_problem(&item.worktree)?) {
+    if let Some(problem) = worktree_problem(repo, &item.worktree, &item.branch, &item.tip)?
+        .or(uncommitted_problem(&item.worktree)?)
+    {
         return Err(StoreError::Corrupt(problem));
     }
     // A rebase that died between its fetch and its cleanup leaves the run's private ref; nothing else uses it.
@@ -188,16 +274,33 @@ pub fn reap_run(repo: &Path, item: &ReapItem) -> Result<(), StoreError> {
     let private = crate::rebase::private_ref_name(&item.run_id);
     let removed_ref = git_raw(repo, &["update-ref", "-d", &private])?;
     if !removed_ref.success {
-        return Err(StoreError::Corrupt(format!("the private ref {private} could not be deleted, nothing else was removed: {}", removed_ref.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "the private ref {private} could not be deleted, nothing else was removed: {}",
+            removed_ref.stderr.trim()
+        )));
     }
     let worktree = item.worktree.to_string_lossy().into_owned();
     let removed = git_raw(repo, &["worktree", "remove", "--", &worktree])?;
     if !removed.success {
-        return Err(StoreError::Corrupt(format!("git would not remove the worktree: {}", removed.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "git would not remove the worktree: {}",
+            removed.stderr.trim()
+        )));
     }
-    let deleted = git_raw(repo, &["update-ref", "-d", &format!("refs/heads/{}", item.branch), &item.tip])?;
+    let deleted = git_raw(
+        repo,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/heads/{}", item.branch),
+            &item.tip,
+        ],
+    )?;
     if !deleted.success {
-        return Err(StoreError::Corrupt(format!("the branch could not be deleted: {}", deleted.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "the branch could not be deleted: {}",
+            deleted.stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -218,14 +321,21 @@ fn in_use(store: &RunStore, record: &crate::store::RunRecord) -> bool {
         return true;
     }
     match store.events(&record.run_id) {
-        Ok(events) => matches!(summarize_run(&events).phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused),
+        Ok(events) => matches!(
+            summarize_run(&events).phase,
+            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused
+        ),
         // Unreadable events: assume it is in use.
         Err(_) => true,
     }
 }
 
 /// Find the leftovers that no run owns. Anything uncertain counts as owned.
-pub fn plan_orphans(store: &RunStore, repo: &Path, project_id: &str) -> Result<Orphans, StoreError> {
+pub fn plan_orphans(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+) -> Result<Orphans, StoreError> {
     let mut owned_refs = std::collections::BTreeSet::new();
     let mut used_branches = std::collections::BTreeSet::new();
     let mut candidates: Vec<(String, String)> = Vec::new();
@@ -249,26 +359,49 @@ pub fn plan_orphans(store: &RunStore, repo: &Path, project_id: &str) -> Result<O
             }
         }
     }
-    let listed = git_raw(repo, &["for-each-ref", "--format=%(refname)", "refs/orq/rebase/"])?;
+    let listed = git_raw(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/orq/rebase/"],
+    )?;
     if !listed.success {
-        return Err(StoreError::Corrupt(format!("the private refs could not be listed: {}", listed.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "the private refs could not be listed: {}",
+            listed.stderr.trim()
+        )));
     }
-    let refs = listed.stdout.lines().map(str::trim).filter(|name| !name.is_empty() && !owned_refs.contains(*name)).map(str::to_string).collect();
+    let refs = listed
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !owned_refs.contains(*name))
+        .map(str::to_string)
+        .collect();
     let mut seen = std::collections::BTreeSet::new();
     // With a record unreadable, no branch is known to be unused.
     let candidates = if unreadable { Vec::new() } else { candidates };
-    let database_branches = candidates.into_iter().filter(|(_, branch)| !used_branches.contains(branch) && seen.insert(branch.clone())).collect();
-    Ok(Orphans { refs, database_branches })
+    let database_branches = candidates
+        .into_iter()
+        .filter(|(_, branch)| !used_branches.contains(branch) && seen.insert(branch.clone()))
+        .collect();
+    Ok(Orphans {
+        refs,
+        database_branches,
+    })
 }
 
 /// Delete one orphaned private rebase ref. Anything else is refused.
 pub fn reap_orphan_ref(repo: &Path, name: &str) -> Result<(), StoreError> {
     if !name.starts_with("refs/orq/rebase/") {
-        return Err(StoreError::Corrupt(format!("{name} is not a private rebase ref")));
+        return Err(StoreError::Corrupt(format!(
+            "{name} is not a private rebase ref"
+        )));
     }
     let removed = git_raw(repo, &["update-ref", "--no-deref", "-d", name])?;
     if !removed.success {
-        return Err(StoreError::Corrupt(format!("the private ref {name} could not be deleted: {}", removed.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "the private ref {name} could not be deleted: {}",
+            removed.stderr.trim()
+        )));
     }
     Ok(())
 }

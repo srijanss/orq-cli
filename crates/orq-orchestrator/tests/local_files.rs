@@ -35,10 +35,23 @@ fn the_main_checkouts_dotenv_file_is_linked_into_the_worktree_and_kept_out_of_gi
 
     let found = carry_local_files(repo.root(), &worktree, None);
 
-    assert_eq!(fs::read_to_string(worktree.join(".env")).unwrap(), "DB_NAME=shop\n");
-    assert!(fs::symlink_metadata(worktree.join(".env")).unwrap().file_type().is_symlink());
-    assert!(!git_out(&worktree, &["status", "--porcelain"]).contains(".env"), "must not show as untracked");
-    assert!(found.notes.iter().all(|n| !n.contains(".env")), "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(worktree.join(".env")).unwrap(),
+        "DB_NAME=shop\n"
+    );
+    assert!(fs::symlink_metadata(worktree.join(".env"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(
+        !git_out(&worktree, &["status", "--porcelain"]).contains(".env"),
+        "must not show as untracked"
+    );
+    assert!(
+        found.notes.iter().all(|n| !n.contains(".env")),
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
@@ -47,11 +60,18 @@ fn a_dotenv_file_the_worktree_already_has_is_left_alone_and_a_missing_one_is_not
     fs::write(worktree.join(".env"), "OWN=1\n").unwrap();
     fs::write(repo.root().join(".env"), "MAIN=1\n").unwrap();
     carry_local_files(repo.root(), &worktree, None);
-    assert_eq!(fs::read_to_string(worktree.join(".env")).unwrap(), "OWN=1\n");
+    assert_eq!(
+        fs::read_to_string(worktree.join(".env")).unwrap(),
+        "OWN=1\n"
+    );
 
     let (bare_repo, bare_worktree) = checkout("dotenv-none");
     let found = carry_local_files(bare_repo.root(), &bare_worktree, None);
-    assert!(found.notes.iter().any(|n| n.contains(".env")), "{:?}", found.notes);
+    assert!(
+        found.notes.iter().any(|n| n.contains(".env")),
+        "{:?}",
+        found.notes
+    );
     assert!(!bare_worktree.join(".env").exists());
 }
 
@@ -66,7 +86,10 @@ fn the_tdd_server_is_pointed_at_the_main_checkouts_files_unless_the_worktree_has
 
     let config = repo.root().join(".tdd-config.json").display().to_string();
     assert_eq!(pairs(&found.env), [("TDD_CONFIG_PATH", config.as_str())]);
-    assert!(!worktree.join(".tdd-config.json").exists(), "the files are pointed at, not copied");
+    assert!(
+        !worktree.join(".tdd-config.json").exists(),
+        "the files are pointed at, not copied"
+    );
 }
 
 #[test]
@@ -78,7 +101,10 @@ fn mcp_json_is_copied_when_missing_and_merged_per_server_when_the_worktree_gener
     )
     .unwrap();
     carry_local_files(repo.root(), &worktree, None);
-    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), fs::read_to_string(repo.root().join(".mcp.json")).unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join(".mcp.json")).unwrap(),
+        fs::read_to_string(repo.root().join(".mcp.json")).unwrap()
+    );
 
     fs::write(
         worktree.join(".mcp.json"),
@@ -87,17 +113,33 @@ fn mcp_json_is_copied_when_missing_and_merged_per_server_when_the_worktree_gener
     .unwrap();
     carry_local_files(repo.root(), &worktree, None);
 
-    let merged: serde_json::Value = serde_json::from_str(&fs::read_to_string(worktree.join(".mcp.json")).unwrap()).unwrap();
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(worktree.join(".mcp.json")).unwrap()).unwrap();
     let tdd = &merged["mcpServers"]["tdd"];
     assert_eq!(tdd["command"], "wt-cmd");
     assert_eq!(tdd["args"], serde_json::json!(["w"]));
-    assert_eq!(tdd["env"], serde_json::json!({"TOKEN": "t", "SHARED": "main", "KEEP": "k"}));
+    assert_eq!(
+        tdd["env"],
+        serde_json::json!({"TOKEN": "t", "SHARED": "main", "KEEP": "k"})
+    );
     assert_eq!(merged["mcpServers"]["other"]["command"], "x");
 }
 
 fn commit_all(dir: &Path) {
     git_out(dir, &["add", "-A"]);
-    git_out(dir, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base"]);
+    git_out(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    );
 }
 
 #[test]
@@ -107,12 +149,26 @@ fn a_mcp_json_that_git_tracks_in_the_worktree_is_never_rewritten_with_the_main_c
     fs::write(repo.root().join(".mcp.json"), tracked).unwrap();
     commit_all(repo.root());
     let worktree = repo.add_linked_worktree("tracked-mcp");
-    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+    fs::write(
+        repo.root().join(".mcp.json"),
+        r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#,
+    )
+    .unwrap();
 
     let found = carry_local_files(repo.root(), &worktree, None);
 
-    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), tracked);
-    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("tracked")), "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(worktree.join(".mcp.json")).unwrap(),
+        tracked
+    );
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|n| n.contains(".mcp.json") && n.contains("tracked")),
+        "{:?}",
+        found.notes
+    );
     assert!(found.notes.iter().all(|n| !n.contains("s3cret")));
 }
 
@@ -128,8 +184,18 @@ fn a_file_that_cannot_be_kept_out_of_git_status_is_not_carried_into_the_worktree
 
     let found = carry_local_files(repo.root(), &worktree, Some(&files));
 
-    assert!(!worktree.join("secrets.json").exists(), "an unprotected copy must not be left behind");
-    assert!(found.notes.iter().any(|n| n.contains("secrets.json") && n.contains("not carried")), "{:?}", found.notes);
+    assert!(
+        !worktree.join("secrets.json").exists(),
+        "an unprotected copy must not be left behind"
+    );
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|n| n.contains("secrets.json") && n.contains("not carried")),
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
@@ -145,13 +211,24 @@ fn a_file_name_with_glob_characters_is_excluded_literally_and_a_line_break_in_a_
     assert!(!worktree.join("secretsp.json").exists());
     let status = git_out(&worktree, &["status", "--porcelain"]);
     assert!(!status.contains("secrets"), "{status}");
-    assert!(found.notes.iter().any(|n| n.contains("not a plain relative path")), "{:?}", found.notes);
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|n| n.contains("not a plain relative path")),
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
 fn a_symlinked_directory_in_either_checkout_cannot_carry_a_file_outside_of_it() {
     let (repo, worktree) = checkout("symlinks");
-    let outside = repo.root().parent().unwrap().join(format!("outside-{}", std::process::id()));
+    let outside = repo
+        .root()
+        .parent()
+        .unwrap()
+        .join(format!("outside-{}", std::process::id()));
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("secrets.json"), "{\"outside\":1}").unwrap();
     // The worktree's "config" leads out of it; the main checkout's "linked" leads into the outside.
@@ -159,13 +236,32 @@ fn a_symlinked_directory_in_either_checkout_cannot_carry_a_file_outside_of_it() 
     fs::create_dir_all(repo.root().join("config")).unwrap();
     fs::write(repo.root().join("config/secrets.json"), "{\"main\":1}").unwrap();
     std::os::unix::fs::symlink(&outside, repo.root().join("linked")).unwrap();
-    let files = vec!["config/secrets.json".to_string(), "linked/secrets.json".to_string()];
+    let files = vec![
+        "config/secrets.json".to_string(),
+        "linked/secrets.json".to_string(),
+    ];
 
     let found = carry_local_files(repo.root(), &worktree, Some(&files));
 
-    assert_eq!(fs::read_to_string(outside.join("secrets.json")).unwrap(), "{\"outside\":1}", "nothing is written outside the worktree");
-    assert!(!worktree.join("linked").exists(), "nothing is read from outside the main checkout");
-    assert_eq!(found.notes.iter().filter(|n| n.contains("symbolic link")).count(), 2, "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(outside.join("secrets.json")).unwrap(),
+        "{\"outside\":1}",
+        "nothing is written outside the worktree"
+    );
+    assert!(
+        !worktree.join("linked").exists(),
+        "nothing is read from outside the main checkout"
+    );
+    assert_eq!(
+        found
+            .notes
+            .iter()
+            .filter(|n| n.contains("symbolic link"))
+            .count(),
+        2,
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
@@ -176,7 +272,10 @@ fn mcpctl_config_is_copied_and_its_lock_file_is_kept_out_of_git_status() {
     carry_local_files(repo.root(), &worktree, None);
     fs::write(worktree.join(".mcpctl.lock"), "").unwrap();
 
-    assert_eq!(fs::read_to_string(worktree.join(".mcpctl.toml")).unwrap(), "[servers]\n");
+    assert_eq!(
+        fs::read_to_string(worktree.join(".mcpctl.toml")).unwrap(),
+        "[servers]\n"
+    );
     let status = git_out(&worktree, &["status", "--porcelain"]);
     assert!(!status.contains(".mcpctl"), "{status}");
 }
@@ -186,35 +285,83 @@ fn the_list_of_carried_files_is_configurable_and_only_plain_relative_paths_are_a
     let (repo, worktree) = checkout("custom");
     fs::write(repo.root().join("secrets.json"), "{\"k\":1}").unwrap();
     fs::write(repo.root().join(".env"), "A=1\n").unwrap();
-    let files = vec!["secrets.json".to_string(), "../outside".to_string(), "/etc/passwd".to_string()];
+    let files = vec![
+        "secrets.json".to_string(),
+        "../outside".to_string(),
+        "/etc/passwd".to_string(),
+    ];
 
     let found = carry_local_files(repo.root(), &worktree, Some(&files));
 
-    assert_eq!(fs::read_to_string(worktree.join("secrets.json")).unwrap(), "{\"k\":1}");
-    assert!(!worktree.join(".env").exists(), "a configured list replaces the default one");
-    assert_eq!(found.notes.iter().filter(|n| n.contains("not a plain relative path")).count(), 2, "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(worktree.join("secrets.json")).unwrap(),
+        "{\"k\":1}"
+    );
+    assert!(
+        !worktree.join(".env").exists(),
+        "a configured list replaces the default one"
+    );
+    assert_eq!(
+        found
+            .notes
+            .iter()
+            .filter(|n| n.contains("not a plain relative path"))
+            .count(),
+        2,
+        "{:?}",
+        found.notes
+    );
     assert!(!worktree.parent().unwrap().join("outside").exists());
 }
 
 #[test]
-fn a_symlinked_source_file_is_not_copied_and_a_symlinked_mcp_json_in_the_worktree_is_not_written_through() {
+fn a_symlinked_source_file_is_not_copied_and_a_symlinked_mcp_json_in_the_worktree_is_not_written_through(
+) {
     let (repo, worktree) = checkout("leaf-symlinks");
-    let outside = repo.root().parent().unwrap().join(format!("outside-leaf-{}", std::process::id()));
+    let outside = repo
+        .root()
+        .parent()
+        .unwrap()
+        .join(format!("outside-leaf-{}", std::process::id()));
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("stolen.json"), "{\"outside\":1}").unwrap();
     let victim = outside.join("victim.json");
     let original = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
     fs::write(&victim, original).unwrap();
-    std::os::unix::fs::symlink(outside.join("stolen.json"), repo.root().join("secrets.json")).unwrap();
-    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("stolen.json"),
+        repo.root().join("secrets.json"),
+    )
+    .unwrap();
+    fs::write(
+        repo.root().join(".mcp.json"),
+        r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#,
+    )
+    .unwrap();
     std::os::unix::fs::symlink(&victim, worktree.join(".mcp.json")).unwrap();
     let files = vec!["secrets.json".to_string(), ".mcp.json".to_string()];
 
     let found = carry_local_files(repo.root(), &worktree, Some(&files));
 
-    assert!(fs::symlink_metadata(worktree.join("secrets.json")).is_err(), "a symlinked source is not copied");
-    assert_eq!(fs::read_to_string(&victim).unwrap(), original, "nothing is written through a symlink");
-    assert_eq!(found.notes.iter().filter(|n| n.contains("symbolic link")).count(), 2, "{:?}", found.notes);
+    assert!(
+        fs::symlink_metadata(worktree.join("secrets.json")).is_err(),
+        "a symlinked source is not copied"
+    );
+    assert_eq!(
+        fs::read_to_string(&victim).unwrap(),
+        original,
+        "nothing is written through a symlink"
+    );
+    assert_eq!(
+        found
+            .notes
+            .iter()
+            .filter(|n| n.contains("symbolic link"))
+            .count(),
+        2,
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
@@ -226,8 +373,13 @@ fn an_untracked_mcp_json_is_only_merged_into_once_git_ignores_it() {
     fs::write(worktree.join(".mcp.json"), own).unwrap();
 
     carry_local_files(repo.root(), &worktree, None);
-    assert!(fs::read_to_string(worktree.join(".mcp.json")).unwrap().contains("s3cret"));
-    assert!(!git_out(&worktree, &["status", "--porcelain"]).contains(".mcp.json"), "merged file must be ignored");
+    assert!(fs::read_to_string(worktree.join(".mcp.json"))
+        .unwrap()
+        .contains("s3cret"));
+    assert!(
+        !git_out(&worktree, &["status", "--porcelain"]).contains(".mcp.json"),
+        "merged file must be ignored"
+    );
 
     let (repo, worktree) = checkout("merge-no-exclude");
     fs::write(repo.root().join(".mcp.json"), main_json).unwrap();
@@ -238,22 +390,49 @@ fn an_untracked_mcp_json_is_only_merged_into_once_git_ignores_it() {
 
     let found = carry_local_files(repo.root(), &worktree, None);
 
-    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), own, "left unchanged when it cannot be ignored");
-    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("not merged")), "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(worktree.join(".mcp.json")).unwrap(),
+        own,
+        "left unchanged when it cannot be ignored"
+    );
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|n| n.contains(".mcp.json") && n.contains("not merged")),
+        "{:?}",
+        found.notes
+    );
 }
 
 #[test]
 fn a_git_failure_while_checking_whether_mcp_json_is_tracked_blocks_the_merge() {
     let (repo, worktree) = checkout("tracked-check-fails");
     let own = r#"{"mcpServers":{"tdd":{"command":"c","env":{}}}}"#;
-    fs::write(repo.root().join(".mcp.json"), r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+    fs::write(
+        repo.root().join(".mcp.json"),
+        r#"{"mcpServers":{"tdd":{"command":"c","env":{"TOKEN":"s3cret"}}}}"#,
+    )
+    .unwrap();
     fs::write(worktree.join(".mcp.json"), own).unwrap();
     // A corrupt index makes git exit with a fatal error rather than "no such path".
-    let git_dir = std::path::PathBuf::from(git_out(&worktree, &["rev-parse", "--absolute-git-dir"]).trim());
+    let git_dir =
+        std::path::PathBuf::from(git_out(&worktree, &["rev-parse", "--absolute-git-dir"]).trim());
     fs::write(git_dir.join("index"), "not an index").unwrap();
 
     let found = carry_local_files(repo.root(), &worktree, None);
 
-    assert_eq!(fs::read_to_string(worktree.join(".mcp.json")).unwrap(), own, "unchanged when tracking cannot be established");
-    assert!(found.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("could not be checked")), "{:?}", found.notes);
+    assert_eq!(
+        fs::read_to_string(worktree.join(".mcp.json")).unwrap(),
+        own,
+        "unchanged when tracking cannot be established"
+    );
+    assert!(
+        found
+            .notes
+            .iter()
+            .any(|n| n.contains(".mcp.json") && n.contains("could not be checked")),
+        "{:?}",
+        found.notes
+    );
 }

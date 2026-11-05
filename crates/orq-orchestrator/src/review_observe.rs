@@ -32,18 +32,34 @@ pub fn observe_review(
 ) -> Result<Result<Observed, ObservationError>, StoreError> {
     let record = store.load(run_id)?;
     if record.provider != "github" && record.provider != "gitlab" {
-        return Err(StoreError::Corrupt(format!("the provider {} has no review requests to observe", record.provider)));
+        return Err(StoreError::Corrupt(format!(
+            "the provider {} has no review requests to observe",
+            record.provider
+        )));
     }
     let repository = repository_url(&record)?;
-    let (cli, args) = list_command(&record.provider, &repository, &record.branch, &record.target_branch).map_err(StoreError::Corrupt)?;
+    let (cli, args) = list_command(
+        &record.provider,
+        &repository,
+        &record.branch,
+        &record.target_branch,
+    )
+    .map_err(StoreError::Corrupt)?;
     let recorded = recorded_review(store, run_id)?;
 
-    let session = DraftSession { program: program.to_string_lossy().into_owned(), args, env: provider_environment(), cwd: record.worktree.clone() };
+    let session = DraftSession {
+        program: program.to_string_lossy().into_owned(),
+        args,
+        env: provider_environment(),
+        cwd: record.worktree.clone(),
+    };
     debug_assert!(cli == "gh" || cli == "glab");
     let text = match run_captured(&session, timeout) {
         Ok(text) => text,
         Err(failure) if failure.stderr.trim().is_empty() => {
-            return Ok(Err(ObservationError::Unavailable(orq_core::redact::redact(&failure.reason))));
+            return Ok(Err(ObservationError::Unavailable(
+                orq_core::redact::redact(&failure.reason),
+            )));
         }
         Err(failure) => return Ok(Err(classify_failure(&failure.stderr))),
     };
@@ -54,8 +70,21 @@ pub fn observe_review(
     let candidates: Vec<Candidate> = listed.iter().map(|l| l.candidate.clone()).collect();
     let reconciled = reconcile(&candidates, recorded.as_ref().map(|r| r.id.as_str()));
     let Some(review) = reconciled.primary else {
-        return Ok(Err(ObservationError::Unavailable("no review request was found for the run's branch".to_string())));
+        return Ok(Err(ObservationError::Unavailable(
+            "no review request was found for the run's branch".to_string(),
+        )));
     };
-    let head_sha = listed.iter().find(|l| l.candidate.review_id == review.review_id).map(|l| l.head_sha.clone()).unwrap_or_default();
-    Ok(Ok(Observed { observation: Observation { state: review.state, head_sha }, review, duplicates: reconciled.duplicates }))
+    let head_sha = listed
+        .iter()
+        .find(|l| l.candidate.review_id == review.review_id)
+        .map(|l| l.head_sha.clone())
+        .unwrap_or_default();
+    Ok(Ok(Observed {
+        observation: Observation {
+            state: review.state,
+            head_sha,
+        },
+        review,
+        duplicates: reconciled.duplicates,
+    }))
 }

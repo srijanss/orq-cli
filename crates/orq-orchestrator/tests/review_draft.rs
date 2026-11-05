@@ -9,13 +9,24 @@ use orq_orchestrator::{draft_review_description, DraftSession, DraftSource, RunR
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -26,7 +37,8 @@ struct World {
 
 /// A worktree whose branch has the commits `subjects` on top of a base commit.
 fn world(tag: &str, subjects: &[&str]) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-draft-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-draft-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
@@ -86,17 +98,27 @@ fn the_agents_first_line_is_the_title_and_the_rest_the_description() {
     assert_eq!(draft.body, "It adds the thing.");
     assert_eq!(draft.source, DraftSource::Agent);
     let prompt = seen.borrow();
-    assert!(prompt.contains("add the thing") && prompt.contains("fix the thing"), "{prompt}");
+    assert!(
+        prompt.contains("add the thing") && prompt.contains("fix the thing"),
+        "{prompt}"
+    );
 }
 
 #[test]
 fn a_failing_agent_falls_back_to_the_first_commit_subject_and_the_commit_list() {
     let w = world("fail", &["add the thing", "fix the thing"]);
 
-    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "echo oops; exit 3")).unwrap();
+    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| {
+        session(&w, "echo oops; exit 3")
+    })
+    .unwrap();
 
     assert_eq!(draft.title, "add the thing");
-    assert!(draft.body.contains("- add the thing") && draft.body.contains("- fix the thing"), "{}", draft.body);
+    assert!(
+        draft.body.contains("- add the thing") && draft.body.contains("- fix the thing"),
+        "{}",
+        draft.body
+    );
     assert!(matches!(draft.source, DraftSource::Fallback { .. }));
 }
 
@@ -104,7 +126,9 @@ fn a_failing_agent_falls_back_to_the_first_commit_subject_and_the_commit_list() 
 fn empty_output_or_a_program_that_cannot_start_also_fall_back() {
     let w = world("empty", &["add the thing"]);
 
-    let empty = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "printf '  \\n'")).unwrap();
+    let empty =
+        draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "printf '  \\n'"))
+            .unwrap();
     let mut missing = session(&w, "");
     missing.program = "/nonexistent/orq-drafter".to_string();
     let broken = draft_review_description(&w.store, "run-1", WAIT, |_| missing).unwrap();
@@ -119,7 +143,8 @@ fn empty_output_or_a_program_that_cannot_start_also_fall_back() {
 fn a_run_without_commits_falls_back_to_the_feature_id() {
     let w = world("none", &[]);
 
-    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "exit 1")).unwrap();
+    let draft =
+        draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "exit 1")).unwrap();
 
     assert_eq!(draft.title, "COM-02");
 }
@@ -134,7 +159,11 @@ fn agent_output_is_cleaned_and_size_limited() {
     assert!(!draft.title.contains('\u{1b}') && !draft.body.contains('\u{1b}'));
     assert!(draft.title.chars().count() <= 120, "{}", draft.title.len());
     assert!(draft.body.chars().count() <= 8000, "{}", draft.body.len());
-    assert_eq!(draft.title.chars().count(), 120, "an over-long title is cut, not dropped");
+    assert_eq!(
+        draft.title.chars().count(),
+        120,
+        "an over-long title is cut, not dropped"
+    );
     assert_eq!(draft.source, DraftSource::Agent);
 }
 
@@ -143,10 +172,16 @@ fn an_agent_that_never_finishes_is_stopped_and_the_fallback_used() {
     let w = world("hang", &["add the thing"]);
     let started = Instant::now();
 
-    let draft =
-        draft_review_description(&w.store, "run-1", Duration::from_millis(300), |_| session(&w, "sleep 30")).unwrap();
+    let draft = draft_review_description(&w.store, "run-1", Duration::from_millis(300), |_| {
+        session(&w, "sleep 30")
+    })
+    .unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(draft.title, "add the thing");
     assert!(matches!(draft.source, DraftSource::Fallback { .. }));
 }
@@ -158,10 +193,16 @@ fn the_stage_records_how_the_draft_was_made() {
     draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, "exit 1")).unwrap();
 
     let events = w.store.events("run-1").unwrap();
-    let kinds: Vec<_> = events.iter().map(|e| (e.stage.clone().unwrap_or_default(), e.kind.clone())).collect();
+    let kinds: Vec<_> = events
+        .iter()
+        .map(|e| (e.stage.clone().unwrap_or_default(), e.kind.clone()))
+        .collect();
     assert_eq!(
         kinds,
-        [("review_draft".to_string(), "stage.started".to_string()), ("review_draft".to_string(), "stage.completed".to_string())]
+        [
+            ("review_draft".to_string(), "stage.started".to_string()),
+            ("review_draft".to_string(), "stage.completed".to_string())
+        ]
     );
     assert_eq!(events[1].payload["source"], "fallback");
 }
@@ -182,7 +223,10 @@ fn an_unknown_run_is_an_error_and_no_session_is_built() {
 
 /// Running, not merely still in the process table: a killed orphan stays a zombie until its adopter reaps it.
 fn alive(pid: &str) -> bool {
-    let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
     let state = String::from_utf8_lossy(&out.stdout);
     let state = state.trim();
     !state.is_empty() && !state.starts_with('Z')
@@ -192,17 +236,28 @@ fn alive(pid: &str) -> bool {
 fn a_process_the_session_leaves_running_in_the_background_is_stopped() {
     let w = world("orphan", &["add the thing"]);
     let pid_file = w.worktree.parent().unwrap().join("bg.pid");
-    let script = format!("sleep 30 & echo $! > {}; printf 'Title\\n\\nBody'", pid_file.display());
+    let script = format!(
+        "sleep 30 & echo $! > {}; printf 'Title\\n\\nBody'",
+        pid_file.display()
+    );
 
-    let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, &script)).unwrap();
+    let draft =
+        draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, &script)).unwrap();
 
     let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
     let deadline = Instant::now() + Duration::from_secs(5);
     while alive(&pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!alive(&pid), "the background process {pid} outlived the drafting session");
-    assert_eq!(draft.source, DraftSource::Agent, "the output written before it exited is still used");
+    assert!(
+        !alive(&pid),
+        "the background process {pid} outlived the drafting session"
+    );
+    assert_eq!(
+        draft.source,
+        DraftSource::Agent,
+        "the output written before it exited is still used"
+    );
 }
 
 #[test]
@@ -218,7 +273,10 @@ fn a_failing_session_does_not_leave_its_background_process_either() {
     while alive(&pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!alive(&pid), "the background process {pid} outlived the drafting session");
+    assert!(
+        !alive(&pid),
+        "the background process {pid} outlived the drafting session"
+    );
 }
 
 #[test]
@@ -237,10 +295,20 @@ fn only_the_oldest_commits_and_a_bounded_slice_of_each_subject_reach_the_prompt(
     .unwrap();
 
     let prompt = seen.borrow();
-    assert!(prompt.contains("commit number 2") && prompt.contains("commit number 50"), "the oldest are kept");
-    assert!(!prompt.contains("commit number 51") && !prompt.contains("commit number 60"), "the newest are dropped");
+    assert!(
+        prompt.contains("commit number 2") && prompt.contains("commit number 50"),
+        "the oldest are kept"
+    );
+    assert!(
+        !prompt.contains("commit number 51") && !prompt.contains("commit number 60"),
+        "the newest are dropped"
+    );
     assert!(!prompt.contains(&"x".repeat(500)), "a subject is cut");
-    assert!(draft.title.starts_with("long x"), "the fallback title is the first commit, not the last: {}", draft.title);
+    assert!(
+        draft.title.starts_with("long x"),
+        "the fallback title is the first commit, not the last: {}",
+        draft.title
+    );
 }
 
 #[test]
@@ -252,11 +320,18 @@ fn a_session_writing_megabytes_is_drained_and_its_multibyte_text_cut_cleanly() {
 
     let draft = draft_review_description(&w.store, "run-1", WAIT, |_| session(&w, script)).unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(8), "a full pipe must not stall the session: {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "a full pipe must not stall the session: {:?}",
+        started.elapsed()
+    );
     assert_eq!(draft.source, DraftSource::Agent);
     assert_eq!(draft.title, "Title");
     let size = draft.body.chars().count();
-    assert!((7990..=8000).contains(&size), "bounded, with only trailing whitespace trimmed: {size}");
+    assert!(
+        (7990..=8000).contains(&size),
+        "bounded, with only trailing whitespace trimmed: {size}"
+    );
     assert!(!draft.body.contains('\u{fffd}'), "no character is split");
 }
 
@@ -291,16 +366,39 @@ fn an_issue_id_is_checked_and_linked_once_at_the_end_of_the_description() {
 
     assert_eq!(issue_number("42").as_deref(), Ok("42"));
     assert_eq!(issue_number("#42").as_deref(), Ok("42"));
-    for bad in ["", "#", "4 2", "-1", "abc", "42\n", "#42 close", "1234567890123", "4\u{0662}", "0", "#0", "000"] {
+    for bad in [
+        "",
+        "#",
+        "4 2",
+        "-1",
+        "abc",
+        "42\n",
+        "#42 close",
+        "1234567890123",
+        "4\u{0662}",
+        "0",
+        "#0",
+        "000",
+    ] {
         assert!(issue_number(bad).is_err(), "{bad:?}");
     }
 
-    let draft = orq_orchestrator::ReviewDraft { title: "t".into(), body: "what changed".into(), source: DraftSource::Agent };
+    let draft = orq_orchestrator::ReviewDraft {
+        title: "t".into(),
+        body: "what changed".into(),
+        source: DraftSource::Agent,
+    };
     let linked = link_issue(draft.clone(), "42");
     assert_eq!(linked.body, "what changed\n\nCloses #42");
-    assert_eq!((linked.title.as_str(), &linked.source), ("t", &DraftSource::Agent));
+    assert_eq!(
+        (linked.title.as_str(), &linked.source),
+        ("t", &DraftSource::Agent)
+    );
     // Linking twice, or after the agent already wrote the line, adds nothing.
     assert_eq!(link_issue(linked.clone(), "42").body, linked.body);
-    let empty = orq_orchestrator::ReviewDraft { body: String::new(), ..draft };
+    let empty = orq_orchestrator::ReviewDraft {
+        body: String::new(),
+        ..draft
+    };
     assert_eq!(link_issue(empty, "7").body, "Closes #7");
 }

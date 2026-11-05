@@ -33,7 +33,9 @@ pub enum ReviewRequestOutcome {
     /// An open or merged review for the same branches already existed and was recorded instead.
     Adopted(ReviewRef),
     /// The provider refused or answered with something unusable; the stage has failed.
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -56,17 +58,24 @@ impl ReviewPeople {
     /// The people for a request; a blank name means nobody, an unacceptable one is refused.
     pub fn checked(assignee: Option<&str>, reviewer: Option<&str>) -> Result<ReviewPeople, String> {
         let person = |what: &str, name: Option<&str>| -> Result<Option<String>, String> {
-            let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else { return Ok(None) };
+            let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+                return Ok(None);
+            };
             let plain = name.chars().count() <= MAX_PERSON_CHARS
                 && !name.starts_with('-')
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | '/'));
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@' | '/'));
             if plain {
                 Ok(Some(name.to_string()))
             } else {
                 Err(format!("{what} {name:?} is not a single user name"))
             }
         };
-        Ok(ReviewPeople { assignee: person("assignee", assignee)?, reviewer: person("reviewer", reviewer)? })
+        Ok(ReviewPeople {
+            assignee: person("assignee", assignee)?,
+            reviewer: person("reviewer", reviewer)?,
+        })
     }
 }
 
@@ -78,7 +87,14 @@ pub fn create_review_request(
     draft: &ReviewDraft,
     timeout: Duration,
 ) -> Result<ReviewRequestOutcome, StoreError> {
-    create_review_request_with(store, run_id, program, draft, &ReviewPeople::default(), timeout)
+    create_review_request_with(
+        store,
+        run_id,
+        program,
+        draft,
+        &ReviewPeople::default(),
+        timeout,
+    )
 }
 
 /// As [`create_review_request`], naming an assignee and a reviewer for a request it creates; an
@@ -95,11 +111,20 @@ pub fn create_review_request_with(
     let kind = match record.provider.as_str() {
         "github" => Kind::GitHub,
         "gitlab" => Kind::GitLab,
-        other => return Err(StoreError::Corrupt(format!("the provider {other} cannot open review requests"))),
+        other => {
+            return Err(StoreError::Corrupt(format!(
+                "the provider {other} cannot open review requests"
+            )))
+        }
     };
     // The repository comes from the stored remote, never from the CLI's own inference.
     let repo = repository_url(&record)?;
-    record_event(store, &record, "stage.started", serde_json::json!({ "provider": record.provider, "repository": repo }))?;
+    record_event(
+        store,
+        &record,
+        "stage.started",
+        serde_json::json!({ "provider": record.provider, "repository": repo }),
+    )?;
 
     let session = |args: Vec<String>| DraftSession {
         program: program.to_string_lossy().into_owned(),
@@ -110,7 +135,13 @@ pub fn create_review_request_with(
     // A review for these branches may exist already (an earlier attempt whose read-back failed, or
     // someone else's); it is adopted, and when that cannot be told a blind create could duplicate it.
     match find_existing(kind, &session(list_args(kind, &record, &repo)), timeout) {
-        Err(reason) => return fail(store, &record, format!("existing review requests could not be listed: {reason}")),
+        Err(reason) => {
+            return fail(
+                store,
+                &record,
+                format!("existing review requests could not be listed: {reason}"),
+            )
+        }
         Ok(Some((review, open))) => {
             record_event(
                 store,
@@ -122,27 +153,57 @@ pub fn create_review_request_with(
             // A refused edit does not fail the stage: the review exists and the run can go on.
             if open {
                 match run_drafter(&session(update_args(kind, &review, draft, &repo)), timeout) {
-                    Ok(_) => record_event(store, &record, UPDATED, serde_json::json!({ "id": review.id }))?,
+                    Ok(_) => record_event(
+                        store,
+                        &record,
+                        UPDATED,
+                        serde_json::json!({ "id": review.id }),
+                    )?,
                     // Only the session's own summary is kept; the provider's words can carry credentials.
-                    Err(reason) => {
-                        record_event(store, &record, UPDATE_FAILED, serde_json::json!({ "id": review.id, "reason": reason }))?
-                    }
+                    Err(reason) => record_event(
+                        store,
+                        &record,
+                        UPDATE_FAILED,
+                        serde_json::json!({ "id": review.id, "reason": reason }),
+                    )?,
                 }
             }
-            record_event(store, &record, "stage.completed", serde_json::json!({ "url": review.url, "adopted": true }))?;
+            record_event(
+                store,
+                &record,
+                "stage.completed",
+                serde_json::json!({ "url": review.url, "adopted": true }),
+            )?;
             return Ok(ReviewRequestOutcome::Adopted(review));
         }
         Ok(None) => {}
     }
-    if let Err(reason) = run_drafter(&session(create_args(kind, &record, draft, people, &repo)), timeout) {
-        return fail(store, &record, format!("the review request could not be created: {reason}"));
+    if let Err(reason) = run_drafter(
+        &session(create_args(kind, &record, draft, people, &repo)),
+        timeout,
+    ) {
+        return fail(
+            store,
+            &record,
+            format!("the review request could not be created: {reason}"),
+        );
     }
     let viewed = match run_drafter(&session(view_args(kind, &record, &repo)), timeout) {
         Ok(text) => text,
-        Err(reason) => return fail(store, &record, format!("the new review request could not be read back: {reason}")),
+        Err(reason) => {
+            return fail(
+                store,
+                &record,
+                format!("the new review request could not be read back: {reason}"),
+            )
+        }
     };
     let Some(review) = parse_view(kind, &viewed) else {
-        return fail(store, &record, "the provider's answer has no usable url and id".to_string());
+        return fail(
+            store,
+            &record,
+            "the provider's answer has no usable url and id".to_string(),
+        );
     };
 
     record_event(
@@ -151,7 +212,12 @@ pub fn create_review_request_with(
         CREATED,
         serde_json::json!({ "url": review.url, "id": review.id, "provider": record.provider }),
     )?;
-    record_event(store, &record, "stage.completed", serde_json::json!({ "url": review.url }))?;
+    record_event(
+        store,
+        &record,
+        "stage.completed",
+        serde_json::json!({ "url": review.url }),
+    )?;
     Ok(ReviewRequestOutcome::Created(review))
 }
 
@@ -179,14 +245,28 @@ const FORWARDED_ENV: &[&str] = &[
 ];
 
 pub(crate) fn provider_environment() -> Vec<(String, String)> {
-    FORWARDED_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect()
+    FORWARDED_ENV
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| (key.to_string(), value))
+        })
+        .collect()
 }
 
 /// The review request recorded for `run_id`, if one was created.
 pub fn recorded_review(store: &RunStore, run_id: &str) -> Result<Option<ReviewRef>, StoreError> {
-    let found = store.events(run_id)?.into_iter().rev().find(|e| e.kind == CREATED || e.kind == ADOPTED);
+    let found = store
+        .events(run_id)?
+        .into_iter()
+        .rev()
+        .find(|e| e.kind == CREATED || e.kind == ADOPTED);
     Ok(found.and_then(|e| {
-        Some(ReviewRef { url: e.payload.get("url")?.as_str()?.to_string(), id: e.payload.get("id")?.as_str()?.to_string() })
+        Some(ReviewRef {
+            url: e.payload.get("url")?.as_str()?.to_string(),
+            id: e.payload.get("id")?.as_str()?.to_string(),
+        })
     }))
 }
 
@@ -261,7 +341,11 @@ pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
 
 fn normalize_remote(raw: &str) -> Option<String> {
     // A query or fragment may carry a credential, and is never part of a repository's identity.
-    if raw.is_empty() || raw.chars().any(|c| c.is_whitespace() || c.is_control() || c == '?' || c == '#') {
+    if raw.is_empty()
+        || raw
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '?' || c == '#')
+    {
         return None;
     }
     let (scheme, authority_and_path) = match raw.split_once("://") {
@@ -276,23 +360,49 @@ fn normalize_remote(raw: &str) -> Option<String> {
         }
     };
     let (authority, path) = authority_and_path.split_once('/')?;
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     // A port on http(s) is the web port; on ssh or git it is not, and is dropped.
     let web = matches!(scheme, Some("http" | "https"));
-    let host = if web { host_port } else { host_port.split(':').next().unwrap_or("") };
+    let host = if web {
+        host_port
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
     if host.is_empty() || path.is_empty() {
         return None;
     }
-    let scheme = if scheme == Some("http") { "http" } else { "https" };
+    let scheme = if scheme == Some("http") {
+        "http"
+    } else {
+        "https"
+    };
     Some(format!("{scheme}://{host}/{path}"))
 }
 
-fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, people: &ReviewPeople, repo: &str) -> Vec<String> {
+fn create_args(
+    kind: Kind,
+    record: &RunRecord,
+    draft: &ReviewDraft,
+    people: &ReviewPeople,
+    repo: &str,
+) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut args = match kind {
         Kind::GitHub => strings(&[
-            "pr", "create", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--title",
-            &draft.title, "--body", &draft.body,
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--head",
+            &record.branch,
+            "--base",
+            &record.target_branch,
+            "--title",
+            &draft.title,
+            "--body",
+            &draft.body,
         ]),
         Kind::GitLab => strings(&[
             "mr",
@@ -310,7 +420,10 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, people: &Rev
             "--yes",
         ]),
     };
-    for (flag, name) in [("--assignee", &people.assignee), ("--reviewer", &people.reviewer)] {
+    for (flag, name) in [
+        ("--assignee", &people.assignee),
+        ("--reviewer", &people.reviewer),
+    ] {
         if let Some(name) = name {
             args.push(flag.to_string());
             args.push(name.clone());
@@ -322,10 +435,28 @@ fn create_args(kind: Kind, record: &RunRecord, draft: &ReviewDraft, people: &Rev
 fn update_args(kind: Kind, review: &ReviewRef, draft: &ReviewDraft, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
-        Kind::GitHub => strings(&["pr", "edit", &review.id, "--repo", repo, "--title", &draft.title, "--body", &draft.body]),
-        Kind::GitLab => {
-            strings(&["mr", "update", &review.id, "--repo", repo, "--title", &draft.title, "--description", &draft.body])
-        }
+        Kind::GitHub => strings(&[
+            "pr",
+            "edit",
+            &review.id,
+            "--repo",
+            repo,
+            "--title",
+            &draft.title,
+            "--body",
+            &draft.body,
+        ]),
+        Kind::GitLab => strings(&[
+            "mr",
+            "update",
+            &review.id,
+            "--repo",
+            repo,
+            "--title",
+            &draft.title,
+            "--description",
+            &draft.body,
+        ]),
     }
 }
 
@@ -334,8 +465,20 @@ fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let page = LOOKUP_PAGE.to_string();
     match kind {
         Kind::GitHub => strings(&[
-            "pr", "list", "--repo", repo, "--head", &record.branch, "--base", &record.target_branch, "--state", "all",
-            "--json", "number,url,state,isCrossRepository", "--limit", &page,
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--head",
+            &record.branch,
+            "--base",
+            &record.target_branch,
+            "--state",
+            "all",
+            "--json",
+            "number,url,state,isCrossRepository",
+            "--limit",
+            &page,
         ]),
         Kind::GitLab => strings(&[
             "mr",
@@ -356,12 +499,18 @@ fn list_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
 }
 
 /// The open review for these branches, else a merged one (flagged `false`); closed ones are not reused.
-fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Result<Option<(ReviewRef, bool)>, String> {
+fn find_existing(
+    kind: Kind,
+    session: &DraftSession,
+    timeout: Duration,
+) -> Result<Option<(ReviewRef, bool)>, String> {
     let text = run_drafter(session, timeout)?;
-    let rows: Vec<serde_json::Value> =
-        serde_json::from_str(text.trim()).map_err(|_| "the provider's listing is not a json array".to_string())?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(text.trim())
+        .map_err(|_| "the provider's listing is not a json array".to_string())?;
     if rows.len() >= LOOKUP_PAGE {
-        return Err(format!("the listing filled its page of {LOOKUP_PAGE}, so it may be incomplete"));
+        return Err(format!(
+            "the listing filled its page of {LOOKUP_PAGE}, so it may be incomplete"
+        ));
     }
     let (mut open, mut merged) = (None, None);
     for row in &rows {
@@ -382,7 +531,8 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
             "closed" | "locked" => continue,
             other => return Err(format!("a listed review has the unknown state {other}")),
         };
-        let review = review_from(kind, row).ok_or_else(|| "a listed review has no usable url and id".to_string())?;
+        let review = review_from(kind, row)
+            .ok_or_else(|| "a listed review has no usable url and id".to_string())?;
         slot.get_or_insert(review);
     }
     Ok(open.map(|r| (r, true)).or(merged.map(|r| (r, false))))
@@ -393,10 +543,19 @@ fn find_existing(kind: Kind, session: &DraftSession, timeout: Duration) -> Resul
 fn from_own_repository(kind: Kind, row: &serde_json::Value) -> Result<bool, String> {
     let unsaid = || "a listed review does not say where its source branch lives".to_string();
     match kind {
-        Kind::GitHub => Ok(!row.get("isCrossRepository").and_then(|v| v.as_bool()).ok_or_else(unsaid)?),
+        Kind::GitHub => Ok(!row
+            .get("isCrossRepository")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(unsaid)?),
         Kind::GitLab => {
-            let source = row.get("source_project_id").and_then(|v| v.as_u64()).ok_or_else(unsaid)?;
-            let target = row.get("target_project_id").and_then(|v| v.as_u64()).ok_or_else(unsaid)?;
+            let source = row
+                .get("source_project_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(unsaid)?;
+            let target = row
+                .get("target_project_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(unsaid)?;
             Ok(source == target)
         }
     }
@@ -405,8 +564,24 @@ fn from_own_repository(kind: Kind, row: &serde_json::Value) -> Result<bool, Stri
 fn view_args(kind: Kind, record: &RunRecord, repo: &str) -> Vec<String> {
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match kind {
-        Kind::GitHub => strings(&["pr", "view", &record.branch, "--repo", repo, "--json", "number,url"]),
-        Kind::GitLab => strings(&["mr", "view", &record.branch, "--repo", repo, "--output", "json"]),
+        Kind::GitHub => strings(&[
+            "pr",
+            "view",
+            &record.branch,
+            "--repo",
+            repo,
+            "--json",
+            "number,url",
+        ]),
+        Kind::GitLab => strings(&[
+            "mr",
+            "view",
+            &record.branch,
+            "--repo",
+            repo,
+            "--output",
+            "json",
+        ]),
     }
 }
 
@@ -426,15 +601,32 @@ fn review_from(kind: Kind, value: &serde_json::Value) -> Option<ReviewRef> {
     if !web || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
-    Some(ReviewRef { url: url.to_string(), id })
+    Some(ReviewRef {
+        url: url.to_string(),
+        id,
+    })
 }
 
-fn fail(store: &RunStore, record: &RunRecord, reason: String) -> Result<ReviewRequestOutcome, StoreError> {
-    record_event(store, record, "stage.failed", serde_json::json!({ "reason": reason }))?;
+fn fail(
+    store: &RunStore,
+    record: &RunRecord,
+    reason: String,
+) -> Result<ReviewRequestOutcome, StoreError> {
+    record_event(
+        store,
+        record,
+        "stage.failed",
+        serde_json::json!({ "reason": reason }),
+    )?;
     Ok(ReviewRequestOutcome::Failed { reason })
 }
 
-fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+fn record_event(
+    store: &RunStore,
+    record: &RunRecord,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),

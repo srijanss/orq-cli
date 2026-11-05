@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use orq_orchestrator::{reconcile_interrupted, record_launch, summarize_run, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{
+    reconcile_interrupted, record_launch, summarize_run, RunPhase, RunRecord, RunStore,
+};
 
 fn record(id: &str) -> RunRecord {
     RunRecord {
@@ -19,7 +21,8 @@ fn record(id: &str) -> RunRecord {
 }
 
 fn store(tag: &str) -> RunStore {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-interrupted-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-interrupted-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     RunStore::new(&dir)
 }
@@ -29,9 +32,12 @@ fn a_running_run_whose_owner_is_dead_is_marked_failed_so_it_can_be_resumed() {
     let store = store("dead");
     store.create(&record("run-1")).unwrap();
     record_launch(&store, "run-1", 4242, std::path::Path::new("/tmp/x.log")).unwrap();
-    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Running);
+    assert_eq!(
+        summarize_run(&store.events("run-1").unwrap()).phase,
+        RunPhase::Running
+    );
 
-    let changed = reconcile_interrupted(&store, "run-1", &|_pid| false).unwrap();
+    let changed = reconcile_interrupted(&store, "run-1", &|_pid, _| false).unwrap();
 
     assert!(changed);
     let summary = summarize_run(&store.events("run-1").unwrap());
@@ -45,21 +51,31 @@ fn a_run_killed_after_a_pause_was_requested_is_marked_failed_too() {
     store.create(&record("run-1")).unwrap();
     record_launch(&store, "run-1", 4242, std::path::Path::new("/tmp/x.log")).unwrap();
     orq_orchestrator::request_pause(&store, "run-1").unwrap();
-    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::PauseRequested);
+    assert_eq!(
+        summarize_run(&store.events("run-1").unwrap()).phase,
+        RunPhase::PauseRequested
+    );
 
-    assert!(reconcile_interrupted(&store, "run-1", &|_pid| false).unwrap());
-    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Failed);
+    assert!(reconcile_interrupted(&store, "run-1", &|_pid, _| false).unwrap());
+    assert_eq!(
+        summarize_run(&store.events("run-1").unwrap()).phase,
+        RunPhase::Failed
+    );
 }
 
 #[test]
 fn a_process_is_dead_only_when_procfs_is_there_and_has_no_entry_for_it() {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-fake-proc-{}", std::process::id()));
+    let root =
+        orq_test_support::process_temp_dir().join(format!("orq-fake-proc-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     // No procfs here (as on macOS): liveness is unknown, which must never read as dead.
     assert!(orq_orchestrator::process_is_alive_in(&root, 77));
     std::fs::create_dir_all(root.join("self")).unwrap();
-    assert!(!orq_orchestrator::process_is_alive_in(&root, 77), "procfs without an entry: gone");
+    assert!(
+        !orq_orchestrator::process_is_alive_in(&root, 77),
+        "procfs without an entry: gone"
+    );
     std::fs::create_dir_all(root.join("77")).unwrap();
     assert!(orq_orchestrator::process_is_alive_in(&root, 77));
 }
@@ -71,13 +87,13 @@ fn guards_leave_live_terminal_paused_and_unlaunched_runs_alone() {
     s.create(&record("r")).unwrap();
     record_launch(&s, "r", 1, std::path::Path::new("/tmp/x.log")).unwrap();
     let before = s.events("r").unwrap().len();
-    assert!(!reconcile_interrupted(&s, "r", &|_| true).unwrap());
+    assert!(!reconcile_interrupted(&s, "r", &|_, _| true).unwrap());
     assert_eq!(s.events("r").unwrap().len(), before);
 
     // No launch metadata: nothing to judge, untouched.
     let s = store("guard-unlaunched");
     s.create(&record("r")).unwrap();
-    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
 
     // Paused keeps its checkpoint.
     let s = store("guard-paused");
@@ -89,8 +105,11 @@ fn guards_leave_live_terminal_paused_and_unlaunched_runs_alone() {
     paused.event_id = "r-paused".into();
     s.append_event(&paused).unwrap();
     if summarize_run(&s.events("r").unwrap()).phase == RunPhase::Paused {
-        assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
-        assert_eq!(summarize_run(&s.events("r").unwrap()).phase, RunPhase::Paused);
+        assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
+        assert_eq!(
+            summarize_run(&s.events("r").unwrap()).phase,
+            RunPhase::Paused
+        );
     }
 
     // Malformed pid: untouched.
@@ -101,7 +120,7 @@ fn guards_leave_live_terminal_paused_and_unlaunched_runs_alone() {
     bad.event_id = "r-bad".into();
     bad.payload = serde_json::json!({ "pid": "abc" });
     s.append_event(&bad).unwrap();
-    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
 }
 
 #[test]
@@ -111,15 +130,90 @@ fn the_latest_launch_wins_and_reconciling_twice_appends_once() {
     record_launch(&s, "r", 111, std::path::Path::new("/tmp/a.log")).unwrap();
     record_launch(&s, "r", 222, std::path::Path::new("/tmp/b.log")).unwrap();
     // Only the first (stale) pid is dead; the latest owner is alive.
-    assert!(!reconcile_interrupted(&s, "r", &|pid| pid == 222).unwrap());
-    assert!(reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    assert!(!reconcile_interrupted(&s, "r", &|pid, _| pid == 222).unwrap());
+    assert!(reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
     let n = s.events("r").unwrap().len();
-    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
     assert_eq!(s.events("r").unwrap().len(), n);
 }
 
 #[test]
 fn an_unknown_run_is_a_store_error() {
     let s = store("unknown");
-    assert!(reconcile_interrupted(&s, "missing", &|_| false).is_err());
+    assert!(reconcile_interrupted(&s, "missing", &|_, _| false).is_err());
+}
+
+fn fake_stat(root: &std::path::Path, pid: u32, start_ticks: u64) {
+    let dir = root.join(pid.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    // `comm` may hold spaces and parentheses; starttime is field 22 overall, so index 19 after the last ')'.
+    let mut fields: Vec<String> = (0..19).map(|i| i.to_string()).collect();
+    fields[0] = "S".into();
+    fields.push(start_ticks.to_string());
+    std::fs::write(
+        dir.join("stat"),
+        format!("{pid} (we ird) name) {}\n", fields.join(" ")),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_pid_reused_by_another_process_is_not_the_recorded_owner() {
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-fake-proc-reuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("self")).unwrap();
+    fake_stat(&root, 77, 200);
+    assert_eq!(
+        orq_orchestrator::process_start_ticks_in(&root, 77),
+        Some(200)
+    );
+    assert_eq!(orq_orchestrator::process_start_ticks_in(&root, 78), None);
+
+    assert!(
+        orq_orchestrator::owner_is_alive_in(&root, 77, Some(200)),
+        "same start time: the owner"
+    );
+    assert!(
+        !orq_orchestrator::owner_is_alive_in(&root, 77, Some(100)),
+        "different start time: pid reused"
+    );
+    assert!(
+        orq_orchestrator::owner_is_alive_in(&root, 77, None),
+        "legacy pid-only record stays conservative"
+    );
+}
+
+#[test]
+fn a_launch_records_the_owners_start_time_and_reconciliation_hands_it_to_the_check() {
+    let s = store("start-ticks");
+    s.create(&record("r")).unwrap();
+    record_launch(
+        &s,
+        "r",
+        std::process::id(),
+        std::path::Path::new("/tmp/x.log"),
+    )
+    .unwrap();
+    let ticks =
+        orq_orchestrator::process_start_ticks_in(std::path::Path::new("/proc"), std::process::id());
+    let launched = s
+        .events("r")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| e.kind == "run.launched")
+        .unwrap();
+    assert_eq!(
+        launched.payload.get("start_ticks").and_then(|t| t.as_u64()),
+        ticks
+    );
+
+    let seen = std::cell::Cell::new(None);
+    reconcile_interrupted(&s, "r", &|_pid, recorded| {
+        seen.set(Some(recorded));
+        true
+    })
+    .unwrap();
+    assert_eq!(seen.get(), Some(ticks));
 }

@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use orq_orchestrator::{latest_checkpoint, record_checkpoint, Checkpoint, RunRecord, RunStore};
 
 fn store(tag: &str) -> (RunStore, RunRecord) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-pause-cp-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-pause-cp-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     let record = RunRecord {
@@ -52,6 +53,12 @@ fn the_latest_checkpoint_wins_and_an_unknown_run_is_an_error() {
     let (store, _) = store("latest");
     record_checkpoint(&store, "run-1", &checkpoint(&"b".repeat(40))).unwrap();
     record_checkpoint(&store, "run-1", &checkpoint(&"c".repeat(40))).unwrap();
-    assert_eq!(latest_checkpoint(&store, "run-1").unwrap().unwrap().head_sha, "c".repeat(40));
+    assert_eq!(
+        latest_checkpoint(&store, "run-1")
+            .unwrap()
+            .unwrap()
+            .head_sha,
+        "c".repeat(40)
+    );
     assert!(record_checkpoint(&store, "nope", &checkpoint("x")).is_err());
 }

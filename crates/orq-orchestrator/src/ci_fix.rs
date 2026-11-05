@@ -50,9 +50,16 @@ pub enum CiFixOutcome {
     /// CI could not be read.
     Errored { fix_attempts: u32, reason: String },
     /// Still red after `fix_attempts` fix sessions; the run has failed.
-    Failed { fix_attempts: u32, failing: Vec<String> },
+    Failed {
+        fix_attempts: u32,
+        failing: Vec<String>,
+    },
     /// A fix left the gate red, so it was not pushed; the run has failed.
-    GateFailed { fix_attempts: u32, step: usize, exit_code: Option<i32> },
+    GateFailed {
+        fix_attempts: u32,
+        step: usize,
+        exit_code: Option<i32>,
+    },
     /// A fix could not be pushed; the run has failed.
     PushFailed { fix_attempts: u32, reason: String },
 }
@@ -75,18 +82,38 @@ pub fn run_ci_fix_loop(
             CiOutcome::Passed => return Ok(CiFixOutcome::Passed { fix_attempts }),
             CiOutcome::Skipped => return Ok(CiFixOutcome::Skipped),
             CiOutcome::TimedOut => return Ok(CiFixOutcome::TimedOut { fix_attempts }),
-            CiOutcome::Errored { reason } => return Ok(CiFixOutcome::Errored { fix_attempts, reason }),
+            CiOutcome::Errored { reason } => {
+                return Ok(CiFixOutcome::Errored {
+                    fix_attempts,
+                    reason,
+                })
+            }
             CiOutcome::Failed { failing } => failing,
         };
         if fix_attempts >= config.max_attempts {
             let reason = format!("CI is still failing after {fix_attempts} fix attempt(s)");
-            fail_run(store, run_id, fix_attempts + 1, serde_json::json!({ "reason": reason, "failing": failing }))?;
-            return Ok(CiFixOutcome::Failed { fix_attempts, failing });
+            fail_run(
+                store,
+                run_id,
+                fix_attempts + 1,
+                serde_json::json!({ "reason": reason, "failing": failing }),
+            )?;
+            return Ok(CiFixOutcome::Failed {
+                fix_attempts,
+                failing,
+            });
         }
         fix_attempts += 1;
 
-        let failure_log = config.log_dir.join(format!("ci-failure-{fix_attempts}.log"));
-        let failure_log = write_failure_log(&worktree, config.log_dir, &failure_log, &steps.failure_log(&failing))?;
+        let failure_log = config
+            .log_dir
+            .join(format!("ci-failure-{fix_attempts}.log"));
+        let failure_log = write_failure_log(
+            &worktree,
+            config.log_dir,
+            &failure_log,
+            &steps.failure_log(&failing),
+        )?;
 
         let spec = steps.fix_session(fix_attempts, &failure_log);
         let session = ImplementSession {
@@ -102,12 +129,31 @@ pub fn run_ci_fix_loop(
         // The session's own result is not trusted: the gate and CI decide.
         run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
 
-        match run_gate_attempt(store, run_id, config.gate, config.gate_enabled, config.gate_log, fix_attempts, config.env)? {
+        match run_gate_attempt(
+            store,
+            run_id,
+            config.gate,
+            config.gate_enabled,
+            config.gate_log,
+            fix_attempts,
+            config.env,
+        )? {
             GateOutcome::Passed | GateOutcome::Skipped { .. } => {}
             GateOutcome::Failed { step, exit_code } => {
-                let reason = format!("the gate failed after CI fix attempt {fix_attempts}; nothing was pushed");
-                fail_run(store, run_id, fix_attempts, serde_json::json!({ "reason": reason }))?;
-                return Ok(CiFixOutcome::GateFailed { fix_attempts, step, exit_code });
+                let reason = format!(
+                    "the gate failed after CI fix attempt {fix_attempts}; nothing was pushed"
+                );
+                fail_run(
+                    store,
+                    run_id,
+                    fix_attempts,
+                    serde_json::json!({ "reason": reason }),
+                )?;
+                return Ok(CiFixOutcome::GateFailed {
+                    fix_attempts,
+                    step,
+                    exit_code,
+                });
             }
         }
 
@@ -115,8 +161,16 @@ pub fn run_ci_fix_loop(
             PushOutcome::Pushed { head_sha } => head = head_sha,
             PushOutcome::Failed { reason } => {
                 let message = format!("pushing CI fix attempt {fix_attempts} failed: {reason}");
-                fail_run(store, run_id, fix_attempts, serde_json::json!({ "reason": message }))?;
-                return Ok(CiFixOutcome::PushFailed { fix_attempts, reason });
+                fail_run(
+                    store,
+                    run_id,
+                    fix_attempts,
+                    serde_json::json!({ "reason": message }),
+                )?;
+                return Ok(CiFixOutcome::PushFailed {
+                    fix_attempts,
+                    reason,
+                });
             }
         }
     }
@@ -129,12 +183,21 @@ pub fn run_ci_fix_loop(
 /// any directory below the worktree on the way to it may be a symlink. CI output can carry
 /// secrets. A directory swapped for a symlink between the check and the open is not guarded
 /// against; a log directory outside the worktree avoids the question.
-fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Result<PathBuf, StoreError> {
+fn write_failure_log(
+    worktree: &Path,
+    dir: &Path,
+    path: &Path,
+    text: &str,
+) -> Result<PathBuf, StoreError> {
     use std::io::Write;
     reject_symlinked_ancestors(worktree, dir)?;
     match fs::symlink_metadata(dir) {
         Ok(meta) if !meta.is_dir() => {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the CI failure log directory is a symlink or not a directory").into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the CI failure log directory is a symlink or not a directory",
+            )
+            .into());
         }
         Ok(_) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(dir)?,
@@ -166,7 +229,9 @@ fn write_failure_log(worktree: &Path, dir: &Path, path: &Path, text: &str) -> Re
 /// the caller's, and may sit behind system symlinks) must be a real directory if it exists:
 /// a repository-planted `.orq -> /elsewhere` must not carry the log out of the tree.
 fn reject_symlinked_ancestors(worktree: &Path, dir: &Path) -> Result<(), StoreError> {
-    let Ok(relative) = dir.strip_prefix(worktree) else { return Ok(()) };
+    let Ok(relative) = dir.strip_prefix(worktree) else {
+        return Ok(());
+    };
     let mut current = worktree.to_path_buf();
     for part in relative.components() {
         current.push(part);
@@ -186,7 +251,12 @@ fn reject_symlinked_ancestors(worktree: &Path, dir: &Path) -> Result<(), StoreEr
     Ok(())
 }
 
-fn fail_run(store: &RunStore, run_id: &str, attempt: u32, payload: serde_json::Value) -> Result<(), StoreError> {
+fn fail_run(
+    store: &RunStore,
+    run_id: &str,
+    attempt: u32,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
     // Recorded under this stage, not the gate's: the run failed here, whatever the gate said.
     store.append_event(&Event {

@@ -7,13 +7,24 @@ use orq_orchestrator::{plan_resume, record_run_completed, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -45,27 +56,68 @@ struct World {
 }
 
 fn world(tag: &str, tamper: Tamper) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-resume-orch-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-resume-orch-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     init_repo(&repo);
-    let worktree = if tamper == Tamper::Elsewhere { root.join("elsewhere") } else { repo.join(".claude/worktrees/fix--COM-02") };
+    let worktree = if tamper == Tamper::Elsewhere {
+        root.join("elsewhere")
+    } else {
+        repo.join(".claude/worktrees/fix--COM-02")
+    };
     fs::create_dir_all(worktree.parent().unwrap()).unwrap();
-    git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-02",
+            worktree.to_str().unwrap(),
+        ],
+    );
     match tamper {
         Tamper::None | Tamper::Elsewhere => {}
         Tamper::Detached => {
             git(&worktree, &["checkout", "-q", "--detach"]);
         }
         Tamper::ReplacedByForeign => {
-            git(&repo, &["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+            git(
+                &repo,
+                &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+            );
             let other = root.join("other");
             init_repo(&other);
-            git(&other, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+            git(
+                &other,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "fix--COM-02",
+                    worktree.to_str().unwrap(),
+                ],
+            );
         }
         Tamper::Symlinked => {
-            git(&repo, &["worktree", "add", "-q", "-b", "someone-else", root.join("someone-else").to_str().unwrap()]);
-            git(&repo, &["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+            git(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "someone-else",
+                    root.join("someone-else").to_str().unwrap(),
+                ],
+            );
+            git(
+                &repo,
+                &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+            );
             std::os::unix::fs::symlink(root.join("someone-else"), &worktree).unwrap();
         }
     }
@@ -91,12 +143,17 @@ fn world(tag: &str, tamper: Tamper) -> World {
 #[test]
 fn only_the_stopped_runs_own_checkout_of_its_branch_can_be_resumed() {
     let ok = world("ok", Tamper::None);
-    let plan = plan_resume(&ok.store, &ok.repo, "repo-1", "COM-02").expect("an untouched worktree is resumable");
+    let plan = plan_resume(&ok.store, &ok.repo, "repo-1", "COM-02")
+        .expect("an untouched worktree is resumable");
     assert_eq!(plan.from.run_id, "run-1");
 
     let refused = [
         ("detached", Tamper::Detached, "not on the branch"),
-        ("foreign", Tamper::ReplacedByForeign, "does not belong to this repository"),
+        (
+            "foreign",
+            Tamper::ReplacedByForeign,
+            "does not belong to this repository",
+        ),
         ("symlink", Tamper::Symlinked, "not under"),
         ("elsewhere", Tamper::Elsewhere, "not under"),
     ];
@@ -144,9 +201,30 @@ fn stopped_run(store: &RunStore, repo: &Path, run_id: &str, at: &str) {
 fn the_latest_run_is_the_one_that_started_last_not_the_one_with_the_larger_id() {
     // Run ids are "run-<seconds>-<pid>": text order is wrong across pid widths and clock order wins.
     let cases = [
-        ("pid-width", [("run-1700000000-999", "2026-01-01T00:00:00Z"), ("run-1700000000-1000", "2026-01-01T00:00:00Z")], "run-1700000000-1000"),
-        ("older-id-larger", [("run-1700000009-1", "2026-01-01T00:00:09Z"), ("run-1700000010-1", "2026-01-01T00:00:10Z")], "run-1700000010-1"),
-        ("clock-beats-id", [("run-1700000099-5", "2026-01-01T00:00:01Z"), ("run-1700000001-5", "2026-01-01T00:00:50Z")], "run-1700000001-5"),
+        (
+            "pid-width",
+            [
+                ("run-1700000000-999", "2026-01-01T00:00:00Z"),
+                ("run-1700000000-1000", "2026-01-01T00:00:00Z"),
+            ],
+            "run-1700000000-1000",
+        ),
+        (
+            "older-id-larger",
+            [
+                ("run-1700000009-1", "2026-01-01T00:00:09Z"),
+                ("run-1700000010-1", "2026-01-01T00:00:10Z"),
+            ],
+            "run-1700000010-1",
+        ),
+        (
+            "clock-beats-id",
+            [
+                ("run-1700000099-5", "2026-01-01T00:00:01Z"),
+                ("run-1700000001-5", "2026-01-01T00:00:50Z"),
+            ],
+            "run-1700000001-5",
+        ),
     ];
     for (tag, runs, expected) in cases {
         let w = world(&format!("latest-{tag}"), Tamper::None);

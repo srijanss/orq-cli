@@ -7,13 +7,24 @@ use orq_orchestrator::{rebase_onto_target, RebaseOutcome, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -27,16 +38,39 @@ struct World {
 /// A bare remote with `main`, a worktree on `fix--COM-02` with one commit of
 /// its own, and another clone to advance `main`.
 fn world(tag: &str, remote_override: Option<&str>) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-rebase-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-rebase-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let remote = root.join("remote.git");
-    git(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
     let worktree = root.join("worktree");
-    git(&root, &["clone", "-q", remote.to_str().unwrap(), worktree.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            worktree.to_str().unwrap(),
+        ],
+    );
     // The rebase itself commits, so the identity must live in the repository,
     // not only in the helper's -c flags.
-    for (key, value) in [("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+    for (key, value) in [
+        ("user.name", "t"),
+        ("user.email", "t@example.com"),
+        ("commit.gpgsign", "false"),
+    ] {
         git(&worktree, &["config", key, value]);
     }
     fs::write(worktree.join("a.txt"), "a\n").unwrap();
@@ -49,7 +83,15 @@ fn world(tag: &str, remote_override: Option<&str>) -> World {
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
     let other = root.join("other");
-    git(&root, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
 
     let store = RunStore::new(&root.join("state"));
     store
@@ -57,7 +99,9 @@ fn world(tag: &str, remote_override: Option<&str>) -> World {
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-02".to_string(),
-            remote: remote_override.map(str::to_string).unwrap_or_else(|| remote.to_str().unwrap().to_string()),
+            remote: remote_override
+                .map(str::to_string)
+                .unwrap_or_else(|| remote.to_str().unwrap().to_string()),
             provider: "github".to_string(),
             target_branch: "main".to_string(),
             base_sha: base,
@@ -67,7 +111,11 @@ fn world(tag: &str, remote_override: Option<&str>) -> World {
             profiles: BTreeMap::new(),
         })
         .unwrap();
-    World { store, worktree, other }
+    World {
+        store,
+        worktree,
+        other,
+    }
 }
 
 fn advance_target(w: &World, file: &str, content: &str) -> String {
@@ -79,12 +127,20 @@ fn advance_target_on(w: &World, branch: &str, file: &str, content: &str) -> Stri
     fs::write(w.other.join(file), content).unwrap();
     git(&w.other, &["add", "."]);
     git(&w.other, &["commit", "-q", "-m", &format!("target {file}")]);
-    git(&w.other, &["push", "-q", "origin", &format!("HEAD:{branch}")]);
+    git(
+        &w.other,
+        &["push", "-q", "origin", &format!("HEAD:{branch}")],
+    );
     git(&w.other, &["rev-parse", "HEAD"])
 }
 
 fn kinds(w: &World) -> Vec<String> {
-    w.store.events("run-1").unwrap().into_iter().map(|e| e.kind).collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect()
 }
 
 #[test]
@@ -94,8 +150,17 @@ fn the_run_branch_is_rebased_onto_the_fetched_target_and_its_sha_recorded() {
 
     let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
 
-    assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: target.clone() });
-    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD~1"]), target, "the run's commit sits on the target");
+    assert_eq!(
+        outcome,
+        RebaseOutcome::Rebased {
+            target_sha: target.clone()
+        }
+    );
+    assert_eq!(
+        git(&w.worktree, &["rev-parse", "HEAD~1"]),
+        target,
+        "the run's commit sits on the target"
+    );
     assert!(w.worktree.join("theirs.txt").is_file() && w.worktree.join("mine.txt").is_file());
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
@@ -113,9 +178,14 @@ fn a_conflict_blocks_the_run_and_leaves_the_worktree_mid_rebase() {
 
     let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
 
-    let RebaseOutcome::Conflict { reason } = outcome else { panic!("expected conflict, got {outcome:?}") };
+    let RebaseOutcome::Conflict { reason } = outcome else {
+        panic!("expected conflict, got {outcome:?}")
+    };
     assert!(reason.contains("conflict"), "{reason}");
-    assert!(git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"), "conflict is left to resolve");
+    assert!(
+        git(&w.worktree, &["status", "--porcelain=v1"]).contains("UU a.txt"),
+        "conflict is left to resolve"
+    );
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "run.blocked");
@@ -160,7 +230,10 @@ fn a_worktree_on_another_branch_is_refused_without_touching_it() {
     assert!(rebase_onto_target(&w.store, "run-1", true).is_err());
 
     assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
-    assert_eq!(git(&w.worktree, &["symbolic-ref", "HEAD"]), "refs/heads/someone-else");
+    assert_eq!(
+        git(&w.worktree, &["symbolic-ref", "HEAD"]),
+        "refs/heads/someone-else"
+    );
     assert!(kinds(&w).is_empty());
 }
 
@@ -185,7 +258,11 @@ fn the_fetched_target_is_kept_in_a_run_specific_ref_that_is_removed_afterwards()
     let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
 
     assert!(matches!(outcome, RebaseOutcome::Rebased { .. }));
-    assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "", "no leftover ref");
+    assert_eq!(
+        git(&w.worktree, &["for-each-ref", "refs/orq"]),
+        "",
+        "no leftover ref"
+    );
 }
 
 #[test]
@@ -213,7 +290,10 @@ fn the_shared_fetch_head_is_left_alone_so_another_runs_fetch_is_not_clobbered() 
 
     rebase_onto_target(&w.store, "run-1", true).unwrap();
 
-    assert_eq!(fs::read_to_string(git_dir.join("FETCH_HEAD")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(git_dir.join("FETCH_HEAD")).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -228,7 +308,10 @@ fn a_rebase_that_fails_without_a_conflict_is_an_error_and_keeps_local_work() {
     assert!(rebase_onto_target(&w.store, "run-1", true).is_err());
 
     assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), before);
-    assert_eq!(fs::read_to_string(w.worktree.join("mine.txt")).unwrap(), "dirty\n");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("mine.txt")).unwrap(),
+        "dirty\n"
+    );
     assert!(kinds(&w).is_empty(), "no success or conflict event");
 }
 
@@ -243,8 +326,16 @@ fn run_ids_that_git_would_reject_as_ref_names_still_rebase() {
 
         let outcome = rebase_onto_target(&w.store, id, true).unwrap();
 
-        assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: target }, "run id {id}");
-        assert_eq!(git(&w.worktree, &["for-each-ref", "refs/orq"]), "", "run id {id}");
+        assert_eq!(
+            outcome,
+            RebaseOutcome::Rebased { target_sha: target },
+            "run id {id}"
+        );
+        assert_eq!(
+            git(&w.worktree, &["for-each-ref", "refs/orq"]),
+            "",
+            "run id {id}"
+        );
     }
 }
 
@@ -271,7 +362,18 @@ fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_o
     let release = advance_target_on(&w, "release", "release.txt", "release\n");
     let main = advance_target(&w, "main.txt", "main\n");
     let second = w.worktree.parent().unwrap().join("second");
-    git(&w.worktree, &["worktree", "add", "-q", "-b", "fix--COM-03", second.to_str().unwrap(), "HEAD"]);
+    git(
+        &w.worktree,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-03",
+            second.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
     let mut record = w.store.load("run-1").unwrap();
     record.run_id = "run-2".to_string();
     record.feature_id = "COM-03".to_string();
@@ -284,8 +386,16 @@ fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_o
     git(&w.worktree, &["update-ref", &first_ref, "HEAD"]);
 
     let second_outcome = rebase_onto_target(&w.store, "run-2", true).unwrap();
-    assert_eq!(second_outcome, RebaseOutcome::Rebased { target_sha: release });
-    assert!(git(&w.worktree, &["for-each-ref", "refs/orq"]).contains(&first_ref), "run 1's ref is untouched");
+    assert_eq!(
+        second_outcome,
+        RebaseOutcome::Rebased {
+            target_sha: release
+        }
+    );
+    assert!(
+        git(&w.worktree, &["for-each-ref", "refs/orq"]).contains(&first_ref),
+        "run 1's ref is untouched"
+    );
     git(&w.worktree, &["update-ref", "-d", &first_ref]);
 
     let first_outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();

@@ -24,7 +24,10 @@ pub struct SessionReference {
 
 /// Every session known to `run_id`: the ones carried in from earlier runs, then its own. A carried
 /// record that cannot be decoded is an error, never a silently shorter history.
-pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionReference>, StoreError> {
+pub fn session_references(
+    store: &RunStore,
+    run_id: &str,
+) -> Result<Vec<SessionReference>, StoreError> {
     let record = store.load(run_id)?;
     let events = store.events(run_id)?;
     let mut all = Vec::new();
@@ -39,18 +42,30 @@ pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionR
     }
     // The sessions of the run itself: one per started session stage, on the profile the run was created with.
     if let Some(profile) = record.profiles.get("implementer") {
-        all.extend(events.iter().filter(|e| e.kind == "stage.started").filter_map(|e| {
-            let stage = e.stage.clone().filter(|s| SESSION_STAGES.contains(&s.as_str()))?;
-            Some(SessionReference {
-                run_id: run_id.to_string(),
-                stage,
-                attempt: e.attempt,
-                role: "implementer".to_string(),
-                harness: profile.harness.clone(),
-                model: profile.model.clone(),
-                session_id: e.payload.get("session_id").and_then(|s| s.as_str()).map(str::to_string),
-            })
-        }));
+        all.extend(
+            events
+                .iter()
+                .filter(|e| e.kind == "stage.started")
+                .filter_map(|e| {
+                    let stage = e
+                        .stage
+                        .clone()
+                        .filter(|s| SESSION_STAGES.contains(&s.as_str()))?;
+                    Some(SessionReference {
+                        run_id: run_id.to_string(),
+                        stage,
+                        attempt: e.attempt,
+                        role: "implementer".to_string(),
+                        harness: profile.harness.clone(),
+                        model: profile.model.clone(),
+                        session_id: e
+                            .payload
+                            .get("session_id")
+                            .and_then(|s| s.as_str())
+                            .map(str::to_string),
+                    })
+                }),
+        );
     }
     Ok(all)
 }
@@ -58,7 +73,11 @@ pub fn session_references(store: &RunStore, run_id: &str) -> Result<Vec<SessionR
 /// The session id a `harness` may continue: the latest one that same harness recorded. A session id
 /// belongs to the harness that issued it, so another harness (after a model switch) gets none and
 /// starts a fresh session from the handoff instead.
-pub fn resumable_session(store: &RunStore, run_id: &str, harness: &str) -> Result<Option<String>, StoreError> {
+pub fn resumable_session(
+    store: &RunStore,
+    run_id: &str,
+    harness: &str,
+) -> Result<Option<String>, StoreError> {
     Ok(session_references(store, run_id)?
         .into_iter()
         .rev()
@@ -68,7 +87,11 @@ pub fn resumable_session(store: &RunStore, run_id: &str, harness: &str) -> Resul
 
 /// Copy the sessions `from_run_id` knows into `record`'s run as a `run.sessions_carried` event.
 /// Only appends to the new run; the earlier run's records are left as they are.
-pub fn carry_session_references(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+pub fn carry_session_references(
+    store: &RunStore,
+    record: &RunRecord,
+    from_run_id: &str,
+) -> Result<(), StoreError> {
     let sessions = session_references(store, from_run_id)?;
     store.append_event(&Event {
         schema_version: 1,

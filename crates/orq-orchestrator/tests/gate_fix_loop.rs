@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, Gate, GateFixOutcome, RunRecord, RunStore};
+use orq_orchestrator::{
+    run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
+    RunStore,
+};
 
 struct World {
     store: RunStore,
@@ -13,7 +16,8 @@ struct World {
 }
 
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-gate-fix-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-gate-fix-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
@@ -34,7 +38,12 @@ fn world(tag: &str) -> World {
         })
         .unwrap();
     let gate_log = root.join("gate.log");
-    World { store, root, worktree, gate_log }
+    World {
+        store,
+        root,
+        worktree,
+        gate_log,
+    }
 }
 
 fn sh(script: &str) -> Vec<String> {
@@ -43,7 +52,10 @@ fn sh(script: &str) -> Vec<String> {
 
 /// A gate that passes once `fixed` exists in the worktree.
 fn gate_needing_fixed() -> Gate {
-    Gate::Steps { steps: vec![sh("test -f fixed")], notes: Vec::new() }
+    Gate::Steps {
+        steps: vec![sh("test -f fixed")],
+        notes: Vec::new(),
+    }
 }
 
 fn spec(w: &World, script: &str) -> FixSessionSpec {
@@ -77,27 +89,45 @@ fn a_passing_gate_starts_no_fix_session() {
     fs::write(w.worktree.join("fixed"), "").unwrap();
     let calls = RefCell::new(0);
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| {
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |_, _| {
             *calls.borrow_mut() += 1;
             spec(&w, "exit 0")
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 0 });
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(kinds(&w), [pair("verify", "stage.started"), pair("verify", "stage.completed")]);
+    assert_eq!(
+        kinds(&w),
+        [
+            pair("verify", "stage.started"),
+            pair("verify", "stage.completed")
+        ]
+    );
 }
 
 #[test]
 fn a_fix_session_that_repairs_the_failure_lets_the_gate_pass_on_the_rerun() {
     let w = world("repair");
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| {
-            spec(&w, "touch fixed")
-        })
-        .unwrap();
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |_, _| spec(&w, "touch fixed"),
+    )
+    .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
     assert_eq!(
@@ -117,14 +147,37 @@ fn a_fix_session_that_repairs_the_failure_lets_the_gate_pass_on_the_rerun() {
 fn reruns_and_fix_sessions_carry_their_attempt_number() {
     let w = world("numbered");
 
-    run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |attempt, _| {
-        spec(&w, if attempt == 2 { "touch fixed" } else { "exit 0" })
-    })
+    run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |attempt, _| {
+            spec(
+                &w,
+                if attempt == 2 {
+                    "touch fixed"
+                } else {
+                    "exit 0"
+                },
+            )
+        },
+    )
     .unwrap();
 
-    let seen: Vec<(String, String, u32)> =
-        w.store.events("run-1").unwrap().into_iter().map(|e| (e.stage.unwrap(), e.kind, e.attempt)).collect();
-    let started: Vec<_> = seen.iter().filter(|(_, kind, _)| kind == "stage.started").collect();
+    let seen: Vec<(String, String, u32)> = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.stage.unwrap(), e.kind, e.attempt))
+        .collect();
+    let started: Vec<_> = seen
+        .iter()
+        .filter(|(_, kind, _)| kind == "stage.started")
+        .collect();
     assert_eq!(
         started,
         [
@@ -142,15 +195,29 @@ fn reruns_and_fix_sessions_carry_their_attempt_number() {
 fn a_fixer_that_repairs_the_worktree_but_exits_nonzero_still_passes_on_the_rerun() {
     let w = world("nonzero");
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| {
-            spec(&w, "touch fixed; exit 1")
-        })
-        .unwrap();
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |_, _| spec(&w, "touch fixed; exit 1"),
+    )
+    .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
-    let fix_failed = w.store.events("run-1").unwrap().into_iter().find(|e| e.stage.as_deref() == Some("gate_fix") && e.kind == "stage.failed").unwrap();
-    assert_eq!(fix_failed.payload["exit_code"], 1, "the harness status is recorded but does not decide");
+    let fix_failed = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .find(|e| e.stage.as_deref() == Some("gate_fix") && e.kind == "stage.failed")
+        .unwrap();
+    assert_eq!(
+        fix_failed.payload["exit_code"], 1,
+        "the harness status is recorded but does not decide"
+    );
     assert_eq!(
         kinds(&w),
         [
@@ -169,19 +236,40 @@ fn a_gate_still_red_after_the_allowed_attempts_fails_the_run_and_keeps_the_workt
     let w = world("red");
     let attempts = RefCell::new(Vec::new());
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |attempt, _| {
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |attempt, _| {
             attempts.borrow_mut().push(attempt);
             spec(&w, "exit 0")
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
-    assert_eq!(outcome, GateFixOutcome::Failed { fix_attempts: 2, step: 0, exit_code: Some(1) });
+    assert_eq!(
+        outcome,
+        GateFixOutcome::Failed {
+            fix_attempts: 2,
+            step: 0,
+            exit_code: Some(1)
+        }
+    );
     assert_eq!(*attempts.borrow(), [1, 2]);
     assert!(w.worktree.exists(), "the worktree is kept for inspection");
     let last = w.store.events("run-1").unwrap().pop().unwrap();
     assert_eq!(last.kind, "run.failed");
-    assert!(last.payload["reason"].as_str().unwrap().contains("2 fix attempt"), "{}", last.payload);
+    assert!(
+        last.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("2 fix attempt"),
+        "{}",
+        last.payload
+    );
 }
 
 #[test]
@@ -189,16 +277,33 @@ fn zero_allowed_attempts_fails_straight_away_without_a_session() {
     let w = world("zero");
     let calls = RefCell::new(0);
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 0, |_, _| {
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        0,
+        |_, _| {
             *calls.borrow_mut() += 1;
             spec(&w, "touch fixed")
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
-    assert_eq!(outcome, GateFixOutcome::Failed { fix_attempts: 0, step: 0, exit_code: Some(1) });
+    assert_eq!(
+        outcome,
+        GateFixOutcome::Failed {
+            fix_attempts: 0,
+            step: 0,
+            exit_code: Some(1)
+        }
+    );
     assert_eq!(*calls.borrow(), 0);
-    assert_eq!(w.store.events("run-1").unwrap().pop().unwrap().kind, "run.failed");
+    assert_eq!(
+        w.store.events("run-1").unwrap().pop().unwrap().kind,
+        "run.failed"
+    );
 }
 
 #[test]
@@ -210,11 +315,36 @@ fn a_skipped_or_disabled_gate_is_never_fixed() {
         spec(&w, "exit 0")
     };
 
-    let skipped = Gate::Skipped { reason: "no local gate detected".to_string() };
-    let outcome = run_gate_with_fixes(&w.store, "run-1", &skipped, true, &w.gate_log, 2, &mut fixer).unwrap();
-    assert_eq!(outcome, GateFixOutcome::Skipped { reason: "no local gate detected".to_string() });
+    let skipped = Gate::Skipped {
+        reason: "no local gate detected".to_string(),
+    };
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &skipped,
+        true,
+        &w.gate_log,
+        2,
+        &mut fixer,
+    )
+    .unwrap();
+    assert_eq!(
+        outcome,
+        GateFixOutcome::Skipped {
+            reason: "no local gate detected".to_string()
+        }
+    );
 
-    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), false, &w.gate_log, 2, &mut fixer).unwrap();
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        false,
+        &w.gate_log,
+        2,
+        &mut fixer,
+    )
+    .unwrap();
     assert!(matches!(outcome, GateFixOutcome::Skipped { .. }));
     assert_eq!(*calls.borrow(), 0);
 }
@@ -225,10 +355,25 @@ fn a_fix_session_that_cannot_start_still_uses_up_an_attempt() {
     let mut broken = spec(&w, "");
     broken.program = "/nonexistent/orq-fixer".to_string();
 
-    let outcome =
-        run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| broken.clone()).unwrap();
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| broken.clone(),
+    )
+    .unwrap();
 
-    assert_eq!(outcome, GateFixOutcome::Failed { fix_attempts: 1, step: 0, exit_code: Some(1) });
+    assert_eq!(
+        outcome,
+        GateFixOutcome::Failed {
+            fix_attempts: 1,
+            step: 0,
+            exit_code: Some(1)
+        }
+    );
     assert!(kinds(&w).contains(&pair("gate_fix", "stage.failed")));
 }
 
@@ -237,13 +382,25 @@ fn the_fixer_is_told_where_the_gate_output_is() {
     let w = world("log");
     let seen = RefCell::new(String::new());
 
-    run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, log| {
-        *seen.borrow_mut() = fs::read_to_string(log).unwrap();
-        spec(&w, "touch fixed")
-    })
+    run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, log| {
+            *seen.borrow_mut() = fs::read_to_string(log).unwrap();
+            spec(&w, "touch fixed")
+        },
+    )
     .unwrap();
 
-    assert!(seen.borrow().contains("test -f fixed"), "the gate log is already written: {}", seen.borrow());
+    assert!(
+        seen.borrow().contains("test -f fixed"),
+        "the gate log is already written: {}",
+        seen.borrow()
+    );
 }
 
 #[test]
@@ -251,10 +408,18 @@ fn an_unknown_run_is_an_error_and_no_fix_session_is_asked_for() {
     let w = world("unknown");
     let calls = RefCell::new(0);
 
-    let result = run_gate_with_fixes(&w.store, "ghost", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| {
-        *calls.borrow_mut() += 1;
-        spec(&w, "exit 0")
-    });
+    let result = run_gate_with_fixes(
+        &w.store,
+        "ghost",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |_, _| {
+            *calls.borrow_mut() += 1;
+            spec(&w, "exit 0")
+        },
+    );
 
     assert!(result.is_err());
     assert_eq!(*calls.borrow(), 0);
@@ -264,13 +429,28 @@ fn an_unknown_run_is_an_error_and_no_fix_session_is_asked_for() {
 fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
     let w = world("env");
     // The gate notes the variable on every run, so the first (failing) run is checked as well as the rerun.
-    let gate = Gate::Steps { steps: vec![sh("echo \"[$TDD_DB]\" >> seen_db && test -f fixed")], notes: Vec::new() };
+    let gate = Gate::Steps {
+        steps: vec![sh("echo \"[$TDD_DB]\" >> seen_db && test -f fixed")],
+        notes: Vec::new(),
+    };
     let env = vec![("TDD_DB".to_string(), "test_shop".to_string())];
 
-    let outcome =
-        run_gate_with_fixes_env(&w.store, "run-1", &gate, true, &w.gate_log, 2, &env, |_, _| spec(&w, "touch fixed")).unwrap();
+    let outcome = run_gate_with_fixes_env(
+        &w.store,
+        "run-1",
+        &gate,
+        true,
+        &w.gate_log,
+        2,
+        &env,
+        |_, _| spec(&w, "touch fixed"),
+    )
+    .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
     let seen = std::fs::read_to_string(w.worktree.join("seen_db")).unwrap();
-    assert_eq!(seen, "[test_shop]\n[test_shop]\n", "both gate runs got the variable");
+    assert_eq!(
+        seen, "[test_shop]\n[test_shop]\n",
+        "both gate runs got the variable"
+    );
 }

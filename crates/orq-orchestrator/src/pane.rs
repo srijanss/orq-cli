@@ -38,8 +38,22 @@ pub fn record_pane(store: &RunStore, run_id: &str, pane: &PaneRef) -> Result<(),
 /// The pane most recently recorded for `run_id`, if any.
 pub fn run_pane(store: &RunStore, run_id: &str) -> Result<Option<PaneRef>, StoreError> {
     let events = store.events(run_id)?;
-    Ok(events.iter().rev().filter(|event| event.kind == PANE_EVENT).find_map(|event| {
-        let field = |name: &str| event.payload.get(name).and_then(|v| v.as_str()).map(str::to_string);
-        Some(PaneRef { workspace_id: field("workspace_id")?, tab_id: field("tab_id")?, pane_id: field("pane_id")? })
-    }))
+    Ok(events
+        .iter()
+        .rev()
+        .filter(|event| event.kind == PANE_EVENT)
+        .find_map(|event| {
+            let field = |name: &str| {
+                event
+                    .payload
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            };
+            Some(PaneRef {
+                workspace_id: field("workspace_id")?,
+                tab_id: field("tab_id")?,
+                pane_id: field("pane_id")?,
+            })
+        }))
 }

@@ -142,7 +142,10 @@ impl Layer {
 }
 
 /// The settings for the repository at `repo`; `env` looks a variable up.
-pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> Result<RunSettings, SettingsError> {
+pub fn load_run_settings(
+    repo: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<RunSettings, SettingsError> {
     let shared = read_layer(&repo.join(SHARED_FILE), SHARED_FILE)?;
     let private = match git_dir(repo) {
         Some(dir) => read_layer(&dir.join("orq/run.toml"), PRIVATE_LABEL)?,
@@ -179,14 +182,18 @@ pub fn load_run_settings(repo: &Path, env: &dyn Fn(&str) -> Option<String>) -> R
 /// Saves `servers` as the `mcp_servers` setting in the private file of the repository at `repo`,
 /// keeping its other keys and comments. A file that is not valid TOML is left untouched.
 pub fn save_mcp_servers_setting(repo: &Path, servers: &[String]) -> Result<(), String> {
-    let dir = git_dir(repo).ok_or_else(|| format!("{} is not in a git repository", repo.display()))?.join("orq");
+    let dir = git_dir(repo)
+        .ok_or_else(|| format!("{} is not in a git repository", repo.display()))?
+        .join("orq");
     let path = dir.join("run.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(format!("{PRIVATE_LABEL}: {:?}", err.kind())),
     };
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|err| format!("{PRIVATE_LABEL} is not valid TOML and was left untouched: {err}"))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|err| {
+        format!("{PRIVATE_LABEL} is not valid TOML and was left untouched: {err}")
+    })?;
     let mut array = toml_edit::Array::new();
     for server in servers {
         array.push(server.as_str());
@@ -194,7 +201,9 @@ pub fn save_mcp_servers_setting(repo: &Path, servers: &[String]) -> Result<(), S
     doc["mcp_servers"] = toml_edit::value(array);
     std::fs::create_dir_all(&dir).map_err(|err| format!("{PRIVATE_LABEL}: {:?}", err.kind()))?;
     // A new file is private; a file that exists keeps the permissions it has.
-    let mode = std::fs::metadata(&path).map(|meta| std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777).unwrap_or(0o600);
+    let mode = std::fs::metadata(&path)
+        .map(|meta| std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777)
+        .unwrap_or(0o600);
     let fail = |err: std::io::Error| format!("{PRIVATE_LABEL}: {:?}", err.kind());
     let (temp, mut file) = create_temp(&dir, mode).map_err(fail)?;
     let written = std::io::Write::write_all(&mut file, doc.to_string().as_bytes())
@@ -213,16 +222,25 @@ fn create_temp(dir: &Path, mode: u32) -> std::io::Result<(std::path::PathBuf, st
     let mut attempt = 0u32;
     loop {
         let temp = dir.join(format!("run.toml.{}.{attempt}.tmp", std::process::id()));
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temp) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temp)
+        {
             Ok(file) => {
                 // The mode given at creation is filtered by the umask, so it is set again outright.
-                if let Err(err) = file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+                if let Err(err) =
+                    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))
+                {
                     let _ = std::fs::remove_file(&temp);
                     return Err(err);
                 }
                 return Ok((temp, file));
             }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => {
+                attempt += 1
+            }
             Err(err) => return Err(err),
         }
     }
@@ -235,52 +253,155 @@ fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
 }
 
 fn invalid(source: &str, reason: impl Into<String>) -> SettingsError {
-    SettingsError::Invalid { source: source.to_string(), reason: reason.into() }
+    SettingsError::Invalid {
+        source: source.to_string(),
+        reason: reason.into(),
+    }
 }
 
 fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Layer::default()),
-        Err(err) => return Err(SettingsError::Unreadable { path: label.to_string(), reason: err.to_string() }),
+        Err(err) => {
+            return Err(SettingsError::Unreadable {
+                path: label.to_string(),
+                reason: err.to_string(),
+            })
+        }
     };
-    let doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| invalid(label, err.to_string()))?;
+    let doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|err: toml_edit::TomlError| invalid(label, err.to_string()))?;
     let mut layer = Layer::default();
     for (key, item) in doc.iter() {
-        let value = item.as_value().ok_or_else(|| invalid(label, format!("{key} must be a plain value")))?;
+        let value = item
+            .as_value()
+            .ok_or_else(|| invalid(label, format!("{key} must be a plain value")))?;
         let bad = |reason: &str| invalid(label, format!("{key} {reason}"));
         match key {
-            "forge" => layer.forge = Some(forge(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
+            "forge" => {
+                layer.forge = Some(
+                    forge(value.as_str().ok_or_else(|| bad("must be a string"))?)
+                        .map_err(|r| bad(&r))?,
+                )
+            }
             "base_branch" => {
-                layer.base_branch = Some(branch(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?)
+                layer.base_branch = Some(
+                    branch(value.as_str().ok_or_else(|| bad("must be a string"))?)
+                        .map_err(|r| bad(&r))?,
+                )
             }
             "gate" => layer.gate = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "setup" => layer.setup = Some(steps(&json_of(value)).map_err(|r| bad(&r))?),
             "ci_timeout_secs" => {
-                layer.ci_timeout = Some(timeout(value.as_integer().ok_or_else(|| bad("must be a whole number"))?).map_err(|r| bad(&r))?)
+                layer.ci_timeout = Some(
+                    timeout(
+                        value
+                            .as_integer()
+                            .ok_or_else(|| bad("must be a whole number"))?,
+                    )
+                    .map_err(|r| bad(&r))?,
+                )
             }
-            "mr_assignee" => layer.mr_assignee = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, true).map_err(|r| bad(&r))?),
-            "mr_reviewer" => layer.mr_reviewer = Some(person(value.as_str().ok_or_else(|| bad("must be a string"))?, false).map_err(|r| bad(&r))?),
+            "mr_assignee" => {
+                layer.mr_assignee = Some(
+                    person(value.as_str().ok_or_else(|| bad("must be a string"))?, true)
+                        .map_err(|r| bad(&r))?,
+                )
+            }
+            "mr_reviewer" => {
+                layer.mr_reviewer = Some(
+                    person(
+                        value.as_str().ok_or_else(|| bad("must be a string"))?,
+                        false,
+                    )
+                    .map_err(|r| bad(&r))?,
+                )
+            }
             "notify_cmd" => layer.notify_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
-            "notify_on" => layer.notify_on = Some(notify_on(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
-            "notify_env" => layer.notify_env = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?),
-            "test_db_vars" => layer.test_db_vars = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?),
+            "notify_on" => {
+                layer.notify_on = Some(
+                    notify_on(value.as_str().ok_or_else(|| bad("must be a string"))?)
+                        .map_err(|r| bad(&r))?,
+                )
+            }
+            "notify_env" => {
+                layer.notify_env = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?)
+            }
+            "test_db_vars" => {
+                layer.test_db_vars = Some(variable_names(&json_of(value)).map_err(|r| bad(&r))?)
+            }
             "local_files" => layer.local_files = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "mcp_servers" => layer.mcp_servers = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
-            "test_db_drop_cmd" => layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
-            "db_name_template" => layer.db_name_template = Some(value.as_str().ok_or_else(|| bad("must be a string"))?.to_string()),
+            "test_db_drop_cmd" => {
+                layer.test_db_drop_cmd = Some(argv(&json_of(value)).map_err(|r| bad(&r))?)
+            }
+            "db_name_template" => {
+                layer.db_name_template = Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| bad("must be a string"))?
+                        .to_string(),
+                )
+            }
             "compact_window" => {
-                layer.compact_window = Some(window(value.as_integer().ok_or_else(|| bad("must be a whole number"))?).map_err(|r| bad(&r))?)
+                layer.compact_window = Some(
+                    window(
+                        value
+                            .as_integer()
+                            .ok_or_else(|| bad("must be a whole number"))?,
+                    )
+                    .map_err(|r| bad(&r))?,
+                )
             }
             "branch_prefix" => {
-                layer.branch_prefix = Some(branch_prefix(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?)
+                layer.branch_prefix = Some(
+                    branch_prefix(value.as_str().ok_or_else(|| bad("must be a string"))?)
+                        .map_err(|r| bad(&r))?,
+                )
             }
-            "model" => layer.model =Some(model(value.as_str().ok_or_else(|| bad("must be a string"))?).map_err(|r| bad(&r))?),
-            "keep_test_db" => layer.keep_test_db = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
-            "auto_exit" => layer.auto_exit = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
-            "remote_control" => layer.remote_control = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
-            "explain_failures" => layer.explain_failures = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
-            "claude_push" => layer.claude_push = Some(value.as_bool().ok_or_else(|| bad("must be true or false"))?),
+            "model" => {
+                layer.model = Some(
+                    model(value.as_str().ok_or_else(|| bad("must be a string"))?)
+                        .map_err(|r| bad(&r))?,
+                )
+            }
+            "keep_test_db" => {
+                layer.keep_test_db = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
+            "auto_exit" => {
+                layer.auto_exit = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
+            "remote_control" => {
+                layer.remote_control = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
+            "explain_failures" => {
+                layer.explain_failures = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
+            "claude_push" => {
+                layer.claude_push = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -306,39 +427,58 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
         layer.setup = Some(steps(&json("ORQ_SETUP", &v)?).map_err(|r| invalid("ORQ_SETUP", r))?);
     }
     if let Some(v) = get("ORQ_CI_TIMEOUT_SECS") {
-        let secs: i64 = v.trim().parse().map_err(|_| invalid("ORQ_CI_TIMEOUT_SECS", "must be a whole number"))?;
+        let secs: i64 = v
+            .trim()
+            .parse()
+            .map_err(|_| invalid("ORQ_CI_TIMEOUT_SECS", "must be a whole number"))?;
         layer.ci_timeout = Some(timeout(secs).map_err(|r| invalid("ORQ_CI_TIMEOUT_SECS", r))?);
     }
     if let Some(v) = get("ORQ_NOTIFY_CMD") {
-        layer.notify_cmd = Some(argv(&json("ORQ_NOTIFY_CMD", &v)?).map_err(|r| invalid("ORQ_NOTIFY_CMD", r))?);
+        layer.notify_cmd =
+            Some(argv(&json("ORQ_NOTIFY_CMD", &v)?).map_err(|r| invalid("ORQ_NOTIFY_CMD", r))?);
     }
     if let Some(v) = get("ORQ_NOTIFY_ON") {
         layer.notify_on = Some(notify_on(v.trim()).map_err(|r| invalid("ORQ_NOTIFY_ON", r))?);
     }
     if let Some(v) = get("ORQ_NOTIFY_ENV") {
-        layer.notify_env = Some(variable_names(&json("ORQ_NOTIFY_ENV", &v)?).map_err(|r| invalid("ORQ_NOTIFY_ENV", r))?);
+        layer.notify_env = Some(
+            variable_names(&json("ORQ_NOTIFY_ENV", &v)?)
+                .map_err(|r| invalid("ORQ_NOTIFY_ENV", r))?,
+        );
     }
     if let Some(v) = get("ORQ_TEST_DB_VARS") {
-        layer.test_db_vars = Some(variable_names(&json("ORQ_TEST_DB_VARS", &v)?).map_err(|r| invalid("ORQ_TEST_DB_VARS", r))?);
+        layer.test_db_vars = Some(
+            variable_names(&json("ORQ_TEST_DB_VARS", &v)?)
+                .map_err(|r| invalid("ORQ_TEST_DB_VARS", r))?,
+        );
     }
     if let Some(v) = get("ORQ_LOCAL_FILES") {
-        layer.local_files = Some(argv(&json("ORQ_LOCAL_FILES", &v)?).map_err(|r| invalid("ORQ_LOCAL_FILES", r))?);
+        layer.local_files =
+            Some(argv(&json("ORQ_LOCAL_FILES", &v)?).map_err(|r| invalid("ORQ_LOCAL_FILES", r))?);
     }
     if let Some(v) = get("ORQ_MCP_SERVERS") {
-        layer.mcp_servers = Some(argv(&json("ORQ_MCP_SERVERS", &v)?).map_err(|r| invalid("ORQ_MCP_SERVERS", r))?);
+        layer.mcp_servers =
+            Some(argv(&json("ORQ_MCP_SERVERS", &v)?).map_err(|r| invalid("ORQ_MCP_SERVERS", r))?);
     }
     if let Some(v) = get("ORQ_TEST_DB_DROP_CMD") {
-        layer.test_db_drop_cmd = Some(argv(&json("ORQ_TEST_DB_DROP_CMD", &v)?).map_err(|r| invalid("ORQ_TEST_DB_DROP_CMD", r))?);
+        layer.test_db_drop_cmd = Some(
+            argv(&json("ORQ_TEST_DB_DROP_CMD", &v)?)
+                .map_err(|r| invalid("ORQ_TEST_DB_DROP_CMD", r))?,
+        );
     }
     if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
         layer.db_name_template = Some(v.trim().to_string());
     }
     if let Some(v) = get("ORQ_COMPACT_WINDOW") {
-        let tokens: i64 = v.trim().parse().map_err(|_| invalid("ORQ_COMPACT_WINDOW", "must be a whole number"))?;
+        let tokens: i64 = v
+            .trim()
+            .parse()
+            .map_err(|_| invalid("ORQ_COMPACT_WINDOW", "must be a whole number"))?;
         layer.compact_window = Some(window(tokens).map_err(|r| invalid("ORQ_COMPACT_WINDOW", r))?);
     }
     if let Some(v) = get("ORQ_BRANCH_PREFIX") {
-        layer.branch_prefix = Some(branch_prefix(v.trim()).map_err(|r| invalid("ORQ_BRANCH_PREFIX", r))?);
+        layer.branch_prefix =
+            Some(branch_prefix(v.trim()).map_err(|r| invalid("ORQ_BRANCH_PREFIX", r))?);
     }
     if let Some(v) = get("ORQ_MODEL") {
         layer.model = Some(model(v.trim()).map_err(|r| invalid("ORQ_MODEL", r))?);
@@ -361,7 +501,12 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
         layer.explain_failures = Some(match v.trim() {
             "1" | "true" => true,
             "0" | "false" => false,
-            _ => return Err(invalid("ORQ_EXPLAIN_FAILURES", "must be 1, 0, true or false")),
+            _ => {
+                return Err(invalid(
+                    "ORQ_EXPLAIN_FAILURES",
+                    "must be 1, 0, true or false",
+                ))
+            }
         });
     }
     if let Some(v) = get("ORQ_CLAUDE_PUSH") {
@@ -381,7 +526,11 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     for (name, assignee) in [("ORQ_MR_ASSIGNEE", true), ("ORQ_MR_REVIEWER", false)] {
         if let Some(v) = get(name) {
             let who = Some(person(&v, assignee).map_err(|r| invalid(name, r))?);
-            if assignee { layer.mr_assignee = who } else { layer.mr_reviewer = who }
+            if assignee {
+                layer.mr_assignee = who
+            } else {
+                layer.mr_reviewer = who
+            }
         }
     }
     Ok(layer)
@@ -391,7 +540,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
 fn json_of(value: &toml_edit::Value) -> serde_json::Value {
     match value {
         toml_edit::Value::String(s) => serde_json::Value::String(s.value().clone()),
-        toml_edit::Value::Array(items) => serde_json::Value::Array(items.iter().map(json_of).collect()),
+        toml_edit::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(json_of).collect())
+        }
         _ => serde_json::Value::Null,
     }
 }
@@ -404,8 +555,15 @@ fn forge(value: &str) -> Result<String, String> {
 }
 
 fn person(value: &str, assignee: bool) -> Result<String, String> {
-    let people = if assignee { ReviewPeople::checked(Some(value), None) } else { ReviewPeople::checked(None, Some(value)) }?;
-    people.assignee.or(people.reviewer).ok_or_else(|| "must not be blank".to_string())
+    let people = if assignee {
+        ReviewPeople::checked(Some(value), None)
+    } else {
+        ReviewPeople::checked(None, Some(value))
+    }?;
+    people
+        .assignee
+        .or(people.reviewer)
+        .ok_or_else(|| "must not be blank".to_string())
 }
 
 fn variable_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
@@ -413,11 +571,18 @@ fn variable_names(value: &serde_json::Value) -> Result<Vec<String>, String> {
         .as_array()
         .ok_or("must be a list of variable names")?
         .iter()
-        .map(|n| n.as_str().map(str::to_string).ok_or("must hold only strings"))
+        .map(|n| {
+            n.as_str()
+                .map(str::to_string)
+                .ok_or("must hold only strings")
+        })
         .collect::<Result<_, _>>()?;
     for name in &names {
         let mut chars = name.chars();
-        let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let plain = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !plain || name == "NOTIFY_MESSAGE" {
             return Err(format!("{name:?} is not a usable variable name"));
         }
@@ -430,7 +595,10 @@ pub fn model(value: &str) -> Result<String, String> {
     // The same rule as the agent adapter's `plain` check, so a name accepted here never fails after the run exists.
     let allowed = |c: char| c.is_ascii_alphanumeric() || "-_./:@+".contains(c);
     if value.is_empty() || value.starts_with('-') || !value.chars().all(allowed) {
-        return Err("must be a model name: letters, digits and - _ . / : @ +, not starting with a dash".to_string());
+        return Err(
+            "must be a model name: letters, digits and - _ . / : @ +, not starting with a dash"
+                .to_string(),
+        );
     }
     Ok(value.to_string())
 }
@@ -440,7 +608,10 @@ fn branch_prefix(value: &str) -> Result<String, String> {
     if orq_core::naming::is_valid_prefix(value) {
         Ok(value.to_string())
     } else {
-        Err("must be a branch prefix such as fix-- or feat/ (letters, digits, . _ - and /)".to_string())
+        Err(
+            "must be a branch prefix such as fix-- or feat/ (letters, digits, . _ - and /)"
+                .to_string(),
+        )
     }
 }
 
@@ -472,7 +643,11 @@ fn argv(value: &serde_json::Value) -> Result<Vec<String>, String> {
         .as_array()
         .ok_or("must be a list of words, not a shell string")?
         .iter()
-        .map(|w| w.as_str().map(str::to_string).ok_or("must hold only strings"))
+        .map(|w| {
+            w.as_str()
+                .map(str::to_string)
+                .ok_or("must hold only strings")
+        })
         .collect::<Result<_, _>>()?;
     match words.first() {
         None => Err("must not be empty".to_string()),
@@ -482,7 +657,12 @@ fn argv(value: &serde_json::Value) -> Result<Vec<String>, String> {
 }
 
 fn steps(value: &serde_json::Value) -> Result<Vec<Vec<String>>, String> {
-    value.as_array().ok_or("must be a list of commands")?.iter().map(argv).collect()
+    value
+        .as_array()
+        .ok_or("must be a list of commands")?
+        .iter()
+        .map(argv)
+        .collect()
 }
 
 /// A context size in tokens: positive, and no larger than any model's window.
