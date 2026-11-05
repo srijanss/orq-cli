@@ -2353,7 +2353,7 @@ impl RunsState {
         if !cards.contains(press) {
             return None;
         }
-        let slot = usize::from((press.y - cards.y) / CARD_HEIGHT);
+        let slot = usize::from((press.y - cards.y) / run_row_height(cards));
         let visible = self.visible(body);
         let index = self.offset(visible) + slot;
         if slot < visible && index < self.len() {
@@ -2376,13 +2376,13 @@ impl RunsState {
         }
     }
 
-    /// Cards that fit: at least one whenever there is a row for it, cut at the bottom.
+    /// Cards that fit, or one-line rows when there is no room for a whole card.
     fn visible(&self, body: Rect) -> usize {
         let cards = self.layout(body).0;
         if cards.height == 0 {
             0
         } else {
-            usize::from((cards.height / CARD_HEIGHT).max(1))
+            usize::from(cards.height / run_row_height(cards))
         }
     }
 
@@ -2433,7 +2433,30 @@ fn panel_inner(panel: Rect) -> Rect {
 }
 
 /// A run drawn like a feature card: its feature and status, then its stage and models.
+/// A whole card when one fits, otherwise a single borderless line per run.
+fn run_row_height(cards: Rect) -> u16 {
+    if cards.height >= CARD_HEIGHT { CARD_HEIGHT } else { 1 }
+}
+
+/// `"> {feature}"`, padding, then the status, filling `width` columns.
+fn run_title_line(run: &RunRow, selected: bool, width: usize) -> Line<'static> {
+    let marker = if selected { "> " } else { "  " };
+    let status = printable(&run.status);
+    let room = width.saturating_sub(MARKER_WIDTH + display_width(&status) + 1);
+    let name = truncate_right(&printable(&run.feature), room);
+    let pad = width.saturating_sub(MARKER_WIDTH + display_width(&name) + display_width(&status));
+    Line::from(vec![
+        Span::styled(format!("{marker}{name}"), name_style(selected)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(status, status_style(&run.status)),
+    ])
+}
+
 fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) {
+    if area.height < CARD_HEIGHT {
+        frame.render_widget(Paragraph::new(run_title_line(run, selected, usize::from(area.width))), area);
+        return;
+    }
     let border = if selected {
         Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
     } else {
@@ -2443,11 +2466,6 @@ fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = usize::from(inner.width);
-    let marker = if selected { "> " } else { "  " };
-    let status = printable(&run.status);
-    let room = width.saturating_sub(MARKER_WIDTH + display_width(&status) + 1);
-    let name = truncate_right(&printable(&run.feature), room);
-    let pad = width.saturating_sub(MARKER_WIDTH + display_width(&name) + display_width(&status));
     let detail = format!(
         "{} · {} / {}",
         run.stage.as_deref().unwrap_or("-"),
@@ -2456,11 +2474,7 @@ fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) 
     );
     let detail_style = if selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
     let lines = vec![
-        Line::from(vec![
-            Span::styled(format!("{marker}{name}"), name_style(selected)),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(status, status_style(&run.status)),
-        ]),
+        run_title_line(run, selected, width),
         Line::styled(
             format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&printable(&detail), width.saturating_sub(MARKER_WIDTH))),
             detail_style,
@@ -2512,8 +2526,9 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
             let visible = state.visible(body);
             let offset = state.offset(visible);
             for (slot, (i, run)) in rows.iter().enumerate().skip(offset).take(visible).enumerate() {
-                let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(CARD_HEIGHT);
-                let area = Rect::new(cards.x, top, cards.width, CARD_HEIGHT.min(cards.bottom().saturating_sub(top)));
+                let height = run_row_height(cards);
+                let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
+                let area = Rect::new(cards.x, top, cards.width, height);
                 render_run_card(frame, area, run, i == state.selected);
             }
             if let Some(panel) = panel {
@@ -3532,10 +3547,18 @@ impl Browser {
         self.runs.stopping = Some(run_id);
     }
 
+    /// After a stop the store says the run failed; reload so the list and its buttons show that, keeping the selection.
     fn confirm_stop(&mut self, backend: &mut dyn BrowserBackend, run_id: &str) {
-        self.notice = Some(match backend.stop_run(run_id) {
-            Ok(message) | Err(message) => message,
-        });
+        match backend.stop_run(run_id) {
+            Ok(message) => {
+                self.open_runs(backend);
+                if let Ok(rows) = &self.runs.rows {
+                    self.runs.selected = rows.iter().position(|r| r.run_id == run_id).unwrap_or(0);
+                }
+                self.notice = Some(message);
+            }
+            Err(message) => self.notice = Some(message),
+        }
     }
 
     /// `c` on a paused, failed or blocked run: check it can continue, then wait for `y` before resuming.
@@ -4002,6 +4025,8 @@ where
                     }
                     if let Some(run_id) = browser.runs.stopping.take() {
                         if key.code == KeyCode::Char('y') {
+                            browser.notice = Some(format!("Stopping {run_id}…"));
+                            terminal.draw(|frame| browser.draw(frame, model))?;
                             browser.confirm_stop(backend, &run_id);
                         } else {
                             browser.notice = Some(format!("Did not stop {run_id}"));
