@@ -208,3 +208,20 @@ fn a_same_branch_sibling_whose_directory_is_gone_still_blocks_the_discard() {
     assert!(store.load("run-1").is_ok());
     assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
 }
+
+#[test]
+fn a_blocked_run_is_discarded_like_a_failed_one() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (root, store) = store("blocked");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
+
+    discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert!(store.load("run-1").is_err());
+    assert!(!worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+    assert!(!root.join("logs").join("run-1").exists());
+    assert_eq!(store.active_run("p", "F").unwrap(), None);
+}

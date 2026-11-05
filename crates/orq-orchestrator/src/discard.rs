@@ -1,4 +1,4 @@
-//! Discarding a failed run: remove its worktree and branch, release its feature locks, and forget
+//! Discarding a failed or blocked run: remove its worktree and branch, release its feature locks, and forget
 //! its record and logs.
 
 use std::path::Path;
@@ -10,15 +10,15 @@ use crate::store::{RunStore, StoreError};
 
 /// Remove the run `run_id` for good: its worktree (with any uncommitted work), its local branch,
 /// its feature locks, its logs and its record. A run whose worktree is already gone keeps its
-/// branch: it cannot be shown to belong to `repo`. Only a failed run can be discarded. Every check
+/// branch: it cannot be shown to belong to `repo`. Only a failed or blocked run, which has ended, can be discarded. Every check
 /// happens before anything is removed, and the record goes last, so a failure part-way can be
 /// retried. `repo` is the repository the run's worktree belongs to.
 pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<(), String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
-    if phase != RunPhase::Failed {
-        return Err(format!("{run_id} is {}; only a failed run can be discarded", phase.as_str()));
+    if !matches!(phase, RunPhase::Failed | RunPhase::Blocked) {
+        return Err(format!("{run_id} is {}; only a failed or blocked run can be discarded", phase.as_str()));
     }
     let branch = record.branch.as_str();
     if branch.is_empty() || branch == record.target_branch {

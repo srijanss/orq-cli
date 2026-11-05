@@ -3808,7 +3808,7 @@ fn run_stop(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// `orq run discard <run> --yes [--repo <path>]`: remove a failed run's worktree (with any uncommitted
+/// `orq run discard <run> --yes [--repo <path>]`: remove a failed or blocked run's worktree (with any uncommitted
 /// work), branch, feature locks, logs and record. Nothing is removed without `--yes`.
 fn run_discard(args: &[OsString]) -> ExitCode {
     let (mut run_id, mut yes, mut repo) = (None, false, PathBuf::from("."));
