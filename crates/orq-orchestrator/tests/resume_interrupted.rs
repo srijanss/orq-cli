@@ -84,8 +84,14 @@ fn dead_pid() -> u32 {
 #[test]
 fn a_run_killed_while_running_is_resumable() {
     let (store, repo) = launched_run("killed", dead_pid());
-    let plan = plan_resume(&store, &repo, "repo-1", "COM-02")
-        .expect("a run whose process is gone can be resumed");
+    let plan = plan_resume(&store, &repo, "repo-1", "COM-02");
+    if !Path::new("/proc/self").exists() {
+        // Without procfs liveness is unknown, which must read as alive: refuse rather than take over.
+        let reason = plan.expect_err("liveness is unknown without procfs");
+        assert!(reason.contains("may still be running"), "{reason}");
+        return;
+    }
+    let plan = plan.expect("a run whose process is gone can be resumed");
     assert_eq!(plan.from.run_id, "run-1");
 }
 

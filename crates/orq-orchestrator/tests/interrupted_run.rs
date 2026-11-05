@@ -104,12 +104,24 @@ fn guards_leave_live_terminal_paused_and_unlaunched_runs_alone() {
     paused.kind = "run.paused".into();
     paused.event_id = "r-paused".into();
     s.append_event(&paused).unwrap();
-    if summarize_run(&s.events("r").unwrap()).phase == RunPhase::Paused {
-        assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
-        assert_eq!(
-            summarize_run(&s.events("r").unwrap()).phase,
-            RunPhase::Paused
-        );
+    assert_eq!(summarize_run(&s.events("r").unwrap()).phase, RunPhase::Paused, "precondition");
+    let n = s.events("r").unwrap().len();
+    assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap());
+    assert_eq!(s.events("r").unwrap().len(), n);
+    assert_eq!(summarize_run(&s.events("r").unwrap()).phase, RunPhase::Paused);
+
+    // Ended runs (completed, blocked) keep their ending even with a dead owner on record.
+    for (tag, ending, phase) in [("completed", "review_ready", RunPhase::Completed), ("blocked", "blocked", RunPhase::Blocked)] {
+        let s = store(&format!("guard-{tag}"));
+        let rec = record("r");
+        s.create(&rec).unwrap();
+        record_launch(&s, "r", 1, std::path::Path::new("/tmp/x.log")).unwrap();
+        orq_orchestrator::record_run_completed(&s, &rec, ending, None).unwrap();
+        assert_eq!(summarize_run(&s.events("r").unwrap()).phase, phase, "precondition");
+        let n = s.events("r").unwrap().len();
+        assert!(!reconcile_interrupted(&s, "r", &|_, _| false).unwrap(), "{tag}");
+        assert_eq!(s.events("r").unwrap().len(), n, "{tag}");
+        assert_eq!(summarize_run(&s.events("r").unwrap()).phase, phase, "{tag}");
     }
 
     // Malformed pid: untouched.
