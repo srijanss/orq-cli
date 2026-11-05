@@ -69,3 +69,12 @@ fn a_narrower_footer_keeps_the_essential_keys_and_the_widest_lists_all() {
         }
     }
 }
+
+#[test]
+fn a_sixty_column_footer_still_says_how_to_open_search_and_close() {
+    let rows = screen(60, 30, vec![KeyCode::Down]);
+    let footer = rows.last().unwrap();
+    for hint in ["Enter open", "/ search", "Esc close"] {
+        assert!(footer.contains(hint), "{hint}: {footer:?}");
+    }
+}

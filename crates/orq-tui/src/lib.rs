@@ -4294,6 +4294,7 @@ const PANEL_MIN_BODY_HEIGHT: u16 = 14;
 const PANEL_HINT: &str = " ↑↓ move · Enter open · a add · e edit · f status · Space mark · p promote · L launch · V review · R resume · / search · r reload · Tab settings · Esc close ";
 
 const PANEL_HINT_COMPACT: &str = " Enter open · a add · e edit · f status · / search · r reload · Esc close ";
+const PANEL_HINT_SHORT: &str = " Enter open · / search · r reload · Esc close ";
 const PANEL_HINT_MINIMAL: &str = " Esc close ";
 
 /// Splits the browser body into the list and, on a roomy viewport, the
@@ -4363,7 +4364,7 @@ fn render_selected_panel(
     let room = usize::from(panel.width.saturating_sub(2));
     let prefix = if marked == 0 { String::new() } else { format!(" {marked} marked ·") };
     // The fullest variant that fits; the last one is cut to the width.
-    let hint = [PANEL_HINT, PANEL_HINT_COMPACT, PANEL_HINT_MINIMAL]
+    let hint = [PANEL_HINT, PANEL_HINT_COMPACT, PANEL_HINT_SHORT, PANEL_HINT_MINIMAL]
         .iter()
         .map(|variant| if prefix.is_empty() { variant.to_string() } else { format!("{prefix}{variant}") })
         .find(|candidate| candidate.chars().count() <= room)
