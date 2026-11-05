@@ -187,3 +187,22 @@ fn orchestrate_on_a_row_opens_the_launch_picker_for_that_feature_and_stays_on_fe
     assert!(backend.calls.contains(&"profiles".to_string()), "{:?}", backend.calls);
     assert!(picked.iter().any(|line| line.contains("fast")), "{picked:#?}");
 }
+
+/// Where `text` is first drawn on `screen`.
+fn text_at(screen: &[String], text: &str) -> (u16, u16) {
+    screen
+        .iter()
+        .enumerate()
+        .find_map(|(y, line)| line.find(text).map(|byte| (line[..byte].chars().count() as u16 + 1, y as u16)))
+        .unwrap_or_else(|| panic!("{text} is drawn: {screen:#?}"))
+}
+
+#[test]
+fn a_click_elsewhere_cancels_a_row_buttons_question_so_a_later_y_does_nothing() {
+    let screen = show(&mut Fake::default(), vec![]);
+    let tab = text_at(&screen, "Orchestrations");
+    let mut backend = Fake::default();
+    let after = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]")), click(tab), key('y')]);
+    assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "the question was cancelled: {:?}", backend.calls);
+    assert!(!after.iter().any(|line| line.contains("Discard run-5?")), "{after:#?}");
+}

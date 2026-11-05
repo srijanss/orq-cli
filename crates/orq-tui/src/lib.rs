@@ -3413,15 +3413,20 @@ impl Browser {
         }
     }
 
+    /// A row button's question that is not answered with `y`: nothing is done, and the notice says so.
+    fn cancel_row_confirm(&mut self, action: RowAction, run_id: &str) {
+        let verb = match action {
+            RowAction::Stop => "stop",
+            RowAction::Resume => "resume",
+            _ => "discard",
+        };
+        self.notice = Some(format!("Did not {verb} {run_id}"));
+    }
+
     /// The key answering a row button's question: `y` does it, any other key cancels.
     fn answer_row_confirm(&mut self, backend: &mut dyn BrowserBackend, action: RowAction, run_id: &str, code: KeyCode) {
         if code != KeyCode::Char('y') {
-            let verb = match action {
-                RowAction::Stop => "stop",
-                RowAction::Resume => "resume",
-                _ => "discard",
-            };
-            self.notice = Some(format!("Did not {verb} {run_id}"));
+            self.cancel_row_confirm(action, run_id);
             return;
         }
         let done = match action {
@@ -4533,6 +4538,14 @@ where
                 if !acted_on {
                     continue;
                 }
+                // A click is not a y: it cancels a row button's question before it can navigate anywhere.
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    if let Some((action, run_id)) = browser.row_confirm.take() {
+                        browser.cancel_row_confirm(action, &run_id);
+                        dirty = true;
+                        continue;
+                    }
+                }
                 let full = Rect::from((Position::ORIGIN, terminal.size()?));
                 if browser.picker.is_some() {
                     continue;
@@ -4646,7 +4659,7 @@ where
                 let (list, promote_area, panel) = list_layout(body, selected.as_ref(), bulk);
                 let control = filter_control_rect(list, browser.status_filter.as_deref(), status_count(&browser.rows, browser.status_filter.as_deref()));
                 let press = Position::new(mouse.column, mouse.row);
-                // A row button's question is answered by key, not by a click.
+                // A scroll leaves a row button's question pending; a click has already cancelled it.
                 if browser.row_confirm.is_some() {
                     continue;
                 }
