@@ -3,7 +3,7 @@ use std::io;
 
 use orq_tui::{run_browser, BrowserBackend, BrowserEntry, EventSource, LedgerErrorView, PopupModel, PromoteOutcome, RunRow};
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
 struct Script(VecDeque<Event>);
@@ -126,4 +126,24 @@ fn a_body_too_short_for_a_card_lists_each_run_on_one_line_with_its_status() {
     let mut backend = Fake { stop: Ok(String::new()), stopped: false, calls: vec![] };
     let rows = show(&mut backend, 80, 3, vec![key(KeyCode::Char('R')), key(KeyCode::Down)]);
     assert!(has(&rows, "COM-01") && rows.iter().any(|r| r.contains("> COM-02")), "{rows:#?}");
+}
+
+fn click(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE })
+}
+
+#[test]
+fn clicking_a_one_line_row_selects_that_run_and_s_then_stops_it() {
+    let mut backend = Fake { stop: Ok("Stopped run-2".into()), stopped: false, calls: vec![] };
+    let mut events = vec![key(KeyCode::Char('R')), click(3, 1)];
+    events.extend(chars("sy"));
+    show(&mut backend, 80, 3, events);
+    assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?}", backend.calls);
+
+    // One row visible and scrolled to the second run: the row on screen is run-2, not run-1.
+    let mut backend = Fake { stop: Ok("Stopped run-2".into()), stopped: false, calls: vec![] };
+    let mut events = vec![key(KeyCode::Char('R')), key(KeyCode::Down), click(3, 0)];
+    events.extend(chars("sy"));
+    show(&mut backend, 80, 2, events);
+    assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?}", backend.calls);
 }
