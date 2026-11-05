@@ -593,10 +593,25 @@ fn runs(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     let store = orq_orchestrator::RunStore::new(&root);
-    let (listings, unreadable) = match orq_orchestrator::list_runs_report(&store, &pipeline::project_id(&project)) {
+    let project_id = pipeline::project_id(&project);
+    let (mut listings, mut unreadable) = match orq_orchestrator::list_runs_report(&store, &project_id) {
         Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
+    // A run whose process is gone is not running: record that, then list what is true.
+    let mut reconciled = false;
+    for run in &listings {
+        if matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested) {
+            reconciled |= orq_orchestrator::reconcile_interrupted(&store, &run.run_id, &orq_orchestrator::process_is_alive)
+                .unwrap_or(false);
+        }
+    }
+    if reconciled {
+        if let Ok(list) = orq_orchestrator::list_runs_report(&store, &project_id) {
+            listings = list.runs;
+            unreadable = list.unreadable;
+        }
+    }
     let phase = |phase: orq_orchestrator::RunPhase| phase.as_str();
     if json {
         let list: Vec<serde_json::Value> = listings

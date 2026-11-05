@@ -434,6 +434,49 @@ fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes()
 }
 
 #[test]
+fn the_runs_listing_shows_a_killed_run_as_failed_not_running() {
+    let w = world("listing-killed");
+    let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-list-killed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&slow_bin);
+    std::fs::create_dir_all(&slow_bin).unwrap();
+    let claude = slow_bin.join("claude");
+    let ready = slow_bin.join("agent-started");
+    std::fs::write(&claude, format!("#!/bin/sh\ntouch {}\nexec sleep 30\n", ready.display())).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![slow_bin];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the implement agent to be running", || ready.exists());
+    runner.kill().unwrap();
+    runner.wait().unwrap();
+
+    let listing = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["runs", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&listing.stdout).into_owned();
+    assert_eq!(listing.status.code(), Some(0), "{}", stderr(&listing));
+    assert!(stdout.contains("failed"), "{stdout}");
+    assert!(!stdout.contains("running"), "{stdout}");
+}
+
+#[test]
 fn a_run_that_failed_after_opening_the_review_resumes_without_repeating_the_agent_or_the_review() {
     let w = world("no-replay");
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
