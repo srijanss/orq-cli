@@ -115,36 +115,37 @@ fn failed_run_without_worktree(tag: &str, repo: &GitFixture, base_sha: &str) -> 
 }
 
 #[test]
-fn a_run_whose_worktree_is_already_gone_is_discarded_only_from_the_repository_it_came_from() {
-    let repo = GitFixture::new();
-    Command::new("git")
-        .arg("-C")
-        .arg(repo.root())
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "only here"])
-        .status()
-        .unwrap();
-    let base = head_sha(repo.root());
-    let wt = repo.add_linked_worktree("orq-run-1");
-    Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
-    let store = failed_run_without_worktree("gone-ok", &repo, &base);
-    discard_run(&store, "run-1", repo.root()).unwrap();
-    assert!(!branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_err());
-
-    // Another repository that happens to have a branch of the same name is not this run's.
-    let foreign = GitFixture::new();
-    let wt = foreign.add_linked_worktree("orq-run-1");
-    Command::new("git").arg("-C").arg(foreign.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
-    let store = failed_run_without_worktree("gone-foreign", &foreign, &base);
-    assert!(discard_run(&store, "run-1", foreign.root()).is_err());
-    assert!(branch_exists(foreign.root(), "orq-run-1") && store.load("run-1").is_ok());
+fn a_run_whose_worktree_is_already_gone_is_forgotten_without_deleting_any_branch() {
+    // Without its worktree nothing ties the run to a repository, so no branch is touched there.
+    for (tag, same_repo) in [("same", true), ("other-clone", false)] {
+        let repo = GitFixture::new();
+        let base = head_sha(repo.root());
+        let wt = repo.add_linked_worktree("orq-run-1");
+        Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
+        let other = GitFixture::new();
+        other.add_linked_worktree("orq-run-1");
+        let supplied = if same_repo { repo.root() } else { other.root() };
+        let store = failed_run_without_worktree(tag, &repo, &base);
+        discard_run(&store, "run-1", supplied).unwrap();
+        assert!(store.load("run-1").is_err(), "{tag}");
+        assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
+        assert!(branch_exists(repo.root(), "orq-run-1") && branch_exists(other.root(), "orq-run-1"), "{tag}");
+    }
 }
 
 #[test]
-fn a_branch_that_is_checked_out_in_another_worktree_is_never_deleted() {
+fn a_group_whose_first_member_lock_is_already_gone_still_releases_the_others() {
     let repo = GitFixture::new();
-    let base = head_sha(repo.root());
-    let live = repo.add_linked_worktree("orq-run-1");
-    let store = failed_run_without_worktree("checked-out", &repo, &base);
-    assert!(discard_run(&store, "run-1", repo.root()).is_err());
-    assert!(live.exists() && branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_ok());
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (root, store) = store("lock-gone");
+    let members = vec!["F".to_string(), "G".to_string()];
+    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
+    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    std::fs::remove_file(root.join("locks").join("p").join("F.lock")).unwrap();
+
+    discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(store.active_run("p", "G").unwrap(), None);
+    assert!(store.load("run-1").is_err());
 }
