@@ -26,6 +26,8 @@ struct Fake {
     refuse_resume: Option<String>,
     /// What stop, resume and discard fail with, when they do.
     fail_with: Option<String>,
+    /// A run's status changing on its own once a read happens: (read, run, status).
+    changes: Vec<(&'static str, &'static str, &'static str)>,
 }
 
 impl Fake {
@@ -35,6 +37,14 @@ impl Fake {
     fn set_status(&mut self, run_id: &str, status: &str) {
         if let Some(run) = self.store().iter_mut().find(|run| run.run_id == run_id) {
             run.status = status.into();
+        }
+    }
+    /// The process behind a run moved on while `read` was being done.
+    fn happen(&mut self, read: &str) {
+        let due: Vec<_> = self.changes.iter().filter(|(on, _, _)| *on == read).map(|&(_, id, status)| (id, status)).collect();
+        self.changes.retain(|(on, _, _)| *on != read);
+        for (run_id, status) in due {
+            self.set_status(run_id, status);
         }
     }
 }
@@ -88,7 +98,12 @@ impl BrowserBackend for Fake {
     }
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         self.calls.push("load_runs".into());
+        self.happen("load_runs");
         Ok(self.store().clone())
+    }
+    fn load_reviews(&mut self) -> Result<Vec<orq_tui::ReviewRow>, String> {
+        self.happen("load_reviews");
+        Ok(vec![])
     }
 
     fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
@@ -305,4 +320,25 @@ fn a_rows_buttons_follow_its_run_after_a_pause_or_a_discard() {
     let discarded = show(&mut Fake::default(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]);
     let (_, echo) = button_line(&discarded, "echo");
     assert!(ALL.iter().all(|label| !echo.contains(label)), "a discarded run leaves no button: {echo:?}");
+}
+
+#[test]
+fn a_run_that_paused_on_its_own_shows_resume_on_its_row_after_the_orchestrations_tab_lists_it() {
+    let mut backend = Fake { changes: vec![("load_runs", "run-2", "paused")], ..Fake::default() };
+    let screen = show(&mut backend, vec![press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Esc)]);
+
+    let (_, line) = button_line(&screen, "bravo");
+    assert!(line.contains("[Resume]") && !line.contains("[Pause]") && !line.contains("[Stop]"), "{line:?}");
+}
+
+#[test]
+fn coming_back_to_features_from_another_tab_reads_the_runs_again() {
+    let mut backend = Fake { changes: vec![("load_reviews", "run-2", "failed")], ..Fake::default() };
+    let screen = show(
+        &mut backend,
+        vec![press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Tab)],
+    );
+
+    let (_, line) = button_line(&screen, "bravo");
+    assert!(line.contains("[Resume]") && line.contains("[Discard]") && !line.contains("[Pause]"), "{line:?}");
 }

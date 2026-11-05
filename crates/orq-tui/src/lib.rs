@@ -3751,9 +3751,7 @@ impl Browser {
         match backend.stop_run(run_id) {
             Ok(message) => {
                 self.open_runs(backend);
-                // The list just read also tells the feature rows what their runs are now.
                 if let Ok(rows) = &self.runs.rows {
-                    self.feature_runs = latest_runs(rows.clone());
                     self.runs.selected = rows.iter().position(|r| r.run_id == run_id).unwrap_or(0);
                 }
                 self.notice = Some(message);
@@ -3828,6 +3826,10 @@ impl Browser {
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
         let rows = backend.load_runs();
         let unreadable = if rows.is_ok() { backend.unreadable_runs() } else { 0 };
+        // The list just read also tells the feature rows what their runs are now.
+        if let Ok(rows) = &rows {
+            self.feature_runs = latest_runs(rows.clone());
+        }
         self.runs = RunsState { rows, selected: 0, unreadable, resuming: None, switching: None, stopping: None };
         self.tab = Tab::Runs;
     }
@@ -3869,6 +3871,12 @@ impl Browser {
         self.notice = Some(match outcome {
             Ok(message) | Err(message) => message,
         });
+    }
+
+    /// Back to Features: a run may have moved on while another tab was shown.
+    fn show_features(&mut self, backend: &mut dyn BrowserBackend) {
+        self.load_feature_runs(backend);
+        self.tab = Tab::Features;
     }
 
     fn open_reviews(&mut self, backend: &mut dyn BrowserBackend) {
@@ -4240,7 +4248,7 @@ where
                         if key.code == KeyCode::Tab {
                             browser.open_runs(backend);
                         } else {
-                            browser.tab = Tab::Features;
+                            browser.show_features(backend);
                         }
                     }
                     dirty = true;
@@ -4282,7 +4290,7 @@ where
                         KeyCode::Char('o') => browser.reopen_selected_run(backend),
                         KeyCode::Char('u') => browser.review_link_of_selected_run(backend, false),
                         KeyCode::Char('y') => browser.review_link_of_selected_run(backend, true),
-                        KeyCode::Esc => browser.tab = Tab::Features,
+                        KeyCode::Esc => browser.show_features(backend),
                         KeyCode::Tab => browser.open_reviews(backend),
                         KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
@@ -4335,7 +4343,7 @@ where
                             browser.reviews.query.clear();
                             browser.reviews.selected = 0;
                         }
-                        KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
+                        KeyCode::Esc | KeyCode::Tab => browser.show_features(backend),
                         KeyCode::Char('a') => browser.reviews.toggle_scope(),
                         KeyCode::Char('s') => browser.reviews.cycle_status(),
                         KeyCode::Char('x') => browser.reviews.cycle_risk(),
@@ -4602,7 +4610,7 @@ where
                             continue;
                         }
                         Some(Tab::Features) if browser.tab != Tab::Features => {
-                            browser.tab = Tab::Features;
+                            browser.show_features(backend);
                             dirty = true;
                             continue;
                         }
