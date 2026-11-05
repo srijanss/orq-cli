@@ -118,3 +118,52 @@ fn a_package_alias_counts_only_for_the_mcpctl_orq_sets_up_and_not_for_another_pr
         "with no mcpctl found, no entry is trusted as one: {without:?}"
     );
 }
+
+#[test]
+fn a_malformed_server_entry_carries_no_package_but_is_still_approved_by_its_own_name() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("mcpctl-malformed");
+    fs::write(
+        worktree.join(".mcp.json"),
+        r#"{"mcpServers":{
+            "number-command":{"command":7,"args":["run","pkg"]},
+            "no-args":{"command":"mcpctl"},
+            "object-args":{"command":"mcpctl","args":{"run":"pkg"}},
+            "number-package":{"command":"mcpctl","args":["run",5]},
+            "install-subcommand":{"command":"mcpctl","args":["install","pkg"]},
+            "not-an-object":"mcpctl run pkg"
+        }}"#,
+    )
+    .unwrap();
+
+    let chosen = vec!["pkg".to_string(), "5".to_string(), "no-args".to_string()];
+    let notes = write_session_settings(&worktree, &[], Some(&chosen), Some(&trusted_mcpctl(&repo, "malformed")));
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["no-args"]));
+    assert_eq!(
+        notes,
+        vec![
+            "MCP server pkg is not declared in .mcp.json; it was not approved".to_string(),
+            "MCP server 5 is not declared in .mcp.json; it was not approved".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn choosing_both_a_package_alias_and_the_server_it_names_approves_that_server_once() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("mcpctl-both");
+    fs::write(
+        worktree.join(".mcp.json"),
+        r#"{"mcpServers":{"tdd":{"command":"mcpctl","args":["run","tdd-mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let chosen = vec!["tdd-mcp".to_string(), "tdd".to_string()];
+    let notes = write_session_settings(&worktree, &[], Some(&chosen), Some(&trusted_mcpctl(&repo, "both")));
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["tdd"]));
+    assert!(notes.is_empty(), "{notes:?}");
+}
