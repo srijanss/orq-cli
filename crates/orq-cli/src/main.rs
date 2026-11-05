@@ -1513,11 +1513,6 @@ fn launch_outcome(success: bool, stdout: &str, stderr: &str) -> Result<String, S
     Err(printable(reason.trim_start_matches("orq: ")))
 }
 
-/// The runner log path `orq run --detach` printed.
-fn launch_log(stdout: &str) -> Option<PathBuf> {
-    stdout.lines().find_map(|line| line.strip_prefix("log: ")).map(PathBuf::from)
-}
-
 /// How long a launch waits for the detached runner to register its run before giving up on
 /// recording the pane.
 const REGISTRATION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -1554,6 +1549,18 @@ fn attach_pane_in(
         Some(grid) => orq_herdr::open_grid_pane(herdr, grid, workspace, cwd, &label, log)?,
         None => orq_herdr::open_run_pane(herdr, workspace, cwd, &label, log)?,
     };
+    record_opened_pane(store, run_id, pane, wait, "the run continues and the tab keeps following its log")
+}
+
+/// Records the opened `pane` on `run_id`, waiting at most `wait` for the run to register; when it
+/// never does the error ends with `meanwhile`, what the user can still count on.
+fn record_opened_pane(
+    store: &orq_orchestrator::RunStore,
+    run_id: &str,
+    pane: orq_herdr::PaneLocation,
+    wait: std::time::Duration,
+    meanwhile: &str,
+) -> Result<(), String> {
     let pane = orq_orchestrator::PaneRef { workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: pane.pane_id };
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -1564,7 +1571,7 @@ fn attach_pane_in(
             }
             Err(orq_orchestrator::StoreError::NotFound(_)) if !wait.is_zero() => {
                 return Err(format!(
-                    "the Herdr tab opened but {run_id} did not register within {}; the run continues and the tab keeps following its log",
+                    "the Herdr tab opened but {run_id} did not register within {}; {meanwhile}",
                     describe_wait(wait)
                 ));
             }
@@ -1573,6 +1580,51 @@ fn attach_pane_in(
             }
         }
     }
+}
+
+/// `text` quoted for a POSIX shell.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// The command a Herdr pane runs to start `run_id` in its foreground: `<exe> <args> --run-id
+/// <run_id>` with `env` set, then a prompt that keeps the pane open until Enter so the run's last
+/// words stay readable. It runs under `sh`, whatever shell the pane has.
+fn foreground_command(exe: &Path, args: &[OsString], run_id: &str, env: &[(&str, &std::ffi::OsStr)]) -> String {
+    let mut words: Vec<String> = Vec::new();
+    if !env.is_empty() {
+        words.push("env".to_string());
+        words.extend(env.iter().map(|(name, value)| format!("{name}={}", sh_quote(&value.to_string_lossy()))));
+    }
+    words.push(sh_quote(&exe.to_string_lossy()));
+    words.extend(args.iter().map(|arg| sh_quote(&arg.to_string_lossy())));
+    words.push(sh_quote("--run-id"));
+    words.push(sh_quote(run_id));
+    let script = format!("{}; printf '\\n[orq run ended; press Enter to close the pane]\\n'; read _", words.join(" "));
+    format!("sh -c {}", sh_quote(&script))
+}
+
+/// Opens a Herdr pane (in the shared `grid` when there is one) that runs `command`, and records it
+/// on `run_id` once the run registers, waiting at most `wait`. `Err` is a pane that never opened,
+/// so nothing was started; `Ok(Some(reason))` is a pane that opened, and so may be running the
+/// run, but is not recorded on it.
+#[allow(clippy::too_many_arguments)]
+fn launch_in_pane(
+    herdr: &dyn orq_herdr::HerdrCli,
+    store: &orq_orchestrator::RunStore,
+    workspace: Option<&str>,
+    cwd: &Path,
+    run_id: &str,
+    command: &str,
+    wait: std::time::Duration,
+    grid: Option<&mut orq_herdr::GridTab>,
+) -> Result<Option<String>, String> {
+    let label = format!("orq {run_id}");
+    let pane = match grid {
+        Some(grid) => orq_herdr::open_grid_command_pane(herdr, grid, workspace, cwd, &label, command)?,
+        None => orq_herdr::open_command_pane(herdr, workspace, cwd, &label, command)?,
+    };
+    Ok(record_opened_pane(store, run_id, pane, wait, "the tab shows how the run went").err())
 }
 
 /// A wait bound as the user reads it: `10s`, `1.5s`, `200ms`.
@@ -1793,7 +1845,7 @@ fn mcpctl_catalog_with(program: &Path, timeout: std::time::Duration) -> Result<V
     Ok(parse_mcp_catalog(&text))
 }
 
-/// Starts a detached run of `feature` and, when a pane can follow its log, opens one.
+/// Starts a run of `feature` in the foreground of a new Herdr pane, or detached when no pane opens.
 fn launch_run(
 repo_root: Option<PathBuf>,
 state_root_override: Option<PathBuf>,
@@ -1816,38 +1868,62 @@ reviewer: String,
         issue: None,
     };
     request.validate(&profiles, &reviewers).map_err(|err| err.to_string())?;
-    // `orq run --detach` checks eligibility, starts the runner in a session of its own and
-    // returns at once, so closing the popup never stops the run.
     let exe = std::env::current_exe().map_err(|err| format!("cannot find the orq executable: {err}"))?;
-    let output = std::process::Command::new(exe)
-        .args(request.args())
+    let args = without_detach_flag(&request.args());
+    // What the run itself would refuse before it starts, asked with nothing started, so a refusal
+    // is the launch's error and not a pane that only says why.
+    let mut check = args.clone();
+    check.push("--check".into());
+    let checked = std::process::Command::new(&exe)
+        .args(&check)
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|err| format!("cannot start orq run: {err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
-    // The run is already going; a pane is only a convenient view of its log.
-    let pane = match (launch_log(&stdout), state_root_override.clone().or_else(pipeline::state_root)) {
-        (Some(log), Some(root)) => {
+    if !checked.status.success() {
+        return launch_outcome(false, "", &String::from_utf8_lossy(&checked.stderr));
+    }
+    // The run goes in the foreground of a Herdr pane, as an interactive session in its worktree
+    // that the user can watch and answer; the pane's shell is not the popup's, so it is given the
+    // state and config locations explicitly.
+    let no_pane = match state_root_override.clone().or_else(pipeline::state_root) {
+        Some(root) => {
+            let run_id = pipeline::new_run_id();
+            let env: Vec<(&str, OsString)> =
+                ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
+            let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
+            let command = foreground_command(&exe, &args, &run_id, &env);
             let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
             let mut guard = grid.as_ref().map(|grid| grid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
-            attach_pane_in(
+            match launch_in_pane(
                 &orq_herdr::HerdrBinary,
                 &orq_orchestrator::RunStore::new(&root),
                 workspace.as_deref(),
                 &project.root,
                 &run_id,
-                &log,
+                &command,
                 REGISTRATION_WAIT,
                 guard.as_deref_mut(),
-            )
+            ) {
+                Ok(None) => return Ok(run_id),
+                // The pane may be running it: starting another would be a second run of the feature.
+                Ok(Some(reason)) => return Ok(format!("{run_id} ({})", printable(&reason))),
+                Err(reason) => reason,
+            }
         }
-        _ => Err("the run reported no log to follow".to_string()),
+        None => "no state location: set XDG_STATE_HOME or HOME".to_string(),
     };
-    Ok(match pane {
-        Ok(()) => run_id,
-        Err(reason) => format!("{run_id} (no Herdr pane: {})", printable(&reason)),
-    })
+    // No pane opened, so nothing started: run detached instead, in a session of its own, so
+    // closing the popup never stops it.
+    let mut detached = args;
+    detached.push("--detach".into());
+    let output = std::process::Command::new(&exe)
+        .args(&detached)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("cannot start orq run: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
+    Ok(format!("{run_id} (no Herdr pane: {})", printable(&no_pane)))
 }
 
 /// The grid tab the launches of one popup batch share.
@@ -3398,6 +3474,59 @@ mod ledger_backend_tests {
     }
 
     #[test]
+    fn a_foreground_launch_runs_orq_in_a_herdr_pane_records_the_pane_and_keeps_it_open_after() {
+        let args: Vec<std::ffi::OsString> = ["run", "--repo", "/my repo's", "--feature", "COM-01"].iter().map(Into::into).collect();
+        let command = crate::foreground_command(
+            std::path::Path::new("/bin/o rq"),
+            &args,
+            "run-5",
+            &[("XDG_STATE_HOME", std::ffi::OsStr::new("/st ate"))],
+        );
+        // Whatever shell the pane runs, the script runs under sh.
+        assert!(command.starts_with("sh -c '"), "{command}");
+        let script = std::process::Command::new("sh").args(["-c", &format!("printf %s {}", &command["sh -c ".len()..])]).output().unwrap();
+        let script = String::from_utf8(script.stdout).unwrap();
+        assert!(
+            script.starts_with("env XDG_STATE_HOME='/st ate' '/bin/o rq' 'run' '--repo' '/my repo'\\''s' '--feature' 'COM-01' '--run-id' 'run-5'"),
+            "{script}"
+        );
+        assert!(script.contains("press Enter") && script.trim_end().ends_with("read _"), "{script}");
+
+        let root = std::env::temp_dir().join(format!("orq-foreground-pane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-5".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
+        let herdr = FakeHerdr { calls: Default::default(), fail: false };
+
+        crate::launch_in_pane(&herdr, &store, Some("w1"), std::path::Path::new("/repo"), "run-5", &command, std::time::Duration::ZERO, None)
+            .unwrap();
+
+        let pane = orq_orchestrator::run_pane(&store, "run-5").unwrap().unwrap();
+        assert_eq!(pane.pane_id, "w1:p5");
+        let calls = herdr.calls.borrow();
+        assert!(calls[0].contains(&"orq run-5".to_string()), "{calls:?}");
+        assert_eq!(calls[1].last(), Some(&command), "{calls:?}");
+
+        let down = FakeHerdr { calls: Default::default(), fail: true };
+        let err = crate::launch_in_pane(&down, &store, Some("w1"), std::path::Path::new("/repo"), "run-5", &command, std::time::Duration::ZERO, None)
+            .unwrap_err();
+        assert!(err.contains("herdr is not running"), "{err}");
+    }
+
+    #[test]
     fn a_launched_run_gets_a_pane_that_is_recorded_and_a_herdr_failure_leaves_the_run_alone() {
         let root = std::env::temp_dir().join(format!("orq-attach-pane-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -3429,8 +3558,6 @@ mod ledger_backend_tests {
         let err = crate::attach_pane(&down, &store, Some("w1"), repo, "run-9", log, std::time::Duration::ZERO).unwrap_err();
         assert!(err.contains("herdr is not running"), "{err}");
 
-        assert_eq!(crate::launch_log("run: r\nlog: /state/logs/r/runner.log\n"), Some("/state/logs/r/runner.log".into()));
-        assert_eq!(crate::launch_log("run: r\n"), None);
     }
 
     #[test]
