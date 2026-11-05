@@ -334,3 +334,18 @@ fn the_terminal_driver_fails_when_something_still_holds_the_terminal_at_its_dead
         assert!(ended(pid), "holder {pid} survived the driver: {drawn}");
     }
 }
+
+#[test]
+fn the_terminal_driver_fails_and_ends_orq_when_orq_has_not_exited_by_its_deadline() {
+    let agent = FakeAgent::builder().build();
+    let w = world("stuck", &agent);
+    let args = ["-c".to_string(), "echo held $$; exec sleep 30".to_string()];
+
+    let (code, drawn) = drive(&w, &github(), Streams::Terminal, 2, "/bin/sh", &args);
+
+    assert!(drawn.contains("orq did not exit; killed"), "{drawn}");
+    assert_eq!(code, 124, "{drawn}");
+    let held = held_pids(&drawn);
+    assert_eq!(held.len(), 1, "{drawn}");
+    assert!(ended(held[0]), "orq {} survived the driver: {drawn}", held[0]);
+}
