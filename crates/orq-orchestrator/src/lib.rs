@@ -11,6 +11,7 @@ mod gate_fix;
 mod gate_stage;
 mod handoff;
 mod implement;
+mod interrupted;
 mod launch;
 mod local_files;
 mod session_references;
@@ -44,6 +45,7 @@ pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec,
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, GateOutcome};
 pub use handoff::{handoff_prompt, read_handoff, write_handoff, DiffFile, GateResult, Handoff, HandoffDiff, PlanItem, HANDOFF_FILE};
 pub use implement::{run_implement_stage, ImplementOutcome, ImplementSession};
+pub use interrupted::reconcile_interrupted;
 pub use launch::record_launch;
 pub use local_files::{carry_local_files, LocalFiles};
 pub use session_references::{carry_session_references, resumable_session, session_references, SessionReference};
