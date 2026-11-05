@@ -2312,7 +2312,7 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: O
     }
 }
 
-const RUNS_TAB: &str = "Runs";
+const RUNS_TAB: &str = "Orchestrations";
 const RUNS_FILE: &str = "runs";
 
 /// What the Runs tab holds: the rows last loaded, or why there are none.
@@ -2759,7 +2759,7 @@ impl SettingsState {
     }
 }
 
-/// The rectangle of each tab in the tab bar of `area`; the Settings and Runs
+/// The rectangle of each tab in the tab bar of `area`; the Settings, Orchestrations and Reviews
 /// tabs are left out when they do not fit. Empty when the chrome is not drawn.
 fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
     if chrome_body(area) == area {
@@ -2774,12 +2774,12 @@ fn tab_rects(area: Rect) -> Vec<(Tab, Rect)> {
         rects.push((Tab::Settings, Rect::new(next, area.y + 1, settings_width, 3)));
         next += settings_width;
         let runs_width = width(RUNS_TAB);
-        if next + runs_width <= area.right() {
+        // The Add Feature button keeps its place: Orchestrations and Reviews only show when they fit beside it.
+        let add_width = u16::try_from(ADD_LABEL.len() + 1).unwrap_or(u16::MAX);
+        if next + runs_width + add_width < area.right() {
             rects.push((Tab::Runs, Rect::new(next, area.y + 1, runs_width, 3)));
             next += runs_width;
             let reviews_width = width(REVIEWS_TAB);
-            // The Add Feature button keeps its place: Reviews only shows when both fit.
-            let add_width = u16::try_from(ADD_LABEL.len() + 1).unwrap_or(u16::MAX);
             if next + reviews_width + add_width < area.right() {
                 rects.push((Tab::Reviews, Rect::new(next, area.y + 1, reviews_width, 3)));
             }

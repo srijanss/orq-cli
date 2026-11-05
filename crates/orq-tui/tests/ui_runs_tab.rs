@@ -53,11 +53,11 @@ fn click(column: u16, row: u16) -> Event {
 
 fn show(events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let _ = run_browser(&mut terminal, &model, &mut Fake, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
     (0..24u16)
-        .map(|y| (0..60u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
+        .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
         .collect()
 }
 
@@ -66,11 +66,11 @@ fn has(lines: &[String], needle: &str) -> bool {
 }
 
 #[test]
-fn the_tab_bar_lists_runs_after_features_and_settings() {
+fn the_tab_bar_lists_orchestrations_after_features_and_settings() {
     let lines = show(vec![]);
 
     let bar = &lines[2];
-    let (features, settings, runs) = (bar.find("Features"), bar.find("Settings"), bar.find("Runs"));
+    let (features, settings, runs) = (bar.find("Features"), bar.find("Settings"), bar.find("Orchestrations"));
     assert!(features < settings && settings < runs && runs.is_some(), "{lines:?}");
 }
 

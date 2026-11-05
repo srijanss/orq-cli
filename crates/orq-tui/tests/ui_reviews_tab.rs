@@ -62,12 +62,12 @@ fn inbox() -> Result<Vec<ReviewRow>, String> {
 fn the_tab_bar_lists_reviews_after_runs() {
     let lines = show(inbox(), vec![]);
     let bar = &lines[2];
-    assert!(bar.find("Runs") < bar.find("Reviews") && bar.contains("Reviews"), "{lines:?}");
+    assert!(bar.find("Orchestrations") < bar.find("Reviews") && bar.contains("Reviews"), "{lines:?}");
 }
 
 #[test]
 fn clicking_the_reviews_tab_lists_each_review_with_project_status_and_risk() {
-    let lines = show(inbox(), vec![click(36, 2)]);
+    let lines = show(inbox(), vec![click(44, 2)]);
     assert!(has(&lines, "COM-01") && has(&lines, "orq-cli") && has(&lines, "ready") && has(&lines, "high"), "{lines:?}");
     assert!(!has(&lines, "alpha"), "{lines:?}");
 }
@@ -84,32 +84,32 @@ fn the_keyboard_opens_the_tab_moves_and_leaves_it() {
 
 #[test]
 fn clicking_the_features_tab_leaves_the_reviews_view() {
-    let lines = show(inbox(), vec![click(36, 2), click(2, 2)]);
+    let lines = show(inbox(), vec![click(44, 2), click(2, 2)]);
     assert!(has(&lines, "alpha") && !has(&lines, "COM-01"), "{lines:?}");
 }
 
 #[test]
 fn an_empty_inbox_says_so() {
-    let lines = show(Ok(vec![]), vec![click(36, 2)]);
+    let lines = show(Ok(vec![]), vec![click(44, 2)]);
     assert!(has(&lines, "No reviews yet"), "{lines:?}");
 }
 
 #[test]
 fn an_unreadable_inbox_shows_why() {
-    let lines = show(Err("the review store is locked".into()), vec![click(36, 2)]);
+    let lines = show(Err("the review store is locked".into()), vec![click(44, 2)]);
     assert!(has(&lines, "the review store is locked"), "{lines:?}");
 }
 
 #[test]
 fn there_is_no_approve_or_merge_action() {
-    let lines = show(inbox(), vec![click(36, 2)]);
+    let lines = show(inbox(), vec![click(44, 2)]);
     let text = lines.join("\n").to_lowercase();
     assert!(!text.contains("approve") && !text.contains("merge"), "{text}");
 }
 
 #[test]
 fn hostile_text_in_a_row_cannot_drive_the_terminal() {
-    let lines = show(Ok(vec![row("x\u{1b}[2J", "orq-cli", "ready", "low")]), vec![click(36, 2)]);
+    let lines = show(Ok(vec![row("x\u{1b}[2J", "orq-cli", "ready", "low")]), vec![click(44, 2)]);
     assert!(!lines.iter().any(|l| l.contains('\u{1b}')), "{lines:?}");
 }
 
