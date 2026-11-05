@@ -396,7 +396,10 @@ fn fake_ssh() {
     ONCE.call_once(|| {
         let ssh = orq_test_support::process_temp_dir()
             .join(format!("orq-fake-ssh-{}", std::process::id()));
-        fs::write(&ssh, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
+        // A world may ask for transport failures: `ssh-failures` beside the remote holds how many
+        // attempts fail before one is let through, and `pushes-seen` counts the attempts.
+        let script = "#!/bin/sh\nshift\nrepo=$(printf '%s' \"$1\" | sed \"s/.*'\\(.*\\)'.*/\\1/\")\ndir=$(dirname \"$repo\")\nif [ -f \"$dir/ssh-failures\" ]; then\n n=$(cat \"$dir/pushes-seen\" 2>/dev/null || echo 0)\n echo $((n+1)) > \"$dir/pushes-seen\"\n if [ \"$n\" -lt \"$(cat \"$dir/ssh-failures\")\" ]; then echo 'ssh: Could not resolve hostname forge.example: Name or service not known' >&2; exit 255; fi\nfi\nexec sh -c \"$1\"\n";
+        fs::write(&ssh, script).unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
         // GIT_SSH_COMMAND is a shell command: quote the path.
         std::env::set_var(
@@ -729,6 +732,15 @@ fn flaky_remote(w: &World, failures: u32, message: &str) {
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// The remote is reached over ssh, and the ssh command cannot resolve the host for the first
+/// `failures` attempts: a transport failure, with no remote involved in the refusal.
+fn flaky_transport(w: &World, failures: u32) {
+    fake_ssh();
+    fs::write(w.root.join("ssh-failures"), failures.to_string()).unwrap();
+    let remote = w.remote.to_str().unwrap();
+    git(&w.worktree, &["remote", "set-url", "origin", &format!("git@forge.example:{remote}")]);
+}
+
 fn pushes_seen(w: &World) -> u32 {
     fs::read_to_string(w.root.join("pushes-seen"))
         .map(|s| s.trim().parse().unwrap())
@@ -737,8 +749,8 @@ fn pushes_seen(w: &World) -> u32 {
 
 #[test]
 fn a_push_that_fails_on_a_network_error_is_retried_with_a_growing_wait_and_succeeds_once() {
-    let w = world("retry-ok", "fix--COM-02", "main", None);
-    flaky_remote(&w, 2, "fatal: unable to access: Could not resolve host: simulated");
+    let w = world("retry-ok", "fix--COM-02", "main", Some("origin"));
+    flaky_transport(&w, 2);
     let waits = std::cell::RefCell::new(Vec::new());
     let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(2) };
 
@@ -758,8 +770,8 @@ fn a_push_that_fails_on_a_network_error_is_retried_with_a_growing_wait_and_succe
 
 #[test]
 fn a_push_that_keeps_failing_on_the_network_gives_up_after_the_bound() {
-    let w = world("retry-bounded", "fix--COM-02", "main", None);
-    flaky_remote(&w, 100, "fatal: unable to access: Could not resolve host: simulated");
+    let w = world("retry-bounded", "fix--COM-02", "main", Some("origin"));
+    flaky_transport(&w, 100);
     let waits = std::cell::RefCell::new(Vec::new());
     let policy = orq_orchestrator::RetryPolicy { max_attempts: 3, base: std::time::Duration::from_secs(1) };
 
@@ -786,5 +798,21 @@ fn a_push_the_remote_refuses_is_not_retried() {
 
     assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
     assert_eq!(pushes_seen(&w), 1, "a refusal will not change by asking again");
+    assert!(waits.borrow().is_empty());
+}
+
+#[test]
+fn a_hook_rejection_is_not_retried_even_when_its_message_names_a_network_error() {
+    let w = world("retry-hook-words", "fix--COM-02", "main", None);
+    flaky_remote(&w, 100, "policy: Could not resolve host of the ticket tracker");
+    let waits = std::cell::RefCell::new(Vec::new());
+    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(1) };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
+            .unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    assert_eq!(pushes_seen(&w), 1, "the remote answered; asking again repeats its hook");
     assert!(waits.borrow().is_empty());
 }

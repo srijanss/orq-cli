@@ -49,8 +49,10 @@ fn is_transient(output: &str) -> bool {
         "the remote end hung up unexpectedly",
         "temporary failure in name resolution",
     ];
+    // The remote answered and said no: whatever its own message says, asking again repeats its hooks.
+    const ANSWERED: [&str; 3] = ["[remote rejected]", "[rejected]", "hook declined"];
     let lower = output.to_lowercase();
-    MARKERS.iter().any(|m| lower.contains(m))
+    !ANSWERED.iter().any(|m| lower.contains(m)) && MARKERS.iter().any(|m| lower.contains(m))
 }
 
 /// Push the run branch of `run_id`, logging git's output to `log_path`. A push that fails on the
