@@ -10,7 +10,7 @@ mod storage;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--detach] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--detach | --check] | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -191,6 +191,8 @@ struct RunArgs {
     switch_implementer: bool,
     switch_reviewer: bool,
     detach: bool,
+    /// `--check`: make every check a launch makes, then stop without starting anything.
+    check: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
 }
@@ -225,6 +227,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--switch-implementer" => parsed.switch_implementer = true,
             "--switch-reviewer" => parsed.switch_reviewer = true,
             "--detach" => parsed.detach = true,
+            "--check" => parsed.check = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
                 match name {
@@ -369,8 +372,8 @@ fn run(args: &[OsString]) -> ExitCode {
     if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
         return fail(format!("run settings: {err}"));
     }
-    if parsed.detach {
-        if parsed.run_id.is_some() {
+    if parsed.detach || parsed.check {
+        if parsed.run_id.is_some() || (parsed.detach && parsed.check) {
             return usage_error();
         }
         match pipeline::active_group_run(&project, &features) {
@@ -380,6 +383,10 @@ fn run(args: &[OsString]) -> ExitCode {
                 return ExitCode::from(EXIT_BUSY);
             }
             Err(message) => return fail(message),
+        }
+        if parsed.check {
+            println!("state: ready");
+            return ExitCode::SUCCESS;
         }
         let forwarded = without_detach_flag(args);
         return match pipeline::launch_detached(&forwarded) {
