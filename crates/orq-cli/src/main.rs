@@ -594,32 +594,10 @@ fn runs(args: &[OsString]) -> ExitCode {
     };
     let store = orq_orchestrator::RunStore::new(&root);
     let project_id = pipeline::project_id(&project);
-    let (mut listings, mut unreadable) = match orq_orchestrator::list_runs_report(&store, &project_id) {
+    let (listings, unreadable) = match list_runs_reconciled(&store, &project_id) {
         Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
-    // A run whose process is gone is not running: record that, then list what is true.
-    let mut reconciled = false;
-    for run in &listings {
-        if matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested) {
-            match orq_orchestrator::reconcile_interrupted(&store, &run.run_id, &orq_orchestrator::process_is_alive) {
-                Ok(changed) => reconciled |= changed,
-                Err(err) => eprintln!(
-                    "orq: {} has no running process, but it could not be recorded as failed: {err:?}",
-                    printable(&run.run_id)
-                ),
-            }
-        }
-    }
-    if reconciled {
-        match orq_orchestrator::list_runs_report(&store, &project_id) {
-            Ok(list) => {
-                listings = list.runs;
-                unreadable = list.unreadable;
-            }
-            Err(err) => eprintln!("orq: the listing could not be refreshed after recording failed runs: {err}"),
-        }
-    }
     let phase = |phase: orq_orchestrator::RunPhase| phase.as_str();
     if json {
         let list: Vec<serde_json::Value> = listings
@@ -1986,7 +1964,17 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
-        let checkpoint = orq_orchestrator::validate_checkpoint(&orq_orchestrator::RunStore::new(&root), repo, run_id)?;
+        let store = orq_orchestrator::RunStore::new(&root);
+        // A run whose process is gone is a failed run, which resumes where it stopped.
+        orq_orchestrator::reconcile_interrupted(&store, run_id, &orq_orchestrator::process_is_alive).map_err(|err| format!("cannot read the run: {err:?}"))?;
+        let stopped = store
+            .events(run_id)
+            .map(|events| matches!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked))
+            .unwrap_or(false);
+        if stopped {
+            return Ok("where it stopped".to_string());
+        }
+        let checkpoint = orq_orchestrator::validate_checkpoint(&store, repo, run_id)?;
         Ok(printable(checkpoint.next_stage.as_deref().unwrap_or("the end")))
     }
 
@@ -2098,7 +2086,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .or_else(pipeline::state_root)
             .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        let list = orq_orchestrator::list_runs_report(&store, &pipeline::project_id(&project)).map_err(|err| err.to_string())?;
+        let list = list_runs_reconciled(&store, &pipeline::project_id(&project))?;
         self.unreadable_runs = list.unreadable;
         Ok(list
             .runs
@@ -3058,6 +3046,78 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A run in `root` for the fixture's project whose recorded process is long gone.
+    fn seed_run_with_dead_process(root: &std::path::Path, repo: &std::path::Path, run_id: &str) {
+        let store = orq_orchestrator::RunStore::new(root);
+        let project = orq_git::resolve_project(repo).unwrap();
+        let project_id = crate::pipeline::project_id(&project);
+        store
+            .create(&orq_orchestrator::RunRecord {
+                run_id: run_id.into(),
+                project_id: project_id.clone(),
+                feature_id: "COM-01".into(),
+                remote: "origin".into(),
+                provider: "github".into(),
+                target_branch: "main".into(),
+                base_sha: "abc".into(),
+                branch: format!("orq/{run_id}"),
+                worktree: std::path::PathBuf::from("/tmp/w"),
+                repository: String::new(),
+                profiles: std::collections::BTreeMap::new(),
+            })
+            .unwrap();
+        store
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: "e-launched".into(),
+                run_id: run_id.into(),
+                project_id,
+                feature_id: "COM-01".into(),
+                kind: "run.launched".into(),
+                stage: None,
+                attempt: 1,
+                occurred_at: "2026-11-02T00:00:00Z".into(),
+                payload: serde_json::json!({"pid": 4_294_967_294u64}),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn load_runs_shows_a_run_whose_process_is_gone_as_failed() {
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-dead-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        seed_run_with_dead_process(&root, fixture.root(), "run-dead");
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+        backend.state_root_override = Some(root.clone());
+
+        let rows = orq_tui::BrowserBackend::load_runs(&mut backend).unwrap();
+
+        assert_eq!(rows.iter().map(|r| r.status.as_str()).collect::<Vec<_>>(), ["failed"]);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resume_check_accepts_a_run_that_failed_because_its_process_died() {
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-resume-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        seed_run_with_dead_process(&root, fixture.root(), "run-dead");
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+        backend.state_root_override = Some(root.clone());
+
+        let checked = orq_tui::BrowserBackend::resume_check(&mut backend, "run-dead");
+
+        assert_eq!(checked, Ok("where it stopped".to_string()));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn the_mcp_catalog_names_are_read_from_the_list_output() {
         let text = "outside-in-tdd-mcp@0.2.3 (python, scaffold)\n  source: /a\nproject-mcp@1.2.1 (python, scaffold)\n  source: /b\n\nproject-mcp@1.3.0 (python)\n";
@@ -3615,6 +3675,31 @@ fn run_switch(args: &[OsString]) -> ExitCode {
         }
         Err(message) => fail(message),
     }
+}
+
+/// This project's runs, after recording as failed every run that still reads as running but whose
+/// process is gone. A run that cannot be recorded is reported on stderr and listed as it reads.
+fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str) -> Result<orq_orchestrator::RunList, String> {
+    let mut list = orq_orchestrator::list_runs_report(store, project_id).map_err(|err| err.to_string())?;
+    let mut reconciled = false;
+    for run in &list.runs {
+        if matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested) {
+            match orq_orchestrator::reconcile_interrupted(store, &run.run_id, &orq_orchestrator::process_is_alive) {
+                Ok(changed) => reconciled |= changed,
+                Err(err) => eprintln!(
+                    "orq: {} has no running process, but it could not be recorded as failed: {err:?}",
+                    printable(&run.run_id)
+                ),
+            }
+        }
+    }
+    if reconciled {
+        match orq_orchestrator::list_runs_report(store, project_id) {
+            Ok(fresh) => list = fresh,
+            Err(err) => eprintln!("orq: the listing could not be refreshed after recording failed runs: {err}"),
+        }
+    }
+    Ok(list)
 }
 
 /// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
