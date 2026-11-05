@@ -126,12 +126,12 @@ fn a_log_viewer_that_cannot_start_closes_only_what_it_made_and_keeps_the_grid_in
     };
 
     let err = at(&herdr, &mut grid, "run-1").unwrap_err();
-    assert!(err.contains("cannot start the log viewer"), "{err}");
+    assert!(err.contains("cannot start the command"), "{err}");
     assert_eq!(herdr.calls.borrow()[3], ["tab", "close", "w:t2"]);
 
     at(&herdr, &mut grid, "run-2").unwrap();
     let err = at(&herdr, &mut grid, "run-3").unwrap_err();
-    assert!(err.contains("cannot start the log viewer"), "{err}");
+    assert!(err.contains("cannot start the command"), "{err}");
     assert_eq!(herdr.calls.borrow()[10], ["pane", "close", "w:p2"], "only the new pane is closed");
 
     let fourth = at(&herdr, &mut grid, "run-4").unwrap();

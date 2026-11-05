@@ -95,6 +95,24 @@ pub fn open_run_pane(
     label: &str,
     log: &Path,
 ) -> Result<PaneLocation, String> {
+    open_command_pane(herdr, workspace, cwd, label, &tail_command(log))
+}
+
+/// The shell command that follows `log` from its first line.
+fn tail_command(log: &Path) -> String {
+    format!("tail -n +1 -f {}", shell_quote(&log.to_string_lossy()))
+}
+
+/// Opens a new tab in `workspace` (Herdr's choice when `None`) at `cwd`, labelled `label`, and
+/// runs the shell command `command` in it, without focus. If the tab opens but the command
+/// cannot be started in it, the tab is closed again.
+pub fn open_command_pane(
+    herdr: &dyn HerdrCli,
+    workspace: Option<&str>,
+    cwd: &Path,
+    label: &str,
+    command: &str,
+) -> Result<PaneLocation, String> {
     let text = |value: &Path| value.to_string_lossy().into_owned();
     let mut create: Vec<String> = vec!["tab".into(), "create".into()];
     if let Some(workspace) = workspace {
@@ -103,10 +121,9 @@ pub fn open_run_pane(
     create.extend(["--cwd".into(), text(cwd), "--label".into(), label.to_string(), "--no-focus".into()]);
     let reply = herdr.run(&create).map_err(|err| format!("cannot open a Herdr tab: {err}"))?;
     let location = parse_location(&reply)?;
-    let command = format!("tail -n +1 -f {}", shell_quote(&text(log)));
-    if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command]) {
+    if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command.to_string()]) {
         let _ = herdr.run(&["tab".into(), "close".into(), location.tab_id.clone()]);
-        return Err(format!("cannot start the log viewer in the Herdr tab: {err}"));
+        return Err(format!("cannot start the command in the Herdr tab: {err}"));
     }
     Ok(location)
 }
@@ -127,8 +144,7 @@ impl GridTab {
     }
 }
 
-/// Puts the run's log into the grid `grid`, opening its tab on first use. A split Herdr refuses
-/// gives that run a tab of its own instead, and the grid carries on from the last pane in it.
+/// Puts the run's log into the grid `grid`: [`open_grid_command_pane`] with a log follower.
 pub fn open_grid_pane(
     herdr: &dyn HerdrCli,
     grid: &mut GridTab,
@@ -137,8 +153,22 @@ pub fn open_grid_pane(
     label: &str,
     log: &Path,
 ) -> Result<PaneLocation, String> {
+    open_grid_command_pane(herdr, grid, workspace, cwd, label, &tail_command(log))
+}
+
+/// Runs the shell command `command` in a pane of the grid `grid`, opening its tab on first use.
+/// A split Herdr refuses gives the command a tab of its own instead, and the grid carries on
+/// from the last pane in it.
+pub fn open_grid_command_pane(
+    herdr: &dyn HerdrCli,
+    grid: &mut GridTab,
+    workspace: Option<&str>,
+    cwd: &Path,
+    label: &str,
+    command: &str,
+) -> Result<PaneLocation, String> {
     let text = |value: &Path| value.to_string_lossy().into_owned();
-    let command = format!("tail -n +1 -f {}", shell_quote(&text(log)));
+    let command = command.to_string();
     let rename = |pane: &PaneLocation| {
         let _ = herdr.run(&["pane".into(), "rename".into(), pane.pane_id.clone(), label.to_string()]);
     };
@@ -153,7 +183,7 @@ pub fn open_grid_pane(
         rename(&location);
         if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command]) {
             let _ = herdr.run(&["tab".into(), "close".into(), location.tab_id.clone()]);
-            return Err(format!("cannot start the log viewer in the Herdr tab: {err}"));
+            return Err(format!("cannot start the command in the Herdr tab: {err}"));
         }
         grid.newest = Some(location.clone());
         return Ok(location);
@@ -169,12 +199,12 @@ pub fn open_grid_pane(
     // reply names no pane has made a pane this cannot find, so it is reported, not hidden.
     let location = match herdr.run(&split) {
         Ok(reply) => parse_split(&reply, &newest)?,
-        Err(_) => return open_run_pane(herdr, workspace, cwd, label, log),
+        Err(_) => return open_command_pane(herdr, workspace, cwd, label, &command),
     };
     rename(&location);
     if let Err(err) = herdr.run(&["pane".into(), "run".into(), location.pane_id.clone(), command]) {
         let _ = herdr.run(&["pane".into(), "close".into(), location.pane_id.clone()]);
-        return Err(format!("cannot start the log viewer in the Herdr pane: {err}"));
+        return Err(format!("cannot start the command in the Herdr pane: {err}"));
     }
     grid.next_direction = if grid.next_direction == "right" { "down" } else { "right" };
     grid.newest = Some(location.clone());
