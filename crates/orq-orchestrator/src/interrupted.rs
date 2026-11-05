@@ -9,7 +9,9 @@ use crate::store::{Event, RunStore, StoreError};
 /// `run.launched`) is gone according to `alive`, append `run.failed`. Returns whether it did.
 pub fn reconcile_interrupted(store: &RunStore, run_id: &str, alive: &dyn Fn(u32) -> bool) -> Result<bool, StoreError> {
     let events = store.events(run_id)?;
-    if summarize_run(&events).phase != RunPhase::Running {
+    // A run that was asked to pause but never reached its checkpoint is as stuck as a running one;
+    // a paused run is waiting on purpose and keeps its checkpoint.
+    if !matches!(summarize_run(&events).phase, RunPhase::Running | RunPhase::PauseRequested) {
         return Ok(false);
     }
     let Some(pid) = events.iter().rev().find(|e| e.kind == "run.launched").and_then(|e| e.payload.get("pid")).and_then(|p| p.as_u64()) else {

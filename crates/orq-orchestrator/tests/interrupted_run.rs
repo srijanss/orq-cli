@@ -38,3 +38,15 @@ fn a_running_run_whose_owner_is_dead_is_marked_failed_so_it_can_be_resumed() {
     assert_eq!(summary.phase, RunPhase::Failed);
     assert!(summary.reason.unwrap().contains("4242"));
 }
+
+#[test]
+fn a_run_killed_after_a_pause_was_requested_is_marked_failed_too() {
+    let store = store("pause-requested");
+    store.create(&record("run-1")).unwrap();
+    record_launch(&store, "run-1", 4242, std::path::Path::new("/tmp/x.log")).unwrap();
+    orq_orchestrator::request_pause(&store, "run-1").unwrap();
+    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::PauseRequested);
+
+    assert!(reconcile_interrupted(&store, "run-1", &|_pid| false).unwrap());
+    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Failed);
+}
