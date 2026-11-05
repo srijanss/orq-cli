@@ -54,11 +54,15 @@ pub struct Options<'a> {
     pub interactive: bool,
 }
 
+/// A run id no other run has: `run-<seconds>-<pid>-<sequence>`, the sequence telling apart the
+/// runs one long-lived process (the popup) names within the same second.
 pub(crate) fn new_run_id() -> String {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     format!(
-        "run-{}-{}",
+        "run-{}-{}-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
-        std::process::id()
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
 

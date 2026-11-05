@@ -1607,7 +1607,8 @@ fn foreground_command(exe: &Path, args: &[OsString], run_id: &str, env: &[(&str,
 /// Opens a Herdr pane (in the shared `grid` when there is one) that runs `command`, and records it
 /// on `run_id` once the run registers, waiting at most `wait`. `Err` is a pane that never opened,
 /// so nothing was started; `Ok(Some(reason))` is a pane that opened, and so may be running the
-/// run, but is not recorded on it.
+/// run, but is not recorded on it. The grid is held only while the pane opens, so the other
+/// launches of the batch are not kept waiting on this run's registration.
 #[allow(clippy::too_many_arguments)]
 fn launch_in_pane(
     herdr: &dyn orq_herdr::HerdrCli,
@@ -1617,14 +1618,45 @@ fn launch_in_pane(
     run_id: &str,
     command: &str,
     wait: std::time::Duration,
-    grid: Option<&mut orq_herdr::GridTab>,
+    grid: Option<&SharedGrid>,
 ) -> Result<Option<String>, String> {
     let label = format!("orq {run_id}");
     let pane = match grid {
-        Some(grid) => orq_herdr::open_grid_command_pane(herdr, grid, workspace, cwd, &label, command)?,
+        Some(grid) => {
+            let mut grid = grid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            orq_herdr::open_grid_command_pane(herdr, &mut grid, workspace, cwd, &label, command)?
+        }
         None => orq_herdr::open_command_pane(herdr, workspace, cwd, &label, command)?,
     };
     Ok(record_opened_pane(store, run_id, pane, wait, "the tab shows how the run went").err())
+}
+
+/// Starts `run_id` in the foreground of a Herdr pane ([`launch_in_pane`]) and, only when no pane
+/// opened and so nothing started, `detach`es it instead, given why. A pane that opened may be
+/// running the run even when it is not recorded on it, so it is never followed by a second run.
+#[allow(clippy::too_many_arguments)]
+fn start_in_pane_or_detached(
+    herdr: &dyn orq_herdr::HerdrCli,
+    store: &orq_orchestrator::RunStore,
+    workspace: Option<&str>,
+    cwd: &Path,
+    run_id: &str,
+    command: &str,
+    wait: std::time::Duration,
+    grid: Option<&SharedGrid>,
+    detach: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    match launch_in_pane(herdr, store, workspace, cwd, run_id, command, wait, grid) {
+        Ok(None) => Ok(run_id.to_string()),
+        Ok(Some(reason)) => Ok(format!("{run_id} ({})", printable(&reason))),
+        Err(reason) => detached_without_pane(&reason, detach),
+    }
+}
+
+/// The run `detach` starts when no pane opened, its id followed by why there is no pane.
+fn detached_without_pane(reason: &str, detach: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
+    let run_id = detach(reason)?;
+    Ok(format!("{run_id} (no Herdr pane: {})", printable(reason)))
 }
 
 /// A wait bound as the user reads it: `10s`, `1.5s`, `200ms`.
@@ -1882,48 +1914,41 @@ reviewer: String,
     if !checked.status.success() {
         return launch_outcome(false, "", &String::from_utf8_lossy(&checked.stderr));
     }
+    // No pane opened, so nothing started: run detached instead, in a session of its own, so
+    // closing the popup never stops it.
+    let detach = |_reason: &str| {
+        let mut detached = args.clone();
+        detached.push("--detach".into());
+        let output = std::process::Command::new(&exe)
+            .args(&detached)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("cannot start orq run: {err}"))?;
+        launch_outcome(output.status.success(), &String::from_utf8_lossy(&output.stdout), &String::from_utf8_lossy(&output.stderr))
+    };
     // The run goes in the foreground of a Herdr pane, as an interactive session in its worktree
     // that the user can watch and answer; the pane's shell is not the popup's, so it is given the
     // state and config locations explicitly.
-    let no_pane = match state_root_override.clone().or_else(pipeline::state_root) {
-        Some(root) => {
-            let run_id = pipeline::new_run_id();
-            let env: Vec<(&str, OsString)> =
-                ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
-            let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
-            let command = foreground_command(&exe, &args, &run_id, &env);
-            let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
-            let mut guard = grid.as_ref().map(|grid| grid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
-            match launch_in_pane(
-                &orq_herdr::HerdrBinary,
-                &orq_orchestrator::RunStore::new(&root),
-                workspace.as_deref(),
-                &project.root,
-                &run_id,
-                &command,
-                REGISTRATION_WAIT,
-                guard.as_deref_mut(),
-            ) {
-                Ok(None) => return Ok(run_id),
-                // The pane may be running it: starting another would be a second run of the feature.
-                Ok(Some(reason)) => return Ok(format!("{run_id} ({})", printable(&reason))),
-                Err(reason) => reason,
-            }
-        }
-        None => "no state location: set XDG_STATE_HOME or HOME".to_string(),
+    let Some(root) = state_root_override.clone().or_else(pipeline::state_root) else {
+        return detached_without_pane("no state location: set XDG_STATE_HOME or HOME", detach);
     };
-    // No pane opened, so nothing started: run detached instead, in a session of its own, so
-    // closing the popup never stops it.
-    let mut detached = args;
-    detached.push("--detach".into());
-    let output = std::process::Command::new(&exe)
-        .args(&detached)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|err| format!("cannot start orq run: {err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let run_id = launch_outcome(output.status.success(), &stdout, &String::from_utf8_lossy(&output.stderr))?;
-    Ok(format!("{run_id} (no Herdr pane: {})", printable(&no_pane)))
+    let run_id = pipeline::new_run_id();
+    let env: Vec<(&str, OsString)> =
+        ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
+    let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
+    let command = foreground_command(&exe, &args, &run_id, &env);
+    let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
+    start_in_pane_or_detached(
+        &orq_herdr::HerdrBinary,
+        &orq_orchestrator::RunStore::new(&root),
+        workspace.as_deref(),
+        &project.root,
+        &run_id,
+        &command,
+        REGISTRATION_WAIT,
+        grid.as_ref(),
+        detach,
+    )
 }
 
 /// The grid tab the launches of one popup batch share.
@@ -3524,6 +3549,98 @@ mod ledger_backend_tests {
         let err = crate::launch_in_pane(&down, &store, Some("w1"), std::path::Path::new("/repo"), "run-5", &command, std::time::Duration::ZERO, None)
             .unwrap_err();
         assert!(err.contains("herdr is not running"), "{err}");
+    }
+
+    fn foreground_launch_fix_store(tag: &str) -> orq_orchestrator::RunStore {
+        let root = std::env::temp_dir().join(format!("orq-foreground-fix-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        orq_orchestrator::RunStore::new(&root)
+    }
+
+    fn foreground_launch_fix_record(run_id: &str) -> orq_orchestrator::RunRecord {
+        orq_orchestrator::RunRecord {
+            run_id: run_id.into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        }
+    }
+
+    #[test]
+    fn foreground_launch_fix_run_ids_made_by_one_process_within_a_second_all_differ() {
+        let ids: std::collections::BTreeSet<String> = (0..50).map(|_| crate::pipeline::new_run_id()).collect();
+        assert_eq!(ids.len(), 50, "{ids:?}");
+    }
+
+    #[test]
+    fn foreground_launch_fix_a_slow_registration_leaves_the_shared_grid_free_for_other_launches() {
+        let root = std::env::temp_dir().join(format!("orq-foreground-fix-grid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let grid = std::sync::Arc::new(std::sync::Mutex::new(orq_herdr::GridTab::new("orq runs")));
+        let herdr = FakeHerdr { calls: Default::default(), fail: false };
+        // Another launch of the batch takes the grid while this one waits for its run to register,
+        // and only then does the run register.
+        let other = {
+            let (grid, root) = (grid.clone(), root.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _held = grid.lock().unwrap();
+                orq_orchestrator::RunStore::new(&root).create(&foreground_launch_fix_record("run-g")).unwrap();
+            })
+        };
+
+        let outcome = crate::launch_in_pane(
+            &herdr,
+            &store,
+            Some("w1"),
+            std::path::Path::new("/repo"),
+            "run-g",
+            "true",
+            std::time::Duration::from_secs(3),
+            Some(&grid),
+        );
+
+        other.join().unwrap();
+        assert_eq!(outcome, Ok(None));
+        assert_eq!(orq_orchestrator::run_pane(&store, "run-g").unwrap().unwrap().pane_id, "w1:p5");
+    }
+
+    #[test]
+    fn foreground_launch_fix_only_a_pane_that_never_opens_is_followed_by_a_detached_run() {
+        let store = foreground_launch_fix_store("detach");
+        let repo = std::path::Path::new("/repo");
+        let wait = std::time::Duration::from_millis(100);
+        let detached = std::cell::RefCell::new(Vec::<String>::new());
+        let detach = |reason: &str| {
+            detached.borrow_mut().push(reason.to_string());
+            Ok("run-d".to_string())
+        };
+
+        // The run registers: its pane is recorded and nothing else starts.
+        store.create(&foreground_launch_fix_record("run-r")).unwrap();
+        let up = FakeHerdr { calls: Default::default(), fail: false };
+        assert_eq!(crate::start_in_pane_or_detached(&up, &store, Some("w1"), repo, "run-r", "true", wait, None, detach), Ok("run-r".to_string()));
+        assert!(detached.borrow().is_empty());
+
+        // The pane opened but the run never registered: the pane may still be running it, so a
+        // detached run would be a second run of the feature.
+        let opened = crate::start_in_pane_or_detached(&up, &store, Some("w1"), repo, "run-late", "true", wait, None, detach).unwrap();
+        assert!(opened.starts_with("run-late (") && opened.contains("did not register within 100ms"), "{opened}");
+        assert!(detached.borrow().is_empty(), "{:?}", detached.borrow());
+
+        // No pane opened, so nothing started: the run goes detached, and says why.
+        let down = FakeHerdr { calls: Default::default(), fail: true };
+        let fallback = crate::start_in_pane_or_detached(&down, &store, Some("w1"), repo, "run-x", "true", wait, None, detach).unwrap();
+        assert_eq!(fallback, "run-d (no Herdr pane: cannot open a Herdr tab: herdr is not running)");
+        assert_eq!(detached.borrow().as_slice(), ["cannot open a Herdr tab: herdr is not running"]);
     }
 
     #[test]
