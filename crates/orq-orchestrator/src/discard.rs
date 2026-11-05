@@ -31,6 +31,19 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Discar
 /// lock is released, with the run's features that no other run holds: nothing continues those, and
 /// no new run can take them while the call runs.
 pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<DiscardOutcome, String> {
+    discard_run_before_remove(store, run_id, repo, orphaned, &mut || {})
+}
+
+/// [`discard_run_then`], calling `before_remove()` between the worktree's cleanliness check and its
+/// removal, so tests can write to it in that window.
+#[doc(hidden)]
+pub fn discard_run_before_remove(
+    store: &RunStore,
+    run_id: &str,
+    repo: &Path,
+    orphaned: &mut dyn FnMut(&str, &[String]),
+    before_remove: &mut dyn FnMut(),
+) -> Result<DiscardOutcome, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
@@ -68,11 +81,8 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
             return Err(format!("{} is not the repository of {run_id}", repo.display()));
         }
         // Uncommitted or untracked work is never deleted: the worktree and its branch stay.
-        let status = git(&record.worktree, &["status", "--porcelain", "-z"])?;
-        if !status.success {
-            return Err(format!("cannot tell whether the worktree of {run_id} has uncommitted work: {}", status.stderr.trim()));
-        }
-        if !status.stdout.is_empty() {
+        // The flags override any configuration that would hide new files or submodule changes.
+        if is_dirty(&record.worktree).map_err(|reason| format!("cannot tell whether the worktree of {run_id} has uncommitted work: {reason}"))? {
             kept_worktree = Some(record.worktree.clone());
         }
     }
@@ -98,10 +108,19 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
         }
     }
     if has_worktree && kept_worktree.is_none() {
-        let removed = git(repo, &["worktree", "remove", "--force", "--", &worktree])?;
+        before_remove();
+        // Without --force git checks again as it removes, so work written since the check above is
+        // never deleted: the worktree is then kept like any other with uncommitted work.
+        let removed = git(repo, &["worktree", "remove", "--", &worktree])?;
         if !removed.success {
-            return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
+            if record.worktree.exists() && is_dirty(&record.worktree).unwrap_or(true) {
+                kept_worktree = Some(record.worktree.clone());
+            } else {
+                return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
+            }
         }
+    }
+    if has_worktree && kept_worktree.is_none() {
         let deleted = git(repo, &["update-ref", "-d", &format!("refs/heads/{branch}")])?;
         if !deleted.success {
             return Err(format!("the branch {branch} could not be deleted: {}", deleted.stderr.trim()));
@@ -141,4 +160,14 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
     }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
     Ok(DiscardOutcome { features: members, kept_worktree })
+}
+
+/// Whether `worktree` has uncommitted or untracked work. The flags override any configuration that
+/// would hide new files or submodule changes.
+fn is_dirty(worktree: &Path) -> Result<bool, String> {
+    let status = git_raw(worktree, &["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none"]).map_err(|e| e.to_string())?;
+    if !status.success {
+        return Err(status.stderr.trim().to_string());
+    }
+    Ok(!status.stdout.is_empty())
 }

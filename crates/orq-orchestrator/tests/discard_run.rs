@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_run, discard_run_then, Event, RunRecord, RunStore, StoreError};
+use orq_orchestrator::{discard_run, discard_run_before_remove, discard_run_then, Event, RunRecord, RunStore, StoreError};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -342,4 +342,52 @@ fn discard_keep_a_run_whose_pause_is_only_requested_is_still_live_and_left_untou
 
     assert!(discard_run(&store, "run-1", repo.root()).is_err());
     assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    assert!(Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success(), "git {args:?}");
+}
+
+#[test]
+fn discard_status_untracked_work_is_kept_even_when_git_is_configured_to_hide_it() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("status-config", &repo);
+    git_in(repo.root(), &["config", "status.showUntrackedFiles", "no"]);
+    std::fs::write(worktree.join("new.txt"), "unfinished").unwrap();
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
+    assert!(worktree.join("new.txt").exists() && branch_exists(repo.root(), "orq-run-1"));
+}
+
+#[test]
+fn discard_status_a_worktree_whose_cleanliness_cannot_be_told_is_left_as_it_was() {
+    let repo = GitFixture::new();
+    let (root, worktree, store) = paused_run("status-fails", &repo);
+    let gitdir = Command::new("git").arg("-C").arg(&worktree).args(["rev-parse", "--absolute-git-dir"]).output().unwrap();
+    let gitdir = PathBuf::from(String::from_utf8(gitdir.stdout).unwrap().trim());
+    std::fs::write(gitdir.join("index"), "not an index").unwrap();
+
+    assert!(discard_run(&store, "run-1", repo.root()).is_err());
+
+    assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-1").is_ok() && root.join("logs").join("run-1").exists());
+    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+}
+
+#[test]
+fn discard_race_work_written_after_the_check_is_kept_with_its_worktree_and_branch() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("race", &repo);
+
+    let outcome = discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
+        std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
+    })
+    .unwrap();
+
+    assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
+    assert!(worktree.join("late.txt").exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-1").is_err());
+    assert_eq!(store.active_run("p", "F").unwrap(), None);
 }
