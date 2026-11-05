@@ -122,11 +122,12 @@ fn tab_opens_settings_showing_both_roles() {
 }
 
 #[test]
-fn clicking_the_settings_tab_opens_it_and_tab_returns_to_features() {
+fn clicking_the_settings_tab_opens_it_and_tab_cycles_back_to_features() {
     let (_, lines) = run(&mut Fake::new(), vec![click(14, 2)]);
     assert!(has(&lines, "Implementer"), "{lines:?}");
 
-    let (_, lines) = run(&mut Fake::new(), vec![key(KeyCode::Tab), key(KeyCode::Tab)]);
+    // Settings → Orchestrations → Reviews → Features.
+    let (_, lines) = run(&mut Fake::new(), vec![key(KeyCode::Tab), key(KeyCode::Tab), key(KeyCode::Tab), key(KeyCode::Tab)]);
     assert!(has(&lines, "alpha"), "{lines:?}");
 }
 

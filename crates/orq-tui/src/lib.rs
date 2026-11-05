@@ -2572,7 +2572,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
 
 const SETTINGS_TAB: &str = "Settings";
 const SETTINGS_FILE: &str = "config.toml";
-const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · p preview · c clean up · Esc back · Tab features ";
+const SETTINGS_HINT: &str = " ↑↓ move/pick · Enter edit/save · p preview · c clean up · Esc back · Tab orchestrations ";
 /// Settings fields in display order: (role, field name).
 const SETTINGS_FIELDS: [(&str, &str); 4] =
     [("Implementer", "harness"), ("Implementer", "model"), ("Reviewer", "harness"), ("Reviewer", "model")];
@@ -4011,7 +4011,11 @@ where
                 }
                 if browser.tab == Tab::Settings {
                     if browser.settings.handle_key(key.code, backend) {
-                        browser.tab = Tab::Features;
+                        if key.code == KeyCode::Tab {
+                            browser.open_runs(backend);
+                        } else {
+                            browser.tab = Tab::Features;
+                        }
                     }
                     dirty = true;
                     continue;
@@ -4052,7 +4056,8 @@ where
                         KeyCode::Char('o') => browser.reopen_selected_run(backend),
                         KeyCode::Char('u') => browser.review_link_of_selected_run(backend, false),
                         KeyCode::Char('y') => browser.review_link_of_selected_run(backend, true),
-                        KeyCode::Esc | KeyCode::Tab => browser.tab = Tab::Features,
+                        KeyCode::Esc => browser.tab = Tab::Features,
+                        KeyCode::Tab => browser.open_reviews(backend),
                         KeyCode::Down | KeyCode::Char('j') => browser.runs.move_by(true),
                         KeyCode::Up | KeyCode::Char('k') => browser.runs.move_by(false),
                         KeyCode::Char('r') => browser.open_runs(backend),
