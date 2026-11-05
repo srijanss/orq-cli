@@ -173,12 +173,24 @@ while status is None and time.time() < end:
     else:
         time.sleep(0.05)
 if status is None or not drained:
-    # orq, or something it left holding the terminal, outlived the deadline: end the whole
-    # session (orq leads its process group) and fail rather than report a partial capture.
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    # orq, or something it left holding the terminal, outlived the deadline: end everything in
+    # the session orq leads, whatever process group it moved to, and fail rather than report a
+    # partial capture.
+    for _ in range(3):
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open("/proc/" + entry + "/stat") as stat:
+                    fields = stat.read().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            # After the command name: state, ppid, pgrp, session.
+            if int(fields[3]) == pid:
+                try:
+                    os.kill(int(entry), signal.SIGKILL)
+                except OSError:
+                    pass
     if status is None:
         os.waitpid(pid, 0)
     what = b"orq did not exit" if status is None else b"the terminal was still held open after orq exited"
@@ -282,15 +294,43 @@ fn an_interactive_session_that_fails_fails_the_run_and_orq_still_reports_on_the_
     assert!(drawn.contains("state: failed"), "{drawn}");
 }
 
+/// The process ids printed as `held <pid>` lines.
+fn held_pids(drawn: &str) -> Vec<u32> {
+    drawn.lines().filter_map(|line| line.trim().strip_prefix("held ")?.trim().parse().ok()).collect()
+}
+
+/// Whether `pid` has ended (gone, or a zombie waiting to be reaped) within two seconds.
+fn ended(pid: u32) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit(')').next().and_then(|rest| rest.split_whitespace().next()).map(str::to_string));
+        if matches!(state.as_deref(), None | Some("Z")) {
+            return true;
+        }
+        if std::time::Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn the_terminal_driver_fails_when_something_still_holds_the_terminal_at_its_deadline() {
     let agent = FakeAgent::builder().build();
     let w = world("held", &agent);
-    let args = ["-c".to_string(), "trap '' HUP; sleep 30 & echo started".to_string()];
+    // One holder in orq's own process group and one, through job control, in a group of its own.
+    let script = "trap '' HUP; sleep 30 & echo held $!; set -m; sleep 30 & echo held $!";
+    let args = ["-c".to_string(), script.to_string()];
 
     let (code, drawn) = drive(&w, &github(), Streams::Terminal, 2, "/bin/sh", &args);
 
-    assert!(drawn.contains("started"), "{drawn}");
     assert!(drawn.contains("the terminal was still held open after orq exited"), "{drawn}");
     assert_eq!(code, 124, "{drawn}");
+    let held = held_pids(&drawn);
+    assert_eq!(held.len(), 2, "{drawn}");
+    for pid in held {
+        assert!(ended(pid), "holder {pid} survived the driver: {drawn}");
+    }
 }
