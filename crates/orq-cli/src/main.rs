@@ -1972,6 +1972,8 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             .map(|events| matches!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked))
             .unwrap_or(false);
         if stopped {
+            // The pipeline continues the latest run of these features, so that is what is checked.
+            check_group_resume(&store, repo, run_id)?;
             return Ok("where it stopped".to_string());
         }
         let checkpoint = orq_orchestrator::validate_checkpoint(&store, repo, run_id)?;
@@ -3101,7 +3103,7 @@ mod ledger_backend_tests {
     }
 
     #[test]
-    fn resume_check_accepts_a_run_that_failed_because_its_process_died() {
+    fn resume_check_treats_a_run_whose_process_died_as_stopped() {
         let fixture = orq_test_support::GitFixture::new();
         let root = std::env::temp_dir().join(format!("orq-backend-resume-check-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -3113,7 +3115,28 @@ mod ledger_backend_tests {
 
         let checked = orq_tui::BrowserBackend::resume_check(&mut backend, "run-dead");
 
-        assert_eq!(checked, Ok("where it stopped".to_string()));
+        // Not "did not stop": the dead process was recorded as a failure first.
+        assert!(!checked.unwrap_err().contains("may still be running"));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resume_check_refuses_a_failed_run_the_group_resume_would_refuse() {
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-resume-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // The seeded run's worktree is outside the repository's worktrees directory.
+        seed_run_with_dead_process(&root, fixture.root(), "run-dead");
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+        backend.state_root_override = Some(root.clone());
+
+        let checked = orq_tui::BrowserBackend::resume_check(&mut backend, "run-dead");
+
+        let message = checked.unwrap_err();
+        assert!(message.contains("worktrees directory"), "{message}");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3702,6 +3725,19 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str) ->
     Ok(list)
 }
 
+/// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
+/// and starts from `run_id`, the reason otherwise. Nothing is launched.
+fn check_group_resume(store: &orq_orchestrator::RunStore, repo: &std::path::Path, run_id: &str) -> Result<(), String> {
+    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let members = orq_orchestrator::run_members(store, run_id)?;
+    let plan = orq_orchestrator::plan_group_resume(store, repo, &record.project_id, &members)?;
+    if plan.from.run_id == run_id {
+        Ok(())
+    } else {
+        Err(format!("{} is a later run of the same features; resume that one", plan.from.run_id))
+    }
+}
+
 /// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
 /// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
 /// not paused, or when the checkpoint no longer matches the checkout.
@@ -3771,11 +3807,8 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
         (_, Err(reason)) => return fail(reason),
     };
-    // The pipeline continues the latest run of these features; refuse when that is another run.
-    match orq_orchestrator::plan_group_resume(&store, &repo, &record.project_id, &members) {
-        Ok(plan) if plan.from.run_id == run_id => {}
-        Ok(plan) => return fail(format!("cannot resume {}: {} is a later run of the same features; resume that one", printable(&run_id), printable(&plan.from.run_id))),
-        Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+    if let Err(reason) = check_group_resume(&store, &repo, &run_id) {
+        return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
     }
     let repo_root = repo.clone();
     let mut forwarded: Vec<OsString> = vec!["--repo".into(), repo.into_os_string(), "--remote".into(), record.remote.into(), "--target".into(), record.target_branch.into(), "--resume".into()];
