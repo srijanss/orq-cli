@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::outcome::git_raw;
 use crate::resume::members_of;
 use crate::run_status::{summarize_run, RunPhase};
-use crate::store::{RunStore, StoreError};
+use crate::store::{Claim, RunStore, StoreError};
 
 /// Remove the run `run_id` for good: its worktree (with any uncommitted work), its local branch,
 /// its feature locks, its logs and its record. A run whose worktree is already gone keeps its
@@ -90,11 +90,22 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
     // Release each member's lock on its own, so one benign outcome cannot hide another's failure.
     let members = members_of(&record, &events);
     // A member whose lock is free is claimed first, so no new run can start it while it is reopened.
+    // If one cannot be claimed, the locks taken here are given back (the run's own stay, and so
+    // does the record), so no feature is left blocked by a run that is not doing it.
     let mut ours = Vec::new();
+    let mut taken = Vec::new();
     for member in &members {
-        if store.claim_lock(&record.project_id, member, run_id).map_err(|e| e.to_string())? {
-            ours.push(member.clone());
+        match store.claim_lock(&record.project_id, member, run_id) {
+            Ok(Claim::Taken) => taken.push(member.clone()),
+            Ok(Claim::AlreadyHeld) => {}
+            Ok(Claim::HeldByAnother) => continue,
+            Err(err) => {
+                // Best effort: the error being returned is the one that matters.
+                let _ = store.finish_group_run(&record.project_id, &taken, run_id);
+                return Err(err.to_string());
+            }
         }
+        ours.push(member.clone());
     }
     if !ours.is_empty() {
         orphaned(&record.project_id, &ours);

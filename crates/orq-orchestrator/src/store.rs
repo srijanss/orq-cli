@@ -36,6 +36,17 @@ pub struct RunRecord {
     pub profiles: BTreeMap<String, RoleProfile>,
 }
 
+/// What [`RunStore::claim_lock`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// The lock was free and is now the run's.
+    Taken,
+    /// The run already held it.
+    AlreadyHeld,
+    /// Another run holds it; it was left alone.
+    HeldByAnother,
+}
+
 /// One line of `events.jsonl`: the spec's event envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
@@ -203,12 +214,13 @@ impl RunStore {
         first.map_or(Ok(()), Err)
     }
 
-    /// Make sure `run_id` holds the lock of `feature_id`: take it if it is free. Returns false,
-    /// leaving the lock alone, when another run holds it.
-    pub fn claim_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<bool, StoreError> {
+    /// Make sure `run_id` holds the lock of `feature_id`: take it if it is free. Another run's
+    /// lock is left alone.
+    pub fn claim_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<Claim, StoreError> {
         match self.take_lock(project_id, feature_id, run_id) {
-            Ok(()) => Ok(true),
-            Err(StoreError::FeatureBusy { active_run_id }) => Ok(active_run_id == run_id),
+            Ok(()) => Ok(Claim::Taken),
+            Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == run_id => Ok(Claim::AlreadyHeld),
+            Err(StoreError::FeatureBusy { .. }) => Ok(Claim::HeldByAnother),
             Err(err) => Err(err),
         }
     }

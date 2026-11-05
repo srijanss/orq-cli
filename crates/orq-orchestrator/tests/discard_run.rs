@@ -261,3 +261,27 @@ fn reopen_the_discard_holds_every_orphaned_feature_lock_while_the_features_are_r
     assert_eq!(store.active_run("p", "H").unwrap(), None);
     assert_eq!(store.active_run("p", "G").unwrap().as_deref(), Some("run-2"));
 }
+
+#[test]
+fn reopen_a_lock_that_cannot_be_claimed_frees_the_locks_the_discard_took_and_keeps_the_run_s_own() {
+    // F was released when the run ended; H the run still holds; the third member's lock cannot be taken.
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (_, store) = store("reopen-claim-fails");
+    let members = vec!["F".to_string(), "H".to_string()];
+    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
+    store
+        .append_event(&event("run.grouped", serde_json::json!({ "features": ["F", "H", "not a feature id"] })))
+        .unwrap();
+    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store.finish_group_run("p", &["F".to_string()], "run-1").unwrap();
+
+    let mut reopened = false;
+    let result = discard_run_then(&store, "run-1", repo.root(), &mut |_, _| reopened = true);
+
+    assert!(result.is_err());
+    assert!(!reopened, "nothing is reopened when the locks could not all be claimed");
+    assert_eq!(store.active_run("p", "F").unwrap(), None, "the lock the discard took is given back");
+    assert_eq!(store.active_run("p", "H").unwrap().as_deref(), Some("run-1"), "the run's own lock stays for a retry");
+    assert!(store.load("run-1").is_ok(), "the record stays, so the discard can be retried");
+}
