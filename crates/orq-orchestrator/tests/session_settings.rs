@@ -49,7 +49,7 @@ fn the_runs_environment_and_mcp_servers_are_merged_into_the_worktrees_local_sess
     )
     .unwrap();
 
-    let notes = write_session_settings(&worktree, &vars(&[("DB_NAME", "secretdb_run1")]), None);
+    let notes = write_session_settings(&worktree, &vars(&[("DB_NAME", "secretdb_run1")]), None, None);
 
     let settings = read_json(&worktree.join(".claude/settings.local.json"));
     assert_eq!(
@@ -83,7 +83,7 @@ fn the_runs_environment_and_mcp_servers_are_merged_into_the_worktrees_local_sess
 #[test]
 fn only_the_configured_servers_are_approved_and_a_problem_is_a_note_not_a_failure() {
     let (_repo, worktree) = checkout("settings-notes");
-    let notes = write_session_settings(&worktree, &[], Some(&["tdd".to_string()]));
+    let notes = write_session_settings(&worktree, &[], Some(&["tdd".to_string()]), None);
     assert!(
         notes.iter().any(|n| n.contains(".mcp.json")),
         "no .mcp.json: {notes:?}"
@@ -98,6 +98,7 @@ fn only_the_configured_servers_are_approved_and_a_problem_is_a_note_not_a_failur
         &worktree,
         &[],
         Some(&["tdd".to_string(), "absent".to_string()]),
+        None,
     );
     let settings = read_json(&worktree.join(".claude/settings.local.json"));
     assert_eq!(
@@ -108,7 +109,7 @@ fn only_the_configured_servers_are_approved_and_a_problem_is_a_note_not_a_failur
 
     let (_other_repo, blocked) = checkout("settings-blocked");
     fs::create_dir_all(blocked.join(".claude/settings.local.json")).unwrap();
-    let notes = write_session_settings(&blocked, &vars(&[("A", "1")]), None);
+    let notes = write_session_settings(&blocked, &vars(&[("A", "1")]), None, None);
     assert!(
         notes.iter().any(|n| n.contains("settings.local.json")),
         "{notes:?}"

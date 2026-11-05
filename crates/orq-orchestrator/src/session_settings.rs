@@ -13,14 +13,17 @@ const WORKTREES_DIR: &str = ".claude/worktrees";
 
 /// Merges `env` into the `env` object of the worktree's `.claude/settings.local.json` and approves
 /// MCP servers in `enabledMcpjsonServers`: those of `servers` that `.mcp.json` declares, or every
-/// server it declares when `servers` is `None`. Other keys and earlier entries are kept.
+/// server it declares when `servers` is `None`. Other keys and earlier entries are kept. A chosen
+/// `mcpctl` package also approves the server that runs it with `mcpctl`, the program orq sets MCP
+/// servers up with (`None` when it is not installed): bare on PATH, or at that program's path.
 pub fn write_session_settings(
     worktree: &Path,
     env: &[(String, String)],
     servers: Option<&[String]>,
+    mcpctl: Option<&Path>,
 ) -> Vec<String> {
     let mut notes = Vec::new();
-    let declared = declared_servers(worktree, &mut notes);
+    let declared = declared_servers(worktree, mcpctl, &mut notes);
     let approved: Vec<String> = match servers {
         Some(wanted) => {
             let mut approved = Vec::new();
@@ -77,11 +80,20 @@ fn resolve<'a>(declared: &'a [DeclaredServer], chosen: &str) -> Result<&'a Strin
     }
 }
 
-/// The `<package>` of a server entry started with `mcpctl run <package>`.
-fn mcpctl_package(entry: &serde_json::Value) -> Option<String> {
-    let command = Path::new(entry.get("command")?.as_str()?);
-    if command.file_name()? != "mcpctl" {
-        return None;
+/// The `<package>` of a server entry started with `mcpctl run <package>`, where that `mcpctl` is
+/// the trusted one: the bare name, looked up on PATH as orq's own is, or a path to the same file.
+fn mcpctl_package(
+    worktree: &Path,
+    entry: &serde_json::Value,
+    trusted: Option<&Path>,
+) -> Option<String> {
+    let trusted = trusted?;
+    let command = entry.get("command")?.as_str()?;
+    if command != "mcpctl" {
+        let same = worktree.join(command).canonicalize().ok()? == trusted.canonicalize().ok()?;
+        if !same {
+            return None;
+        }
     }
     match entry.get("args")?.as_array()?.as_slice() {
         [run, package, ..] if run.as_str() == Some("run") => package.as_str().map(str::to_string),
@@ -90,7 +102,11 @@ fn mcpctl_package(entry: &serde_json::Value) -> Option<String> {
 }
 
 /// The servers `.mcp.json` declares; a missing or unreadable file is a note.
-fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<DeclaredServer> {
+fn declared_servers(
+    worktree: &Path,
+    mcpctl: Option<&Path>,
+    notes: &mut Vec<String>,
+) -> Vec<DeclaredServer> {
     let text = match std::fs::read_to_string(worktree.join(".mcp.json")) {
         Ok(text) => text,
         Err(_) => {
@@ -110,7 +126,7 @@ fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<DeclaredSer
                     .iter()
                     .map(|(name, entry)| DeclaredServer {
                         name: name.clone(),
-                        package: mcpctl_package(entry),
+                        package: mcpctl_package(worktree, entry, mcpctl),
                     })
                     .collect()
             })
