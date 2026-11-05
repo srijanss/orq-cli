@@ -47,13 +47,19 @@ fn seed(tag: &str) -> (PathBuf, RunStore) {
 #[test]
 fn stopping_a_live_run_ends_its_owner_process_and_records_it_failed() {
     let (home, store) = seed("live");
-    let mut owner = Command::new("sleep").arg("60").spawn().unwrap();
+    let owner = Command::new("sleep").arg("60").spawn().unwrap();
     orq_orchestrator::record_owner(&store, "run-1", owner.id()).unwrap();
+
+    // A real owner is reaped by its own parent; reap this one the same way, concurrently.
+    let reaper = std::thread::spawn(move || {
+        let mut owner = owner;
+        owner.wait().unwrap()
+    });
 
     let out = orq(&home, &["run", "stop", "run-1"]);
 
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!owner.wait().unwrap().success(), "the owner process was ended");
+    assert!(!reaper.join().unwrap().success(), "the owner process was ended");
     let events = store.events("run-1").unwrap();
     assert_eq!(orq_orchestrator::summarize_run(&events).phase, RunPhase::Failed);
 
