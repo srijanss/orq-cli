@@ -112,7 +112,13 @@ impl BrowserBackend for Fake {
 fn show(backend: &mut Fake, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-    let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
+    let mut script = Script(events.into());
+    let ended = run_browser(&mut terminal, &model, backend, &mut script);
+    // The browser must have read every scripted event and stopped only because the script ran out.
+    let error = ended.expect_err("the browser quit before the script ran out");
+    let eof = error.downcast_ref::<io::Error>().is_some_and(|err| err.kind() == io::ErrorKind::UnexpectedEof);
+    assert!(eof, "the browser stopped on another error: {error}");
+    assert!(script.0.is_empty(), "{} scripted events were never read", script.0.len());
     let buffer = terminal.backend().buffer();
     (0..HEIGHT).map(|y| (0..WIDTH).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
 }
