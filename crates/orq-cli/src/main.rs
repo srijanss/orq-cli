@@ -1985,6 +1985,17 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(format!("Stopped {}; c resumes it", printable(run_id)))
     }
 
+    fn feature_runs(&mut self) -> Vec<orq_tui::RunRow> {
+        self.load_runs().unwrap_or_default()
+    }
+
+    fn discard_run(&mut self, run_id: &str) -> Result<String, String> {
+        let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
+        let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
+        orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, repo).map_err(|message| printable(&message))?;
+        Ok(format!("Discarded {}", printable(run_id)))
+    }
+
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;

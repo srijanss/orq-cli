@@ -1,0 +1,189 @@
+use std::collections::VecDeque;
+use std::io;
+
+use orq_tui::{run_browser, BrowserBackend, BrowserEntry, EventSource, LedgerErrorView, PopupModel, PromoteOutcome, RunRow};
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::Terminal;
+
+const WIDTH: u16 = 100;
+const HEIGHT: u16 = 40;
+
+struct Script(VecDeque<Event>);
+
+impl EventSource for Script {
+    fn next_event(&mut self) -> io::Result<Event> {
+        self.0.pop_front().ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "script exhausted"))
+    }
+}
+
+#[derive(Default)]
+struct Fake {
+    calls: Vec<String>,
+}
+
+fn entry(name: &str, status: &str) -> BrowserEntry {
+    BrowserEntry { name: name.into(), description: None, status: status.into(), depends_on: vec![], test_file: None }
+}
+
+fn run(run_id: &str, feature: &str, status: &str) -> RunRow {
+    RunRow {
+        run_id: run_id.into(),
+        feature: feature.into(),
+        status: status.into(),
+        stage: None,
+        implementer_model: None,
+        reviewer_model: None,
+        has_review_link: false,
+    }
+}
+
+impl BrowserBackend for Fake {
+    fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
+        Ok(vec![
+            entry("alpha", "pending"),
+            entry("bravo", "in_progress"),
+            entry("charlie", "in_progress"),
+            entry("delta", "in_progress"),
+            entry("echo", "in_progress"),
+            entry("foxtrot", "completed"),
+        ])
+    }
+    fn promote(&mut self, _feature: &str) -> PromoteOutcome {
+        PromoteOutcome::Saved
+    }
+    fn feature_runs(&mut self) -> Vec<RunRow> {
+        self.calls.push("feature_runs".into());
+        vec![
+            // An older failed run of bravo is superseded by its latest one, which is running.
+            run("run-1", "bravo", "failed"),
+            run("run-2", "bravo", "running"),
+            run("run-3", "charlie", "paused"),
+            run("run-4", "delta", "failed"),
+            run("run-5", "echo", "blocked"),
+            run("run-6", "foxtrot", "completed"),
+        ]
+    }
+    fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
+        self.calls.push(format!("pause {run_id}"));
+        Ok(format!("Pause requested for {run_id}"))
+    }
+    fn stop_run(&mut self, run_id: &str) -> Result<String, String> {
+        self.calls.push(format!("stop {run_id}"));
+        Ok(format!("Stopped {run_id}"))
+    }
+    fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
+        self.calls.push(format!("check {run_id}"));
+        Ok("where it stopped".into())
+    }
+    fn resume_run(&mut self, run_id: &str) -> Result<String, String> {
+        self.calls.push(format!("resume {run_id}"));
+        Ok(format!("Resumed {run_id}"))
+    }
+    fn discard_run(&mut self, run_id: &str) -> Result<String, String> {
+        self.calls.push(format!("discard {run_id}"));
+        Ok(format!("Discarded {run_id}"))
+    }
+    fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
+        self.calls.push("profiles".into());
+        Ok(vec!["fast".into()])
+    }
+}
+
+fn show(backend: &mut Fake, events: Vec<Event>) -> Vec<String> {
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
+    let buffer = terminal.backend().buffer();
+    (0..HEIGHT).map(|y| (0..WIDTH).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
+}
+
+/// The card line that holds a feature's buttons: the line above its name.
+fn button_line(screen: &[String], feature: &str) -> (u16, String) {
+    let y = screen
+        .iter()
+        .position(|line| line.contains(&format!(" {feature} ")))
+        .unwrap_or_else(|| panic!("{feature} is listed: {screen:#?}"));
+    (y as u16 - 1, screen[y - 1].clone())
+}
+
+/// Where the label `button` of `feature`'s row is drawn.
+fn button_at(screen: &[String], feature: &str, button: &str) -> (u16, u16) {
+    let (y, line) = button_line(screen, feature);
+    let byte = line.find(button).unwrap_or_else(|| panic!("{feature} has {button}: {line:?}"));
+    (line[..byte].chars().count() as u16 + 1, y)
+}
+
+fn click((column, row): (u16, u16)) -> Event {
+    Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE })
+}
+
+fn key(c: char) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+}
+
+const ALL: [&str; 5] = ["[Orchestrate]", "[Pause]", "[Stop]", "[Resume]", "[Discard]"];
+
+#[test]
+fn each_feature_row_shows_the_buttons_its_latest_run_allows() {
+    let screen = show(&mut Fake::default(), vec![]);
+    for (feature, expected) in [
+        ("alpha", &["[Orchestrate]"][..]),
+        ("bravo", &["[Pause]", "[Stop]"][..]),
+        ("charlie", &["[Resume]"][..]),
+        ("delta", &["[Resume]", "[Discard]"][..]),
+        ("echo", &["[Discard]"][..]),
+        ("foxtrot", &[][..]),
+    ] {
+        let (_, line) = button_line(&screen, feature);
+        for label in ALL {
+            assert_eq!(line.contains(label), expected.contains(&label), "{feature} and {label}: {line:?}");
+        }
+    }
+}
+
+#[test]
+fn a_row_button_acts_on_its_own_rows_run_and_asks_before_stopping_resuming_or_discarding() {
+    let screen = show(&mut Fake::default(), vec![]);
+
+    let mut backend = Fake::default();
+    show(&mut backend, vec![click(button_at(&screen, "bravo", "[Pause]"))]);
+    assert!(backend.calls.contains(&"pause run-2".to_string()), "{:?}", backend.calls);
+
+    let mut backend = Fake::default();
+    show(&mut backend, vec![click(button_at(&screen, "bravo", "[Stop]")), key('y')]);
+    assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?}", backend.calls);
+
+    let mut backend = Fake::default();
+    show(&mut backend, vec![click(button_at(&screen, "charlie", "[Resume]")), key('y')]);
+    assert!(
+        backend.calls.contains(&"check run-3".to_string()) && backend.calls.contains(&"resume run-3".to_string()),
+        "{:?}",
+        backend.calls
+    );
+
+    let mut backend = Fake::default();
+    let asked = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]"))]);
+    assert!(asked.iter().any(|line| line.contains("Discard run-5?")), "{asked:#?}");
+    assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "nothing is discarded before y: {:?}", backend.calls);
+
+    let mut backend = Fake::default();
+    let done = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]);
+    assert!(backend.calls.contains(&"discard run-5".to_string()), "{:?}", backend.calls);
+    assert!(done.iter().any(|line| line.contains("Discarded run-5")), "{done:#?}");
+    let reloads = backend.calls.iter().filter(|call| *call == "feature_runs").count();
+    assert_eq!(reloads, 2, "the rows' runs are read again after the discard: {:?}", backend.calls);
+
+    let mut backend = Fake::default();
+    show(&mut backend, vec![click(button_at(&screen, "delta", "[Discard]")), key('n')]);
+    assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "any other key cancels: {:?}", backend.calls);
+}
+
+#[test]
+fn orchestrate_on_a_row_opens_the_launch_picker_for_that_feature_and_stays_on_features() {
+    let screen = show(&mut Fake::default(), vec![]);
+    let mut backend = Fake::default();
+    let picked = show(&mut backend, vec![click(button_at(&screen, "alpha", "[Orchestrate]"))]);
+    assert!(backend.calls.contains(&"profiles".to_string()), "{:?}", backend.calls);
+    assert!(picked.iter().any(|line| line.contains("fast")), "{picked:#?}");
+}

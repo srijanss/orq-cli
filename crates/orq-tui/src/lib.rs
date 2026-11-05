@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
 
@@ -502,7 +502,7 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let list = list_area(frame.area());
-    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, None, state, "no features");
+    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, None, &|_| &[], state, "no features");
 }
 
 /// Rows `0..len` of `row` that fit in `list`, the selected one marked. Only
@@ -514,6 +514,7 @@ fn render_rows<'a>(
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
+    buttons: &dyn Fn(usize) -> &'static [RowAction],
     state: &FeatureListState,
     empty: &str,
 ) {
@@ -523,7 +524,7 @@ fn render_rows<'a>(
     let width = usize::from(list.width);
     let card = item_height(list);
     if card > 1 && len > 0 {
-        render_cards(frame, list, len, row, depends, marked, state);
+        render_cards(frame, list, len, row, depends, marked, buttons, state);
         return;
     }
     let lines: Vec<Line> = if len == 0 {
@@ -588,14 +589,14 @@ fn render_cards<'a>(
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
+    buttons: &dyn Fn(usize) -> &'static [RowAction],
     state: &FeatureListState,
 ) {
     let visible = usize::from(list.height / CARD_HEIGHT);
     let first = window(state.selected, state.offset, visible, len);
     let selected = state.selected.map(|i| i.min(len - 1));
     for (slot, index) in (first..len.min(first + visible)).enumerate() {
-        let top = list.y + u16::try_from(slot).unwrap_or(0) * CARD_HEIGHT;
-        let area = Rect::new(list.x, top, list.width, CARD_HEIGHT);
+        let area = card_rect(list, slot);
         let border = if selected == Some(index) {
             Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
         } else {
@@ -615,9 +616,12 @@ fn render_cards<'a>(
         let pad = width.saturating_sub(used);
         let is_selected = selected == Some(index);
         let summary_style = if is_selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
+        let rects = row_button_rects(inner, buttons(index));
+        // The summary gives way to the buttons, keeping a space before the first.
+        let summary_room = rects.first().map_or(width, |(rect, _)| usize::from(rect.x - inner.x).saturating_sub(1));
         let lines = vec![
             Line::styled(
-                format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&summary, width.saturating_sub(MARKER_WIDTH))),
+                format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&summary, summary_room.saturating_sub(MARKER_WIDTH))),
                 summary_style,
             ),
             Line::from(vec![
@@ -627,7 +631,72 @@ fn render_cards<'a>(
             ]),
         ];
         frame.render_widget(Paragraph::new(lines), inner);
+        for (rect, action) in rects {
+            frame.render_widget(Paragraph::new(Span::styled(action.label(), Style::new().fg(Color::Cyan))), rect);
+        }
     }
+}
+
+/// A button on a feature's card, acting on the feature or on its latest run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    Orchestrate,
+    Pause,
+    Stop,
+    Resume,
+    Discard,
+}
+
+impl RowAction {
+    fn label(self) -> &'static str {
+        match self {
+            RowAction::Orchestrate => "[Orchestrate]",
+            RowAction::Pause => "[Pause]",
+            RowAction::Stop => "[Stop]",
+            RowAction::Resume => "[Resume]",
+            RowAction::Discard => "[Discard]",
+        }
+    }
+}
+
+/// The buttons of a feature in ledger `status` whose latest run is in `run` (`None` without a
+/// run). A paused run is resumed, not stopped: only a live process can be stopped.
+fn row_actions(status: &str, run: Option<&str>) -> &'static [RowAction] {
+    match run {
+        Some("running") => &[RowAction::Pause, RowAction::Stop],
+        Some("pause_requested") => &[RowAction::Stop],
+        Some("paused") => &[RowAction::Resume],
+        Some("failed") => &[RowAction::Resume, RowAction::Discard],
+        Some("blocked") => &[RowAction::Discard],
+        None | Some("completed") if status == "pending" => &[RowAction::Orchestrate],
+        _ => &[],
+    }
+}
+
+/// Where each of `actions` sits on the first line of a card's `inner` area: right-aligned, one
+/// space apart, left to right. Nothing when they do not all fit beside the marker.
+fn row_button_rects(inner: Rect, actions: &[RowAction]) -> Vec<(Rect, RowAction)> {
+    if actions.is_empty() || inner.height == 0 {
+        return Vec::new();
+    }
+    let total: usize = actions.iter().map(|a| a.label().chars().count()).sum::<usize>() + actions.len() - 1;
+    if total + MARKER_WIDTH > usize::from(inner.width) {
+        return Vec::new();
+    }
+    let mut x = inner.right() - u16::try_from(total).unwrap_or(0);
+    let mut rects = Vec::new();
+    for action in actions {
+        let width = u16::try_from(action.label().chars().count()).unwrap_or(0);
+        rects.push((Rect::new(x, inner.y, width, 1), *action));
+        x += width + 1;
+    }
+    rects
+}
+
+/// The card area of the `slot`-th card shown in `list`.
+fn card_rect(list: Rect, slot: usize) -> Rect {
+    let top = list.y + u16::try_from(slot).unwrap_or(0) * CARD_HEIGHT;
+    Rect::new(list.x, top, list.width, CARD_HEIGHT)
 }
 
 fn dependency_summary(depends_on: &[String]) -> String {
@@ -860,7 +929,7 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_search_in(frame, frame.area(), model, rows, items, None, search, state, &|_| None, None);
+    render_search_in(frame, frame.area(), model, rows, items, None, search, state, &|_| None, None, &|_| &[]);
 }
 
 fn render_search_in(
@@ -874,6 +943,7 @@ fn render_search_in(
     state: &FeatureListState,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
+    buttons: &dyn Fn(usize) -> &'static [RowAction],
 ) {
     render_header(frame, area, model);
     let full = list_area(area);
@@ -924,6 +994,7 @@ fn render_search_in(
         |i| &rows[matches[i]],
         &|i| depends(matches[i]),
         marked_match.as_ref().map(|f| f as &dyn Fn(usize) -> bool),
+        &|i| buttons(matches[i]),
         state,
         empty,
     );
@@ -1600,6 +1671,18 @@ pub trait BrowserBackend {
     /// Resumes the paused `run_id` as a detached run; `Ok` is what happened, `Err` why it did not.
     fn resume_run(&mut self, _run_id: &str) -> Result<String, String> {
         Err("resuming runs is not available".into())
+    }
+
+    /// The project's runs in run-id order, for the buttons of the Features rows: the last run of
+    /// a feature is its latest. Unreadable runs are left out; an error is no runs.
+    fn feature_runs(&mut self) -> Vec<RunRow> {
+        Vec::new()
+    }
+
+    /// Removes the failed or blocked `run_id` for good (its worktree, branch, logs and record);
+    /// `Ok` is what happened, `Err` why not.
+    fn discard_run(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("discarding runs is not available".into())
     }
 
     /// Records that the paused `run_id` continues its `role` on `profile`; `Ok` is what happened,
@@ -3100,6 +3183,10 @@ struct Browser {
     generating: Option<Box<dyn GenerationJob>>,
     /// A launch still registering its run; the popup keeps taking keys meanwhile.
     launching: Option<LaunchBatch>,
+    /// Each feature's latest run, for the buttons of its row.
+    feature_runs: HashMap<String, RunRow>,
+    /// A row button's stop, resume or discard waiting for a `y`.
+    row_confirm: Option<(RowAction, String)>,
 }
 
 impl Drop for Browser {
@@ -3246,6 +3333,107 @@ impl Browser {
     fn reload(&mut self, backend: &mut dyn BrowserBackend) {
         self.apply_load(backend.load());
         self.absent = self.error.is_some() && backend.ledger_absent();
+        self.load_feature_runs(backend);
+    }
+
+    /// Selects `name`'s row among those shown, so the card pressed is the one marked.
+    fn select_feature(&mut self, name: &str) {
+        let shown = self.visible();
+        if let Some(position) = shown.iter().position(|&i| self.entries.get(i).is_some_and(|e| e.name == name)) {
+            self.list.selected = Some(position);
+        }
+    }
+
+    /// Reads the runs again and keeps each feature's latest, the last one listed.
+    fn load_feature_runs(&mut self, backend: &mut dyn BrowserBackend) {
+        self.feature_runs = backend.feature_runs().into_iter().map(|run| (run.feature.clone(), run)).collect();
+    }
+
+    fn row_actions_of(&self, entry: &BrowserEntry) -> &'static [RowAction] {
+        row_actions(&entry.status, self.feature_runs.get(&entry.name).map(|run| run.status.as_str()))
+    }
+
+    /// The row button under `press` on the Features list drawn in `list`, and its feature.
+    fn row_button_at(&self, list: Rect, press: Position) -> Option<(String, RowAction)> {
+        let list = list_area(search_area(list, &self.search));
+        if item_height(list) != CARD_HEIGHT || !list.contains(press) {
+            return None;
+        }
+        let shown = self.visible();
+        let visible = usize::from(list.height / CARD_HEIGHT);
+        let slot = usize::from((press.y - list.y) / CARD_HEIGHT);
+        let index = window(self.list.selected, self.list.offset, visible, shown.len()) + slot;
+        if slot >= visible {
+            return None;
+        }
+        let entry = self.entries.get(*shown.get(index)?)?;
+        let inner = Block::bordered().inner(card_rect(list, slot));
+        row_button_rects(inner, self.row_actions_of(entry))
+            .into_iter()
+            .find(|(rect, _)| rect.contains(press))
+            .map(|(_, action)| (entry.name.clone(), action))
+    }
+
+    /// A row button pressed on `feature`'s card: Orchestrate opens the launch picker for it, the
+    /// others act on its latest run, asking first before a stop, resume or discard.
+    fn row_action(&mut self, backend: &mut dyn BrowserBackend, feature: String, action: RowAction) {
+        if action == RowAction::Orchestrate {
+            self.open_launch_picker(backend, vec![feature], Vec::new());
+            return;
+        }
+        let Some(run_id) = self.feature_runs.get(&feature).map(|run| run.run_id.clone()) else { return };
+        match action {
+            RowAction::Pause => {
+                self.notice = Some(match backend.pause_run(&run_id) {
+                    Ok(message) | Err(message) => message,
+                });
+                self.load_feature_runs(backend);
+            }
+            RowAction::Stop => {
+                self.notice = Some(format!("Stop {run_id}? Its process ends and it can be resumed later; y to confirm, any other key cancels"));
+                self.row_confirm = Some((action, run_id));
+            }
+            RowAction::Resume => {
+                self.notice = Some(match backend.resume_check(&run_id) {
+                    Ok(next) => {
+                        let ask = format!("Resume {run_id} from {next}? y to confirm, any other key cancels");
+                        self.row_confirm = Some((action, run_id));
+                        ask
+                    }
+                    Err(reason) => reason,
+                });
+            }
+            RowAction::Discard => {
+                self.notice = Some(format!(
+                    "Discard {run_id}? Its worktree (with uncommitted work), branch and logs are deleted for good; y to confirm, any other key cancels"
+                ));
+                self.row_confirm = Some((action, run_id));
+            }
+            RowAction::Orchestrate => {}
+        }
+    }
+
+    /// The key answering a row button's question: `y` does it, any other key cancels.
+    fn answer_row_confirm(&mut self, backend: &mut dyn BrowserBackend, action: RowAction, run_id: &str, code: KeyCode) {
+        if code != KeyCode::Char('y') {
+            let verb = match action {
+                RowAction::Stop => "stop",
+                RowAction::Resume => "resume",
+                _ => "discard",
+            };
+            self.notice = Some(format!("Did not {verb} {run_id}"));
+            return;
+        }
+        let done = match action {
+            RowAction::Stop => backend.stop_run(run_id),
+            RowAction::Resume => backend.resume_run(run_id),
+            RowAction::Discard => backend.discard_run(run_id),
+            RowAction::Pause | RowAction::Orchestrate => return,
+        };
+        self.notice = Some(match done {
+            Ok(message) | Err(message) => printable(&message),
+        });
+        self.load_feature_runs(backend);
     }
 
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
@@ -3533,6 +3721,7 @@ impl Browser {
         self.notice = Some(match backend.pause_run(&run_id) {
             Ok(message) | Err(message) => message,
         });
+        self.load_feature_runs(backend);
     }
 
     /// `s` on a running run: wait for `y` before ending its process.
@@ -3552,6 +3741,7 @@ impl Browser {
         match backend.stop_run(run_id) {
             Ok(message) => {
                 self.open_runs(backend);
+                self.load_feature_runs(backend);
                 if let Ok(rows) = &self.runs.rows {
                     self.runs.selected = rows.iter().position(|r| r.run_id == run_id).unwrap_or(0);
                 }
@@ -3621,6 +3811,7 @@ impl Browser {
         self.notice = Some(match backend.resume_run(run_id) {
             Ok(message) | Err(message) => message,
         });
+        self.load_feature_runs(backend);
     }
 
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
@@ -3702,6 +3893,16 @@ impl Browser {
             }
             launchable
         };
+        self.open_launch_picker(backend, features, skipped);
+    }
+
+    /// The implementer / reviewer chooser for launching `features`; `skipped` are the marked
+    /// features left out, with their status.
+    fn open_launch_picker(&mut self, backend: &mut dyn BrowserBackend, features: Vec<String>, skipped: Vec<(String, String)>) {
+        if self.launching.is_some() {
+            self.notice = Some("A launch is still running; wait for it to finish".to_string());
+            return;
+        }
         match backend.launch_profiles() {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
@@ -3806,6 +4007,7 @@ impl Browser {
         let marks = &self.marked;
         let is_marked = |index: usize| entries.get(index).is_some_and(|e| marks.contains(&e.name));
         let marked: Option<&dyn Fn(usize) -> bool> = if marks.is_empty() { None } else { Some(&is_marked) };
+        let buttons = |index: usize| entries.get(index).map_or(&[][..], |e| self.row_actions_of(e));
         render_search_in(
             frame,
             list,
@@ -3817,6 +4019,7 @@ impl Browser {
             &self.list,
             &depends,
             marked,
+            &buttons,
         );
         let filter = self.status_filter.as_deref();
         let count = status_count(&self.rows, filter);
@@ -3896,6 +4099,8 @@ where
         absent: false,
         generating: None,
         launching: None,
+        feature_runs: HashMap::new(),
+        row_confirm: None,
     };
     browser.reload(backend);
     let mut dirty = true;
@@ -3906,6 +4111,7 @@ where
         }
         if let Some(notice) = browser.launching.as_mut().and_then(|batch| batch.poll()) {
             browser.launching = None;
+            browser.load_feature_runs(backend);
             browser.notice = Some(notice);
             dirty = true;
             continue;
@@ -4006,6 +4212,15 @@ where
                         }
                         FormAction::None => {}
                     }
+                    dirty = true;
+                    continue;
+                }
+                if let Some((action, run_id)) = browser.row_confirm.take() {
+                    if action == RowAction::Stop && key.code == KeyCode::Char('y') {
+                        browser.notice = Some(format!("Stopping {run_id}…"));
+                        terminal.draw(|frame| browser.draw(frame, model))?;
+                    }
+                    browser.answer_row_confirm(backend, action, &run_id, key.code);
                     dirty = true;
                     continue;
                 }
@@ -4431,6 +4646,15 @@ where
                 let (list, promote_area, panel) = list_layout(body, selected.as_ref(), bulk);
                 let control = filter_control_rect(list, browser.status_filter.as_deref(), status_count(&browser.rows, browser.status_filter.as_deref()));
                 let press = Position::new(mouse.column, mouse.row);
+                // A row button's question is answered by key, not by a click.
+                if browser.row_confirm.is_some() {
+                    continue;
+                }
+                let row_button = if mouse.kind == MouseEventKind::Down(MouseButton::Left) && browser.dropdown.is_none() {
+                    browser.row_button_at(list, press)
+                } else {
+                    None
+                };
                 if browser.dropdown.is_some() && browser.dropdown_shown(area) == 0 {
                     browser.dropdown = None;
                 }
@@ -4450,6 +4674,10 @@ where
                     } else {
                         browser.dropdown = Some(highlight);
                     }
+                } else if let Some((feature, action)) = row_button {
+                    browser.select_feature(&feature);
+                    browser.notice = None;
+                    browser.row_action(backend, feature, action);
                 } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && control.is_some_and(|c| c.contains(press))
                     && browser.dropdown_shown(area) > 0

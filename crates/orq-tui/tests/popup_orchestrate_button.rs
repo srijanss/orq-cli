@@ -63,9 +63,9 @@ fn a_pending_feature_shows_an_orchestrate_button_and_other_statuses_do_not() {
     let pending = screen(vec![key(KeyCode::Down)]);
     assert!(find(&pending, "[ Orchestrate (L) ]").is_some(), "{pending:?}");
     let draft = screen(vec![key(KeyCode::Down), key(KeyCode::Down)]);
-    assert!(find(&draft, "Orchestrate").is_none() && find(&draft, "[ Mark pending (p) ]").is_some(), "{draft:?}");
+    assert!(find(&draft, "Orchestrate (L)").is_none() && find(&draft, "[ Mark pending (p) ]").is_some(), "{draft:?}");
     let done = screen(vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down)]);
-    assert!(find(&done, "Orchestrate").is_none(), "{done:?}");
+    assert!(find(&done, "Orchestrate (L)").is_none(), "{done:?}");
 }
 
 #[test]
