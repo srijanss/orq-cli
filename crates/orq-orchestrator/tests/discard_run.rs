@@ -188,3 +188,23 @@ fn a_lock_that_cannot_be_released_keeps_the_record_so_the_discard_can_be_retried
     discard_run(&store, "run-1", repo.root()).unwrap();
     assert!(store.load("run-1").is_err());
 }
+
+#[test]
+fn a_same_branch_sibling_whose_directory_is_gone_still_blocks_the_discard() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let sibling = worktree.with_file_name("orq-discard-stale-sibling");
+    let _ = std::fs::remove_dir_all(&sibling);
+    let added = Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "add", "--force"]).arg(&sibling).arg("orq-run-1").status().unwrap();
+    assert!(added.success());
+    std::fs::remove_dir_all(&sibling).unwrap();
+    let (_, store) = store("stale-sibling");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+
+    assert!(discard_run(&store, "run-1", repo.root()).is_err());
+
+    assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-1").is_ok());
+    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+}
