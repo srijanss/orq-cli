@@ -38,6 +38,19 @@ fn run(run_id: &str, feature: &str, status: &str) -> RunRow {
     }
 }
 
+/// The runs the fake lists, oldest first.
+fn runs() -> Vec<RunRow> {
+    vec![
+        // An older failed run of bravo is superseded by its latest one, which is running.
+        run("run-1", "bravo", "failed"),
+        run("run-2", "bravo", "running"),
+        run("run-3", "charlie", "paused"),
+        run("run-4", "delta", "failed"),
+        run("run-5", "echo", "blocked"),
+        run("run-6", "foxtrot", "completed"),
+    ]
+}
+
 impl BrowserBackend for Fake {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
         Ok(vec![
@@ -54,16 +67,13 @@ impl BrowserBackend for Fake {
     }
     fn feature_runs(&mut self) -> Vec<RunRow> {
         self.calls.push("feature_runs".into());
-        vec![
-            // An older failed run of bravo is superseded by its latest one, which is running.
-            run("run-1", "bravo", "failed"),
-            run("run-2", "bravo", "running"),
-            run("run-3", "charlie", "paused"),
-            run("run-4", "delta", "failed"),
-            run("run-5", "echo", "blocked"),
-            run("run-6", "foxtrot", "completed"),
-        ]
+        runs()
     }
+    fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
+        self.calls.push("load_runs".into());
+        Ok(runs())
+    }
+
     fn pause_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("pause {run_id}"));
         Ok(format!("Pause requested for {run_id}"))
@@ -205,4 +215,26 @@ fn a_click_elsewhere_cancels_a_row_buttons_question_so_a_later_y_does_nothing() 
     let after = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]")), click(tab), key('y')]);
     assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "the question was cancelled: {:?}", backend.calls);
     assert!(!after.iter().any(|line| line.contains("Discard run-5?")), "{after:#?}");
+}
+
+fn press(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[test]
+fn stopping_from_the_orchestrations_tab_reads_the_runs_once_for_the_list_and_the_rows() {
+    let mut backend = Fake::default();
+    let screen = show(
+        &mut backend,
+        vec![press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Down), key('s'), key('y')],
+    );
+    let after_stop = backend
+        .calls
+        .iter()
+        .skip_while(|call| *call != "stop run-2")
+        .skip(1)
+        .filter(|call| *call == "load_runs" || *call == "feature_runs")
+        .count();
+    assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?} {screen:#?}", backend.calls);
+    assert_eq!(after_stop, 1, "one read of the runs serves both: {:?}", backend.calls);
 }

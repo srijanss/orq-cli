@@ -659,6 +659,11 @@ impl RowAction {
     }
 }
 
+/// Each feature's latest run in `runs`, the last one listed.
+fn latest_runs(runs: Vec<RunRow>) -> HashMap<String, RunRow> {
+    runs.into_iter().map(|run| (run.feature.clone(), run)).collect()
+}
+
 /// The buttons of a feature in ledger `status` whose latest run is in `run` (`None` without a
 /// run). A paused run is resumed, not stopped: only a live process can be stopped.
 fn row_actions(status: &str, run: Option<&str>) -> &'static [RowAction] {
@@ -3346,7 +3351,7 @@ impl Browser {
 
     /// Reads the runs again and keeps each feature's latest, the last one listed.
     fn load_feature_runs(&mut self, backend: &mut dyn BrowserBackend) {
-        self.feature_runs = backend.feature_runs().into_iter().map(|run| (run.feature.clone(), run)).collect();
+        self.feature_runs = latest_runs(backend.feature_runs());
     }
 
     fn row_actions_of(&self, entry: &BrowserEntry) -> &'static [RowAction] {
@@ -3746,8 +3751,9 @@ impl Browser {
         match backend.stop_run(run_id) {
             Ok(message) => {
                 self.open_runs(backend);
-                self.load_feature_runs(backend);
+                // The list just read also tells the feature rows what their runs are now.
                 if let Ok(rows) = &self.runs.rows {
+                    self.feature_runs = latest_runs(rows.clone());
                     self.runs.selected = rows.iter().position(|r| r.run_id == run_id).unwrap_or(0);
                 }
                 self.notice = Some(message);
