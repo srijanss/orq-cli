@@ -110,9 +110,11 @@ if pid == 0:
     os.close(slave)
     os.execv(sys.argv[1], sys.argv[1:])
 os.close(slave)
-out = b""
+out = bytearray()
 status = None
 deadline = time.time() + 60
+# Read until the terminal reports end of stream (every holder of it has gone), not merely until
+# orq exits: output written just before the exit may still be buffered.
 while time.time() < deadline:
     r, _, _ = select.select([fd], [], [], 0.1)
     if r:
@@ -120,17 +122,26 @@ while time.time() < deadline:
             chunk = os.read(fd, 4096)
         except OSError:
             chunk = b""
-        out += chunk
+        if not chunk:
+            break
+        out.extend(chunk)
+    if status is None:
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done:
+            status = st
+end = time.time() + 5
+while status is None and time.time() < end:
     done, st = os.waitpid(pid, os.WNOHANG)
     if done:
         status = st
-        break
+    else:
+        time.sleep(0.05)
 if status is None:
     os.kill(pid, signal.SIGKILL)
     os.waitpid(pid, 0)
-    sys.stdout.buffer.write(out + b"\n[driver: orq did not exit and was killed]")
+    sys.stdout.buffer.write(bytes(out) + b"\n[driver: orq did not exit and was killed]")
     sys.exit(124)
-sys.stdout.buffer.write(out)
+sys.stdout.buffer.write(bytes(out))
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
     let output = command(w, provider, "python3")
