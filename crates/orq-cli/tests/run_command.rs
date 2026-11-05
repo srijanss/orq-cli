@@ -534,6 +534,64 @@ fn the_runs_listing_leaves_a_live_run_alone_and_records_a_dead_pause_requested_r
 }
 
 #[test]
+fn the_runs_listing_keeps_a_paused_run_paused_even_though_its_process_is_gone() {
+    let w = world("listing-paused");
+    let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-list-paused-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&slow_bin);
+    std::fs::create_dir_all(&slow_bin).unwrap();
+    let claude = slow_bin.join("claude");
+    let ready = slow_bin.join("agent-started");
+    std::fs::write(&claude, format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", ready.display())).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![slow_bin];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the implement agent to be running", || ready.exists());
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    let run_id = store.run_ids().unwrap().into_iter().next().expect("the run was recorded");
+    orq_orchestrator::request_pause(&store, &run_id).unwrap();
+    let requested = store.events(&run_id).unwrap().into_iter().find(|e| e.kind == "run.pause_requested").unwrap();
+    store
+        .append_event(&orq_orchestrator::Event {
+            event_id: format!("{}-paused", requested.event_id),
+            kind: "run.paused".to_string(),
+            payload: serde_json::json!({}),
+            ..requested
+        })
+        .unwrap();
+    runner.kill().unwrap();
+    runner.wait().unwrap();
+
+    for extra in [&[][..], &["--json"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+            .args(["runs", "--repo"])
+            .arg(w.repo.root())
+            .args(extra)
+            .env("XDG_CONFIG_HOME", &w.env.config)
+            .env("XDG_STATE_HOME", &w.env.state)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert!(stdout.contains("paused") && !stdout.contains("failed"), "{stdout}");
+    }
+    assert!(store.events(&run_id).unwrap().iter().all(|e| e.kind != "run.failed"), "no failure was recorded");
+}
+
+#[test]
 fn the_runs_listing_says_so_when_a_dead_run_cannot_be_recorded_as_failed() {
     let w = world("listing-unwritable");
     let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-list-unwritable-{}", std::process::id()));
@@ -566,6 +624,11 @@ fn the_runs_listing_says_so_when_a_dead_run_cannot_be_recorded_as_failed() {
     let run_id = store.run_ids().unwrap().into_iter().next().expect("the run was recorded");
     let log = w.env.state.join("orq").join("runs").join(&run_id).join("events.jsonl");
     std::fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().append(true).open(&log).is_ok() {
+        // A privileged user ignores the file mode, so the write cannot be made to fail here.
+        eprintln!("skipped: the event log is still writable (running with write privileges)");
+        return;
+    }
 
     let listing = Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["runs", "--repo"])
