@@ -3628,10 +3628,27 @@ mod ledger_backend_tests {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::options().write(true).open(logs.join("implement.log")).unwrap().set_modified(old).unwrap();
         let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "fix--COM-01".into(),
+            worktree: "/tmp/w".into(),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.create(&record).unwrap();
         let herdr = RecordHerdr(std::cell::RefCell::new(vec![]));
 
-        let _ = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
+        let outcome = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
 
+        assert_eq!(outcome, orq_tui::PaneFocus::Focused);
+        let pane = orq_orchestrator::run_pane(&store, "run-1").unwrap().unwrap();
+        assert_eq!(pane.pane_id, "w1:p9");
         let calls = herdr.0.borrow().iter().flatten().cloned().collect::<Vec<_>>().join(" ");
         assert!(calls.contains("gate.log"), "{calls}");
         assert!(!calls.contains("implement.log"), "{calls}");
