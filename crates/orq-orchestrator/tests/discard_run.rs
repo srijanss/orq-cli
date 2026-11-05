@@ -97,3 +97,54 @@ fn a_run_that_is_not_failed_or_has_an_unsafe_worktree_or_branch_is_left_untouche
     assert!(worktree.exists() && other.exists() && repo.root().exists());
     assert!(branch_exists(repo.root(), "orq-run-1") && branch_exists(repo.root(), "other"));
 }
+
+fn head_sha(repo: &Path) -> String {
+    let out = Command::new("git").arg("-C").arg(repo).args(["rev-parse", "HEAD"]).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn failed_run_without_worktree(tag: &str, repo: &GitFixture, base_sha: &str) -> RunStore {
+    let (_, store) = store(tag);
+    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-gone-{}-{tag}", std::process::id()));
+    let mut rec = record(&gone, "orq-run-1");
+    rec.base_sha = base_sha.to_string();
+    let _ = repo;
+    store.start_run(&rec).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+}
+
+#[test]
+fn a_run_whose_worktree_is_already_gone_is_discarded_only_from_the_repository_it_came_from() {
+    let repo = GitFixture::new();
+    Command::new("git")
+        .arg("-C")
+        .arg(repo.root())
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-q", "-m", "only here"])
+        .status()
+        .unwrap();
+    let base = head_sha(repo.root());
+    let wt = repo.add_linked_worktree("orq-run-1");
+    Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
+    let store = failed_run_without_worktree("gone-ok", &repo, &base);
+    discard_run(&store, "run-1", repo.root()).unwrap();
+    assert!(!branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_err());
+
+    // Another repository that happens to have a branch of the same name is not this run's.
+    let foreign = GitFixture::new();
+    let wt = foreign.add_linked_worktree("orq-run-1");
+    Command::new("git").arg("-C").arg(foreign.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
+    let store = failed_run_without_worktree("gone-foreign", &foreign, &base);
+    assert!(discard_run(&store, "run-1", foreign.root()).is_err());
+    assert!(branch_exists(foreign.root(), "orq-run-1") && store.load("run-1").is_ok());
+}
+
+#[test]
+fn a_branch_that_is_checked_out_in_another_worktree_is_never_deleted() {
+    let repo = GitFixture::new();
+    let base = head_sha(repo.root());
+    let live = repo.add_linked_worktree("orq-run-1");
+    let store = failed_run_without_worktree("checked-out", &repo, &base);
+    assert!(discard_run(&store, "run-1", repo.root()).is_err());
+    assert!(live.exists() && branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_ok());
+}
