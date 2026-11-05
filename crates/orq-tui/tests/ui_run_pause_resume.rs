@@ -135,3 +135,22 @@ fn the_pause_and_resume_hints_show_even_when_the_run_has_no_review_link() {
     let mut backend = Fake { status: "paused", no_link: true, ..Fake::default() };
     assert!(has(&show(&mut backend, open_runs()), "c resume"));
 }
+
+#[test]
+fn c_on_a_failed_run_asks_to_resume_it_and_resumes_after_y() {
+    for status in ["failed", "blocked"] {
+        let mut backend = Fake { status, check: Some(Ok("where it stopped".into())), ..Fake::default() };
+        let lines = show(&mut backend, [open_runs(), keys_only("cy")].concat());
+        assert_eq!(backend.calls, ["check run-1", "resume run-1"], "{status}");
+        assert!(has(&lines, "Resuming run-1"), "{status}: {lines:?}");
+    }
+}
+
+#[test]
+fn the_runs_hint_offers_resume_for_failed_and_blocked_runs() {
+    for status in ["failed", "blocked", "paused"] {
+        let mut backend = Fake { status, ..Fake::default() };
+        let lines = show(&mut backend, open_runs());
+        assert!(has(&lines, "c resume"), "{status}: {lines:?}");
+    }
+}

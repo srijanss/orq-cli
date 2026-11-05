@@ -2400,6 +2400,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                 let control = match status {
                     Some("running") => " · p pause",
                     Some("paused") => " · c resume · m switch model",
+                    Some("failed" | "blocked") => " · c resume · o new pane",
                     _ if no_link => " · o new pane",
                     _ => " · o new pane",
                 };
@@ -3377,12 +3378,12 @@ impl Browser {
         });
     }
 
-    /// `c` on a paused run: check its checkpoint, then wait for `y` before resuming.
+    /// `c` on a paused, failed or blocked run: check it can continue, then wait for `y` before resuming.
     fn ask_to_resume_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
         let Some(run) = self.selected_run() else { return };
         let (run_id, status) = (run.run_id.clone(), run.status.clone());
-        if status != "paused" {
-            self.notice = Some(format!("{run_id} is {status}; only a paused run can be resumed"));
+        if !matches!(status.as_str(), "paused" | "failed" | "blocked") {
+            self.notice = Some(format!("{run_id} is {status}; only a paused, failed or blocked run can be resumed"));
             return;
         }
         self.notice = Some(match backend.resume_check(&run_id) {
