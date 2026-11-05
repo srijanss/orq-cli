@@ -46,7 +46,7 @@ pub fn record_group(
 }
 
 /// The features a run was for, in order.
-fn members_of(record: &RunRecord, events: &[Event]) -> Vec<String> {
+pub(crate) fn members_of(record: &RunRecord, events: &[Event]) -> Vec<String> {
     events
         .iter()
         .find(|e| e.kind == GROUP_EVENT)

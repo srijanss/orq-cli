@@ -486,4 +486,18 @@ impl RunStore {
         };
         serde_json::from_str(&text).map_err(|err| StoreError::Corrupt(err.to_string()))
     }
+
+    /// Delete everything the store keeps for a run: its record and events, and its logs. Feature
+    /// locks are not touched.
+    pub fn remove_run(&self, run_id: &str) -> Result<(), StoreError> {
+        let dir = self.run_dir(run_id)?;
+        for path in [self.root.join("logs").join(run_id), dir] {
+            match fs::remove_dir_all(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(())
+    }
 }

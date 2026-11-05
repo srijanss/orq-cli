@@ -37,6 +37,7 @@ fn main() -> ExitCode {
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
         (Some("run"), Some("pause")) => run_pause(&args[2..]),
         (Some("run"), Some("stop")) => run_stop(&args[2..]),
+        (Some("run"), Some("discard")) => run_discard(&args[2..]),
         (Some("run"), Some("switch")) => run_switch(&args[2..]),
         (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
@@ -3793,6 +3794,41 @@ fn run_stop(args: &[OsString]) -> ExitCode {
     match orq_orchestrator::stop_run(&store, run_id, &orq_orchestrator::owner_state, &orq_orchestrator::terminate_process, &std::thread::sleep) {
         Ok(()) => {
             println!("Stopped run {}; resume it with `orq run resume {}`.", printable(run_id), printable(run_id));
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(printable(&message)),
+    }
+}
+
+/// `orq run discard <run> --yes [--repo <path>]`: remove a failed run's worktree (with any uncommitted
+/// work), branch, feature locks, logs and record. Nothing is removed without `--yes`.
+fn run_discard(args: &[OsString]) -> ExitCode {
+    let (mut run_id, mut yes, mut repo) = (None, false, PathBuf::from("."));
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_str() {
+            Some("--yes") => yes = true,
+            Some("--repo") => match iter.next() {
+                Some(value) => repo = PathBuf::from(value),
+                None => return usage_error(),
+            },
+            Some(id) if !id.starts_with('-') && run_id.is_none() => run_id = Some(id),
+            _ => return usage_error(),
+        }
+    }
+    let Some(run_id) = run_id else { return usage_error() };
+    if !yes {
+        return fail(format!(
+            "discarding {} deletes its worktree (including uncommitted work), branch and logs for good; re-run with --yes to confirm",
+            printable(run_id)
+        ));
+    }
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    match orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, &repo) {
+        Ok(()) => {
+            println!("Discarded run {}.", printable(run_id));
             ExitCode::SUCCESS
         }
         Err(message) => fail(printable(&message)),
