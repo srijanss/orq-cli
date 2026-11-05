@@ -159,14 +159,16 @@ pub fn plan_group_resume_with(
         return Err(format!("{feature_id} has no earlier run to resume"));
     };
     // A run killed mid-flight never recorded an ending: if its process is gone, it is a failed run.
-    let interrupted = crate::interrupted::reconcile_interrupted(store, &from.run_id, alive)
+    crate::interrupted::reconcile_interrupted(store, &from.run_id, alive)
         .map_err(|e| format!("cannot reconcile {}: {e:?}", from.run_id))?;
-    if interrupted {
-        // The dead process never released the features it held; a new run must be able to take them.
-        let held = run_members(store, &from.run_id)?;
-        // A feature with no lock, or one now held by another run, is not this run's to release.
-        for feature in &held {
-            match store.finish_run(&from.project_id, feature, &from.run_id) {
+    let events = store
+        .events(&from.run_id)
+        .map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
+    // A failed run never keeps its features, whether it just now proved dead or an earlier attempt
+    // recorded that and died before releasing. Each release checks ownership, so this is repeatable.
+    if summarize_run(&events).phase == RunPhase::Failed {
+        for feature in members_of(&from, &events) {
+            match store.finish_run(&from.project_id, &feature, &from.run_id) {
                 Ok(()) | Err(StoreError::NotFound(_)) | Err(StoreError::FeatureBusy { .. }) => {}
                 Err(e) => {
                     return Err(format!("cannot release {feature} of {}: {e:?}", from.run_id))
@@ -174,9 +176,6 @@ pub fn plan_group_resume_with(
             }
         }
     }
-    let events = store
-        .events(&from.run_id)
-        .map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
     let earlier = members_of(&from, &events);
     if earlier != members {
         return Err(format!(

@@ -250,3 +250,38 @@ fn planning_a_resume_of_an_interrupted_run_frees_the_feature_it_still_held() {
     s.start_group_run(&record("run-2"), &members)
         .expect("a new run can take the feature");
 }
+
+fn lock_owner(s: &RunStore, feature: &str) -> Option<String> {
+    s.active_run("p", feature).unwrap()
+}
+
+#[test]
+fn releasing_an_interrupted_runs_locks_is_retryable_and_only_ever_its_own() {
+    let s = store("group-release");
+    let members = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+    let mut old = record("run-1");
+    old.feature_id = "A".into();
+    s.start_group_run(&old, &members).unwrap();
+    record_launch(&s, "run-1", 4242, std::path::Path::new("/tmp/x.log")).unwrap();
+    orq_orchestrator::record_group(&s, &old, &members).unwrap();
+
+    // Reconciliation already persisted run.failed (an earlier attempt died before releasing).
+    assert!(reconcile_interrupted(&s, "run-1", &|_, _| false).unwrap());
+    // B's lock is already gone; C was taken over by a newer run.
+    s.finish_run("p", "B", "run-1").unwrap();
+    s.finish_run("p", "C", "run-1").unwrap();
+    let mut newer = record("run-2");
+    newer.feature_id = "C".into();
+    s.start_group_run(&newer, &["C".to_string()]).unwrap();
+
+    let _ = orq_orchestrator::plan_group_resume_with(
+        &s,
+        std::path::Path::new("/tmp/none"),
+        "p",
+        &members,
+        &|_, _| false,
+    );
+
+    assert_eq!(lock_owner(&s, "A"), None, "the remaining lock is freed on retry");
+    assert_eq!(lock_owner(&s, "C").as_deref(), Some("run-2"), "a newer owner is kept");
+}
