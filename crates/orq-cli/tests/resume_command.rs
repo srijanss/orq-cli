@@ -269,6 +269,7 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
     let runs = w.state.join("orq/runs");
     let run_id = std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned();
     set_gate(&w, "true");
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
 
     let output = Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
@@ -277,7 +278,7 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
         .env("XDG_STATE_HOME", &w.state)
         .env("ORQ_FORGE", "gh")
         .env("GIT_SSH_COMMAND", &w.ssh)
-        .env("PATH", path_with(&first_agent, &github(), &w.tag))
+        .env("PATH", path_with(&second_agent, &github(), &w.tag))
         .env_remove("HERDR_ACTIVE_PANE_CWD")
         .output()
         .unwrap();
@@ -285,4 +286,7 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(pushed.contains("feature.txt"), "the stopped run's work was continued: {pushed}");
+    assert!(!pushed.contains("again.txt"), "the agent was not started again: {pushed}");
 }
