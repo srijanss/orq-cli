@@ -229,3 +229,24 @@ fn a_launch_records_the_owners_start_time_and_reconciliation_hands_it_to_the_che
     .unwrap();
     assert_eq!(seen.get(), Some(ticks));
 }
+
+#[test]
+fn planning_a_resume_of_an_interrupted_run_frees_the_feature_it_still_held() {
+    let s = store("frees-lock");
+    let old = record("run-1");
+    let members = vec!["F".to_string()];
+    s.start_group_run(&old, &members).unwrap();
+    record_launch(&s, "run-1", 4242, std::path::Path::new("/tmp/x.log")).unwrap();
+
+    // The plan itself may be refused (there is no checkout here); the dead run's lock must be gone anyway.
+    let _ = orq_orchestrator::plan_group_resume_with(
+        &s,
+        std::path::Path::new("/tmp/none"),
+        "p",
+        &members,
+        &|_, _| false,
+    );
+
+    s.start_group_run(&record("run-2"), &members)
+        .expect("a new run can take the feature");
+}

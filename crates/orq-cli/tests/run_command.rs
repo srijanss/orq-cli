@@ -374,6 +374,57 @@ fn a_foreground_run_records_its_owner_so_a_killed_one_can_be_recovered() {
 }
 
 #[test]
+fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes() {
+    let w = world("foreground-killed");
+    let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-run-killed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&slow_bin);
+    std::fs::create_dir_all(&slow_bin).unwrap();
+    let claude = slow_bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![slow_bin];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let store = orq_orchestrator::RunStore::new(&w.env.state.join("orq"));
+    let launched = || {
+        store.run_ids().unwrap_or_default().into_iter().find_map(|id| {
+            let events = store.events(&id).ok()?;
+            events.into_iter().find(|e| e.kind == "run.launched").map(|e| (id, e))
+        })
+    };
+    wait_until("the foreground run to record its owner", || launched().is_some());
+    let (run_id, owner) = launched().unwrap();
+    assert_eq!(owner.payload["pid"].as_u64(), Some(u64::from(runner.id())), "the owner is the runner itself");
+    let state = |id: &str| orq_orchestrator::summarize_run(&store.events(id).unwrap()).phase;
+    assert_eq!(state(&run_id), orq_orchestrator::RunPhase::Running, "alive and running");
+
+    runner.kill().unwrap();
+    runner.wait().unwrap();
+
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check", "--resume"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let events = store.events(&run_id).unwrap();
+    let failed = events.iter().find(|e| e.kind == "run.failed").expect("the killed run was marked interrupted");
+    assert!(failed.payload["reason"].as_str().unwrap().contains("interrupted"), "{:?}", failed.payload);
+}
+
+#[test]
 fn an_agent_that_leaves_no_commit_blocks_the_run_and_nothing_is_pushed() {
     let w = world("nocommit");
     let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
