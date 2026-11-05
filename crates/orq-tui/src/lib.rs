@@ -1372,6 +1372,18 @@ pub fn promote_intent_for_mouse(area: Rect, selected: Option<&FeatureRow>, mouse
     promotable(selected).map(|row| PromoteIntent { feature: row.name.clone() })
 }
 
+const ORCHESTRATE_LABEL: &str = "[ Orchestrate (L) ]";
+
+/// The Orchestrate button inside the selected-feature panel's `inner` row,
+/// shown only for a pending feature.
+fn orchestrate_rect(inner: Rect, selected: Option<&FeatureRow>) -> Option<Rect> {
+    if !selected.is_some_and(|row| row.status == "pending") || inner.height == 0 || inner.width == 0 {
+        return None;
+    }
+    let width = u16::try_from(ORCHESTRATE_LABEL.chars().count()).unwrap_or(u16::MAX).min(inner.width);
+    Some(Rect::new(inner.x, inner.y, width, 1))
+}
+
 /// The button that promotes the marked drafts, `count` of them.
 fn bulk_label(count: usize) -> String {
     format!("[ Promote {count} to pending (p) ]")
@@ -4220,7 +4232,7 @@ where
                 }
                 let selected = browser.selected_row();
                 let bulk = browser.marked_drafts();
-                let (list, promote_area, _) = list_layout(body, selected.as_ref(), bulk);
+                let (list, promote_area, panel) = list_layout(body, selected.as_ref(), bulk);
                 let control = filter_control_rect(list, browser.status_filter.as_deref(), status_count(&browser.rows, browser.status_filter.as_deref()));
                 let press = Position::new(mouse.column, mouse.row);
                 if browser.dropdown.is_some() && browser.dropdown_shown(area) == 0 {
@@ -4251,6 +4263,12 @@ where
                     browser.promote_marked(backend);
                 } else if let Some(intent) = promote_intent_for_mouse(promote_area, selected.as_ref(), mouse) {
                     browser.promote(backend, intent);
+                } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && panel.is_some()
+                    && browser.marked.is_empty()
+                    && orchestrate_rect(promote_area, selected.as_ref()).is_some_and(|b| b.contains(press))
+                {
+                    browser.open_launch(backend);
                 } else {
                     let len = browser.visible().len();
                     browser.list.handle_mouse(search_area(list, &browser.search), len, mouse);
@@ -4371,6 +4389,9 @@ fn render_selected_panel(
         render_bulk_button(frame, inner, bulk);
     } else if promotable(selected).is_some() {
         render_promote_button(frame, inner, selected);
+    } else if let Some(button) = orchestrate_rect(inner, selected).filter(|_| marked == 0) {
+        let label: String = ORCHESTRATE_LABEL.chars().take(usize::from(button.width)).collect();
+        frame.render_widget(Paragraph::new(label), button);
     } else {
         frame.render_widget(
             Paragraph::new("Mark pending is only for drafts").style(Style::default().fg(Color::DarkGray)),
