@@ -4275,6 +4275,9 @@ const PANEL_MIN_WIDTH: u16 = 30;
 const PANEL_MIN_BODY_HEIGHT: u16 = 14;
 const PANEL_HINT: &str = " ↑↓ move · Enter open · a add · e edit · f status · Space mark · p promote · L launch · V review · R resume · / search · r reload · Tab settings · Esc close ";
 
+const PANEL_HINT_COMPACT: &str = " Enter open · a add · e edit · f status · / search · r reload · Esc close ";
+const PANEL_HINT_MINIMAL: &str = " Esc close ";
+
 /// Splits the browser body into the list and, on a roomy viewport, the
 /// selected-feature panel below it. Without a panel the promote button
 /// keeps its place under the list.
@@ -4339,8 +4342,14 @@ fn render_selected_panel(
         None => " Selected feature ".to_string(),
     };
     let title: String = title.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
-    let hint = if marked == 0 { PANEL_HINT.to_string() } else { format!(" {marked} marked ·{PANEL_HINT}") };
-    let hint: String = hint.chars().take(usize::from(panel.width.saturating_sub(2))).collect();
+    let room = usize::from(panel.width.saturating_sub(2));
+    let prefix = if marked == 0 { String::new() } else { format!(" {marked} marked ·") };
+    // The fullest variant that fits; the last one is cut to the width.
+    let hint = [PANEL_HINT, PANEL_HINT_COMPACT, PANEL_HINT_MINIMAL]
+        .iter()
+        .map(|variant| if prefix.is_empty() { variant.to_string() } else { format!("{prefix}{variant}") })
+        .find(|candidate| candidate.chars().count() <= room)
+        .unwrap_or_else(|| PANEL_HINT_MINIMAL.chars().take(room).collect());
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
