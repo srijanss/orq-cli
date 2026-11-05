@@ -12,8 +12,9 @@ use crate::store::{RunStore, StoreError};
 /// its feature locks, its logs and its record. A run whose worktree is already gone keeps its
 /// branch: it cannot be shown to belong to `repo`. Only a failed or blocked run, which has ended, can be discarded. Every check
 /// happens before anything is removed, and the record goes last, so a failure part-way can be
-/// retried. `repo` is the repository the run's worktree belongs to.
-pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<(), String> {
+/// retried. `repo` is the repository the run's worktree belongs to. Returns the run's features, which
+/// nothing continues any more.
+pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Vec<String>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
@@ -81,12 +82,14 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<(), St
     // Without its worktree nothing ties the run to `repo` (another clone may share the base commit
     // and a branch name), so no branch is deleted; only the run's own records go.
     // Release each member's lock on its own, so one benign outcome cannot hide another's failure.
-    for member in members_of(&record, &events) {
-        match store.finish_group_run(&record.project_id, std::slice::from_ref(&member), run_id) {
+    let members = members_of(&record, &events);
+    for member in &members {
+        match store.finish_group_run(&record.project_id, std::slice::from_ref(member), run_id) {
             // A lock that is gone, or already held by another run, is not this run's to release.
             Ok(()) | Err(StoreError::NotFound(_)) | Err(StoreError::FeatureBusy { .. }) => {}
             Err(err) => return Err(err.to_string()),
         }
     }
-    store.remove_run(run_id).map_err(|e| e.to_string())
+    store.remove_run(run_id).map_err(|e| e.to_string())?;
+    Ok(members)
 }

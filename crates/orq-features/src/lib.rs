@@ -261,6 +261,9 @@ pub use draft::FeatureDraft;
 mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
 
+mod reopen;
+pub use reopen::reopen_features;
+
 mod validate;
 pub use validate::{validate_entries, ValidationError};
 

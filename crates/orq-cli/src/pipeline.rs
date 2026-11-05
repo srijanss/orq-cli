@@ -532,11 +532,30 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             eprintln!("orq: cannot record the end of {}: {err:?}", report.run_id);
         }
     }
+    if matches!(report.ending, Ending::Blocked | Ending::Failed) && !has_commits(&record) {
+        // Nothing was built, so nothing continues the features: they may be launched again.
+        if let Err(err) = orq_features::reopen_features(&orq_features::ledger_path(options.project), options.features) {
+            eprintln!("orq: cannot put {} back to pending: {err}", options.features.join(","));
+        }
+    }
     if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
         explain_failure(options, &settings, &record, &logs, report.detail.as_deref().unwrap_or("the run failed"));
     }
     announce(&settings, repo, &options.features.join(","), report.ending.name(), report.detail.as_deref(), report.review_url.as_deref());
     Ok(report)
+}
+
+/// Whether the run's worktree has a commit since the run's base. A worktree that is gone has none.
+fn has_commits(record: &RunRecord) -> bool {
+    if !record.worktree.is_dir() {
+        return false;
+    }
+    let output = Command::new("git").arg("-C").arg(&record.worktree).args(["rev-list", "--count", &format!("{}..HEAD", record.base_sha)]).output();
+    // When git cannot tell, the work is assumed to be there, so the feature is not reopened.
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim() != "0",
+        _ => true,
+    }
 }
 
 /// Start a detached Claude session in the run's worktree that explains the failure and can be reached from

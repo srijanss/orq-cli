@@ -2117,8 +2117,9 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     fn discard_run(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
-        orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, repo).map_err(|message| printable(&message))?;
-        Ok(format!("Discarded {}", printable(run_id)))
+        let members = orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, repo).map_err(|message| printable(&message))?;
+        let reopened = reopen_discarded(repo, &members);
+        Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(";{note}")).unwrap_or_default()))
     }
 
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
@@ -4087,6 +4088,26 @@ fn run_stop(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// Put the features of a discarded run, which nothing continues any more, back to `pending`, and say
+/// which were. A ledger that cannot be updated is only warned about: the run is already gone.
+fn reopen_discarded(repo: &Path, members: &[String]) -> String {
+    let path = match orq_git::resolve_project(repo) {
+        Ok(project) => orq_features::ledger_path(&project),
+        Err(err) => {
+            eprintln!("orq: cannot find the feature ledger of {}: {err:?}", repo.display());
+            return String::new();
+        }
+    };
+    match orq_features::reopen_features(&path, members) {
+        Ok(reopened) if reopened.is_empty() => String::new(),
+        Ok(reopened) => format!(" {} {} pending again.", printable(&reopened.join(", ")), if reopened.len() == 1 { "is" } else { "are" }),
+        Err(err) => {
+            eprintln!("orq: cannot put {} back to pending: {}", printable(&members.join(",")), printable(&err));
+            String::new()
+        }
+    }
+}
+
 /// `orq run discard <run> --yes [--repo <path>]`: remove a failed or blocked run's worktree (with any uncommitted
 /// work), branch, feature locks, logs and record. Nothing is removed without `--yes`.
 fn run_discard(args: &[OsString]) -> ExitCode {
@@ -4114,8 +4135,8 @@ fn run_discard(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     match orq_orchestrator::discard_run(&orq_orchestrator::RunStore::new(&root), run_id, &repo) {
-        Ok(()) => {
-            println!("Discarded run {}.", printable(run_id));
+        Ok(members) => {
+            println!("Discarded run {}.{}", printable(run_id), reopen_discarded(&repo, &members));
             ExitCode::SUCCESS
         }
         Err(message) => fail(printable(&message)),
