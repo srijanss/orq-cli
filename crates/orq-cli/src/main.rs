@@ -1578,6 +1578,18 @@ fn focus_run(herdr: &dyn orq_herdr::HerdrCli, store: &orq_orchestrator::RunStore
     }
 }
 
+/// The most recently written `*.log` file directly in `dir`.
+fn newest_log(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "log") && path.is_file())
+        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
+        .max()
+        .map(|(_, path)| path)
+}
+
 /// Opens a fresh Herdr pane following the run's runner log and records it, replacing a missing one.
 /// The run is already registered, so no waiting is needed.
 fn reopen_run(
@@ -1589,6 +1601,8 @@ fn reopen_run(
     run_id: &str,
 ) -> orq_tui::PaneFocus {
     let log = state_root.join("logs").join(run_id).join("runner.log");
+    // A run started in a terminal has stage logs but no runner log: follow the one written last.
+    let log = if log.is_file() { log } else { newest_log(&state_root.join("logs").join(run_id)).unwrap_or(log) };
     if !log.is_file() {
         return orq_tui::PaneFocus::Failed(format!("{run_id} has no log to follow ({})", printable(&log.display().to_string())));
     }
@@ -3600,6 +3614,27 @@ mod ledger_backend_tests {
         let outcome = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
 
         assert!(matches!(outcome, orq_tui::PaneFocus::Failed(reason) if reason.contains("no log")));
+    }
+
+    #[test]
+    fn reopening_a_foreground_run_without_a_runner_log_follows_its_newest_stage_log() {
+        let root = std::env::temp_dir().join(format!("orq-reopen-foreground-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let logs = root.join("logs/run-1");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("implement.log"), "a\n").unwrap();
+        std::fs::write(logs.join("gate.log"), "b\n").unwrap();
+        std::fs::write(logs.join("implement.done"), "").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(logs.join("implement.log")).unwrap().set_modified(old).unwrap();
+        let store = orq_orchestrator::RunStore::new(&root);
+        let herdr = RecordHerdr(std::cell::RefCell::new(vec![]));
+
+        let _ = crate::reopen_run(&herdr, &store, None, std::path::Path::new("/repo"), &root, "run-1");
+
+        let calls = herdr.0.borrow().iter().flatten().cloned().collect::<Vec<_>>().join(" ");
+        assert!(calls.contains("gate.log"), "{calls}");
+        assert!(!calls.contains("implement.log"), "{calls}");
     }
 
     struct RecordHerdr(std::cell::RefCell<Vec<Vec<String>>>);
