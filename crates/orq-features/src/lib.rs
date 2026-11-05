@@ -235,7 +235,7 @@ pub fn ledger_path(project: &orq_git::Project) -> std::path::PathBuf {
 }
 
 mod edit;
-pub use edit::{set_entry_status, EditError};
+pub use edit::{set_entry_status, set_entry_statuses, EditError};
 
 mod write;
 pub use write::write_ledger_atomic;
@@ -262,7 +262,7 @@ mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
 
 mod reopen;
-pub use reopen::reopen_features;
+pub use reopen::{reopen_features, reopen_features_before_save};
 
 mod validate;
 pub use validate::{validate_entries, ValidationError};

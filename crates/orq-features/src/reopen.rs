@@ -3,7 +3,7 @@ use std::path::Path;
 
 use orq_core::FeatureStatus;
 
-use crate::{set_entry_status, LedgerError, LedgerStatus, LoadedLedger, SaveError};
+use crate::{set_entry_statuses, LedgerError, LedgerStatus, LoadedLedger, SaveError};
 
 /// How many times a save that lost a race to another writer is retried from a fresh load.
 const CONFLICT_RETRIES: usize = 3;
@@ -18,6 +18,13 @@ const CONFLICT_RETRIES: usize = 3;
 /// This deliberately bypasses the user-facing transition policy (which only promotes drafts):
 /// it undoes what the agent's TDD server recorded, not a choice the user made.
 pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, String> {
+    reopen_features_before_save(path, names, &mut || {})
+}
+
+/// [`reopen_features`], calling `before_save` between each load and its save: a seam for tests
+/// that race another writer against the save.
+#[doc(hidden)]
+pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &mut dyn FnMut()) -> Result<Vec<String>, String> {
     for _ in 0..CONFLICT_RETRIES {
         let loaded = match LoadedLedger::load(path) {
             Ok(loaded) => loaded,
@@ -34,10 +41,9 @@ pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, Str
         if reopened.is_empty() {
             return Ok(reopened);
         }
-        let mut text = std::str::from_utf8(loaded.bytes()).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))?.to_string();
-        for name in &reopened {
-            text = set_entry_status(&text, name, FeatureStatus::Pending).map_err(|e| format!("cannot edit {name} in {}: {e:?}", path.display()))?;
-        }
+        let text = std::str::from_utf8(loaded.bytes()).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))?;
+        let text = set_entry_statuses(text, &reopened, FeatureStatus::Pending).map_err(|e| format!("cannot edit {}: {e:?}", path.display()))?;
+        before_save();
         match loaded.save(&text) {
             Ok(()) => return Ok(reopened),
             Err(SaveError::Conflict) => continue,

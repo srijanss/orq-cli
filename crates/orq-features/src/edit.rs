@@ -32,6 +32,30 @@ pub fn set_entry_status(
     Ok(edited)
 }
 
+/// [`set_entry_status`] for every entry named in `names`, found in a single pass over `text`.
+/// Every name must be in the ledger; nothing else changes.
+pub fn set_entry_statuses(text: &str, names: &[String], status: FeatureStatus) -> Result<String, EditError> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
+    let wanted: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let spans = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: None }
+        .scan_all(&|name| wanted.contains(name))?;
+    // Entry names are unique, so each wanted name matches at most one entry.
+    if spans.len() != wanted.len() {
+        return Err(EditError::UnknownFeature);
+    }
+    let mut edited = String::with_capacity(text.len() + 16 * spans.len());
+    let mut copied = 0;
+    for (start, end) in spans {
+        edited.push_str(&text[copied..start]);
+        edited.push('"');
+        edited.push_str(status_text(status));
+        edited.push('"');
+        copied = end;
+    }
+    edited.push_str(&text[copied..]);
+    Ok(edited)
+}
+
 /// Returns `text` with the given top-level members of the entry named
 /// `feature_name` set to the given JSON values: an existing member's value is
 /// replaced in place, a missing one is added after the last member. Every
@@ -109,30 +133,29 @@ impl Scanner<'_> {
     }
 
     fn scan(&mut self, name: &str) -> Result<Option<(usize, usize)>, EditError> {
+        Ok(self.scan_all(&|entry_name| entry_name == name)?.pop())
+    }
+
+    /// The status spans, in text order, of every entry whose `featureName` is `wanted`.
+    fn scan_all(&mut self, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<(usize, usize)>, EditError> {
         self.skip_ws();
         self.expect(b'[')?;
-        // Every entry is scanned, so an ill-shaped one is reported wherever it sits.
-        let mut found = None;
+        // Every entry is scanned, so an ill-shaped one is reported wherever it sits; a repeated
+        // featureName, which the loader rejects, is caught through `names`.
+        let mut found = Vec::new();
         loop {
             self.skip_ws();
             match self.peek() {
                 Some(b']') => return Ok(found),
                 Some(b',') => self.pos += 1,
-                Some(b'{') => {
-                    let span = self.entry(name)?;
-                    if found.is_some() && span.is_some() {
-                        // The loader rejects a repeated featureName, so must the editor.
-                        return Err(EditError::Malformed);
-                    }
-                    found = found.or(span);
-                }
+                Some(b'{') => found.extend(self.entry(wanted)?),
                 _ => return Err(EditError::Malformed),
             }
         }
     }
 
-    /// Scans one entry object; its status span if its `featureName` is `name`.
-    fn entry(&mut self, name: &str) -> Result<Option<(usize, usize)>, EditError> {
+    /// Scans one entry object; its status span if its `featureName` is `wanted`.
+    fn entry(&mut self, wanted: &dyn Fn(&str) -> bool) -> Result<Option<(usize, usize)>, EditError> {
         self.expect(b'{')?;
         let mut matches = false;
         let mut status = None;
@@ -169,7 +192,7 @@ impl Scanner<'_> {
                     seen_name = true;
                     if self.bytes[start] == b'"' {
                         let entry_name = self.decode(value)?;
-                        matches = entry_name == name;
+                        matches = wanted(&entry_name);
                         if !self.names.insert(entry_name) {
                             return Err(EditError::Malformed);
                         }

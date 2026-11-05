@@ -979,4 +979,32 @@ mod tests {
         assert!(ahead_count(&output(0, "")).is_err());
         assert!(ahead_count(&output(0, "many\n")).is_err());
     }
+
+    fn record_in(worktree: std::path::PathBuf) -> orq_orchestrator::RunRecord {
+        orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "F".into(),
+            remote: String::new(),
+            provider: String::new(),
+            target_branch: "main".into(),
+            base_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            branch: "orq/F".into(),
+            worktree,
+            repository: String::new(),
+            profiles: Default::default(),
+        }
+    }
+
+    #[test]
+    fn has_commits_assumes_the_work_is_there_when_git_cannot_tell_and_none_when_the_worktree_is_gone() {
+        let dir = std::env::temp_dir().join(format!("orq-has-commits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // An existing directory git cannot read as a worktree: the feature must not be reopened.
+        assert!(super::has_commits(&record_in(dir.clone())));
+        assert!(!super::has_commits(&record_in(dir.join("gone"))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

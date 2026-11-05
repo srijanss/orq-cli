@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use orq_features::reopen_features;
+use orq_features::{reopen_features, reopen_features_before_save, set_entry_statuses};
+use orq_core::FeatureStatus;
 
 fn dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("orq-reopen-{}-{tag}", std::process::id()));
@@ -55,4 +56,51 @@ fn reopen_features_a_malformed_ledger_is_an_error_and_left_alone() {
 
     assert!(reopen_features(&path, &names(&["a"])).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json");
+}
+
+#[test]
+fn reopen_features_several_statuses_are_set_in_one_edit_and_nothing_else_changes() {
+    let before = "[\n  {\"featureName\": \"a\", \"status\": \"in_progress\"},\n  {\"status\": \"in_progress\", \"featureName\": \"b\"},\n  {\"featureName\": \"c\", \"status\": \"in_progress\"}\n]\n";
+
+    let edited = set_entry_statuses(before, &names(&["c", "a"]), FeatureStatus::Pending).unwrap();
+
+    assert_eq!(edited, "[\n  {\"featureName\": \"a\", \"status\": \"pending\"},\n  {\"status\": \"in_progress\", \"featureName\": \"b\"},\n  {\"featureName\": \"c\", \"status\": \"pending\"}\n]\n");
+    assert_eq!(set_entry_statuses(before, &names(&["a", "missing"]), FeatureStatus::Pending), Err(orq_features::EditError::UnknownFeature));
+}
+
+#[test]
+fn reopen_features_a_save_that_loses_a_race_starts_again_from_the_other_writer_s_ledger() {
+    let path = dir("race").join(".tdd-features.json");
+    std::fs::write(&path, "[{\"featureName\":\"a\",\"status\":\"in_progress\"},{\"featureName\":\"b\",\"status\":\"in_progress\"}]").unwrap();
+    let mut raced = false;
+
+    let reopened = reopen_features_before_save(&path, &names(&["a", "b"]), &mut || {
+        if !raced {
+            raced = true;
+            // Another writer completes b and adds c between this load and its save.
+            std::fs::write(&path, "[{\"featureName\":\"a\",\"status\":\"in_progress\"},{\"featureName\":\"b\",\"status\":\"completed\"},{\"featureName\":\"c\",\"status\":\"pending\"}]").unwrap();
+        }
+    })
+    .unwrap();
+
+    assert_eq!(reopened, names(&["a"]));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[{\"featureName\":\"a\",\"status\":\"pending\"},{\"featureName\":\"b\",\"status\":\"completed\"},{\"featureName\":\"c\",\"status\":\"pending\"}]"
+    );
+}
+
+#[test]
+fn reopen_features_a_ledger_that_keeps_changing_is_an_error_and_keeps_the_last_writer_s_text() {
+    let path = dir("churn").join(".tdd-features.json");
+    std::fs::write(&path, "[{\"featureName\":\"a\",\"status\":\"in_progress\"}]").unwrap();
+    let mut round = 0;
+
+    let result = reopen_features_before_save(&path, &names(&["a"]), &mut || {
+        round += 1;
+        std::fs::write(&path, format!("[{{\"featureName\":\"a\",\"status\":\"in_progress\",\"round\":{round}}}]")).unwrap();
+    });
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("[{{\"featureName\":\"a\",\"status\":\"in_progress\",\"round\":{round}}}]"));
 }

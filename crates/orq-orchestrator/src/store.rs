@@ -203,6 +203,16 @@ impl RunStore {
         first.map_or(Ok(()), Err)
     }
 
+    /// Make sure `run_id` holds the lock of `feature_id`: take it if it is free. Returns false,
+    /// leaving the lock alone, when another run holds it.
+    pub fn claim_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<bool, StoreError> {
+        match self.take_lock(project_id, feature_id, run_id) {
+            Ok(()) => Ok(true),
+            Err(StoreError::FeatureBusy { active_run_id }) => Ok(active_run_id == run_id),
+            Err(err) => Err(err),
+        }
+    }
+
     fn take_lock(
         &self,
         project_id: &str,

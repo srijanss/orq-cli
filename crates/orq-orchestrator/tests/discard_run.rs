@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_run, Event, RunRecord, RunStore};
+use orq_orchestrator::{discard_run, discard_run_then, Event, RunRecord, RunStore, StoreError};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -224,4 +224,40 @@ fn a_blocked_run_is_discarded_like_a_failed_one() {
     assert!(!worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
     assert!(!root.join("logs").join("run-1").exists());
     assert_eq!(store.active_run("p", "F").unwrap(), None);
+}
+
+#[test]
+fn reopen_the_discard_holds_every_orphaned_feature_lock_while_the_features_are_reopened() {
+    // The run already released F's lock when it ended; G another run has since taken.
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (_, store) = store("reopen-held");
+    let members = vec!["F".to_string(), "G".to_string(), "H".to_string()];
+    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
+    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
+    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store.finish_group_run("p", &["F".to_string(), "G".to_string()], "run-1").unwrap();
+    let mut other = record(&worktree, "orq-run-2");
+    other.run_id = "run-2".into();
+    other.feature_id = "G".into();
+    store.start_run(&other).unwrap();
+
+    let mut seen = Vec::new();
+    discard_run_then(&store, "run-1", repo.root(), &mut |project_id, features| {
+        assert_eq!(project_id, "p");
+        for feature in features {
+            assert_eq!(store.active_run("p", feature).unwrap().as_deref(), Some("run-1"), "{feature} is held while it is reopened");
+        }
+        // A run launched now cannot take a feature that is being reopened.
+        let mut late = record(&worktree, "orq-run-3");
+        late.run_id = "run-3".into();
+        assert!(matches!(store.start_run(&late), Err(StoreError::FeatureBusy { .. })));
+        seen = features.to_vec();
+    })
+    .unwrap();
+
+    assert_eq!(seen, vec!["F".to_string(), "H".to_string()], "G belongs to run-2");
+    assert_eq!(store.active_run("p", "F").unwrap(), None);
+    assert_eq!(store.active_run("p", "H").unwrap(), None);
+    assert_eq!(store.active_run("p", "G").unwrap().as_deref(), Some("run-2"));
 }

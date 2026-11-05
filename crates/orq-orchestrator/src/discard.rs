@@ -89,13 +89,11 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
     // and a branch name), so no branch is deleted; only the run's own records go.
     // Release each member's lock on its own, so one benign outcome cannot hide another's failure.
     let members = members_of(&record, &events);
+    // A member whose lock is free is claimed first, so no new run can start it while it is reopened.
     let mut ours = Vec::new();
     for member in &members {
-        match store.active_run(&record.project_id, member) {
-            Ok(None) => ours.push(member.clone()),
-            Ok(Some(owner)) if owner == run_id => ours.push(member.clone()),
-            Ok(Some(_)) => {}
-            Err(err) => return Err(err.to_string()),
+        if store.claim_lock(&record.project_id, member, run_id).map_err(|e| e.to_string())? {
+            ours.push(member.clone());
         }
     }
     if !ours.is_empty() {
