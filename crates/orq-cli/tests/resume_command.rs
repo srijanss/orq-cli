@@ -259,3 +259,30 @@ fn a_run_killed_while_a_pause_was_pending_is_resumed_by_the_resume_command() {
     let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
     assert!(!pushed.contains("again.txt"), "the finished agent session was not started again: {pushed}");
 }
+
+#[test]
+fn a_failed_run_is_resumed_by_the_resume_command() {
+    let w = world("failed-resume");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+    let runs = w.state.join("orq/runs");
+    let run_id = std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned();
+    set_gate(&w, "true");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", path_with(&first_agent, &github(), &w.tag))
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+}
