@@ -20,11 +20,62 @@ pub enum PushOutcome {
     Failed { reason: String },
 }
 
-/// Push the run branch of `run_id`, logging git's output to `log_path`.
+/// How often a push that failed on the network is tried again: at most `max_attempts` pushes in
+/// all, waiting `base`, then twice that, and so on between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base: std::time::Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        RetryPolicy {
+            max_attempts: 3,
+            base: std::time::Duration::from_secs(2),
+        }
+    }
+}
+
+/// Text git prints when the network, not the remote's decision, stopped a push. A refusal (a
+/// rejected ref, a hook, a permission) will not change by asking again, so it is not listed.
+fn is_transient(output: &str) -> bool {
+    const MARKERS: [&str; 7] = [
+        "could not resolve host",
+        "connection timed out",
+        "connection reset",
+        "connection refused",
+        "operation timed out",
+        "the remote end hung up unexpectedly",
+        "temporary failure in name resolution",
+    ];
+    let lower = output.to_lowercase();
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Push the run branch of `run_id`, logging git's output to `log_path`. A push that fails on the
+/// network is retried within the default [`RetryPolicy`].
 pub fn push_run_branch(
     store: &RunStore,
     run_id: &str,
     log_path: &Path,
+) -> Result<PushOutcome, StoreError> {
+    push_run_branch_with(
+        store,
+        run_id,
+        log_path,
+        &RetryPolicy::default(),
+        &std::thread::sleep,
+    )
+}
+
+/// [`push_run_branch`] with the retry policy and the way of waiting supplied.
+pub fn push_run_branch_with(
+    store: &RunStore,
+    run_id: &str,
+    log_path: &Path,
+    policy: &RetryPolicy,
+    sleep: &dyn Fn(std::time::Duration),
 ) -> Result<PushOutcome, StoreError> {
     let record = store.load(run_id)?;
     let log_name = log_path.to_string_lossy().into_owned();
@@ -93,28 +144,45 @@ pub fn push_run_branch(
     )?;
     // No force option: a remote branch that diverged is reported, not overwritten.
     // `push.followTags` in the user's config must not publish tags with it.
-    let pushed = if checked.is_some() {
-        // A setup failure is a failed stage, not an error that leaves the stage started.
-        match isolated_push(worktree, &destination, &refspec) {
-            Ok(pushed) => pushed,
-            Err(error) => {
-                writeln!(log, "{}", redact_credentials(&error.to_string()))?;
-                return fail(
-                    store,
-                    &record,
-                    format!("git push of {} failed", record.branch),
-                    &log_name,
-                );
+    let mut attempt = 1;
+    let pushed = loop {
+        let pushed = if checked.is_some() {
+            // A setup failure is a failed stage, not an error that leaves the stage started.
+            match isolated_push(worktree, &destination, &refspec) {
+                Ok(pushed) => pushed,
+                Err(error) => {
+                    writeln!(log, "{}", redact_credentials(&error.to_string()))?;
+                    return fail(
+                        store,
+                        &record,
+                        format!("git push of {} failed", record.branch),
+                        &log_name,
+                    );
+                }
             }
+        } else {
+            git_raw(
+                worktree,
+                &["push", "--no-follow-tags", "--", &destination, &refspec],
+            )?
+        };
+        log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
+        log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
+        let again = !pushed.success
+            && attempt < policy.max_attempts
+            && is_transient(&format!("{}{}", pushed.stdout, pushed.stderr));
+        if !again {
+            break pushed;
         }
-    } else {
-        git_raw(
-            worktree,
-            &["push", "--no-follow-tags", "--", &destination, &refspec],
-        )?
+        let wait = policy.base * 2u32.saturating_pow(attempt - 1);
+        writeln!(
+            log,
+            "attempt {attempt} failed on the network; trying again in {}s",
+            wait.as_secs()
+        )?;
+        sleep(wait);
+        attempt += 1;
     };
-    log.write_all(redact_credentials(&pushed.stdout).as_bytes())?;
-    log.write_all(redact_credentials(&pushed.stderr).as_bytes())?;
     if !pushed.success {
         let reason = format!("git push of {} failed", record.branch);
         return fail(store, &record, reason, &log_name);

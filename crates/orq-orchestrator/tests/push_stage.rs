@@ -711,3 +711,80 @@ fn a_run_branch_named_like_a_protected_branch_is_refused_even_when_the_target_di
     );
     assert_eq!(kinds(&w), ["stage.failed"]);
 }
+
+/// A remote whose pre-receive hook fails with `message` for the first `failures` pushes, then lets them through.
+fn flaky_remote(w: &World, failures: u32, message: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let counter = w.root.join("pushes-seen");
+    let hook = w.remote.join("hooks").join("pre-receive");
+    fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nn=$(cat '{c}' 2>/dev/null || echo 0)\necho $((n+1)) > '{c}'\nif [ \"$n\" -lt {failures} ]; then echo '{message}' >&2; exit 1; fi\n",
+            c = counter.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn pushes_seen(w: &World) -> u32 {
+    fs::read_to_string(w.root.join("pushes-seen"))
+        .map(|s| s.trim().parse().unwrap())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_push_that_fails_on_a_network_error_is_retried_with_a_growing_wait_and_succeeds_once() {
+    let w = world("retry-ok", "fix--COM-02", "main", None);
+    flaky_remote(&w, 2, "fatal: unable to access: Could not resolve host: simulated");
+    let waits = std::cell::RefCell::new(Vec::new());
+    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(2) };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
+            .unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+    assert_eq!(pushes_seen(&w), 3, "two transient failures, then the push that landed");
+    assert_eq!(
+        *waits.borrow(),
+        [std::time::Duration::from_secs(2), std::time::Duration::from_secs(4)],
+        "the wait doubles"
+    );
+    assert_eq!(kinds(&w), ["stage.started", "stage.completed"], "one stage, however many attempts");
+}
+
+#[test]
+fn a_push_that_keeps_failing_on_the_network_gives_up_after_the_bound() {
+    let w = world("retry-bounded", "fix--COM-02", "main", None);
+    flaky_remote(&w, 100, "fatal: unable to access: Could not resolve host: simulated");
+    let waits = std::cell::RefCell::new(Vec::new());
+    let policy = orq_orchestrator::RetryPolicy { max_attempts: 3, base: std::time::Duration::from_secs(1) };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
+            .unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    assert_eq!(pushes_seen(&w), 3, "exactly the bound");
+    assert_eq!(waits.borrow().len(), 2, "no wait after the last attempt");
+    assert_eq!(kinds(&w), ["stage.started", "stage.failed"]);
+}
+
+#[test]
+fn a_push_the_remote_refuses_is_not_retried() {
+    let w = world("retry-refused", "fix--COM-02", "main", None);
+    flaky_remote(&w, 100, "policy: this branch is protected");
+    let waits = std::cell::RefCell::new(Vec::new());
+    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(1) };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
+            .unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
+    assert_eq!(pushes_seen(&w), 1, "a refusal will not change by asking again");
+    assert!(waits.borrow().is_empty());
+}

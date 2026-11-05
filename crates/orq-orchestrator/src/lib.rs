@@ -62,7 +62,7 @@ pub use notify::{
 pub use orq_written::record_orq_written;
 pub use outcome::{check_implement_outcome, ImplementCheck};
 pub use pane::{record_pane, run_pane, PaneRef};
-pub use push_stage::{push_run_branch, PushOutcome};
+pub use push_stage::{push_run_branch, push_run_branch_with, PushOutcome, RetryPolicy};
 pub use reap::{
     plan_orphans, plan_reap, reap_orphan_ref, reap_run, reap_run_databases, Orphans, ReapItem,
     ReapVerdict,
