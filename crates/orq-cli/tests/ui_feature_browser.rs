@@ -227,5 +227,5 @@ fn the_browser_shows_the_product_header_and_the_features_tab() {
     assert_eq!(code, 0, "{drawn}");
     assert!(drawn.contains("Developer"), "{drawn}");
     assert!(drawn.contains("Features"), "{drawn}");
-    assert!(!drawn.contains("Orchestrations"), "{drawn}");
+    assert!(drawn.contains("Orchestrations"), "the Orchestrations tab sits beside Features: {drawn}");
 }
