@@ -4273,7 +4273,7 @@ where
 pub const PANEL_ROWS: u16 = 3;
 const PANEL_MIN_WIDTH: u16 = 30;
 const PANEL_MIN_BODY_HEIGHT: u16 = 14;
-const PANEL_HINT: &str = " ↑↓ move · Enter open · / search · f status · r reload · Esc close ";
+const PANEL_HINT: &str = " ↑↓ move · Enter open · a add · e edit · f status · Space mark · p promote · L launch · V review · R resume · / search · r reload · Tab settings · Esc close ";
 
 /// Splits the browser body into the list and, on a roomy viewport, the
 /// selected-feature panel below it. Without a panel the promote button
