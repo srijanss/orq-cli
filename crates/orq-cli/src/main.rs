@@ -3050,6 +3050,11 @@ mod ledger_backend_tests {
 
     /// A run in `root` for the fixture's project whose recorded process is long gone.
     fn seed_run_with_dead_process(root: &std::path::Path, repo: &std::path::Path, run_id: &str) {
+        seed_run_with_process(root, repo, run_id, 4_294_967_294);
+    }
+
+    /// A run in `root` for the fixture's project that was launched by process `pid`.
+    fn seed_run_with_process(root: &std::path::Path, repo: &std::path::Path, run_id: &str, pid: u64) {
         let store = orq_orchestrator::RunStore::new(root);
         let project = orq_git::resolve_project(repo).unwrap();
         let project_id = crate::pipeline::project_id(&project);
@@ -3079,7 +3084,7 @@ mod ledger_backend_tests {
                 stage: None,
                 attempt: 1,
                 occurred_at: "2026-11-02T00:00:00Z".into(),
-                payload: serde_json::json!({"pid": 4_294_967_294u64}),
+                payload: serde_json::json!({"pid": pid}),
             })
             .unwrap();
     }
@@ -3100,6 +3105,71 @@ mod ledger_backend_tests {
         assert_eq!(rows.iter().map(|r| r.status.as_str()).collect::<Vec<_>>(), ["failed"]);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Load the runs of a backend whose state lives in `root`, for the fixture's repository.
+    fn load_rows(root: &std::path::Path, repo: &std::path::Path) -> Vec<String> {
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(repo.to_path_buf());
+        backend.state_root_override = Some(root.to_path_buf());
+        let rows = orq_tui::BrowserBackend::load_runs(&mut backend).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        rows.into_iter().map(|r| r.status).collect()
+    }
+
+    #[test]
+    fn load_runs_leaves_a_run_with_a_live_process_running_and_records_nothing() {
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-live-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        seed_run_with_process(&root, fixture.root(), "run-live", u64::from(std::process::id()));
+
+        assert_eq!(load_rows(&root, fixture.root()), ["running"]);
+
+        let events = orq_orchestrator::RunStore::new(&root).events("run-live").unwrap();
+        assert!(events.iter().all(|e| e.kind != "run.failed"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_runs_shows_a_pause_requested_run_by_liveness_of_its_process() {
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-pause-requested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        seed_run_with_process(&root, fixture.root(), "run-live", u64::from(std::process::id()));
+        seed_run_with_dead_process(&root, fixture.root(), "run-dead");
+        let store = orq_orchestrator::RunStore::new(&root);
+        orq_orchestrator::request_pause(&store, "run-live").unwrap();
+        orq_orchestrator::request_pause(&store, "run-dead").unwrap();
+
+        let mut rows = load_rows(&root, fixture.root());
+        rows.sort();
+
+        assert_eq!(rows, ["failed", "pause_requested"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_runs_still_lists_a_dead_run_when_recording_its_failure_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = orq_test_support::GitFixture::new();
+        let root = std::env::temp_dir().join(format!("orq-backend-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        seed_run_with_dead_process(&root, fixture.root(), "run-dead");
+        let log = root.join("runs").join("run-dead").join("events.jsonl");
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if std::fs::OpenOptions::new().append(true).open(&log).is_ok() {
+            eprintln!("skipped: the event log is still writable (running with write privileges)");
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        // The row is kept (as the run is on record) rather than dropped or failing the listing.
+        assert_eq!(load_rows(&root, fixture.root()).len(), 1);
+
+        let _ = std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
