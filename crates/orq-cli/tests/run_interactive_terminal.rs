@@ -112,6 +112,20 @@ enum Streams {
 /// As `run_in_pty`, with `streams` deciding which streams are the terminal. Output moved off the
 /// terminal is appended to what is returned.
 fn run_in_pty_with(w: &World, provider: &FakeProvider, streams: Streams, args: &[String]) -> (i32, String) {
+    drive(w, provider, streams, 60, env!("CARGO_BIN_EXE_orq"), args)
+}
+
+/// Runs `program <args>` on a fresh pseudo-terminal, reading it until no process holds it any
+/// more or `deadline_secs` pass; past the deadline everything in the session is killed and the
+/// exit code is 124.
+fn drive(
+    w: &World,
+    provider: &FakeProvider,
+    streams: Streams,
+    deadline_secs: u32,
+    program: &str,
+    args: &[String],
+) -> (i32, String) {
     const DRIVER: &str = r#"
 import fcntl, os, pty, select, signal, struct, sys, termios, time
 fd, slave = pty.openpty()
@@ -132,7 +146,8 @@ if pid == 0:
 os.close(slave)
 out = bytearray()
 status = None
-deadline = time.time() + 60
+drained = False
+deadline = time.time() + float(os.environ.get("PTY_DEADLINE", "60"))
 # Read until the terminal reports end of stream (every holder of it has gone), not merely until
 # orq exits: output written just before the exit may still be buffered.
 while time.time() < deadline:
@@ -143,6 +158,7 @@ while time.time() < deadline:
         except OSError:
             chunk = b""
         if not chunk:
+            drained = True
             break
         out.extend(chunk)
     if status is None:
@@ -156,10 +172,17 @@ while status is None and time.time() < end:
         status = st
     else:
         time.sleep(0.05)
-if status is None:
-    os.kill(pid, signal.SIGKILL)
-    os.waitpid(pid, 0)
-    sys.stdout.buffer.write(bytes(out) + b"\n[driver: orq did not exit and was killed]")
+if status is None or not drained:
+    # orq, or something it left holding the terminal, outlived the deadline: end the whole
+    # session (orq leads its process group) and fail rather than report a partial capture.
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    if status is None:
+        os.waitpid(pid, 0)
+    what = b"orq did not exit" if status is None else b"the terminal was still held open after orq exited"
+    sys.stdout.buffer.write(bytes(out) + b"\n[driver: " + what + b"; killed]")
     sys.exit(124)
 sys.stdout.buffer.write(bytes(out))
 sys.exit(os.waitstatus_to_exitcode(status))
@@ -171,9 +194,10 @@ sys.exit(os.waitstatus_to_exitcode(status))
     };
     let elsewhere = w.seen.with_file_name("stdout");
     let output = command(w, provider, "python3")
+        .env("PTY_DEADLINE", deadline_secs.to_string())
         .args(["-I", "-c", DRIVER, mode])
         .arg(&elsewhere)
-        .arg(env!("CARGO_BIN_EXE_orq"))
+        .arg(program)
         .args(args)
         .output()
         .unwrap();
@@ -256,4 +280,17 @@ fn an_interactive_session_that_fails_fails_the_run_and_orq_still_reports_on_the_
     assert!(drawn.contains("the agent gave up"), "{drawn}");
     assert_eq!(code, 31, "{drawn}");
     assert!(drawn.contains("state: failed"), "{drawn}");
+}
+
+#[test]
+fn the_terminal_driver_fails_when_something_still_holds_the_terminal_at_its_deadline() {
+    let agent = FakeAgent::builder().build();
+    let w = world("held", &agent);
+    let args = ["-c".to_string(), "trap '' HUP; sleep 30 & echo started".to_string()];
+
+    let (code, drawn) = drive(&w, &github(), Streams::Terminal, 2, "/bin/sh", &args);
+
+    assert!(drawn.contains("started"), "{drawn}");
+    assert!(drawn.contains("the terminal was still held open after orq exited"), "{drawn}");
+    assert_eq!(code, 124, "{drawn}");
 }
