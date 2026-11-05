@@ -412,6 +412,11 @@ fn run(args: &[OsString]) -> ExitCode {
         resume: parsed.resume,
         switch_implementer: parsed.switch_implementer,
         switch_reviewer: parsed.switch_reviewer,
+        // A detached runner has no terminal, so it stays headless.
+        interactive: {
+            use std::io::IsTerminal;
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+        },
     };
     match pipeline::execute(&options) {
         Ok(report) => {

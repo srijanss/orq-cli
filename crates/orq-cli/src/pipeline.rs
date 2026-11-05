@@ -50,6 +50,8 @@ pub struct Options<'a> {
     /// On resume: the role continues on the profile named for it; otherwise on the paused run's own.
     pub switch_implementer: bool,
     pub switch_reviewer: bool,
+    /// The implement session is given orq's own terminal, so the agent runs interactively in it.
+    pub interactive: bool,
 }
 
 fn new_run_id() -> String {
@@ -763,7 +765,7 @@ fn stages(
                 cwd: worktree,
                 session_id: None,
                 log: &logs.join("implement.log"),
-                terminal: false,
+                terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
             if !run_implement_stage(store, run_id, &session)?.success {
