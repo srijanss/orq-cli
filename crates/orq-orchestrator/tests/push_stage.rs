@@ -398,7 +398,7 @@ fn fake_ssh() {
             .join(format!("orq-fake-ssh-{}", std::process::id()));
         // A world may ask for transport failures: `ssh-failures` beside the remote holds how many
         // attempts fail before one is let through, and `pushes-seen` counts the attempts.
-        let script = "#!/bin/sh\nshift\nrepo=$(printf '%s' \"$1\" | sed \"s/.*'\\(.*\\)'.*/\\1/\")\ndir=$(dirname \"$repo\")\nif [ -f \"$dir/ssh-failures\" ]; then\n n=$(cat \"$dir/pushes-seen\" 2>/dev/null || echo 0)\n echo $((n+1)) > \"$dir/pushes-seen\"\n if [ \"$n\" -lt \"$(cat \"$dir/ssh-failures\")\" ]; then echo 'ssh: Could not resolve hostname forge.example: Name or service not known' >&2; exit 255; fi\nfi\nexec sh -c \"$1\"\n";
+        let script = "#!/bin/sh\nshift\nrepo=$(printf '%s' \"$1\" | sed \"s/.*'\\(.*\\)'.*/\\1/\")\ndir=$(dirname \"$repo\")\nif [ -f \"$dir/ssh-failures\" ]; then\n n=$(cat \"$dir/pushes-seen\" 2>/dev/null || echo 0)\n echo $((n+1)) > \"$dir/pushes-seen\"\n if [ \"$n\" -lt \"$(cat \"$dir/ssh-failures\")\" ]; then echo 'ssh: Could not resolve hostname forge.example: Name or service not known' >&2; exit 255; fi\nfi\nif [ -f \"$dir/ssh-ack-lost\" ] && [ ! -f \"$dir/ack-lost-done\" ]; then touch \"$dir/ack-lost-done\"; sh -c \"$1\"; echo 'Connection reset by peer' >&2; exit 255; fi\nexec sh -c \"$1\"\n";
         fs::write(&ssh, script).unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
         // GIT_SSH_COMMAND is a shell command: quote the path.
@@ -839,4 +839,23 @@ fn a_huge_backoff_is_capped_instead_of_overflowing() {
         waits.borrow()
     );
     assert_eq!(kinds(&w), ["stage.started", "stage.failed"], "the stage is not left started");
+}
+
+#[test]
+fn a_push_the_remote_took_but_whose_acknowledgement_was_lost_succeeds_on_retry() {
+    let w = world("retry-ack-lost", "fix--COM-02", "main", Some("origin"));
+    fake_ssh();
+    fs::write(w.root.join("ssh-ack-lost"), "").unwrap();
+    let remote = w.remote.to_str().unwrap();
+    git(&w.worktree, &["remote", "set-url", "origin", &format!("git@forge.example:{remote}")]);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+    let policy = orq_orchestrator::RetryPolicy { max_attempts: 3, base: std::time::Duration::from_secs(1) };
+
+    let outcome =
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|_| {}).unwrap();
+
+    assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
+    assert!(w.root.join("ack-lost-done").exists(), "the first attempt reached the remote");
+    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
+    assert_eq!(kinds(&w), ["stage.started", "stage.completed"], "one terminal event");
 }
