@@ -116,6 +116,17 @@ pub fn plan_group_resume(
     project_id: &str,
     members: &[String],
 ) -> Result<ResumePlan, String> {
+    plan_group_resume_with(store, repo, project_id, members, &crate::interrupted::process_is_alive)
+}
+
+/// [`plan_group_resume`] with the owner-liveness check supplied (pid, recorded start time).
+pub fn plan_group_resume_with(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+    members: &[String],
+    alive: &dyn Fn(u32, Option<u64>) -> bool,
+) -> Result<ResumePlan, String> {
     let feature_id = members
         .first()
         .map(String::as_str)
@@ -151,7 +162,7 @@ pub fn plan_group_resume(
     crate::interrupted::reconcile_interrupted(
         store,
         &from.run_id,
-        &crate::interrupted::process_is_alive,
+        alive,
     )
     .map_err(|e| format!("cannot reconcile {}: {e:?}", from.run_id))?;
     let events = store

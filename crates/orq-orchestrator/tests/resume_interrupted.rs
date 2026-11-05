@@ -102,3 +102,15 @@ fn a_run_whose_process_is_still_alive_is_not_resumable() {
         plan_resume(&store, &repo, "repo-1", "COM-02").expect_err("its process is still running");
     assert!(reason.contains("may still be running"), "{reason}");
 }
+
+#[test]
+fn a_dead_owner_is_resumable_and_a_live_one_refused_whatever_the_platform() {
+    let (store, repo) = launched_run("injected", 4242);
+    let members = ["COM-02".to_string()];
+    let reason = orq_orchestrator::plan_group_resume_with(&store, &repo, "repo-1", &members, &|_, _| true)
+        .expect_err("a live owner is not taken over");
+    assert!(reason.contains("may still be running"), "{reason}");
+    let plan = orq_orchestrator::plan_group_resume_with(&store, &repo, "repo-1", &members, &|_, _| false)
+        .expect("a dead owner is resumable");
+    assert_eq!(plan.from.run_id, "run-1");
+}
