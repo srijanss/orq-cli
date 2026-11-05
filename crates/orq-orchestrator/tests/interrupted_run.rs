@@ -63,3 +63,63 @@ fn a_process_is_dead_only_when_procfs_is_there_and_has_no_entry_for_it() {
     std::fs::create_dir_all(root.join("77")).unwrap();
     assert!(orq_orchestrator::process_is_alive_in(&root, 77));
 }
+
+#[test]
+fn guards_leave_live_terminal_paused_and_unlaunched_runs_alone() {
+    // Owner alive: untouched.
+    let s = store("guard-alive");
+    s.create(&record("r")).unwrap();
+    record_launch(&s, "r", 1, std::path::Path::new("/tmp/x.log")).unwrap();
+    let before = s.events("r").unwrap().len();
+    assert!(!reconcile_interrupted(&s, "r", &|_| true).unwrap());
+    assert_eq!(s.events("r").unwrap().len(), before);
+
+    // No launch metadata: nothing to judge, untouched.
+    let s = store("guard-unlaunched");
+    s.create(&record("r")).unwrap();
+    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+
+    // Paused keeps its checkpoint.
+    let s = store("guard-paused");
+    s.create(&record("r")).unwrap();
+    record_launch(&s, "r", 1, std::path::Path::new("/tmp/x.log")).unwrap();
+    orq_orchestrator::request_pause(&s, "r").unwrap();
+    let mut paused = s.events("r").unwrap().last().unwrap().clone();
+    paused.kind = "run.paused".into();
+    paused.event_id = "r-paused".into();
+    s.append_event(&paused).unwrap();
+    if summarize_run(&s.events("r").unwrap()).phase == RunPhase::Paused {
+        assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+        assert_eq!(summarize_run(&s.events("r").unwrap()).phase, RunPhase::Paused);
+    }
+
+    // Malformed pid: untouched.
+    let s = store("guard-malformed");
+    s.create(&record("r")).unwrap();
+    let mut bad = paused.clone();
+    bad.kind = "run.launched".into();
+    bad.event_id = "r-bad".into();
+    bad.payload = serde_json::json!({ "pid": "abc" });
+    s.append_event(&bad).unwrap();
+    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+}
+
+#[test]
+fn the_latest_launch_wins_and_reconciling_twice_appends_once() {
+    let s = store("latest-launch");
+    s.create(&record("r")).unwrap();
+    record_launch(&s, "r", 111, std::path::Path::new("/tmp/a.log")).unwrap();
+    record_launch(&s, "r", 222, std::path::Path::new("/tmp/b.log")).unwrap();
+    // Only the first (stale) pid is dead; the latest owner is alive.
+    assert!(!reconcile_interrupted(&s, "r", &|pid| pid == 222).unwrap());
+    assert!(reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    let n = s.events("r").unwrap().len();
+    assert!(!reconcile_interrupted(&s, "r", &|_| false).unwrap());
+    assert_eq!(s.events("r").unwrap().len(), n);
+}
+
+#[test]
+fn an_unknown_run_is_a_store_error() {
+    let s = store("unknown");
+    assert!(reconcile_interrupted(&s, "missing", &|_| false).is_err());
+}
