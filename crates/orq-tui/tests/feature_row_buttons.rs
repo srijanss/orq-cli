@@ -147,11 +147,15 @@ impl BrowserBackend for Fake {
 }
 
 fn show(backend: &mut Fake, events: Vec<Event>) -> Vec<String> {
+    show_sized(backend, events, WIDTH, HEIGHT)
+}
+
+fn show_sized(backend: &mut Fake, events: Vec<Event>, width: u16, height: u16) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
-    (0..HEIGHT).map(|y| (0..WIDTH).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
+    (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
 }
 
 /// The card line that holds a feature's buttons: the line above its name.
@@ -341,4 +345,53 @@ fn coming_back_to_features_from_another_tab_reads_the_runs_again() {
 
     let (_, line) = button_line(&screen, "bravo");
     assert!(line.contains("[Resume]") && line.contains("[Discard]") && !line.contains("[Pause]"), "{line:?}");
+}
+
+/// What the fake was asked to do to runs, leaving out the reads.
+fn acted(backend: &Fake) -> Vec<String> {
+    backend.calls.iter().filter(|call| !matches!(call.as_str(), "load_runs" | "feature_runs")).cloned().collect()
+}
+
+#[test]
+fn after_a_name_search_a_rows_button_acts_on_that_rows_run() {
+    let search = || vec![key('/'), key('e'), key('c'), key('h'), key('o'), press(KeyCode::Enter)];
+    let screen = show(&mut Fake::default(), search());
+    assert!(!screen.iter().any(|line| line.contains(" bravo ")), "the search hides bravo: {screen:#?}");
+
+    let mut backend = Fake::default();
+    show(&mut backend, [search(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]].concat());
+    assert_eq!(acted(&backend), vec!["discard run-5".to_string()]);
+}
+
+#[test]
+fn after_the_list_scrolls_a_rows_button_acts_on_that_rows_run() {
+    let (width, height) = (WIDTH, 22);
+    let down = || vec![press(KeyCode::Down); 7];
+    let screen = show_sized(&mut Fake::default(), down(), width, height);
+    assert!(!screen.iter().any(|line| line.contains(" alpha ")), "alpha has scrolled away: {screen:#?}");
+
+    let mut backend = Fake::default();
+    show_sized(&mut backend, [down(), vec![click(button_at(&screen, "delta", "[Resume]")), key('y')]].concat(), width, height);
+    assert_eq!(acted(&backend), vec!["check run-4".to_string(), "resume run-4".to_string()]);
+
+    let mut backend = Fake::default();
+    show_sized(&mut backend, [down(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]].concat(), width, height);
+    assert_eq!(acted(&backend), vec!["discard run-5".to_string()]);
+}
+
+#[test]
+fn the_compact_layout_draws_no_row_buttons_and_a_click_there_acts_on_no_run() {
+    let (width, height) = (WIDTH, 9);
+    let screen = show_sized(&mut Fake::default(), vec![], width, height);
+    assert!(screen.iter().any(|line| line.contains("alpha")), "the rows are listed, one line each: {screen:#?}");
+    assert!(!screen.iter().any(|line| ALL.iter().any(|label| line.contains(label))), "{screen:#?}");
+
+    let mut backend = Fake::default();
+    let clicks: Vec<Event> = (0..height).flat_map(|row| [click((width - 3, row)), key('y')]).collect();
+    show_sized(&mut backend, clicks, width, height);
+    assert!(
+        !acted(&backend).iter().any(|call| ["pause", "stop", "resume", "discard", "check"].iter().any(|verb| call.starts_with(verb))),
+        "{:?}",
+        backend.calls
+    );
 }
