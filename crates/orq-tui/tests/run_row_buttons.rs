@@ -206,7 +206,7 @@ fn each_orchestrations_row_shows_the_buttons_its_runs_status_allows() {
     for (feature, nth, expected) in [
         ("bravo", 0, &["[Resume]", "[Discard]"][..]),
         ("bravo", 1, &["[Pause]", "[Stop]"][..]),
-        ("charlie", 0, &["[Resume]"][..]),
+        ("charlie", 0, &["[Resume]", "[Discard]"][..]),
         ("delta", 0, &["[Resume]", "[Discard]"][..]),
         ("echo", 0, &["[Discard]"][..]),
         ("foxtrot", 0, &[][..]),
@@ -282,4 +282,18 @@ fn a_feature_row_offers_only_orchestrate_and_shows_its_latest_runs_status() {
             assert!(line.contains(badge), "{feature} shows its run is {badge}: {line:?}");
         }
     }
+}
+
+#[test]
+fn discard_keep_a_paused_rows_discard_asks_first_and_says_uncommitted_work_is_kept() {
+    let screen = show(&mut Fake::default(), to_runs());
+    let mut backend = Fake::default();
+    let asked = show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Discard]"))]].concat());
+    assert!(acted(&backend).is_empty(), "{:?}", backend.calls);
+    let prompt = asked.join("\n");
+    assert!(prompt.contains("Discard run-3?") && prompt.contains("uncommitted work is kept"), "{asked:#?}");
+
+    let mut backend = Fake::default();
+    show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Discard]")), key('y')]].concat());
+    assert_eq!(acted(&backend), vec!["discard run-3"]);
 }

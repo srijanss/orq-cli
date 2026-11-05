@@ -81,6 +81,7 @@ fn discarding_a_failed_run_removes_its_record_logs_worktree_branch_and_lock() {
     let dry = orq(&s.home, &["run", "discard", "run-1", "--repo", repo]);
     assert!(!dry.status.success(), "without --yes nothing is discarded");
     assert!(s.worktree.exists() && s.store.load("run-1").is_ok());
+    std::fs::remove_file(s.worktree.join("scratch.txt")).unwrap();
 
     let out = orq(&s.home, &["run", "discard", "run-1", "--yes", "--repo", repo]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -106,4 +107,20 @@ fn a_run_that_is_not_failed_or_a_bad_argument_discards_nothing() {
     assert!(s.worktree.exists() && branch_exists(s.repo.root(), "orq-run-1"));
     assert!(s.store.load("run-1").is_ok());
     assert_eq!(s.store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+}
+
+#[test]
+fn discard_keep_a_paused_run_with_uncommitted_work_is_discarded_and_says_where_its_worktree_was_kept() {
+    let s = seed("paused-dirty", Some("run.pause_requested"));
+    s.store.append_event(&event("run.paused")).unwrap();
+    let repo = s.repo.root().to_str().unwrap();
+
+    let out = orq(&s.home, &["run", "discard", "run-1", "--yes", "--repo", repo]);
+
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Discarded run run-1.") && stdout.contains(&format!("kept {}", s.worktree.display())), "{stdout}");
+    assert!(s.worktree.join("scratch.txt").exists() && branch_exists(s.repo.root(), "orq-run-1"));
+    assert!(s.store.load("run-1").is_err());
+    assert_eq!(s.store.active_run("p", "F").unwrap(), None);
 }

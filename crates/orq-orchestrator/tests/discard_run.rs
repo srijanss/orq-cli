@@ -285,3 +285,61 @@ fn reopen_a_lock_that_cannot_be_claimed_frees_the_locks_the_discard_took_and_kee
     assert_eq!(store.active_run("p", "H").unwrap().as_deref(), Some("run-1"), "the run's own lock stays for a retry");
     assert!(store.load("run-1").is_ok(), "the record stays, so the discard can be retried");
 }
+
+fn paused_run(tag: &str, repo: &GitFixture) -> (PathBuf, PathBuf, RunStore) {
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (root, store) = store(tag);
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.pause_requested", serde_json::json!({}))).unwrap();
+    store.append_event(&event("run.paused", serde_json::json!({}))).unwrap();
+    std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
+    (root, worktree, store)
+}
+
+#[test]
+fn discard_keep_a_paused_run_with_a_clean_worktree_is_discarded_with_its_worktree_and_branch() {
+    let repo = GitFixture::new();
+    let (root, worktree, store) = paused_run("paused-clean", &repo);
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(outcome.kept_worktree, None);
+    assert_eq!(outcome.features, vec!["F".to_string()]);
+    assert!(store.load("run-1").is_err());
+    assert!(!worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+    assert!(!root.join("logs").join("run-1").exists());
+    assert_eq!(store.active_run("p", "F").unwrap(), None);
+}
+
+#[test]
+fn discard_keep_a_dirty_worktree_and_its_branch_are_kept_while_the_run_is_forgotten() {
+    for (tag, staged) in [("untracked", false), ("staged", true)] {
+        let repo = GitFixture::new();
+        let (root, worktree, store) = paused_run(&format!("dirty-{tag}"), &repo);
+        std::fs::write(worktree.join("work.txt"), "unfinished").unwrap();
+        if staged {
+            Command::new("git").arg("-C").arg(&worktree).args(["add", "work.txt"]).status().unwrap();
+        }
+
+        let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+        assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()), "{tag}");
+        assert_eq!(std::fs::read_to_string(worktree.join("work.txt")).unwrap(), "unfinished", "{tag}");
+        assert!(branch_exists(repo.root(), "orq-run-1"), "{tag}");
+        assert!(store.load("run-1").is_err(), "{tag}");
+        assert!(!root.join("logs").join("run-1").exists(), "{tag}");
+        assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
+    }
+}
+
+#[test]
+fn discard_keep_a_run_whose_pause_is_only_requested_is_still_live_and_left_untouched() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (_, store) = store("pause-requested");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.pause_requested", serde_json::json!({}))).unwrap();
+
+    assert!(discard_run(&store, "run-1", repo.root()).is_err());
+    assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+}

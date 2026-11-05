@@ -1,31 +1,42 @@
-//! Discarding a failed or blocked run: remove its worktree and branch, release its feature locks, and forget
-//! its record and logs.
+//! Discarding a failed, blocked or paused run: remove its worktree and branch when they hold no
+//! uncommitted work, release its feature locks, and forget its record and logs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::outcome::git_raw;
 use crate::resume::members_of;
 use crate::run_status::{summarize_run, RunPhase};
 use crate::store::{Claim, RunStore, StoreError};
 
-/// Remove the run `run_id` for good: its worktree (with any uncommitted work), its local branch,
-/// its feature locks, its logs and its record. A run whose worktree is already gone keeps its
-/// branch: it cannot be shown to belong to `repo`. Only a failed or blocked run, which has ended, can be discarded. Every check
-/// happens before anything is removed, and the record goes last, so a failure part-way can be
-/// retried. `repo` is the repository the run's worktree belongs to. Returns the run's features.
-pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Vec<String>, String> {
+/// What a discard did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscardOutcome {
+    /// The run's features.
+    pub features: Vec<String>,
+    /// The worktree left in place, with its branch, because it held uncommitted or untracked work.
+    pub kept_worktree: Option<PathBuf>,
+}
+
+/// Remove the run `run_id` for good: its feature locks, its logs and its record, and its worktree
+/// and local branch when the worktree is clean. A worktree with uncommitted or untracked work is
+/// kept, with its branch, and reported. A run whose worktree is already gone keeps its branch: it
+/// cannot be shown to belong to `repo`. Only a failed, blocked or paused run, whose process has
+/// ended, can be discarded. Every check happens before anything is removed, and the record goes
+/// last, so a failure part-way can be retried. `repo` is the repository the run's worktree belongs to.
+pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<DiscardOutcome, String> {
     discard_run_then(store, run_id, repo, &mut |_, _| {})
 }
 
 /// [`discard_run`], calling `orphaned(project_id, features)` once the worktree is gone and before any
 /// lock is released, with the run's features that no other run holds: nothing continues those, and
 /// no new run can take them while the call runs.
-pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<Vec<String>, String> {
+pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<DiscardOutcome, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
-    if !matches!(phase, RunPhase::Failed | RunPhase::Blocked) {
-        return Err(format!("{run_id} is {}; only a failed or blocked run can be discarded", phase.as_str()));
+    // A run whose pause is only requested is still running until it reaches a safe point.
+    if !matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused) {
+        return Err(format!("{run_id} is {}; only a failed, blocked or paused run can be discarded", phase.as_str()));
     }
     let branch = record.branch.as_str();
     if branch.is_empty() || branch == record.target_branch {
@@ -35,6 +46,7 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
     let worktree = record.worktree.to_string_lossy().into_owned();
     // Every check happens before anything is removed.
     let has_worktree = record.worktree.exists();
+    let mut kept_worktree = None;
     if has_worktree {
         let same_as_repo = match (record.worktree.canonicalize(), repo.canonicalize()) {
             (Ok(worktree), Ok(repo)) => worktree == repo,
@@ -55,6 +67,16 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
         if theirs.is_none() || ours.is_none() || theirs.and_then(|p| p.canonicalize().ok()) != ours.and_then(|p| p.canonicalize().ok()) {
             return Err(format!("{} is not the repository of {run_id}", repo.display()));
         }
+        // Uncommitted or untracked work is never deleted: the worktree and its branch stay.
+        let status = git(&record.worktree, &["status", "--porcelain", "-z"])?;
+        if !status.success {
+            return Err(format!("cannot tell whether the worktree of {run_id} has uncommitted work: {}", status.stderr.trim()));
+        }
+        if !status.stdout.is_empty() {
+            kept_worktree = Some(record.worktree.clone());
+        }
+    }
+    if has_worktree && kept_worktree.is_none() {
         // `worktree add --force` lets several worktrees share a branch; deleting it would leave the
         // others on an unborn HEAD, so a branch checked out anywhere else is never deleted.
         let listing = git(repo, &["worktree", "list", "--porcelain", "-z"])?;
@@ -75,7 +97,7 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
             }
         }
     }
-    if has_worktree {
+    if has_worktree && kept_worktree.is_none() {
         let removed = git(repo, &["worktree", "remove", "--force", "--", &worktree])?;
         if !removed.success {
             return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
@@ -118,5 +140,5 @@ pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &
         }
     }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
-    Ok(members)
+    Ok(DiscardOutcome { features: members, kept_worktree })
 }

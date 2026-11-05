@@ -2118,7 +2118,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         let reopened = discard_and_reopen(&root, run_id, repo).map_err(|message| printable(&message))?;
-        Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(";{note}")).unwrap_or_default()))
+        Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(".{note}")).unwrap_or_default()))
     }
 
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
@@ -4088,12 +4088,16 @@ fn run_stop(args: &[OsString]) -> ExitCode {
 }
 
 /// Discard `run_id`, putting the features nothing continues any more back to `pending` in `repo`'s
-/// ledger before their locks are released, and say which were.
+/// ledger before their locks are released, and say which were and where a worktree with
+/// uncommitted work was kept.
 fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, String> {
     let mut note = String::new();
-    orq_orchestrator::discard_run_then(&orq_orchestrator::RunStore::new(root), run_id, repo, &mut |project_id, features| {
+    let outcome = orq_orchestrator::discard_run_then(&orq_orchestrator::RunStore::new(root), run_id, repo, &mut |project_id, features| {
         note = reopen_discarded(repo, project_id, features);
     })?;
+    if let Some(kept) = outcome.kept_worktree {
+        note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
+    }
     Ok(note)
 }
 
@@ -4122,8 +4126,9 @@ fn reopen_discarded(repo: &Path, project_id: &str, members: &[String]) -> String
     }
 }
 
-/// `orq run discard <run> --yes [--repo <path>]`: remove a failed or blocked run's worktree (with any uncommitted
-/// work), branch, feature locks, logs and record. Nothing is removed without `--yes`.
+/// `orq run discard <run> --yes [--repo <path>]`: remove a failed, blocked or paused run's feature locks,
+/// logs and record, and its worktree and branch unless the worktree holds uncommitted work. Nothing is
+/// removed without `--yes`.
 fn run_discard(args: &[OsString]) -> ExitCode {
     let (mut run_id, mut yes, mut repo) = (None, false, PathBuf::from("."));
     let mut iter = args.iter();
@@ -4141,7 +4146,7 @@ fn run_discard(args: &[OsString]) -> ExitCode {
     let Some(run_id) = run_id else { return usage_error() };
     if !yes {
         return fail(format!(
-            "discarding {} deletes its worktree (including uncommitted work), branch and logs for good; re-run with --yes to confirm",
+            "discarding {} deletes its logs, and its worktree and branch unless they hold uncommitted work, for good; re-run with --yes to confirm",
             printable(run_id)
         ));
     }

@@ -700,7 +700,7 @@ fn run_actions(status: &str) -> &'static [RowAction] {
     match status {
         "running" => &[RowAction::Pause, RowAction::Stop],
         "pause_requested" => &[RowAction::Stop],
-        "paused" => &[RowAction::Resume],
+        "paused" => &[RowAction::Resume, RowAction::Discard],
         "failed" => &[RowAction::Resume, RowAction::Discard],
         "blocked" => &[RowAction::Discard],
         _ => &[],
@@ -3375,7 +3375,7 @@ impl Browser {
             }
             RowAction::Discard => {
                 self.notice = Some(format!(
-                    "Discard {run_id}? Its worktree (with uncommitted work), branch and logs are deleted for good; y to confirm, any other key cancels"
+                    "Discard {run_id}? Logs, a clean worktree and its branch go; uncommitted work is kept. y confirms, other keys cancel"
                 ));
                 self.row_confirm = Some((action, run_id));
             }
