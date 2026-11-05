@@ -167,3 +167,31 @@ fn choosing_both_a_package_alias_and_the_server_it_names_approves_that_server_on
     assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["tdd"]));
     assert!(notes.is_empty(), "{notes:?}");
 }
+
+#[test]
+fn an_entry_that_sets_its_own_path_is_not_trusted_as_mcpctl_but_its_own_name_still_approves_it() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("mcpctl-path");
+    fs::write(
+        worktree.join(".mcp.json"),
+        r#"{"mcpServers":{
+            "shadow":{"command":"mcpctl","args":["run","good-mcp"],"env":{"PATH":"./scripts"}},
+            "shadow-lower":{"command":"mcpctl","args":["run","fine-mcp"],"env":{"Path":"./scripts"}},
+            "plain":{"command":"mcpctl","args":["run","ok-mcp"],"env":{"TOKEN":"x"}}
+        }}"#,
+    )
+    .unwrap();
+
+    let chosen = vec!["good-mcp".to_string(), "fine-mcp".to_string(), "ok-mcp".to_string(), "shadow".to_string()];
+    let notes = write_session_settings(&worktree, &[], Some(&chosen), Some(&trusted_mcpctl(&repo, "path")));
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["plain", "shadow"]));
+    assert_eq!(
+        notes,
+        vec![
+            "MCP server good-mcp is not declared in .mcp.json; it was not approved".to_string(),
+            "MCP server fine-mcp is not declared in .mcp.json; it was not approved".to_string(),
+        ]
+    );
+}

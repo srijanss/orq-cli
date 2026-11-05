@@ -88,6 +88,14 @@ fn mcpctl_package(
     trusted: Option<&Path>,
 ) -> Option<String> {
     let trusted = trusted?;
+    // An entry that sets its own PATH may find a different `mcpctl` than orq's.
+    let sets_path = entry
+        .get("env")
+        .and_then(|env| env.as_object())
+        .is_some_and(|env| env.keys().any(|key| key.eq_ignore_ascii_case("PATH")));
+    if sets_path {
+        return None;
+    }
     let command = entry.get("command")?.as_str()?;
     if command != "mcpctl" {
         let same = worktree.join(command).canonicalize().ok()? == trusted.canonicalize().ok()?;
