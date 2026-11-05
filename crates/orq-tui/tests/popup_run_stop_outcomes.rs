@@ -14,7 +14,7 @@ impl EventSource for Script {
     }
 }
 
-/// Two runs; a successful stop leaves the second one failed, as the store would.
+/// Three runs; a successful stop leaves the second one failed, as the store would.
 struct Fake {
     stop: Result<String, String>,
     stopped: bool,
@@ -43,7 +43,7 @@ impl BrowserBackend for Fake {
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         self.calls.push("load".into());
         let second = if self.stopped { "failed" } else { "running" };
-        Ok(vec![row("run-1", "COM-01", "running"), row("run-2", "COM-02", second)])
+        Ok(vec![row("run-1", "COM-01", "running"), row("run-2", "COM-02", second), row("run-3", "COM-03", "running")])
     }
     fn stop_run(&mut self, run_id: &str) -> Result<String, String> {
         self.calls.push(format!("stop {run_id}"));
@@ -146,4 +146,15 @@ fn clicking_a_one_line_row_selects_that_run_and_s_then_stops_it() {
     events.extend(chars("sy"));
     show(&mut backend, 80, 2, events);
     assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?}", backend.calls);
+}
+
+#[test]
+fn clicking_an_unselected_row_of_a_scrolled_list_selects_the_run_shown_there() {
+    // Two rows fit; selecting the third run scrolls the list so rows show run-2 then run-3.
+    let mut backend = Fake { stop: Ok("Stopped run-2".into()), stopped: false, calls: vec![] };
+    let mut events = vec![key(KeyCode::Char('R')), key(KeyCode::Down), key(KeyCode::Down), click(3, 0)];
+    events.extend(chars("sy"));
+    show(&mut backend, 80, 3, events);
+    let stops: Vec<&String> = backend.calls.iter().filter(|c| c.starts_with("stop")).collect();
+    assert_eq!(stops, vec!["stop run-2"], "{:?}", backend.calls);
 }
