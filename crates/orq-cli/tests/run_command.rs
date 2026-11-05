@@ -459,6 +459,61 @@ fn a_run_that_failed_after_opening_the_review_resumes_without_repeating_the_agen
 }
 
 #[test]
+fn a_run_that_failed_between_the_push_and_the_review_resumes_to_open_it_once_without_redoing_the_work() {
+    let w = world("push-then-crash");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let broken = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .fail(&["pr", "create"], 1, "forge unavailable")
+        .build();
+    let output = run_with(&w, &agent, &broken, &["--no-ci-check"]);
+    assert_ne!(output.status.code(), Some(0), "the review could not be opened");
+    let pushed = git(&w.remote, &["rev-parse", "fix--COM-01"]);
+
+    let second_agent = FakeAgent::builder().write_file("again.txt", "x\n").commit("feat: again").build();
+    let second = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .build();
+    let output = run_with(&w, &second_agent, &second, &["--no-ci-check", "--resume"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
+    assert!(drafts_only, "the implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    let creates = second.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
+    assert_eq!(creates, 1, "the review is opened exactly once: {:?}", second.calls());
+    assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01"]), pushed, "the branch was not rewritten");
+    assert!(stdout.contains(PR_URL), "{stdout}");
+}
+
+#[test]
+fn a_run_stopped_by_its_gate_before_the_push_resumes_to_push_and_open_the_review_without_the_agent() {
+    let w = world("gate-then-resume");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    let toml = w.repo.root().join(".orq/run.toml");
+    std::fs::write(&toml, "gate = [\"false\"]\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    assert_ne!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
+
+    std::fs::write(&toml, "gate = [\"true\"]\n").unwrap();
+    let second_agent = FakeAgent::builder().write_file("again.txt", "x\n").commit("feat: again").build();
+    let provider = github();
+    let output = run_with(&w, &second_agent, &provider, &["--no-ci-check", "--resume"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
+    assert!(drafts_only, "the implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "pushed on resume");
+    let creates = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
+    assert_eq!(creates, 1, "{:?}", provider.calls());
+}
+
+#[test]
 fn an_agent_that_leaves_no_commit_blocks_the_run_and_nothing_is_pushed() {
     let w = world("nocommit");
     let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
