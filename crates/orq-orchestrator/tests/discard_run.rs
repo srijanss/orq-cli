@@ -391,3 +391,27 @@ fn discard_race_work_written_after_the_check_is_kept_with_its_worktree_and_branc
     assert!(store.load("run-1").is_err());
     assert_eq!(store.active_run("p", "F").unwrap(), None);
 }
+
+#[test]
+fn discard_submodule_a_worktree_with_an_initialized_submodule_is_kept_and_the_run_still_discarded() {
+    for (tag, dirty) in [("clean", false), ("dirty", true)] {
+        let repo = GitFixture::new();
+        let (root, worktree, store) = paused_run(&format!("submodule-{tag}"), &repo);
+        let sub = root.join("sub-origin");
+        std::fs::create_dir_all(&sub).unwrap();
+        git_in(&sub, &["init", "-q"]);
+        git_in(&sub, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "sub"]);
+        git_in(&worktree, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "sub"]);
+        git_in(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "add sub"]);
+        if dirty {
+            std::fs::write(worktree.join("sub").join("work.txt"), "unfinished").unwrap();
+        }
+
+        let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+        assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()), "{tag}");
+        assert!(worktree.join("sub").exists() && branch_exists(repo.root(), "orq-run-1"), "{tag}");
+        assert!(store.load("run-1").is_err(), "{tag}");
+        assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
+    }
+}

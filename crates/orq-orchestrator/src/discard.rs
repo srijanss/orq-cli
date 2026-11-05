@@ -110,10 +110,11 @@ pub fn discard_run_before_remove(
     if has_worktree && kept_worktree.is_none() {
         before_remove();
         // Without --force git checks again as it removes, so work written since the check above is
-        // never deleted: the worktree is then kept like any other with uncommitted work.
+        // never deleted. A worktree git will not remove (new work, or an initialized submodule,
+        // which git never removes unforced) is kept with its branch like any other with work in it.
         let removed = git(repo, &["worktree", "remove", "--", &worktree])?;
         if !removed.success {
-            if record.worktree.exists() && is_dirty(&record.worktree).unwrap_or(true) {
+            if record.worktree.exists() {
                 kept_worktree = Some(record.worktree.clone());
             } else {
                 return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
