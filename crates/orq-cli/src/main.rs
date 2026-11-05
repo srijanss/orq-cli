@@ -602,14 +602,22 @@ fn runs(args: &[OsString]) -> ExitCode {
     let mut reconciled = false;
     for run in &listings {
         if matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested) {
-            reconciled |= orq_orchestrator::reconcile_interrupted(&store, &run.run_id, &orq_orchestrator::process_is_alive)
-                .unwrap_or(false);
+            match orq_orchestrator::reconcile_interrupted(&store, &run.run_id, &orq_orchestrator::process_is_alive) {
+                Ok(changed) => reconciled |= changed,
+                Err(err) => eprintln!(
+                    "orq: {} has no running process, but it could not be recorded as failed: {err:?}",
+                    printable(&run.run_id)
+                ),
+            }
         }
     }
     if reconciled {
-        if let Ok(list) = orq_orchestrator::list_runs_report(&store, &project_id) {
-            listings = list.runs;
-            unreadable = list.unreadable;
+        match orq_orchestrator::list_runs_report(&store, &project_id) {
+            Ok(list) => {
+                listings = list.runs;
+                unreadable = list.unreadable;
+            }
+            Err(err) => eprintln!("orq: the listing could not be refreshed after recording failed runs: {err}"),
         }
     }
     let phase = |phase: orq_orchestrator::RunPhase| phase.as_str();
