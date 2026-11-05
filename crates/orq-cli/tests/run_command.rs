@@ -373,6 +373,13 @@ fn a_foreground_run_records_its_owner_so_a_killed_one_can_be_recovered() {
     assert!(launched.payload.get("log").is_none(), "a foreground run has no runner log to name: {:?}", launched.payload);
 }
 
+/// Every agent invocation (the first and the latest) is the PR-description drafter, never an implement session.
+fn assert_only_drafting(agent: &FakeAgent, what: &str) {
+    for run in [agent.first_run(), agent.last_run()].into_iter().flatten() {
+        assert!(run.args.iter().any(|a| a.starts_with("Write a pull request title")), "{what}: {:?}", run.args);
+    }
+}
+
 #[test]
 fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes() {
     let w = world("foreground-killed");
@@ -380,7 +387,8 @@ fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes()
     let _ = std::fs::remove_dir_all(&slow_bin);
     std::fs::create_dir_all(&slow_bin).unwrap();
     let claude = slow_bin.join("claude");
-    std::fs::write(&claude, "#!/bin/sh\nsleep 30\n").unwrap();
+    let ready = slow_bin.join("agent-started");
+    std::fs::write(&claude, format!("#!/bin/sh\ntouch {}\nexec sleep 30\n", ready.display())).unwrap();
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
@@ -406,6 +414,7 @@ fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes()
         })
     };
     wait_until("the foreground run to record its owner", || launched().is_some());
+    wait_until("the implement agent to be running", || ready.exists());
     let (run_id, owner) = launched().unwrap();
     assert_eq!(owner.payload["pid"].as_u64(), Some(u64::from(runner.id())), "the owner is the runner itself");
     let state = |id: &str| orq_orchestrator::summarize_run(&store.events(id).unwrap()).phase;
@@ -450,8 +459,7 @@ fn a_run_that_failed_after_opening_the_review_resumes_without_repeating_the_agen
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
-    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
-    assert!(drafts_only, "the finished implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    assert_only_drafting(&second_agent, "the finished implement session is not started again");
     assert!(!w.repo.root().join("again.txt").exists(), "no new work was committed");
     assert!(!second.calls().iter().any(|c| c.args.starts_with(&["pr".into(), "create".into()])), "no second review: {:?}", second.calls());
     assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01"]), pushed, "the pushed branch is untouched");
@@ -480,8 +488,7 @@ fn a_run_that_failed_between_the_push_and_the_review_resumes_to_open_it_once_wit
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
-    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
-    assert!(drafts_only, "the implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    assert_only_drafting(&second_agent, "the implement session is not started again");
     let creates = second.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
     assert_eq!(creates, 1, "the review is opened exactly once: {:?}", second.calls());
     assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01"]), pushed, "the branch was not rewritten");
@@ -506,8 +513,7 @@ fn a_run_stopped_by_its_gate_before_the_push_resumes_to_push_and_open_the_review
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
-    let drafts_only = second_agent.first_run().is_none_or(|r| r.args.iter().any(|a| a.starts_with("Write a pull request title")));
-    assert!(drafts_only, "the implement session is not started again: {:?}", second_agent.first_run().map(|r| r.args));
+    assert_only_drafting(&second_agent, "the implement session is not started again");
     assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "pushed on resume");
     let creates = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
     assert_eq!(creates, 1, "{:?}", provider.calls());
