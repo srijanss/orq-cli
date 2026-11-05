@@ -94,9 +94,9 @@ pub fn stop_run(
             }
             OwnerState::Running => {
                 signal(pid, false)?;
-                if !exited(pid, start, probe, sleep) {
+                if wait_for_exit(pid, start, probe, sleep)? == OwnerState::Running {
                     signal(pid, true)?;
-                    if !exited(pid, start, probe, sleep) {
+                    if wait_for_exit(pid, start, probe, sleep)? == OwnerState::Running {
                         return Err(format!("the owner of {run_id} (pid {pid}) is still running"));
                     }
                 }
@@ -119,19 +119,26 @@ pub fn stop_run(
         .map_err(|e| e.to_string())
 }
 
-fn exited(
+/// Poll until the owner is `Exited`; returns the last state seen. An owner whose identity is
+/// lost (`Unknown`) is an error, so the caller never escalates against an unverified pid.
+fn wait_for_exit(
     pid: u32,
     start: u64,
     probe: &dyn Fn(u32, u64) -> OwnerState,
     sleep: &dyn Fn(Duration),
-) -> bool {
-    for _ in 0..POLLS_PER_SIGNAL {
-        if probe(pid, start) == OwnerState::Exited {
-            return true;
+) -> Result<OwnerState, String> {
+    let mut state = OwnerState::Running;
+    for _ in 0..=POLLS_PER_SIGNAL {
+        state = probe(pid, start);
+        match state {
+            OwnerState::Exited => return Ok(state),
+            OwnerState::Unknown => {
+                return Err(format!("lost track of the owner (pid {pid}) while stopping it; not signalling further"));
+            }
+            OwnerState::Running => sleep(POLL_INTERVAL),
         }
-        sleep(POLL_INTERVAL);
     }
-    probe(pid, start) == OwnerState::Exited
+    Ok(state)
 }
 
 /// Send SIGTERM (or SIGKILL when `force`) to the single process `pid`.

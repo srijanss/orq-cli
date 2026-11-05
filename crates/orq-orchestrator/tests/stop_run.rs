@@ -199,3 +199,15 @@ fn the_owner_probe_tells_a_running_process_from_a_gone_zombie_or_reused_one_and_
     std::fs::create_dir_all(&no_proc).unwrap();
     assert_eq!(owner_state_in(&no_proc, 4242, 7), OwnerState::Unknown, "no procfs to verify against");
 }
+
+#[test]
+fn an_owner_whose_identity_is_lost_while_waiting_is_not_killed() {
+    let store = seeded("lost", Some(owner()), &[]);
+    let signals = RefCell::new(Vec::new());
+    let termed = Cell::new(false);
+    let probe = |_: u32, _: u64| if termed.get() { OwnerState::Unknown } else { OwnerState::Running };
+    let result = stop_run(&store, "run-1", &probe, &|pid, force| { signals.borrow_mut().push((pid, force)); termed.set(true); Ok(()) }, &no_wait);
+    assert!(result.is_err());
+    assert_eq!(*signals.borrow(), vec![(4242, false)]);
+    assert_eq!(phase(&store), RunPhase::Running);
+}
