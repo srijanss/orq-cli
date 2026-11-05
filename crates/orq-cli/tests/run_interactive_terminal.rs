@@ -96,6 +96,22 @@ fn run_args(w: &World) -> Vec<String> {
 /// Runs `orq <args>` on a fresh pseudo-terminal as its controlling terminal; the exit code and
 /// everything written to the terminal.
 fn run_in_pty(w: &World, provider: &FakeProvider, args: &[String]) -> (i32, String) {
+    run_in_pty_with(w, provider, Streams::Terminal, args)
+}
+
+/// Which of orq's standard streams are the terminal; the others are moved off it.
+#[derive(Clone, Copy)]
+enum Streams {
+    Terminal,
+    /// Input is `/dev/null`; output and errors are the terminal.
+    InputElsewhere,
+    /// Output goes to a file; input and errors are the terminal.
+    OutputElsewhere,
+}
+
+/// As `run_in_pty`, with `streams` deciding which streams are the terminal. Output moved off the
+/// terminal is appended to what is returned.
+fn run_in_pty_with(w: &World, provider: &FakeProvider, streams: Streams, args: &[String]) -> (i32, String) {
     const DRIVER: &str = r#"
 import fcntl, os, pty, select, signal, struct, sys, termios, time
 fd, slave = pty.openpty()
@@ -106,9 +122,13 @@ if pid == 0:
     fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
     for n in (0, 1, 2):
         os.dup2(slave, n)
+    if sys.argv[1] == "input-elsewhere":
+        os.dup2(os.open("/dev/null", os.O_RDONLY), 0)
+    elif sys.argv[1] == "output-elsewhere":
+        os.dup2(os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 1)
     os.close(fd)
     os.close(slave)
-    os.execv(sys.argv[1], sys.argv[1:])
+    os.execv(sys.argv[3], sys.argv[3:])
 os.close(slave)
 out = bytearray()
 status = None
@@ -144,12 +164,22 @@ if status is None:
 sys.stdout.buffer.write(bytes(out))
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
+    let mode = match streams {
+        Streams::Terminal => "terminal",
+        Streams::InputElsewhere => "input-elsewhere",
+        Streams::OutputElsewhere => "output-elsewhere",
+    };
+    let elsewhere = w.seen.with_file_name("stdout");
     let output = command(w, provider, "python3")
-        .args(["-I", "-c", DRIVER, env!("CARGO_BIN_EXE_orq")])
+        .args(["-I", "-c", DRIVER, mode])
+        .arg(&elsewhere)
+        .arg(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .output()
         .unwrap();
-    (output.status.code().unwrap_or(-1), String::from_utf8_lossy(&output.stdout).into_owned())
+    let mut drawn = String::from_utf8_lossy(&output.stdout).into_owned();
+    drawn.push_str(&std::fs::read_to_string(&elsewhere).unwrap_or_default());
+    (output.status.code().unwrap_or(-1), drawn)
 }
 
 /// Whether the implement session, the first `claude` started in the run's worktree, had a
@@ -186,4 +216,41 @@ fn a_run_without_a_terminal_keeps_the_implement_session_headless() {
 
     assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(seen(&w), "none");
+}
+
+#[test]
+fn a_run_whose_input_is_not_the_terminal_keeps_the_implement_session_headless() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("no-input", &agent);
+
+    let (code, drawn) = run_in_pty_with(&w, &github(), Streams::InputElsewhere, &run_args(&w));
+
+    assert_eq!(code, 0, "{drawn}");
+    assert_eq!(seen(&w), "none", "{drawn}");
+}
+
+#[test]
+fn a_run_whose_output_is_not_the_terminal_keeps_the_implement_session_headless() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("no-output", &agent);
+
+    let (code, drawn) = run_in_pty_with(&w, &github(), Streams::OutputElsewhere, &run_args(&w));
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("state: review_ready"), "{drawn}");
+    assert_eq!(seen(&w), "none", "{drawn}");
+}
+
+#[test]
+fn an_interactive_session_that_fails_fails_the_run_and_orq_still_reports_on_the_terminal() {
+    let agent = FakeAgent::builder().stderr("the agent gave up\n").exit_code(3).build();
+    let w = world("pty-fails", &agent);
+
+    let (code, drawn) = run_in_pty(&w, &github(), &run_args(&w));
+
+    assert_eq!(seen(&w), "tty", "{drawn}");
+    // The session wrote to the terminal itself rather than to the stage log.
+    assert!(drawn.contains("the agent gave up"), "{drawn}");
+    assert_eq!(code, 31, "{drawn}");
+    assert!(drawn.contains("state: failed"), "{drawn}");
 }
