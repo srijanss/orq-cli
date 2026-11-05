@@ -48,9 +48,27 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<(), St
         if theirs.is_none() || ours.is_none() || theirs.and_then(|p| p.canonicalize().ok()) != ours.and_then(|p| p.canonicalize().ok()) {
             return Err(format!("{} is not the repository of {run_id}", repo.display()));
         }
+        // `worktree add --force` lets several worktrees share a branch; deleting it would leave the
+        // others on an unborn HEAD, so a branch checked out anywhere else is never deleted.
+        let listing = git(repo, &["worktree", "list", "--porcelain", "-z"])?;
+        if !listing.success {
+            return Err(format!("cannot list the worktrees of {}: {}", repo.display(), listing.stderr.trim()));
+        }
+        let ours = record.worktree.canonicalize().map_err(|e| e.to_string())?;
+        let wanted = format!("branch refs/heads/{branch}");
+        let mut path: Option<String> = None;
+        for field in listing.stdout.split('\0') {
+            if let Some(p) = field.strip_prefix("worktree ") {
+                path = Some(p.to_string());
+            } else if field == wanted {
+                let other = path.as_deref().unwrap_or_default();
+                if Path::new(other).canonicalize().ok().as_ref() != Some(&ours) {
+                    return Err(format!("the branch {branch} is checked out in {other}; refusing to delete it"));
+                }
+            }
+        }
     }
     if has_worktree {
-        // Git allows a branch in one worktree only, and this one was verified to be on it.
         let removed = git(repo, &["worktree", "remove", "--force", "--", &worktree])?;
         if !removed.success {
             return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
