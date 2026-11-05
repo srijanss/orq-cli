@@ -50,3 +50,29 @@ fn a_package_is_matched_only_through_an_mcpctl_run_entry_and_an_unmatched_one_is
     assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["tdd"]));
     assert_eq!(notes, vec!["MCP server other-mcp is not declared in .mcp.json; it was not approved".to_string()]);
 }
+
+#[test]
+fn an_exact_server_name_wins_over_a_package_alias_and_an_alias_run_by_two_servers_approves_neither() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("mcpctl-exact");
+    fs::write(
+        worktree.join(".mcp.json"),
+        r#"{"mcpServers":{
+            "a":{"command":"mcpctl","args":["run","docs"]},
+            "docs":{"command":"docs-server"},
+            "one":{"command":"mcpctl","args":["run","shared-mcp"]},
+            "two":{"command":"mcpctl","args":["run","shared-mcp"]}
+        }}"#,
+    )
+    .unwrap();
+
+    let chosen = vec!["docs".to_string(), "shared-mcp".to_string()];
+    let notes = write_session_settings(&worktree, &[], Some(&chosen));
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["docs"]));
+    assert_eq!(
+        notes,
+        vec!["MCP server shared-mcp is run by more than one .mcp.json server (one, two); it was not approved".to_string()]
+    );
+}

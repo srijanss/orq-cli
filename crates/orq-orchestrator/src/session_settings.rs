@@ -25,14 +25,10 @@ pub fn write_session_settings(
         Some(wanted) => {
             let mut approved = Vec::new();
             for name in wanted {
-                match declared.iter().find(|server| server.serves(name)) {
-                    Some(server) if !approved.contains(&server.name) => {
-                        approved.push(server.name.clone())
-                    }
-                    Some(_) => {}
-                    None => notes.push(format!(
-                        "MCP server {name} is not declared in .mcp.json; it was not approved"
-                    )),
+                match resolve(&declared, name) {
+                    Ok(server) if !approved.contains(server) => approved.push(server.clone()),
+                    Ok(_) => {}
+                    Err(note) => notes.push(note),
                 }
             }
             approved
@@ -58,9 +54,26 @@ struct DeclaredServer {
     package: Option<String>,
 }
 
-impl DeclaredServer {
-    fn serves(&self, chosen: &str) -> bool {
-        self.name == chosen || self.package.as_deref() == Some(chosen)
+/// The `.mcp.json` server name a chosen name approves: the server of that name, or else the one
+/// server that runs it as an `mcpctl` package. Otherwise the note why nothing is approved.
+fn resolve<'a>(declared: &'a [DeclaredServer], chosen: &str) -> Result<&'a String, String> {
+    if let Some(server) = declared.iter().find(|server| server.name == chosen) {
+        return Ok(&server.name);
+    }
+    let running: Vec<&String> = declared
+        .iter()
+        .filter(|server| server.package.as_deref() == Some(chosen))
+        .map(|server| &server.name)
+        .collect();
+    match running.as_slice() {
+        [only] => Ok(only),
+        [] => Err(format!(
+            "MCP server {chosen} is not declared in .mcp.json; it was not approved"
+        )),
+        many => Err(format!(
+            "MCP server {chosen} is run by more than one .mcp.json server ({}); it was not approved",
+            many.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", ")
+        )),
     }
 }
 
