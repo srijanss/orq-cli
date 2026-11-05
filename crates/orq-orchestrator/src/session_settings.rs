@@ -23,18 +23,21 @@ pub fn write_session_settings(
     let declared = declared_servers(worktree, &mut notes);
     let approved: Vec<String> = match servers {
         Some(wanted) => {
-            for name in wanted.iter().filter(|name| !declared.contains(name)) {
-                notes.push(format!(
-                    "MCP server {name} is not declared in .mcp.json; it was not approved"
-                ));
+            let mut approved = Vec::new();
+            for name in wanted {
+                match declared.iter().find(|server| server.serves(name)) {
+                    Some(server) if !approved.contains(&server.name) => {
+                        approved.push(server.name.clone())
+                    }
+                    Some(_) => {}
+                    None => notes.push(format!(
+                        "MCP server {name} is not declared in .mcp.json; it was not approved"
+                    )),
+                }
             }
-            wanted
-                .iter()
-                .filter(|name| declared.contains(name))
-                .cloned()
-                .collect()
+            approved
         }
-        None => declared.clone(),
+        None => declared.iter().map(|server| server.name.clone()).collect(),
     };
     if approved.is_empty() && !declared.is_empty() || (approved.is_empty() && servers.is_some()) {
         notes.push("no MCP server of .mcp.json was approved for the session".to_string());
@@ -48,8 +51,33 @@ pub fn write_session_settings(
     notes
 }
 
-/// The server names `.mcp.json` declares; a missing or unreadable file is a note.
-fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<String> {
+/// A server `.mcp.json` declares: its name there and, when it is started with
+/// `mcpctl run <package>`, that package, the name the `mcpctl` catalog knows it by.
+struct DeclaredServer {
+    name: String,
+    package: Option<String>,
+}
+
+impl DeclaredServer {
+    fn serves(&self, chosen: &str) -> bool {
+        self.name == chosen || self.package.as_deref() == Some(chosen)
+    }
+}
+
+/// The `<package>` of a server entry started with `mcpctl run <package>`.
+fn mcpctl_package(entry: &serde_json::Value) -> Option<String> {
+    let command = Path::new(entry.get("command")?.as_str()?);
+    if command.file_name()? != "mcpctl" {
+        return None;
+    }
+    match entry.get("args")?.as_array()?.as_slice() {
+        [run, package, ..] if run.as_str() == Some("run") => package.as_str().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// The servers `.mcp.json` declares; a missing or unreadable file is a note.
+fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<DeclaredServer> {
     let text = match std::fs::read_to_string(worktree.join(".mcp.json")) {
         Ok(text) => text,
         Err(_) => {
@@ -64,7 +92,15 @@ fn declared_servers(worktree: &Path, notes: &mut Vec<String>) -> Vec<String> {
         Ok(json) => json
             .get("mcpServers")
             .and_then(|v| v.as_object())
-            .map(|servers| servers.keys().cloned().collect())
+            .map(|servers| {
+                servers
+                    .iter()
+                    .map(|(name, entry)| DeclaredServer {
+                        name: name.clone(),
+                        package: mcpctl_package(entry),
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         Err(_) => {
             notes.push(".mcp.json is not valid JSON; no MCP server was approved".to_string());
