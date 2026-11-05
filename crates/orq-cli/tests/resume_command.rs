@@ -203,3 +203,57 @@ fn a_resume_that_fails_in_setup_still_remembers_that_the_agent_finished() {
     let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
     assert!(!pushed.contains("again.txt"), "the agent was not asked again after a failed resume: {pushed}");
 }
+
+/// Rewrites the only run's events as if its process had been killed while a pause was pending:
+/// everything the pipeline recorded after the agent session is dropped, and a pause is requested.
+fn kill_with_pause_pending(w: &World) -> String {
+    let runs = w.state.join("orq/runs");
+    let run_id = std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned();
+    let path = runs.join(&run_id).join("events.jsonl");
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    for line in std::fs::read_to_string(&path).unwrap().lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        let kind = event["type"].as_str().unwrap_or_default();
+        let after_agent = event["stage"].as_str().is_some_and(|s| s != "implement_and_review");
+        if kind == "run.failed" || kind == "run.completed" || kind == "run.blocked" || after_agent {
+            continue;
+        }
+        kept.push(event);
+    }
+    let mut pause = kept.last().unwrap().clone();
+    pause["type"] = "run.pause_requested".into();
+    pause["stage"] = serde_json::Value::Null;
+    pause["event_id"] = format!("{run_id}-pause").into();
+    pause["payload"] = serde_json::json!({});
+    kept.push(pause);
+    let text: String = kept.iter().map(|e| format!("{e}\n")).collect();
+    std::fs::write(&path, text).unwrap();
+    run_id
+}
+
+#[test]
+fn a_run_killed_while_a_pause_was_pending_is_resumed_by_the_resume_command() {
+    let w = world("dead-pause");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = kill_with_pause_pending(&w);
+    set_gate(&w, "true");
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", path_with(&second_agent, &github(), &w.tag))
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+}

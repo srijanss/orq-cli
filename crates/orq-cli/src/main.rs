@@ -3622,11 +3622,29 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
     let store = orq_orchestrator::RunStore::new(&root);
-    let checkpoint = match orq_orchestrator::validate_checkpoint(&store, &repo, &run_id) {
-        Ok(checkpoint) => checkpoint,
-        Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+    // A run killed mid-flight never recorded an ending: when its process is gone it is a failed run.
+    if let Err(err) = orq_orchestrator::reconcile_interrupted(&store, &run_id, &orq_orchestrator::process_is_alive) {
+        return fail(format!("cannot resume {}: {err:?}", printable(&run_id)));
+    }
+    let stopped = store
+        .events(&run_id)
+        .map(|events| {
+            matches!(
+                orq_orchestrator::summarize_run(&events).phase,
+                orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked
+            )
+        })
+        .unwrap_or(false);
+    let next = if stopped {
+        // A failed or blocked run has no checkpoint; the pipeline picks it up through the group resume below.
+        "where it stopped".to_string()
+    } else {
+        match orq_orchestrator::validate_checkpoint(&store, &repo, &run_id) {
+            Ok(checkpoint) => checkpoint.next_stage.unwrap_or_else(|| "the end".to_string()),
+            Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+        }
     };
-    let next = checkpoint.next_stage.as_deref().unwrap_or("the end");
+    let next = next.as_str();
     if !yes {
         use std::io::{BufRead, IsTerminal, Write};
         if !std::io::stdin().is_terminal() {
