@@ -200,8 +200,8 @@ fn clicking_after_scrolling_selects_the_run_shown_on_that_row() {
 
     let line = selected_line(&mut many_runs(30), keys);
 
-    // 25 downs select run 26 of 30; with room for 3 cards the first shown is run 24.
-    assert!(line.contains("COM-24"), "{line}");
+    // 25 downs select run 26 of 30; with room for 4 cards the first shown is run 23.
+    assert!(line.contains("COM-23"), "{line}");
 }
 
 #[test]

@@ -502,7 +502,7 @@ pub fn render_popup_with_features(frame: &mut Frame, model: &PopupModel, rows: &
 pub fn render_feature_list(frame: &mut Frame, model: &PopupModel, rows: &[FeatureRow], state: &FeatureListState) {
     render_popup(frame, model);
     let list = list_area(frame.area());
-    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, None, &|_| &[], state, "no features");
+    render_rows(frame, list, rows.len(), |i| &rows[i], &|_| None, None, &|_| (&[], None), state, "no features");
 }
 
 /// Rows `0..len` of `row` that fit in `list`, the selected one marked. Only
@@ -514,7 +514,7 @@ fn render_rows<'a>(
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
-    buttons: &dyn Fn(usize) -> &'static [RowAction],
+    buttons: &dyn Fn(usize) -> RowEnd,
     state: &FeatureListState,
     empty: &str,
 ) {
@@ -589,7 +589,7 @@ fn render_cards<'a>(
     row: impl Fn(usize) -> &'a FeatureRow,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
-    buttons: &dyn Fn(usize) -> &'static [RowAction],
+    buttons: &dyn Fn(usize) -> RowEnd,
     state: &FeatureListState,
 ) {
     let visible = usize::from(list.height / CARD_HEIGHT);
@@ -616,14 +616,30 @@ fn render_cards<'a>(
         let pad = width.saturating_sub(used);
         let is_selected = selected == Some(index);
         let summary_style = if is_selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
-        let rects = row_button_rects(inner, buttons(index));
-        // The summary gives way to the buttons, keeping a space before the first.
-        let summary_room = rects.first().map_or(width, |(rect, _)| usize::from(rect.x - inner.x).saturating_sub(1));
+        let (actions, run_status) = buttons(index);
+        let rects = row_button_rects(inner, actions);
+        // Without buttons the latest run's status sits at the right end, when it fits beside the marker.
+        let badge = run_status
+            .as_deref()
+            .filter(|_| rects.is_empty())
+            .map(|text| truncate_right(&printable(text), width.saturating_sub(MARKER_WIDTH + 1)))
+            .filter(|text| !text.is_empty());
+        let badge_width = badge.as_deref().map_or(0, display_width);
+        // The summary gives way to the buttons or the badge, keeping a space before them.
+        let summary_room = match rects.first() {
+            Some((rect, _)) => usize::from(rect.x - inner.x).saturating_sub(1),
+            None if badge_width > 0 => width.saturating_sub(badge_width + 1),
+            None => width,
+        };
+        let summary = truncate_right(&summary, summary_room.saturating_sub(MARKER_WIDTH));
+        let summary_pad = width.saturating_sub(MARKER_WIDTH + display_width(&summary) + badge_width);
+        let mut first = vec![Span::styled(format!("{}{summary}", " ".repeat(MARKER_WIDTH.min(width))), summary_style)];
+        if let Some(text) = badge {
+            first.push(Span::raw(" ".repeat(summary_pad)));
+            first.push(Span::styled(text, status_style(run_status.as_deref().unwrap_or_default())));
+        }
         let lines = vec![
-            Line::styled(
-                format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&summary, summary_room.saturating_sub(MARKER_WIDTH))),
-                summary_style,
-            ),
+            Line::from(first),
             Line::from(vec![
                 Span::styled(format!("{marker}{name}"), name_style(is_selected)),
                 Span::raw(" ".repeat(pad)),
@@ -637,7 +653,11 @@ fn render_cards<'a>(
     }
 }
 
-/// A button on a feature's card, acting on the feature or on its latest run.
+/// The right end of a card's first line: its buttons, or else the status of the feature's latest
+/// run as a badge (`None` without one).
+type RowEnd = (&'static [RowAction], Option<String>);
+
+/// A button on a feature's card (Orchestrate) or on a run's card in the Orchestrations tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowAction {
     Orchestrate,
@@ -665,15 +685,24 @@ fn latest_runs(runs: Vec<RunRow>) -> HashMap<String, RunRow> {
 }
 
 /// The buttons of a feature in ledger `status` whose latest run is in `run` (`None` without a
-/// run). A paused run is resumed, not stopped: only a live process can be stopped.
+/// run): Orchestrate while it is pending with no live run. Its runs are acted on in the
+/// Orchestrations tab.
 fn row_actions(status: &str, run: Option<&str>) -> &'static [RowAction] {
     match run {
-        Some("running") => &[RowAction::Pause, RowAction::Stop],
-        Some("pause_requested") => &[RowAction::Stop],
-        Some("paused") => &[RowAction::Resume],
-        Some("failed") => &[RowAction::Resume, RowAction::Discard],
-        Some("blocked") => &[RowAction::Discard],
         None | Some("completed") if status == "pending" => &[RowAction::Orchestrate],
+        _ => &[],
+    }
+}
+
+/// The buttons of a run in `status`. A paused run is resumed, not stopped: only a live process
+/// can be stopped.
+fn run_actions(status: &str) -> &'static [RowAction] {
+    match status {
+        "running" => &[RowAction::Pause, RowAction::Stop],
+        "pause_requested" => &[RowAction::Stop],
+        "paused" => &[RowAction::Resume],
+        "failed" => &[RowAction::Resume, RowAction::Discard],
+        "blocked" => &[RowAction::Discard],
         _ => &[],
     }
 }
@@ -934,7 +963,7 @@ pub fn render_feature_search(
     search: &SearchState,
     state: &FeatureListState,
 ) {
-    render_search_in(frame, frame.area(), model, rows, items, None, search, state, &|_| None, None, &|_| &[]);
+    render_search_in(frame, frame.area(), model, rows, items, None, search, state, &|_| None, None, &|_| (&[], None));
 }
 
 fn render_search_in(
@@ -948,7 +977,7 @@ fn render_search_in(
     state: &FeatureListState,
     depends: &dyn Fn(usize) -> Option<String>,
     marked: Option<&dyn Fn(usize) -> bool>,
-    buttons: &dyn Fn(usize) -> &'static [RowAction],
+    buttons: &dyn Fn(usize) -> RowEnd,
 ) {
     render_header(frame, area, model);
     let full = list_area(area);
@@ -2430,43 +2459,40 @@ impl RunsState {
         };
     }
 
-    /// A press on a run's card selects it; a press on a button of the selected run's panel is
-    /// the action it names.
-    fn click(&mut self, body: Rect, press: Position) -> Option<RunAction> {
-        let (cards, panel) = self.layout(body);
-        if let Some(panel) = panel.filter(|panel| panel.contains(press)) {
-            let status = self.rows.as_ref().ok().and_then(|rows| rows.get(self.selected)).map(|run| run.status.as_str());
-            return run_buttons(panel_inner(panel), status).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action);
-        }
+    /// A press on a run's card selects it; a press on one of that card's buttons is also the
+    /// action it names. One-line rows have no buttons.
+    fn click(&mut self, body: Rect, press: Position) -> Option<RowAction> {
+        let cards = self.layout(body);
         if !cards.contains(press) {
             return None;
         }
-        let slot = usize::from((press.y - cards.y) / run_row_height(cards));
+        let height = run_row_height(cards);
+        let slot = usize::from((press.y - cards.y) / height);
         let visible = self.visible(body);
         let index = self.offset(visible) + slot;
-        if slot < visible && index < self.len() {
-            self.selected = index;
+        if slot >= visible || index >= self.len() {
+            return None;
         }
-        None
+        self.selected = index;
+        let status = self.rows.as_ref().ok()?.get(index)?.status.as_str();
+        if height != CARD_HEIGHT {
+            return None;
+        }
+        let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
+        let inner = Block::bordered().inner(Rect::new(cards.x, top, cards.width, height));
+        row_button_rects(inner, run_actions(status)).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action)
     }
 
-    /// The area for run cards and, when the body is tall enough, the selected run's panel. The
-    /// last body row is the hint, and the row above it holds the unreadable-runs warning when
-    /// there is one.
-    fn layout(&self, body: Rect) -> (Rect, Option<Rect>) {
+    /// The area for run cards. The last body row is the hint, and the row above it holds the
+    /// unreadable-runs warning when there is one.
+    fn layout(&self, body: Rect) -> Rect {
         let reserved = if self.unreadable > 0 && body.height > 1 { 2 } else { 1 };
-        let rest = Rect::new(body.x, body.y, body.width, body.height.saturating_sub(reserved));
-        if body.width >= PANEL_MIN_WIDTH && body.height >= PANEL_MIN_BODY_HEIGHT && self.len() > 0 {
-            let cards = Rect::new(rest.x, rest.y, rest.width, rest.height - PANEL_ROWS);
-            (cards, Some(Rect::new(rest.x, cards.bottom(), rest.width, PANEL_ROWS)))
-        } else {
-            (rest, None)
-        }
+        Rect::new(body.x, body.y, body.width, body.height.saturating_sub(reserved))
     }
 
     /// Cards that fit, or one-line rows when there is no room for a whole card.
     fn visible(&self, body: Rect) -> usize {
-        let cards = self.layout(body).0;
+        let cards = self.layout(body);
         if cards.height == 0 {
             0
         } else {
@@ -2479,45 +2505,6 @@ impl RunsState {
     fn offset(&self, visible: usize) -> usize {
         (self.selected + 1).saturating_sub(visible)
     }
-}
-
-/// What a button of the selected run's panel does: the same as its key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunAction {
-    Pause,
-    Stop,
-    Resume,
-}
-
-/// The labels of the controls a run in `status` allows.
-fn run_controls(status: Option<&str>) -> &'static [(&'static str, RunAction)] {
-    match status {
-        Some("running") => &[("[ Pause (p) ]", RunAction::Pause), ("[ Stop (s) ]", RunAction::Stop)],
-        Some("pause_requested") => &[("[ Stop (s) ]", RunAction::Stop)],
-        Some("paused" | "failed" | "blocked") => &[("[ Resume (c) ]", RunAction::Resume)],
-        _ => &[],
-    }
-}
-
-/// Where each button of a run in `status` sits on the panel's `inner` row, left to right; a
-/// button that does not fit whole is left out.
-fn run_buttons(inner: Rect, status: Option<&str>) -> Vec<(Rect, RunAction)> {
-    let mut x = inner.x;
-    let mut buttons = Vec::new();
-    for (label, action) in run_controls(status) {
-        let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
-        if inner.height == 0 || x.saturating_add(width) > inner.right() {
-            break;
-        }
-        buttons.push((Rect::new(x, inner.y, width, 1), *action));
-        x = x.saturating_add(width + 1);
-    }
-    buttons
-}
-
-/// The one-row area inside a bordered panel.
-fn panel_inner(panel: Rect) -> Rect {
-    Rect::new(panel.x + 1, panel.y + 1, panel.width.saturating_sub(2), panel.height.saturating_sub(2).min(1))
 }
 
 /// A run drawn like a feature card: its feature and status, then its stage and models.
@@ -2554,6 +2541,9 @@ fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = usize::from(inner.width);
+    let buttons = row_button_rects(inner, run_actions(&run.status));
+    // The title gives way to the buttons, keeping a space before the first.
+    let title_room = buttons.first().map_or(width, |(rect, _)| usize::from(rect.x - inner.x).saturating_sub(1));
     let detail = format!(
         "{} · {} / {}",
         run.stage.as_deref().unwrap_or("-"),
@@ -2562,39 +2552,15 @@ fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) 
     );
     let detail_style = if selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
     let lines = vec![
-        run_title_line(run, selected, width),
+        run_title_line(run, selected, title_room),
         Line::styled(
             format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&printable(&detail), width.saturating_sub(MARKER_WIDTH))),
             detail_style,
         ),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-/// The selected run's panel: its feature in the title and the buttons its status allows.
-fn render_run_panel(frame: &mut Frame, panel: Rect, run: Option<&RunRow>) {
-    let room = usize::from(panel.width.saturating_sub(2));
-    let title = match run {
-        Some(run) => format!(" Selected run · {} ", printable(&run.feature)),
-        None => " Selected run ".to_string(),
-    };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(truncate_right(&title, room));
-    frame.render_widget(block, panel);
-    let inner = panel_inner(panel);
-    let status = run.map(|run| run.status.as_str());
-    let buttons = run_buttons(inner, status);
-    if buttons.is_empty() {
-        let text = match run {
-            Some(run) => format!("No controls while {}", printable(&run.status)),
-            None => "No run selected".to_string(),
-        };
-        frame.render_widget(Paragraph::new(truncate_right(&text, room)).style(Style::default().fg(Color::DarkGray)), inner);
-    }
-    for ((rect, _), (label, _)) in buttons.iter().zip(run_controls(status)) {
-        frame.render_widget(Paragraph::new(*label), *rect);
+    for (rect, action) in buttons {
+        frame.render_widget(Paragraph::new(Span::styled(action.label(), Style::new().fg(Color::Cyan))), rect);
     }
 }
 
@@ -2610,7 +2576,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
         Err(reason) => put(frame, 0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
         Ok(rows) if rows.is_empty() => put(frame, 0, Line::from(Span::styled("No runs yet", dim))),
         Ok(rows) => {
-            let (cards, panel) = state.layout(body);
+            let cards = state.layout(body);
             let visible = state.visible(body);
             let offset = state.offset(visible);
             for (slot, (i, run)) in rows.iter().enumerate().skip(offset).take(visible).enumerate() {
@@ -2618,9 +2584,6 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                 let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
                 let area = Rect::new(cards.x, top, cards.width, height);
                 render_run_card(frame, area, run, i == state.selected);
-            }
-            if let Some(panel) = panel {
-                render_run_panel(frame, panel, rows.get(state.selected));
             }
         }
     }
@@ -3379,20 +3342,22 @@ impl Browser {
             .map(|(_, action)| (entry.name.clone(), action))
     }
 
-    /// A row button pressed on `feature`'s card: Orchestrate opens the launch picker for it, the
-    /// others act on its latest run, asking first before a stop, resume or discard.
+    /// A row button pressed on `feature`'s card: Orchestrate opens the launch picker for it.
     fn row_action(&mut self, backend: &mut dyn BrowserBackend, feature: String, action: RowAction) {
         if action == RowAction::Orchestrate {
             self.open_launch_picker(backend, vec![feature], Vec::new());
-            return;
         }
-        let Some(run_id) = self.feature_runs.get(&feature).map(|run| run.run_id.clone()) else { return };
+    }
+
+    /// A button pressed on `run_id`'s card in the Orchestrations tab: a pause is done at once, a
+    /// stop, resume or discard is asked first.
+    fn run_row_action(&mut self, backend: &mut dyn BrowserBackend, run_id: String, action: RowAction) {
         match action {
             RowAction::Pause => {
                 self.notice = Some(match backend.pause_run(&run_id) {
                     Ok(message) | Err(message) => message,
                 });
-                self.load_feature_runs(backend);
+                self.refresh_runs(backend);
             }
             RowAction::Stop => {
                 self.notice = Some(format!("Stop {run_id}? Its process ends and it can be resumed later; y to confirm, any other key cancels"));
@@ -3443,7 +3408,24 @@ impl Browser {
         self.notice = Some(match done {
             Ok(message) | Err(message) => printable(&message),
         });
-        self.load_feature_runs(backend);
+        self.refresh_runs(backend);
+    }
+
+    /// Reads the runs again after acting on one: on the Orchestrations tab its list is read and the
+    /// selection kept on the same run (or the nearest row when that run is gone), which also tells
+    /// the feature rows; elsewhere only the feature rows' runs are read.
+    fn refresh_runs(&mut self, backend: &mut dyn BrowserBackend) {
+        if self.tab != Tab::Runs {
+            self.load_feature_runs(backend);
+            return;
+        }
+        let (selected, run_id) = (self.runs.selected, self.selected_run().map(|run| run.run_id.clone()));
+        self.open_runs(backend);
+        if let Ok(rows) = &self.runs.rows {
+            self.runs.selected = run_id
+                .and_then(|id| rows.iter().position(|row| row.run_id == id))
+                .unwrap_or_else(|| selected.min(rows.len().saturating_sub(1)));
+        }
     }
 
     fn apply_load(&mut self, loaded: Result<Vec<BrowserEntry>, LedgerErrorView>) {
@@ -3731,7 +3713,7 @@ impl Browser {
         self.notice = Some(match backend.pause_run(&run_id) {
             Ok(message) | Err(message) => message,
         });
-        self.load_feature_runs(backend);
+        self.refresh_runs(backend);
     }
 
     /// `s` on a running run: wait for `y` before ending its process.
@@ -3820,7 +3802,7 @@ impl Browser {
         self.notice = Some(match backend.resume_run(run_id) {
             Ok(message) | Err(message) => message,
         });
-        self.load_feature_runs(backend);
+        self.refresh_runs(backend);
     }
 
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
@@ -4026,7 +4008,11 @@ impl Browser {
         let marks = &self.marked;
         let is_marked = |index: usize| entries.get(index).is_some_and(|e| marks.contains(&e.name));
         let marked: Option<&dyn Fn(usize) -> bool> = if marks.is_empty() { None } else { Some(&is_marked) };
-        let buttons = |index: usize| entries.get(index).map_or(&[][..], |e| self.row_actions_of(e));
+        let buttons = |index: usize| -> RowEnd {
+            entries.get(index).map_or((&[][..], None), |e| {
+                (self.row_actions_of(e), self.feature_runs.get(&e.name).map(|run| run.status.clone()))
+            })
+        };
         render_search_in(
             frame,
             list,
@@ -4634,11 +4620,10 @@ where
                     let waiting = browser.runs.stopping.is_some() || browser.runs.resuming.is_some() || browser.runs.switching.is_some();
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) && !waiting {
                         browser.notice = None;
-                        match browser.runs.click(chrome_body(full), Position::new(mouse.column, mouse.row)) {
-                            Some(RunAction::Pause) => browser.pause_selected_run(backend),
-                            Some(RunAction::Stop) => browser.ask_to_stop_selected_run(),
-                            Some(RunAction::Resume) => browser.ask_to_resume_selected_run(backend),
-                            None => {}
+                        if let Some(action) = browser.runs.click(chrome_body(full), Position::new(mouse.column, mouse.row)) {
+                            if let Some(run_id) = browser.selected_run().map(|run| run.run_id.clone()) {
+                                browser.run_row_action(backend, run_id, action);
+                            }
                         }
                         dirty = true;
                     }

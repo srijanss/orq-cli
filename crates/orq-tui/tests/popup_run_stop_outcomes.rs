@@ -86,7 +86,7 @@ fn a_successful_stop_reloads_the_runs_keeps_the_selection_and_the_message_and_c_
     assert!(has(&rows, "Stopped run-2; c resumes it"), "{rows:#?}");
     let selected = rows.iter().position(|r| r.contains("> COM-02")).expect("run-2 stays selected");
     assert!(rows[selected].contains("failed"), "{rows:#?}");
-    assert!(has(&rows, "[ Resume (c) ]"), "{rows:#?}");
+    assert!(rows[selected].contains("[Resume]"), "{rows:#?}");
 
     let mut backend = Fake { stop: Ok("Stopped run-2".into()), stopped: false, calls: vec![] };
     let mut events = vec![key(KeyCode::Char('R')), key(KeyCode::Down)];

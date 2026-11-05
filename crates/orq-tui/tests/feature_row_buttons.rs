@@ -87,6 +87,7 @@ impl BrowserBackend for Fake {
             entry("delta", "in_progress"),
             entry("echo", "in_progress"),
             entry("foxtrot", "completed"),
+            entry("golf", "pending"),
         ])
     }
     fn promote(&mut self, _feature: &str) -> PromoteOutcome {
@@ -158,7 +159,8 @@ fn show_sized(backend: &mut Fake, events: Vec<Event>, width: u16, height: u16) -
     (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect()
 }
 
-/// The card line that holds a feature's buttons: the line above its name.
+/// The first line of a feature's card, which holds its button or its latest run's status: the
+/// line above its name.
 fn button_line(screen: &[String], feature: &str) -> (u16, String) {
     let y = screen
         .iter()
@@ -174,6 +176,23 @@ fn button_at(screen: &[String], feature: &str, button: &str) -> (u16, u16) {
     (line[..byte].chars().count() as u16 + 1, y)
 }
 
+/// The title line of the `nth` Orchestrations card of `feature`, which holds that run's buttons.
+fn run_line(screen: &[String], feature: &str, nth: usize) -> (u16, String) {
+    let (y, line) = screen
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(&format!(" {feature} ")))
+        .nth(nth)
+        .unwrap_or_else(|| panic!("run {nth} of {feature} is listed: {screen:#?}"));
+    (y as u16, line.clone())
+}
+
+fn run_button(screen: &[String], feature: &str, nth: usize, button: &str) -> (u16, u16) {
+    let (y, line) = run_line(screen, feature, nth);
+    let byte = line.find(button).unwrap_or_else(|| panic!("run {nth} of {feature} has {button}: {line:?}"));
+    (line[..byte].chars().count() as u16 + 1, y)
+}
+
 fn click((column, row): (u16, u16)) -> Event {
     Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE })
 }
@@ -182,61 +201,43 @@ fn key(c: char) -> Event {
     Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
 }
 
-const ALL: [&str; 5] = ["[Orchestrate]", "[Pause]", "[Stop]", "[Resume]", "[Discard]"];
+fn press(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
 
-#[test]
-fn each_feature_row_shows_the_buttons_its_latest_run_allows() {
-    let screen = show(&mut Fake::default(), vec![]);
-    for (feature, expected) in [
-        ("alpha", &["[Orchestrate]"][..]),
-        ("bravo", &["[Pause]", "[Stop]"][..]),
-        ("charlie", &["[Resume]"][..]),
-        ("delta", &["[Resume]", "[Discard]"][..]),
-        ("echo", &["[Discard]"][..]),
-        ("foxtrot", &[][..]),
-    ] {
-        let (_, line) = button_line(&screen, feature);
-        for label in ALL {
-            assert_eq!(line.contains(label), expected.contains(&label), "{feature} and {label}: {line:?}");
-        }
-    }
+/// The keys that open the Orchestrations tab from Features.
+fn to_runs() -> Vec<Event> {
+    vec![press(KeyCode::Tab), press(KeyCode::Tab)]
+}
+
+const ALL: [&str; 5] = ["[Orchestrate]", "[Pause]", "[Stop]", "[Resume]", "[Discard]"];
+/// A terminal height at which the Orchestrations tab lists its runs one line each.
+const RUNS_COMPACT: u16 = 4;
+const RUN_BUTTONS: [&str; 4] = ["[Pause]", "[Stop]", "[Resume]", "[Discard]"];
+
+/// What the fake was asked to do to runs, leaving out the reads.
+fn acted(backend: &Fake) -> Vec<String> {
+    backend.calls.iter().filter(|call| !matches!(call.as_str(), "load_runs" | "feature_runs" | "profiles")).cloned().collect()
 }
 
 #[test]
-fn a_row_button_acts_on_its_own_rows_run_and_asks_before_stopping_resuming_or_discarding() {
+fn a_feature_row_shows_orchestrate_only_when_pending_with_no_live_run_and_otherwise_its_runs_status() {
     let screen = show(&mut Fake::default(), vec![]);
-
-    let mut backend = Fake::default();
-    show(&mut backend, vec![click(button_at(&screen, "bravo", "[Pause]"))]);
-    assert!(backend.calls.contains(&"pause run-2".to_string()), "{:?}", backend.calls);
-
-    let mut backend = Fake::default();
-    show(&mut backend, vec![click(button_at(&screen, "bravo", "[Stop]")), key('y')]);
-    assert!(backend.calls.contains(&"stop run-2".to_string()), "{:?}", backend.calls);
-
-    let mut backend = Fake::default();
-    show(&mut backend, vec![click(button_at(&screen, "charlie", "[Resume]")), key('y')]);
-    assert!(
-        backend.calls.contains(&"check run-3".to_string()) && backend.calls.contains(&"resume run-3".to_string()),
-        "{:?}",
-        backend.calls
-    );
-
-    let mut backend = Fake::default();
-    let asked = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]"))]);
-    assert!(asked.iter().any(|line| line.contains("Discard run-5?")), "{asked:#?}");
-    assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "nothing is discarded before y: {:?}", backend.calls);
-
-    let mut backend = Fake::default();
-    let done = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]);
-    assert!(backend.calls.contains(&"discard run-5".to_string()), "{:?}", backend.calls);
-    assert!(done.iter().any(|line| line.contains("Discarded run-5")), "{done:#?}");
-    let reloads = backend.calls.iter().filter(|call| *call == "feature_runs").count();
-    assert_eq!(reloads, 2, "the rows' runs are read again after the discard: {:?}", backend.calls);
-
-    let mut backend = Fake::default();
-    show(&mut backend, vec![click(button_at(&screen, "delta", "[Discard]")), key('n')]);
-    assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "any other key cancels: {:?}", backend.calls);
+    for (feature, button, badge) in [
+        ("alpha", true, None),
+        ("bravo", false, Some("running")),
+        ("charlie", false, Some("paused")),
+        ("delta", false, Some("failed")),
+        ("echo", false, Some("blocked")),
+        ("foxtrot", false, Some("completed")),
+    ] {
+        let (_, line) = button_line(&screen, feature);
+        assert_eq!(line.contains("[Orchestrate]"), button, "{feature}: {line:?}");
+        assert!(RUN_BUTTONS.iter().all(|label| !line.contains(label)), "{feature} has no run buttons: {line:?}");
+        if let Some(badge) = badge {
+            assert!(line.contains(badge), "{feature} shows {badge}: {line:?}");
+        }
+    }
 }
 
 #[test]
@@ -258,26 +259,19 @@ fn text_at(screen: &[String], text: &str) -> (u16, u16) {
 }
 
 #[test]
-fn a_click_elsewhere_cancels_a_row_buttons_question_so_a_later_y_does_nothing() {
-    let screen = show(&mut Fake::default(), vec![]);
-    let tab = text_at(&screen, "Orchestrations");
+fn a_click_elsewhere_cancels_a_run_buttons_question_so_a_later_y_does_nothing() {
+    let screen = show(&mut Fake::default(), to_runs());
+    let tab = text_at(&screen, "Features");
     let mut backend = Fake::default();
-    let after = show(&mut backend, vec![click(button_at(&screen, "echo", "[Discard]")), click(tab), key('y')]);
+    let after = show(&mut backend, [to_runs(), vec![click(run_button(&screen, "echo", 0, "[Discard]")), click(tab), key('y')]].concat());
     assert!(!backend.calls.iter().any(|call| call.starts_with("discard")), "the question was cancelled: {:?}", backend.calls);
     assert!(!after.iter().any(|line| line.contains("Discard run-5?")), "{after:#?}");
-}
-
-fn press(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 #[test]
 fn stopping_from_the_orchestrations_tab_reads_the_runs_once_for_the_list_and_the_rows() {
     let mut backend = Fake::default();
-    let screen = show(
-        &mut backend,
-        vec![press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Down), key('s'), key('y')],
-    );
+    let screen = show(&mut backend, [to_runs(), vec![press(KeyCode::Down), key('s'), key('y')]].concat());
     let after_stop = backend
         .calls
         .iter()
@@ -290,49 +284,65 @@ fn stopping_from_the_orchestrations_tab_reads_the_runs_once_for_the_list_and_the
 }
 
 #[test]
-fn a_refused_resume_check_shows_why_and_asks_nothing_so_y_resumes_nothing() {
-    let screen = show(&mut Fake::default(), vec![]);
-    let mut backend = Fake { refuse_resume: Some("run-3 cannot resume: its base moved".into()), ..Fake::default() };
-    let after = show(&mut backend, vec![click(button_at(&screen, "charlie", "[Resume]")), key('y')]);
-    assert!(!backend.calls.contains(&"resume run-3".to_string()), "{:?}", backend.calls);
-    assert!(after.iter().any(|line| line.contains("its base moved")), "{after:#?}");
-}
-
-#[test]
-fn a_failed_stop_resume_or_discard_is_shown_without_its_control_characters_and_the_row_keeps_its_buttons() {
-    let screen = show(&mut Fake::default(), vec![]);
-    for (feature, button, call) in
-        [("bravo", "[Stop]", "stop run-2"), ("charlie", "[Resume]", "resume run-3"), ("echo", "[Discard]", "discard run-5")]
-    {
-        let mut backend = Fake { fail_with: Some("it failed: \u{1b}[2Jdisk full".into()), ..Fake::default() };
-        let after = show(&mut backend, vec![click(button_at(&screen, feature, button)), key('y')]);
+fn a_run_button_answered_with_y_reads_the_runs_once_for_the_list_and_the_rows() {
+    let screen = show(&mut Fake::default(), to_runs());
+    for (feature, nth, button, call) in [("bravo", 1, "[Stop]", "stop run-2"), ("charlie", 0, "[Resume]", "resume run-3"), ("echo", 0, "[Discard]", "discard run-5")] {
+        let mut backend = Fake::default();
+        show(&mut backend, [to_runs(), vec![click(run_button(&screen, feature, nth, button)), key('y')]].concat());
+        let after = backend.calls.iter().skip_while(|c| *c != call).skip(1).filter(|c| *c == "load_runs" || *c == "feature_runs").count();
         assert!(backend.calls.contains(&call.to_string()), "{:?}", backend.calls);
-        assert!(after.iter().any(|line| line.contains("disk full")), "{feature}: {after:#?}");
-        assert!(!after.iter().any(|line| line.contains('\u{1b}')), "{feature}: no raw escape reaches the screen");
-        assert!(button_line(&after, feature).1.contains(button), "{feature} still offers {button}: {after:#?}");
+        assert_eq!(after, 1, "{call}: {:?}", backend.calls);
     }
 }
 
 #[test]
-fn a_rows_buttons_follow_its_run_after_a_pause_or_a_discard() {
-    let screen = show(&mut Fake::default(), vec![]);
+fn a_refused_resume_check_shows_why_and_asks_nothing_so_y_resumes_nothing() {
+    let screen = show(&mut Fake::default(), to_runs());
+    let mut backend = Fake { refuse_resume: Some("run-3 cannot resume: its base moved".into()), ..Fake::default() };
+    let after = show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Resume]"))]].concat());
+    assert!(after.iter().any(|line| line.contains("its base moved")), "{after:#?}");
 
-    let paused = show(&mut Fake::default(), vec![click(button_at(&screen, "bravo", "[Pause]"))]);
-    let (_, bravo) = button_line(&paused, "bravo");
-    assert!(bravo.contains("[Stop]") && !bravo.contains("[Pause]"), "a pause pending leaves only Stop: {bravo:?}");
-
-    let discarded = show(&mut Fake::default(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]);
-    let (_, echo) = button_line(&discarded, "echo");
-    assert!(ALL.iter().all(|label| !echo.contains(label)), "a discarded run leaves no button: {echo:?}");
+    let mut backend = Fake { refuse_resume: Some("run-3 cannot resume: its base moved".into()), ..Fake::default() };
+    show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Resume]")), key('y')]].concat());
+    assert!(!backend.calls.contains(&"resume run-3".to_string()), "nothing was asked, so y resumes nothing: {:?}", backend.calls);
 }
 
 #[test]
-fn a_run_that_paused_on_its_own_shows_resume_on_its_row_after_the_orchestrations_tab_lists_it() {
+fn a_failed_stop_resume_or_discard_is_shown_without_its_control_characters_and_the_row_keeps_its_buttons() {
+    let screen = show(&mut Fake::default(), to_runs());
+    for (feature, nth, button, call) in
+        [("bravo", 1, "[Stop]", "stop run-2"), ("charlie", 0, "[Resume]", "resume run-3"), ("echo", 0, "[Discard]", "discard run-5")]
+    {
+        let mut backend = Fake { fail_with: Some("it failed: \u{1b}[2Jdisk full".into()), ..Fake::default() };
+        let after = show(&mut backend, [to_runs(), vec![click(run_button(&screen, feature, nth, button)), key('y')]].concat());
+        assert!(backend.calls.contains(&call.to_string()), "{:?}", backend.calls);
+        assert!(after.iter().any(|line| line.contains("disk full")), "{feature}: {after:#?}");
+        assert!(!after.iter().any(|line| line.contains('\u{1b}')), "{feature}: no raw escape reaches the screen");
+        assert!(run_line(&after, feature, nth).1.contains(button), "{feature} still offers {button}: {after:#?}");
+    }
+}
+
+#[test]
+fn a_runs_buttons_and_its_features_status_follow_it_after_a_pause_or_a_discard() {
+    let screen = show(&mut Fake::default(), to_runs());
+
+    let paused = show(&mut Fake::default(), [to_runs(), vec![click(run_button(&screen, "bravo", 1, "[Pause]"))]].concat());
+    let (_, bravo) = run_line(&paused, "bravo", 1);
+    assert!(bravo.contains("[Stop]") && !bravo.contains("[Pause]"), "a pause pending leaves only Stop: {bravo:?}");
+    let features = show(&mut Fake::default(), [to_runs(), vec![click(run_button(&screen, "bravo", 1, "[Pause]")), press(KeyCode::Esc)]].concat());
+    assert!(button_line(&features, "bravo").1.contains("pause_requested"), "{features:#?}");
+
+    let discarded = show(&mut Fake::default(), [to_runs(), vec![click(run_button(&screen, "echo", 0, "[Discard]")), key('y')]].concat());
+    assert!(!discarded.iter().any(|line| line.contains(" echo ")), "a discarded run leaves the list: {discarded:#?}");
+}
+
+#[test]
+fn a_run_that_paused_on_its_own_shows_on_its_feature_row_after_the_orchestrations_tab_lists_it() {
     let mut backend = Fake { changes: vec![("load_runs", "run-2", "paused")], ..Fake::default() };
-    let screen = show(&mut backend, vec![press(KeyCode::Tab), press(KeyCode::Tab), press(KeyCode::Esc)]);
+    let screen = show(&mut backend, [to_runs(), vec![press(KeyCode::Esc)]].concat());
 
     let (_, line) = button_line(&screen, "bravo");
-    assert!(line.contains("[Resume]") && !line.contains("[Pause]") && !line.contains("[Stop]"), "{line:?}");
+    assert!(line.contains("paused") && !line.contains("running"), "{line:?}");
 }
 
 #[test]
@@ -344,54 +354,48 @@ fn coming_back_to_features_from_another_tab_reads_the_runs_again() {
     );
 
     let (_, line) = button_line(&screen, "bravo");
-    assert!(line.contains("[Resume]") && line.contains("[Discard]") && !line.contains("[Pause]"), "{line:?}");
-}
-
-/// What the fake was asked to do to runs, leaving out the reads.
-fn acted(backend: &Fake) -> Vec<String> {
-    backend.calls.iter().filter(|call| !matches!(call.as_str(), "load_runs" | "feature_runs")).cloned().collect()
+    assert!(line.contains("failed") && !line.contains("running"), "{line:?}");
 }
 
 #[test]
-fn after_a_name_search_a_rows_button_acts_on_that_rows_run() {
-    let search = || vec![key('/'), key('e'), key('c'), key('h'), key('o'), press(KeyCode::Enter)];
+fn after_a_name_search_orchestrate_opens_the_picker_for_that_row() {
+    let search = || vec![key('/'), key('g'), key('o'), key('l'), key('f'), press(KeyCode::Enter)];
     let screen = show(&mut Fake::default(), search());
-    assert!(!screen.iter().any(|line| line.contains(" bravo ")), "the search hides bravo: {screen:#?}");
+    assert!(!screen.iter().any(|line| line.contains(" alpha ")), "the search hides alpha: {screen:#?}");
 
     let mut backend = Fake::default();
-    show(&mut backend, [search(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]].concat());
-    assert_eq!(acted(&backend), vec!["discard run-5".to_string()]);
+    let picked = show(&mut backend, [search(), vec![click(button_at(&screen, "golf", "[Orchestrate]"))]].concat());
+    assert!(backend.calls.contains(&"profiles".to_string()), "{:?} {picked:#?}", backend.calls);
 }
 
 #[test]
-fn after_the_list_scrolls_a_rows_button_acts_on_that_rows_run() {
+fn after_the_list_scrolls_orchestrate_opens_the_picker_for_that_row() {
     let (width, height) = (WIDTH, 22);
     let down = || vec![press(KeyCode::Down); 7];
     let screen = show_sized(&mut Fake::default(), down(), width, height);
     assert!(!screen.iter().any(|line| line.contains(" alpha ")), "alpha has scrolled away: {screen:#?}");
 
     let mut backend = Fake::default();
-    show_sized(&mut backend, [down(), vec![click(button_at(&screen, "delta", "[Resume]")), key('y')]].concat(), width, height);
-    assert_eq!(acted(&backend), vec!["check run-4".to_string(), "resume run-4".to_string()]);
-
-    let mut backend = Fake::default();
-    show_sized(&mut backend, [down(), vec![click(button_at(&screen, "echo", "[Discard]")), key('y')]].concat(), width, height);
-    assert_eq!(acted(&backend), vec!["discard run-5".to_string()]);
+    show_sized(&mut backend, [down(), vec![click(button_at(&screen, "golf", "[Orchestrate]"))]].concat(), width, height);
+    assert!(backend.calls.contains(&"profiles".to_string()), "{:?}", backend.calls);
 }
 
 #[test]
-fn the_compact_layout_draws_no_row_buttons_and_a_click_there_acts_on_no_run() {
-    let (width, height) = (WIDTH, 9);
-    let screen = show_sized(&mut Fake::default(), vec![], width, height);
-    assert!(screen.iter().any(|line| line.contains("alpha")), "the rows are listed, one line each: {screen:#?}");
-    assert!(!screen.iter().any(|line| ALL.iter().any(|label| line.contains(label))), "{screen:#?}");
+fn the_compact_layouts_draw_no_row_buttons_and_a_click_there_acts_on_no_run() {
+    // Features rows are one line each at 9 rows; the Orchestrations cards need fewer rows still.
+    for (tab, height) in [(vec![], 9), (to_runs(), RUNS_COMPACT)] {
+        let width = WIDTH;
+        let screen = show_sized(&mut Fake::default(), tab.clone(), width, height);
+        assert!(screen.iter().any(|line| line.contains("bravo")), "the rows are listed, one line each: {screen:#?}");
+        assert!(!screen.iter().any(|line| ALL.iter().any(|label| line.contains(label))), "{screen:#?}");
 
-    let mut backend = Fake::default();
-    let clicks: Vec<Event> = (0..height).flat_map(|row| [click((width - 3, row)), key('y')]).collect();
-    show_sized(&mut backend, clicks, width, height);
-    assert!(
-        !acted(&backend).iter().any(|call| ["pause", "stop", "resume", "discard", "check"].iter().any(|verb| call.starts_with(verb))),
-        "{:?}",
-        backend.calls
-    );
+        let mut backend = Fake::default();
+        let clicks: Vec<Event> = (0..height).flat_map(|row| [click((width - 3, row)), key('y')]).collect();
+        show_sized(&mut backend, [tab, clicks].concat(), width, height);
+        assert!(
+            !acted(&backend).iter().any(|call| ["pause", "stop", "resume", "discard", "check"].iter().any(|verb| call.starts_with(verb))),
+            "{:?}",
+            backend.calls
+        );
+    }
 }

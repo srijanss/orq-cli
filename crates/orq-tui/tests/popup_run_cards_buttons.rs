@@ -107,17 +107,19 @@ fn each_run_is_a_bordered_card_with_its_status_and_its_stage_and_models_beneath(
     assert!(detail.contains("implement") && detail.contains("opus") && detail.contains("kimi"), "{rows:#?}");
     let (_, other) = find(&rows, "COM-02").expect("the second card");
     assert!(other >= name_row + 4, "one card per run: {rows:#?}");
-    assert!(has(&rows, "Selected run"), "{rows:#?}");
+    assert!(!has(&rows, "Selected run"), "the buttons are on the cards: {rows:#?}");
+    assert!(has(&rows, "[Pause]") && rows[usize::from(name_row)].contains("[Pause]"), "{rows:#?}");
 }
 
 #[test]
-fn the_selected_run_offers_the_buttons_its_status_allows() {
+fn a_run_card_offers_the_buttons_its_status_allows() {
     for (status, shown, hidden) in [
-        ("running", vec!["[ Pause (p) ]", "[ Stop (s) ]"], vec!["[ Resume (c) ]"]),
-        ("pause_requested", vec!["[ Stop (s) ]"], vec!["[ Pause (p) ]", "[ Resume (c) ]"]),
-        ("paused", vec!["[ Resume (c) ]"], vec!["[ Pause (p) ]", "[ Stop (s) ]"]),
-        ("failed", vec!["[ Resume (c) ]"], vec!["[ Pause (p) ]", "[ Stop (s) ]"]),
-        ("completed", vec![], vec!["[ Pause (p) ]", "[ Stop (s) ]", "[ Resume (c) ]"]),
+        ("running", vec!["[Pause]", "[Stop]"], vec!["[Resume]"]),
+        ("pause_requested", vec!["[Stop]"], vec!["[Pause]", "[Resume]"]),
+        ("paused", vec!["[Resume]"], vec!["[Pause]", "[Stop]"]),
+        ("failed", vec!["[Resume]", "[Discard]"], vec!["[Pause]", "[Stop]"]),
+        ("blocked", vec!["[Discard]"], vec!["[Pause]", "[Stop]", "[Resume]"]),
+        ("completed", vec![], vec!["[Pause]", "[Stop]", "[Resume]", "[Discard]"]),
     ] {
         let rows = show(&mut Fake { status, calls: vec![] }, vec![]);
         for label in shown {
@@ -132,7 +134,7 @@ fn the_selected_run_offers_the_buttons_its_status_allows() {
 #[test]
 fn clicking_pause_pauses_the_run() {
     let rows = show(&mut Fake { status: "running", calls: vec![] }, vec![]);
-    let (x, y) = find(&rows, "[ Pause (p) ]").unwrap();
+    let (x, y) = find(&rows, "[Pause]").unwrap();
     let mut backend = Fake { status: "running", calls: vec![] };
     show(&mut backend, vec![click(x + 2, y)]);
     assert_eq!(backend.calls, vec!["pause run-1"]);
@@ -154,7 +156,7 @@ fn stop_asks_for_y_first_by_key_and_by_click() {
     assert!(cancelled.calls.is_empty() && has(&rows, "Did not stop run-1"), "{rows:#?}");
 
     let rows = show(&mut Fake { status: "running", calls: vec![] }, vec![]);
-    let (x, y) = find(&rows, "[ Stop (s) ]").unwrap();
+    let (x, y) = find(&rows, "[Stop]").unwrap();
     let mut by_click = Fake { status: "running", calls: vec![] };
     show(&mut by_click, vec![click(x + 2, y), key('y')]);
     assert_eq!(by_click.calls, vec!["stop run-1"]);
@@ -171,7 +173,7 @@ fn stop_is_refused_for_a_run_that_is_not_running() {
 #[test]
 fn clicking_resume_asks_to_resume_and_y_resumes() {
     let rows = show(&mut Fake { status: "paused", calls: vec![] }, vec![]);
-    let (x, y) = find(&rows, "[ Resume (c) ]").unwrap();
+    let (x, y) = find(&rows, "[Resume]").unwrap();
     let mut backend = Fake { status: "paused", calls: vec![] };
     show(&mut backend, vec![click(x + 2, y), key('y')]);
     assert_eq!(backend.calls, vec!["check run-1", "resume run-1"]);
