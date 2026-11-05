@@ -29,6 +29,7 @@ mod review_request;
 mod run_list;
 mod run_settings;
 mod run_status;
+mod stop;
 mod session_references;
 mod session_settings;
 mod setup;
@@ -94,6 +95,7 @@ pub use session_references::{
 };
 pub use session_settings::{exclude_worktrees_dir, setup_mcp_servers, write_session_settings};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
+pub use stop::{stop_run, terminate_process};
 pub use store::{Event, RoleProfile, RunRecord, RunStore, StoreError};
 pub use worktree_databases::{
     derive_worktree_databases, derive_worktree_databases_with, drop_test_databases,

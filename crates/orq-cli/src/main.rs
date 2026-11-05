@@ -36,6 +36,7 @@ fn main() -> ExitCode {
         (Some("run"), Some("pin")) => storage::pin(&args[2..], true),
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
         (Some("run"), Some("pause")) => run_pause(&args[2..]),
+        (Some("run"), Some("stop")) => run_stop(&args[2..]),
         (Some("run"), Some("switch")) => run_switch(&args[2..]),
         (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
@@ -3778,6 +3779,23 @@ fn run_pause(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(message) => fail(message),
+    }
+}
+
+/// `orq run stop <run>`: end a live run's owner process and record the run failed, so it can be resumed.
+fn run_stop(args: &[OsString]) -> ExitCode {
+    let [run_id] = args else { return usage_error() };
+    let Some(run_id) = run_id.to_str() else { return usage_error() };
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    let store = orq_orchestrator::RunStore::new(&root);
+    match orq_orchestrator::stop_run(&store, run_id, &orq_orchestrator::process_is_alive, &orq_orchestrator::terminate_process) {
+        Ok(()) => {
+            println!("Stopped run {}; resume it with `orq run resume {}`.", printable(run_id), printable(run_id));
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(printable(&message)),
     }
 }
 
