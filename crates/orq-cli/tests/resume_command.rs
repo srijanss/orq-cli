@@ -256,4 +256,6 @@ fn a_run_killed_while_a_pause_was_pending_is_resumed_by_the_resume_command() {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(!pushed.contains("again.txt"), "the finished agent session was not started again: {pushed}");
 }
