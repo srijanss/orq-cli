@@ -370,6 +370,7 @@ fn a_foreground_run_records_its_owner_so_a_killed_one_can_be_recovered() {
     let launched = store.events(&run_id).unwrap().into_iter().find(|e| e.kind == "run.launched");
     let launched = launched.expect("a foreground run records run.launched too");
     assert!(launched.payload.get("pid").and_then(|p| p.as_u64()).is_some(), "{:?}", launched.payload);
+    assert!(launched.payload.get("log").is_none(), "a foreground run has no runner log to name: {:?}", launched.payload);
 }
 
 #[test]

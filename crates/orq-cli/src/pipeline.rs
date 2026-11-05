@@ -372,9 +372,15 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
     }
-    // Every run names its owner process (detached or not), so a killed one can be told from a live one.
-    let log = root.join("logs").join(&run_id).join("runner.log");
-    if let Err(err) = record_launch(&store, &run_id, std::process::id(), &log) {
+    // Every run names its owner process (detached or not), so a killed one can be told from a live
+    // one. Only a detached run has a runner log to name.
+    let recorded = if options.run_id.is_some() {
+        let log = root.join("logs").join(&run_id).join("runner.log");
+        record_launch(&store, &run_id, std::process::id(), &log)
+    } else {
+        orq_orchestrator::record_owner(&store, &run_id, std::process::id())
+    };
+    if let Err(err) = recorded {
         eprintln!("orq: cannot record the launch of {run_id}: {err}");
     }
     let finish = |store: &RunStore| store.finish_group_run(&record.project_id, &members, &record.run_id);

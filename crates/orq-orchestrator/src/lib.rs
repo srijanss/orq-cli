@@ -54,7 +54,7 @@ pub use interrupted::{
     owner_is_alive_in, process_is_alive, process_is_alive_in, process_start_ticks_in,
     reconcile_interrupted,
 };
-pub use launch::record_launch;
+pub use launch::{record_launch, record_owner};
 pub use local_files::{carry_local_files, LocalFiles};
 pub use notify::{
     notification_message, send_notification, send_notification_with, wants_notification,

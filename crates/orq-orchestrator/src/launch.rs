@@ -12,7 +12,25 @@ pub fn record_launch(
     pid: u32,
     log: &Path,
 ) -> Result<(), StoreError> {
+    record(store, run_id, pid, Some(log))
+}
+
+/// Record `run.launched` for a run that owns its terminal: the owner's process id and start time,
+/// and no log, because its output goes to the launcher's own streams.
+pub fn record_owner(store: &RunStore, run_id: &str, pid: u32) -> Result<(), StoreError> {
+    record(store, run_id, pid, None)
+}
+
+fn record(store: &RunStore, run_id: &str, pid: u32, log: Option<&Path>) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
+    let mut payload = serde_json::json!({
+        "pid": pid,
+        // Tells this process from a later one that reuses the pid; absent where there is no procfs.
+        "start_ticks": crate::interrupted::process_start_ticks_in(Path::new("/proc"), pid),
+    });
+    if let Some(log) = log {
+        payload["log"] = serde_json::Value::String(log.to_string_lossy().into_owned());
+    }
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(run_id),
@@ -23,11 +41,6 @@ pub fn record_launch(
         stage: None,
         attempt: 1,
         occurred_at: now_rfc3339(),
-        payload: serde_json::json!({
-            "pid": pid,
-            "log": log.to_string_lossy(),
-            // Tells this process from a later one that reuses the pid; absent where there is no procfs.
-            "start_ticks": crate::interrupted::process_start_ticks_in(Path::new("/proc"), pid),
-        }),
+        payload,
     })
 }
