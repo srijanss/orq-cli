@@ -233,3 +233,51 @@ fn a_switch_whose_new_work_fails_the_gate_is_not_pushed() {
     let on_remote = Command::new("git").arg("-C").arg(&w.remote).args(["log", "--format=%s", &paused.branch]).output().unwrap();
     assert!(!String::from_utf8_lossy(&on_remote.stdout).contains("feat: pi continues the work"), "rejected work must not be pushed");
 }
+
+#[test]
+fn a_switch_after_the_push_gates_the_new_work_again_and_pushes_it_on_top() {
+    let agent = agent();
+    let pi = FakeAgent::builder().write_file("pi.txt", "from pi\n").commit("feat: pi continues the work").build();
+    let w = world("switch-after-push", &agent, &pi);
+    std::fs::write(w.repo.root().join(".orq.toml"), PROFILES).unwrap();
+    // A gate that only counts its runs; the pause is asked for by the remote while it takes the first push.
+    let count = w.base.join("gate-runs");
+    let script = w.base.join("gate.sh");
+    std::fs::write(&script, format!("#!/bin/sh\necho run >> '{}'\nexit 0\n", count.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), format!("gate = [\"{}\"]\nexplain_failures = false\n", script.display())).unwrap();
+    let hook = w.remote.join("hooks/pre-receive");
+    let seen = w.base.join("pushes-seen");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\necho push >> '{seen}'\n[ \"$(wc -l < '{seen}')\" -eq 1 ] && XDG_STATE_HOME='{state}' '{orq}' run pause \"$(ls '{state}/orq/runs')\" >'{log}' 2>&1\nexit 0\n",
+            seen = seen.display(),
+            orq = env!("CARGO_BIN_EXE_orq"),
+            state = w.state.display(),
+            log = w.base.join("pause.log").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+    assert_eq!(first.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&first.stdout), String::from_utf8_lossy(&first.stderr));
+    let store = RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let paused = store.load(&run_id).unwrap();
+    assert_eq!(std::fs::read_to_string(&seen).unwrap().lines().count(), 1, "the first run pushed once, then paused");
+    assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
+    assert!(!git(&w.remote, &["log", "--format=%s", &paused.branch]).contains("pi continues"), "precondition: pi has not run");
+
+    request(&w, &run_id, "implementer", "team-pi");
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+
+    assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2, "the pi work must pass the gate again");
+    assert_eq!(std::fs::read_to_string(&seen).unwrap().lines().count(), 2, "and be pushed again");
+    let local = git(w.repo.root(), &["rev-parse", &paused.branch]);
+    assert_eq!(git(&w.remote, &["rev-parse", &paused.branch]).trim(), local.trim());
+    assert!(git(&w.remote, &["log", "--format=%s", &paused.branch]).contains("feat: pi continues the work"));
+}
