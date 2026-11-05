@@ -83,11 +83,13 @@ fn r_lists_the_projects_runs_with_feature_status_stage_and_models() {
 
     let lines = show(&mut backend, vec![key(KeyCode::Char('R'))]);
 
-    let first = lines.iter().find(|l| l.contains("COM-01")).expect("COM-01 row");
-    assert!(first.contains("running") && first.contains("implement"), "{first}");
-    assert!(first.contains("opus") && first.contains("kimi-k3"), "{first}");
-    let second = lines.iter().find(|l| l.contains("COM-02")).expect("COM-02 row");
-    assert!(second.contains("failed") && second.contains("gate"), "{second}");
+    // Each run is a card: its feature and status, then its stage and models beneath.
+    let at = lines.iter().position(|l| l.contains("COM-01")).expect("COM-01 card");
+    assert!(lines[at].contains("running"), "{lines:?}");
+    let detail = &lines[at + 1];
+    assert!(detail.contains("implement") && detail.contains("opus") && detail.contains("kimi-k3"), "{detail}");
+    let at = lines.iter().position(|l| l.contains("COM-02")).expect("COM-02 card");
+    assert!(lines[at].contains("failed") && lines[at + 1].contains("gate"), "{lines:?}");
     assert!(!has(&lines, "alpha"), "{lines:?}");
 }
 
@@ -111,15 +113,15 @@ fn two_runs() -> Fake {
     }
 }
 
+/// The line of the selected run's card, which carries the "> " marker.
 fn selected_line(backend: &mut Fake, events: Vec<Event>) -> String {
-    use ratatui::style::Modifier;
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let _ = run_browser(&mut terminal, &model, backend, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
     (0..24u16)
-        .find(|&y| buffer[(0, y)].modifier.contains(Modifier::REVERSED) && buffer[(0, y)].symbol() != " ")
         .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+        .find(|line| line.contains("> COM-"))
         .unwrap_or_default()
 }
 
@@ -136,7 +138,7 @@ fn the_arrow_keys_move_the_selected_run_and_stop_at_the_ends() {
 
 #[test]
 fn clicking_a_run_selects_it() {
-    let line = selected_line(&mut two_runs(), vec![key(KeyCode::Char('R')), click(3, 6)]);
+    let line = selected_line(&mut two_runs(), vec![key(KeyCode::Char('R')), click(3, 10)]);
 
     assert!(line.contains("COM-02"), "{line}");
 }
@@ -198,8 +200,8 @@ fn clicking_after_scrolling_selects_the_run_shown_on_that_row() {
 
     let line = selected_line(&mut many_runs(30), keys);
 
-    // 25 downs select run 26 of 30; with 18 run rows the first shown is run 9.
-    assert!(line.contains("COM-09"), "{line}");
+    // 25 downs select run 26 of 30; with room for 3 cards the first shown is run 24.
+    assert!(line.contains("COM-24"), "{line}");
 }
 
 #[test]

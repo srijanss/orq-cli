@@ -1585,6 +1585,12 @@ pub trait BrowserBackend {
         Err("pausing runs is not available".into())
     }
 
+    /// Ends the live owner process of the running `run_id`, leaving it failed and resumable; `Ok` is
+    /// what happened, `Err` why not.
+    fn stop_run(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("stopping runs is not available".into())
+    }
+
     /// Checks that the paused `run_id` can be resumed; `Ok` names where it would continue, `Err` is
     /// why its checkpoint no longer allows it.
     fn resume_check(&mut self, _run_id: &str) -> Result<String, String> {
@@ -2319,6 +2325,8 @@ struct RunsState {
     resuming: Option<String>,
     /// The run and the "role profile" text typed so far while picking a model switch.
     switching: Option<(String, String)>,
+    /// The running run whose stop waits for a `y`.
+    stopping: Option<String>,
 }
 
 impl RunsState {
@@ -2334,23 +2342,48 @@ impl RunsState {
         };
     }
 
-    fn click(&mut self, body: Rect, press: Position) {
-        if !body.contains(press) {
-            return;
+    /// A press on a run's card selects it; a press on a button of the selected run's panel is
+    /// the action it names.
+    fn click(&mut self, body: Rect, press: Position) -> Option<RunAction> {
+        let (cards, panel) = self.layout(body);
+        if let Some(panel) = panel.filter(|panel| panel.contains(press)) {
+            let status = self.rows.as_ref().ok().and_then(|rows| rows.get(self.selected)).map(|run| run.status.as_str());
+            return run_buttons(panel_inner(panel), status).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action);
         }
-        let row = usize::from(press.y - body.y);
+        if !cards.contains(press) {
+            return None;
+        }
+        let slot = usize::from((press.y - cards.y) / CARD_HEIGHT);
         let visible = self.visible(body);
-        let index = self.offset(visible) + row;
-        if row < visible && index < self.len() {
+        let index = self.offset(visible) + slot;
+        if slot < visible && index < self.len() {
             self.selected = index;
+        }
+        None
+    }
+
+    /// The area for run cards and, when the body is tall enough, the selected run's panel. The
+    /// last body row is the hint, and the row above it holds the unreadable-runs warning when
+    /// there is one.
+    fn layout(&self, body: Rect) -> (Rect, Option<Rect>) {
+        let reserved = if self.unreadable > 0 && body.height > 1 { 2 } else { 1 };
+        let rest = Rect::new(body.x, body.y, body.width, body.height.saturating_sub(reserved));
+        if body.width >= PANEL_MIN_WIDTH && body.height >= PANEL_MIN_BODY_HEIGHT && self.len() > 0 {
+            let cards = Rect::new(rest.x, rest.y, rest.width, rest.height - PANEL_ROWS);
+            (cards, Some(Rect::new(rest.x, cards.bottom(), rest.width, PANEL_ROWS)))
+        } else {
+            (rest, None)
         }
     }
 
-    /// Rows available to runs: the last body row is the hint, and the row
-    /// above it holds the unreadable-runs warning when there is one.
+    /// Cards that fit: at least one whenever there is a row for it, cut at the bottom.
     fn visible(&self, body: Rect) -> usize {
-        let reserved = if self.unreadable > 0 && body.height > 1 { 2 } else { 1 };
-        usize::from(body.height.saturating_sub(reserved))
+        let cards = self.layout(body).0;
+        if cards.height == 0 {
+            0
+        } else {
+            usize::from((cards.height / CARD_HEIGHT).max(1))
+        }
     }
 
     /// The first listed run: the selection stays on screen, at the bottom
@@ -2360,35 +2393,131 @@ impl RunsState {
     }
 }
 
+/// What a button of the selected run's panel does: the same as its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunAction {
+    Pause,
+    Stop,
+    Resume,
+}
+
+/// The labels of the controls a run in `status` allows.
+fn run_controls(status: Option<&str>) -> &'static [(&'static str, RunAction)] {
+    match status {
+        Some("running") => &[("[ Pause (p) ]", RunAction::Pause), ("[ Stop (s) ]", RunAction::Stop)],
+        Some("pause_requested") => &[("[ Stop (s) ]", RunAction::Stop)],
+        Some("paused" | "failed" | "blocked") => &[("[ Resume (c) ]", RunAction::Resume)],
+        _ => &[],
+    }
+}
+
+/// Where each button of a run in `status` sits on the panel's `inner` row, left to right; a
+/// button that does not fit whole is left out.
+fn run_buttons(inner: Rect, status: Option<&str>) -> Vec<(Rect, RunAction)> {
+    let mut x = inner.x;
+    let mut buttons = Vec::new();
+    for (label, action) in run_controls(status) {
+        let width = u16::try_from(label.chars().count()).unwrap_or(u16::MAX);
+        if inner.height == 0 || x.saturating_add(width) > inner.right() {
+            break;
+        }
+        buttons.push((Rect::new(x, inner.y, width, 1), *action));
+        x = x.saturating_add(width + 1);
+    }
+    buttons
+}
+
+/// The one-row area inside a bordered panel.
+fn panel_inner(panel: Rect) -> Rect {
+    Rect::new(panel.x + 1, panel.y + 1, panel.width.saturating_sub(2), panel.height.saturating_sub(2).min(1))
+}
+
+/// A run drawn like a feature card: its feature and status, then its stage and models.
+fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) {
+    let border = if selected {
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = usize::from(inner.width);
+    let marker = if selected { "> " } else { "  " };
+    let status = printable(&run.status);
+    let room = width.saturating_sub(MARKER_WIDTH + display_width(&status) + 1);
+    let name = truncate_right(&printable(&run.feature), room);
+    let pad = width.saturating_sub(MARKER_WIDTH + display_width(&name) + display_width(&status));
+    let detail = format!(
+        "{} · {} / {}",
+        run.stage.as_deref().unwrap_or("-"),
+        run.implementer_model.as_deref().unwrap_or("-"),
+        run.reviewer_model.as_deref().unwrap_or("-")
+    );
+    let detail_style = if selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{marker}{name}"), name_style(selected)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(status, status_style(&run.status)),
+        ]),
+        Line::styled(
+            format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&printable(&detail), width.saturating_sub(MARKER_WIDTH))),
+            detail_style,
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The selected run's panel: its feature in the title and the buttons its status allows.
+fn render_run_panel(frame: &mut Frame, panel: Rect, run: Option<&RunRow>) {
+    let room = usize::from(panel.width.saturating_sub(2));
+    let title = match run {
+        Some(run) => format!(" Selected run · {} ", printable(&run.feature)),
+        None => " Selected run ".to_string(),
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(truncate_right(&title, room));
+    frame.render_widget(block, panel);
+    let inner = panel_inner(panel);
+    let status = run.map(|run| run.status.as_str());
+    let buttons = run_buttons(inner, status);
+    if buttons.is_empty() {
+        let text = match run {
+            Some(run) => format!("No controls while {}", printable(&run.status)),
+            None => "No run selected".to_string(),
+        };
+        frame.render_widget(Paragraph::new(truncate_right(&text, room)).style(Style::default().fg(Color::DarkGray)), inner);
+    }
+    for ((rect, _), (label, _)) in buttons.iter().zip(run_controls(status)) {
+        frame.render_widget(Paragraph::new(*label), *rect);
+    }
+}
+
 fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<&str>) {
     let width = usize::from(body.width);
     let dim = Style::new().fg(Color::DarkGray);
-    let mut put = |row: u16, line: Line<'static>| {
+    let put = |frame: &mut Frame, row: u16, line: Line<'static>| {
         if row < body.height {
             frame.render_widget(Paragraph::new(line), Rect::new(body.x, body.y + row, body.width, 1));
         }
     };
     match &state.rows {
-        Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
-        Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No runs yet", dim))),
+        Err(reason) => put(frame, 0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
+        Ok(rows) if rows.is_empty() => put(frame, 0, Line::from(Span::styled("No runs yet", dim))),
         Ok(rows) => {
+            let (cards, panel) = state.layout(body);
             let visible = state.visible(body);
             let offset = state.offset(visible);
-            for (i, run) in rows.iter().enumerate().skip(offset).take(visible) {
-                let models = format!(
-                    "{} / {}",
-                    run.implementer_model.as_deref().unwrap_or("-"),
-                    run.reviewer_model.as_deref().unwrap_or("-")
-                );
-                let text = format!(
-                    "{}  {}  {}  {}",
-                    run.feature,
-                    run.status,
-                    run.stage.as_deref().unwrap_or("-"),
-                    models
-                );
-                let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-                put(u16::try_from(i - offset).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+            for (slot, (i, run)) in rows.iter().enumerate().skip(offset).take(visible).enumerate() {
+                let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(CARD_HEIGHT);
+                let area = Rect::new(cards.x, top, cards.width, CARD_HEIGHT.min(cards.bottom().saturating_sub(top)));
+                render_run_card(frame, area, run, i == state.selected);
+            }
+            if let Some(panel) = panel {
+                render_run_panel(frame, panel, rows.get(state.selected));
             }
         }
     }
@@ -2398,7 +2527,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
             state.unreadable,
             if state.unreadable == 1 { "run" } else { "runs" }
         );
-        put(body.height - 2, Line::from(Span::styled(truncate_right(&text, width), Style::new().fg(Color::Yellow))));
+        put(frame, body.height - 2, Line::from(Span::styled(truncate_right(&text, width), Style::new().fg(Color::Yellow))));
     }
     if body.height > 0 {
         let last = match notice {
@@ -2410,7 +2539,8 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                     Err(_) => None,
                 };
                 let control = match status {
-                    Some("running") => " · p pause",
+                    Some("running") => " · p pause · s stop",
+                    Some("pause_requested") => " · s stop",
                     Some("paused") => " · c resume · m switch model",
                     Some("failed" | "blocked") => " · c resume · o new pane",
                     _ if no_link => " · o new pane",
@@ -2421,7 +2551,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                 Line::from(Span::styled(truncate_right(&hint, width), dim))
             }
         };
-        put(body.height - 1, last);
+        put(frame, body.height - 1, last);
     }
 }
 
@@ -3390,6 +3520,24 @@ impl Browser {
         });
     }
 
+    /// `s` on a running run: wait for `y` before ending its process.
+    fn ask_to_stop_selected_run(&mut self) {
+        let Some(run) = self.selected_run() else { return };
+        let (run_id, status) = (run.run_id.clone(), run.status.clone());
+        if !matches!(status.as_str(), "running" | "pause_requested") {
+            self.notice = Some(format!("{run_id} is {status}; only a running run can be stopped"));
+            return;
+        }
+        self.notice = Some(format!("Stop {run_id}? Its process ends and it can be resumed later; y to confirm, any other key cancels"));
+        self.runs.stopping = Some(run_id);
+    }
+
+    fn confirm_stop(&mut self, backend: &mut dyn BrowserBackend, run_id: &str) {
+        self.notice = Some(match backend.stop_run(run_id) {
+            Ok(message) | Err(message) => message,
+        });
+    }
+
     /// `c` on a paused, failed or blocked run: check it can continue, then wait for `y` before resuming.
     fn ask_to_resume_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
         let Some(run) = self.selected_run() else { return };
@@ -3455,7 +3603,7 @@ impl Browser {
     fn open_runs(&mut self, backend: &mut dyn BrowserBackend) {
         let rows = backend.load_runs();
         let unreadable = if rows.is_ok() { backend.unreadable_runs() } else { 0 };
-        self.runs = RunsState { rows, selected: 0, unreadable, resuming: None, switching: None };
+        self.runs = RunsState { rows, selected: 0, unreadable, resuming: None, switching: None, stopping: None };
         self.tab = Tab::Runs;
     }
 
@@ -3716,7 +3864,7 @@ where
             report: None,
             confirming: false,
         },
-        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0, resuming: None, switching: None },
+        runs: RunsState { rows: Ok(Vec::new()), selected: 0, unreadable: 0, resuming: None, switching: None, stopping: None },
         reviews: ReviewsState::new(model.project_name.clone()),
         form: None,
         preview: None,
@@ -3852,6 +4000,15 @@ where
                         dirty = true;
                         continue;
                     }
+                    if let Some(run_id) = browser.runs.stopping.take() {
+                        if key.code == KeyCode::Char('y') {
+                            browser.confirm_stop(backend, &run_id);
+                        } else {
+                            browser.notice = Some(format!("Did not stop {run_id}"));
+                        }
+                        dirty = true;
+                        continue;
+                    }
                     if let Some(run_id) = browser.runs.resuming.take() {
                         if key.code == KeyCode::Char('y') {
                             browser.confirm_resume(backend, &run_id);
@@ -3863,6 +4020,7 @@ where
                     }
                     match key.code {
                         KeyCode::Char('p') => browser.pause_selected_run(backend),
+                        KeyCode::Char('s') => browser.ask_to_stop_selected_run(),
                         KeyCode::Char('c') => browser.ask_to_resume_selected_run(backend),
                         KeyCode::Char('m') => browser.ask_to_switch_selected_run(),
                         KeyCode::Enter => browser.focus_selected_run(backend),
@@ -4200,8 +4358,16 @@ where
                     continue;
                 }
                 if browser.tab == Tab::Runs {
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        browser.runs.click(chrome_body(full), Position::new(mouse.column, mouse.row));
+                    // A pending confirmation or model switch is answered by key, not by a click.
+                    let waiting = browser.runs.stopping.is_some() || browser.runs.resuming.is_some() || browser.runs.switching.is_some();
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) && !waiting {
+                        browser.notice = None;
+                        match browser.runs.click(chrome_body(full), Position::new(mouse.column, mouse.row)) {
+                            Some(RunAction::Pause) => browser.pause_selected_run(backend),
+                            Some(RunAction::Stop) => browser.ask_to_stop_selected_run(),
+                            Some(RunAction::Resume) => browser.ask_to_resume_selected_run(backend),
+                            None => {}
+                        }
                         dirty = true;
                     }
                     continue;
