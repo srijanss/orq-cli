@@ -16,7 +16,8 @@ const POLL_QUIET_MAX: Duration = Duration::from_secs(5);
 const HEARTBEAT: Duration = Duration::from_secs(60);
 const STUCK_AFTER: Duration = Duration::from_secs(300);
 
-/// Prints activity lines until dropped. Printing never fails the run.
+/// Prints activity lines until dropped. Printing never fails the run. Stopping is best-effort for a
+/// line already being written: it is never waited for, so one that was in flight can still appear.
 pub struct Progress {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -221,16 +222,42 @@ mod tests {
 
     struct Counting {
         writes: Arc<std::sync::atomic::AtomicUsize>,
+        attempts: Arc<std::sync::atomic::AtomicUsize>,
+        fail_writes: Arc<AtomicBool>,
         fail_flush: bool,
     }
     impl Write for Counting {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.writes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_writes.load(Ordering::SeqCst) {
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.writes.fetch_add(bytes.iter().filter(|b| **b == b'\n').count(), Ordering::SeqCst);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             if self.fail_flush { Err(std::io::ErrorKind::BrokenPipe.into()) } else { Ok(()) }
         }
+    }
+
+    fn counting(writes: &Arc<std::sync::atomic::AtomicUsize>, fail_flush: bool) -> Counting {
+        Counting { writes: writes.clone(), attempts: Default::default(), fail_writes: Default::default(), fail_flush }
+    }
+
+    #[test]
+    fn a_write_that_errors_is_tried_again_with_the_next_line() {
+        let (root, logs) = running_run("erroring");
+        std::fs::write(logs.join("gate.log"), "one\n").unwrap();
+        let sink = Counting { writes: Default::default(), attempts: Default::default(), fail_writes: Arc::new(AtomicBool::new(true)), fail_flush: false };
+        let (attempts, writes, fail) = (sink.attempts.clone(), sink.writes.clone(), sink.fail_writes.clone());
+        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(sink));
+        wait_for("a failed write", || attempts.load(Ordering::SeqCst) > 0);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        fail.store(false, Ordering::SeqCst);
+        std::fs::write(logs.join("gate.log"), "two\n").unwrap();
+        wait_for("a line after the failed write", || writes.load(Ordering::SeqCst) > 0);
+        drop(progress);
     }
 
     fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
@@ -246,7 +273,7 @@ mod tests {
         let (root, logs) = running_run("dropped");
         std::fs::write(logs.join("gate.log"), "first\n").unwrap();
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Counting { writes: writes.clone(), fail_flush: false }));
+        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(counting(&writes, false)));
         wait_for("the first line", || writes.load(Ordering::SeqCst) > 0);
         drop(progress);
         let before = writes.load(Ordering::SeqCst);
@@ -265,7 +292,7 @@ mod tests {
         std::fs::create_dir_all(&logs).unwrap();
         std::fs::write(logs.join("gate.log"), "one\n").unwrap();
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let progress = Progress::start_with(root.clone(), "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Counting { writes: writes.clone(), fail_flush: true }));
+        let progress = Progress::start_with(root.clone(), "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(counting(&writes, true)));
         std::thread::sleep(Duration::from_millis(700));
         assert_eq!(writes.load(Ordering::SeqCst), 0, "the run cannot be read yet");
 
