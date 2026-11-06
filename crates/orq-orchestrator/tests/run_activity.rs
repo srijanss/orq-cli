@@ -131,6 +131,6 @@ fn a_token_cut_by_the_start_of_the_tail_is_not_shown() {
     assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
 
     // The window opening inside a multi-byte character is no different.
-    std::fs::write(dir.join("stage.log"), "é".repeat(8 * 1024)).unwrap();
+    std::fs::write(dir.join("stage.log"), format!("{}x", "é".repeat(8 * 1024))).unwrap();
     assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
 }
