@@ -369,3 +369,27 @@ fn replacing_the_needs_input_hook_keeps_every_other_hook_beside_it() {
     assert_eq!(pre[1]["hooks"][0]["command"], "/usr/local/bin/wrap run needs-input now");
     assert_eq!(pre[2]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
 }
+
+#[test]
+fn taking_the_needs_input_hook_out_leaves_everything_else_and_creates_nothing() {
+    let (_repo, worktree) = checkout("needs-input-hook-out");
+    assert!(orq_orchestrator::remove_needs_input_hook(&worktree).is_empty());
+    assert!(!worktree.join(".claude").exists(), "a worktree with no settings gets none");
+
+    let own = "'/orq' run needs-input 'r' --repo '/x'";
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    let earlier = serde_json::json!({"env": {"A": "1"}, "hooks": {"PreToolUse": [
+        {"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": own}]},
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "audit"}]},
+    ]}});
+    fs::write(worktree.join(".claude/settings.local.json"), earlier.to_string()).unwrap();
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, own).is_empty());
+
+    assert!(orq_orchestrator::remove_needs_input_hook(&worktree).is_empty());
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["env"]["A"], "1");
+    assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1, "{settings}");
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "audit");
+    assert!(!settings.to_string().contains("needs-input"), "{settings}");
+}

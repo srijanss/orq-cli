@@ -211,6 +211,27 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
     }
 }
 
+/// Takes the hook `write_needs_input_hook` wrote back out of a worktree an attended session has used,
+/// for a session with nobody to ask. A worktree with no settings gets none. Returns notes, like it.
+pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
+    if std::fs::symlink_metadata(worktree.join(SETTINGS)).is_err() {
+        return Vec::new();
+    }
+    let edited = edit_settings(worktree, |root| {
+        let Some(hooks) = root.get_mut("hooks").and_then(|hooks| hooks.as_object_mut()) else { return Ok(()) };
+        for (event, _) in NEEDS_INPUT_EVENTS {
+            if let Some(entries) = hooks.get_mut(event).and_then(|entries| entries.as_array_mut()) {
+                remove_own_hooks(entries);
+            }
+        }
+        Ok(())
+    });
+    match edited {
+        Ok(()) => Vec::new(),
+        Err(why) => vec![format!("{SETTINGS} was not updated: {why}")],
+    }
+}
+
 /// Takes out of `entries` the commands `write_needs_input_hook` wrote and nothing beside them: an
 /// entry goes only when one of ours was all it held.
 fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {

@@ -300,6 +300,26 @@ fn only_a_session_with_a_terminal_gets_the_hook_that_says_it_needs_its_person() 
 }
 
 #[test]
+fn a_headless_run_resuming_on_an_attended_worktree_takes_the_hook_out() {
+    let agent = FakeAgent::builder().exit_code(3).build();
+    let settings_of = |w: &World| std::fs::read_to_string(format!("{}.settings", w.seen.display())).unwrap_or_default();
+    let w = world("reused-hook", &agent);
+
+    let (_, drawn) = run_in_pty(&w, &github(), &run_args(&w));
+    assert!(settings_of(&w).contains("needs-input"), "{drawn}");
+
+    let mut args = run_args(&w);
+    args.push("--resume".to_string());
+    let output = command(&w, &github(), env!("CARGO_BIN_EXE_orq")).args(args).output().unwrap();
+
+    let sessions = std::fs::read_to_string(&w.seen).unwrap();
+    let places: Vec<&str> = sessions.lines().map(|line| line.split_once(' ').unwrap().1).collect();
+    assert!(places.len() >= 2, "{sessions}\n{}", String::from_utf8_lossy(&output.stderr));
+    assert!(places.iter().all(|place| *place == places[0]), "the resumed run works in the same worktree: {sessions}");
+    assert!(!settings_of(&w).contains("needs-input"), "{}", settings_of(&w));
+}
+
+#[test]
 fn a_run_whose_input_is_not_the_terminal_keeps_the_implement_session_headless() {
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let w = world("no-input", &agent);

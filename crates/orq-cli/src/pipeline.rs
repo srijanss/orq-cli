@@ -771,6 +771,8 @@ fn stages(
                 }
                 Err(err) => notes.push(format!("the session will not say when it needs an answer: orq's own path is unknown ({:?})", err.kind())),
             }
+        } else {
+            notes.extend(orq_orchestrator::remove_needs_input_hook(worktree));
         }
         notes.extend(orq_orchestrator::record_orq_written(worktree));
     }
