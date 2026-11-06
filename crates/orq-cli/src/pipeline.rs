@@ -799,6 +799,7 @@ fn stages(
                     reviewer: spec(&options.reviewer),
                     context: options.context,
                     exit_marker: marker,
+                    attended: options.interactive,
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
                 })

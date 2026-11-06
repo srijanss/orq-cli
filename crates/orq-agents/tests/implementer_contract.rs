@@ -16,6 +16,7 @@ fn request<'a>(harness: &str, model: &str, features: &'a [&'a str]) -> Implement
         reviewer: spec("pi", "kimi-k3"),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     }
@@ -53,6 +54,32 @@ fn every_harness_refuses_another_harnesss_model_no_features_and_unsafe_values() 
         for bad in ["--evil", "a b", ""] {
             assert!(adapter.implement_argv(&request(harness, bad, &["COM-01"])).is_err(), "{harness}: model {bad:?}");
         }
+    });
+}
+
+#[test]
+fn an_attended_session_is_told_to_ask_and_wait_and_to_leave_the_marker_only_with_nothing_left_to_ask() {
+    for_each_harness(|harness, model| {
+        let adapter = adapter_for(harness).unwrap();
+        let features = ["COM-01"];
+        let marked = ImplementRequest { exit_marker: Some("/logs/implement.done"), ..request(harness, model, &features) };
+        let attended = ImplementRequest { attended: true, ..marked.clone() };
+
+        let prompt = adapter.implement_argv(&attended).unwrap().last().unwrap().clone();
+        assert!(prompt.contains("watching this session"), "{harness}: {prompt}");
+        assert!(prompt.contains("wait for the answer"), "{harness}: {prompt}");
+        assert!(prompt.contains("nothing is left to do or ask"), "{harness}: {prompt}");
+        assert_eq!(prompt.contains("AskUserQuestion"), harness == "claude", "{harness}: {prompt}");
+        assert!(prompt.find("watching this session") < prompt.find("/logs/implement.done"), "{harness}: {prompt}");
+
+        let unattended = adapter.implement_argv(&marked).unwrap().last().unwrap().clone();
+        assert!(!unattended.contains("watching this session"), "{harness}: {unattended}");
+        assert!(unattended.contains("As your very last step, once everything is committed, create the empty file"), "{harness}: {unattended}");
+
+        // Without a marker the session is still told it can ask.
+        let no_marker = ImplementRequest { attended: true, ..request(harness, model, &features) };
+        let prompt = adapter.implement_argv(&no_marker).unwrap().last().unwrap().clone();
+        assert!(prompt.contains("watching this session"), "{harness}: {prompt}");
     });
 }
 

@@ -34,6 +34,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         reviewer: spec("pi", "openai/gpt-6-astra", Some("medium")),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -63,6 +64,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -93,6 +95,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -114,6 +117,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
         reviewer: spec("gemini", "flash", None),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -132,6 +136,7 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable\nand mention it in the MR"),
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -181,6 +186,7 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
         reviewer: spec("pi", "kimi-k3", None),
         context: Some("keep the API stable"),
         exit_marker: Some("/repo/.git/orq/exit-run-1"),
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -203,6 +209,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
             exit_marker: Some(marker),
+            attended: false,
             remote_control: None,
             handoff: None,
         })
@@ -224,6 +231,7 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
             reviewer: spec("pi", "kimi-k3", None),
             context: None,
             exit_marker: None,
+            attended: false,
             remote_control: name,
             handoff: None,
         })
@@ -276,6 +284,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };
@@ -308,6 +317,7 @@ fn a_group_implement_request_asks_for_every_feature_to_be_completed_the_usual_wa
         reviewer: spec("pi", "kimi-k3", None),
         context: None,
         exit_marker: None,
+        attended: false,
         remote_control: None,
         handoff: None,
     };

@@ -53,7 +53,7 @@ fn world(tag: &str, agent: &FakeAgent) -> World {
     std::fs::write(
         &claude,
         format!(
-            "#!/bin/sh\ni=-; o=-; [ -t 0 ] && i=t; [ -t 1 ] && o=t\necho \"$i$o $PWD\" >> '{seen}'\nexec '{agent}' \"$@\"\n",
+            "#!/bin/sh\ni=-; o=-; [ -t 0 ] && i=t; [ -t 1 ] && o=t\necho \"$i$o $PWD\" >> '{seen}'\nprintf '%s\\n' \"$*\" >> '{seen}.args'\nexec '{agent}' \"$@\"\n",
             seen = seen.display(),
             agent = agent.path().display()
         ),
@@ -255,6 +255,27 @@ fn a_run_without_a_terminal_keeps_the_implement_session_headless() {
 
     assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(seen(&w), "none");
+}
+
+#[test]
+fn only_a_session_with_a_terminal_is_told_someone_is_watching_and_can_answer() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let prompt_of = |w: &World| std::fs::read_to_string(format!("{}.args", w.seen.display())).unwrap_or_default();
+
+    let attended = world("attended-prompt", &agent);
+    let (code, drawn) = run_in_pty(&attended, &github(), &run_args(&attended));
+    assert_eq!(code, 0, "{drawn}");
+    let prompt = prompt_of(&attended);
+    assert!(prompt.contains("AskUserQuestion"), "{prompt}");
+    assert!(prompt.contains("watching this session"), "{prompt}");
+
+    let headless = world("headless-prompt", &agent);
+    let output = command(&headless, &github(), env!("CARGO_BIN_EXE_orq")).args(run_args(&headless)).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    let prompt = prompt_of(&headless);
+    assert!(prompt.contains("COM-01"), "{prompt}");
+    assert!(!prompt.contains("AskUserQuestion"), "{prompt}");
+    assert!(!prompt.contains("watching this session"), "{prompt}");
 }
 
 #[test]

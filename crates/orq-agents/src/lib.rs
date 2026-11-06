@@ -46,6 +46,9 @@ pub struct ImplementRequest<'a> {
     pub context: Option<&'a str>,
     /// A file the session creates as its very last step, so orq can close it; `None` asks for nothing.
     pub exit_marker: Option<&'a str>,
+    /// Someone is watching this session in a terminal and can answer it; `false` keeps a headless
+    /// session's wording.
+    pub attended: bool,
     /// The name the session is reachable under from the Claude app; `None` starts it without Remote Control.
     pub remote_control: Option<&'a str>,
     /// Where an earlier session left the work, when this session continues one after a model switch.
@@ -279,9 +282,18 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str("\n\nHandoff from the previous session:\n");
         prompt.push_str(&handoff.replace('\0', " "));
     }
+    if request.attended {
+        // Skills written for unattended runs say otherwise, so this has to be said outright.
+        let how = if harness == "claude" { "ask with AskUserQuestion" } else { "ask in this session" };
+        prompt.push_str(&format!("\n\nA person is watching this session and can answer you, so this run is not unattended, whatever a skill's wording says. When you need a decision you cannot make yourself, {how} and wait for the answer."));
+    }
     if let Some(marker) = request.exit_marker {
         let quoted = marker_for_prompt(marker)?;
-        prompt.push_str("\n\nAs your very last step, once everything is committed, create the empty file ");
+        prompt.push_str(if request.attended {
+            "\n\nFinal step, only after everything is implemented, reviewed, fixed and committed, and nothing is left to do or ask: create the empty file "
+        } else {
+            "\n\nAs your very last step, once everything is committed, create the empty file "
+        });
         prompt.push_str(&quoted);
         prompt.push_str(" and then stop.");
     }
