@@ -1633,6 +1633,13 @@ pub enum PaneFocus {
     Failed(String),
 }
 
+/// The profile each role's step of the launch picker opens on; `None` opens on the first.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LaunchDefaults {
+    pub implementer: Option<String>,
+    pub reviewer: Option<String>,
+}
+
 /// Where the browser's data lives: reads the ledger and performs promotes.
 /// The browser itself never touches a file.
 pub trait BrowserBackend {
@@ -1749,6 +1756,11 @@ pub trait BrowserBackend {
     /// Model profile names the launch picker offers.
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         Err("launching runs is not available".into())
+    }
+
+    /// The profiles configured for each role, which the launch picker opens on.
+    fn launch_defaults(&mut self) -> LaunchDefaults {
+        LaunchDefaults::default()
     }
 
     /// Starts a detached run of `feature`; the id of the run, or why it did not start.
@@ -3012,6 +3024,8 @@ struct LaunchPicker {
     profiles: Vec<String>,
     selected: usize,
     implementer: Option<String>,
+    /// Where the reviewer step opens: the configured reviewer's row, or the first.
+    reviewer_start: usize,
     /// The catalog's servers, offered after the reviewer; empty skips that step.
     catalog: Vec<String>,
     /// Set once the reviewer is chosen and the servers are being picked.
@@ -3054,7 +3068,7 @@ impl LaunchPicker {
                     match self.implementer.clone() {
                         None => {
                             self.implementer = Some(chosen);
-                            self.selected = 0;
+                            self.selected = self.reviewer_start;
                         }
                         Some(implementer) if self.catalog.is_empty() => {
                             return LaunchAction::Launch { implementer, reviewer: chosen, mcp: Vec::new() }
@@ -3908,12 +3922,16 @@ impl Browser {
             Ok(profiles) if profiles.is_empty() => self.notice = Some("No model profiles are configured".to_string()),
             Ok(profiles) => {
                 let catalog = backend.mcp_catalog().unwrap_or_default();
+                let defaults = backend.launch_defaults();
+                let row = |default: Option<&String>| default.and_then(|name| profiles.iter().position(|p| p == name)).unwrap_or(0);
+                let (selected, reviewer_start) = (row(defaults.implementer.as_ref()), row(defaults.reviewer.as_ref()));
                 self.launch = Some(LaunchPicker {
                     features,
                     skipped,
                     profiles,
-                    selected: 0,
+                    selected,
                     implementer: None,
+                    reviewer_start,
                     catalog,
                     reviewer: None,
                     marked: HashSet::new(),
