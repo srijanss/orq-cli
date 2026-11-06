@@ -1084,6 +1084,10 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     }
 
     fn push(&mut self) -> Result<PushOutcome, StoreError> {
+        // A push publishes commits only: a fix left uncommitted passed the gate but would never reach CI.
+        if let ImplementCheck::Blocked { reason } = check_implement_outcome(self.store, self.run_id)? {
+            return Ok(PushOutcome::Failed { reason });
+        }
         push_run_branch(self.store, self.run_id, &self.push_log)
     }
 

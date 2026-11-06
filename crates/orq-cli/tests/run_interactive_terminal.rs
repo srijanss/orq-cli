@@ -497,3 +497,54 @@ fn a_red_ci_opens_its_fix_session_on_the_terminal_then_pushes_the_fix_and_waits_
     assert_eq!(asked.len(), 3, "{asked:?}");
     assert_ne!(asked[0], asked[1], "CI was asked about the fix: {asked:?}");
 }
+
+/// `claude` runs `work` in its fix session for a red CI, then leaves the marker it was told about
+/// and stays open; every other session is `agent`.
+fn ci_fix_session_does(w: &World, work: &str) {
+    std::fs::rename(w.bin.join("claude"), w.bin.join("claude-inner")).unwrap();
+    std::fs::write(
+        w.bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'CI failed'*)\necho run >> '{sessions}'\n{work}\nmarker=$(printf '%s' \"$*\" | sed -n 's/.*create the empty file \\([^ ]*\\) and then stop.*/\\1/p')\ntouch \"$marker\"\nsleep 20\nexit 0;;\nesac\nexec '{inner}' \"$@\"\n",
+            sessions = w.seen.with_file_name("fix-sessions").display(),
+            inner = w.bin.join("claude-inner").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(w.bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// CI answers red once, and green from then on.
+fn ci_red_then_green() -> FakeProvider {
+    FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply_once(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n")
+        .reply_once(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n")
+        .reply(&["api"], "{\"state\":\"success\",\"total_count\":0,\"statuses\":[]}\n")
+        .build()
+}
+
+fn with_ci_check(w: &World) -> Vec<String> {
+    run_args(w).into_iter().filter(|arg| arg != "--no-ci-check").collect()
+}
+
+fn ci_polls(provider: &FakeProvider) -> usize {
+    provider.calls().iter().filter(|call| call.args.first().is_some_and(|arg| arg == "api")).count()
+}
+
+#[test]
+fn a_ci_fix_left_uncommitted_is_not_pushed_and_fails_the_run() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-fix-dirty", &agent);
+    ci_fix_session_does(&w, "touch ci-fixed");
+    let provider = ci_red_then_green();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &with_ci_check(&w));
+
+    assert_ne!(code, 0, "{drawn}");
+    assert!(drawn.contains("uncommitted changes"), "{drawn}");
+    assert!(!drawn.contains("review_ready"), "{drawn}");
+    assert_eq!(ci_polls(&provider), 1, "CI is not asked about a fix that was not pushed");
+}
