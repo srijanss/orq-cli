@@ -10,13 +10,14 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
-    CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
+    CiFixConfig, CiFixOutcome, CiFixSteps, CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
 
 /// How many times a red gate is handed to a fix session before the run fails.
 const GATE_FIX_ATTEMPTS: u32 = 2;
+const CI_FIX_ATTEMPTS: u32 = 2;
 
 #[derive(Clone)]
 pub struct Options<'a> {
@@ -982,19 +983,65 @@ fn stages(
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
     }
-    let ci = wait_for_ci_logged(
-        store,
-        run_id,
-        &provider,
-        &head_sha,
-        &CiWaitConfig {
-            enabled: options.ci_check,
-            poll_interval: Duration::from_secs(15),
-            timeout: settings.ci_timeout.unwrap_or(Duration::from_secs(30 * 60)),
-            command_timeout: Duration::from_secs(60),
-        },
-        Some(&logs.join("ci.log")),
-    )?;
+    let ci_config = CiWaitConfig {
+        enabled: options.ci_check,
+        poll_interval: Duration::from_secs(15),
+        timeout: settings.ci_timeout.unwrap_or(Duration::from_secs(30 * 60)),
+        command_timeout: Duration::from_secs(60),
+    };
+    let ci_log = logs.join("ci.log");
+    // A published branch is the user's own checkout, and no agent edits it: its CI is only reported.
+    let ci = if options.publish || !options.ci_check {
+        wait_for_ci_logged(store, run_id, &provider, &head_sha, &ci_config, Some(&ci_log))?
+    } else {
+        let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let task = format!(
+            "CI failed on the pushed branch. The newest ci-failure-*.log in {} lists the failing checks. Read it, get each check's log with {provider_cli}, fix the cause in this worktree and commit the fix.",
+            logs.display()
+        );
+        let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
+        // Someone watching the run gets the session on the terminal, closed once it says it is finished.
+        let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("ci-fix.done"));
+        let fix_args = adapter_for(&options.implementer.harness)
+            .and_then(|adapter| {
+                adapter.fix_argv(&FixRequest {
+                    implementer: spec(&implementer),
+                    task: &task,
+                    logs_dir,
+                    exit_marker: fix_marker.as_deref().and_then(Path::to_str),
+                    attended: options.interactive,
+                })
+            })
+            .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let mut steps = PipelineCiSteps {
+            store,
+            run_id,
+            provider: &provider,
+            provider_cli,
+            config: &ci_config,
+            ci_log: &ci_log,
+            push_log: logs.join("push.log"),
+            session: FixSessionSpec {
+                program: claude_program.to_string(),
+                args: fix_args,
+                env: database_env.to_vec(),
+                cwd: worktree.to_path_buf(),
+                session_id: None,
+                log: logs.join("ci-fix.log"),
+                terminal: options.interactive,
+                exit_marker: fix_marker,
+            },
+        };
+        let config = CiFixConfig {
+            gate: &gate,
+            gate_enabled: options.gate,
+            gate_log: &logs.join("gate.log"),
+            log_dir: logs,
+            max_attempts: CI_FIX_ATTEMPTS,
+            env: database_env,
+        };
+        ci_verdict(run_ci_fix_loop(store, run_id, &head_sha, &config, &mut steps)?)
+    };
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
     if !options.publish {
         // The test databases go with the worktree; a kept worktree may still need them.
@@ -1017,6 +1064,64 @@ fn stages(
         });
     }
     Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url) })
+}
+
+/// How the pipeline talks to CI and the remote while the fix loop runs.
+struct PipelineCiSteps<'a> {
+    store: &'a RunStore,
+    run_id: &'a str,
+    provider: &'a Path,
+    provider_cli: &'a str,
+    config: &'a CiWaitConfig,
+    ci_log: &'a Path,
+    push_log: PathBuf,
+    session: FixSessionSpec,
+}
+
+impl CiFixSteps for PipelineCiSteps<'_> {
+    fn wait(&mut self, head_sha: &str) -> Result<CiOutcome, StoreError> {
+        wait_for_ci_logged(self.store, self.run_id, self.provider, head_sha, self.config, Some(self.ci_log))
+    }
+
+    fn push(&mut self) -> Result<PushOutcome, StoreError> {
+        push_run_branch(self.store, self.run_id, &self.push_log)
+    }
+
+    fn failure_log(&mut self, failing: &[String]) -> String {
+        ci_failure_text(self.provider_cli, failing)
+    }
+
+    fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> FixSessionSpec {
+        self.session.clone()
+    }
+}
+
+/// What a fix session starts from: orq knows the names of the failing checks, and the session
+/// fetches their logs with the provider's own CLI.
+fn ci_failure_text(provider_cli: &str, failing: &[String]) -> String {
+    let hint = if provider_cli == "glab" {
+        "`glab ci view` shows the pipeline and `glab ci trace <job>` prints a job's log."
+    } else {
+        "`gh pr checks` lists the checks and `gh run view <run-id> --log-failed` prints a failed run's log."
+    };
+    format!("CI failed on the pushed branch.\n\nFailing checks:\n- {}\n\n{hint}\n", failing.join("\n- "))
+}
+
+/// The fix loop's ending, as what the rest of the pipeline reports and cleans up after.
+fn ci_verdict(outcome: CiFixOutcome) -> CiOutcome {
+    match outcome {
+        CiFixOutcome::Passed { .. } => CiOutcome::Passed,
+        CiFixOutcome::Skipped => CiOutcome::Skipped,
+        CiFixOutcome::TimedOut { .. } => CiOutcome::TimedOut,
+        CiFixOutcome::Errored { reason, .. } => CiOutcome::Errored { reason },
+        CiFixOutcome::Failed { failing, .. } => CiOutcome::Failed { failing },
+        CiFixOutcome::GateFailed { fix_attempts, step, exit_code } => CiOutcome::Errored {
+            reason: format!("the gate failed at step {step} (exit {exit_code:?}) after CI fix attempt {fix_attempts}; nothing was pushed"),
+        },
+        CiFixOutcome::PushFailed { fix_attempts, reason } => CiOutcome::Errored {
+            reason: format!("pushing CI fix attempt {fix_attempts} failed: {reason}"),
+        },
+    }
 }
 
 #[cfg(test)]

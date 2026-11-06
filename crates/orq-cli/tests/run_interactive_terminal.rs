@@ -446,3 +446,54 @@ fn a_red_gate_opens_its_fix_session_on_the_terminal_and_closes_it_when_the_sessi
     assert!(!late.exists(), "the session was closed by its marker");
     assert!(!drawn.contains("gate_fix"), "nothing is drawn over the session: {drawn}");
 }
+
+#[test]
+fn a_red_ci_opens_its_fix_session_on_the_terminal_then_pushes_the_fix_and_waits_again() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-fix", &agent);
+    let (fix_seen, fix_args, late) = (w.seen.with_file_name("fix-seen"), w.seen.with_file_name("fix-args"), w.seen.with_file_name("late"));
+    std::fs::rename(w.bin.join("claude"), w.bin.join("claude-inner")).unwrap();
+    std::fs::write(
+        w.bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'CI failed'*)\n[ -t 0 ] && [ -t 1 ] && echo tty > '{seen}'\nprintf '%s\\n' \"$*\" > '{args}'\nsleep 2\ntouch ci-fixed; git add ci-fixed; git -c user.name=t -c user.email=t@example.invalid commit -q -m 'fix: repair the CI'\nmarker=$(printf '%s' \"$*\" | sed -n 's/.*create the empty file \\([^ ]*\\) and then stop.*/\\1/p')\ntouch \"$marker\"\nsleep 20\n: > '{late}'\nexit 0;;\nesac\nexec '{inner}' \"$@\"\n",
+            seen = fix_seen.display(),
+            args = fix_args.display(),
+            late = late.display(),
+            inner = w.bin.join("claude-inner").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(w.bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    // Red on the first commit; green on the one the fix pushed. A red check run ends a poll before the
+    // commit status is asked for, so only the second poll reaches the standing reply.
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply_once(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n")
+        .reply_once(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n")
+        .reply(&["api"], "{\"state\":\"success\",\"total_count\":0,\"statuses\":[]}\n")
+        .build();
+    let args: Vec<String> = run_args(&w).into_iter().filter(|arg| arg != "--no-ci-check").collect();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &args);
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("state: review_ready"), "{drawn}");
+    assert_eq!(std::fs::read_to_string(&fix_seen).unwrap_or_default().trim(), "tty", "{drawn}");
+    let fix = std::fs::read_to_string(&fix_args).unwrap();
+    assert!(!format!(" {fix} ").contains(" -p "), "an attended fix session is not headless: {fix}");
+    assert!(fix.contains("--add-dir") && fix.contains("/logs/"), "the session may read the logs: {fix}");
+    assert!(!late.exists(), "the session was closed by its marker");
+    assert!(!drawn.contains("ci_fix"), "nothing is drawn over the session: {drawn}");
+    // The second wait is about another commit: the fix was pushed before CI was asked again.
+    let asked: Vec<String> = provider
+        .calls()
+        .iter()
+        .filter(|call| call.args.first().is_some_and(|arg| arg == "api"))
+        .filter_map(|call| call.args.iter().find(|arg| arg.contains("/commits/")).cloned())
+        .collect();
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert_ne!(asked[0], asked[1], "CI was asked about the fix: {asked:?}");
+}
