@@ -324,3 +324,44 @@ fn blanks_alone_count_as_finished_but_a_report_after_them_still_fails_the_stage(
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
     assert!(outcome.success, "{outcome:?}");
 }
+
+#[test]
+fn a_session_that_failed_by_its_exit_status_keeps_that_failure_whatever_its_marker_says() {
+    let (store, root) = setup("reported-and-exit-3");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("echo 'the review could not run' > {}; exit 3", marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert_eq!(outcome.exit_code, Some(3));
+    assert_eq!(outcome.reported, None);
+    assert!(stage_failure_reason(&store).contains('3'), "{}", stage_failure_reason(&store));
+}
+
+#[test]
+fn a_session_killed_by_a_signal_keeps_that_failure_whatever_its_marker_says() {
+    let (store, root) = setup("reported-and-killed");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("echo 'the review could not run' > {}; kill -9 $$", marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert_eq!(outcome.exit_code, None);
+    assert_eq!(outcome.reported, None);
+    assert!(!stage_failure_reason(&store).contains("reported a problem"), "{}", stage_failure_reason(&store));
+}
+
+#[test]
+fn a_marker_that_cannot_be_read_fails_an_otherwise_successful_session() {
+    let (store, root) = setup("unreadable");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("touch {m}; chmod 000 {m}; exit 0", m = marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    let reason = stage_failure_reason(&store);
+    assert!(reason.contains("could not be read"), "{reason}");
+}
