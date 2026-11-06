@@ -33,6 +33,87 @@ fn no_env(_: &str) -> Option<String> {
     None
 }
 
+fn script_private(repo: &Path, text: &str) {
+    fs::write(repo.join(".git/orchestrate.env"), text).unwrap();
+}
+
+fn shell_gate(command: &str) -> Option<Vec<String>> {
+    Some(vec!["bash".to_string(), "-c".to_string(), command.to_string()])
+}
+
+#[test]
+fn the_gate_command_of_the_old_script_settings_becomes_a_bash_gate_and_names_its_file() {
+    let r = repo("scriptgate");
+    script_private(&r, "GATE_CMD='rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc'\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.gate, shell_gate("rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc"));
+    assert!(s.gate_from_script.is_some_and(|file| file.contains("orchestrate")));
+}
+
+/// The lines the old script accepts are read as it reads them: never by a shell, and the first value wins.
+#[test]
+fn the_script_settings_file_is_read_by_the_rules_of_the_script() {
+    let r = repo("scriptlines");
+    script_private(
+        &r,
+        "# GATE_CMD=commented\nSETUP_CMD=make deps\nnot a setting\n  export GATE_CMD = \"make check $(whoami)\"  \r\nGATE_CMD=later\n",
+    );
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.gate, shell_gate("make check $(whoami)"));
+}
+
+#[test]
+fn the_private_script_file_wins_over_the_one_in_the_repo_even_when_it_sets_the_gate_to_nothing() {
+    let only_repo = repo("scriptrepo");
+    fs::write(only_repo.join(".orchestrate.env"), "GATE_CMD=make repo\n").unwrap();
+    let s = load_run_settings(&only_repo, &no_env).unwrap();
+    assert_eq!(s.gate, shell_gate("make repo"));
+    assert!(s.gate_from_script.is_some_and(|file| file.ends_with(".orchestrate.env")));
+
+    let both = repo("scriptboth");
+    fs::write(both.join(".orchestrate.env"), "GATE_CMD=make repo\n").unwrap();
+    script_private(&both, "GATE_CMD=make private\n");
+    assert_eq!(load_run_settings(&both, &no_env).unwrap().gate, shell_gate("make private"));
+
+    // Set to nothing is still set: the script then falls back to its own detection.
+    script_private(&both, "GATE_CMD=''\n");
+    let s = load_run_settings(&both, &no_env).unwrap();
+    assert_eq!((s.gate, s.gate_from_script), (None, None));
+}
+
+#[test]
+fn a_gate_named_by_orq_settings_wins_over_the_script_file() {
+    let r = repo("scriptloses");
+    script_private(&r, "GATE_CMD=make script\n");
+    shared(&r, "gate = [\"make\", \"shared\"]\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.gate, Some(vec!["make".to_string(), "shared".to_string()]));
+    assert_eq!(s.gate_from_script, None);
+}
+
+/// A named pipe would block the run forever if it were opened: the script only reads regular files.
+#[test]
+fn a_script_file_that_is_not_a_regular_file_is_not_opened() {
+    let r = repo("scriptfifo");
+    let made = std::process::Command::new("mkfifo").arg(r.join(".git/orchestrate.env")).status().unwrap();
+    assert!(made.success());
+    let (done, finished) = std::sync::mpsc::channel();
+    let path = r.clone();
+    std::thread::spawn(move || done.send(load_run_settings(&path, &no_env).map(|s| s.gate)));
+    let got = finished.recv_timeout(Duration::from_secs(10)).expect("the settings load returned");
+    assert_eq!(got.unwrap(), None);
+}
+
+/// A file orq cannot read must not quietly send the run back to a gate nobody chose.
+#[cfg(unix)]
+#[test]
+fn a_script_file_that_cannot_be_read_stops_the_run_instead_of_changing_its_gate() {
+    let r = repo("scriptunreadable");
+    // A symbolic link that loops is unreadable for any user, root included.
+    std::os::unix::fs::symlink("orchestrate.env", r.join(".git/orchestrate.env")).unwrap();
+    assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Unreadable { .. })));
+}
+
 #[test]
 fn a_repo_without_settings_gets_none() {
     let r = repo("none");

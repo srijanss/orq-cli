@@ -314,6 +314,9 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     // Read from the user's checkout, never from the agent's worktree.
     let settings = orq_orchestrator::load_run_settings(&options.project.root, &|name| std::env::var(name).ok())
         .map_err(|e| other(format!("run settings: {e}")))?;
+    if let Some(file) = &settings.gate_from_script {
+        eprintln!("orq: using GATE_CMD from {file} as the gate");
+    }
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
         Some(orq_orchestrator::plan_group_resume(store, repo, &project_id(options.project), &members).map_err(other)?)
@@ -742,6 +745,17 @@ fn group_draft(mut draft: orq_orchestrator::ReviewDraft, features: &[String]) ->
     draft
 }
 
+/// What a gate runs with: the run's variables, and `GATE_BASE`, the commit the branch was last
+/// rebased onto, or the one it started from when it was not rebased. A pause cannot lose it: it is
+/// read from the run's events.
+fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)]) -> Result<Vec<(String, String)>, StoreError> {
+    let events = store.events(&record.run_id)?;
+    let rebased = events.iter().rev().filter(|e| e.kind == "rebase.completed").find_map(|e| e.payload["target_sha"].as_str());
+    let mut env = run_vars.to_vec();
+    env.push(("GATE_BASE".to_string(), rebased.unwrap_or(&record.base_sha).to_string()));
+    Ok(env)
+}
+
 fn stages(
     store: &RunStore,
     record: &RunRecord,
@@ -908,8 +922,9 @@ fn stages(
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
         };
+        let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
-            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, _| FixSessionSpec {
+            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args.clone(),
                 env: database_env.to_vec(),
@@ -1037,13 +1052,14 @@ fn stages(
                 exit_marker: fix_marker,
             },
         };
+        let gate_env = gate_env(store, record, database_env)?;
         let config = CiFixConfig {
             gate: &gate,
             gate_enabled: options.gate,
             gate_log: &logs.join("gate.log"),
             log_dir: logs,
             max_attempts: CI_FIX_ATTEMPTS,
-            env: database_env,
+            env: &gate_env,
         };
         ci_verdict(run_ci_fix_loop(store, run_id, &head_sha, &config, &mut steps)?)
     };

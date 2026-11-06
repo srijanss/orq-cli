@@ -135,6 +135,54 @@ fn a_configured_gate_runs_and_a_failing_one_stops_the_run_before_the_push() {
 }
 
 #[test]
+fn a_run_names_the_script_file_its_gate_came_from() {
+    let w = world("scriptgatenotice");
+    std::fs::write(w.repo.root().join(".git/orchestrate.env"), "GATE_CMD=true\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let err = stderr(&output);
+    assert_eq!(output.status.code(), Some(0), "{err}");
+    assert!(err.contains("GATE_CMD") && err.contains("orchestrate.env"), "{err}");
+}
+
+/// The script told its gate what the branch sits on, and a gate command may use that to look at the change.
+#[test]
+fn a_gate_is_told_the_commit_its_branch_was_rebased_onto() {
+    let w = world("gatebase");
+    std::fs::write(
+        w.repo.root().join(".git/orchestrate.env"),
+        "GATE_CMD='test \"$GATE_BASE\" = \"$(git rev-parse HEAD~1)\" && test \"$(git diff --name-only \"$GATE_BASE\"...HEAD)\" = feature.txt'\n",
+    )
+    .unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+/// A project set up for the old script keeps its gate: the shell command is what runs, and the run says so.
+#[test]
+fn the_gate_command_of_the_old_script_settings_runs_when_nothing_else_names_a_gate() {
+    let w = world("scriptgate");
+    std::fs::write(
+        w.repo.root().join(".git/orchestrate.env"),
+        "GATE_CMD='rc=0; true || rc=1; false || rc=1; exit $rc'\n",
+    )
+    .unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_ne!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
+    assert!(stderr(&output).contains("GATE_CMD"), "the run says where its gate came from: {}", stderr(&output));
+}
+
+#[test]
 fn auto_exit_false_in_the_settings_file_asks_for_no_marker_and_keeps_the_sessions_own_exit_status() {
     let w = world("noautoexit");
     std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();

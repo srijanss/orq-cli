@@ -2,7 +2,9 @@
 //! timeout. They come from a private file in the git directory (`orq/run.toml`), a checked-in
 //! `.orq/run.toml`, and `ORQ_*` environment variables; the environment wins over the private
 //! file, which wins over the checked-in one, key by key. Commands are argv lists, never shell
-//! text, and every value is validated before a run uses it.
+//! text, and every value is validated before a run uses it. The one exception: when none of those
+//! names a gate, the `GATE_CMD` of the old script's settings file is run with `bash -c`, as the
+//! script ran it. That file is only ever parsed here, never evaluated.
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,6 +14,9 @@ use crate::review_request::ReviewPeople;
 
 const SHARED_FILE: &str = ".orq/run.toml";
 const PRIVATE_LABEL: &str = "orq/run.toml in the git directory";
+/// The old script's settings files, private one first; only `GATE_CMD` is taken from them.
+const SCRIPT_PRIVATE_FILE: &str = "orchestrate.env";
+const SCRIPT_REPO_FILE: &str = ".orchestrate.env";
 /// A CI wait longer than a day is a typo, not a wish.
 const MAX_CI_TIMEOUT_SECS: i64 = 86_400;
 const MAX_COMPACT_WINDOW: i64 = 10_000_000;
@@ -23,6 +28,8 @@ pub struct RunSettings {
     pub base_branch: Option<String>,
     /// The gate command; `None` leaves the project's own detection in charge.
     pub gate: Option<Vec<String>>,
+    /// The old script's settings file that `gate` was taken from, when it was.
+    pub gate_from_script: Option<String>,
     /// Extra setup steps, run before the detected install step.
     pub setup: Vec<Vec<String>>,
     pub ci_timeout: Option<Duration>,
@@ -152,10 +159,16 @@ pub fn load_run_settings(
         None => Layer::default(),
     };
     let merged = env_layer(env)?.over(private).over(shared);
+    let script_gate = match merged.gate {
+        Some(_) => None,
+        None => script_gate(repo)?,
+    };
+    let (script_command, gate_from_script) = script_gate.unzip();
     Ok(RunSettings {
         forge: merged.forge,
         base_branch: merged.base_branch,
-        gate: merged.gate,
+        gate: merged.gate.or(script_command),
+        gate_from_script,
         setup: merged.setup.unwrap_or_default(),
         ci_timeout: merged.ci_timeout,
         mr_assignee: merged.mr_assignee,
@@ -250,6 +263,55 @@ fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
     let got = git_raw(repo, &["rev-parse", "--git-dir"]).ok()?;
     let line = got.stdout.lines().next()?.trim();
     (got.success && !line.is_empty()).then(|| repo.join(line))
+}
+
+/// The gate the old script would have run: its `GATE_CMD`, and the file that set it. The first
+/// file to set the variable wins, even to nothing, which leaves the project's detection in charge.
+fn script_gate(repo: &Path) -> Result<Option<(Vec<String>, String)>, SettingsError> {
+    let private = git_dir(repo).map(|dir| dir.join(SCRIPT_PRIVATE_FILE));
+    for path in private.into_iter().chain([repo.join(SCRIPT_REPO_FILE)]) {
+        let Some(text) = read_script_file(&path)? else {
+            continue;
+        };
+        if let Some(command) = text.lines().find_map(script_gate_line) {
+            return Ok((!command.is_empty()).then(|| {
+                let argv = vec!["bash".to_string(), "-c".to_string(), command.to_string()];
+                (argv, path.display().to_string())
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// The text of a script settings file. Like the script, only a regular file is read, so a named
+/// pipe cannot block the run; one that is there but unreadable is an error, not a different gate.
+fn read_script_file(path: &Path) -> Result<Option<String>, SettingsError> {
+    let unreadable = |err: std::io::Error| SettingsError::Unreadable {
+        path: path.display().to_string(),
+        reason: err.to_string(),
+    };
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(unreadable(err)),
+    }
+    let bytes = std::fs::read(path).map_err(unreadable)?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// The value of a `[export ]GATE_CMD = value` line, with one pair of surrounding quotes removed.
+fn script_gate_line(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let line = line
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(line, str::trim_start);
+    let value = line.strip_prefix("GATE_CMD")?.trim_start().strip_prefix('=')?.trim_start();
+    let quoted = value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')));
+    Some(if quoted { &value[1..value.len() - 1] } else { value })
 }
 
 fn invalid(source: &str, reason: impl Into<String>) -> SettingsError {

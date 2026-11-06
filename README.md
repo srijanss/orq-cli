@@ -28,6 +28,8 @@ forge = "gh"                      # for a self-hosted host; "gh" or "glab"
 
 Layering, key by key: `ORQ_*` environment variables beat the private file, which beats the checked-in file. Commands are argv lists, never shell text; put a compound command in a script and call that.
 
+A project set up for the old orchestrate script keeps its gate. When nothing above names a gate, orq takes `GATE_CMD` from `<git-dir>/orchestrate.env`, then from `.orchestrate.env` in the repo: the first file to set it wins, and setting it to nothing means detection. It runs with `bash -c` and `GATE_BASE` set to the commit the branch was rebased onto, the run prints which file it came from, and the file is only parsed, never evaluated. Every other key in those files is ignored, as is a `GATE_CMD` environment variable.
+
 The full list of keys is in `crates/orq-orchestrator/src/run_settings.rs`.
 
 ## Running a feature
