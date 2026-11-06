@@ -247,15 +247,12 @@ fn run_session(
         }
     }
     command.envs(session.env.iter().map(|(k, v)| (k, v)));
-    let mut child = command
-        .spawn()
+    let mut child = crate::child_groups::spawn(&mut command)
         .map_err(|e| format!("the drafting session could not start: {e}"))?;
-    let tracked = crate::child_groups::track(child.id());
-    let mut stdout = child
-        .stdout
-        .take()
+    let (stdout, stderr) = child.take_output();
+    let mut stdout = stdout
         .ok_or_else(|| "the drafting session has no output".to_string())?;
-    if let Some(mut stderr) = child.stderr.take() {
+    if let Some(mut stderr) = stderr {
         stderr_sink.done.store(false, Ordering::Release);
         let sink = Arc::clone(stderr_sink);
         std::thread::spawn(move || {
@@ -294,24 +291,27 @@ fn run_session(
     });
 
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                stop(&mut child);
+    loop {
+        // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
+        match child.has_exited() {
+            Ok(true) => break,
+            Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(false) => {
+                stop(child);
                 return Err("the drafting session timed out".to_string());
             }
             Err(e) => {
-                stop(&mut child);
+                stop(child);
                 return Err(format!("the drafting session could not be awaited: {e}"));
             }
         }
-    };
+    }
     // Whatever the exit status, nothing the session started may outlive it; this also
     // closes the output pipe so the reader ends.
-    kill_group(child.id());
-    drop(tracked);
+    child.end_group();
+    let status = child
+        .reap()
+        .map_err(|e| format!("the drafting session could not be awaited: {e}"))?;
     if !status.success() {
         return Err(format!("the drafting session failed ({status})"));
     }
@@ -330,20 +330,9 @@ fn run_session(
 }
 
 /// Kill the session's whole process group, then reap it.
-fn stop(child: &mut std::process::Child) {
-    kill_group(child.id());
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// The session leads its own process group, whose id is its pid.
-fn kill_group(pgid: u32) {
-    let group = format!("-{pgid}");
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &group])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn stop(child: crate::child_groups::TrackedChild) {
+    child.end_group();
+    let _ = child.reap();
 }
 
 /// Title from the first line, body from the rest; None when there is no title.

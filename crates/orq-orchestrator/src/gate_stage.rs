@@ -179,32 +179,27 @@ fn run_step(
         .stderr(log.try_clone()?);
     use std::os::unix::process::CommandExt;
     command.process_group(0);
-    let mut child = match command.spawn() {
+    let child = match crate::child_groups::spawn(&mut command) {
         Ok(child) => child,
         Err(err) => return Ok((None, Some(format!("could not be started: {err}")))),
     };
-    let group = child.id() as libc::pid_t;
-    let tracked = crate::child_groups::track(child.id());
     let deadline = std::time::Instant::now() + limit;
     let exited = loop {
         // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
-        match crate::terminal_session::has_exited(&child) {
+        match child.has_exited() {
             Ok(true) => break true,
             Ok(false) if std::time::Instant::now() >= deadline => break false,
             Ok(false) => std::thread::sleep(std::time::Duration::from_millis(50)),
             Err(err) => {
-                // Safety: plain system call; the leader is unreaped.
-                unsafe { libc::killpg(group, libc::SIGKILL) };
-                drop(tracked);
-                let _ = child.wait();
+                child.end_group();
+                let _ = child.reap();
                 return Err(err.into());
             }
         }
     };
-    // Whatever the step started goes with it. Safety: plain system call; the leader is unreaped.
-    unsafe { libc::killpg(group, libc::SIGKILL) };
-    drop(tracked);
-    let status = child.wait()?;
+    // Whatever the step started goes with it.
+    child.end_group();
+    let status = child.reap()?;
     if !exited {
         return Ok((None, Some(format!("timed out after {}s and was stopped", limit.as_secs()))));
     }

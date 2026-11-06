@@ -29,18 +29,16 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
+    let child = crate::child_groups::spawn(&mut command)?;
     // The command holds this end of the terminal, which only the program may keep open.
     drop(command);
 
-    let group = child.id() as libc::pid_t;
-    let tracked = crate::child_groups::track(child.id());
     let mut deadline = Instant::now() + limit;
     let mut marked = false;
     let mut next_marker_check = Instant::now();
     let outcome = loop {
         discard_output(&mut screen);
-        match has_exited(&child) {
+        match child.has_exited() {
             Ok(true) => break Ok(()),
             Err(err) => break Err(err),
             Ok(false) => {}
@@ -54,15 +52,13 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
             }
         }
         if now >= deadline {
-            break stop(&mut child, &mut screen);
+            break stop(&child, &mut screen);
         }
     };
     // Whatever the program started and left running goes with it, however it ended. The leader is
     // still unreaped (a zombie keeps its id reserved), so the id still names only this group.
-    // Safety: plain system call.
-    unsafe { libc::killpg(group, libc::SIGKILL) };
-    drop(tracked);
-    let _ = child.wait();
+    child.end_group();
+    let _ = child.reap();
     outcome
 }
 
@@ -101,7 +97,7 @@ mod tests {
     }
 }
 
-fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
+fn stop(child: &crate::child_groups::TrackedChild, screen: &mut File) -> io::Result<()> {
     // The program leads its own session (see `setsid`), so its id is also its group's.
     let group = child.id() as libc::pid_t;
     // Safety: plain system call; the child is not yet reaped, so the id still names its group.
@@ -109,7 +105,7 @@ fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
     let grace = Instant::now() + STOP_GRACE;
     while Instant::now() < grace {
         discard_output(screen);
-        if has_exited(child)? {
+        if child.has_exited()? {
             return Ok(());
         }
     }

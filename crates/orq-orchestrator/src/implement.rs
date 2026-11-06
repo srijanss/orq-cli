@@ -131,7 +131,7 @@ pub(crate) fn run_session_stage(
         }
     }
     let status = cleared
-        .and_then(|()| command.spawn())
+        .and_then(|()| crate::child_groups::spawn(&mut command))
         .and_then(|child| wait_for_session(child, session.exit_marker));
     let (outcome, reason) = match status {
         Ok(SessionEnd::Closed) => (
@@ -194,25 +194,21 @@ const MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Waits for `child`; with a marker, closes it once the marker exists and a short grace has passed.
 fn wait_for_session(
-    mut child: std::process::Child,
+    child: crate::child_groups::TrackedChild,
     marker: Option<&Path>,
 ) -> std::io::Result<SessionEnd> {
-    let tracked = crate::child_groups::track(child.id());
     let mut seen: Option<std::time::Instant> = None;
     loop {
         // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
-        if crate::terminal_session::has_exited(&child)? {
+        if child.has_exited()? {
             end_group(child.id());
-            drop(tracked);
-            return child.wait().map(SessionEnd::Exited);
+            return child.reap().map(SessionEnd::Exited);
         }
         if marker.is_some_and(Path::exists) {
             let since = *seen.get_or_insert_with(std::time::Instant::now);
             if since.elapsed() >= MARKER_GRACE {
                 end_group(child.id());
-                drop(tracked);
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.reap();
                 return Ok(SessionEnd::Closed);
             }
         }

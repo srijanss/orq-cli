@@ -319,42 +319,36 @@ pub fn drop_test_databases_within(
         // Its own process group, so a timeout can stop everything the command started.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let child = command.spawn();
-        let mut child = match child {
+        let child = match crate::child_groups::spawn(&mut command) {
             Ok(child) => child,
             Err(err) => {
                 notes.push(format!("dropping test database {test_name} could not be started ({:?}); drop it manually", err.kind()));
                 continue;
             }
         };
-        let _tracked = crate::child_groups::track(child.id());
         let deadline = std::time::Instant::now() + limit;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if std::time::Instant::now() < deadline => {
+        let exited = loop {
+            // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
+            match child.has_exited() {
+                Ok(true) => break true,
+                Ok(false) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(20))
                 }
-                _ => break None,
+                _ => break false,
             }
         };
+        if !exited {
+            child.end_group();
+        }
+        let status = child.reap();
         match status {
-            Some(status) if status.success() => {}
-            Some(status) => notes.push(format!(
+            Ok(status) if exited && status.success() => {}
+            Ok(status) if exited => notes.push(format!(
                 "dropping test database {test_name} failed ({status}); drop it manually"
             )),
-            None => {
-                #[cfg(unix)]
-                if let Ok(group) = i32::try_from(child.id()) {
-                    // SAFETY: kill(2) with the negated id of the group this function created.
-                    unsafe { libc::kill(-group, libc::SIGKILL) };
-                }
-                let _ = child.kill();
-                let _ = child.wait();
-                notes.push(format!(
-                    "dropping test database {test_name} timed out; drop it manually"
-                ));
-            }
+            _ => notes.push(format!(
+                "dropping test database {test_name} timed out; drop it manually"
+            )),
         }
     }
     notes
