@@ -24,9 +24,18 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// A script that starts a long-lived child, writes its process id down, and waits for it.
+/// A script that notes the signals it was started ignoring (a background job would change its own),
+/// starts a long-lived child, writes the child's process id down, and waits for it.
 fn starts_a_child(pidfile: &Path) -> String {
-    format!("sleep 300 & echo $! > '{}'; wait", pidfile.display())
+    let pidfile = pidfile.display();
+    format!("grep SigIgn /proc/$$/status > '{pidfile}.ignored'; sleep 300 & echo $! > '{pidfile}'; wait")
+}
+
+/// The signals the owner's child noted it was started ignoring, as the kernel's bit mask.
+fn ignored_by_child(pidfile: &Path) -> u64 {
+    let text = std::fs::read_to_string(format!("{}.ignored", pidfile.display())).unwrap();
+    let mask = text.trim().strip_prefix("SigIgn:").expect("a SigIgn line").trim();
+    u64::from_str_radix(mask, 16).unwrap()
 }
 
 /// In an owner process: its scratch directory and child script, with the ending signals set up.
@@ -250,11 +259,13 @@ fn a_signal_the_owner_was_started_ignoring_stays_ignored() {
     std::thread::sleep(Duration::from_millis(500));
 
     let owner_still_running = owner.try_wait().unwrap().is_none();
-    let child_still_running = alive(child);
+    let ignored = ignored_by_child(&pidfile);
     // SIGTERM was not ignored, so this also cleans up.
     ends_with_the_owner(&mut owner, child, libc::SIGTERM);
     assert!(owner_still_running, "an ignored signal ended the owner");
-    assert!(child_still_running, "an ignored signal ended the child");
+    for signal in [libc::SIGINT, libc::SIGHUP] {
+        assert_ne!(ignored & (1 << (signal - 1)), 0, "the child stopped ignoring signal {signal}");
+    }
 }
 
 /// A setup step may start a service the run goes on to use, so finishing normally must not end it.
