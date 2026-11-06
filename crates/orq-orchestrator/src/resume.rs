@@ -45,12 +45,14 @@ pub fn record_group(
     })
 }
 
-/// The features a run was for, in order.
+/// The features a run was for, in order. The first names the run, so a note that does not start
+/// with the run's own feature is no group at all.
 pub(crate) fn members_of(record: &RunRecord, events: &[Event]) -> Vec<String> {
     events
         .iter()
         .find(|e| e.kind == GROUP_EVENT)
-        .and_then(|e| serde_json::from_value(e.payload["features"].clone()).ok())
+        .and_then(|e| serde_json::from_value::<Vec<String>>(e.payload["features"].clone()).ok())
+        .filter(|members| members.first() == Some(&record.feature_id))
         .unwrap_or_else(|| vec![record.feature_id.clone()])
 }
 

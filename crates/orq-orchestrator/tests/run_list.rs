@@ -205,3 +205,25 @@ fn an_adopted_review_lists_its_link_and_a_run_without_profiles_lists_no_models()
     assert_eq!(runs[0].implementer_model, None);
     assert_eq!(runs[0].reviewer_model, None);
 }
+
+#[test]
+fn a_run_whose_group_note_does_not_start_with_its_own_feature_is_a_run_of_that_feature_alone() {
+    let s = store("bad-group");
+    for (run_id, members) in [("run-empty", vec![]), ("run-other", vec!["COM-09".to_string()])] {
+        let r = record(run_id, "p1", "COM-01");
+        s.create(&r).unwrap();
+        orq_orchestrator::record_group(&s, &r, &members).unwrap();
+    }
+    let good = record("run-good", "p1", "COM-01");
+    s.create(&good).unwrap();
+    orq_orchestrator::record_group(&s, &good, &["COM-01".to_string(), "COM-02".to_string()]).unwrap();
+
+    let runs = list_runs(&s, "p1").unwrap();
+
+    let members: Vec<(&str, Vec<&str>)> =
+        runs.iter().map(|run| (run.run_id.as_str(), run.members.iter().map(String::as_str).collect())).collect();
+    assert_eq!(
+        members,
+        [("run-empty", vec!["COM-01"]), ("run-good", vec!["COM-01", "COM-02"]), ("run-other", vec!["COM-01"])]
+    );
+}
