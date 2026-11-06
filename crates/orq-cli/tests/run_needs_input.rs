@@ -223,3 +223,29 @@ fn a_permission_prompt_after_the_question_is_answered_is_its_own_need() {
     assert!(!given[0].payload.to_string().contains("secret"), "what was answered stays out of the record");
     assert_eq!(sent_lines(&w.sent, 2).len(), 2, "the answer itself tells nobody");
 }
+
+#[test]
+fn a_notifier_that_fails_leaves_the_session_alone_and_the_need_on_the_run() {
+    let w = world("notifier-fails");
+    let failing = format!("printf 'ran\\n' >> '{}'; exit 7; ", w.sent.display());
+    let started = Instant::now();
+    let out = hook(&w, "run-1", &question("Anyone?"), &failing);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty());
+    assert!(started.elapsed() < Duration::from_secs(4), "took {:?}", started.elapsed());
+    assert_eq!(needs(&w.store).len(), 1);
+    assert_eq!(sent_lines(&w.sent, 1), ["ran"], "the notifier did run, and failed");
+}
+
+#[test]
+fn run_settings_it_cannot_read_leave_the_session_alone_and_the_need_on_the_run() {
+    let w = world("bad-settings");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "not = [valid").unwrap();
+    let out = hook(&w, "run-1", &question("Anyone?"), "");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty());
+    assert_eq!(needs(&w.store).len(), 1);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!w.sent.exists(), "settings that cannot be read send nothing");
+}
