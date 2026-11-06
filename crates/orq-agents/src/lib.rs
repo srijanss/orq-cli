@@ -308,6 +308,10 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
     let Some(task) = checked_context(request.task)? else {
         return Err(AdapterError::InvalidValue { field: "task", value: String::new() });
     };
+    // The prompt begins with the task, and a program reads an argument beginning with a dash as an option.
+    if task.starts_with('-') {
+        return Err(AdapterError::InvalidValue { field: "task", value: task.chars().take(40).collect() });
+    }
     let mut prompt = task.to_string();
     if request.attended {
         prompt.push_str(&attended_wording(harness));

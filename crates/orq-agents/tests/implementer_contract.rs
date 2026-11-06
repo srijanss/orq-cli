@@ -183,6 +183,18 @@ fn a_fix_session_refuses_what_would_not_stay_one_safe_argument() {
 }
 
 #[test]
+fn a_fix_session_refuses_a_task_its_program_would_read_as_an_option() {
+    for_each_harness(|harness, model| {
+        let adapter = adapter_for(harness).unwrap();
+
+        for task in ["--help", "  --help", "-p"] {
+            let request = orq_agents::FixRequest { task, ..fix_request(harness, model, None, false) };
+            assert!(adapter.fix_argv(&request).is_err(), "{harness}: {task}");
+        }
+    });
+}
+
+#[test]
 fn a_claude_fix_session_may_read_the_logs_without_its_prompt_becoming_another_directory() {
     let argv = adapter_for("claude").unwrap().fix_argv(&fix_request("claude", "opus", None, false)).unwrap();
 
