@@ -356,8 +356,11 @@ fn a_session_killed_by_a_signal_keeps_that_failure_whatever_its_marker_says() {
 #[test]
 fn a_marker_that_cannot_be_read_fails_an_otherwise_successful_session() {
     let (store, root) = setup("unreadable");
-    let marker = root.join("worktree/done.marker");
-    let args = args(&format!("touch {m}; chmod 000 {m}; exit 0", m = marker.display()));
+    // The folder turning into a file is an error for any user; a permission would not stop root.
+    let folder = root.join("worktree/markers");
+    fs::create_dir_all(&folder).unwrap();
+    let marker = folder.join("done.marker");
+    let args = args(&format!("rmdir {f}; touch {f}; exit 0", f = folder.display()));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
