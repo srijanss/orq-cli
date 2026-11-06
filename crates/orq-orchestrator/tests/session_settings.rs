@@ -295,3 +295,48 @@ fn the_run_worktrees_directory_is_kept_out_of_the_main_checkouts_git_status_thro
     let exclude = fs::read_to_string(repo.root().join(".git/info/exclude")).unwrap();
     assert_eq!(exclude.matches(".claude/worktrees").count(), 1, "{exclude}");
 }
+
+#[test]
+fn the_needs_input_hook_joins_the_settings_and_replaces_only_an_earlier_copy_of_itself() {
+    let (_repo, worktree) = checkout("needs-input-hook");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::write(
+        worktree.join(".claude/settings.local.json"),
+        r#"{"env":{"KEEP":"1"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"mine"}]}]}}"#,
+    )
+    .unwrap();
+
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/old/orq' run needs-input r --repo '/x'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/new/orq' run needs-input r --repo '/x'").is_empty());
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["env"]["KEEP"], "1");
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 2, "{pre:?}");
+    assert_eq!(pre[0]["hooks"][0]["command"], "mine");
+    assert_eq!(pre[1]["matcher"], "AskUserQuestion");
+    assert_eq!(pre[1]["hooks"][0]["command"], "'/new/orq' run needs-input r --repo '/x'");
+    let notification = settings["hooks"]["Notification"].as_array().unwrap();
+    assert_eq!(notification.len(), 1, "{notification:?}");
+    assert_eq!(notification[0]["matcher"], "permission_prompt");
+    assert_eq!(notification[0]["hooks"][0]["command"], "'/new/orq' run needs-input r --repo '/x'");
+}
+
+#[test]
+fn settings_the_hook_cannot_join_are_a_note_and_are_left_as_they_were() {
+    let (_repo, worktree) = checkout("needs-input-hook-bad");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    let path = worktree.join(".claude/settings.local.json");
+    fs::write(&path, r#"{"hooks":"nonsense"}"#).unwrap();
+    let notes = orq_orchestrator::write_needs_input_hook(&worktree, "orq run needs-input r --repo /x");
+    assert!(notes.iter().any(|n| n.contains("settings.local.json")), "{notes:?}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"hooks":"nonsense"}"#);
+
+    let outside = worktree.join("outside.json");
+    fs::write(&outside, "{}").unwrap();
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    let notes = orq_orchestrator::write_needs_input_hook(&worktree, "orq run needs-input r --repo /x");
+    assert!(notes.iter().any(|n| n.contains("settings.local.json")), "{notes:?}");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "{}");
+}

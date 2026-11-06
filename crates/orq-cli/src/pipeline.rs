@@ -591,7 +591,7 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
 
 /// Tell the configured notifier how a run ended. Best effort: a notifier that fails never
 /// changes how the run ended.
-fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str, ending: &str, detail: Option<&str>, url: Option<&str>) {
+pub(crate) fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str, ending: &str, detail: Option<&str>, url: Option<&str>) {
     if !orq_orchestrator::wants_notification(settings.notify_on.as_deref(), ending) {
         return;
     }
@@ -757,6 +757,21 @@ fn stages(
         notes.extend(orq_orchestrator::exclude_worktrees_dir(&options.project.root));
         let mcpctl = find_program("mcpctl");
         notes.extend(orq_orchestrator::prepare_mcp_servers(worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref()));
+        // Only a session with a terminal has someone to ask.
+        if options.interactive {
+            match std::env::current_exe() {
+                Ok(orq) => {
+                    let command = format!(
+                        "{} run needs-input {} --repo {}",
+                        crate::sh_quote(&orq.to_string_lossy()),
+                        crate::sh_quote(&run_id),
+                        crate::sh_quote(&options.project.root.to_string_lossy())
+                    );
+                    notes.extend(orq_orchestrator::write_needs_input_hook(worktree, &command));
+                }
+                Err(err) => notes.push(format!("the session will not say when it needs an answer: orq's own path is unknown ({:?})", err.kind())),
+            }
+        }
         notes.extend(orq_orchestrator::record_orq_written(worktree));
     }
     let database_env = run_vars.as_slice();

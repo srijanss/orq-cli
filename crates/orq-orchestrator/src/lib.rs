@@ -15,6 +15,7 @@ mod implement;
 mod interrupted;
 mod launch;
 mod local_files;
+mod needs_input;
 mod notify;
 mod orq_written;
 mod outcome;
@@ -59,6 +60,7 @@ pub use interrupted::{
 };
 pub use launch::{record_launch, record_owner};
 pub use local_files::{carry_local_files, LocalFiles};
+pub use needs_input::{parse_needs_input, record_needs_input, NeedsInput};
 pub use notify::{
     notification_message, send_notification, send_notification_with, wants_notification,
 };
@@ -95,7 +97,7 @@ pub use run_status::{
 pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,
 };
-pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, setup_mcp_servers, write_session_settings};
+pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, setup_mcp_servers, write_needs_input_hook, write_session_settings};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use stop::{owner_state, owner_state_in, stop_run, terminate_process, OwnerState};
 pub use store::{Claim, Event, RoleProfile, RunRecord, RunStore, StoreError};

@@ -11,6 +11,9 @@ use crate::local_files::{crosses_symlink, exclude_locally};
 const SETTINGS: &str = ".claude/settings.local.json";
 const WORKTREES_DIR: &str = ".claude/worktrees";
 const MCPCTL_TOML: &str = ".mcpctl.toml";
+/// What every command of the needs-input hook contains, however `orq` is reached.
+const NEEDS_INPUT_COMMAND: &str = " run needs-input ";
+const NEEDS_INPUT_TIMEOUT_SECS: u64 = 10;
 
 /// Merges `env` into the `env` object of the worktree's `.claude/settings.local.json` and approves
 /// MCP servers in `enabledMcpjsonServers`: those of `servers` that `.mcp.json` declares, or every
@@ -152,6 +155,72 @@ fn merge_settings(
     env: &[(String, String)],
     approved: &[String],
 ) -> Result<(), String> {
+    edit_settings(worktree, |root| {
+        if !env.is_empty() {
+            let table = root.entry("env").or_insert_with(|| serde_json::json!({}));
+            let table = table
+                .as_object_mut()
+                .ok_or("its env is not a JSON object")?;
+            for (key, value) in env {
+                table.insert(key.clone(), serde_json::Value::String(value.clone()));
+            }
+        }
+        if !approved.is_empty() {
+            let list = root
+                .entry("enabledMcpjsonServers")
+                .or_insert_with(|| serde_json::json!([]));
+            let list = list
+                .as_array_mut()
+                .ok_or("its enabledMcpjsonServers is not a JSON array")?;
+            for name in approved {
+                if !list.iter().any(|item| item.as_str() == Some(name)) {
+                    list.push(serde_json::Value::String(name.clone()));
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Tells the worktree's Claude session to run `command` when it asks its person a question or waits
+/// for a permission, and nothing else about the settings changes. An earlier copy of the hook goes,
+/// so a resumed run or a moved `orq` binary does not call it twice. The hook is held to a short
+/// timeout: Claude waits for it before it shows the question.
+pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
+    let edited = edit_settings(worktree, |root| {
+        let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        let hooks = hooks.as_object_mut().ok_or("its hooks is not a JSON object")?;
+        for (event, matcher) in [("PreToolUse", "AskUserQuestion"), ("Notification", "permission_prompt")] {
+            let entries = hooks.entry(event).or_insert_with(|| serde_json::json!([]));
+            let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
+            entries.retain(|entry| !runs_needs_input(entry));
+            entries.push(serde_json::json!({
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": command, "timeout": NEEDS_INPUT_TIMEOUT_SECS}],
+            }));
+        }
+        Ok(())
+    });
+    match edited {
+        Ok(()) => Vec::new(),
+        Err(why) => vec![format!("{SETTINGS} was not updated: {why}")],
+    }
+}
+
+/// Whether a hook entry is one `write_needs_input_hook` wrote.
+fn runs_needs_input(entry: &serde_json::Value) -> bool {
+    let hooks = entry.get("hooks").and_then(|hooks| hooks.as_array());
+    hooks.into_iter().flatten().any(|hook| {
+        hook.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains(NEEDS_INPUT_COMMAND))
+    })
+}
+
+/// Applies `edit` to the object in the worktree's settings file, or a new one, and writes it back.
+/// An edit that fails leaves the file as it was.
+fn edit_settings(
+    worktree: &Path,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), String>,
+) -> Result<(), String> {
     let path = worktree.join(SETTINGS);
     if crosses_symlink(worktree, SETTINGS)
         || std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink())
@@ -167,28 +236,7 @@ fn merge_settings(
         Err(err) => return Err(format!("it could not be read ({:?})", err.kind())),
     };
     let root = settings.as_object_mut().ok_or("it is not a JSON object")?;
-    if !env.is_empty() {
-        let table = root.entry("env").or_insert_with(|| serde_json::json!({}));
-        let table = table
-            .as_object_mut()
-            .ok_or("its env is not a JSON object")?;
-        for (key, value) in env {
-            table.insert(key.clone(), serde_json::Value::String(value.clone()));
-        }
-    }
-    if !approved.is_empty() {
-        let list = root
-            .entry("enabledMcpjsonServers")
-            .or_insert_with(|| serde_json::json!([]));
-        let list = list
-            .as_array_mut()
-            .ok_or("its enabledMcpjsonServers is not a JSON array")?;
-        for name in approved {
-            if !list.iter().any(|item| item.as_str() == Some(name)) {
-                list.push(serde_json::Value::String(name.clone()));
-            }
-        }
-    }
+    edit(root)?;
     std::fs::create_dir_all(worktree.join(".claude"))
         .map_err(|err| format!("its directory could not be created ({:?})", err.kind()))?;
     let text = serde_json::to_string_pretty(&settings)

@@ -80,7 +80,7 @@ fn facts_of(
 }
 
 /// Unix seconds of a `YYYY-MM-DDTHH:MM:SSZ` timestamp, the form events are written in.
-fn parse_rfc3339(text: &str) -> Option<u64> {
+pub(crate) fn parse_rfc3339(text: &str) -> Option<u64> {
     let bytes = text.as_bytes();
     if bytes.len() != 20
         || bytes[4] != b'-'

@@ -53,7 +53,7 @@ fn world(tag: &str, agent: &FakeAgent) -> World {
     std::fs::write(
         &claude,
         format!(
-            "#!/bin/sh\ni=-; o=-; [ -t 0 ] && i=t; [ -t 1 ] && o=t\necho \"$i$o $PWD\" >> '{seen}'\nprintf '%s\\n' \"$*\" >> '{seen}.args'\nexec '{agent}' \"$@\"\n",
+            "#!/bin/sh\ni=-; o=-; [ -t 0 ] && i=t; [ -t 1 ] && o=t\necho \"$i$o $PWD\" >> '{seen}'\nprintf '%s\\n' \"$*\" >> '{seen}.args'\ncp .claude/settings.local.json '{seen}.settings' 2>/dev/null\nexec '{agent}' \"$@\"\n",
             seen = seen.display(),
             agent = agent.path().display()
         ),
@@ -276,6 +276,27 @@ fn only_a_session_with_a_terminal_is_told_someone_is_watching_and_can_answer() {
     assert!(prompt.contains("COM-01"), "{prompt}");
     assert!(!prompt.contains("AskUserQuestion"), "{prompt}");
     assert!(!prompt.contains("watching this session"), "{prompt}");
+}
+
+#[test]
+fn only_a_session_with_a_terminal_gets_the_hook_that_says_it_needs_its_person() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let settings_of = |w: &World| std::fs::read_to_string(format!("{}.settings", w.seen.display())).unwrap_or_default();
+
+    let attended = world("attended-hook", &agent);
+    let (code, drawn) = run_in_pty(&attended, &github(), &run_args(&attended));
+    assert_eq!(code, 0, "{drawn}");
+    let settings: serde_json::Value = serde_json::from_str(&settings_of(&attended)).unwrap();
+    let hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "AskUserQuestion");
+    assert_eq!(settings["hooks"]["Notification"][0]["matcher"], "permission_prompt");
+    assert!(hook.contains(" run needs-input "), "{hook}");
+    assert!(hook.contains(&format!("'{}'", attended.repo.root().display())), "{hook}");
+
+    let headless = world("headless-hook", &agent);
+    let output = command(&headless, &github(), env!("CARGO_BIN_EXE_orq")).args(run_args(&headless)).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!settings_of(&headless).contains("needs-input"));
 }
 
 #[test]

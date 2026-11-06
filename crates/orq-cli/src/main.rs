@@ -39,6 +39,8 @@ fn main() -> ExitCode {
         (Some("run"), Some("stop")) => run_stop(&args[2..]),
         (Some("run"), Some("discard")) => run_discard(&args[2..]),
         (Some("run"), Some("switch")) => run_switch(&args[2..]),
+        (Some("run"), Some("needs-input")) => run_needs_input(&args[2..]),
+        (Some("run"), Some("needs-input-send")) => run_needs_input_send(&args[2..]),
         (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
@@ -4304,6 +4306,70 @@ fn run_discard(args: &[OsString]) -> ExitCode {
         }
         Err(message) => fail(printable(&message)),
     }
+}
+
+/// The variable that carries what is asked to the detached sender, out of sight of `ps`.
+const NEEDS_INPUT_TEXT: &str = "ORQ_NEEDS_INPUT_TEXT";
+
+/// `orq run needs-input <run> --repo <path>`, the hook of an attended session. It always exits 0 with
+/// nothing on stdout: Claude reads an exit code of 2 as refusing the tool and stdout as a decision.
+fn run_needs_input(args: &[OsString]) -> ExitCode {
+    if let Err(why) = record_and_send_need(args) {
+        eprintln!("orq: {}", printable(&why));
+    }
+    ExitCode::SUCCESS
+}
+
+/// Claude waits for its hook before it shows the question, so the need is recorded here and the
+/// notifier, which may be slow, is left to a detached process.
+fn record_and_send_need(args: &[OsString]) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    const MAX_INPUT_BYTES: u64 = 1024 * 1024;
+
+    let [run_id, flag, repo] = args else { return Err("usage: orq run needs-input <run> --repo <path>".to_string()) };
+    let (Some(run_id), Some("--repo")) = (run_id.to_str(), flag.to_str()) else {
+        return Err("usage: orq run needs-input <run> --repo <path>".to_string());
+    };
+    let mut input = String::new();
+    std::io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut input).map_err(|err| format!("cannot read the hook's input: {err}"))?;
+    let Some(need) = orq_orchestrator::parse_needs_input(&input) else { return Ok(()) };
+    let root = pipeline::state_root().ok_or("cannot locate the Orq state directory")?;
+    let store = orq_orchestrator::RunStore::new(&root);
+    let recorded = orq_orchestrator::record_needs_input(&store, run_id, &need).map_err(|err| format!("cannot record that {run_id} needs input: {err}"))?;
+    let Some(features) = recorded else { return Ok(()) };
+    let exe = std::env::current_exe().map_err(|err| format!("cannot find orq's own path: {err}"))?;
+    let mut sender = Command::new(exe);
+    sender
+        .args(["run", "needs-input-send", "--repo"])
+        .arg(repo)
+        .args(["--feature", &features, "--ending", need.ending()])
+        .env(NEEDS_INPUT_TEXT, need.text())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // In a process group of its own, so closing the session's terminal does not take it down.
+    std::os::unix::process::CommandExt::process_group(&mut sender, 0);
+    sender.spawn().map_err(|err| format!("cannot start the notification: {err}"))?;
+    Ok(())
+}
+
+/// The detached half of `run needs-input`: tells the person what the session is asking.
+fn run_needs_input_send(args: &[OsString]) -> ExitCode {
+    let [flag_repo, repo, flag_feature, feature, flag_ending, ending] = args else { return usage_error() };
+    let (Some("--repo"), Some("--feature"), Some(feature), Some("--ending"), Some(ending)) =
+        (flag_repo.to_str(), flag_feature.to_str(), feature.to_str(), flag_ending.to_str(), ending.to_str())
+    else {
+        return usage_error();
+    };
+    let repo = Path::new(repo);
+    let settings = match orq_orchestrator::load_run_settings(repo, &|name| std::env::var(name).ok()) {
+        Ok(settings) => settings,
+        Err(err) => return fail(format!("run settings: {err}")),
+    };
+    let text = std::env::var(NEEDS_INPUT_TEXT).unwrap_or_default();
+    pipeline::announce(&settings, repo, feature, ending, Some(&text), None);
+    ExitCode::SUCCESS
 }
 
 /// `orq run switch <run> --role implementer|reviewer --profile <name> [--repo <path>]`: record that a
