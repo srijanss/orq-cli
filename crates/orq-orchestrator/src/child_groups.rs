@@ -151,9 +151,17 @@ impl TrackedChild {
         self.child.wait()
     }
 
+    /// Stops tracking the group, in the order that makes reaping it afterwards safe. The handler sets
+    /// `ENDING` before it reads the slots, so if it read this id, this thread sees `ENDING` here and
+    /// never goes on to free the id while the handler is about to signal it.
     fn untrack(&mut self) {
         if let Some(slot) = self.slot.take() {
             slot.store(0, Ordering::SeqCst);
+        }
+        if ENDING.load(Ordering::SeqCst) {
+            loop {
+                std::thread::park();
+            }
         }
     }
 }
@@ -349,5 +357,56 @@ mod tests {
         }
         assert_eq!(status.signal(), Some(libc::SIGTERM), "the stop ended the process");
         assert!(gone, "the child outlived the stop");
+    }
+
+    const ENDING_VARIABLE: &str = "ORQ_TEST_REAP_WHILE_ENDING";
+    const NOTHING_WAS_REAPED: i32 = 7;
+
+    /// Whether the process is still an exited child nothing has reaped.
+    fn unreaped(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            let state = stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
+            state.as_deref() == Some("Z")
+        })
+    }
+
+    /// Not a check of its own: `a_child_is_not_reaped_once_the_process_is_ending` runs it in a process
+    /// of its own, because `ENDING` never goes back.
+    #[test]
+    #[ignore = "only run by a_child_is_not_reaped_once_the_process_is_ending"]
+    fn reaping_while_ending() {
+        if std::env::var_os(ENDING_VARIABLE).is_none() {
+            return;
+        }
+        let exited = || {
+            let child = spawn(Command::new("true").process_group(0)).unwrap();
+            child.wait_for_exit().unwrap();
+            child
+        };
+        let (reaped_on_purpose, given_up_on) = (exited(), exited());
+        let pids = [reaped_on_purpose.id(), given_up_on.id()];
+        ENDING.store(true, Ordering::SeqCst);
+
+        std::thread::spawn(move || reaped_on_purpose.reap());
+        std::thread::spawn(move || drop(given_up_on));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let both_unreaped = pids.iter().all(|pid| unreaped(*pid));
+        std::process::exit(if both_unreaped { NOTHING_WAS_REAPED } else { 1 });
+    }
+
+    /// The signal handler may have read a group's id just before it stopped being tracked and be about
+    /// to signal it. That id must keep naming that group until the process has ended.
+    #[test]
+    fn a_child_is_not_reaped_once_the_process_is_ending() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "child_groups::tests::reaping_while_ending", "--ignored"])
+            .env(ENDING_VARIABLE, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        assert_eq!(status.code(), Some(NOTHING_WAS_REAPED), "a child was reaped while the process was ending");
     }
 }
