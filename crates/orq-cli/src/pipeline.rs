@@ -417,6 +417,22 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         eprintln!("orq: cannot record the launch of {run_id}: {err}");
     }
     let finish = |store: &RunStore| store.finish_group_run(&record.project_id, &members, &record.run_id);
+    // A resume that skips the rebase still sits on the commit the paused run rebased onto, and a gate
+    // told otherwise would judge the wrong changes. Without it the resume stops before it does
+    // anything. Its run is removed, not failed: a resume continues a feature's newest run, and that
+    // has to stay the one it could not continue.
+    if let Some(from) = resumed.as_ref().map(|r| r.from.run_id.as_str()) {
+        if let Err(err) = orq_orchestrator::carry_rebase(&store, &record, from) {
+            let mut message = format!("cannot carry the rebase of {from} into the resumed run: {err:?}; {from} was left as it was, resume it again");
+            if let Err(lock) = finish(&store) {
+                message.push_str(&format!("; the feature locks were not released: {lock:?}"));
+            }
+            if let Err(removal) = store.remove_run(&run_id) {
+                message.push_str(&format!("; {run_id} was not removed: {removal:?}"));
+            }
+            return Err(other(message));
+        }
+    }
     // Which features this run is for, so that only a run of the same group can be resumed.
     if members.len() > 1 {
         if let Err(err) = orq_orchestrator::record_group(&store, &record, &members) {
@@ -455,10 +471,6 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if let Some(from) = resumed.as_ref().map(|r| r.from.run_id.as_str()) {
         if let Err(err) = orq_orchestrator::carry_session_references(&store, &record, from) {
             eprintln!("orq: cannot carry the sessions of {from} into {run_id}: {err:?}");
-        }
-        // A resume that skips the rebase still sits on the commit the paused run rebased onto.
-        if let Err(err) = orq_orchestrator::carry_rebase(&store, &record, from) {
-            eprintln!("orq: cannot carry the rebase of {from} into {run_id}: {err:?}");
         }
     }
     // A paused run handed its checkout to this run; it no longer holds it.

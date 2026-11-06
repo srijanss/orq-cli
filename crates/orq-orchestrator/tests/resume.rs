@@ -272,6 +272,27 @@ fn a_rebase_stays_known_through_resumes_until_the_branch_is_rebased_again() {
     assert_eq!(rebased_onto(&w.store, "run-c").unwrap().as_deref(), Some("second"));
 }
 
+/// The caller aborts the resume on either failure, so neither may pass for "nothing to carry".
+#[test]
+fn a_rebase_that_cannot_be_read_or_written_is_an_error_not_nothing_to_carry() {
+    let w = world("rebase-carry-fails", Tamper::None);
+    for (id, at) in [("run-a", "2026-01-01T00:00:01Z"), ("run-b", "2026-01-01T00:00:02Z")] {
+        stopped_run(&w.store, &w.repo, id, at);
+    }
+    rebased(&w.store, "run-a", "first");
+    let target = w.store.load("run-b").unwrap();
+    let source_events = w.repo.parent().unwrap().join("state/runs/run-a/events.jsonl");
+    let intact = fs::read_to_string(&source_events).unwrap();
+
+    fs::write(&source_events, format!("{intact}broken\n")).unwrap();
+    assert!(carry_rebase(&w.store, &target, "run-a").is_err(), "the source cannot be read");
+    assert_eq!(rebased_onto(&w.store, "run-b").unwrap(), None);
+
+    fs::write(&source_events, &intact).unwrap();
+    w.store.remove_run("run-b").unwrap();
+    assert!(carry_rebase(&w.store, &target, "run-a").is_err(), "the target cannot be written");
+}
+
 #[test]
 fn a_run_that_never_rebased_has_nothing_to_carry() {
     let w = world("rebase-none", Tamper::None);

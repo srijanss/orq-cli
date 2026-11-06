@@ -174,6 +174,54 @@ fn a_gate_rerun_after_a_resume_is_still_told_the_commit_the_branch_was_rebased_o
     assert!(bases.iter().all(|base| *base == moved), "expected {moved}: {bases:?}");
 }
 
+/// The events of the paused run turn unreadable during the fetch of the next run, after the resume
+/// has checked them. The rebase then cannot be carried, so the resume stops before it does anything,
+/// and because a resume continues a feature's newest run, it leaves no run behind to take the
+/// paused one's place.
+#[test]
+fn a_resume_that_cannot_carry_the_rebase_stops_and_the_paused_run_can_be_resumed_again() {
+    let agent = agent();
+    let w = world("carryfails", &agent);
+    let moved = target_moves_and_first_gate_pauses(&w);
+    let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main"]);
+    let stdout = String::from_utf8_lossy(&first.stdout).into_owned();
+    assert!(stdout.contains("state: paused"), "{stdout}\n{}", String::from_utf8_lossy(&first.stderr));
+    let store = RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let events = w.state.join("orq/runs").join(&run_id).join("events.jsonl");
+    let intact = std::fs::read_to_string(&events).unwrap();
+    let armed = w.base.join("break-events");
+    std::fs::write(&armed, "").unwrap();
+    std::fs::write(
+        &w.ssh,
+        format!(
+            "#!/bin/sh\nif [ -f '{armed}' ]; then rm '{armed}'; echo broken >> '{events}'; fi\nfor a; do last=$a; done\nexec sh -c \"$last\"\n",
+            armed = armed.display(),
+            events = events.display(),
+        ),
+    )
+    .unwrap();
+
+    let aborted = resume(&w, &run_id);
+
+    let stderr = String::from_utf8_lossy(&aborted.stderr).into_owned();
+    assert_ne!(aborted.status.code(), Some(0), "{}\n{stderr}", String::from_utf8_lossy(&aborted.stdout));
+    assert!(stderr.contains("cannot carry the rebase"), "{stderr}");
+    assert!(!armed.exists(), "the fetch of the resume broke the events");
+    assert_eq!(store.run_ids().unwrap(), vec![run_id.clone()], "the aborted resume leaves no run behind");
+    assert_eq!(count_calls(&w, &["pr", "create"]), 0);
+    // Apart from the broken line, the paused run was not touched.
+    assert_eq!(std::fs::read_to_string(&events).unwrap(), format!("{intact}broken\n"));
+    std::fs::write(&events, &intact).unwrap();
+    assert_eq!(orq_orchestrator::summarize_run(&store.events(&run_id).unwrap()).phase, orq_orchestrator::RunPhase::Paused);
+
+    let again = resume(&w, &run_id);
+
+    assert_eq!(again.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&again.stdout), String::from_utf8_lossy(&again.stderr));
+    let resumed = store.run_ids().unwrap().into_iter().find(|id| *id != run_id).expect("the resume started a run");
+    assert_eq!(orq_orchestrator::rebased_onto(&store, &resumed).unwrap().as_deref(), Some(moved.as_str()));
+}
+
 #[test]
 fn a_resumed_run_does_not_redo_the_stages_the_checkpoint_says_are_done() {
     let agent = agent();
