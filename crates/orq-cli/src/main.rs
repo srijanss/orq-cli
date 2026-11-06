@@ -2043,6 +2043,27 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(profiles.profiles().iter().map(|profile| profile.name.clone()).collect())
     }
 
+    /// Whatever cannot be read gives no default for what depended on it: the picker still opens.
+    fn launch_defaults(&mut self) -> orq_tui::LaunchDefaults {
+        let Some(project) = self.repo_root.as_deref().and_then(|repo| orq_git::resolve_project(repo).ok()) else {
+            return orq_tui::LaunchDefaults::default();
+        };
+        let user_config = self.settings_path.as_deref().unwrap_or(Path::new(""));
+        let Ok(profiles) = orq_features::load_model_profiles(user_config, &project.root.join(".orq.toml")) else {
+            return orq_tui::LaunchDefaults::default();
+        };
+        let reviewers = orq_features::load_reviewer_config(&project.root.join(".tdd-config.json")).unwrap_or_default();
+        let settings = orq_features::Settings::load(user_config).ok();
+        let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
+        let (implementer, reviewer) = orq_features::default_role_profiles(
+            &profiles,
+            &reviewers,
+            agent(orq_features::AgentRole::Implementer).as_ref(),
+            agent(orq_features::AgentRole::Reviewer).as_ref(),
+        );
+        orq_tui::LaunchDefaults { implementer, reviewer }
+    }
+
     fn launch(&mut self, feature: &str, implementer: &str, reviewer: &str) -> Result<String, String> {
         launch_run(
             self.repo_root.clone(),
@@ -3444,6 +3465,83 @@ mod ledger_backend_tests {
         assert!(names.contains(&"zz-launch-a".to_string()) && names.contains(&"zz-launch-b".to_string()), "{names:?}");
         let reason = refused.unwrap_err();
         assert!(reason.contains("no-such-profile"), "{reason}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A backend on a fresh repository whose user config holds two profiles for each role and `extra`;
+    /// `name` keeps its directory apart from other tests'.
+    fn launch_defaults_backend(fixture: &orq_test_support::GitFixture, name: &str, extra: &str) -> (LedgerBackend, std::path::PathBuf) {
+        let (dir, path) = ledger(&[name]);
+        let config = dir.join("cfg").join("orq").join("config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            format!("[models.first]\nharness = \"claude\"\nmodel = \"sonnet\"\n\n[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.kimi]\nharness = \"pi\"\nmodel = \"kimi\"\n\n[models.astra]\nharness = \"pi\"\nmodel = \"openai/astra\"\n\n{extra}"),
+        )
+        .unwrap();
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = Some(fixture.root().to_path_buf());
+        backend.settings_path = Some(config);
+        (backend, dir)
+    }
+
+    #[test]
+    fn launch_defaults_come_from_the_implementer_and_reviewer_tables_of_the_user_config() {
+        let fixture = orq_test_support::GitFixture::new();
+        let (mut backend, dir) = launch_defaults_backend(
+            &fixture,
+            "launch-defaults-tables",
+            "[implementer]\nharness = \"claude\"\nmodel = \"opus\"\n\n[reviewer]\nharness = \"pi\"\nmodel = \"openai/astra\"\n",
+        );
+
+        let defaults = orq_tui::BrowserBackend::launch_defaults(&mut backend);
+
+        assert_eq!(defaults.implementer.as_deref(), Some("opus"));
+        assert_eq!(defaults.reviewer.as_deref(), Some("astra"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_defaults_prefer_the_reviewer_a_run_would_use_from_the_repos_tdd_config() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::write(
+            fixture.root().join(".tdd-config.json"),
+            r#"{"reviewers":{"default":{"reviewer":"pi","model":"kimi"}}}"#,
+        )
+        .unwrap();
+        let (mut backend, dir) =
+            launch_defaults_backend(&fixture, "launch-defaults-tdd", "[reviewer]\nharness = \"pi\"\nmodel = \"openai/astra\"\n");
+
+        let defaults = orq_tui::BrowserBackend::launch_defaults(&mut backend);
+
+        assert_eq!(defaults.reviewer.as_deref(), Some("kimi"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_defaults_keep_the_other_sources_when_one_cannot_be_read() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::write(fixture.root().join(".tdd-config.json"), "not json").unwrap();
+        let (mut backend, dir) = launch_defaults_backend(
+            &fixture,
+            "launch-defaults-unreadable",
+            "[implementer]\nharness = 1\n\n[reviewer]\nharness = \"pi\"\nmodel = \"openai/astra\"\n",
+        );
+
+        let defaults = orq_tui::BrowserBackend::launch_defaults(&mut backend);
+
+        assert_eq!(defaults.implementer, None);
+        assert_eq!(defaults.reviewer.as_deref(), Some("astra"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_defaults_are_empty_when_the_project_is_not_known() {
+        let (dir, path) = ledger(&["launch-defaults-unknown"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.repo_root = None;
+
+        assert_eq!(orq_tui::BrowserBackend::launch_defaults(&mut backend), orq_tui::LaunchDefaults::default());
         let _ = std::fs::remove_dir_all(dir);
     }
 

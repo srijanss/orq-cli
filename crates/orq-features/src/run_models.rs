@@ -5,7 +5,7 @@
 //! every source, and the implementer must run on the claude harness.
 
 use crate::model_profiles::{ModelProfile, ModelProfiles};
-use crate::profiles::AgentRole;
+use crate::profiles::{AgentProfile, AgentRole};
 use crate::reviewer_config::TddReviewerConfig;
 
 const BUILT_IN_IMPLEMENTER: (&str, &str) = ("claude", "opus");
@@ -116,4 +116,28 @@ pub fn resolve_run_models(
     }
 
     Ok(ResolvedModels { implementer, reviewer })
+}
+
+/// The profile each role is offered first when launching, `(implementer, reviewer)`: what a run
+/// with no choice would use, as far as a profile expresses it, then the first profile with the
+/// harness and model of `implementer` / `reviewer` (the `[implementer]` and `[reviewer]` tables).
+/// A source no profile matches is passed over.
+pub fn default_role_profiles(
+    profiles: &ModelProfiles,
+    reviewer_config: &TddReviewerConfig,
+    implementer: Option<&AgentProfile>,
+    reviewer: Option<&AgentProfile>,
+) -> (Option<String>, Option<String>) {
+    let matching = |agent: Option<&AgentProfile>| {
+        let agent = agent?;
+        let found = profiles.profiles().iter().find(|p| p.harness == agent.harness && p.model == agent.model)?;
+        Some(found.name.clone())
+    };
+    let by_role = |role| profiles.role(role).map(|p| p.name.clone());
+    (
+        by_role(AgentRole::Implementer).or_else(|| matching(implementer)),
+        matching(reviewer_config.default_reviewer.as_ref())
+            .or_else(|| by_role(AgentRole::Reviewer))
+            .or_else(|| matching(reviewer)),
+    )
 }
