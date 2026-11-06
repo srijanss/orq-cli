@@ -10,7 +10,7 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
     CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
@@ -971,7 +971,7 @@ fn stages(
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
     }
-    let ci = wait_for_ci(
+    let ci = wait_for_ci_logged(
         store,
         run_id,
         &provider,
@@ -982,6 +982,7 @@ fn stages(
             timeout: settings.ci_timeout.unwrap_or(Duration::from_secs(30 * 60)),
             command_timeout: Duration::from_secs(60),
         },
+        Some(&logs.join("ci.log")),
     )?;
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
     if !options.publish {

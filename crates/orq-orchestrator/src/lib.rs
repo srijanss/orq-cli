@@ -44,7 +44,7 @@ pub use checkpoint::{
     latest_checkpoint, pause_at_boundary, record_checkpoint, validate_checkpoint, Checkpoint,
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
-pub use ci_wait::{wait_for_ci, CiOutcome, CiWaitConfig};
+pub use ci_wait::{wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use discard::{discard_run, discard_run_before_remove, discard_run_then, DiscardOutcome};

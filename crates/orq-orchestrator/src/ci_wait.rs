@@ -80,6 +80,18 @@ pub fn wait_for_ci(
     head_sha: &str,
     config: &CiWaitConfig,
 ) -> Result<CiOutcome, StoreError> {
+    wait_for_ci_logged(store, run_id, program, head_sha, config, None)
+}
+
+/// `wait_for_ci`, writing a line to `log` after each look at the checks, so someone watching can see it is waiting.
+pub fn wait_for_ci_logged(
+    store: &RunStore,
+    run_id: &str,
+    program: &Path,
+    head_sha: &str,
+    config: &CiWaitConfig,
+    log: Option<&Path>,
+) -> Result<CiOutcome, StoreError> {
     let record = store.load(run_id)?;
     if !config.enabled {
         record_event(
@@ -128,10 +140,18 @@ pub fn wait_for_ci(
         // A call never runs past the stage deadline, so nothing is accepted after it.
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            note(log, &format!("CI timed out waiting for the checks of {}", short(head_sha)));
             let payload = serde_json::json!({ "result": "timed_out", "head_sha": head_sha });
             return fail(store, &record, payload, CiOutcome::TimedOut);
         }
         let verdict = poll_once(&sessions, kind, head_sha, config, deadline);
+        let waited = config.timeout.saturating_sub(deadline.saturating_duration_since(Instant::now()));
+        match &verdict {
+            Verdict::Pending => note(log, &format!("CI waiting: checks of {} still running ({}s of {}s)", short(head_sha), waited.as_secs(), config.timeout.as_secs())),
+            Verdict::Empty => note(log, &format!("CI waiting: no checks reported for {} yet ({}s of {}s)", short(head_sha), waited.as_secs(), config.timeout.as_secs())),
+            Verdict::Unusable(_) => note(log, &format!("CI waiting: the provider did not answer usably, trying again ({failures_so_far} so far)", failures_so_far = failures + 1)),
+            _ => {}
+        }
         match verdict {
             Verdict::Passed => {
                 record_event(
@@ -161,6 +181,18 @@ pub fn wait_for_ci(
                 .max(MIN_POLL_INTERVAL)
                 .min(deadline.saturating_duration_since(Instant::now())),
         );
+    }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+/// A line for whoever is watching; a log that cannot be written never fails the wait.
+fn note(log: Option<&Path>, text: &str) {
+    use std::io::Write;
+    if let Some(mut file) = log.and_then(|path| crate::implement::open_log(path).ok()) {
+        let _ = writeln!(file, "{text}");
     }
 }
 

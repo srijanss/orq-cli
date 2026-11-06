@@ -683,3 +683,20 @@ fn a_repeated_git_suffix_is_a_different_repository_from_the_pinned_one() {
     assert!(outcome.is_err(), "{outcome:?}");
     assert!(provider.calls().is_empty(), "{:?}", provider.calls());
 }
+
+#[test]
+fn each_look_at_unfinished_checks_leaves_a_line_saying_what_is_awaited() {
+    let w = world("logged", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks(RUNNING, 1)).build();
+    let short = CiWaitConfig { timeout: Duration::from_millis(400), ..config() };
+    let log = std::env::temp_dir().join(format!("orq-ci-log-{}", std::process::id()));
+    let _ = fs::remove_file(&log);
+
+    orq_orchestrator::wait_for_ci_logged(&w.store, "run-1", &provider.gh(), SHA, &short, Some(&log)).unwrap();
+
+    let text = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() > 1, "{text}");
+    assert!(lines.iter().all(|l| l.contains("CI") && l.contains("waiting")), "{text}");
+    assert!(lines.last().unwrap().contains("timed out"), "{text}");
+}
