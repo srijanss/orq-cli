@@ -39,10 +39,10 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
     let mut next_marker_check = Instant::now();
     let outcome = loop {
         discard_output(&mut screen);
-        match child.try_wait() {
-            Ok(Some(_)) => break Ok(()),
+        match has_exited(&child) {
+            Ok(true) => break Ok(()),
             Err(err) => break Err(err),
-            Ok(None) => {}
+            Ok(false) => {}
         }
         let now = Instant::now();
         if !marked && now >= next_marker_check {
@@ -57,10 +57,25 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
         }
     };
     // Whatever the program started and left running goes with it, however it ended. The leader is
-    // reaped by now, but its group lives on while any member does.
+    // still unreaped (a zombie keeps its id reserved), so the id still names only this group.
     // Safety: plain system call.
     unsafe { libc::killpg(group, libc::SIGKILL) };
+    let _ = child.wait();
     outcome
+}
+
+/// Whether the program has exited, without reaping it: its id stays reserved until `wait`.
+fn has_exited(child: &Child) -> io::Result<bool> {
+    // Safety: an all-zero siginfo is valid for waitid to fill in.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // Safety: `info` is valid for the call; the child is ours and not yet reaped.
+    let status = unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // With WNOHANG, no child state change leaves the pid field zero.
+    // Safety: reading the pid of the filled-in siginfo.
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
@@ -71,13 +86,11 @@ fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
     let grace = Instant::now() + STOP_GRACE;
     while Instant::now() < grace {
         discard_output(screen);
-        if child.try_wait()?.is_some() {
+        if has_exited(child)? {
             return Ok(());
         }
     }
-    // Safety: as above.
-    unsafe { libc::killpg(group, libc::SIGKILL) };
-    child.wait().map(|_| ())
+    Ok(())
 }
 
 /// Waits a moment for output and reads what came, since a program with a full screen buffer stops.
