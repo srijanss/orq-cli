@@ -6,13 +6,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::resume::members_of;
 use crate::retention_facts::parse_rfc3339;
-use crate::store::{Event, RunStore, StoreError};
+use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const EVENT: &str = "run.needs_input";
+const ANSWERED_EVENT: &str = "run.input_given";
 const QUESTION: &str = "question";
 const PERMISSION: &str = "permission";
 const MAX_TEXT_CHARS: usize = 1000;
-/// A question also fires a permission prompt within seconds; one need is told about once.
+/// A question also fires a permission prompt within seconds; one need is told about once. A bound
+/// on top of the answer's own event, which never comes for a question rejected or interrupted.
 const SAME_NEED_SECS: u64 = 30;
 
 /// What a session is waiting for its person to do.
@@ -59,6 +61,12 @@ pub fn parse_needs_input(input: &str) -> Option<NeedsInput> {
     }
 }
 
+/// Whether the JSON a Claude hook is given on stdin says a question has just been answered.
+pub fn question_was_answered(input: &str) -> bool {
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(input) else { return false };
+    input["hook_event_name"] == "PostToolUse" && input["tool_name"] == "AskUserQuestion"
+}
+
 fn one_line(text: &str) -> String {
     orq_core::redact::redact(text)
         .chars()
@@ -75,25 +83,36 @@ pub fn record_needs_input(store: &RunStore, run_id: &str, need: &NeedsInput) -> 
     if need.kind == PERMISSION && follows_a_question(&events) {
         return Ok(None);
     }
+    append(store, &record, EVENT, serde_json::json!({"kind": need.kind, "text": need.text}))?;
+    Ok(Some(members_of(&record, &events).join(",")))
+}
+
+/// Puts on the run that its person has answered. What they answered stays out of the record.
+pub fn record_input_given(store: &RunStore, run_id: &str) -> Result<(), StoreError> {
+    let record = store.load(run_id)?;
+    append(store, &record, ANSWERED_EVENT, serde_json::json!({}))
+}
+
+fn append(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
-        event_id: next_event_id(run_id),
+        event_id: next_event_id(&record.run_id),
         run_id: record.run_id.clone(),
         project_id: record.project_id.clone(),
         feature_id: record.feature_id.clone(),
-        kind: EVENT.to_string(),
+        kind: kind.to_string(),
         stage: None,
         attempt: 1,
         occurred_at: now_rfc3339(),
-        payload: serde_json::json!({"kind": need.kind, "text": need.text}),
-    })?;
-    Ok(Some(members_of(&record, &events).join(",")))
+        payload,
+    })
 }
 
 fn follows_a_question(events: &[Event]) -> bool {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let latest = events.iter().rev().find(|e| e.kind == EVENT && e.payload["kind"] == QUESTION);
+    let latest = events.iter().rev().find(|e| e.kind == ANSWERED_EVENT || (e.kind == EVENT && e.payload["kind"] == QUESTION));
     latest
+        .filter(|event| event.kind == EVENT)
         .and_then(|event| parse_rfc3339(&event.occurred_at))
         .is_some_and(|asked| now.saturating_sub(asked) < SAME_NEED_SECS)
 }

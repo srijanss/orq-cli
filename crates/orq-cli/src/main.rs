@@ -4333,9 +4333,12 @@ fn record_and_send_need(args: &[OsString]) -> Result<(), String> {
     };
     let mut input = String::new();
     std::io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut input).map_err(|err| format!("cannot read the hook's input: {err}"))?;
-    let Some(need) = orq_orchestrator::parse_needs_input(&input) else { return Ok(()) };
     let root = pipeline::state_root().ok_or("cannot locate the Orq state directory")?;
     let store = orq_orchestrator::RunStore::new(&root);
+    if orq_orchestrator::question_was_answered(&input) {
+        return orq_orchestrator::record_input_given(&store, run_id).map_err(|err| format!("cannot record the answer on {run_id}: {err}"));
+    }
+    let Some(need) = orq_orchestrator::parse_needs_input(&input) else { return Ok(()) };
     let recorded = orq_orchestrator::record_needs_input(&store, run_id, &need).map_err(|err| format!("cannot record that {run_id} needs input: {err}"))?;
     let Some(features) = recorded else { return Ok(()) };
     let exe = std::env::current_exe().map_err(|err| format!("cannot find orq's own path: {err}"))?;

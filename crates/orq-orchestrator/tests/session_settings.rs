@@ -320,6 +320,10 @@ fn the_needs_input_hook_joins_the_settings_and_replaces_only_an_earlier_copy_of_
     assert_eq!(notification.len(), 1, "{notification:?}");
     assert_eq!(notification[0]["matcher"], "permission_prompt");
     assert_eq!(notification[0]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
+    let post = settings["hooks"]["PostToolUse"].as_array().unwrap();
+    assert_eq!(post.len(), 1, "{post:?}");
+    assert_eq!(post[0]["matcher"], "AskUserQuestion");
+    assert_eq!(post[0]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
 }
 
 #[test]

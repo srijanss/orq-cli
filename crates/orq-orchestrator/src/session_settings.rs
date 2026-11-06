@@ -182,6 +182,10 @@ fn merge_settings(
     })
 }
 
+/// When a session needs its person, and when a question has been answered and no longer does.
+const NEEDS_INPUT_EVENTS: [(&str, &str); 3] =
+    [("PreToolUse", "AskUserQuestion"), ("Notification", "permission_prompt"), ("PostToolUse", "AskUserQuestion")];
+
 /// Tells the worktree's Claude session to run `command` when it asks its person a question or waits
 /// for a permission, and nothing else about the settings changes. An earlier copy of the hook goes,
 /// so a resumed run or a moved `orq` binary does not call it twice. The hook is held to a short
@@ -190,7 +194,7 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
     let edited = edit_settings(worktree, |root| {
         let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
         let hooks = hooks.as_object_mut().ok_or("its hooks is not a JSON object")?;
-        for (event, matcher) in [("PreToolUse", "AskUserQuestion"), ("Notification", "permission_prompt")] {
+        for (event, matcher) in NEEDS_INPUT_EVENTS {
             let entries = hooks.entry(event).or_insert_with(|| serde_json::json!([]));
             let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
             remove_own_hooks(entries);

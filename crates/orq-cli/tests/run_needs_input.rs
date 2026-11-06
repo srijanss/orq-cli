@@ -199,3 +199,27 @@ fn input_it_cannot_use_leaves_the_session_alone() {
     std::thread::sleep(Duration::from_millis(500));
     assert!(!w.sent.exists());
 }
+
+#[test]
+fn a_permission_prompt_after_the_question_is_answered_is_its_own_need() {
+    let w = world("answered");
+    assert_eq!(hook(&w, "run-1", &question("Pick one?"), "").status.code(), Some(0));
+    let answered = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": "Pick one?"}]},
+        "tool_response": {"answers": {"Pick one?": "the secret answer"}},
+    })
+    .to_string();
+    let out = hook(&w, "run-1", &answered, "");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty());
+    assert_eq!(hook(&w, "run-1", &permission(), "").status.code(), Some(0));
+
+    let kinds: Vec<String> = needs(&w.store).iter().map(|e| e.payload["kind"].as_str().unwrap().to_string()).collect();
+    assert_eq!(kinds, ["question", "permission"]);
+    let given: Vec<Event> = w.store.events("run-1").unwrap().into_iter().filter(|e| e.kind == "run.input_given").collect();
+    assert_eq!(given.len(), 1);
+    assert!(!given[0].payload.to_string().contains("secret"), "what was answered stays out of the record");
+    assert_eq!(sent_lines(&w.sent, 2).len(), 2, "the answer itself tells nobody");
+}

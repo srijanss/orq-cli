@@ -60,7 +60,7 @@ pub use interrupted::{
 };
 pub use launch::{record_launch, record_owner};
 pub use local_files::{carry_local_files, LocalFiles};
-pub use needs_input::{parse_needs_input, record_needs_input, NeedsInput};
+pub use needs_input::{parse_needs_input, question_was_answered, record_input_given, record_needs_input, NeedsInput};
 pub use notify::{
     notification_message, send_notification, send_notification_with, wants_notification,
 };
