@@ -78,3 +78,46 @@ fn the_newest_log_of_a_run_is_read_for_its_last_nonblank_line() {
     assert!(tail.quiet_for < Duration::from_secs(60));
     assert!(newest_log_tail(&dir.join("missing")).is_none());
 }
+
+fn log_dir(tag: &str) -> std::path::PathBuf {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-activity-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_secret_cut_by_the_display_length_is_redacted_before_it_is_cut() {
+    let dir = log_dir("cut");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    std::fs::write(dir.join("stage.log"), format!("{} {token}\n", "x".repeat(190))).unwrap();
+
+    let line = newest_log_tail(&dir).unwrap().last_line.unwrap();
+
+    assert!(!line.contains("ghp_"), "{line}");
+}
+
+#[test]
+fn what_a_tail_cannot_vouch_for_is_never_shown() {
+    use std::os::unix::fs::symlink;
+    let dir = log_dir("edges");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    // The tail window (8 KiB) opens in the middle of the token's line, then one whole line follows.
+    let long = format!("{}{token}\n", "y".repeat(8 * 1024 - 20));
+    std::fs::write(dir.join("stage.log"), format!("{long}last whole line\n")).unwrap();
+    assert_eq!(newest_log_tail(&dir).unwrap().last_line.as_deref(), Some("last whole line"));
+
+    // A tail that is only the middle of one line shows nothing rather than a fragment.
+    std::fs::write(dir.join("stage.log"), format!("{}\n", "z".repeat(20 * 1024))).unwrap();
+    assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
+
+    // Blank-only, directories named like logs, and links are not output.
+    std::fs::write(dir.join("stage.log"), "\n  \n").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::create_dir(dir.join("newer.log")).unwrap();
+    std::fs::write(dir.join("secret.txt"), "from elsewhere\n").unwrap();
+    symlink(dir.join("secret.txt"), dir.join("link.log")).unwrap();
+    let tail = newest_log_tail(&dir).unwrap();
+    assert_eq!(tail.last_line, None);
+    assert_eq!(tail.size, 4);
+}

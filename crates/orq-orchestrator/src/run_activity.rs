@@ -54,16 +54,34 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
             newest = Some((modified, path, meta.len()));
         }
     }
-    let (modified, path, size) = newest?;
-    let mut file = std::fs::File::open(&path).ok()?;
+    let (_, path, _) = newest?;
+    // Opened without following a link and without waiting on a pipe, then judged by the handle
+    // itself: the path may have been swapped since it was listed.
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let (modified, size) = (meta.modified().ok()?, meta.len());
     file.seek(SeekFrom::Start(size.saturating_sub(TAIL_BYTES))).ok()?;
     let mut bytes = Vec::new();
     file.take(TAIL_BYTES).read_to_end(&mut bytes).ok()?;
-    let last_line = String::from_utf8_lossy(&bytes)
+    let start = size.saturating_sub(TAIL_BYTES);
+    let text = String::from_utf8_lossy(&bytes);
+    // A tail that begins mid-file starts mid-line: that cut line is dropped, since a secret
+    // cut at its front would no longer be recognised.
+    let text = if start > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+    // Redacted whole, then cut for display: the other way round could leave a secret's tail.
+    let last_line = text
         .lines()
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(MAX_LINE_CHARS).collect());
+        .map(|line| orq_core::redact::redact(line).chars().take(MAX_LINE_CHARS).collect());
     Some(LogTail { size, quiet_for: modified.elapsed().unwrap_or_default(), last_line })
 }
