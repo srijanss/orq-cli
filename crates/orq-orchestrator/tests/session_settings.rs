@@ -249,6 +249,30 @@ fn a_symlinked_mcpctl_toml_is_neither_read_nor_set_up_whatever_the_setting() {
 }
 
 #[test]
+fn a_setup_that_fails_is_a_note_and_the_session_gets_the_environment_and_what_setup_left_behind() {
+    let (repo, worktree) = checkout("mcpctl-prepare-fails");
+    let tool = repo.root().parent().unwrap().join(format!("fake-mcpctl-fails-{}", std::process::id()));
+    fs::write(&tool, "#!/bin/sh\necho '{\"mcpServers\":{\"tdd\":{\"command\":\"c\"}}}' > .mcp.json\nexit 1\n").unwrap();
+    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fs::write(worktree.join(".mcpctl.toml"), "[[mcp]]\nname = \"tdd\"\n").unwrap();
+    let env = vars(&[("KEEP", "1")]);
+
+    // No mcpctl: the selection stays unset up, and nothing is approved without a .mcp.json.
+    let notes = prepare_mcp_servers(&worktree, &env, None, None);
+    assert!(notes.iter().any(|n| n.contains("mcpctl is not on PATH")), "{notes:?}");
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["env"]["KEEP"], "1");
+    assert!(settings.get("enabledMcpjsonServers").is_none(), "{settings}");
+
+    // A failing mcpctl that wrote part of .mcp.json: said so, and what it left is what is approved.
+    let notes = prepare_mcp_servers(&worktree, &env, None, Some(&tool));
+    assert!(notes.iter().any(|n| n.contains("mcpctl setup") && n.contains("failed")), "{notes:?}");
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["env"]["KEEP"], "1");
+    assert_eq!(settings["enabledMcpjsonServers"], serde_json::json!(["tdd"]), "{settings}");
+}
+
+#[test]
 fn the_run_worktrees_directory_is_kept_out_of_the_main_checkouts_git_status_through_the_local_exclude_only(
 ) {
     let repo = GitFixture::new();
