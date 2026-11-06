@@ -184,6 +184,7 @@ fn run_step(
         Err(err) => return Ok((None, Some(format!("could not be started: {err}")))),
     };
     let group = child.id() as libc::pid_t;
+    let tracked = crate::child_groups::track(child.id());
     let deadline = std::time::Instant::now() + limit;
     let exited = loop {
         // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
@@ -194,6 +195,7 @@ fn run_step(
             Err(err) => {
                 // Safety: plain system call; the leader is unreaped.
                 unsafe { libc::killpg(group, libc::SIGKILL) };
+                drop(tracked);
                 let _ = child.wait();
                 return Err(err.into());
             }
@@ -201,6 +203,7 @@ fn run_step(
     };
     // Whatever the step started goes with it. Safety: plain system call; the leader is unreaped.
     unsafe { libc::killpg(group, libc::SIGKILL) };
+    drop(tracked);
     let status = child.wait()?;
     if !exited {
         return Ok((None, Some(format!("timed out after {}s and was stopped", limit.as_secs()))));

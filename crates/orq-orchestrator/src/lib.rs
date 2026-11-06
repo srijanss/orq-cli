@@ -2,6 +2,7 @@
 //! apart from the CLI and the popup that drive it.
 
 mod checkpoint;
+mod child_groups;
 mod ci_fix;
 mod ci_wait;
 mod cleanup;
@@ -60,6 +61,7 @@ pub use interrupted::{
     owner_is_alive_in, process_is_alive, process_is_alive_in, process_start_ticks_in,
     reconcile_interrupted,
 };
+pub use child_groups::end_children_with_this_process;
 pub use launch::{record_launch, record_owner};
 pub use local_files::{carry_local_files, LocalFiles};
 pub use needs_input::{parse_needs_input, question_was_answered, record_input_given, record_needs_input, NeedsInput};

@@ -327,6 +327,7 @@ pub fn drop_test_databases_within(
                 continue;
             }
         };
+        let _tracked = crate::child_groups::track(child.id());
         let deadline = std::time::Instant::now() + limit;
         let status = loop {
             match child.try_wait() {

@@ -34,6 +34,7 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
     drop(command);
 
     let group = child.id() as libc::pid_t;
+    let tracked = crate::child_groups::track(child.id());
     let mut deadline = Instant::now() + limit;
     let mut marked = false;
     let mut next_marker_check = Instant::now();
@@ -60,6 +61,7 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
     // still unreaped (a zombie keeps its id reserved), so the id still names only this group.
     // Safety: plain system call.
     unsafe { libc::killpg(group, libc::SIGKILL) };
+    drop(tracked);
     let _ = child.wait();
     outcome
 }

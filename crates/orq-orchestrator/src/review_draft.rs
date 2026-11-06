@@ -250,6 +250,7 @@ fn run_session(
     let mut child = command
         .spawn()
         .map_err(|e| format!("the drafting session could not start: {e}"))?;
+    let tracked = crate::child_groups::track(child.id());
     let mut stdout = child
         .stdout
         .take()
@@ -310,6 +311,7 @@ fn run_session(
     // Whatever the exit status, nothing the session started may outlive it; this also
     // closes the output pipe so the reader ends.
     kill_group(child.id());
+    drop(tracked);
     if !status.success() {
         return Err(format!("the drafting session failed ({status})"));
     }

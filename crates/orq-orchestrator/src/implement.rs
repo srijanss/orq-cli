@@ -109,11 +109,10 @@ pub(crate) fn run_session_stage(
         },
         None => Ok(()),
     };
-    // A session that is closed by its marker runs in a process group of its own, so closing it ends its
-    // descendants too. On the terminal it also takes the foreground, and orq takes it back afterwards.
-    let own_group = session.exit_marker.is_some();
+    // A session runs in a process group of its own, so ending it ends its descendants too. On the
+    // terminal it also takes the foreground, and orq takes it back afterwards.
     #[cfg(unix)]
-    if own_group {
+    {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
         if session.terminal {
@@ -133,7 +132,7 @@ pub(crate) fn run_session_stage(
     }
     let status = cleared
         .and_then(|()| command.spawn())
-        .and_then(|child| wait_for_session(child, session.exit_marker, own_group));
+        .and_then(|child| wait_for_session(child, session.exit_marker));
     let (outcome, reason) = match status {
         Ok(SessionEnd::Closed) => (
             ImplementOutcome {
@@ -197,21 +196,21 @@ const MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 fn wait_for_session(
     mut child: std::process::Child,
     marker: Option<&Path>,
-    own_group: bool,
 ) -> std::io::Result<SessionEnd> {
-    let Some(marker) = marker else {
-        return child.wait().map(SessionEnd::Exited);
-    };
+    let tracked = crate::child_groups::track(child.id());
     let mut seen: Option<std::time::Instant> = None;
     loop {
-        if let Some(status) = child.try_wait()? {
-            end_group(child.id(), own_group);
-            return Ok(SessionEnd::Exited(status));
+        // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
+        if crate::terminal_session::has_exited(&child)? {
+            end_group(child.id());
+            drop(tracked);
+            return child.wait().map(SessionEnd::Exited);
         }
-        if marker.exists() {
+        if marker.is_some_and(Path::exists) {
             let since = *seen.get_or_insert_with(std::time::Instant::now);
             if since.elapsed() >= MARKER_GRACE {
-                end_group(child.id(), own_group);
+                end_group(child.id());
+                drop(tracked);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(SessionEnd::Closed);
@@ -222,18 +221,15 @@ fn wait_for_session(
 }
 
 /// Ends every process still in the session's own group, so none outlives the stage.
-fn end_group(leader: u32, own_group: bool) {
+fn end_group(leader: u32) {
     #[cfg(unix)]
-    if own_group {
+    {
         take_back_terminal();
-    }
-    #[cfg(unix)]
-    if own_group {
         // SAFETY: the session leads a group of its own, so its pid names that group.
         unsafe { libc::killpg(leader as libc::pid_t, libc::SIGKILL) };
     }
     #[cfg(not(unix))]
-    let _ = (leader, own_group);
+    let _ = leader;
 }
 
 /// Makes orq's own process group the terminal's foreground group again, when stdin is a terminal.

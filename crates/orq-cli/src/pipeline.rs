@@ -401,6 +401,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
         Err(err) => return Err(other(format!("{err:?}"))),
     }
+    orq_orchestrator::end_children_with_this_process();
     // Every run names its owner process (detached or not), so a killed one can be told from a live
     // one. Only a detached run has a runner log to name.
     let recorded = if options.run_id.is_some() {

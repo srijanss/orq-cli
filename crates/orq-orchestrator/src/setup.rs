@@ -145,14 +145,23 @@ pub fn run_setup_with_env(
         let err_out = file
             .try_clone()
             .map_err(|err| failure(step, None, format!("could not use the log: {err}")))?;
-        let status = Command::new(program)
-            .args(args)
-            .current_dir(worktree)
-            .envs(env.iter().map(|(name, value)| (name, value)))
-            .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(err_out)
-            .status();
+        // A group of its own, so a stop ends what the step started. What a step leaves running when it
+        // finishes is left alone: starting a service can be what the step is for.
+        let status = std::os::unix::process::CommandExt::process_group(
+            Command::new(program)
+                .args(args)
+                .current_dir(worktree)
+                .envs(env.iter().map(|(name, value)| (name, value)))
+                .stdin(Stdio::null())
+                .stdout(out)
+                .stderr(err_out),
+            0,
+        )
+        .spawn()
+        .and_then(|mut child| {
+            let _tracked = crate::child_groups::track(child.id());
+            child.wait()
+        });
         match status {
             Ok(status) if status.success() => {}
             Ok(status) => {
