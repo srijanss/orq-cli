@@ -4288,8 +4288,9 @@ fn run_stop(args: &[OsString]) -> ExitCode {
 /// uncommitted work was kept.
 fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, String> {
     let mut note = String::new();
-    let outcome = orq_orchestrator::discard_run_then(&orq_orchestrator::RunStore::new(root), run_id, repo, &mut |project_id, features| {
-        note = reopen_discarded(repo, project_id, features);
+    let store = orq_orchestrator::RunStore::new(root);
+    let outcome = orq_orchestrator::discard_run_then(&store, run_id, repo, &mut |project_id, features| {
+        note = reopen_discarded(&store, run_id, repo, project_id, features);
     })?;
     if let Some(kept) = outcome.kept_worktree {
         note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
@@ -4299,8 +4300,9 @@ fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, 
 
 /// Put the features of a discarded run back to `pending`, and say which were. Only the ledger of
 /// the run's own project is touched: another repository may have features of the same names. A
-/// ledger that cannot be updated is only warned about: the run is going regardless.
-fn reopen_discarded(repo: &Path, project_id: &str, members: &[String]) -> String {
+/// feature marked `completed` is reopened too, as its work goes with the run, unless a later run
+/// took it. A ledger that cannot be updated is only warned about: the run is going regardless.
+fn reopen_discarded(store: &orq_orchestrator::RunStore, run_id: &str, repo: &Path, project_id: &str, members: &[String]) -> String {
     let project = match orq_git::resolve_project(repo) {
         Ok(project) => project,
         Err(err) => {
@@ -4312,7 +4314,11 @@ fn reopen_discarded(repo: &Path, project_id: &str, members: &[String]) -> String
         eprintln!("orq: {} is not the project of the run; its features are left as they are", repo.display());
         return String::new();
     }
-    match orq_features::reopen_features(&orq_features::ledger_path(&project), members) {
+    let completed_too = orq_orchestrator::features_no_later_run_took(store, run_id, members).unwrap_or_else(|err| {
+        eprintln!("orq: features marked completed stay completed: cannot read the other runs: {}", printable(&err));
+        Vec::new()
+    });
+    match orq_features::reopen_discarded_features(&orq_features::ledger_path(&project), members, &completed_too) {
         Ok(reopened) if reopened.is_empty() => String::new(),
         Ok(reopened) => format!(" {} {} pending again.", printable(&reopened.join(", ")), if reopened.len() == 1 { "is" } else { "are" }),
         Err(err) => {

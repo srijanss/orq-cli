@@ -21,23 +21,37 @@ pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, Str
     reopen_features_before_save(path, names, &mut || {})
 }
 
+/// [`reopen_features`] for a discarded run: its work is gone with it, so of `names` those in
+/// `completed_too` also go back to `pending` when the ledger records them as `completed`. The caller
+/// leaves out a feature whose `completed` this run cannot have written.
+pub fn reopen_discarded_features(path: &Path, names: &[String], completed_too: &[String]) -> Result<Vec<String>, String> {
+    reopen(path, names, completed_too, &mut || {})
+}
+
 /// [`reopen_features`], calling `before_save` between each load and its save: a seam for tests
 /// that race another writer against the save.
 #[doc(hidden)]
 pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &mut dyn FnMut()) -> Result<Vec<String>, String> {
+    reopen(path, names, &[], before_save)
+}
+
+fn reopen(path: &Path, names: &[String], completed_too: &[String], before_save: &mut dyn FnMut()) -> Result<Vec<String>, String> {
     for _ in 0..CONFLICT_RETRIES {
         let loaded = match LoadedLedger::load(path) {
             Ok(loaded) => loaded,
             Err(LedgerError::Missing { .. }) => return Ok(Vec::new()),
             Err(err) => return Err(format!("cannot read {}: {err:?}", path.display())),
         };
-        let in_progress: HashSet<&str> = loaded
+        let reopenable: HashSet<&str> = loaded
             .entries()
             .iter()
-            .filter(|e| e.status == LedgerStatus::Known(FeatureStatus::InProgress))
+            .filter(|e| {
+                e.status == LedgerStatus::Known(FeatureStatus::InProgress)
+                    || (e.status == LedgerStatus::Known(FeatureStatus::Completed) && completed_too.contains(&e.feature_name))
+            })
             .map(|e| e.feature_name.as_str())
             .collect();
-        let reopened: Vec<String> = names.iter().filter(|name| in_progress.contains(name.as_str())).cloned().collect();
+        let reopened: Vec<String> = names.iter().filter(|name| reopenable.contains(name.as_str())).cloned().collect();
         if reopened.is_empty() {
             return Ok(reopened);
         }

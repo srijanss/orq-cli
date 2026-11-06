@@ -274,3 +274,64 @@ fn reopen_discarding_leaves_a_feature_another_run_now_holds_in_progress() {
     assert_eq!(status_of(d.repo.root(), "COM-01"), "in_progress", "run-2 is working on it");
     assert_eq!(d.store.active_run(&d.project_id, "COM-01").unwrap().as_deref(), Some("run-2"));
 }
+
+#[test]
+fn reopen_discarding_a_run_whose_feature_the_agent_marked_completed_puts_it_back_to_pending() {
+    let d = blocked_run("discard-completed", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-03", "completed")]);
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "pending", "the work it recorded as complete is gone with the run");
+    assert_eq!(status_of(d.repo.root(), "COM-03"), "completed", "a feature outside the run is left alone");
+    assert!(text(&output.stdout).contains("COM-01") && text(&output.stdout).contains("pending"), "{}", text(&output.stdout));
+}
+
+/// Another run of COM-01 in the project of `d`, whose lock is already released, started at `at`.
+fn finished_run_of_the_feature(d: &Discard, run_id: &str, at: &str) {
+    d.store.finish_run(&d.project_id, "COM-01", "run-1").unwrap();
+    d.store.start_run(&record(run_id, &d.project_id, &format!("orq-{run_id}"), d.home.join(run_id))).unwrap();
+    d.store.append_event(&Event { run_id: run_id.into(), occurred_at: at.into(), ..event("stage.started") }).unwrap();
+    d.store.finish_run(&d.project_id, "COM-01", run_id).unwrap();
+}
+
+#[test]
+fn reopen_discarding_an_old_run_leaves_a_feature_a_later_run_completed() {
+    let d = blocked_run("discard-later-completed", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    finished_run_of_the_feature(&d, "run-2", "2026-11-02T11:00:00Z");
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "completed", "run-2 finished it after run-1");
+    assert!(!text(&output.stdout).contains("pending"), "{}", text(&output.stdout));
+}
+
+#[test]
+fn reopen_discarding_a_later_run_reopens_a_feature_an_older_run_also_worked_on() {
+    let d = blocked_run("discard-older-run", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    finished_run_of_the_feature(&d, "run-0", "2026-11-02T09:00:00Z");
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "pending", "run-0 came before the discarded run, so the status is the discarded run's");
+}
+
+#[test]
+fn reopen_discarding_leaves_a_completed_feature_when_another_run_cannot_be_read() {
+    let d = blocked_run("discard-unreadable-run", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    let unreadable = d.home.join("orq/runs/run-9");
+    std::fs::create_dir_all(&unreadable).unwrap();
+    std::fs::write(unreadable.join("run.json"), "not json").unwrap();
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "completed", "a run that cannot be read may be the one that finished it");
+    assert!(text(&output.stderr).contains("stay completed"), "{}", text(&output.stderr));
+}
