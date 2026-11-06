@@ -35,30 +35,33 @@ impl Progress {
             let mut previous: Option<RunActivity> = None;
             let mut last_line = Instant::now();
             let mut wait = POLL;
-            loop {
-                let mut shown = false;
+            while !flag.load(Ordering::SeqCst) {
                 if let Some(current) = look(&store, &run_id, &logs) {
-                    shown = previous.as_ref() != Some(&current);
-                    if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat) {
+                    // Checked again just before writing: a printer that was dropped while it looked says nothing.
+                    if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat).filter(|_| !flag.load(Ordering::SeqCst)) {
                         let stuck = if current.may_be_stuck { " (it may be stuck)" } else { "" };
                         let _ = writeln!(out, "{line}{stuck}");
                         let _ = out.flush();
                         last_line = Instant::now();
                     }
+                    wait = next_wait(previous.as_ref(), &current, wait);
                     previous = Some(current);
                 }
-                if flag.load(Ordering::Relaxed) {
-                    return;
-                }
                 let slept = Instant::now();
-                while slept.elapsed() < wait && !flag.load(Ordering::Relaxed) {
+                while slept.elapsed() < wait && !flag.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                wait = if shown { POLL } else { (wait * 2).min(POLL_QUIET_MAX) };
             }
         });
         Self { stop, thread: Some(thread) }
     }
+}
+
+/// How long to wait before looking again: back to the short wait when something new was shown,
+/// else twice as long, up to the quiet maximum. Time passing in a silent log is not news.
+fn next_wait(previous: Option<&RunActivity>, current: &RunActivity, wait: Duration) -> Duration {
+    let news = previous.is_none_or(|p| p.phase != current.phase || p.stage != current.stage || p.last_output != current.last_output || p.may_be_stuck != current.may_be_stuck);
+    if news { POLL } else { (wait * 2).min(POLL_QUIET_MAX) }
 }
 
 fn look(store: &RunStore, run_id: &str, logs: &Path) -> Option<RunActivity> {
@@ -71,7 +74,7 @@ impl Drop for Progress {
     fn drop(&mut self) {
         // Never joined: the printer may be stuck writing to a terminal that stopped taking output,
         // and the end of the run must not wait for it. It stops by itself, or with the process.
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::SeqCst);
         self.thread.take();
     }
 }
@@ -141,24 +144,15 @@ mod tests {
         assert!(text.contains("gate") && text.contains("running 12 tests"), "{text}");
     }
 
-    struct Stalled;
+    struct Stalled(Arc<AtomicBool>);
     impl Write for Stalled {
         fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.0.store(true, Ordering::SeqCst);
             std::thread::park();
             Ok(0)
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
-        }
-    }
-
-    struct Broken;
-    impl Write for Broken {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
         }
     }
 
@@ -189,8 +183,9 @@ mod tests {
     fn a_terminal_that_stops_taking_output_never_holds_up_the_end_of_the_run() {
         let (root, logs) = running_run("stalled");
         std::fs::write(logs.join("gate.log"), "running\n").unwrap();
-        let progress = Progress::start_with(root, "run-1".into(), logs, Duration::from_secs(60), Box::new(Stalled));
-        std::thread::sleep(Duration::from_millis(300));
+        let entered = Arc::new(AtomicBool::new(false));
+        let progress = Progress::start_with(root, "run-1".into(), logs, Duration::from_secs(60), Box::new(Stalled(entered.clone())));
+        wait_for("the write to stall", || entered.load(Ordering::SeqCst));
 
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -201,15 +196,102 @@ mod tests {
         assert!(finished.recv_timeout(Duration::from_secs(3)).is_ok(), "stopping the printer waited for the stalled terminal");
     }
 
-    #[test]
-    fn a_broken_terminal_and_a_run_not_yet_readable_do_not_stop_the_printer() {
-        let (root, logs) = running_run("broken");
-        // The run is read before its first event exists, and the output is a closed pipe.
-        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Broken));
-        std::thread::sleep(Duration::from_millis(700));
-        std::fs::write(logs.join("gate.log"), "running\n").unwrap();
-        std::thread::sleep(Duration::from_millis(700));
+    fn activity(output: &str, quiet: u64) -> RunActivity {
+        RunActivity {
+            phase: orq_orchestrator::RunPhase::Running,
+            stage: Some("gate".into()),
+            last_output: Some(output.into()),
+            may_be_stuck: false,
+            quiet_for: Some(Duration::from_secs(quiet)),
+        }
+    }
 
+    #[test]
+    fn an_unchanged_log_reaches_the_longest_wait_however_long_it_stays_quiet() {
+        let mut wait = POLL;
+        let mut before = activity("running", 1);
+        for quiet in 2..20 {
+            let now = activity("running", quiet);
+            wait = next_wait(Some(&before), &now, wait);
+            before = now;
+        }
+        assert_eq!(wait, POLL_QUIET_MAX);
+        assert_eq!(next_wait(Some(&before), &activity("42 passed", 1), wait), POLL);
+    }
+
+    struct Counting {
+        writes: Arc<std::sync::atomic::AtomicUsize>,
+        fail_flush: bool,
+    }
+    impl Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_flush { Err(std::io::ErrorKind::BrokenPipe.into()) } else { Ok(()) }
+        }
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < until, "never happened: {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn nothing_is_printed_once_the_printer_has_been_dropped() {
+        let (root, logs) = running_run("dropped");
+        std::fs::write(logs.join("gate.log"), "first\n").unwrap();
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Counting { writes: writes.clone(), fail_flush: false }));
+        wait_for("the first line", || writes.load(Ordering::SeqCst) > 0);
         drop(progress);
+        let before = writes.load(Ordering::SeqCst);
+
+        std::fs::write(logs.join("gate.log"), "second\n").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+
+        assert_eq!(writes.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn a_failing_flush_and_a_run_that_appears_later_do_not_stop_the_printer() {
+        let root = orq_test_support::process_temp_dir().join(format!("orq-progress-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("gate.log"), "one\n").unwrap();
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let progress = Progress::start_with(root.clone(), "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Counting { writes: writes.clone(), fail_flush: true }));
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(writes.load(Ordering::SeqCst), 0, "the run cannot be read yet");
+
+        let (_, _) = (running_run_at(&root), ());
+        wait_for("a line once the run can be read", || writes.load(Ordering::SeqCst) > 0);
+        let first = writes.load(Ordering::SeqCst);
+        std::fs::write(logs.join("gate.log"), "two\n").unwrap();
+        wait_for("a line after a failed flush", || writes.load(Ordering::SeqCst) > first);
+        drop(progress);
+    }
+
+    fn running_run_at(root: &Path) {
+        let store = RunStore::new(root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "repo-1".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "orq/com-01".into(),
+            worktree: root.join("wt"),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.start_run(&record).unwrap();
     }
 }
