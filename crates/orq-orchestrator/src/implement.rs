@@ -2,6 +2,7 @@
 //! worktree and record what happened as stage events.
 
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +35,8 @@ pub struct ImplementOutcome {
     pub success: bool,
     /// `None` when the program could not be started or was killed by a signal.
     pub exit_code: Option<i32>,
+    /// What the session said went wrong, cleaned for the run's events, when it reported a problem.
+    pub reported: Option<String>,
 }
 
 pub fn run_implement_stage(
@@ -133,11 +136,27 @@ pub(crate) fn run_session_stage(
     let status = cleared
         .and_then(|()| crate::child_groups::spawn(&mut command))
         .and_then(|child| wait_for_session(child, session.exit_marker));
+    let reported = session.exit_marker.and_then(marker_report);
+    // A session that failed by its exit status has already failed, whatever its marker says.
+    let finished = match &status {
+        Ok(SessionEnd::Closed) => true,
+        Ok(SessionEnd::Exited(status)) => status.success(),
+        Err(_) => false,
+    };
     let (outcome, reason) = match status {
+        _ if finished && reported.is_some() => (
+            ImplementOutcome {
+                success: false,
+                exit_code: Some(0),
+                reported: reported.clone(),
+            },
+            reported.map(|problem| format!("the session reported a problem: {problem}")),
+        ),
         Ok(SessionEnd::Closed) => (
             ImplementOutcome {
                 success: true,
                 exit_code: Some(0),
+                reported: None,
             },
             None,
         ),
@@ -145,6 +164,7 @@ pub(crate) fn run_session_stage(
             ImplementOutcome {
                 success: true,
                 exit_code: status.code(),
+                reported: None,
             },
             None,
         ),
@@ -157,6 +177,7 @@ pub(crate) fn run_session_stage(
                 ImplementOutcome {
                     success: false,
                     exit_code: status.code(),
+                    reported: None,
                 },
                 Some(reason),
             )
@@ -165,6 +186,7 @@ pub(crate) fn run_session_stage(
             ImplementOutcome {
                 success: false,
                 exit_code: None,
+                reported: None,
             },
             Some(format!("could not start {}: {err}", session.program)),
         ),
@@ -181,6 +203,36 @@ pub(crate) fn run_session_stage(
     };
     store.append_event(&closing)?;
     Ok(outcome)
+}
+
+/// A marker is read only this far: it is a short note, and nothing limits what a session writes there.
+const MARKER_READ_LIMIT: u64 = 4096;
+/// The most of a report that goes into the run's events.
+const MARKER_REPORT_LIMIT: usize = 500;
+
+/// What the session wrote into its marker. An empty marker means it finished as asked.
+fn marker_report(marker: &Path) -> Option<String> {
+    // Nothing is followed or opened unless it is a plain file: a pipe would block orq, and a link
+    // would copy another file's contents into the run's events.
+    match fs::symlink_metadata(marker) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => return Some(format!("its finish marker could not be read: {err}")),
+        Ok(found) if !found.is_file() => return Some("its finish marker is not a plain file".to_string()),
+        Ok(_) => {}
+    }
+    let mut bytes = Vec::new();
+    let read = fs::File::open(marker).and_then(|file| file.take(MARKER_READ_LIMIT).read_to_end(&mut bytes));
+    if let Err(err) = read {
+        return Some(format!("its finish marker could not be read: {err}"));
+    }
+    let redacted = orq_core::redact::redact(&String::from_utf8_lossy(&bytes));
+    let cleaned: String = redacted
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MARKER_REPORT_LIMIT)
+        .collect();
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
 }
 
 enum SessionEnd {

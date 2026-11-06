@@ -231,3 +231,68 @@ fn terminal_session_descendants_do_not_outlive_a_closed_or_exited_session() {
         assert!(!late.exists(), "{tag}: a descendant kept running");
     }
 }
+
+fn stage_failure_reason(store: &RunStore) -> String {
+    let events = store.events("run-1").unwrap();
+    let failed = events.iter().find(|e| e.kind == "stage.failed").expect("the stage failed");
+    failed.payload["reason"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_session_that_writes_a_problem_into_its_marker_fails_the_stage_with_that_problem() {
+    let (store, root) = setup("reported");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("echo 'the review could not run' > {}; sleep 30", marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(stage_failure_reason(&store).contains("the review could not run"));
+}
+
+#[test]
+fn a_session_that_writes_a_problem_and_exits_by_itself_fails_the_stage_too() {
+    let (store, root) = setup("reported-exit");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("echo 'the review could not run' > {}; exit 0", marker.display()));
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(stage_failure_reason(&store).contains("the review could not run"));
+}
+
+#[test]
+fn a_marker_that_is_not_a_plain_file_fails_the_stage_and_is_not_followed() {
+    for (tag, make) in [("dir", "mkdir"), ("link", "ln -s /etc/hostname")] {
+        let (store, root) = setup(&format!("not-plain-{tag}"));
+        let marker = root.join("worktree/done.marker");
+        let args = args(&format!("{make} {}; sleep 30", marker.display()));
+
+        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+        assert!(!outcome.success, "{tag}: {outcome:?}");
+        let reason = stage_failure_reason(&store);
+        assert!(reason.contains("not a plain file"), "{tag}: {reason}");
+    }
+}
+
+#[test]
+fn what_a_session_reports_is_cleaned_before_it_is_recorded() {
+    let (store, root) = setup("cleaned");
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "printf 'first\\033[2Jline\\ntoken=ghp_abcdefghijklmnopqrstuvwxyz0123456789 ' > {m}; head -c 100000 /dev/zero | tr '\\0' x >> {m}; sleep 30",
+        m = marker.display()
+    );
+    let args = args(&script);
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    let reason = stage_failure_reason(&store);
+    assert!(reason.contains("first"), "{reason}");
+    assert!(!reason.chars().any(char::is_control), "{reason:?}");
+    assert!(!reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{reason}");
+    assert!(reason.chars().count() < 1000, "{} chars", reason.chars().count());
+}

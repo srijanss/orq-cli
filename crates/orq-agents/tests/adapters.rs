@@ -196,7 +196,7 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
     let prompt = argv.last().unwrap();
     assert!(prompt.starts_with("/implement-and-review COM-02 --reviewer pi --model kimi-k3"), "{prompt}");
     assert!(prompt.contains("Extra context:\nkeep the API stable"), "{prompt}");
-    assert!(prompt.ends_with("As your very last step, once everything is committed, create the empty file /repo/.git/orq/exit-run-1 and then stop."), "{prompt}");
+    assert!(prompt.contains("As your very last step, once everything is committed, create the empty file /repo/.git/orq/exit-run-1 and then stop."), "{prompt}");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
         })
     };
     let argv = ask("/my repo/.git/orq/exit").unwrap();
-    assert!(argv.last().unwrap().ends_with("create the empty file \"/my repo/.git/orq/exit\" and then stop."), "{argv:?}");
+    assert!(argv.last().unwrap().contains("create the empty file \"/my repo/.git/orq/exit\" and then stop."), "{argv:?}");
     for bad in ["-x", "relative/path", "/a\nb", "", "/a\"b", "/a`b", "/a\\b"] {
         assert!(ask(bad).is_err(), "{bad:?}");
     }

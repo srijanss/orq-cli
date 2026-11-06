@@ -206,3 +206,25 @@ fn a_claude_fix_session_may_read_the_logs_without_its_prompt_becoming_another_di
     let leading = fix_request("claude", "opus", None, false);
     assert!(adapter_for("claude").unwrap().fix_argv(&orq_agents::FixRequest { logs_dir: "-rf", ..leading }).is_err());
 }
+
+#[test]
+fn a_session_with_a_marker_is_told_to_write_down_what_it_could_not_do() {
+    for_each_harness(|harness, model| {
+        let features = ["COM-01"];
+        let adapter = adapter_for(harness).unwrap();
+        for attended in [true, false] {
+            let marked = ImplementRequest {
+                attended,
+                exit_marker: Some("/state/logs/run-1/implement.done"),
+                ..request(harness, model, &features)
+            };
+            let prompt = adapter.implement_argv(&marked).unwrap().last().unwrap().clone();
+            assert!(prompt.contains("create the empty file /state/logs/run-1/implement.done and then stop."), "{harness}: {prompt}");
+            assert!(prompt.contains("could not be done"), "{harness}: {prompt}");
+            assert!(prompt.contains("write what went wrong into that file"), "{harness}: {prompt}");
+        }
+
+        let unmarked = adapter.implement_argv(&request(harness, model, &features)).unwrap().last().unwrap().clone();
+        assert!(!unmarked.contains("write what went wrong"), "{harness}: {unmarked}");
+    });
+}

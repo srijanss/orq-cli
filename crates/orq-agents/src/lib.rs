@@ -374,6 +374,7 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         });
         prompt.push_str(&quoted);
         prompt.push_str(" and then stop.");
+        prompt.push_str(" If any part of this could not be done the way it was asked, including a review that could not run, write what went wrong into that file instead of leaving it empty.");
     }
     Ok(prompt)
 }

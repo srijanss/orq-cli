@@ -661,3 +661,26 @@ fn a_published_branch_with_a_red_ci_fails_without_a_fix_session_or_another_push(
     let local = git(w.repo.root(), &["rev-parse", "topic"]);
     assert_eq!(git(&w._remote, &["rev-parse", "refs/heads/topic"]), local, "{drawn}");
 }
+
+#[test]
+fn a_run_whose_session_reports_a_problem_fails_and_says_what_the_problem_was() {
+    let agent = FakeAgent::builder().build();
+    let w = world("reports", &agent);
+    std::fs::write(
+        w.bin.join("claude"),
+        "#!/bin/sh\nmarker=$(printf '%s' \"$*\" | sed -n 's/.*create the empty file \\([^ ]*\\) and then stop.*/\\1/p')\n[ -n \"$marker\" ] && echo 'the review could not run' > \"$marker\"\nexit 0\n",
+    )
+    .unwrap();
+    let provider = github();
+
+    let output = command(&w, &provider, env!("CARGO_BIN_EXE_orq")).args(run_args(&w)).output().unwrap();
+
+    let store = orq_orchestrator::RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().pop().expect("the run is recorded");
+    let events = store.events(&run_id).unwrap();
+    let ended = events.iter().find(|event| event.kind == "run.completed").expect("the ending is recorded");
+    assert_eq!(ended.payload["ending"], "failed", "{:?}", ended.payload);
+    let reason = ended.payload["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("the review could not run"), "{reason:?}");
+    assert_ne!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stdout));
+}

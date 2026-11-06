@@ -857,8 +857,12 @@ fn stages(
                 terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
-            if !run_implement_stage(store, run_id, &session)?.success {
-                return stopped(Ending::Failed, "the implement session failed");
+            let outcome = run_implement_stage(store, run_id, &session)?;
+            if !outcome.success {
+                return stopped(Ending::Failed, match outcome.reported {
+                    Some(problem) => format!("the implement session reported a problem: {problem}"),
+                    None => "the implement session failed".to_string(),
+                });
             }
             if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
                 return stopped(Ending::Blocked, reason);
