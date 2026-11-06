@@ -208,8 +208,10 @@ fn merge_settings(
     write().map_err(|err| format!("it could not be written ({:?})", err.kind()))
 }
 
-/// Runs `mcpctl setup --mcp <name>` in `worktree` for each of `servers`, with `env` added to the
-/// environment. `mcpctl` is the program, `None` when it is not installed.
+/// Runs one `mcpctl setup --mcp <a> --mcp <b>` in `worktree` for all of `servers`, with `env` added
+/// to the environment, so each is locked to its latest version. One call, because `setup` replaces
+/// the project's selection: with a call per server only the last would be locked, and the others
+/// would run at the machine's active version. `mcpctl` is the program, `None` when it is not installed.
 pub fn setup_mcp_servers(
     worktree: &Path,
     servers: &[String],
@@ -224,29 +226,32 @@ pub fn setup_mcp_servers(
             "mcpctl is not on PATH; the configured MCP servers were not set up".to_string(),
         ];
     };
-    let mut notes = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for name in servers.iter().filter(|name| seen.insert(name.as_str())) {
-        let done = Command::new(program)
-            .args(["setup", "--mcp", name])
-            .current_dir(worktree)
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        match done {
-            Ok(status) if status.success() => {}
-            Ok(status) => notes.push(format!(
-                "mcpctl setup for MCP server {name} failed ({status})"
-            )),
-            Err(err) => notes.push(format!(
-                "mcpctl setup for MCP server {name} could not be started ({:?})",
-                err.kind()
-            )),
-        }
+    let names: Vec<&str> = servers
+        .iter()
+        .map(String::as_str)
+        .filter(|name| seen.insert(*name))
+        .collect();
+    let done = Command::new(program)
+        .arg("setup")
+        .args(names.iter().flat_map(|name| ["--mcp", *name]))
+        .current_dir(worktree)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let names = names.join(", ");
+    match done {
+        Ok(status) if status.success() => Vec::new(),
+        Ok(status) => vec![format!(
+            "mcpctl setup for MCP servers {names} failed ({status}); run it in the worktree to see why"
+        )],
+        Err(err) => vec![format!(
+            "mcpctl setup for MCP servers {names} could not be started ({:?})",
+            err.kind()
+        )],
     }
-    notes
 }
 
 /// Keeps the directory run worktrees live in out of the main checkout's git status, through the local

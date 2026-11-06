@@ -117,7 +117,9 @@ fn only_the_configured_servers_are_approved_and_a_problem_is_a_note_not_a_failur
 }
 
 #[test]
-fn mcpctl_sets_up_each_configured_server_in_the_worktree_and_a_missing_or_failing_tool_is_a_note() {
+fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_tool_is_a_note() {
+    // `mcpctl setup` replaces the project's selection, so one call per server would keep only the
+    // last one, and the others would run at the machine's active version.
     let (repo, worktree) = checkout("mcpctl-setup");
     let seen = repo
         .root()
@@ -132,13 +134,13 @@ fn mcpctl_sets_up_each_configured_server_in_the_worktree_and_a_missing_or_failin
     fs::write(
         &tool,
         format!(
-            "#!/bin/sh\necho \"$PWD $* $DB_NAME\" >> '{}'\n[ \"$3\" = bad ] && exit 3\nexit 0\n",
+            "#!/bin/sh\necho \"$PWD $* $DB_NAME\" >> '{}'\ncase \"$*\" in *bad*) exit 3;; esac\nexit 0\n",
             seen.display()
         ),
     )
     .unwrap();
     fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let servers = vec!["tdd".to_string(), "bad".to_string()];
+    let servers = vec!["tdd".to_string(), "project".to_string()];
 
     let notes = setup_mcp_servers(
         &worktree,
@@ -149,21 +151,24 @@ fn mcpctl_sets_up_each_configured_server_in_the_worktree_and_a_missing_or_failin
 
     let log = fs::read_to_string(&seen).unwrap();
     let lines: Vec<&str> = log.lines().collect();
-    assert_eq!(lines.len(), 2, "{log}");
-    assert!(lines[0].ends_with("setup --mcp tdd run1"), "{log}");
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].ends_with("setup --mcp tdd --mcp project run1"), "{log}");
     assert!(
         lines[0].starts_with(&worktree.display().to_string()),
         "run inside the worktree: {log}"
     );
-    assert!(notes.iter().any(|n| n.contains("bad")), "{notes:?}");
+    assert!(notes.is_empty(), "{notes:?}");
+
+    let failing = vec!["tdd".to_string(), "bad".to_string()];
+    let notes = setup_mcp_servers(&worktree, &failing, &[], Some(&tool));
+    assert!(notes.iter().any(|n| n.contains("tdd") && n.contains("bad")), "{notes:?}");
 
     let again = vec!["tdd".to_string(), "tdd".to_string()];
-    let before = fs::read_to_string(&seen).unwrap().lines().count();
     setup_mcp_servers(&worktree, &again, &[], Some(&tool));
-    assert_eq!(
-        fs::read_to_string(&seen).unwrap().lines().count(),
-        before + 1,
-        "a repeated name is set up once"
+    let log = fs::read_to_string(&seen).unwrap();
+    assert!(
+        log.lines().last().unwrap().ends_with("setup --mcp tdd "),
+        "a repeated name is set up once: {log}"
     );
 
     let missing = setup_mcp_servers(&worktree, &servers, &[], None);
