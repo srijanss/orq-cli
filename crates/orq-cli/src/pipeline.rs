@@ -864,6 +864,11 @@ fn stages(
         }
     }
 
+    // The agent session has the terminal while it runs; after it, short lines keep the pane alive.
+    let _progress = (options.interactive && !options.publish)
+        .then(|| logs.parent().and_then(Path::parent).map(|root| crate::progress::Progress::start(root.to_path_buf(), run_id.to_string(), logs.to_path_buf())))
+        .flatten();
+
     if !done("gate") {
         if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
             return paused("rebase");

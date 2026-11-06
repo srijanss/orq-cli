@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 mod desktop;
 mod pipeline;
+mod progress;
 mod review;
 mod storage;
 

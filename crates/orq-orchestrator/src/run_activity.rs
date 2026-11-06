@@ -21,6 +21,8 @@ pub struct RunActivity {
     pub stage: Option<String>,
     pub last_output: Option<String>,
     pub may_be_stuck: bool,
+    /// How long the newest log has been silent, when there is one.
+    pub quiet_for: Option<Duration>,
 }
 
 pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Duration) -> RunActivity {
@@ -30,6 +32,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
         phase: summary.phase,
         stage: summary.stage,
         last_output: log.and_then(|l| l.last_line.as_deref()).map(orq_core::redact::redact),
+        quiet_for: log.map(|l| l.quiet_for),
         may_be_stuck: running && log.is_some_and(|l| l.quiet_for > stuck_after),
     }
 }
@@ -84,4 +87,25 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
         .find(|line| !line.is_empty())
         .map(|line| orq_core::redact::redact(line).chars().take(MAX_LINE_CHARS).collect());
     Some(LogTail { size, quiet_for: modified.elapsed().unwrap_or_default(), last_line })
+}
+
+/// The line to show for `current`, or none: a changed stage or last line of output is shown as it
+/// comes, and a run that has shown nothing for `heartbeat` says it is still going.
+pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, since_last_line: Duration, heartbeat: Duration) -> Option<String> {
+    let stage = current.stage.as_deref().unwrap_or("run");
+    let changed = match previous {
+        None => true,
+        Some(p) => p.stage != current.stage || (current.last_output.is_some() && p.last_output != current.last_output),
+    };
+    if changed {
+        return Some(match &current.last_output {
+            Some(out) => format!("orq: {stage}: {out}"),
+            None => format!("orq: {stage}"),
+        });
+    }
+    if since_last_line >= heartbeat {
+        let quiet = current.quiet_for.map_or(String::new(), |q| format!(", no output for {}s", q.as_secs()));
+        return Some(format!("orq: {stage} still running{quiet}"));
+    }
+    None
 }

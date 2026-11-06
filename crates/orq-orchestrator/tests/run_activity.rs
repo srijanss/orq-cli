@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use orq_orchestrator::{newest_log_tail, run_activity, Event, LogTail, RunPhase};
+use orq_orchestrator::{activity_line, newest_log_tail, run_activity, Event, LogTail, RunPhase};
 
 fn event(kind: &str, stage: Option<&str>) -> Event {
     Event {
@@ -133,4 +133,40 @@ fn a_token_cut_by_the_start_of_the_tail_is_not_shown() {
     // The window opening inside a multi-byte character is no different.
     std::fs::write(dir.join("stage.log"), format!("{}x", "é".repeat(8 * 1024))).unwrap();
     assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
+}
+
+fn seen(events: &[Event], line: &str, quiet: u64) -> orq_orchestrator::RunActivity {
+    run_activity(events, Some(&tail(line, quiet)), STUCK_AFTER)
+}
+
+#[test]
+fn a_line_is_shown_when_the_stage_or_output_changes_and_not_otherwise() {
+    let verify = [event("stage.started", Some("verify"))];
+    let push = [event("stage.started", Some("push"))];
+    let none = Duration::ZERO;
+    let heartbeat = Duration::from_secs(60);
+
+    let first = activity_line(None, &seen(&verify, "running tests", 1), none, heartbeat).unwrap();
+    assert!(first.contains("verify") && first.contains("running tests"), "{first}");
+
+    let same = seen(&verify, "running tests", 2);
+    assert_eq!(activity_line(Some(&seen(&verify, "running tests", 1)), &same, Duration::from_secs(5), heartbeat), None);
+
+    let more = seen(&verify, "42 passed", 1);
+    assert!(activity_line(Some(&same), &more, Duration::from_secs(5), heartbeat).unwrap().contains("42 passed"));
+
+    let next = seen(&push, "42 passed", 1);
+    assert!(activity_line(Some(&more), &next, Duration::from_secs(5), heartbeat).unwrap().contains("push"));
+}
+
+#[test]
+fn a_quiet_stage_says_it_is_still_running_once_the_heartbeat_has_passed() {
+    let verify = [event("stage.started", Some("verify"))];
+    let quiet = seen(&verify, "running tests", 130);
+    let heartbeat = Duration::from_secs(60);
+
+    let line = activity_line(Some(&quiet), &quiet, Duration::from_secs(61), heartbeat).unwrap();
+
+    assert!(line.contains("verify") && line.contains("still running") && line.contains("130"), "{line}");
+    assert_eq!(activity_line(Some(&quiet), &quiet, Duration::from_secs(59), heartbeat), None);
 }
