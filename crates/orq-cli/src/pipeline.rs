@@ -610,6 +610,8 @@ pub(crate) fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, fea
 /// Where the detached sender finds the text, which stays out of the process list this way.
 pub(crate) const PUSH_TEXT: &str = "ORQ_PUSH_TEXT";
 const PUSH_SESSION_LIMIT: Duration = Duration::from_secs(60);
+/// Where sessions auto-compact when the run settings do not say, as in the orchestrate script.
+const DEFAULT_COMPACT_WINDOW: u32 = 150_000;
 /// What the session gets to finish sending once the tool has run.
 const PUSH_SESSION_LINGER: Duration = Duration::from_secs(3);
 
@@ -767,10 +769,10 @@ fn stages(
         orq_orchestrator::derive_worktree_databases_with(&options.project.root, &vars, &record.branch, named, settings.db_name_template.as_deref())
     };
     let mut run_vars = databases.env.clone();
-    // Every session of the run, and its settings file, is told where to auto-compact.
-    if let Some(tokens) = settings.compact_window {
-        run_vars.push(("CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(), tokens.to_string()));
-    }
+    // Every session of the run, and its settings file, is told where to auto-compact: where the
+    // settings say, else where the orchestrate script does.
+    let tokens = settings.compact_window.unwrap_or(DEFAULT_COMPACT_WINDOW);
+    run_vars.push(("CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(), tokens.to_string()));
     let mut notes = databases.notes.clone();
     if !options.publish {
         let carried = orq_orchestrator::carry_local_files(&options.project.root, worktree, settings.local_files.as_deref());

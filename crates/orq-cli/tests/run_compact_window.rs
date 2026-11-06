@@ -112,7 +112,7 @@ fn the_implement_session_is_told_the_configured_compact_window() {
 }
 
 #[test]
-fn without_a_setting_sessions_are_left_to_their_own_default() {
+fn without_a_setting_sessions_compact_at_150000_like_the_orchestrate_script() {
     let w = world("default");
     settings(&w, "");
 
@@ -121,7 +121,7 @@ fn without_a_setting_sessions_are_left_to_their_own_default() {
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
     let seen = lines(&seen);
     assert!(!seen.is_empty());
-    assert!(seen.iter().all(|line| line == "[]"), "{seen:?}");
+    assert!(seen.iter().all(|line| line == "[150000]"), "{seen:?}");
 }
 
 #[test]
