@@ -700,3 +700,38 @@ fn each_look_at_unfinished_checks_leaves_a_line_saying_what_is_awaited() {
     assert!(lines.iter().all(|l| l.contains("CI") && l.contains("waiting")), "{text}");
     assert!(lines.last().unwrap().contains("timed out"), "{text}");
 }
+
+fn log_path(tag: &str) -> std::path::PathBuf {
+    let log = std::env::temp_dir().join(format!("orq-ci-log-{tag}-{}", std::process::id()));
+    let _ = fs::remove_file(&log);
+    log
+}
+
+#[test]
+fn a_log_that_cannot_be_written_never_changes_the_outcome() {
+    let w = world("unwritable", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks(RUNNING, 1)).build();
+    let short = CiWaitConfig { timeout: Duration::from_millis(300), ..config() };
+    let directory = std::env::temp_dir();
+
+    let outcome = orq_orchestrator::wait_for_ci_logged(&w.store, "run-1", &provider.gh(), SHA, &short, Some(&directory)).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+}
+
+#[test]
+fn a_commit_with_no_checks_yet_and_a_provider_that_errs_are_each_said_in_the_log() {
+    let none = world("log-none", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks("", 0)).build();
+    let short = CiWaitConfig { timeout: Duration::from_millis(300), ..config() };
+    let log = log_path("none");
+    orq_orchestrator::wait_for_ci_logged(&none.store, "run-1", &provider.gh(), SHA, &short, Some(&log)).unwrap();
+    assert!(fs::read_to_string(&log).unwrap().contains("CI waiting"));
+
+    let err = world("log-err", "github", "https://github.example/o/r.git");
+    let provider = github_provider().fail(&["api"], 1, "HTTP 502\n").build();
+    let log = log_path("err");
+    let outcome = orq_orchestrator::wait_for_ci_logged(&err.store, "run-1", &provider.gh(), SHA, &config(), Some(&log)).unwrap();
+    assert!(matches!(outcome, CiOutcome::Errored { .. }));
+    assert!(fs::read_to_string(&log).unwrap().contains("did not answer usably"));
+}

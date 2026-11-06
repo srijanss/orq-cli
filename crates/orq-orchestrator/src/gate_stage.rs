@@ -185,20 +185,26 @@ fn run_step(
     };
     let group = child.id() as libc::pid_t;
     let deadline = std::time::Instant::now() + limit;
-    let status = loop {
-        match child.try_wait()? {
-            Some(status) => break Some(status),
-            None if std::time::Instant::now() >= deadline => break None,
-            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+    let exited = loop {
+        // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
+        match crate::terminal_session::has_exited(&child) {
+            Ok(true) => break true,
+            Ok(false) if std::time::Instant::now() >= deadline => break false,
+            Ok(false) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(err) => {
+                // Safety: plain system call; the leader is unreaped.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+                let _ = child.wait();
+                return Err(err.into());
+            }
         }
     };
-    // Whatever the step started goes with it; the leader is unreaped until now, so the id is still ours.
-    // Safety: plain system call.
+    // Whatever the step started goes with it. Safety: plain system call; the leader is unreaped.
     unsafe { libc::killpg(group, libc::SIGKILL) };
-    let Some(status) = status else {
-        let _ = child.wait();
+    let status = child.wait()?;
+    if !exited {
         return Ok((None, Some(format!("timed out after {}s and was stopped", limit.as_secs()))));
-    };
+    }
     Ok(match status {
         status if status.success() => (status.code(), None),
         status => match status.code() {

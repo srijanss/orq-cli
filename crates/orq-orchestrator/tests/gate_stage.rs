@@ -252,3 +252,17 @@ fn a_step_that_never_ends_fails_the_gate_at_the_limit_and_leaves_nothing_running
     std::thread::sleep(Duration::from_secs(4));
     assert!(!late.exists(), "a process the step started kept running");
 }
+
+#[test]
+fn a_step_that_exits_early_takes_what_it_left_running_with_it_and_keeps_its_exit_code() {
+    use std::time::Duration;
+    let w = world("leftover");
+    let late = w.root.join("late");
+    let gate = steps(vec![sh(&format!("(sleep 2; touch '{}') & exit 3", late.display()))]);
+
+    let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
+
+    assert_eq!(outcome, GateOutcome::Failed { step: 0, exit_code: Some(3) });
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!late.exists(), "a process the step left behind kept running");
+}

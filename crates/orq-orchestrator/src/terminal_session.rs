@@ -65,7 +65,7 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
 }
 
 /// Whether the program has exited, without reaping it: its id stays reserved until `wait`.
-fn has_exited(child: &Child) -> io::Result<bool> {
+pub(crate) fn has_exited(child: &Child) -> io::Result<bool> {
     // Safety: an all-zero siginfo is valid for waitid to fill in.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // Safety: `info` is valid for the call; the child is ours and not yet reaped.
