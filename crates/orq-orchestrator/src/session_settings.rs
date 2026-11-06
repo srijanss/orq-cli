@@ -243,14 +243,27 @@ fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {
     });
 }
 
-/// Whether `command` has the shape of the one Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`:
-/// someone's own command that merely has these words in it stays.
+/// Whether `command` is exactly what Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`, one
+/// quoted word in each place: someone's own command, compound or merely with these words in it, stays.
 fn is_needs_input_command(command: &str) -> bool {
-    let quoted = |word: &str| word.len() >= 2 && word.starts_with('\'') && word.ends_with('\'');
-    command
-        .split_once(NEEDS_INPUT_COMMAND)
-        .and_then(|(orq, rest)| Some((orq, rest.split_once(" --repo ")?)))
-        .is_some_and(|(orq, (run, root))| quoted(orq) && quoted(run) && quoted(root))
+    let whole = || {
+        let rest = after_quoted_word(command)?.strip_prefix(NEEDS_INPUT_COMMAND)?;
+        let rest = after_quoted_word(rest)?.strip_prefix(" --repo ")?;
+        after_quoted_word(rest)
+    };
+    whole().is_some_and(str::is_empty)
+}
+
+/// What follows the single-quoted shell word `text` starts with, where `'\''` puts a quote inside it.
+fn after_quoted_word(text: &str) -> Option<&str> {
+    let mut rest = text.strip_prefix('\'')?;
+    loop {
+        rest = &rest[rest.find('\'')? + 1..];
+        match rest.strip_prefix("\\''") {
+            Some(more) => rest = more,
+            None => return Some(rest),
+        }
+    }
 }
 
 /// Applies `edit` to the object in the worktree's settings file, or a new one, and writes it back.

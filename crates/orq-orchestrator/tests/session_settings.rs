@@ -393,3 +393,26 @@ fn taking_the_needs_input_hook_out_leaves_everything_else_and_creates_nothing() 
     assert_eq!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "audit");
     assert!(!settings.to_string().contains("needs-input"), "{settings}");
 }
+
+#[test]
+fn only_the_exact_command_orq_writes_counts_as_its_own_hook() {
+    let (_repo, worktree) = checkout("needs-input-hook-exact");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    let someone_elses = [
+        "'/usr/local/bin/audit' && '/old/orq' run needs-input 'r' --repo '/x'",
+        "'/old/orq' run needs-input 'r' --repo '/x'; '/usr/local/bin/audit'",
+        "'/old/orq' run needs-input 'r' && 'audit' --repo '/x'",
+        "'/old/orq' run needs-input 'r' --repo '/x' 'more'",
+    ];
+    let quoted_quote = "'/it'\\''s/orq' run needs-input 'r' --repo '/it'\\''s'";
+    let mut hooks: Vec<serde_json::Value> = someone_elses.iter().map(|c| serde_json::json!({"type": "command", "command": c})).collect();
+    hooks.push(serde_json::json!({"type": "command", "command": quoted_quote}));
+    let earlier = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "AskUserQuestion", "hooks": hooks}]}});
+    fs::write(worktree.join(".claude/settings.local.json"), earlier.to_string()).unwrap();
+
+    assert!(orq_orchestrator::remove_needs_input_hook(&worktree).is_empty());
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    let left: Vec<&str> = settings["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap()).collect();
+    assert_eq!(left, someone_elses, "someone's compound command stays and ours, however quoted, goes");
+}
