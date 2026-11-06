@@ -193,7 +193,7 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
         for (event, matcher) in [("PreToolUse", "AskUserQuestion"), ("Notification", "permission_prompt")] {
             let entries = hooks.entry(event).or_insert_with(|| serde_json::json!([]));
             let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
-            entries.retain(|entry| !runs_needs_input(entry));
+            remove_own_hooks(entries);
             entries.push(serde_json::json!({
                 "matcher": matcher,
                 "hooks": [{"type": "command", "command": command, "timeout": NEEDS_INPUT_TIMEOUT_SECS}],
@@ -207,12 +207,25 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
     }
 }
 
-/// Whether a hook entry is one `write_needs_input_hook` wrote.
-fn runs_needs_input(entry: &serde_json::Value) -> bool {
-    let hooks = entry.get("hooks").and_then(|hooks| hooks.as_array());
-    hooks.into_iter().flatten().any(|hook| {
-        hook.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains(NEEDS_INPUT_COMMAND))
-    })
+/// Takes out of `entries` the commands `write_needs_input_hook` wrote and nothing beside them: an
+/// entry goes only when one of ours was all it held.
+fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {
+    entries.retain_mut(|entry| {
+        let Some(hooks) = entry.get_mut("hooks").and_then(|hooks| hooks.as_array_mut()) else { return true };
+        let held = hooks.len();
+        hooks.retain(|hook| !hook.get("command").and_then(|c| c.as_str()).is_some_and(is_needs_input_command));
+        hooks.len() == held || !hooks.is_empty()
+    });
+}
+
+/// Whether `command` has the shape of the one Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`:
+/// someone's own command that merely has these words in it stays.
+fn is_needs_input_command(command: &str) -> bool {
+    let quoted = |word: &str| word.len() >= 2 && word.starts_with('\'') && word.ends_with('\'');
+    command
+        .split_once(NEEDS_INPUT_COMMAND)
+        .and_then(|(orq, rest)| Some((orq, rest.split_once(" --repo ")?)))
+        .is_some_and(|(orq, (run, root))| quoted(orq) && quoted(run) && quoted(root))
 }
 
 /// Applies `edit` to the object in the worktree's settings file, or a new one, and writes it back.

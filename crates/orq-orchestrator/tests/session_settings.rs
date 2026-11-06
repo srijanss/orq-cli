@@ -306,8 +306,8 @@ fn the_needs_input_hook_joins_the_settings_and_replaces_only_an_earlier_copy_of_
     )
     .unwrap();
 
-    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/old/orq' run needs-input r --repo '/x'").is_empty());
-    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/new/orq' run needs-input r --repo '/x'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/old/orq' run needs-input 'r' --repo '/x'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/new/orq' run needs-input 'r' --repo '/x'").is_empty());
 
     let settings = read_json(&worktree.join(".claude/settings.local.json"));
     assert_eq!(settings["env"]["KEEP"], "1");
@@ -315,11 +315,11 @@ fn the_needs_input_hook_joins_the_settings_and_replaces_only_an_earlier_copy_of_
     assert_eq!(pre.len(), 2, "{pre:?}");
     assert_eq!(pre[0]["hooks"][0]["command"], "mine");
     assert_eq!(pre[1]["matcher"], "AskUserQuestion");
-    assert_eq!(pre[1]["hooks"][0]["command"], "'/new/orq' run needs-input r --repo '/x'");
+    assert_eq!(pre[1]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
     let notification = settings["hooks"]["Notification"].as_array().unwrap();
     assert_eq!(notification.len(), 1, "{notification:?}");
     assert_eq!(notification[0]["matcher"], "permission_prompt");
-    assert_eq!(notification[0]["hooks"][0]["command"], "'/new/orq' run needs-input r --repo '/x'");
+    assert_eq!(notification[0]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
 }
 
 #[test]
@@ -339,4 +339,29 @@ fn settings_the_hook_cannot_join_are_a_note_and_are_left_as_they_were() {
     let notes = orq_orchestrator::write_needs_input_hook(&worktree, "orq run needs-input r --repo /x");
     assert!(notes.iter().any(|n| n.contains("settings.local.json")), "{notes:?}");
     assert_eq!(fs::read_to_string(&outside).unwrap(), "{}");
+}
+
+#[test]
+fn replacing_the_needs_input_hook_keeps_every_other_hook_beside_it() {
+    let (_repo, worktree) = checkout("needs-input-hook-beside");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    let own = "'/old/orq' run needs-input 'r' --repo '/x'";
+    let earlier = serde_json::json!({"hooks": {"PreToolUse": [
+        {"matcher": "AskUserQuestion", "hooks": [
+            {"type": "command", "command": "audit"},
+            {"type": "command", "command": own},
+        ]},
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/local/bin/wrap run needs-input now"}]},
+    ]}});
+    fs::write(worktree.join(".claude/settings.local.json"), earlier.to_string()).unwrap();
+
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, "'/new/orq' run needs-input 'r' --repo '/x'").is_empty());
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 3, "{pre:?}");
+    assert_eq!(pre[0]["hooks"].as_array().unwrap().len(), 1, "{pre:?}");
+    assert_eq!(pre[0]["hooks"][0]["command"], "audit");
+    assert_eq!(pre[1]["hooks"][0]["command"], "/usr/local/bin/wrap run needs-input now");
+    assert_eq!(pre[2]["hooks"][0]["command"], "'/new/orq' run needs-input 'r' --repo '/x'");
 }
