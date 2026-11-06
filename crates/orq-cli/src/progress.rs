@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use orq_orchestrator::{activity_line, newest_log_tail, run_activity, RunActivity, RunStore};
 
 const POLL: Duration = Duration::from_millis(500);
+/// A run that shows nothing new is looked at less and less often, up to this.
+const POLL_QUIET_MAX: Duration = Duration::from_secs(5);
 const HEARTBEAT: Duration = Duration::from_secs(60);
 const STUCK_AFTER: Duration = Duration::from_secs(300);
 
@@ -32,8 +34,11 @@ impl Progress {
             let store = RunStore::new(&state_root);
             let mut previous: Option<RunActivity> = None;
             let mut last_line = Instant::now();
+            let mut wait = POLL;
             loop {
+                let mut shown = false;
                 if let Some(current) = look(&store, &run_id, &logs) {
+                    shown = previous.as_ref() != Some(&current);
                     if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat) {
                         let stuck = if current.may_be_stuck { " (it may be stuck)" } else { "" };
                         let _ = writeln!(out, "{line}{stuck}");
@@ -45,7 +50,11 @@ impl Progress {
                 if flag.load(Ordering::Relaxed) {
                     return;
                 }
-                std::thread::sleep(POLL);
+                let slept = Instant::now();
+                while slept.elapsed() < wait && !flag.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                wait = if shown { POLL } else { (wait * 2).min(POLL_QUIET_MAX) };
             }
         });
         Self { stop, thread: Some(thread) }
@@ -60,10 +69,10 @@ fn look(store: &RunStore, run_id: &str, logs: &Path) -> Option<RunActivity> {
 
 impl Drop for Progress {
     fn drop(&mut self) {
+        // Never joined: the printer may be stuck writing to a terminal that stopped taking output,
+        // and the end of the run must not wait for it. It stops by itself, or with the process.
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.thread.take();
     }
 }
 
@@ -130,5 +139,77 @@ mod tests {
 
         let text = String::from_utf8(written.lock().unwrap().clone()).unwrap();
         assert!(text.contains("gate") && text.contains("running 12 tests"), "{text}");
+    }
+
+    struct Stalled;
+    impl Write for Stalled {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            std::thread::park();
+            Ok(0)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    fn running_run(tag: &str) -> (PathBuf, PathBuf) {
+        let root = orq_test_support::process_temp_dir().join(format!("orq-progress-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "repo-1".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "orq/com-01".into(),
+            worktree: root.join("wt"),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.start_run(&record).unwrap();
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        (root, logs)
+    }
+
+    #[test]
+    fn a_terminal_that_stops_taking_output_never_holds_up_the_end_of_the_run() {
+        let (root, logs) = running_run("stalled");
+        std::fs::write(logs.join("gate.log"), "running\n").unwrap();
+        let progress = Progress::start_with(root, "run-1".into(), logs, Duration::from_secs(60), Box::new(Stalled));
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(progress);
+            let _ = done.send(());
+        });
+
+        assert!(finished.recv_timeout(Duration::from_secs(3)).is_ok(), "stopping the printer waited for the stalled terminal");
+    }
+
+    #[test]
+    fn a_broken_terminal_and_a_run_not_yet_readable_do_not_stop_the_printer() {
+        let (root, logs) = running_run("broken");
+        // The run is read before its first event exists, and the output is a closed pipe.
+        let progress = Progress::start_with(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Broken));
+        std::thread::sleep(Duration::from_millis(700));
+        std::fs::write(logs.join("gate.log"), "running\n").unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+
+        drop(progress);
     }
 }
