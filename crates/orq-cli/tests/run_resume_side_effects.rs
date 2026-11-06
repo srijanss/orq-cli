@@ -25,6 +25,15 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn world(tag: &str, agent: &FakeAgent) -> World {
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .build();
+    world_with(tag, agent, provider)
+}
+
+fn world_with(tag: &str, agent: &FakeAgent, provider: FakeProvider) -> World {
     let repo = GitFixture::new();
     let remote = repo.add_bare_remote();
     git(repo.root(), &["branch", "-M", "main"]);
@@ -39,11 +48,6 @@ fn world(tag: &str, agent: &FakeAgent) -> World {
     std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
 
-    let provider = FakeProvider::builder()
-        .reply(&["pr", "list"], "[]\n")
-        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
-        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
-        .build();
     let bin = base.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
@@ -113,6 +117,61 @@ fn agent() -> FakeAgent {
 
 fn count_calls(w: &World, prefix: &[&str]) -> usize {
     w.provider.calls().iter().filter(|c| c.args.len() >= prefix.len() && c.args.iter().zip(prefix).all(|(a, b)| a == b)).count()
+}
+
+/// The target branch gets a new commit during setup, and the first gate asks for a pause, so the
+/// run stops with its rebase and gate done. Every gate leaves its `GATE_BASE` as a line in
+/// `gate-bases`. Returns the new commit of the target.
+fn target_moves_and_first_gate_pauses(w: &World) -> String {
+    let other = w.base.join("other");
+    git(w.repo.root(), &["clone", "--quiet", "--branch", "main", &w.remote.display().to_string(), &other.display().to_string()]);
+    git(&other, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "moved"]);
+    let seen = w.base.join("gate-bases");
+    let script = w.base.join("gate.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n[ -f '{seen}' ] || XDG_STATE_HOME='{state}' '{orq}' run pause \"$(ls '{state}/orq/runs')\" >/dev/null 2>&1\necho \"$GATE_BASE\" >> '{seen}'\n",
+            seen = seen.display(),
+            state = w.state.display(),
+            orq = env!("CARGO_BIN_EXE_orq"),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(
+        w.repo.root().join(".orq/run.toml"),
+        format!("gate = [\"{}\"]\nexplain_failures = false\nsetup = [[\"git\", \"-C\", \"{}\", \"push\", \"--quiet\", \"origin\", \"main\"]]\n", script.display(), other.display()),
+    )
+    .unwrap();
+    git(&other, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
+#[test]
+fn a_gate_rerun_after_a_resume_is_still_told_the_commit_the_branch_was_rebased_onto() {
+    let agent = agent();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+    let w = world_with("rebasedbase", &agent, provider);
+    let moved = target_moves_and_first_gate_pauses(&w);
+    let first = orq(&w, &["run", "--repo", w.repo.root().to_str().unwrap(), "--feature", "COM-01", "--remote", "origin", "--target", "main"]);
+    let stdout = String::from_utf8_lossy(&first.stdout).into_owned();
+    assert!(stdout.contains("state: paused"), "{stdout}\n{}", String::from_utf8_lossy(&first.stderr));
+    let store = RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+
+    let second = orq(&w, &["run", "resume", &run_id, "--yes", "--repo", w.repo.root().to_str().unwrap()]);
+
+    let seen = std::fs::read_to_string(w.base.join("gate-bases")).unwrap();
+    let bases: Vec<&str> = seen.lines().collect();
+    assert!(bases.len() >= 2, "the gate ran again after the CI fix: {bases:?}\n{}", String::from_utf8_lossy(&second.stderr));
+    assert!(bases.iter().all(|base| *base == moved), "expected {moved}: {bases:?}");
 }
 
 #[test]

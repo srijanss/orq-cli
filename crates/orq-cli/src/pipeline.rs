@@ -456,6 +456,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         if let Err(err) = orq_orchestrator::carry_session_references(&store, &record, from) {
             eprintln!("orq: cannot carry the sessions of {from} into {run_id}: {err:?}");
         }
+        // A resume that skips the rebase still sits on the commit the paused run rebased onto.
+        if let Err(err) = orq_orchestrator::carry_rebase(&store, &record, from) {
+            eprintln!("orq: cannot carry the rebase of {from} into {run_id}: {err:?}");
+        }
     }
     // A paused run handed its checkout to this run; it no longer holds it.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
@@ -746,13 +750,12 @@ fn group_draft(mut draft: orq_orchestrator::ReviewDraft, features: &[String]) ->
 }
 
 /// What a gate runs with: the run's variables, and `GATE_BASE`, the commit the branch was last
-/// rebased onto, or the one it started from when it was not rebased. A pause cannot lose it: it is
-/// read from the run's events.
+/// rebased onto, or the one it started from when it was not rebased. A pause or a resume cannot lose
+/// it: it is read from the run's events, and a resumed run carries it over.
 fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)]) -> Result<Vec<(String, String)>, StoreError> {
-    let events = store.events(&record.run_id)?;
-    let rebased = events.iter().rev().filter(|e| e.kind == "rebase.completed").find_map(|e| e.payload["target_sha"].as_str());
+    let base = orq_orchestrator::rebased_onto(store, &record.run_id)?.unwrap_or_else(|| record.base_sha.clone());
     let mut env = run_vars.to_vec();
-    env.push(("GATE_BASE".to_string(), rebased.unwrap_or(&record.base_sha).to_string()));
+    env.push(("GATE_BASE".to_string(), base));
     Ok(env)
 }
 

@@ -11,6 +11,7 @@ use crate::run_status::{summarize_run, RunPhase};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const IMPLEMENT_STAGE: &str = "implement_and_review";
+const REBASE_CARRIED: &str = "run.rebase_carried";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumePlan {
@@ -292,5 +293,35 @@ pub fn record_inherited_implement(
         attempt: 1,
         occurred_at: now_rfc3339(),
         payload: serde_json::json!({ "resumed_from": from_run_id }),
+    })
+}
+
+/// The commit `run_id`'s branch was last rebased onto, by this run or by a run it resumed.
+pub fn rebased_onto(store: &RunStore, run_id: &str) -> Result<Option<String>, StoreError> {
+    Ok(store
+        .events(run_id)?
+        .iter()
+        .rev()
+        .filter(|e| e.kind == "rebase.completed" || e.kind == REBASE_CARRIED)
+        .find_map(|e| e.payload["target_sha"].as_str().map(str::to_string)))
+}
+
+/// Tell `record`'s run what the branch it takes over from `from_run_id` sits on: a resumed run can
+/// skip its rebase. Only appends to the new run.
+pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+    let Some(target_sha) = rebased_onto(store, from_run_id)? else {
+        return Ok(());
+    };
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: REBASE_CARRIED.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "from": from_run_id, "target_sha": target_sha }),
     })
 }

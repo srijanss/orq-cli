@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{plan_resume, record_run_completed, RunRecord, RunStore};
+use orq_orchestrator::{carry_rebase, plan_resume, rebased_onto, record_run_completed, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -235,4 +235,51 @@ fn the_latest_run_is_the_one_that_started_last_not_the_one_with_the_larger_id() 
         let plan = plan_resume(&store, &w.repo, "repo-1", "COM-02").expect(tag);
         assert_eq!(plan.from.run_id, expected, "{tag}");
     }
+}
+
+fn rebased(store: &RunStore, run_id: &str, onto: &str) {
+    store
+        .append_event(&orq_orchestrator::Event {
+            schema_version: 1,
+            event_id: format!("{run_id}-rebased-{onto}"),
+            run_id: run_id.to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            kind: "rebase.completed".to_string(),
+            stage: Some("rebase".to_string()),
+            attempt: 1,
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            payload: serde_json::json!({ "target_sha": onto }),
+        })
+        .unwrap();
+}
+
+/// A resumed run that skips its rebase still knows what its branch sits on, however many resumes
+/// ago the rebase happened, until it rebases again.
+#[test]
+fn a_rebase_stays_known_through_resumes_until_the_branch_is_rebased_again() {
+    let w = world("rebase-carried", Tamper::None);
+    for (id, at) in [("run-a", "2026-01-01T00:00:01Z"), ("run-b", "2026-01-01T00:00:02Z"), ("run-c", "2026-01-01T00:00:03Z")] {
+        stopped_run(&w.store, &w.repo, id, at);
+    }
+    rebased(&w.store, "run-a", "first");
+
+    carry_rebase(&w.store, &w.store.load("run-b").unwrap(), "run-a").unwrap();
+    carry_rebase(&w.store, &w.store.load("run-c").unwrap(), "run-b").unwrap();
+    assert_eq!(rebased_onto(&w.store, "run-c").unwrap().as_deref(), Some("first"));
+
+    rebased(&w.store, "run-c", "second");
+    assert_eq!(rebased_onto(&w.store, "run-c").unwrap().as_deref(), Some("second"));
+}
+
+#[test]
+fn a_run_that_never_rebased_has_nothing_to_carry() {
+    let w = world("rebase-none", Tamper::None);
+    for (id, at) in [("run-a", "2026-01-01T00:00:01Z"), ("run-b", "2026-01-01T00:00:02Z")] {
+        stopped_run(&w.store, &w.repo, id, at);
+    }
+
+    carry_rebase(&w.store, &w.store.load("run-b").unwrap(), "run-a").unwrap();
+
+    assert_eq!(rebased_onto(&w.store, "run-b").unwrap(), None);
 }
