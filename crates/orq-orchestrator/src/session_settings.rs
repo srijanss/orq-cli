@@ -220,11 +220,18 @@ pub fn prepare_mcp_servers(
     mcpctl: Option<&Path>,
 ) -> Vec<String> {
     let mut notes = Vec::new();
-    let selected = match chosen {
-        Some(names) => names.to_vec(),
-        None => selected_in_mcpctl_toml(worktree, &mut notes),
-    };
-    notes.extend(setup_mcp_servers(worktree, &selected, env, mcpctl));
+    // A tracked link is in the worktree whatever carrying refused: reading it would let a file
+    // from outside select servers, and setup, which rewrites the file, would write through it.
+    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML)).is_ok_and(|meta| meta.file_type().is_symlink());
+    if linked {
+        notes.push(format!("{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"));
+    } else {
+        let selected = match chosen {
+            Some(names) => names.to_vec(),
+            None => selected_in_mcpctl_toml(worktree, &mut notes),
+        };
+        notes.extend(setup_mcp_servers(worktree, &selected, env, mcpctl));
+    }
     notes.extend(write_session_settings(worktree, env, chosen, mcpctl));
     notes
 }

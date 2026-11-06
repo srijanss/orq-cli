@@ -222,6 +222,33 @@ fn prepared_servers_come_from_the_setting_or_else_the_worktrees_mcpctl_toml_and_
 }
 
 #[test]
+fn a_symlinked_mcpctl_toml_is_neither_read_nor_set_up_whatever_the_setting() {
+    let (repo, worktree) = checkout("mcpctl-symlink");
+    let dir = repo.root().parent().unwrap();
+    let seen = dir.join(format!("mcpctl-symlink-seen-{}", std::process::id()));
+    let tool = dir.join(format!("fake-mcpctl-symlink-{}", std::process::id()));
+    fs::write(&tool, format!("#!/bin/sh\necho \"$*\" >> '{}'\n", seen.display())).unwrap();
+    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let outside = dir.join(format!("outside-mcpctl-{}.toml", std::process::id()));
+    fs::write(&outside, "[[mcp]]\nname = \"from-outside\"\n").unwrap();
+    std::os::unix::fs::symlink(&outside, worktree.join(".mcpctl.toml")).unwrap();
+
+    let notes = prepare_mcp_servers(&worktree, &vars(&[("KEEP", "1")]), None, Some(&tool));
+    assert!(!seen.exists(), "the outside file selected servers: {}", fs::read_to_string(&seen).unwrap_or_default());
+    assert!(notes.iter().any(|n| n.contains(".mcpctl.toml") && n.contains("symbolic link")), "{notes:?}");
+
+    // Setup rewrites the file, so an explicit setting must not write through the link either.
+    let chosen = vec!["tdd".to_string()];
+    let notes = prepare_mcp_servers(&worktree, &[], Some(&chosen), Some(&tool));
+    assert!(!seen.exists(), "setup ran through the link");
+    assert!(notes.iter().any(|n| n.contains("symbolic link")), "{notes:?}");
+
+    // The run's environment still reaches the session.
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["env"]["KEEP"], "1");
+}
+
+#[test]
 fn the_run_worktrees_directory_is_kept_out_of_the_main_checkouts_git_status_through_the_local_exclude_only(
 ) {
     let repo = GitFixture::new();
