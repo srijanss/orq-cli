@@ -658,8 +658,10 @@ pub(crate) fn send_push(cwd: &Path, message: &str) -> Result<(), String> {
         .env_remove("CLAUDE_CODE_ENTRYPOINT")
         .env_remove(PUSH_TEXT);
     let ran = orq_orchestrator::run_in_terminal(command, &marker, PUSH_SESSION_LIMIT, PUSH_SESSION_LINGER);
+    let delivered = marker.exists();
     let _ = std::fs::remove_dir_all(&dir);
-    ran.map_err(|err| err.to_string())
+    ran.map_err(|err| err.to_string())?;
+    if delivered { Ok(()) } else { Err("the push notification session ended without sending it".to_string()) }
 }
 
 /// A new empty directory under the temp dir that only this user can enter. Created exclusively, so one

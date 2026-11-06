@@ -1551,3 +1551,38 @@ fn a_group_run_is_announced_once_naming_every_feature_of_the_group() {
     assert_eq!(lines.len(), 1, "{heard}");
     assert!(lines[0].starts_with("orq: COM-01,COM-02 review_ready"), "{heard}");
 }
+
+/// Runs `orq run push-send` with a `claude` that is the given shell script, in a directory of its own.
+fn push_send_with(tag: &str, claude_script: &str) -> Output {
+    let dir = std::env::temp_dir().join(format!("orq-push-send-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let claude = dir.join("claude");
+    std::fs::write(&claude, format!("#!/bin/sh\n{claude_script}\n")).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "push-send", "--repo"])
+        .arg(&dir)
+        .env("ORQ_PUSH_TEXT", "orq: COM-01 review_ready")
+        .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_push_session_that_ends_without_the_tool_having_run_is_a_failure() {
+    let silent = push_send_with("silent", "exit 0");
+    let failing = push_send_with("failing", "exit 3");
+
+    for output in [silent, failing] {
+        assert_ne!(output.status.code(), Some(0), "nothing was sent, so nothing may say it was");
+        assert!(stderr(&output).contains("push"), "{}", stderr(&output));
+    }
+}
+
+#[test]
+fn a_push_session_whose_tool_ran_is_a_delivery() {
+    let sent = push_send_with("sent", "for a in \"$@\"; do m=$(printf '%s' \"$a\" | sed -n \"s/.*touch '\\([^']*\\)'.*/\\1/p\"); [ -n \"$m\" ] && touch \"$m\"; done; exit 0");
+
+    assert_eq!(sent.status.code(), Some(0), "{}", stderr(&sent));
+}

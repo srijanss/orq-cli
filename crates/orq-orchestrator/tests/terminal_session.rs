@@ -95,3 +95,23 @@ fn a_program_that_cannot_start_is_an_error() {
     let dir = scratch("missing");
     assert!(run_in_terminal(Command::new(dir.join("no-such-program")), &dir.join("never"), LONG, LONG).is_err());
 }
+
+#[test]
+fn something_the_program_left_running_that_ignores_being_asked_to_stop_is_killed_when_it_exits_first() {
+    let dir = scratch("leftover");
+    let script = "(trap '' TERM HUP; exec sleep 86400) & echo $! > helper; touch done; sleep 0.2; exit 0";
+
+    run_in_terminal(shell(&dir, script), &dir.join("done"), LONG, LONG).unwrap();
+
+    assert!(gone(&std::fs::read_to_string(dir.join("helper")).unwrap()));
+}
+
+#[test]
+fn something_the_program_left_running_is_killed_when_the_program_is_stopped_and_exits_on_being_asked() {
+    let dir = scratch("leftover-stop");
+    let script = "(trap '' TERM HUP; exec sleep 86400) & echo $! > helper; sleep 86400";
+
+    run_in_terminal(shell(&dir, script), &dir.join("never"), Duration::from_millis(500), LONG).unwrap();
+
+    assert!(gone(&std::fs::read_to_string(dir.join("helper")).unwrap()));
+}

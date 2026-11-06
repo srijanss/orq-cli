@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 /// How long a program asked to stop has before it is killed.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const POLL_MS: u16 = 100;
+/// A program that writes without pause would otherwise have the marker looked for after every read.
+const MARKER_CHECK_EVERY: Duration = Duration::from_millis(100);
 
 /// Runs `command` under a new terminal of its own, reading and discarding what it shows, until it exits.
 /// One still running is stopped, with everything it started, `linger` after `done_marker` appears or at
@@ -31,19 +33,34 @@ pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration
     // The command holds this end of the terminal, which only the program may keep open.
     drop(command);
 
+    let group = child.id() as libc::pid_t;
     let mut deadline = Instant::now() + limit;
     let mut marked = false;
-    while Instant::now() < deadline {
+    let mut next_marker_check = Instant::now();
+    let outcome = loop {
         discard_output(&mut screen);
-        if child.try_wait()?.is_some() {
-            return Ok(());
+        match child.try_wait() {
+            Ok(Some(_)) => break Ok(()),
+            Err(err) => break Err(err),
+            Ok(None) => {}
         }
-        if !marked && done_marker.exists() {
-            marked = true;
-            deadline = deadline.min(Instant::now() + linger);
+        let now = Instant::now();
+        if !marked && now >= next_marker_check {
+            next_marker_check = now + MARKER_CHECK_EVERY;
+            if done_marker.exists() {
+                marked = true;
+                deadline = deadline.min(now + linger);
+            }
         }
-    }
-    stop(&mut child, &mut screen)
+        if now >= deadline {
+            break stop(&mut child, &mut screen);
+        }
+    };
+    // Whatever the program started and left running goes with it, however it ended. The leader is
+    // reaped by now, but its group lives on while any member does.
+    // Safety: plain system call.
+    unsafe { libc::killpg(group, libc::SIGKILL) };
+    outcome
 }
 
 fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
