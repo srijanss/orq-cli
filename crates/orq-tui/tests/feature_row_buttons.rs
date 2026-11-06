@@ -28,6 +28,8 @@ struct Fake {
     fail_with: Option<String>,
     /// A run's status changing on its own once a read happens: (read, run, status).
     changes: Vec<(&'static str, &'static str, &'static str)>,
+    /// The ledger, when a test needs other features than the usual ones.
+    ledger: Option<Vec<BrowserEntry>>,
 }
 
 impl Fake {
@@ -80,6 +82,9 @@ fn runs() -> Vec<RunRow> {
 
 impl BrowserBackend for Fake {
     fn load(&mut self) -> Result<Vec<BrowserEntry>, LedgerErrorView> {
+        if let Some(ledger) = &self.ledger {
+            return Ok(ledger.clone());
+        }
         Ok(vec![
             entry("alpha", "pending"),
             entry("bravo", "in_progress"),
@@ -238,6 +243,72 @@ fn a_feature_row_shows_orchestrate_only_when_pending_with_no_live_run_and_otherw
             assert!(line.contains(badge), "{feature} shows {badge}: {line:?}");
         }
     }
+}
+
+/// The agent's TDD server marks a feature completed in the ledger when the implementation is done,
+/// well before the run's gate, push and CI.
+#[test]
+fn a_feature_the_ledger_calls_completed_is_not_shown_completed_until_its_latest_run_is() {
+    let mut backend = Fake {
+        ledger: Some(vec![
+            entry("stuck", "completed"),
+            entry("held", "completed"),
+            entry("broken", "completed"),
+            entry("finished", "completed"),
+            entry("no-run", "completed"),
+        ]),
+        store: Some(vec![
+            run("run-1", "stuck", "running"),
+            run("run-2", "held", "paused"),
+            run("run-3", "broken", "failed"),
+            run("run-4", "finished", "completed"),
+        ]),
+        ..Fake::default()
+    };
+
+    let screen = show(&mut backend, vec![]);
+
+    let name_line = |feature: &str| {
+        screen.iter().find(|line| line.contains(&format!(" {feature} "))).unwrap_or_else(|| panic!("{feature}: {screen:#?}")).clone()
+    };
+    for feature in ["stuck", "held", "broken"] {
+        let line = name_line(feature);
+        assert!(line.contains("in_progress") && !line.contains("completed"), "{feature}: {line:?}");
+    }
+    for feature in ["finished", "no-run"] {
+        assert!(name_line(feature).contains("completed"), "{feature}: {screen:#?}");
+    }
+}
+
+#[test]
+fn the_detail_of_a_feature_with_an_unfinished_run_does_not_say_completed_either() {
+    let mut backend = Fake {
+        ledger: Some(vec![entry("stuck", "completed")]),
+        store: Some(vec![run("run-1", "stuck", "running")]),
+        ..Fake::default()
+    };
+
+    let screen = show(&mut backend, vec![press(KeyCode::Down), press(KeyCode::Enter)]);
+
+    assert!(screen.iter().any(|line| line.contains("[in_progress]")), "{screen:#?}");
+    assert!(!screen.iter().any(|line| line.contains("completed")), "{screen:#?}");
+}
+
+#[test]
+fn a_feature_reads_completed_once_its_run_has_finished() {
+    let mut backend = Fake {
+        ledger: Some(vec![entry("stuck", "completed")]),
+        store: Some(vec![run("run-1", "stuck", "running")]),
+        changes: vec![("load_runs", "run-1", "completed")],
+        ..Fake::default()
+    };
+    let mut events = to_runs();
+    events.extend([press(KeyCode::Tab), press(KeyCode::Tab)]);
+
+    let screen = show(&mut backend, events);
+
+    let line = screen.iter().find(|line| line.contains(" stuck ")).unwrap_or_else(|| panic!("{screen:#?}"));
+    assert!(line.contains("completed") && !line.contains("in_progress"), "{line:?}");
 }
 
 #[test]

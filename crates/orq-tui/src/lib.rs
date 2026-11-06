@@ -684,6 +684,16 @@ fn latest_runs(runs: Vec<RunRow>) -> HashMap<String, RunRow> {
     runs.into_iter().map(|run| (run.feature.clone(), run)).collect()
 }
 
+/// What a feature in ledger `status` whose latest run is in `run` (`None` without a run) reads as.
+/// The agent marks a feature completed when its implementation is done, before the run's gate, push
+/// and CI, so the ledger's word only stands once that run has finished too.
+fn shown_status<'a>(status: &'a str, run: Option<&str>) -> &'a str {
+    match run {
+        Some(run) if status == "completed" && run != "completed" => "in_progress",
+        _ => status,
+    }
+}
+
 /// The buttons of a feature in ledger `status` whose latest run is in `run` (`None` without a
 /// run): Orchestrate while it is pending with no live run. Its runs are acted on in the
 /// Orchestrations tab.
@@ -3206,16 +3216,23 @@ impl DetailView {
 
 impl Browser {
     fn set_entries(&mut self, entries: Vec<BrowserEntry>) {
-        self.rows = entries
-            .iter()
-            .map(|e| FeatureRow { name: e.name.clone(), status: e.status.clone() })
-            .collect();
         self.items = entries.iter().map(|e| (e.name.clone(), e.description.clone())).collect();
         self.entries = entries;
         if !self.marked.is_empty() {
             let present: HashSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
             self.marked.retain(|name| present.contains(name.as_str()));
         }
+        self.refresh_rows();
+    }
+
+    /// What `entry` reads as, given its latest run as last read.
+    fn status_of<'a>(&self, entry: &'a BrowserEntry) -> &'a str {
+        shown_status(&entry.status, self.feature_runs.get(&entry.name).map(|run| run.status.as_str()))
+    }
+
+    /// Rebuilds the rows after the ledger or the runs were read.
+    fn refresh_rows(&mut self) {
+        self.rows = self.entries.iter().map(|e| FeatureRow { name: e.name.clone(), status: self.status_of(e).to_string() }).collect();
         // The open detail follows the reloaded data, or closes when its feature is gone.
         if let Some(open) = self.detail.take() {
             self.detail = self.detail_for(&open.row.name).map(|view| DetailView { scroll: open.scroll, ..view });
@@ -3224,15 +3241,16 @@ impl Browser {
 
     fn detail_for(&self, name: &str) -> Option<DetailView> {
         let entry = self.entries.iter().find(|e| e.name == name)?;
+        let status = self.status_of(entry).to_string();
         Some(DetailView {
             detail: FeatureDetail {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
-                status: entry.status.clone(),
+                status: status.clone(),
                 test_file: entry.test_file.clone(),
                 dependencies: dependency_statuses(&entry.depends_on, &self.rows),
             },
-            row: FeatureRow { name: entry.name.clone(), status: entry.status.clone() },
+            row: FeatureRow { name: entry.name.clone(), status },
             scroll: 0,
             lines: Vec::new(),
             tagged: Vec::new(),
@@ -3329,6 +3347,7 @@ impl Browser {
     /// Reads the runs again and keeps each feature's latest, the last one listed.
     fn load_feature_runs(&mut self, backend: &mut dyn BrowserBackend) {
         self.feature_runs = latest_runs(backend.feature_runs());
+        self.refresh_rows();
     }
 
     fn row_actions_of(&self, entry: &BrowserEntry) -> &'static [RowAction] {
