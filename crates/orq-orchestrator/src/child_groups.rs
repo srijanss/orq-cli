@@ -2,14 +2,30 @@
 //! Gate steps and sessions run in groups of their own, which a signal to the owner does not reach.
 
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 /// More than a run has going at once; a group that finds no free slot would outlive a stop.
 const SLOTS: usize = 32;
 
 /// Plain atomics, because the signal handler may touch nothing else.
 static GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
+
+/// How many threads are between starting a child and tracking it. The signal handler waits for them,
+/// because it cannot end a group nothing has tracked yet.
+static STARTING: AtomicUsize = AtomicUsize::new(0);
+
+/// Set by the signal handler before it reads `STARTING`, and read by a start after it raises
+/// `STARTING`: so either the handler waits for that start, or that start sees this and never happens.
+static ENDING: AtomicBool = AtomicBool::new(false);
+
+/// How long the signal handler waits for a child that is starting, so a stuck start cannot keep the
+/// process from ending.
+const START_WAIT_TICKS: usize = 5_000;
+const START_WAIT_TICK_NANOS: libc::c_long = 1_000_000;
+
+const END_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
 
 /// A running child leading a process group of its own, which ends with the run's owner. The child can
 /// only be reaped through `reap`, which stops tracking it first: once reaped, its id may name another
@@ -22,10 +38,73 @@ pub(crate) struct TrackedChild {
 
 /// Starts `command`, which must put the child in a group of its own.
 pub(crate) fn spawn(command: &mut Command) -> io::Result<TrackedChild> {
+    spawn_with(command, |_| {})
+}
+
+/// `spawn`, running `before_tracking` between the start and the tracking, so a test can stop the
+/// process at exactly that point.
+fn spawn_with(command: &mut Command, before_tracking: impl FnOnce(&Child)) -> io::Result<TrackedChild> {
+    let start = Start::begin();
+    let old_mask = start.old_mask;
+    // Safety: the closure only makes async-signal-safe calls, on a copy of the mask.
+    unsafe {
+        command.pre_exec(move || {
+            // The handler is this process's and must not run in the child, which the mask let through
+            // now would allow. A signal being ignored stays ignored, as it would across the exec.
+            for signal in END_SIGNALS {
+                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_IGN {
+                    libc::signal(signal, libc::SIG_IGN);
+                }
+            }
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut());
+            Ok(())
+        });
+    }
     let child = command.spawn()?;
+    before_tracking(&child);
     let group = child.id() as i32;
     let slot = GROUPS.iter().find(|slot| slot.compare_exchange(0, group, Ordering::SeqCst, Ordering::SeqCst).is_ok());
     Ok(TrackedChild { child, slot, reaped: false })
+}
+
+/// The time between starting a child and tracking it, during which this thread does not take the
+/// signals that end the process: the handler running on this thread would wait for this very start.
+struct Start {
+    old_mask: libc::sigset_t,
+}
+
+impl Start {
+    fn begin() -> Start {
+        // Safety: an all-zero sigset_t is valid storage, and these calls only fill in what they are given.
+        let old_mask = unsafe {
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            let mut old_mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut blocked);
+            for signal in END_SIGNALS {
+                libc::sigaddset(&mut blocked, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut old_mask);
+            old_mask
+        };
+        STARTING.fetch_add(1, Ordering::SeqCst);
+        if ENDING.load(Ordering::SeqCst) {
+            // The handler is ending this process and may not have seen this start.
+            STARTING.fetch_sub(1, Ordering::SeqCst);
+            loop {
+                std::thread::park();
+            }
+        }
+        Start { old_mask }
+    }
+}
+
+impl Drop for Start {
+    fn drop(&mut self) {
+        // In this order: a signal let through now must find nothing to wait for.
+        STARTING.fetch_sub(1, Ordering::SeqCst);
+        // Safety: the mask was filled in by `begin`.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.old_mask, std::ptr::null_mut()) };
+    }
 }
 
 impl TrackedChild {
@@ -93,7 +172,7 @@ impl Drop for TrackedChild {
 /// interrupted (SIGINT) or loses its terminal (SIGHUP). A signal it was started ignoring stays ignored.
 pub fn end_children_with_this_process() {
     let handler = end_groups_and_die as extern "C" fn(libc::c_int);
-    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+    for signal in END_SIGNALS {
         // Safety: the handler only makes async-signal-safe calls and touches only atomics.
         unsafe {
             if libc::signal(signal, handler as libc::sighandler_t) == libc::SIG_IGN {
@@ -106,6 +185,15 @@ pub fn end_children_with_this_process() {
 /// SIGKILL, because a group that ignored a gentler signal would outlive the run. The signal is then
 /// raised again with its default action, so this process ends the way it would have without a handler.
 extern "C" fn end_groups_and_die(signal: libc::c_int) {
+    ENDING.store(true, Ordering::SeqCst);
+    let tick = libc::timespec { tv_sec: 0, tv_nsec: START_WAIT_TICK_NANOS };
+    for _ in 0..START_WAIT_TICKS {
+        if STARTING.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        // Safety: async-signal-safe, and `tick` is valid for the call.
+        unsafe { libc::nanosleep(&tick, std::ptr::null_mut()) };
+    }
     for slot in &GROUPS {
         let group = slot.load(Ordering::SeqCst);
         if group != 0 {
@@ -202,5 +290,64 @@ mod tests {
         // Safety: a null status is allowed; the leader is this process's child unless it was reaped.
         let reaped = unsafe { libc::waitpid(leader, std::ptr::null_mut(), libc::WNOHANG) } == -1;
         assert!(reaped, "the leader was left unreaped");
+    }
+
+    /// The signals are held back only while the child starts; children inherit what is held back.
+    #[test]
+    fn a_started_child_takes_signals_as_usual() {
+        use std::os::unix::process::ExitStatusExt;
+        let child = spawn(Command::new("sleep").arg("300").process_group(0)).unwrap();
+
+        // Safety: plain system call on our own unreaped child.
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !child.has_exited().unwrap() {
+            // Dropping the child on this failure ends it.
+            assert!(std::time::Instant::now() < until, "the child did not take the signal");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(child.reap().unwrap().signal(), Some(libc::SIGTERM));
+    }
+
+    const PID_FILE_VARIABLE: &str = "ORQ_TEST_CHILD_PID_FILE";
+
+    /// Not a check of its own: `a_stop_while_a_child_is_starting_still_ends_it` runs it in a process
+    /// of its own, which the stop then ends.
+    #[test]
+    #[ignore = "only run by a_stop_while_a_child_is_starting_still_ends_it"]
+    fn stopped_while_starting_a_child() {
+        let Ok(file) = std::env::var(PID_FILE_VARIABLE) else { return };
+        end_children_with_this_process();
+
+        let _child = spawn_with(Command::new("sleep").arg("300").process_group(0), |child| {
+            std::fs::write(&file, child.id().to_string()).unwrap();
+            // Safety: plain system calls; the stop arrives after the start and before the tracking.
+            unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+    }
+
+    #[test]
+    fn a_stop_while_a_child_is_starting_still_ends_it() {
+        use std::os::unix::process::ExitStatusExt;
+        let file = scratch_file("starting");
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "child_groups::tests::stopped_while_starting_a_child", "--ignored"])
+            .env(PID_FILE_VARIABLE, &file)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        let started = written_pid(&file);
+        let gone = gone_soon(started);
+        if !gone {
+            // Safety: plain system call, so the test leaves nothing behind.
+            unsafe { libc::kill(started, libc::SIGKILL) };
+        }
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "the stop ended the process");
+        assert!(gone, "the child outlived the stop");
     }
 }
