@@ -472,3 +472,33 @@ fn a_fix_session_that_leaves_its_marker_is_closed_and_the_gate_runs_again() {
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "the session was left open: {:?}", started.elapsed());
 }
+
+#[test]
+fn a_marker_left_by_the_first_fix_session_does_not_close_the_second() {
+    let w = world("marker-retry");
+    let marker = w.root.join("gate-fix.done");
+    let gave_up = format!("touch '{}'; sleep 30", marker.display());
+
+    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |attempt, _| FixSessionSpec {
+        exit_marker: Some(marker.clone()),
+        ..spec(&w, if attempt == 1 { &gave_up } else { "sleep 2; touch fixed" })
+    })
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 2 });
+}
+
+#[test]
+fn a_marker_from_before_the_loop_does_not_close_the_first_fix_session() {
+    let w = world("marker-stale");
+    let marker = w.root.join("gate-fix.done");
+    fs::write(&marker, "").unwrap();
+
+    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| FixSessionSpec {
+        exit_marker: Some(marker.clone()),
+        ..spec(&w, "sleep 2; touch fixed")
+    })
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+}
