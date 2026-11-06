@@ -147,20 +147,67 @@ fn a_run_names_the_script_file_its_gate_came_from() {
     assert!(err.contains("GATE_CMD") && err.contains("orchestrate.env"), "{err}");
 }
 
-/// The script told its gate what the branch sits on, and a gate command may use that to look at the change.
-#[test]
-fn a_gate_is_told_the_commit_its_branch_was_rebased_onto() {
-    let w = world("gatebase");
+/// The target branch gets a new commit while the run sets up, so the commit the run started from
+/// and the one it rebases onto differ. Returns the new commit.
+fn target_moves_during_setup(w: &World) -> String {
+    let other = orq_test_support::process_temp_dir().join(format!("orq-run-other-{}-{}", std::process::id(), w.tag));
+    let _ = std::fs::remove_dir_all(&other);
+    git(w.repo.root(), &["clone", "--quiet", "--branch", "main", &w.remote.display().to_string(), &other.display().to_string()]);
+    git(&other, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "moved"]);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
     std::fs::write(
-        w.repo.root().join(".git/orchestrate.env"),
-        "GATE_CMD='test \"$GATE_BASE\" = \"$(git rev-parse HEAD~1)\" && test \"$(git diff --name-only \"$GATE_BASE\"...HEAD)\" = feature.txt'\n",
+        w.repo.root().join(".orq/run.toml"),
+        format!("setup = [[\"git\", \"-C\", \"{}\", \"push\", \"--quiet\", \"origin\", \"main\"]]\n", other.display()),
     )
     .unwrap();
+    git(&other, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
+/// Every run of the gate leaves its `GATE_BASE` as a line in the returned file.
+fn gate_records_its_base(w: &World) -> PathBuf {
+    let seen = orq_test_support::process_temp_dir().join(format!("orq-run-gate-base-{}-{}", std::process::id(), w.tag));
+    let _ = std::fs::remove_file(&seen);
+    std::fs::write(w.repo.root().join(".git/orchestrate.env"), format!("GATE_CMD='echo \"$GATE_BASE\" >> {}'\n", seen.display())).unwrap();
+    seen
+}
+
+/// The script told its gate what the branch sits on, and every run of the gate is told the same:
+/// also the one after a CI fix, before the fix is pushed.
+#[test]
+fn every_gate_of_a_run_is_told_the_commit_its_branch_was_rebased_onto() {
+    let w = world("gatebase");
+    let moved = target_moves_during_setup(&w);
+    let seen = gate_records_its_base(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+
+    let output = run_with(&w, &agent, &provider, &[]);
+
+    let seen = std::fs::read_to_string(&seen).unwrap_or_default();
+    let bases: Vec<&str> = seen.lines().collect();
+    assert!(bases.len() >= 2, "the gate ran again after the CI fix: {bases:?}\n{}", stderr(&output));
+    assert!(bases.iter().all(|base| *base == moved), "expected {moved}: {bases:?}");
+}
+
+/// A branch that was not rebased still sits on the commit it started from, whatever the target did.
+#[test]
+fn a_gate_of_a_run_that_does_not_rebase_is_told_the_commit_it_started_from() {
+    let w = world("gatebasenorebase");
+    let started = git(&w.remote, &["rev-parse", "main"]).trim().to_string();
+    let moved = target_moves_during_setup(&w);
+    let seen = gate_records_its_base(&w);
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
 
-    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check", "--no-rebase"]);
 
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_ne!(started, moved);
+    assert_eq!(std::fs::read_to_string(&seen).unwrap_or_default().trim(), started, "{}", stderr(&output));
 }
 
 /// A project set up for the old script keeps its gate: the shell command is what runs, and the run says so.
