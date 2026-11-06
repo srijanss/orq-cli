@@ -335,3 +335,61 @@ fn reopen_discarding_leaves_a_completed_feature_when_another_run_cannot_be_read(
     assert_eq!(status_of(d.repo.root(), "COM-01"), "completed", "a run that cannot be read may be the one that finished it");
     assert!(text(&output.stderr).contains("stay completed"), "{}", text(&output.stderr));
 }
+
+#[test]
+fn reopen_discarding_counts_a_run_started_in_the_same_second_as_later() {
+    let d = blocked_run("discard-same-second", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    finished_run_of_the_feature(&d, "run-2", "2026-11-02T10:00:00Z");
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "completed", "which of the two finished it cannot be told");
+}
+
+#[test]
+fn reopen_discarding_counts_a_run_without_events_as_later() {
+    let d = blocked_run("discard-eventless-other", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+    d.store.finish_run(&d.project_id, "COM-01", "run-1").unwrap();
+    d.store.start_run(&record("run-2", &d.project_id, "orq-run-2", d.home.join("run-2"))).unwrap();
+    d.store.finish_run(&d.project_id, "COM-01", "run-2").unwrap();
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "completed", "a run with no time may be the one that finished it");
+}
+
+#[test]
+fn reopen_discarding_a_run_without_events_counts_every_other_run_as_later() {
+    let d = blocked_run("discard-eventless-self", true);
+    d.store.finish_run(&d.project_id, "COM-01", "run-1").unwrap();
+    d.store.start_run(&record("run-2", &d.project_id, "orq-run-2", d.home.join("run-2"))).unwrap();
+
+    let free = orq_orchestrator::features_no_later_run_took(&d.store, "run-2", &["COM-01".to_string()]).unwrap();
+
+    assert!(free.is_empty(), "run-1 has a time and run-2 has none: {free:?}");
+}
+
+#[test]
+fn reopen_discarding_a_group_keeps_only_the_member_a_later_run_took() {
+    let d = blocked_run("discard-group-partial", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "completed")]);
+    d.store
+        .append_event(&Event { payload: serde_json::json!({ "features": ["COM-01", "COM-02"] }), ..event("run.grouped") })
+        .unwrap();
+    let later = RunRecord { feature_id: "COM-02".into(), ..record("run-2", &d.project_id, "orq-run-2", d.home.join("run-2")) };
+    d.store.start_run(&later).unwrap();
+    d.store
+        .append_event(&Event { run_id: "run-2".into(), feature_id: "COM-02".into(), occurred_at: "2026-11-02T11:00:00Z".into(), ..event("stage.started") })
+        .unwrap();
+    d.store.finish_run(&d.project_id, "COM-02", "run-2").unwrap();
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "COM-01"), "pending", "nothing else took it");
+    assert_eq!(status_of(d.repo.root(), "COM-02"), "completed", "run-2 finished it after the group");
+}
