@@ -296,3 +296,31 @@ fn what_a_session_reports_is_cleaned_before_it_is_recorded() {
     assert!(!reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{reason}");
     assert!(reason.chars().count() < 1000, "{} chars", reason.chars().count());
 }
+
+#[test]
+fn blanks_alone_count_as_finished_but_a_report_after_them_still_fails_the_stage() {
+    for (tag, blanks, says) in [
+        ("short", 600, "the review could not run"),
+        ("past-the-read-limit", 100_000, "marker"),
+    ] {
+        let (store, root) = setup(&format!("blanks-{tag}"));
+        let marker = root.join("worktree/done.marker");
+        let script = format!(
+            "head -c {blanks} /dev/zero | tr '\\0' ' ' > {m}; echo 'the review could not run' >> {m}; sleep 30",
+            m = marker.display()
+        );
+        let args = args(&script);
+
+        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+        assert!(!outcome.success, "{tag}: {outcome:?}");
+        let reason = stage_failure_reason(&store);
+        assert!(reason.contains(says), "{tag}: {reason}");
+    }
+
+    let (store, root) = setup("blanks-only");
+    let marker = root.join("worktree/done.marker");
+    let args = args(&format!("echo > {}; sleep 30", marker.display()));
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+    assert!(outcome.success, "{outcome:?}");
+}

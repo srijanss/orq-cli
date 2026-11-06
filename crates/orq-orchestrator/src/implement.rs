@@ -249,10 +249,14 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<String> {
     let cleaned: String = redacted
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .take(MARKER_REPORT_LIMIT)
         .collect();
     let cleaned = cleaned.trim();
-    (!cleaned.is_empty()).then(|| cleaned.to_string())
+    if !cleaned.is_empty() {
+        return Some(cleaned.chars().take(MARKER_REPORT_LIMIT).collect());
+    }
+    // Blanks up to the read limit say nothing about what comes after them, so that is not a finish.
+    (bytes.len() as u64 >= MARKER_READ_LIMIT)
+        .then(|| "its finish marker holds more than orq reads, and the part it read is blank".to_string())
 }
 
 enum SessionEnd {
