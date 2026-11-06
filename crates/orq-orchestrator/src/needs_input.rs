@@ -13,9 +13,10 @@ const ANSWERED_EVENT: &str = "run.input_given";
 const QUESTION: &str = "question";
 const PERMISSION: &str = "permission";
 const MAX_TEXT_CHARS: usize = 1000;
-/// A question also fires a permission prompt within seconds; one need is told about once. A bound
-/// on top of the answer's own event, which never comes for a question rejected or interrupted.
-const SAME_NEED_SECS: u64 = 30;
+/// A question also fires a permission prompt, some 5 seconds after it. Nothing in that prompt tells it
+/// from another tool's, and a question rejected or interrupted leaves no answer event: only the time
+/// between them does. Kept short, since a second notification costs less than a permission untold.
+const SAME_NEED_SECS: u64 = 10;
 
 /// What a session is waiting for its person to do.
 #[derive(Debug, Clone, PartialEq, Eq)]

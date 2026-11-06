@@ -249,3 +249,30 @@ fn run_settings_it_cannot_read_leave_the_session_alone_and_the_need_on_the_run()
     std::thread::sleep(Duration::from_millis(500));
     assert!(!w.sent.exists(), "settings that cannot be read send nothing");
 }
+
+#[test]
+fn a_permission_prompt_after_a_question_was_left_unanswered_is_told_about() {
+    let w = world("rejected");
+    // A rejected question fires no hook, and a tool's prompt reads the same as a question's: only
+    // the few seconds a question's own prompt takes tell them apart.
+    let asked = Command::new("date").args(["-u", "-d", "12 seconds ago", "+%Y-%m-%dT%H:%M:%SZ"]).output().unwrap();
+    let run = w.store.load("run-1").unwrap();
+    w.store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: "asked".into(),
+            run_id: run.run_id,
+            project_id: run.project_id,
+            feature_id: run.feature_id,
+            kind: "run.needs_input".into(),
+            stage: None,
+            attempt: 1,
+            occurred_at: String::from_utf8(asked.stdout).unwrap().trim().to_string(),
+            payload: serde_json::json!({"kind": "question", "text": "Pick one?"}),
+        })
+        .unwrap();
+    assert_eq!(hook(&w, "run-1", &permission(), "").status.code(), Some(0));
+    assert_eq!(needs(&w.store).len(), 2);
+    assert_eq!(sent_lines(&w.sent, 1).len(), 1);
+}
+
