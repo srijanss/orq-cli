@@ -13,10 +13,11 @@ static GROUPS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 
 /// A running child leading a process group of its own, which ends with the run's owner. The child can
 /// only be reaped through `reap`, which stops tracking it first: once reaped, its id may name another
-/// process's group.
+/// process's group. Dropping it without reaping gives up on it: its group is ended and it is reaped.
 pub(crate) struct TrackedChild {
     child: Child,
     slot: Option<&'static AtomicI32>,
+    reaped: bool,
 }
 
 /// Starts `command`, which must put the child in a group of its own.
@@ -24,7 +25,7 @@ pub(crate) fn spawn(command: &mut Command) -> io::Result<TrackedChild> {
     let child = command.spawn()?;
     let group = child.id() as i32;
     let slot = GROUPS.iter().find(|slot| slot.compare_exchange(0, group, Ordering::SeqCst, Ordering::SeqCst).is_ok());
-    Ok(TrackedChild { child, slot })
+    Ok(TrackedChild { child, slot, reaped: false })
 }
 
 impl TrackedChild {
@@ -67,6 +68,7 @@ impl TrackedChild {
     /// Stops tracking the group and reaps its leader, waiting for the leader if it is still running.
     pub(crate) fn reap(mut self) -> io::Result<ExitStatus> {
         self.untrack();
+        self.reaped = true;
         self.child.wait()
     }
 
@@ -79,7 +81,11 @@ impl TrackedChild {
 
 impl Drop for TrackedChild {
     fn drop(&mut self) {
-        self.untrack();
+        if !self.reaped {
+            self.end_group();
+            self.untrack();
+            let _ = self.child.wait();
+        }
     }
 }
 
@@ -138,5 +144,63 @@ mod tests {
         assert!(child.reap().unwrap().success());
 
         assert!(!is_tracked(pid));
+    }
+
+    fn running(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            let state = stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
+            !matches!(state.as_deref(), Some("Z" | "X" | "x"))
+        })
+    }
+
+    fn scratch_file(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("orq-child-groups-{}-{tag}", std::process::id()))
+    }
+
+    /// Waits for a program to write the id of what it started.
+    fn written_pid(file: &std::path::Path) -> i32 {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()) {
+                let _ = std::fs::remove_file(file);
+                return pid;
+            }
+            assert!(std::time::Instant::now() < until, "nothing was written to {}", file.display());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn gone_soon(pid: i32) -> bool {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while running(pid) {
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        true
+    }
+
+    /// An early return, such as an error while watching the child, must not leave the group running
+    /// with nothing tracking it any more.
+    #[test]
+    fn a_child_given_up_on_ends_with_its_group_and_is_reaped() {
+        let file = scratch_file("given-up");
+        let script = format!("sleep 300 & echo $! > '{}'; wait", file.display());
+        let child = spawn(Command::new("sh").args(["-c", &script]).process_group(0)).unwrap();
+        let leader = child.id() as i32;
+        let started = written_pid(&file);
+
+        drop(child);
+
+        let gone = gone_soon(started);
+        if !gone {
+            // Safety: plain system call, so the test leaves nothing behind.
+            unsafe { libc::kill(started, libc::SIGKILL) };
+        }
+        assert!(gone, "what the child started outlived it");
+        // Safety: a null status is allowed; the leader is this process's child unless it was reaped.
+        let reaped = unsafe { libc::waitpid(leader, std::ptr::null_mut(), libc::WNOHANG) } == -1;
+        assert!(reaped, "the leader was left unreaped");
     }
 }

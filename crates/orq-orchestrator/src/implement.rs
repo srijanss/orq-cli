@@ -200,9 +200,17 @@ fn wait_for_session(
     let mut seen: Option<std::time::Instant> = None;
     loop {
         // Looking does not reap, so the leader's id stays reserved until the group has been signalled.
-        if child.has_exited()? {
-            end_group(child.id());
-            return child.reap().map(SessionEnd::Exited);
+        match child.has_exited() {
+            Ok(false) => {}
+            Ok(true) => {
+                end_group(child.id());
+                return child.reap().map(SessionEnd::Exited);
+            }
+            // Dropping the child ends the session; the terminal has to come back first.
+            Err(err) => {
+                end_group(child.id());
+                return Err(err);
+            }
         }
         if marker.is_some_and(Path::exists) {
             let since = *seen.get_or_insert_with(std::time::Instant::now);
