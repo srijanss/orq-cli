@@ -78,6 +78,27 @@ fn has_exited(child: &Child) -> io::Result<bool> {
     Ok(unsafe { info.si_pid() } != 0)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_exited_program_stays_unreaped_so_its_id_stays_reserved_until_waited_for() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        let until = Instant::now() + Duration::from_secs(5);
+        while !has_exited(&child).unwrap() {
+            assert!(Instant::now() < until, "the program never exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // A reaped program's id is free to be reused; an unreaped one can still be signalled.
+        // Safety: signal 0 only checks that the process exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the exited program was reaped by looking at it");
+        assert!(child.wait().unwrap().success());
+    }
+}
+
 fn stop(child: &mut Child, screen: &mut File) -> io::Result<()> {
     // The program leads its own session (see `setsid`), so its id is also its group's.
     let group = child.id() as libc::pid_t;
