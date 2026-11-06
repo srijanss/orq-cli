@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use orq_orchestrator::{exclude_worktrees_dir, setup_mcp_servers, write_session_settings};
+use orq_orchestrator::{exclude_worktrees_dir, prepare_mcp_servers, setup_mcp_servers, write_session_settings};
 use orq_test_support::GitFixture;
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
@@ -177,6 +177,48 @@ fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_to
         setup_mcp_servers(&worktree, &[], &[], None).is_empty(),
         "nothing configured, nothing said"
     );
+}
+
+#[test]
+fn prepared_servers_come_from_the_setting_or_else_the_worktrees_mcpctl_toml_and_are_approved_after_setup() {
+    let (repo, worktree) = checkout("mcpctl-prepare");
+    let seen = repo.root().parent().unwrap().join(format!("mcpctl-prepare-seen-{}", std::process::id()));
+    let tool = repo.root().parent().unwrap().join(format!("fake-mcpctl-prepare-{}", std::process::id()));
+    fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\necho '{{\"mcpServers\":{{\"tdd\":{{\"command\":\"c\"}}}}}}' > .mcp.json\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let log = || fs::read_to_string(&seen).unwrap_or_default();
+
+    // Nothing selected anywhere: no setup.
+    prepare_mcp_servers(&worktree, &[], None, Some(&tool));
+    assert_eq!(log(), "");
+
+    // A name that would read as an option is not passed on.
+    let toml = worktree.join(".mcpctl.toml");
+    fs::write(&toml, "[[mcp]]\nname = \"tdd\"\n\n[[mcp]]\nname = \"--evil\"\n\n[[mcp]]\nname = \"project\"\n").unwrap();
+    let notes = prepare_mcp_servers(&worktree, &[], None, Some(&tool));
+    assert_eq!(log(), "setup --mcp tdd --mcp project\n");
+    assert!(notes.iter().any(|n| n.contains(".mcpctl.toml")), "{notes:?}");
+    let approved = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(approved["enabledMcpjsonServers"], serde_json::json!(["tdd"]), "what setup generated is approved");
+
+    // The setting wins over the file.
+    let chosen = vec!["tdd".to_string()];
+    prepare_mcp_servers(&worktree, &[], Some(&chosen), Some(&tool));
+    assert_eq!(log().lines().last(), Some("setup --mcp tdd"));
+
+    // An unreadable selection is a note and no setup.
+    let before = log();
+    fs::write(&toml, "[[mcp]\n").unwrap();
+    let notes = prepare_mcp_servers(&worktree, &[], None, Some(&tool));
+    assert_eq!(log(), before);
+    assert!(notes.iter().any(|n| n.contains(".mcpctl.toml")), "{notes:?}");
 }
 
 #[test]

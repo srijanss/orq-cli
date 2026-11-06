@@ -95,7 +95,7 @@ pub use run_status::{
 pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,
 };
-pub use session_settings::{exclude_worktrees_dir, setup_mcp_servers, write_session_settings};
+pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, setup_mcp_servers, write_session_settings};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use stop::{owner_state, owner_state_in, stop_run, terminate_process, OwnerState};
 pub use store::{Claim, Event, RoleProfile, RunRecord, RunStore, StoreError};

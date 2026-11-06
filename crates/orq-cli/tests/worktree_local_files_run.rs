@@ -141,3 +141,43 @@ fn the_worktrees_session_settings_carry_the_run_environment_and_approve_the_conf
     let status = Command::new("git").arg("-C").arg(w.repo.root()).args(["status", "--porcelain"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&status.stdout).contains(".claude"), "the worktrees directory must not show up");
 }
+
+/// A fake `mcpctl` on the run's PATH: logs its arguments to `log`, and generates the `.mcp.json` of
+/// the selected servers, as the real setup does.
+fn fake_mcpctl(w: &World, log: &Path) {
+    let bin = w.base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("mcpctl");
+    std::fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncat > .mcp.json <<'JSON'\n{{\"mcpServers\":{{\"tdd\":{{\"command\":\"mcpctl\",\"args\":[\"run\",\"tdd-mcp\"]}},\"project\":{{\"command\":\"mcpctl\",\"args\":[\"run\",\"project-mcp\"]}}}}}}\nJSON\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn with_no_servers_configured_the_run_locks_the_servers_of_the_carried_mcpctl_toml_and_approves_what_setup_generates() {
+    let w = world("mcpctl-toml");
+    std::fs::write(
+        w.repo.root().join(".mcpctl.toml"),
+        "[project]\nname = \"p\"\n\n[[mcp]]\nname = \"tdd-mcp\"\nversion = \"^0.2.0\"\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^1.2.0\"\n",
+    )
+    .unwrap();
+    let (mcpctl_seen, gate_seen) = (w.base.join("mcpctl-seen"), w.base.join("settings-seen"));
+    fake_mcpctl(&w, &mcpctl_seen);
+    settings(&w, &format!("gate = [\"sh\", \"-c\", \"cat .claude/settings.local.json > {}\"]\n", gate_seen.display()));
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&mcpctl_seen).unwrap(), "setup --mcp tdd-mcp --mcp project-mcp\n");
+    let seen: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&gate_seen).unwrap()).unwrap();
+    let mut approved: Vec<String> = serde_json::from_value(seen["enabledMcpjsonServers"].clone()).unwrap();
+    approved.sort();
+    assert_eq!(approved, ["project", "tdd"], "both generated servers are approved");
+}

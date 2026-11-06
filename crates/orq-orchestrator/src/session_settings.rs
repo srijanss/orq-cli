@@ -10,6 +10,7 @@ use crate::local_files::{crosses_symlink, exclude_locally};
 
 const SETTINGS: &str = ".claude/settings.local.json";
 const WORKTREES_DIR: &str = ".claude/worktrees";
+const MCPCTL_TOML: &str = ".mcpctl.toml";
 
 /// Merges `env` into the `env` object of the worktree's `.claude/settings.local.json` and approves
 /// MCP servers in `enabledMcpjsonServers`: those of `servers` that `.mcp.json` declares, or every
@@ -206,6 +207,52 @@ fn merge_settings(
         file.write_all((text + "\n").as_bytes())
     };
     write().map_err(|err| format!("it could not be written ({:?})", err.kind()))
+}
+
+/// Sets up the run's MCP servers and then approves them, so what `mcpctl` generates in `.mcp.json`
+/// is approved too. The servers are `chosen`, or with no such setting those the worktree's
+/// `.mcpctl.toml` selects: without a setup they would run at the machine's active version, not
+/// their latest. `env` is added to the setup's environment and merged into the session's settings.
+pub fn prepare_mcp_servers(
+    worktree: &Path,
+    env: &[(String, String)],
+    chosen: Option<&[String]>,
+    mcpctl: Option<&Path>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    let selected = match chosen {
+        Some(names) => names.to_vec(),
+        None => selected_in_mcpctl_toml(worktree, &mut notes),
+    };
+    notes.extend(setup_mcp_servers(worktree, &selected, env, mcpctl));
+    notes.extend(write_session_settings(worktree, env, chosen, mcpctl));
+    notes
+}
+
+/// The servers the `[[mcp]]` tables of the worktree's `.mcpctl.toml` name. A file that cannot be
+/// read selects none and a name that would read as an option is left out, each with a note; a
+/// missing file is simply no selection.
+fn selected_in_mcpctl_toml(worktree: &Path, notes: &mut Vec<String>) -> Vec<String> {
+    let text = match std::fs::read_to_string(worktree.join(MCPCTL_TOML)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            notes.push(format!("{MCPCTL_TOML} could not be read ({:?}); no MCP server was set up", err.kind()));
+            return Vec::new();
+        }
+    };
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        notes.push(format!("{MCPCTL_TOML} is not valid TOML; no MCP server was set up"));
+        return Vec::new();
+    };
+    let tables = doc.get("mcp").and_then(|item| item.as_array_of_tables());
+    let names = tables.into_iter().flat_map(|tables| tables.iter());
+    let names = names.filter_map(|table| table.get("name")?.as_str());
+    let (options, names): (Vec<&str>, Vec<&str>) = names.partition(|name| name.starts_with('-'));
+    if !options.is_empty() {
+        notes.push(format!("{MCPCTL_TOML} names MCP servers that look like options; they were left out"));
+    }
+    names.into_iter().map(str::to_string).collect()
 }
 
 /// Runs one `mcpctl setup --mcp <a> --mcp <b>` in `worktree` for all of `servers`, with `env` added
