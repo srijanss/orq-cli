@@ -121,3 +121,16 @@ fn what_a_tail_cannot_vouch_for_is_never_shown() {
     assert_eq!(tail.last_line, None);
     assert_eq!(tail.size, 4);
 }
+
+#[test]
+fn a_token_cut_by_the_start_of_the_tail_is_not_shown() {
+    let dir = log_dir("straddle");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    // One unterminated line: the tail window opens inside the token and nothing whole follows.
+    std::fs::write(dir.join("stage.log"), format!("{}{token}{}", "p".repeat(100), "q".repeat(8 * 1024 - 20))).unwrap();
+    assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
+
+    // The window opening inside a multi-byte character is no different.
+    std::fs::write(dir.join("stage.log"), "é".repeat(8 * 1024)).unwrap();
+    assert_eq!(newest_log_tail(&dir).unwrap().last_line, None);
+}
