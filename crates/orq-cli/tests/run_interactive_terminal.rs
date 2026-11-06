@@ -547,4 +547,117 @@ fn a_ci_fix_left_uncommitted_is_not_pushed_and_fails_the_run() {
     assert!(drawn.contains("uncommitted changes"), "{drawn}");
     assert!(!drawn.contains("review_ready"), "{drawn}");
     assert_eq!(ci_polls(&provider), 1, "CI is not asked about a fix that was not pushed");
+    assert!(worktree_kept(&w), "the uncommitted fix is still there: {drawn}");
+}
+
+/// What a fix session does to commit a fix of its own.
+const COMMIT_A_FIX: &str = "f=ci-fixed-$$; touch $f; git add $f; git -c user.name=t -c user.email=t@example.invalid commit -qm 'fix: ci'";
+
+fn ci_always_red() -> FakeProvider {
+    FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n")
+        .build()
+}
+
+fn fix_sessions(w: &World) -> usize {
+    std::fs::read_to_string(w.seen.with_file_name("fix-sessions")).unwrap_or_default().lines().count()
+}
+
+fn worktree_kept(w: &World) -> bool {
+    std::fs::read_dir(w.repo.root().join(".claude/worktrees")).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+#[test]
+fn a_ci_still_red_after_every_fix_attempt_fails_the_run_and_keeps_the_worktree() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-fix-exhausted", &agent);
+    ci_fix_session_does(&w, COMMIT_A_FIX);
+    let provider = ci_always_red();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &with_ci_check(&w));
+
+    assert_ne!(code, 0, "{drawn}");
+    assert_eq!(fix_sessions(&w), 2, "{drawn}");
+    assert_eq!(ci_polls(&provider), 3, "the commit and each of the two fixes: {drawn}");
+    assert!(drawn.contains("CI did not pass: Failed"), "{drawn}");
+    assert!(!drawn.contains("review_ready"), "{drawn}");
+    assert!(worktree_kept(&w), "{drawn}");
+}
+
+#[test]
+fn a_ci_fix_that_turns_the_gate_red_is_not_pushed_and_fails_the_run() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-fix-gate", &agent);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"sh\", \"-c\", \"test ! -e broken\"]\n").unwrap();
+    ci_fix_session_does(&w, "touch broken");
+    let provider = ci_red_then_green();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &with_ci_check(&w));
+
+    assert_ne!(code, 0, "{drawn}");
+    assert_eq!(fix_sessions(&w), 1, "{drawn}");
+    assert!(drawn.contains("after CI fix attempt 1; nothing was pushed"), "{drawn}");
+    assert_eq!(ci_polls(&provider), 1, "{drawn}");
+    assert!(!drawn.contains("review_ready"), "{drawn}");
+    assert!(worktree_kept(&w), "{drawn}");
+}
+
+#[test]
+fn a_ci_fix_the_remote_refuses_fails_the_run_and_keeps_the_worktree() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-fix-push", &agent);
+    let hook = w._remote.join("hooks/pre-receive");
+    let refuse = format!("mkdir -p '{hooks}'; printf '#!/bin/sh\\nexit 1\\n' > '{hook}'; chmod +x '{hook}'", hooks = w._remote.join("hooks").display(), hook = hook.display());
+    ci_fix_session_does(&w, &format!("{COMMIT_A_FIX}\n{refuse}"));
+    let provider = ci_red_then_green();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &with_ci_check(&w));
+
+    assert_ne!(code, 0, "{drawn}");
+    assert_eq!(fix_sessions(&w), 1, "{drawn}");
+    assert!(drawn.contains("pushing CI fix attempt 1 failed"), "{drawn}");
+    assert_eq!(ci_polls(&provider), 1, "{drawn}");
+    assert!(!drawn.contains("review_ready"), "{drawn}");
+    assert!(worktree_kept(&w), "{drawn}");
+}
+
+#[test]
+fn a_run_with_ci_checks_off_starts_no_ci_fix_session_and_asks_ci_nothing() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("ci-off", &agent);
+    ci_fix_session_does(&w, COMMIT_A_FIX);
+    let provider = ci_always_red();
+
+    let (code, drawn) = run_in_pty(&w, &provider, &run_args(&w));
+
+    assert_eq!(code, 0, "{drawn}");
+    assert_eq!(fix_sessions(&w), 0, "{drawn}");
+    assert_eq!(ci_polls(&provider), 0, "{drawn}");
+}
+
+#[test]
+fn a_published_branch_with_a_red_ci_fails_without_a_fix_session_or_another_push() {
+    let agent = FakeAgent::builder().build();
+    let w = world("ci-publish", &agent);
+    git(w.repo.root(), &["checkout", "--quiet", "-b", "topic"]);
+    std::fs::write(w.repo.root().join("topic.txt"), "work\n").unwrap();
+    git(w.repo.root(), &["add", "topic.txt"]);
+    git(w.repo.root(), &["-c", "user.name=Topic", "-c", "user.email=topic@example.invalid", "commit", "--quiet", "-m", "feat: the topic"]);
+    ci_fix_session_does(&w, COMMIT_A_FIX);
+    let provider = ci_always_red();
+    let mut args = with_ci_check(&w);
+    args.push("--publish".to_string());
+
+    let (code, drawn) = run_in_pty(&w, &provider, &args);
+
+    assert_ne!(code, 0, "{drawn}");
+    assert!(drawn.contains("CI did not pass: Failed"), "{drawn}");
+    assert_eq!(fix_sessions(&w), 0, "{drawn}");
+    assert_eq!(ci_polls(&provider), 1, "{drawn}");
+    let local = git(w.repo.root(), &["rev-parse", "topic"]);
+    assert_eq!(git(&w._remote, &["rev-parse", "refs/heads/topic"]), local, "{drawn}");
 }
