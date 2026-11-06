@@ -114,6 +114,7 @@ impl CiFixSteps for Script {
             session_id: Some("session-1".to_string()),
             log: self.root.join("fix.log"),
             terminal: false,
+            exit_marker: None,
         }
     }
 }

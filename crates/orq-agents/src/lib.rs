@@ -57,6 +57,20 @@ pub struct ImplementRequest<'a> {
     pub handoff: Option<&'a str>,
 }
 
+/// What a stage asks an adapter to start when a check went red: a session that repairs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixRequest<'a> {
+    pub implementer: ModelSpec,
+    /// What went wrong and what to do, in words.
+    pub task: &'a str,
+    /// The run's logs, which lie outside the worktree the session starts in.
+    pub logs_dir: &'a str,
+    /// A file the session creates when it is finished, so orq can close it; `None` asks for nothing.
+    pub exit_marker: Option<&'a str>,
+    /// Someone is watching this session in a terminal and can answer it; `false` starts it headless.
+    pub attended: bool,
+}
+
 /// The longest extra context a run accepts, in characters.
 pub const MAX_CONTEXT_CHARS: usize = 4000;
 
@@ -108,6 +122,9 @@ pub trait HarnessAdapter {
 
     /// Arguments (after the program) that start the implement session.
     fn implement_argv(&self, request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError>;
+
+    /// Arguments (after the program) that start a session repairing a red check.
+    fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError>;
 }
 
 pub fn adapter_for(harness: &str) -> Result<Box<dyn HarnessAdapter>, AdapterError> {
@@ -260,6 +277,47 @@ impl HarnessAdapter for Claude {
         argv.push(prompt);
         Ok(argv)
     }
+
+    fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
+        let prompt = fix_prompt("claude", request)?;
+        let mut argv = if request.attended { Vec::new() } else { vec!["-p".to_string()] };
+        // `--add-dir` takes any number of values, so an option has to follow it before the prompt.
+        argv.extend(["--add-dir".to_string(), request.logs_dir.to_string()]);
+        argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
+        Ok(argv)
+    }
+}
+
+/// The wording that tells a session someone is there to answer it.
+fn attended_wording(harness: &str) -> String {
+    // Skills written for unattended runs say otherwise, so this has to be said outright.
+    let how = if harness == "claude" { "ask with AskUserQuestion" } else { "ask in this session" };
+    format!("\n\nA person is watching this session and can answer you, so this run is not unattended, whatever a skill's wording says. When you need a decision you cannot make yourself, {how} and wait for the answer.")
+}
+
+/// The one prompt argument of a fix session on `harness`, after checking everything the request puts
+/// into its arguments. Every adapter builds its prompt here so they all refuse the same unsafe values.
+fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String, AdapterError> {
+    if request.implementer.harness != harness {
+        return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
+    }
+    plain("implementer model", &request.implementer.model)?;
+    if !request.logs_dir.starts_with('/') || request.logs_dir.chars().any(char::is_control) {
+        return Err(AdapterError::InvalidValue { field: "logs", value: request.logs_dir.to_string() });
+    }
+    let Some(task) = checked_context(request.task)? else {
+        return Err(AdapterError::InvalidValue { field: "task", value: String::new() });
+    };
+    let mut prompt = task.to_string();
+    if request.attended {
+        prompt.push_str(&attended_wording(harness));
+    }
+    if let Some(marker) = request.exit_marker {
+        prompt.push_str("\n\nFinal step, only after the fix is committed and nothing is left to do or ask: create the empty file ");
+        prompt.push_str(&marker_for_prompt(marker)?);
+        prompt.push_str(" and then stop.");
+    }
+    Ok(prompt)
 }
 
 /// The one prompt argument of an implementer session on `harness`, after checking everything the
@@ -301,9 +359,7 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str(&handoff.replace('\0', " "));
     }
     if request.attended {
-        // Skills written for unattended runs say otherwise, so this has to be said outright.
-        let how = if harness == "claude" { "ask with AskUserQuestion" } else { "ask in this session" };
-        prompt.push_str(&format!("\n\nA person is watching this session and can answer you, so this run is not unattended, whatever a skill's wording says. When you need a decision you cannot make yourself, {how} and wait for the answer."));
+        prompt.push_str(&attended_wording(harness));
     }
     if let Some(marker) = request.exit_marker {
         let quoted = marker_for_prompt(marker)?;
@@ -339,6 +395,13 @@ impl HarnessAdapter for Pi {
         }
         // pi has no Remote Control: `remote_control` is a Claude-only capability and is not passed on.
         argv.push(prompt);
+        Ok(argv)
+    }
+
+    fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
+        let prompt = fix_prompt("pi", request)?;
+        let mut argv = if request.attended { Vec::new() } else { vec!["-p".to_string()] };
+        argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
         Ok(argv)
     }
 }

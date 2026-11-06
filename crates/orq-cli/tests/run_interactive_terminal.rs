@@ -411,3 +411,38 @@ fn the_terminal_driver_fails_and_ends_orq_when_orq_has_not_exited_by_its_deadlin
     assert_eq!(held.len(), 1, "{drawn}");
     assert!(ended(held[0]), "orq {} survived the driver: {drawn}", held[0]);
 }
+
+#[test]
+fn a_red_gate_opens_its_fix_session_on_the_terminal_and_closes_it_when_the_session_says_it_is_done() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("gate-fix", &agent);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"sh\", \"-c\", \"test -f fixed\"]\n").unwrap();
+    // The fix session records how it was started, works long enough for a line to be drawn over it if
+    // anything were to draw one, commits, leaves the marker it was told about, and then just stays open.
+    let (fix_seen, fix_args, late) = (w.seen.with_file_name("fix-seen"), w.seen.with_file_name("fix-args"), w.seen.with_file_name("late"));
+    std::fs::rename(w.bin.join("claude"), w.bin.join("claude-inner")).unwrap();
+    std::fs::write(
+        w.bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*)\n[ -t 0 ] && [ -t 1 ] && echo tty > '{seen}'\nprintf '%s\\n' \"$*\" > '{args}'\nsleep 2\ntouch fixed; git add fixed; git -c user.name=t -c user.email=t@example.invalid commit -q -m 'fix: repair the gate'\nmarker=$(printf '%s' \"$*\" | sed -n 's/.*create the empty file \\([^ ]*\\) and then stop.*/\\1/p')\ntouch \"$marker\"\nsleep 20\n: > '{late}'\nexit 0;;\nesac\nexec '{inner}' \"$@\"\n",
+            seen = fix_seen.display(),
+            args = fix_args.display(),
+            late = late.display(),
+            inner = w.bin.join("claude-inner").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(w.bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let (code, drawn) = run_in_pty(&w, &github(), &run_args(&w));
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("state: review_ready"), "{drawn}");
+    assert_eq!(std::fs::read_to_string(&fix_seen).unwrap_or_default().trim(), "tty", "{drawn}");
+    let args = std::fs::read_to_string(&fix_args).unwrap();
+    assert!(!format!(" {args} ").contains(" -p "), "an attended fix session is not headless: {args}");
+    assert!(args.contains("--add-dir") && args.contains("/logs/"), "the session may read the logs: {args}");
+    assert!(!late.exists(), "the session was closed by its marker");
+    assert!(!drawn.contains("gate_fix"), "nothing is drawn over the session: {drawn}");
+}

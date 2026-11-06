@@ -67,6 +67,7 @@ fn spec(w: &World, script: &str) -> FixSessionSpec {
         session_id: Some("session-1".to_string()),
         log: w.root.join("fix.log"),
         terminal: false,
+        exit_marker: None,
     }
 }
 
@@ -453,4 +454,21 @@ fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
         seen, "[test_shop]\n[test_shop]\n",
         "both gate runs got the variable"
     );
+}
+
+#[test]
+fn a_fix_session_that_leaves_its_marker_is_closed_and_the_gate_runs_again() {
+    let w = world("marker");
+    let marker = w.root.join("gate-fix.done");
+    let script = format!("touch fixed; touch '{}'; sleep 30", marker.display());
+    let started = std::time::Instant::now();
+
+    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| FixSessionSpec {
+        exit_marker: Some(marker.clone()),
+        ..spec(&w, &script)
+    })
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the session was left open: {:?}", started.elapsed());
 }

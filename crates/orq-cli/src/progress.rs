@@ -39,7 +39,7 @@ impl Progress {
             while !flag.load(Ordering::SeqCst) {
                 if let Some(current) = look(&store, &run_id, &logs) {
                     // Checked again just before writing: a printer that was dropped while it looked says nothing.
-                    if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat).filter(|_| !flag.load(Ordering::SeqCst)) {
+                    if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat).filter(|_| !session_has_terminal(&current) && !flag.load(Ordering::SeqCst)) {
                         let stuck = if current.may_be_stuck { " (it may be stuck)" } else { "" };
                         let _ = writeln!(out, "{line}{stuck}");
                         let _ = out.flush();
@@ -56,6 +56,11 @@ impl Progress {
         });
         Self { stop, thread: Some(thread) }
     }
+}
+
+/// A fix session draws on the terminal itself, so a line printed over it would garble its screen.
+fn session_has_terminal(current: &RunActivity) -> bool {
+    matches!(current.stage.as_deref(), Some("gate_fix" | "ci_fix"))
 }
 
 /// How long to wait before looking again: back to the short wait when something new was shown,
@@ -178,6 +183,41 @@ mod tests {
         let logs = root.join("logs");
         std::fs::create_dir_all(&logs).unwrap();
         (root, logs)
+    }
+
+    #[test]
+    fn nothing_is_printed_while_a_fix_session_has_the_terminal_and_lines_resume_after_it() {
+        let (root, logs) = running_run("session");
+        let store = RunStore::new(&root);
+        let started = |id: &str, stage: &str| {
+            store
+                .append_event(&orq_orchestrator::Event {
+                    schema_version: 1,
+                    event_id: id.into(),
+                    run_id: "run-1".into(),
+                    project_id: "repo-1".into(),
+                    feature_id: "COM-01".into(),
+                    kind: "stage.started".into(),
+                    stage: Some(stage.into()),
+                    attempt: 1,
+                    occurred_at: "2026-11-02T10:00:00Z".into(),
+                    payload: serde_json::json!({}),
+                })
+                .unwrap();
+        };
+        started("e1", "gate_fix");
+        std::fs::write(logs.join("gate.log"), "failed\n").unwrap();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        // A heartbeat of nothing would print on every look, if anything were to print.
+        let progress = Progress::start_with(root.clone(), "run-1".into(), logs, Duration::ZERO, Box::new(Sink(written.clone())));
+
+        std::thread::sleep(POLL * 3);
+        assert_eq!(String::from_utf8_lossy(&written.lock().unwrap()), "");
+
+        started("e2", "verify");
+        wait_for("a line after the session", || !written.lock().unwrap().is_empty());
+        drop(progress);
+        assert!(String::from_utf8_lossy(&written.lock().unwrap()).contains("verify"));
     }
 
     #[test]

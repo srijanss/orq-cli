@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use orq_agents::{adapter_for, ImplementRequest, ModelSpec};
+use orq_agents::{adapter_for, FixRequest, ImplementRequest, ModelSpec};
 use orq_features::ResolvedModel;
 use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
 use orq_orchestrator::{
@@ -879,28 +879,39 @@ fn stages(
 
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
         let gate_log = logs.join("gate.log");
-        let fix_model = implementer.model.clone();
         let fix_log = logs.join("gate-fix.log");
         // A red gate gets a fix session with the run's environment, then runs again. A published branch is
         // the user's own checkout: it is only checked, never edited by an agent.
         let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
+        // Someone watching the run gets the session on the terminal, closed once it says it is finished.
+        let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("gate-fix.done"));
+        let fix_args = if options.publish {
+            Vec::new()
+        } else {
+            let task = format!("The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.", gate_log.display());
+            let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
+            adapter_for(&options.implementer.harness)
+                .and_then(|adapter| {
+                    adapter.fix_argv(&FixRequest {
+                        implementer: spec(&implementer),
+                        task: &task,
+                        logs_dir,
+                        exit_marker: fix_marker.as_deref().and_then(Path::to_str),
+                        attended: options.interactive,
+                    })
+                })
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
+        };
         let gate_outcome =
-            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, log| FixSessionSpec {
+            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, database_env, |_, _| FixSessionSpec {
                 program: claude_program.to_string(),
-                args: vec![
-                    "-p".to_string(),
-                    "--model".to_string(),
-                    fix_model.clone(),
-                    format!(
-                        "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.",
-                        log.display()
-                    ),
-                ],
+                args: fix_args.clone(),
                 env: database_env.to_vec(),
                 cwd: worktree.to_path_buf(),
                 session_id: None,
                 log: fix_log.clone(),
-                terminal: false,
+                terminal: options.interactive,
+                exit_marker: fix_marker.clone(),
             })?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {

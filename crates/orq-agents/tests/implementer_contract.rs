@@ -135,3 +135,62 @@ fn each_harness_names_the_skill_and_the_thinking_flag_its_own_way_and_only_claud
         }
     }
 }
+
+fn fix_request<'a>(harness: &str, model: &str, exit_marker: Option<&'a str>, attended: bool) -> orq_agents::FixRequest<'a> {
+    orq_agents::FixRequest { implementer: spec(harness, model), task: "The gate failed. Fix it.", logs_dir: "/state/logs/run-1", exit_marker, attended }
+}
+
+#[test]
+fn an_attended_fix_session_is_interactive_says_someone_is_watching_and_how_to_end_it() {
+    for_each_harness(|harness, model| {
+        let adapter = adapter_for(harness).unwrap();
+
+        let argv = adapter.fix_argv(&fix_request(harness, model, Some("/state/logs/run-1/gate-fix.done"), true)).unwrap();
+
+        assert!(!argv.iter().any(|a| a == "-p"), "{harness}: {argv:?}");
+        let prompt = argv.last().unwrap();
+        assert!(prompt.starts_with("The gate failed. Fix it."), "{harness}: {prompt}");
+        assert!(prompt.contains("A person is watching this session"), "{harness}: {prompt}");
+        assert!(prompt.contains("create the empty file /state/logs/run-1/gate-fix.done and then stop."), "{harness}: {prompt}");
+        assert!(prompt.contains("only after the fix is committed"), "{harness}: {prompt}");
+    });
+}
+
+#[test]
+fn an_unattended_fix_session_is_headless_and_talks_to_nobody() {
+    for_each_harness(|harness, model| {
+        let adapter = adapter_for(harness).unwrap();
+
+        let argv = adapter.fix_argv(&fix_request(harness, model, None, false)).unwrap();
+
+        assert_eq!(argv.first().map(String::as_str), Some("-p"), "{harness}: {argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("The gate failed. Fix it."), "{harness}: {argv:?}");
+    });
+}
+
+#[test]
+fn a_fix_session_refuses_what_would_not_stay_one_safe_argument() {
+    for_each_harness(|harness, model| {
+        let adapter = adapter_for(harness).unwrap();
+
+        assert!(adapter.fix_argv(&fix_request(harness, "--bad", None, false)).is_err(), "{harness}: model");
+        assert!(adapter.fix_argv(&fix_request(harness, model, Some("relative/marker"), true)).is_err(), "{harness}: marker");
+        let controlled = orq_agents::FixRequest { task: "fix\u{1b}[2J", ..fix_request(harness, model, None, false) };
+        assert!(adapter.fix_argv(&controlled).is_err(), "{harness}: task");
+    });
+    let other = adapter_for("claude").unwrap().fix_argv(&fix_request("pi", "team/model", None, false));
+    assert!(matches!(other, Err(AdapterError::WrongHarness { .. })), "{other:?}");
+}
+
+#[test]
+fn a_claude_fix_session_may_read_the_logs_without_its_prompt_becoming_another_directory() {
+    let argv = adapter_for("claude").unwrap().fix_argv(&fix_request("claude", "opus", None, false)).unwrap();
+
+    // `--add-dir` takes any number of values, so what follows it must be another option.
+    let at = argv.iter().position(|a| a == "--add-dir").unwrap();
+    assert_eq!(argv[at + 1], "/state/logs/run-1");
+    assert!(argv[at + 2].starts_with('-'), "{argv:?}");
+
+    let leading = fix_request("claude", "opus", None, false);
+    assert!(adapter_for("claude").unwrap().fix_argv(&orq_agents::FixRequest { logs_dir: "-rf", ..leading }).is_err());
+}

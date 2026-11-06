@@ -21,6 +21,8 @@ pub struct FixSessionSpec {
     pub session_id: Option<String>,
     pub log: PathBuf,
     pub terminal: bool,
+    /// A file the session leaves when it is finished, at which orq closes it; `None` waits for it to exit.
+    pub exit_marker: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +119,7 @@ pub fn run_gate_with_fixes_env(
                     session_id: spec.session_id.as_deref(),
                     log: &spec.log,
                     terminal: spec.terminal,
-                    exit_marker: None,
+                    exit_marker: spec.exit_marker.as_deref(),
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
