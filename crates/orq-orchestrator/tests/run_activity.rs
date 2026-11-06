@@ -170,3 +170,14 @@ fn a_quiet_stage_says_it_is_still_running_once_the_heartbeat_has_passed() {
     assert!(line.contains("verify") && line.contains("still running") && line.contains("130"), "{line}");
     assert_eq!(activity_line(Some(&quiet), &quiet, Duration::from_secs(59), heartbeat), None);
 }
+
+#[test]
+fn control_sequences_in_output_never_reach_the_line_shown_on_a_terminal() {
+    let verify = [event("stage.started", Some("verify"))];
+    let hostile = "ok\u{1b}[2J\u{1b}]52;c;aGk=\u{7}\rfake: all passed\u{8}\u{8}";
+
+    let line = activity_line(None, &seen(&verify, hostile, 1), Duration::ZERO, Duration::from_secs(60)).unwrap();
+
+    assert!(!line.chars().any(char::is_control), "{line:?}");
+    assert!(line.contains("ok") && line.contains("fake: all passed"), "{line:?}");
+}

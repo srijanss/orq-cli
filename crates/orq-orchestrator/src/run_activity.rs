@@ -92,14 +92,14 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
 /// The line to show for `current`, or none: a changed stage or last line of output is shown as it
 /// comes, and a run that has shown nothing for `heartbeat` says it is still going.
 pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, since_last_line: Duration, heartbeat: Duration) -> Option<String> {
-    let stage = current.stage.as_deref().unwrap_or("run");
+    let stage = printable(current.stage.as_deref().unwrap_or("run"));
     let changed = match previous {
         None => true,
         Some(p) => p.stage != current.stage || (current.last_output.is_some() && p.last_output != current.last_output),
     };
     if changed {
         return Some(match &current.last_output {
-            Some(out) => format!("orq: {stage}: {out}"),
+            Some(out) => format!("orq: {stage}: {}", printable(out)),
             None => format!("orq: {stage}"),
         });
     }
@@ -108,4 +108,37 @@ pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, sinc
         return Some(format!("orq: {stage} still running{quiet}"));
     }
     None
+}
+
+/// Text safe to write to a terminal: escape sequences (colour, cursor, title, clipboard, links) and
+/// every other control character are removed, so output can never redraw or rewrite the screen.
+fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters, then one final byte in @..~.
+                Some('[') => {
+                    for n in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                // OSC, DCS, and the like: until BEL or the string terminator ESC \.
+                Some(']' | 'P' | '^' | '_' | 'X') => {
+                    while let Some(n) = chars.next() {
+                        if n == '\u{7}' || (n == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
