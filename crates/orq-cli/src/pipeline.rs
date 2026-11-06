@@ -601,45 +601,65 @@ pub(crate) fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, fea
             eprintln!("orq: the notification command failed: {err}");
         }
     }
-    if settings.claude_push == Some(true) {
-        push_to_claude_app(&message);
+    // The push goes through Remote Control, so a project that turned that off gets none.
+    if settings.claude_push != Some(false) && settings.remote_control != Some(false) {
+        push_to_claude_app(cwd, &message);
     }
 }
 
-/// Send `message` to the Claude app through a detached one-shot Claude session. Best effort: it never
-/// changes how the run ended, and the run does not wait for it.
-fn push_to_claude_app(message: &str) {
-    let Some(program) = find_program("claude") else { return };
-    let argv = match orq_agents::push_notification_argv(message) {
-        Ok(argv) => argv,
+/// Where the detached sender finds the text, which stays out of the process list this way.
+pub(crate) const PUSH_TEXT: &str = "ORQ_PUSH_TEXT";
+const PUSH_SESSION_LIMIT: Duration = Duration::from_secs(60);
+/// What the session gets to finish sending once the tool has run.
+const PUSH_SESSION_LINGER: Duration = Duration::from_secs(3);
+
+/// Send `message` to the Claude app from a detached `orq run push-send`. Best effort: it never changes
+/// how the run ended, and the run does not wait for it.
+fn push_to_claude_app(cwd: &Path, message: &str) {
+    use std::process::Stdio;
+    if find_program("claude").is_none() {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
         Err(err) => {
-            eprintln!("orq: cannot send the Claude push notification: {err:?}");
+            eprintln!("orq: cannot send the Claude push notification: cannot find orq's own path: {err}");
             return;
         }
     };
-    let quiet = std::process::Stdio::null;
-    let home = match private_session_dir() {
-        Ok(dir) => dir,
-        Err(err) => {
-            eprintln!("orq: cannot send the Claude push notification: no private directory for the session: {err}");
-            return;
-        }
-    };
-    // In a directory made for this session alone, so no repository and no file planted in the shared temp
-    // dir supplies it instructions; project memory loading is also switched off. In a process group of its
-    // own, so the end of the run's terminal session does not take it down.
+    let mut sender = Command::new(exe);
+    sender.args(["run", "push-send", "--repo"]).arg(cwd).env(PUSH_TEXT, message).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // In a process group of its own, so the end of the run's terminal session does not take it down.
+    std::os::unix::process::CommandExt::process_group(&mut sender, 0);
+    if let Err(err) = sender.spawn() {
+        eprintln!("orq: cannot send the Claude push notification: {err}");
+    }
+}
+
+/// Runs the short Claude session that sends `message`. Claude only reaches the app from an interactive
+/// session with Remote Control on, and only tells a phone when it does not think somebody is watching
+/// the terminal, so the session gets a terminal of its own and that check is switched off. It runs in
+/// the repository because a folder Claude does not trust stops at a question nobody answers; project
+/// memory and project settings stay out of it, and its only tool is the push.
+pub(crate) fn send_push(cwd: &Path, message: &str) -> Result<(), String> {
+    let program = find_program("claude").ok_or("claude is not on PATH")?;
+    let dir = private_session_dir().map_err(|err| format!("no private directory for the session: {err}"))?;
+    let marker = dir.join("sent");
+    let name = format!("orq-push-{}", std::process::id());
+    let argv = orq_agents::push_notification_argv(message, &name, &marker).map_err(|err| format!("{err:?}"))?;
     let mut command = Command::new(program);
     command
         .args(&argv)
-        .current_dir(&home)
+        .current_dir(cwd)
+        .env("CLAUDE_CODE_DISABLE_NOTIFICATION_PRESENCE_CHECK", "1")
         .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1")
-        .stdin(quiet())
-        .stdout(quiet())
-        .stderr(quiet());
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    if let Err(err) = command.spawn() {
-        eprintln!("orq: cannot send the Claude push notification: {err}");
-    }
+        .env("TERM", "xterm-256color")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env_remove(PUSH_TEXT);
+    let ran = orq_orchestrator::run_in_terminal(command, &marker, PUSH_SESSION_LIMIT, PUSH_SESSION_LINGER);
+    let _ = std::fs::remove_dir_all(&dir);
+    ran.map_err(|err| err.to_string())
 }
 
 /// A new empty directory under the temp dir that only this user can enter. Created exclusively, so one

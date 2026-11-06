@@ -1464,51 +1464,74 @@ fn remote_control_off_with_the_explainer_on_starts_an_explainer_that_is_not_reac
     assert!(!explain.iter().any(|a| a == "--remote-control"), "{explain:?}");
 }
 
-fn push_session(agent: &FakeAgent) -> Option<Vec<String>> {
-    agent.last_run().map(|run| run.args).filter(|args| args.iter().any(|a| a == "PushNotification"))
+/// As `run_with`, but the push is left to the project's settings, and a `claude` writes down the push
+/// session it is asked for at the returned path instead of running the fake agent for it.
+fn run_with_push_allowed(w: &World, agent: &FakeAgent, provider: &FakeProvider) -> (Output, PathBuf) {
+    let bin = orq_test_support::process_temp_dir().join(format!("orq-run-push-{}-{}", std::process::id(), w.tag));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in *'--tools PushNotification'*) {{ [ -t 0 ] && echo terminal; echo \"cwd=$PWD\"; echo \"presence=$CLAUDE_CODE_DISABLE_NOTIFICATION_PRESENCE_CHECK\"; echo \"memory=$CLAUDE_CODE_DISABLE_CLAUDE_MDS\"; printf '%s\\n' \"$@\"; }} > \"$0.tmp\"; mv \"$0.tmp\" \"$0.heard\"; exit 0;; esac\nexec '{}' \"$@\"\n",
+        agent.path().display()
+    );
+    std::fs::write(&claude, script).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![bin.clone()];
+    dirs.extend(std::env::split_paths(&path_with(agent, provider, &w.tag)));
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("ORQ_CLAUDE_PUSH")
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    (output, bin.join("claude.heard"))
 }
 
 #[test]
-fn claude_push_sends_the_run_end_to_the_claude_app_through_a_print_session() {
+fn claude_push_is_on_by_default_and_reaches_the_app_through_a_connected_terminal_session() {
     let w = world("claudepush");
-    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
-    std::fs::write(w.repo.root().join(".orq/run.toml"), "claude_push = true\n").unwrap();
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
 
-    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+    let (output, heard) = run_with_push_allowed(&w, &agent, &github());
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    wait_until("the push session", || push_session(&agent).is_some());
-    let args = push_session(&agent).unwrap();
-    assert!(args.iter().any(|a| a == "-p"), "{args:?}");
-    assert!(args.last().unwrap().contains("COM-01 review_ready"), "{args:?}");
-
-    // The session starts in a directory made for it alone: not the shared temp dir (where anyone could plant
-    // a CLAUDE.md), not the repository, and closed to other users.
-    use std::os::unix::fs::PermissionsExt;
-    let cwd = agent.last_run().unwrap().cwd;
-    let shared = std::env::temp_dir();
-    assert_ne!(cwd.canonicalize().unwrap(), shared.canonicalize().unwrap(), "{cwd:?}");
-    assert!(cwd.canonicalize().unwrap().starts_with(shared.canonicalize().unwrap()), "{cwd:?}");
-    assert!(!cwd.starts_with(w.repo.root()), "{cwd:?}");
-    assert_eq!(std::fs::metadata(&cwd).unwrap().permissions().mode() & 0o777, 0o700, "{cwd:?}");
+    wait_until("the push session", || heard.exists());
+    let heard = std::fs::read_to_string(&heard).unwrap();
+    let lines: Vec<&str> = heard.lines().collect();
+    assert_eq!(lines[0], "terminal", "a print session can never deliver: {heard}");
+    let cwd = lines[1].strip_prefix("cwd=").unwrap();
+    assert_eq!(Path::new(cwd).canonicalize().unwrap(), w.repo.root().canonicalize().unwrap(), "a new directory would stop at the trust prompt: {heard}");
+    assert_eq!(lines[2], "presence=1", "{heard}");
+    assert_eq!(lines[3], "memory=1", "{heard}");
+    assert!(!lines.contains(&"-p"), "{heard}");
+    assert!(lines.iter().any(|l| l.starts_with("--remote-control=")), "{heard}");
+    assert!(heard.contains("COM-01 review_ready"), "{heard}");
 }
 
 #[test]
-fn claude_push_stays_off_unless_asked_for_and_follows_notify_on() {
-    let off = world("claudepushoff");
-    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
-    assert_eq!(run_with(&off, &agent, &github(), &["--no-ci-check"]).status.code(), Some(0));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(push_session(&agent).is_none(), "off by default");
-
-    let quiet = world("claudepushquiet");
-    std::fs::create_dir_all(quiet.repo.root().join(".orq")).unwrap();
-    std::fs::write(quiet.repo.root().join(".orq/run.toml"), "claude_push = true\nnotify_on = \"failures\"\n").unwrap();
-    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
-    assert_eq!(run_with(&quiet, &agent, &github(), &["--no-ci-check"]).status.code(), Some(0));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert!(push_session(&agent).is_none(), "a clean run is not announced under notify_on = failures");
+fn claude_push_stays_off_when_turned_off_or_remote_control_is_off_and_follows_notify_on() {
+    for (tag, settings) in [
+        ("claudepushoff", "claude_push = false\n"),
+        ("claudepushlocal", "remote_control = false\nexplain_failures = false\n"),
+        ("claudepushquiet", "notify_on = \"failures\"\n"),
+    ] {
+        let w = world(tag);
+        std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+        std::fs::write(w.repo.root().join(".orq/run.toml"), settings).unwrap();
+        let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+        let (output, heard) = run_with_push_allowed(&w, &agent, &github());
+        assert_eq!(output.status.code(), Some(0), "{tag}: {}", stderr(&output));
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        assert!(!heard.exists(), "{tag}");
+    }
 }
 
 #[test]

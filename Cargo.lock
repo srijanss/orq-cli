@@ -945,6 +945,9 @@ dependencies = [
 [[package]]
 name = "orq-agents"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "orq-cli"

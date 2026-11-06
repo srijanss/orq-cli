@@ -262,17 +262,48 @@ fn the_failure_explainer_is_a_remote_controllable_claude_session_told_the_failur
 }
 
 #[test]
-fn push_session_is_a_print_session_with_only_the_push_tool_and_takes_one_line() {
+fn push_session_is_a_connected_interactive_session_with_only_the_push_tool_and_takes_one_line() {
     use orq_agents::push_notification_argv;
-    let argv = push_notification_argv("orq: COM-02 failed").unwrap();
-    assert_eq!(&argv[..7], ["-p", "--model", "haiku", "--allowedTools", "PushNotification", "--tools", "PushNotification"]);
+    let marker = std::path::Path::new("/tmp/orq-push/sent");
+    let argv = push_notification_argv("orq: COM-02 failed", "orq-push-7", marker).unwrap();
+    assert!(!argv.contains(&"-p".to_string()), "a print session can never deliver: {argv:?}");
+    assert_eq!(&argv[..6], ["--model", "haiku", "--allowedTools", "PushNotification", "--tools", "PushNotification"]);
     assert!(argv.contains(&"--disable-slash-commands".to_string()), "{argv:?}");
+    assert!(argv.contains(&"--strict-mcp-config".to_string()), "no connected tools: {argv:?}");
+    assert!(argv.contains(&"--remote-control=orq-push-7".to_string()), "{argv:?}");
+    let at = argv.iter().position(|a| a == "--name").unwrap();
+    assert_eq!(argv[at + 1], "orq-push-7");
     let at = argv.iter().position(|a| a == "--setting-sources").expect("project and local settings (hooks) are not loaded");
     assert_eq!(argv[at + 1], "user");
     assert!(argv.last().unwrap().contains("orq: COM-02 failed"));
     for bad in ["", "  ", "two\nlines", "bell\u{7}"] {
-        assert!(push_notification_argv(bad).is_err(), "{bad:?}");
+        assert!(push_notification_argv(bad, "n", marker).is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn push_session_marks_when_the_tool_has_run_wherever_the_marker_lives() {
+    let dir = std::env::temp_dir().join(format!("orq-push-it's $(x) {}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("sent");
+    let argv = orq_agents::push_notification_argv("orq: COM-02 failed", "n", &marker).unwrap();
+
+    let at = argv.iter().position(|a| a == "--settings").unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
+    let hook = &settings["hooks"]["PostToolUse"][0];
+    assert_eq!(hook["matcher"], "PushNotification");
+    let status = std::process::Command::new("sh").args(["-c", hook["hooks"][0]["command"].as_str().unwrap()]).status().unwrap();
+
+    assert!(status.success());
+    assert!(marker.exists());
+}
+
+#[test]
+fn push_session_keeps_the_notification_short_enough_for_the_app() {
+    let long = "é".repeat(500);
+    let argv = orq_agents::push_notification_argv(&long, "n", std::path::Path::new("/m")).unwrap();
+    let prompt = argv.last().unwrap();
+    assert_eq!(prompt.matches('é').count(), 190, "{prompt}");
 }
 
 #[test]

@@ -36,6 +36,7 @@ mod session_references;
 mod session_settings;
 mod setup;
 mod store;
+mod terminal_session;
 mod worktree_databases;
 
 pub use checkpoint::{
@@ -65,6 +66,7 @@ pub use notify::{
     notification_message, send_notification, send_notification_with, wants_notification,
 };
 pub use orq_written::record_orq_written;
+pub use terminal_session::run_in_terminal;
 pub use outcome::{check_implement_outcome, ImplementCheck};
 pub use pane::{record_pane, run_pane, PaneRef};
 pub use push_stage::{push_run_branch, push_run_branch_with, PushOutcome, RetryPolicy};

@@ -41,6 +41,7 @@ fn main() -> ExitCode {
         (Some("run"), Some("switch")) => run_switch(&args[2..]),
         (Some("run"), Some("needs-input")) => run_needs_input(&args[2..]),
         (Some("run"), Some("needs-input-send")) => run_needs_input_send(&args[2..]),
+        (Some("run"), Some("push-send")) => run_push_send(&args[2..]),
         (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
@@ -4373,6 +4374,19 @@ fn run_needs_input_send(args: &[OsString]) -> ExitCode {
     let text = std::env::var(NEEDS_INPUT_TEXT).unwrap_or_default();
     pipeline::announce(&settings, repo, feature, ending, Some(&text), None);
     ExitCode::SUCCESS
+}
+
+/// The detached half of a Claude push: the run or the notification that wanted it has moved on.
+fn run_push_send(args: &[OsString]) -> ExitCode {
+    let [flag_repo, repo] = args else { return usage_error() };
+    if flag_repo.to_str() != Some("--repo") {
+        return usage_error();
+    }
+    let text = std::env::var(pipeline::PUSH_TEXT).unwrap_or_default();
+    match pipeline::send_push(Path::new(repo), &text) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => fail(format!("cannot send the Claude push notification: {why}")),
+    }
 }
 
 /// `orq run switch <run> --role implementer|reviewer --profile <name> [--repo <path>]`: record that a

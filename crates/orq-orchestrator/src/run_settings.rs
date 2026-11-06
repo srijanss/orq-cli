@@ -51,7 +51,7 @@ pub struct RunSettings {
     pub auto_exit: Option<bool>,
     pub remote_control: Option<bool>,
     pub explain_failures: Option<bool>,
-    /// Also send a push notification to the Claude app when a run ends (off when unset).
+    /// Also send a push notification to the Claude app when a run ends (on when unset; needs Remote Control).
     pub claude_push: Option<bool>,
     /// The shape of a per-worktree database name, with `{name}` and `{branch}`.
     pub db_name_template: Option<String>,
