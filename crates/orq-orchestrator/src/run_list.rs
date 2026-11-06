@@ -1,6 +1,7 @@
 //! The runs of one project, as a list a UI or command can print: each run's feature, status,
 //! models and review link, read from the run store. Another project's runs are never listed.
 
+use crate::resume::members_of;
 use crate::run_status::{summarize_run, RunPhase};
 use crate::store::{RunStore, StoreError};
 
@@ -8,6 +9,8 @@ use crate::store::{RunStore, StoreError};
 pub struct RunListing {
     pub run_id: String,
     pub feature_id: String,
+    /// Every feature the run is for, in order; the first is `feature_id`.
+    pub members: Vec<String>,
     pub phase: RunPhase,
     pub stage: Option<String>,
     pub reason: Option<String>,
@@ -62,6 +65,7 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
         list.runs.push(RunListing {
             run_id,
             feature_id: record.feature_id.clone(),
+            members: members_of(&record, &events),
             phase: summary.phase,
             stage: summary.stage,
             reason: summary.reason,

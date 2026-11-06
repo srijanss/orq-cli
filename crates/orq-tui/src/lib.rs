@@ -1724,8 +1724,9 @@ pub trait BrowserBackend {
         Err("resuming runs is not available".into())
     }
 
-    /// The project's runs in run-id order, for the buttons of the Features rows: the last run of
-    /// a feature is its latest. Unreadable runs are left out; an error is no runs.
+    /// The project's runs in run-id order, for the buttons of the Features rows, a run of several
+    /// features once for each of them: the last run of a feature is its latest. Unreadable runs
+    /// are left out; an error is no runs.
     fn feature_runs(&mut self) -> Vec<RunRow> {
         Vec::new()
     }
