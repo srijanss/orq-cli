@@ -233,3 +233,22 @@ fn an_unknown_run_is_an_error_and_nothing_runs() {
     assert!(run_gate_stage(&w.store, "ghost", &gate, true, &w.log).is_err());
     assert!(!marker.exists());
 }
+
+#[test]
+fn a_step_that_never_ends_fails_the_gate_at_the_limit_and_leaves_nothing_running() {
+    use std::time::{Duration, Instant};
+    let w = world("limit");
+    let late = w.root.join("late");
+    let script = format!("(sleep 3; touch '{}') & sleep 60", late.display());
+    let gate = steps(vec![sh(&script)]);
+    let started = Instant::now();
+
+    let outcome = orq_orchestrator::run_gate_stage_with_limit(&w.store, "run-1", &gate, true, &w.log, &[], Duration::from_secs(1)).unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(20), "the gate waited for the step");
+    assert!(matches!(outcome, GateOutcome::Failed { step: 0, exit_code: None }), "{outcome:?}");
+    let failed = w.store.events("run-1").unwrap().into_iter().find(|e| e.kind == "stage.failed").expect("a failure was recorded");
+    assert!(failed.payload["reason"].as_str().unwrap().contains("timed out"), "{:?}", failed.payload);
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(!late.exists(), "a process the step started kept running");
+}

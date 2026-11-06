@@ -52,6 +52,22 @@ pub fn run_gate_stage_with_env(
     run_gate_attempt(store, run_id, gate, enabled, log_path, 1, env)
 }
 
+/// `run_gate_stage_with_env`, with each step stopped, and the gate failed, once it has run for `limit`.
+pub fn run_gate_stage_with_limit(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    log_path: &Path,
+    env: &[(String, String)],
+    limit: std::time::Duration,
+) -> Result<GateOutcome, StoreError> {
+    run_gate_attempt_limited(store, run_id, gate, enabled, log_path, 1, env, limit)
+}
+
+/// No gate step is left running longer than this: a step that hangs fails the gate instead of the run.
+pub const STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// One run of the gate, its events numbered `attempt`.
 pub(crate) fn run_gate_attempt(
     store: &RunStore,
@@ -61,6 +77,20 @@ pub(crate) fn run_gate_attempt(
     log_path: &Path,
     attempt: u32,
     env: &[(String, String)],
+) -> Result<GateOutcome, StoreError> {
+    run_gate_attempt_limited(store, run_id, gate, enabled, log_path, attempt, env, STEP_LIMIT)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_gate_attempt_limited(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    log_path: &Path,
+    attempt: u32,
+    env: &[(String, String)],
+    limit: std::time::Duration,
 ) -> Result<GateOutcome, StoreError> {
     let record = store.load(run_id)?;
     let skip_reason = match gate {
@@ -94,7 +124,7 @@ pub(crate) fn run_gate_attempt(
 
     for (index, argv) in steps.iter().enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
-        let (exit_code, failure) = run_step(&record, argv, &log, env)?;
+        let (exit_code, failure) = run_step(&record, argv, &log, env, limit)?;
         if let Some(failure) = failure {
             let reason = format!(
                 "gate step {} ({}) {failure}",
@@ -130,6 +160,7 @@ fn run_step(
     argv: &[String],
     log: &fs::File,
     env: &[(String, String)],
+    limit: std::time::Duration,
 ) -> Result<(Option<i32>, Option<String>), StoreError> {
     let Some((program, args)) = argv.split_first() else {
         return Ok((None, Some("is empty".to_string())));
@@ -146,13 +177,34 @@ fn run_step(
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log.try_clone()?);
-    Ok(match command.status() {
-        Ok(status) if status.success() => (status.code(), None),
-        Ok(status) => match status.code() {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => return Ok((None, Some(format!("could not be started: {err}")))),
+    };
+    let group = child.id() as libc::pid_t;
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break Some(status),
+            None if std::time::Instant::now() >= deadline => break None,
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+    // Whatever the step started goes with it; the leader is unreaped until now, so the id is still ours.
+    // Safety: plain system call.
+    unsafe { libc::killpg(group, libc::SIGKILL) };
+    let Some(status) = status else {
+        let _ = child.wait();
+        return Ok((None, Some(format!("timed out after {}s and was stopped", limit.as_secs()))));
+    };
+    Ok(match status {
+        status if status.success() => (status.code(), None),
+        status => match status.code() {
             Some(code) => (Some(code), Some(format!("exited with status {code}"))),
             None => (None, Some("was stopped by a signal".to_string())),
         },
-        Err(err) => (None, Some(format!("could not be started: {err}"))),
     })
 }
 
