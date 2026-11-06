@@ -212,17 +212,37 @@ const MARKER_REPORT_LIMIT: usize = 500;
 
 /// What the session wrote into its marker. An empty marker means it finished as asked.
 fn marker_report(marker: &Path) -> Option<String> {
-    // Nothing is followed or opened unless it is a plain file: a pipe would block orq, and a link
-    // would copy another file's contents into the run's events.
-    match fs::symlink_metadata(marker) {
+    marker_report_with(marker, || {})
+}
+
+/// `marker_report`, running `between` just before the path is opened, so a test can swap the path at
+/// exactly that point.
+fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<String> {
+    const NOT_PLAIN: &str = "its finish marker is not a plain file";
+    let mut open = fs::OpenOptions::new();
+    open.read(true);
+    // Whatever the path is by now: a link is not followed, which would copy another file's contents
+    // into the run's events, and a pipe cannot block orq.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    between();
+    let file = match open.open(marker) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        #[cfg(unix)]
+        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => return Some(NOT_PLAIN.to_string()),
         Err(err) => return Some(format!("its finish marker could not be read: {err}")),
-        Ok(found) if !found.is_file() => return Some("its finish marker is not a plain file".to_string()),
-        Ok(_) => {}
+    };
+    match file.metadata() {
+        Ok(found) if found.is_file() => {}
+        Ok(_) => return Some(NOT_PLAIN.to_string()),
+        Err(err) => return Some(format!("its finish marker could not be read: {err}")),
     }
     let mut bytes = Vec::new();
-    let read = fs::File::open(marker).and_then(|file| file.take(MARKER_READ_LIMIT).read_to_end(&mut bytes));
-    if let Err(err) = read {
+    if let Err(err) = file.take(MARKER_READ_LIMIT).read_to_end(&mut bytes) {
         return Some(format!("its finish marker could not be read: {err}"));
     }
     let redacted = orq_core::redact::redact(&String::from_utf8_lossy(&bytes));
@@ -480,5 +500,38 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    }
+
+    #[test]
+    fn a_marker_swapped_after_it_was_inspected_is_not_followed_and_does_not_block() {
+        let dir = std::env::temp_dir().join(format!("orq-marker-swap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (marker, secret) = (dir.join("done"), dir.join("secret"));
+        fs::write(&secret, "the contents of another file").unwrap();
+
+        fs::write(&marker, "").unwrap();
+        let report = marker_report_with(&marker, || {
+            fs::remove_file(&marker).unwrap();
+            std::os::unix::fs::symlink(&secret, &marker).unwrap();
+        })
+        .expect("a link is a problem to report");
+        assert!(!report.contains("another file"), "{report}");
+
+        let fifo = dir.join("pipe");
+        fs::write(&fifo, "").unwrap();
+        let (sender, answer) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let report = marker_report_with(&path, || {
+                fs::remove_file(&path).unwrap();
+                let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+                // Safety: plain system call on a path this test owns.
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            });
+            let _ = sender.send(report);
+        });
+        let report = answer.recv_timeout(std::time::Duration::from_secs(5)).expect("the read blocked on a pipe");
+        assert!(report.is_some(), "a pipe is a problem to report");
     }
 }
