@@ -3536,6 +3536,52 @@ mod ledger_backend_tests {
     }
 
     #[test]
+    fn launch_defaults_are_empty_when_the_repository_cannot_be_resolved() {
+        let fixture = orq_test_support::GitFixture::new();
+        let (mut backend, dir) = launch_defaults_backend(
+            &fixture,
+            "launch-defaults-no-repo",
+            "[implementer]\nharness = \"claude\"\nmodel = \"opus\"\n",
+        );
+        backend.repo_root = Some(dir.join("no-such-repository"));
+
+        assert_eq!(orq_tui::BrowserBackend::launch_defaults(&mut backend), orq_tui::LaunchDefaults::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_defaults_are_empty_when_the_model_profiles_cannot_be_read() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::write(fixture.root().join(".orq.toml"), "not [ toml").unwrap();
+        let (mut backend, dir) = launch_defaults_backend(
+            &fixture,
+            "launch-defaults-bad-profiles",
+            "[implementer]\nharness = \"claude\"\nmodel = \"opus\"\n",
+        );
+
+        assert_eq!(orq_tui::BrowserBackend::launch_defaults(&mut backend), orq_tui::LaunchDefaults::default());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launch_defaults_from_the_repos_roles_survive_a_missing_user_config() {
+        let fixture = orq_test_support::GitFixture::new();
+        std::fs::write(
+            fixture.root().join(".orq.toml"),
+            "[models.zz-a]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.zz-b]\nharness = \"pi\"\nmodel = \"kimi\"\n\n[roles]\nimplementer = \"zz-a\"\nreviewer = \"zz-b\"\n",
+        )
+        .unwrap();
+        let (mut backend, dir) = launch_defaults_backend(&fixture, "launch-defaults-no-user-config", "");
+        backend.settings_path = Some(dir.join("no-such-config.toml"));
+
+        let defaults = orq_tui::BrowserBackend::launch_defaults(&mut backend);
+
+        assert_eq!(defaults.implementer.as_deref(), Some("zz-a"));
+        assert_eq!(defaults.reviewer.as_deref(), Some("zz-b"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn launch_defaults_are_empty_when_the_project_is_not_known() {
         let (dir, path) = ledger(&["launch-defaults-unknown"]);
         let mut backend = LedgerBackend::new(path);
