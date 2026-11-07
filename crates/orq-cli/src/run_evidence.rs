@@ -18,15 +18,23 @@ const MAX_LEDGER_BYTES: u64 = 4 * 1024 * 1024;
 /// round of a commit a rebase or a later fix replaced shows as review of another commit.
 /// `None` when no round of this run was recorded.
 pub(crate) fn review_from_ledger(worktree: &Path, base: &str) -> Option<Value> {
+    review_from_ledger_with(worktree, base, |ancestor, descendant| is_ancestor(worktree, ancestor, descendant))
+}
+
+/// [`review_from_ledger`] asking `check` whether one commit is an ancestor of another. Rounds of
+/// one review share their ends, so each distinct pair is asked about once.
+fn review_from_ledger_with(worktree: &Path, base: &str, mut check: impl FnMut(&str, &str) -> bool) -> Option<Value> {
     let rounds = read_object(&worktree.join(ROUNDS_FILE))?;
     let open = read_object(&worktree.join(FINDINGS_FILE));
+    let mut known: std::collections::HashMap<(String, String), bool> = std::collections::HashMap::new();
+    let mut is_ancestor = |ancestor: &str, descendant: &str| *known.entry((ancestor.to_string(), descendant.to_string())).or_insert_with(|| check(ancestor, descendant));
     let mut kept: Vec<(&str, &Map<String, Value>)> = Vec::new();
     for (scope, scope_rounds) in &rounds {
         for round in scope_rounds.as_array().into_iter().flatten().filter_map(Value::as_object) {
             let (Some(start), Some(reviewed)) = (round.get("start").and_then(Value::as_str), round.get("head").and_then(Value::as_str)) else {
                 continue;
             };
-            if is_commit_id(start) && is_commit_id(reviewed) && is_ancestor(worktree, base, start) && is_ancestor(worktree, start, reviewed) {
+            if is_commit_id(start) && is_commit_id(reviewed) && is_ancestor(base, start) && is_ancestor(start, reviewed) {
                 kept.push((scope, round));
             }
         }
@@ -188,6 +196,27 @@ mod tests {
             vec![vec![("F1".to_string(), "fixed".to_string()), ("F2".to_string(), "rejected".to_string())], vec![("F3".to_string(), "fixed".to_string())]],
             "{details}"
         );
+    }
+
+    /// Many rounds of one review share their start and head, so git is asked about each distinct
+    /// pair of commits once, not once per round.
+    #[test]
+    fn each_distinct_pair_of_commits_is_checked_for_ancestry_once() {
+        let repo = GitFixture::new();
+        let base = commit(&repo, "base");
+        let head = commit(&repo, "head");
+        let rounds: Vec<serde_json::Value> = (1..=5).map(|n| round(&base, &head, n, &[])).collect();
+        ledger(&repo, json!({format!("review:{base}"): rounds}), json!({}));
+
+        let mut asked: Vec<(String, String)> = Vec::new();
+        let details = review_from_ledger_with(repo.root(), &base, |ancestor, descendant| {
+            asked.push((ancestor.to_string(), descendant.to_string()));
+            is_ancestor(repo.root(), ancestor, descendant)
+        })
+        .expect("the run's rounds");
+
+        assert_eq!(details["rounds"].as_array().map(Vec::len), Some(5), "{details}");
+        assert_eq!(asked, vec![(base.clone(), base.clone()), (base.clone(), head.clone())]);
     }
 
     /// A rebase rewrites the commits the session reviewed, so the pushed head no longer holds them.
