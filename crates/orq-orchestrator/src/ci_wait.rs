@@ -209,13 +209,18 @@ fn has_ci_config(worktree: &Path, kind: Kind) -> bool {
         },
         Kind::GitHub => match std::fs::read_dir(worktree.join(".github/workflows")) {
             // An unreadable entry might be a workflow: treat it as configured.
-            Ok(entries) => entries.into_iter().any(|entry| match entry {
-                Ok(entry) => matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml")),
-                Err(_) => true,
-            }),
+            Ok(entries) => has_workflow_entry(entries),
             Err(err) => err.kind() != std::io::ErrorKind::NotFound,
         },
     }
+}
+
+/// Whether `entries` hold a workflow file; an entry that cannot be read might be one, so it counts.
+fn has_workflow_entry(entries: impl IntoIterator<Item = std::io::Result<std::fs::DirEntry>>) -> bool {
+    entries.into_iter().any(|entry| match entry {
+        Ok(entry) => matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml")),
+        Err(_) => true,
+    })
 }
 
 fn short(sha: &str) -> &str {
@@ -608,6 +613,14 @@ mod tests {
         ));
         assert!(matches!(gitlab_verdict("{}", SHA), Verdict::Unusable(_)));
     }
+    #[test]
+    fn a_workflow_directory_entry_that_cannot_be_read_counts_as_configured() {
+        let unreadable: Vec<std::io::Result<std::fs::DirEntry>> = vec![Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))];
+        assert!(has_workflow_entry(unreadable));
+        let none: Vec<std::io::Result<std::fs::DirEntry>> = Vec::new();
+        assert!(!has_workflow_entry(none));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_config_that_cannot_be_inspected_counts_as_configured_not_absent() {
