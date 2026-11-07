@@ -2185,6 +2185,13 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(".{note}")).unwrap_or_default()))
     }
 
+    fn accept_run(&mut self, run_id: &str) -> Result<String, String> {
+        let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
+        let store = orq_orchestrator::RunStore::new(&root);
+        orq_orchestrator::accept_run(&store, run_id, &|worktree| orq_orchestrator::run_worktree_tests(worktree, None))
+            .map_err(|message| printable(&message))
+    }
+
     fn resume_check(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
@@ -3224,6 +3231,36 @@ mod ledger_backend_tests {
         let named: Vec<(&str, &str)> = rows.iter().map(|row| (row.run_id.as_str(), row.feature.as_str())).collect();
         assert_eq!(named, [("run-1", "COM-01"), ("run-1", "COM-02")]);
         assert_eq!(listed.len(), 1, "the Orchestrations tab still lists the run once: {listed:?}");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn accepting_a_run_that_has_not_failed_is_refused_by_the_ledger_backend() {
+        let root = std::env::temp_dir().join(format!("orq-backend-accept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = orq_orchestrator::RunStore::new(&root);
+        let record = orq_orchestrator::RunRecord {
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "abc".into(),
+            branch: "orq/run-1".into(),
+            worktree: std::path::PathBuf::from("/tmp/w"),
+            repository: String::new(),
+            profiles: std::collections::BTreeMap::new(),
+        };
+        store.create(&record).unwrap();
+        let (dir, path) = ledger(&["a"]);
+        let mut backend = LedgerBackend::new(path);
+        backend.state_root_override = Some(root.clone());
+
+        let err = orq_tui::BrowserBackend::accept_run(&mut backend, "run-1").unwrap_err();
+
+        assert!(err.contains("only a failed run can be accepted"), "{err}");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
     }

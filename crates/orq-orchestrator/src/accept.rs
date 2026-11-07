@@ -1,0 +1,82 @@
+//! Accepting a failed run: the work it left committed is taken as the run's result when the
+//! tests pass in its worktree, so the run ends review ready like any other.
+
+use std::path::Path;
+
+use crate::gate::{choose_gate, Gate};
+use crate::outcome::git_raw;
+use crate::run_status::{record_run_completed, summarize_run, RunPhase};
+use crate::store::RunStore;
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = git_raw(dir, args).map_err(|e| e.to_string())?;
+    if !out.success {
+        return Err(format!("git {} failed", args.join(" ")));
+    }
+    Ok(out.stdout)
+}
+
+/// Mark the failed run `run_id` review ready when its worktree holds committed work, nothing is
+/// left uncommitted and `tests(worktree)` passes. The tests run only once the run is known to be
+/// acceptable; a failure leaves the run failed and is returned as the reason.
+pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    let events = store.events(run_id).map_err(|e| e.to_string())?;
+    let phase = summarize_run(&events).phase;
+    if phase != RunPhase::Failed {
+        return Err(format!("{run_id} is {}; only a failed run can be accepted", phase.as_str()));
+    }
+    if !record.worktree.is_dir() {
+        return Err(format!("the worktree of {run_id} is gone; there is no work to accept"));
+    }
+    let status = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    if !status.trim().is_empty() {
+        return Err(format!("{run_id} has uncommitted changes in its worktree; commit or discard them first"));
+    }
+    let range = format!("{}..HEAD", record.base_sha);
+    let commits = git(&record.worktree, &["rev-list", "--count", &range])?;
+    if commits.trim() == "0" {
+        return Err(format!("{run_id} left no committed work to accept"));
+    }
+    tests(&record.worktree).map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
+    record_run_completed(store, &record, "review_ready", None).map_err(|e| format!("{e:?}"))?;
+    Ok(format!("Accepted {run_id}: its tests pass and it is review ready"))
+}
+
+const OUTPUT_TAIL: usize = 1500;
+
+fn tail(text: &str) -> &str {
+    let text = text.trim();
+    if text.len() <= OUTPUT_TAIL {
+        return text;
+    }
+    let mut from = text.len() - OUTPUT_TAIL;
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    &text[from..]
+}
+
+/// Run the tests of `worktree`: the `configured` command if given, otherwise what its stacks
+/// call for. Nothing to run is a failure, not a pass. A failing step returns the end of what it
+/// printed. There is no time limit.
+pub fn run_worktree_tests(worktree: &Path, configured: Option<&[String]>) -> Result<(), String> {
+    let steps = match choose_gate(worktree, configured).map_err(|e| e.to_string())? {
+        Gate::Skipped { reason } => return Err(reason),
+        Gate::Steps { steps, .. } => steps,
+    };
+    for argv in steps {
+        let Some((program, args)) = argv.split_first() else { continue };
+        let out = std::process::Command::new(program)
+            .args(args)
+            .current_dir(worktree)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("could not run `{}`: {e}", argv.join(" ")))?;
+        if !out.status.success() {
+            let printed = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&printed)));
+        }
+    }
+    Ok(())
+}

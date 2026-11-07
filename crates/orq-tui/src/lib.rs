@@ -665,6 +665,7 @@ enum RowAction {
     Stop,
     Resume,
     Discard,
+    Accept,
     OpenLink,
     CopyLink,
 }
@@ -677,6 +678,7 @@ impl RowAction {
             RowAction::Stop => "[Stop]",
             RowAction::Resume => "[Resume]",
             RowAction::Discard => "[Discard]",
+            RowAction::Accept => "[Accept]",
             RowAction::OpenLink => "[Open MR]",
             RowAction::CopyLink => "[Copy link]",
         }
@@ -715,7 +717,7 @@ fn run_actions(status: &str) -> &'static [RowAction] {
         "running" => &[RowAction::Pause, RowAction::Stop],
         "pause_requested" => &[RowAction::Stop],
         "paused" => &[RowAction::Resume, RowAction::Discard],
-        "failed" => &[RowAction::Resume, RowAction::Discard],
+        "failed" => &[RowAction::Resume, RowAction::Accept, RowAction::Discard],
         "blocked" => &[RowAction::Discard],
         _ => &[],
     }
@@ -1781,6 +1783,12 @@ pub trait BrowserBackend {
     /// `Ok` is what happened, `Err` why not.
     fn discard_run(&mut self, _run_id: &str) -> Result<String, String> {
         Err("discarding runs is not available".into())
+    }
+
+    /// Accepts the failed `run_id`: runs the tests in its worktree and, if they pass, marks it
+    /// review ready; `Ok` is what happened, `Err` why not.
+    fn accept_run(&mut self, _run_id: &str) -> Result<String, String> {
+        Err("accepting runs is not available".into())
     }
 
     /// Records that the paused `run_id` continues its `role` on `profile`; `Ok` is what happened,
@@ -3486,6 +3494,12 @@ impl Browser {
                 ));
                 self.row_confirm = Some((action, run_id));
             }
+            RowAction::Accept => {
+                self.notice = Some(format!(
+                    "Accept {run_id}? Its tests run in its worktree and, if they pass, it is marked review ready. y confirms, other keys cancel"
+                ));
+                self.row_confirm = Some((action, run_id));
+            }
             RowAction::OpenLink => self.review_link_of_selected_run(backend, false),
             RowAction::CopyLink => self.review_link_of_selected_run(backend, true),
             RowAction::Orchestrate => {}
@@ -3497,6 +3511,7 @@ impl Browser {
         let verb = match action {
             RowAction::Stop => "stop",
             RowAction::Resume => "resume",
+            RowAction::Accept => "accept",
             _ => "discard",
         };
         self.notice = Some(format!("Did not {verb} {run_id}"));
@@ -3512,6 +3527,7 @@ impl Browser {
             RowAction::Stop => backend.stop_run(run_id),
             RowAction::Resume => backend.resume_run(run_id),
             RowAction::Discard => backend.discard_run(run_id),
+            RowAction::Accept => backend.accept_run(run_id),
             RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink => return,
         };
         self.notice = Some(match done {
