@@ -45,6 +45,17 @@ fn a_running_stage_silent_for_too_long_may_be_stuck() {
 }
 
 #[test]
+fn between_stages_the_run_is_never_stuck_and_names_no_finished_stage() {
+    let events = [event("stage.started", Some("implement_and_review")), event("stage.completed", Some("implement_and_review"))];
+
+    let activity = run_activity(&events, Some(&tail("old implement output", 9999)), STUCK_AFTER);
+
+    assert_eq!(activity.phase, RunPhase::Running);
+    assert!(!activity.may_be_stuck, "nothing runs between stages, so nothing can be stuck");
+    assert_eq!(activity.stage, None, "a finished stage is not repeated");
+}
+
+#[test]
 fn a_finished_run_is_never_stuck_however_quiet() {
     let events = [event("stage.started", Some("verify")), event("worktree.removed", None)];
 

@@ -33,14 +33,21 @@ pub struct RunActivity {
 pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Duration) -> RunActivity {
     let summary = summarize_run(events);
     let running = matches!(summary.phase, RunPhase::Running | RunPhase::PauseRequested);
+    // Between stages nothing runs: the finished stage is not repeated, and the silence of its old
+    // log is not a sign of anything stuck.
+    let between_stages = events
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind.as_str(), "stage.started" | "stage.completed" | "stage.skipped"))
+        .is_some_and(|e| e.kind != "stage.started");
     RunActivity {
         phase: summary.phase,
-        stage: summary.stage,
+        stage: summary.stage.filter(|_| !(running && between_stages)),
         attempt: events.iter().rev().find(|e| e.stage.is_some()).map_or(0, |e| e.attempt),
         tests: log.and_then(|l| l.tests.clone()),
         last_output: log.and_then(|l| l.last_line.as_deref()).map(orq_core::redact::redact),
         quiet_for: log.map(|l| l.quiet_for),
-        may_be_stuck: running && log.is_some_and(|l| l.quiet_for > stuck_after),
+        may_be_stuck: running && !between_stages && log.is_some_and(|l| l.quiet_for > stuck_after),
     }
 }
 
