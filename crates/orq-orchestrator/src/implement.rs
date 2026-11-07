@@ -142,10 +142,11 @@ pub(crate) fn run_session_stage(
             let end = wait_for_session(child, session.exit_marker);
             #[cfg(unix)]
             if let Some(settings) = &terminal_settings {
-                // A session that ended by itself has put its screen away and left its last words
-                // on it; only one orq ended still has its screen up.
-                let closed_by_orq = !matches!(end, Ok(SessionEnd::Exited(_)));
-                restore_terminal(settings, closed_by_orq);
+                // A session that exited by itself has put its screen away and left its last words
+                // on it; one orq closed, or one a signal killed, still has its screen up.
+                let screen_left_up =
+                    !matches!(&end, Ok(SessionEnd::Exited(status)) if status.code().is_some());
+                restore_terminal(settings, screen_left_up);
             }
             end
         });

@@ -275,6 +275,38 @@ fn a_terminal_session_that_ends_by_itself_keeps_what_it_printed_on_the_screen() 
 }
 
 #[test]
+fn a_terminal_session_killed_by_a_signal_has_its_screen_modes_undone_and_its_screen_cleared() {
+    if let Some(root) = std::env::var_os(CHILD) {
+        let script = format!("stty raw -echo; printf '\\033[?1049h\\033[?25l{DREW}'; kill -9 $$");
+        let outcome =
+            run_terminal_session(Path::new(&root), "sh", &["-c".to_string(), script]).unwrap();
+        assert!(!outcome.success, "{outcome:?}");
+        return;
+    }
+    let root = fresh_root("signal");
+    let screen = run_on_terminal(
+        "a_terminal_session_killed_by_a_signal_has_its_screen_modes_undone_and_its_screen_cleared",
+        &root,
+    );
+
+    assert!(screen.contains("1 passed"), "{screen:?}");
+    let (_, after) = screen
+        .split_once(DREW)
+        .unwrap_or_else(|| panic!("the session never ran on the terminal: {screen:?}"));
+    for (what, sequence) in [
+        ("leave the session's own screen", "\x1b[?1049l"),
+        ("show the cursor", "\x1b[?25h"),
+        ("clear the screen", "\x1b[2J"),
+    ] {
+        assert!(
+            after.contains(sequence),
+            "orq did not {what} after the session: {after:?}"
+        );
+    }
+    assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
+}
+
+#[test]
 fn a_session_not_given_the_terminal_leaves_the_screen_and_terminal_settings_alone() {
     if let Some(root) = std::env::var_os(CHILD) {
         return run_an_agent_like_session(Path::new(&root), false);
