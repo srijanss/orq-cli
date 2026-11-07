@@ -1415,7 +1415,7 @@ impl Drop for WorkerJob {
 fn reviews_with_links(rows: Vec<orq_core::review_inbox::InboxRow>, runs: &[orq_orchestrator::RunListing]) -> Vec<orq_tui::ReviewRow> {
     rows.into_iter()
         .map(|r| {
-            let has_link = runs.iter().any(|run| run.run_id == r.run_id && run.review_url.is_some());
+            let has_link = r.current && runs.iter().any(|run| run.run_id == r.run_id && run.review_url.is_some());
             orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, current: r.current, stale: r.stale, has_link }
         })
         .collect()
@@ -3724,6 +3724,34 @@ mod ledger_backend_tests {
 
         let linked: Vec<(&str, bool)> = rows.iter().map(|row| (row.run_id.as_str(), row.has_link)).collect();
         assert_eq!(linked, vec![("run-1", true), ("run-2", false), ("run-other", false)]);
+    }
+
+    #[test]
+    fn a_review_of_another_project_has_no_link_even_when_its_run_id_matches_a_local_run() {
+        let inbox = |current: bool| orq_core::review_inbox::InboxRow {
+            run_id: "run-1".into(),
+            feature: "COM-01".into(),
+            project: "orq-cli".into(),
+            current,
+            status: "ready".into(),
+            risk: "low".into(),
+            stale: false,
+        };
+        let runs = [orq_orchestrator::RunListing {
+            run_id: "run-1".into(),
+            feature_id: "COM-01".into(),
+            members: vec!["COM-01".into()],
+            phase: orq_orchestrator::RunPhase::Failed,
+            stage: None,
+            reason: None,
+            implementer_model: None,
+            reviewer_model: None,
+            review_url: Some("https://example.test/mr/1".into()),
+        }];
+
+        let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], &runs);
+
+        assert_eq!(rows.iter().map(|row| row.has_link).collect::<Vec<_>>(), vec![true, false]);
     }
 
     #[test]
