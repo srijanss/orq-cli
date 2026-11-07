@@ -78,15 +78,18 @@ fn finding(found: &Value, still_open: Option<&Vec<Value>>) -> Value {
 }
 
 /// The JSON object in `path`, when it is a regular file of sane size. The worktree is the agent's,
-/// so a symlink there is not followed out of it.
+/// so a symlink there is not followed out of it, and a pipe there is not waited on. It is opened
+/// once and checked through that descriptor, so it cannot be swapped between the check and the read.
 fn read_object(path: &Path) -> Option<Map<String, Value>> {
     use std::io::Read;
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.file_type().is_file() || meta.len() > MAX_LEDGER_BYTES {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_LEDGER_BYTES {
         return None;
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(MAX_LEDGER_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    file.by_ref().take(MAX_LEDGER_BYTES + 1).read_to_end(&mut bytes).ok()?;
     if bytes.len() as u64 > MAX_LEDGER_BYTES {
         return None;
     }
@@ -229,6 +232,23 @@ mod tests {
         );
         assert_eq!(review_from_ledger(repo.root(), &base), None, "only commit ids are rounds of this run");
         assert!(!marker.exists(), "a round's start was passed to git as an option");
+    }
+
+    /// A ledger the agent replaced with a named pipe is not review evidence, and reading it does not
+    /// wait for a writer that never comes.
+    #[test]
+    fn a_ledger_that_is_a_named_pipe_is_not_read() {
+        let repo = GitFixture::new();
+        let base = commit(&repo, "base");
+        let made = std::process::Command::new("mkfifo").arg(repo.root().join(".tdd-review-rounds.json")).status().unwrap();
+        assert!(made.success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let root = repo.root().to_path_buf();
+        std::thread::spawn(move || sender.send(review_from_ledger(&root, &base)).unwrap());
+
+        let details = receiver.recv_timeout(std::time::Duration::from_secs(5)).expect("reading the ledger blocked");
+
+        assert_eq!(details, None);
     }
 
     /// The gate steps that passed for the head, then what CI said about it: each red check by
