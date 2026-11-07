@@ -1684,3 +1684,48 @@ fn a_push_session_whose_tool_ran_is_a_delivery() {
 
     assert_eq!(sent.status.code(), Some(0), "{}", stderr(&sent));
 }
+
+#[test]
+fn a_gate_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_to_fix_elsewhere() {
+    let w = world("unrelated-gate");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"false\"]\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    // Only a fix session is told where to report a failure that is not the run's.
+    let bin = orq_test_support::process_temp_dir().join(format!("orq-run-bin-{}-unrelated", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nif [ -n \"$ORQ_UNRELATED_FAILURE_FILE\" ]; then echo 'billing clock test is flaky' > \"$ORQ_UNRELATED_FAILURE_FILE\"; exit 0; fi\nexec '{}' \"$@\"\n",
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![bin, provider.bin_dir()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(EXIT_BLOCKED), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: blocked"), "{stdout}");
+    assert!(stderr(&output).contains("unrelated") && stderr(&output).contains("billing clock test is flaky"), "{}", stderr(&output));
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
+    assert_eq!(git(w.repo.root(), &["worktree", "list"]).lines().count(), 2, "the worktree is kept");
+}

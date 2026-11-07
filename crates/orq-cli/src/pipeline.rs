@@ -929,6 +929,10 @@ fn stages(
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
         let gate_log = logs.join("gate.log");
         let fix_log = logs.join("gate-fix.log");
+        // Where a fix session says that the failure is not the run's; the session is told in its environment too.
+        let unrelated_report = logs.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
+        let mut fix_env = database_env.to_vec();
+        fix_env.push(("ORQ_UNRELATED_FAILURE_FILE".to_string(), unrelated_report.to_string_lossy().into_owned()));
         // A red gate gets a fix session with the run's environment, then runs again. A published branch is
         // the user's own checkout: it is only checked, never edited by an agent.
         let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
@@ -937,7 +941,13 @@ fn stages(
         let fix_args = if options.publish {
             Vec::new()
         } else {
-            let task = format!("The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix.", gate_log.display());
+            let task = format!(
+                "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix. \
+                 If the failure has nothing to do with your changes (a flaky test, a test already broken on the target branch, a broken environment), do not fix it: \
+                 write a line saying what fails and why it is not caused by your changes to {} and stop.",
+                gate_log.display(),
+                unrelated_report.display()
+            );
             let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
             adapter_for(&options.implementer.harness)
                 .and_then(|adapter| {
@@ -956,7 +966,7 @@ fn stages(
             run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args.clone(),
-                env: database_env.to_vec(),
+                env: fix_env.clone(),
                 cwd: worktree.to_path_buf(),
                 session_id: None,
                 log: fix_log.clone(),
@@ -966,6 +976,13 @@ fn stages(
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
                 return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
+            }
+            // Left alone on purpose: the person decides whether it is fixed first, in its own change.
+            GateFixOutcome::Unrelated { summary } => {
+                return stopped(
+                    Ending::Blocked,
+                    format!("the gate fails for a reason unrelated to this run: {summary}. Get that fixed separately and merged into the target branch, then resume this run"),
+                );
             }
             // A repair that was not committed would leave the pushed commit unfixed.
             GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {

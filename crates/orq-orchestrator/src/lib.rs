@@ -50,7 +50,7 @@ pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use discard::{discard_run, discard_run_before_remove, discard_run_then, features_no_later_run_took, DiscardOutcome};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
-pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, GateFixOutcome};
+pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome};
 pub use handoff::{
     handoff_prompt, read_handoff, write_handoff, DiffFile, GateResult, Handoff, HandoffDiff,
