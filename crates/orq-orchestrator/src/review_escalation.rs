@@ -2,6 +2,7 @@
 //! review ledger the session left in its worktree. Such a run waits for a human decision; it has
 //! not failed.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -98,15 +99,18 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
         .as_ref()
         .and_then(|l| l.get(format!("review:{start}")))
         .and_then(Value::as_array);
+    // Each finding's live status, by id; a finding listed twice keeps its first entry's status.
+    let mut live_status: HashMap<&str, Option<&str>> = HashMap::new();
+    for entry in live.into_iter().flatten() {
+        if let Some(id) = text(entry, "id") {
+            live_status.entry(id).or_insert_with(|| text(entry, "status"));
+        }
+    }
     let findings = blocking
         .iter()
         .map(|f| {
             let id = text(f, "id").unwrap_or("").to_string();
-            let status = live
-                .and_then(|l| l.iter().find(|n| text(n, "id") == Some(id.as_str())))
-                .and_then(|n| text(n, "status"))
-                .unwrap_or("fixed")
-                .to_string();
+            let status = live_status.get(id.as_str()).copied().flatten().unwrap_or("fixed").to_string();
             EscalatedFinding {
                 severity: text(f, "severity").unwrap_or("").to_string(),
                 file: text(f, "file").map(str::to_string),

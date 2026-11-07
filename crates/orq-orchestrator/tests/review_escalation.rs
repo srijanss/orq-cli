@@ -185,3 +185,20 @@ fn a_newer_round_whose_head_is_not_after_its_start_is_not_taken_for_the_latest_r
 
     assert_eq!(review.reviewed_head, reviewed);
 }
+
+#[test]
+fn a_finding_listed_twice_in_the_live_ledger_takes_the_status_of_its_first_entry() {
+    let (dir, base) = repo("duplicate-live");
+    let reviewed = commit(&dir, "a.txt", "feature");
+    ledger(
+        &dir,
+        &base,
+        vec![round(&base, &reviewed, 3, vec![finding("leak", "high", "open"), finding("race", "medium", "open")])],
+        vec![finding("race", "medium", "deferred"), finding("leak", "high", "rejected"), finding("leak", "high", "open")],
+    );
+
+    let review = escalated_review(&dir, &base).unwrap().expect("the review escalated");
+
+    let statuses: Vec<(&str, &str)> = review.findings.iter().map(|f| (f.id.as_str(), f.status.as_str())).collect();
+    assert_eq!(statuses, vec![("leak", "rejected"), ("race", "deferred")]);
+}
