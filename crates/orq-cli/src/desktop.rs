@@ -2,6 +2,7 @@
 //! lookup is a parameter so the success path, a missing tool and a failing tool are all
 //! testable without touching the machine's real tools.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 /// Finds a program by name, `None` when it is not installed.
@@ -24,9 +25,10 @@ pub(crate) fn open_url_with(url: &str, lookup: Lookup<'_>) -> Result<String, Str
     Err(format!("cannot open the link, no opener worked: {}", crate::printable(url)))
 }
 
-/// Puts `text` on the clipboard with the first clipboard tool that works.
-pub(crate) fn copy_text_with(text: &str, lookup: Lookup<'_>) -> Result<String, String> {
-    use std::io::Write;
+/// Puts `text` on the clipboard with the first clipboard tool that works. Without one, as over
+/// SSH or with no display, asks `terminal` to copy it; a terminal never answers that request, so
+/// the result does not claim the text arrived.
+pub(crate) fn copy_text_with(text: &str, lookup: Lookup<'_>, terminal: Option<&mut dyn Write>) -> Result<String, String> {
     let tools: [(&str, &[&str]); 3] = [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("pbcopy", &[])];
     for (name, args) in tools {
         let Some(program) = lookup(name) else { continue };
@@ -44,10 +46,33 @@ pub(crate) fn copy_text_with(text: &str, lookup: Lookup<'_>) -> Result<String, S
             return Ok(format!("Copied {}", crate::printable(text)));
         }
     }
+    if let Some(terminal) = terminal {
+        let request = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+        if terminal.write_all(request.as_bytes()).and_then(|()| terminal.flush()).is_ok() {
+            return Ok(format!("Asked the terminal to copy {}", crate::printable(text)));
+        }
+    }
     Err(format!(
         "cannot copy: no clipboard tool worked (wl-copy, xclip, pbcopy); the link is {}",
         crate::printable(text)
     ))
+}
+
+/// Standard padded base64, the encoding the terminal's clipboard request carries.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let group = chunk.iter().fold(0u32, |acc, byte| acc << 8 | u32::from(*byte)) << (8 * (3 - chunk.len()));
+        for position in 0..4 {
+            if position <= chunk.len() {
+                encoded.push(char::from(ALPHABET[(group >> (18 - 6 * position)) as usize & 63]));
+            } else {
+                encoded.push('=');
+            }
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -114,7 +139,7 @@ mod tests {
         let tool = script(&dir, "xclip", &format!("cat > '{}'", out.display()));
         let find = lookup(HashMap::from([("xclip", tool)]));
 
-        let result = copy_text_with("https://example.test/pull/7", &find);
+        let result = copy_text_with("https://example.test/pull/7", &find, None);
 
         assert_eq!(result, Ok("Copied https://example.test/pull/7".to_string()));
         assert_eq!(std::fs::read_to_string(out).unwrap(), "https://example.test/pull/7");
@@ -127,13 +152,61 @@ mod tests {
         let out = dir.join("clip");
         let good = script(&dir, "pbcopy", &format!("cat > '{}'", out.display()));
 
-        let fell_back = copy_text_with("link-1", &lookup(HashMap::from([("wl-copy", broken.clone()), ("pbcopy", good)])));
+        let fell_back = copy_text_with("link-1", &lookup(HashMap::from([("wl-copy", broken.clone()), ("pbcopy", good)])), None);
         assert_eq!(fell_back, Ok("Copied link-1".to_string()));
         assert_eq!(std::fs::read_to_string(out).unwrap(), "link-1");
 
-        let failed = copy_text_with("link-2", &lookup(HashMap::from([("wl-copy", broken)]))).unwrap_err();
+        let failed = copy_text_with("link-2", &lookup(HashMap::from([("wl-copy", broken)])), None).unwrap_err();
         assert!(failed.contains("no clipboard tool worked") && failed.contains("link-2"), "{failed}");
-        let missing = copy_text_with("link-3", &lookup(HashMap::new())).unwrap_err();
+        let missing = copy_text_with("link-3", &lookup(HashMap::new()), None).unwrap_err();
         assert!(missing.contains("no clipboard tool worked") && missing.contains("link-3"), "{missing}");
+    }
+
+    #[test]
+    fn with_no_clipboard_tool_the_terminal_is_asked_to_copy_and_the_result_says_only_that() {
+        let mut terminal = Vec::new();
+
+        let result = copy_text_with("https://example.test/pull/7", &lookup(HashMap::new()), Some(&mut terminal));
+
+        assert_eq!(result, Ok("Asked the terminal to copy https://example.test/pull/7".to_string()));
+        assert_eq!(String::from_utf8(terminal).unwrap(), "\x1b]52;c;aHR0cHM6Ly9leGFtcGxlLnRlc3QvcHVsbC83\x07");
+    }
+
+    #[test]
+    fn the_terminal_request_encodes_every_length_of_text_with_correct_padding() {
+        for (text, encoded) in [("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg==")] {
+            let mut terminal = Vec::new();
+            copy_text_with(text, &lookup(HashMap::new()), Some(&mut terminal)).unwrap();
+            assert_eq!(String::from_utf8(terminal).unwrap(), format!("\x1b]52;c;{encoded}\x07"));
+        }
+    }
+
+    #[test]
+    fn a_clipboard_tool_that_works_leaves_the_terminal_alone() {
+        let dir = scratch("copy-no-terminal");
+        let tool = script(&dir, "xclip", "cat > /dev/null");
+        let mut terminal = Vec::new();
+
+        let result = copy_text_with("link-4", &lookup(HashMap::from([("xclip", tool)])), Some(&mut terminal));
+
+        assert_eq!(result, Ok("Copied link-4".to_string()));
+        assert!(terminal.is_empty());
+    }
+
+    #[test]
+    fn a_terminal_that_cannot_be_written_to_still_names_the_link() {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("closed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let failed = copy_text_with("link-5", &lookup(HashMap::new()), Some(&mut Closed)).unwrap_err();
+
+        assert!(failed.contains("no clipboard tool worked") && failed.contains("link-5"), "{failed}");
     }
 }
