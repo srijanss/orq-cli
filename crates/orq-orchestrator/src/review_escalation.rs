@@ -2,7 +2,7 @@
 //! review ledger the session left in its worktree. Such a run waits for a human decision; it has
 //! not failed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -60,7 +60,7 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
         return Err(format!("{ROUNDS_FILE} is not a JSON object"));
     };
     // Every round, newest first; the latest one of a review of this run's work is the one that
-    // counts. Only as many are checked against the history as it takes to find it.
+    // counts.
     let mut candidates: Vec<(&str, &Value)> = scopes
         .values()
         .filter_map(Value::as_array)
@@ -68,15 +68,29 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
         .map(|round| (text(round, "recordedAt").unwrap_or(""), round))
         .collect();
     candidates.sort_by(|a, b| b.0.cmp(a.0));
+    // The history is asked once for the run's commits; each round is then checked against that,
+    // and only a start and head both among them are asked whether they come in order, once per pair.
+    let Some(run_commits) = run_commits(worktree, base)? else {
+        return Ok(None);
+    };
+    let mut in_order: HashMap<(&str, &str), bool> = HashMap::new();
     let mut latest = None;
     for (_, round) in candidates {
         let (Some(start), Some(head)) = (text(round, "start"), text(round, "head")) else {
             continue;
         };
-        if is_ancestor(worktree, base, start)?
-            && is_ancestor(worktree, start, head)?
-            && is_ancestor(worktree, head, "HEAD")?
-        {
+        if !run_commits.contains(start) || !run_commits.contains(head) {
+            continue;
+        }
+        let ordered = match in_order.get(&(start, head)) {
+            Some(&known) => known,
+            None => {
+                let known = is_ancestor(worktree, start, head)?;
+                in_order.insert((start, head), known);
+                known
+            }
+        };
+        if ordered {
             latest = Some((round, start, head));
             break;
         }
@@ -168,9 +182,40 @@ fn read_ledger(path: &Path) -> Result<Option<Value>, String> {
     serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{name} is not valid JSON: {e}"))
 }
 
+/// The full names of the commits of this run's work: `base` and every commit after it that `HEAD`
+/// has. `None` when `base` is not a commit `HEAD` has, so no review can be of this run's work.
+fn run_commits(worktree: &Path, base: &str) -> Result<Option<HashSet<String>>, String> {
+    if !is_commit_name(base) {
+        return Ok(None);
+    }
+    let commit = format!("{base}^{{commit}}");
+    // `base` is a hexadecimal name, so git cannot read it as an option; one it does not know is
+    // a failure, and no review is of this run's work.
+    let names = git_raw(worktree, &["rev-parse", "--quiet", &commit, "HEAD"]).map_err(|e| e.to_string())?;
+    if !names.success {
+        return Ok(None);
+    }
+    let mut names = names.stdout.lines();
+    let (Some(base), Some(head)) = (names.next(), names.next()) else {
+        return Ok(None);
+    };
+    let range = format!("{base}..{head}");
+    let out = git_raw(worktree, &["rev-list", "--ancestry-path", &range, "--"]).map_err(|e| e.to_string())?;
+    if !out.success {
+        return Err(format!("git rev-list {range} failed: {}", out.stderr.trim()));
+    }
+    let mut commits: HashSet<String> = out.stdout.lines().map(str::to_string).collect();
+    // An empty path means `HEAD` is `base` or does not have it.
+    if commits.is_empty() && base != head {
+        return Ok(None);
+    }
+    commits.insert(base.to_string());
+    Ok(Some(commits))
+}
+
 /// Whether `ancestor` is `descendant` or one of its ancestors. A name git does not know is not.
 fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, String> {
-    if !is_commit_name(ancestor) || !(descendant == "HEAD" || is_commit_name(descendant)) {
+    if !is_commit_name(ancestor) || !is_commit_name(descendant) {
         return Ok(false);
     }
     let out = git_raw(worktree, &["merge-base", "--is-ancestor", ancestor, descendant])
