@@ -556,6 +556,66 @@ fn a_report_left_by_an_earlier_session_does_not_stop_a_loop_whose_fix_works() {
 }
 
 #[test]
+fn an_empty_or_blank_report_is_no_report_and_the_gate_reruns() {
+    let w = world("report-blank");
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("printf ' \\n\\n' > '{}'; touch fixed", report.display())),
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+}
+
+#[test]
+fn a_report_that_is_not_text_is_still_reported_without_failing() {
+    let w = world("report-binary");
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("printf 'flaky \\377 clock\\n' > '{}'", report.display())),
+    )
+    .unwrap();
+
+    match outcome {
+        GateFixOutcome::Unrelated { summary } => assert!(summary.starts_with("flaky"), "{summary}"),
+        other => panic!("expected Unrelated, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_report_that_cannot_be_read_is_no_report() {
+    let w = world("report-directory");
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("mkdir '{}'; touch fixed", report.display())),
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+}
+
+#[test]
 fn a_huge_report_is_cut_to_one_short_line() {
     let w = world("report-huge");
     let report = w.root.join("unrelated-failure.txt");
