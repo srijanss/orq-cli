@@ -118,7 +118,9 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
             "--ignored",
         ],
     )?;
-    if !status.success {
+    // git_raw reads output lossily: a path that is not UTF-8 comes back as another name, which could
+    // be taken for a cache directory of its own. Such a worktree is not judged, but kept.
+    if !status.success || status.stdout.contains(char::REPLACEMENT_CHARACTER) {
         return Ok(Some(UncommittedWork::Unreadable));
     }
     // Untracked files are listed one by one, so an ignored directory is never exempt as a whole: each

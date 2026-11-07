@@ -263,6 +263,33 @@ fn a_build_cache_in_a_directory_with_a_non_ascii_name_is_removed_with_the_worktr
 }
 
 #[test]
+fn a_non_utf8_directory_name_never_borrows_the_cache_tag_of_a_look_alike_directory() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let w = world("non-utf8-collision");
+    fs::write(w.worktree.join(".gitignore"), "cache-*/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore build output"]);
+    // A tagged cache named with the replacement character, and an untagged directory whose
+    // invalid byte a lossy reading would turn into that same name.
+    let tagged = w.worktree.join("cache-\u{FFFD}");
+    fs::create_dir_all(&tagged).unwrap();
+    fs::write(
+        tagged.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    let raw = w.worktree.join(OsStr::from_bytes(b"cache-\xff"));
+    fs::create_dir_all(&raw).unwrap();
+    fs::write(raw.join("work.txt"), "not rebuildable").unwrap();
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
+
+    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert!(raw.join("work.txt").exists(), "the file is intact");
+}
+
+#[test]
 fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in_a_proven_build_cache() {
     use std::os::unix::fs::symlink;
     const SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
