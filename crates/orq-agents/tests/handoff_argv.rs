@@ -16,6 +16,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         attended: false,
         remote_control: None,
         handoff: Some("Plan:\n- COM-02 (in_progress)\nRemaining: gate"),
+        review_again: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(argv.len(), 3, "the summary stays inside the one prompt argument: {argv:?}");

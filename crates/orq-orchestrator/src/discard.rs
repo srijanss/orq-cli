@@ -48,8 +48,8 @@ pub fn discard_run_before_remove(
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
     // A run whose pause is only requested is still running until it reaches a safe point.
-    if !matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused) {
-        return Err(format!("{run_id} is {}; only a failed, blocked or paused run can be discarded", phase.as_str()));
+    if !matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::Paused) {
+        return Err(format!("{run_id} is {}; only a failed, blocked, paused or review-waiting run can be discarded", phase.as_str()));
     }
     let branch = record.branch.as_str();
     if branch.is_empty() || branch == record.target_branch {

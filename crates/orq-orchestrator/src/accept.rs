@@ -1,4 +1,4 @@
-//! Accepting a failed run: the work it left committed is taken as the run's result when the
+//! Accepting a failed run, or one whose review escalated: the work it left committed is taken as the run's result when the
 //! tests pass in its worktree, so the run ends review ready like any other.
 
 use std::path::Path;
@@ -34,15 +34,18 @@ fn verify_own_worktree(run_id: &str, worktree: &Path, branch: &str) -> Result<()
     Ok(())
 }
 
-/// Mark the failed run `run_id` review ready when its worktree holds committed work, nothing is
+/// Mark the failed or needs-review run `run_id` review ready when its worktree holds committed work, nothing is
 /// left uncommitted and `tests(worktree)` passes. The tests run only once the run is known to be
 /// acceptable; a failure leaves the run failed and is returned as the reason.
 pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
-    if phase != RunPhase::Failed {
-        return Err(format!("{run_id} is {}; only a failed run can be accepted", phase.as_str()));
+    if !matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) {
+        return Err(format!(
+            "{run_id} is {}; only a failed run can be accepted, or one waiting on a review decision",
+            phase.as_str()
+        ));
     }
     if !record.worktree.is_dir() {
         return Err(format!("the worktree of {run_id} is gone; there is no work to accept"));

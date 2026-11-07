@@ -454,7 +454,7 @@ fn run(args: &[OsString]) -> ExitCode {
             }
             ExitCode::from(match report.ending {
                 pipeline::Ending::ReviewReady | pipeline::Ending::Paused => 0,
-                pipeline::Ending::Blocked => EXIT_BLOCKED,
+                pipeline::Ending::Blocked | pipeline::Ending::NeedsReview => EXIT_BLOCKED,
                 pipeline::Ending::Failed => EXIT_FAILED,
             })
         }
@@ -2214,7 +2214,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         orq_orchestrator::reconcile_interrupted(&store, run_id, &orq_orchestrator::process_is_alive).map_err(|err| format!("cannot read the run: {err:?}"))?;
         let stopped = store
             .events(run_id)
-            .map(|events| matches!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked))
+            .map(|events| matches!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked | orq_orchestrator::RunPhase::NeedsReview))
             .unwrap_or(false);
         if stopped {
             // The pipeline continues the latest run of these features, so that is what is checked.
@@ -4692,12 +4692,12 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         .map(|events| {
             matches!(
                 orq_orchestrator::summarize_run(&events).phase,
-                orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked
+                orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked | orq_orchestrator::RunPhase::NeedsReview
             )
         })
         .unwrap_or(false);
     let next = if stopped {
-        // A failed or blocked run has no checkpoint; the pipeline picks it up through the group resume below.
+        // A failed, blocked or review-waiting run has no checkpoint; the pipeline picks it up through the group resume below.
         "where it stopped".to_string()
     } else {
         match orq_orchestrator::validate_checkpoint(&store, &repo, &run_id) {
@@ -4726,6 +4726,16 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     };
     if let Err(reason) = check_group_resume(&store, &repo, &run_id) {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
+    }
+    // A run waiting for a review decision kept its features; reviewing again starts them anew.
+    let waiting = store.events(&run_id).is_ok_and(|events| orq_orchestrator::summarize_run(&events).phase == orq_orchestrator::RunPhase::NeedsReview);
+    if waiting {
+        let reopened = orq_git::resolve_project(&repo)
+            .map_err(|err| format!("cannot resolve project: {err:?}"))
+            .and_then(|project| orq_features::reopen_features(&orq_features::ledger_path(&project), &members));
+        if let Err(reason) = reopened {
+            return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
+        }
     }
     let repo_root = repo.clone();
     let mut forwarded: Vec<OsString> = vec!["--repo".into(), repo.into_os_string(), "--remote".into(), record.remote.into(), "--target".into(), record.target_branch.into(), "--resume".into()];

@@ -664,6 +664,8 @@ enum RowAction {
     Pause,
     Stop,
     Resume,
+    /// Resume a run whose review escalated: its session reviews the commits since again.
+    ReviewAgain,
     Discard,
     Accept,
     OpenLink,
@@ -678,6 +680,7 @@ impl RowAction {
             RowAction::Pause => "[Pause]",
             RowAction::Stop => "[Stop]",
             RowAction::Resume => "[Resume]",
+            RowAction::ReviewAgain => "[Review again]",
             RowAction::Discard => "[Discard]",
             RowAction::Accept => "[Accept]",
             RowAction::OpenLink => "[Open MR]",
@@ -721,6 +724,7 @@ fn run_actions(status: &str) -> &'static [RowAction] {
         "paused" => &[RowAction::Resume, RowAction::Discard],
         "failed" => &[RowAction::Resume, RowAction::Accept, RowAction::Discard],
         "blocked" => &[RowAction::Resume, RowAction::Discard],
+        "needs_review" => &[RowAction::ReviewAgain, RowAction::Accept, RowAction::Discard],
         _ => &[],
     }
 }
@@ -2661,10 +2665,10 @@ impl RunsState {
         Rect::new(body.x, body.y, body.width, list - reason)
     }
 
-    /// The reason of the selected run when it failed or is blocked, wrapped to `width`.
+    /// The reason of the selected run when it failed, is blocked or waits on a review, wrapped to `width`.
     fn reason_lines(&self, width: u16) -> Vec<String> {
         let Ok(rows) = &self.rows else { return Vec::new() };
-        let Some(run) = rows.get(self.selected).filter(|run| matches!(run.status.as_str(), "failed" | "blocked")) else {
+        let Some(run) = rows.get(self.selected).filter(|run| matches!(run.status.as_str(), "failed" | "blocked" | "needs_review")) else {
             return Vec::new();
         };
         let Some(reason) = run.reason.as_deref().map(printable).filter(|r| !r.trim().is_empty()) else {
@@ -2805,6 +2809,7 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                     Some("pause_requested") => " · s stop",
                     Some("paused") => " · c resume · m switch model",
                     Some("failed" | "blocked") => " · c resume · o new pane",
+                    Some("needs_review") => " · c review again · o new pane",
                     _ if no_link => " · o new pane",
                     _ => " · o new pane",
                 };
@@ -3559,6 +3564,7 @@ impl Browser {
     /// A button pressed on `run_id`'s card in the Orchestrations tab: a pause is done at once, a
     /// stop, resume or discard is asked first.
     fn run_row_action(&mut self, backend: &mut dyn BrowserBackend, run_id: String, action: RowAction) {
+        let action = if action == RowAction::ReviewAgain { RowAction::Resume } else { action };
         match action {
             RowAction::Pause => {
                 self.notice = Some(match backend.pause_run(&run_id) {
@@ -3594,7 +3600,7 @@ impl Browser {
             }
             RowAction::OpenLink => self.review_link_of_selected_run(backend, false),
             RowAction::CopyLink => self.review_link_of_selected_run(backend, true),
-            RowAction::Orchestrate | RowAction::Details => {}
+            RowAction::Orchestrate | RowAction::Details | RowAction::ReviewAgain => {}
         }
     }
 
@@ -3617,7 +3623,7 @@ impl Browser {
         }
         let done = match action {
             RowAction::Stop => backend.stop_run(run_id),
-            RowAction::Resume => backend.resume_run(run_id),
+            RowAction::Resume | RowAction::ReviewAgain => backend.resume_run(run_id),
             RowAction::Discard => backend.discard_run(run_id),
             RowAction::Accept => backend.accept_run(run_id),
             RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink | RowAction::Details => return,
@@ -3970,12 +3976,12 @@ impl Browser {
         }
     }
 
-    /// `c` on a paused, failed or blocked run: check it can continue, then wait for `y` before resuming.
+    /// `c` on a paused, failed, blocked or review-waiting run: check it can continue, then wait for `y` before resuming.
     fn ask_to_resume_selected_run(&mut self, backend: &mut dyn BrowserBackend) {
         let Some(run) = self.selected_run() else { return };
         let (run_id, status) = (run.run_id.clone(), run.status.clone());
-        if !matches!(status.as_str(), "paused" | "failed" | "blocked") {
-            self.notice = Some(format!("{run_id} is {status}; only a paused, failed or blocked run can be resumed"));
+        if !matches!(status.as_str(), "paused" | "failed" | "blocked" | "needs_review") {
+            self.notice = Some(format!("{run_id} is {status}; only a paused, failed, blocked or review-waiting run can be resumed"));
             return;
         }
         self.notice = Some(match backend.resume_check(&run_id) {

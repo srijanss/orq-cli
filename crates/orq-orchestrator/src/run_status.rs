@@ -4,8 +4,8 @@
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
-/// Record that the run has ended. `ending` is `review_ready`, `blocked` or `failed`; a reason
-/// is kept for the last two. Listing reads this instead of inferring the end from other events.
+/// Record that the run has ended. `ending` is `review_ready`, `blocked`, `needs_review` or
+/// `failed`; a reason is kept for the last three. Listing reads this instead of inferring the end from other events.
 pub fn record_run_completed(
     store: &RunStore,
     record: &RunRecord,
@@ -39,6 +39,9 @@ pub enum RunPhase {
     Failed,
     /// Waiting on a human, for example a rebase conflict.
     Blocked,
+    /// The implement session's review escalated: the run waits for a human to review again,
+    /// accept or discard its work.
+    NeedsReview,
     /// A pause was asked for; the run keeps going until it reaches a stage boundary.
     PauseRequested,
     /// The run stopped at a stage boundary and can be resumed.
@@ -52,6 +55,7 @@ impl RunPhase {
             RunPhase::Completed => "completed",
             RunPhase::Failed => "failed",
             RunPhase::Blocked => "blocked",
+            RunPhase::NeedsReview => "needs_review",
             RunPhase::PauseRequested => "pause_requested",
             RunPhase::Paused => "paused",
         }
@@ -208,6 +212,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
                 Some("review_ready" | "resumed") => RunPhase::Completed,
                 Some("failed") => RunPhase::Failed,
                 Some("blocked") => RunPhase::Blocked,
+                Some("needs_review") => RunPhase::NeedsReview,
                 _ => continue,
             },
             // Cleanup keeps the worktree of an unsuccessful run too: that says nothing about how
@@ -215,7 +220,9 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "worktree.kept" => {
                 let unsuccessful =
                     event.payload.get("run_succeeded").and_then(|v| v.as_bool()) == Some(false);
-                if unsuccessful || matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked) {
+                if unsuccessful
+                    || matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview)
+                {
                     continue;
                 }
                 RunPhase::Completed
@@ -224,7 +231,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
         };
         summary.phase = phase;
         summary.reason = match phase {
-            RunPhase::Failed | RunPhase::Blocked => event
+            RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview => event
                 .payload
                 .get("reason")
                 .and_then(|r| r.as_str())

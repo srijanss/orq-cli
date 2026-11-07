@@ -190,7 +190,7 @@ pub fn plan_group_resume_with(
     }
     let mut checkpoint = None;
     match summarize_run(&events).phase {
-        RunPhase::Failed | RunPhase::Blocked => {}
+        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview => {}
         RunPhase::Running => {
             return Err(format!(
                 "{} did not stop; it may still be running",

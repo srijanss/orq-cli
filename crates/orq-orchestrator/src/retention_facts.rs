@@ -56,7 +56,8 @@ fn facts_of(
     };
     let state = match summarize_run(&events).phase {
         RunPhase::Running => RunState::Running,
-        RunPhase::Blocked => RunState::Blocked,
+        // Waiting on a human decision, like a blocked run.
+        RunPhase::Blocked | RunPhase::NeedsReview => RunState::Blocked,
         RunPhase::Failed => RunState::Failed,
         RunPhase::Completed => RunState::Completed,
         RunPhase::PauseRequested => RunState::PauseRequested,

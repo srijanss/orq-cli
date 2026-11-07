@@ -28,6 +28,7 @@ mod rebase;
 mod resume;
 mod retention_facts;
 mod review_draft;
+mod review_escalation;
 mod review_observe;
 mod review_request;
 mod run_list;
@@ -99,6 +100,7 @@ pub use run_settings::{
     load_run_settings, model as checked_model, save_mcp_servers_setting, RunSettings, SettingsError,
 };
 pub use run_activity::{activity_line, newest_log_tail, run_activity, step_lines, test_progress, test_total_line, LogTail, RunActivity, TestProgress};
+pub use review_escalation::{escalated_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
 pub use run_status::{
     record_capability_skipped, record_model_switched, record_run_completed, request_model_switch,
     request_pause, summarize_run, RunPhase, RunSummary,

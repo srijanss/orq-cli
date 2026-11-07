@@ -55,6 +55,18 @@ pub struct ImplementRequest<'a> {
     pub remote_control: Option<&'a str>,
     /// Where an earlier session left the work, when this session continues one after a model switch.
     pub handoff: Option<&'a str>,
+    /// The run's review escalated and a human asked for another: the session reviews and fixes the
+    /// commits after the escalated head instead of implementing the features.
+    pub review_again: Option<ReviewAgain<'a>>,
+}
+
+/// Where a review asked for again starts, and the findings that were open when it escalated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewAgain<'a> {
+    /// The head the escalated review last reviewed: the new review covers `from..HEAD`.
+    pub from: &'a str,
+    /// The open findings, in words, one per line.
+    pub findings: &'a str,
 }
 
 /// What a stage asks an adapter to start when a check went red: a session that repairs it.
@@ -327,6 +339,11 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
 /// The one prompt argument of an implementer session on `harness`, after checking everything the
 /// request puts into it. `command` is how that harness names the implement-and-review skill. Every
 /// adapter builds its prompt here so they all refuse the same unsafe values.
+/// A hexadecimal object name, so it can never be read as an option or a revision expression.
+fn is_commit_name(name: &str) -> bool {
+    (7..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn implement_prompt(harness: &'static str, command: &str, request: &ImplementRequest<'_>) -> Result<String, AdapterError> {
     if request.implementer.harness != harness {
         return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
@@ -340,18 +357,30 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     plain("implementer model", &request.implementer.model)?;
     adapter_for(&request.reviewer.harness)?;
     plain("reviewer model", &request.reviewer.model)?;
-    let mut prompt = format!(
-        "{command} {} --reviewer {} --model {}",
-        request.features.join(" "),
-        request.reviewer.harness,
-        request.reviewer.model
-    );
+    // Reviewing again covers what came after the escalated head; the features were already implemented.
+    let subject = match &request.review_again {
+        Some(again) => {
+            if !is_commit_name(again.from) {
+                return Err(AdapterError::InvalidValue { field: "review start", value: again.from.to_string() });
+            }
+            format!("{}..HEAD", again.from)
+        }
+        None => request.features.join(" "),
+    };
+    let command = match request.review_again {
+        Some(_) => command.replace("implement-and-review", "review-and-fix"),
+        None => command.to_string(),
+    };
+    let mut prompt = format!("{command} {subject} --reviewer {} --model {}", request.reviewer.harness, request.reviewer.model);
     if let Some(thinking) = &request.reviewer.thinking {
         plain("reviewer thinking", thinking)?;
         prompt.push_str(" --thinking ");
         prompt.push_str(thinking);
     }
-    if request.features.len() > 1 {
+    if let Some(again) = &request.review_again {
+        prompt.push_str("\n\nThe review of this branch escalated and a human asked for another review of the commits since the head it last reviewed. These findings were open when it escalated:\n");
+        prompt.push_str(&again.findings.replace('\0', " "));
+    } else if request.features.len() > 1 {
         prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
     }
     if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {

@@ -138,6 +138,8 @@ pub enum Ending {
     ReviewReady,
     Blocked,
     Failed,
+    /// The implement session's review loop escalated: a human reviews again, accepts or discards.
+    NeedsReview,
     /// Stopped at a stage boundary because a pause was requested; the run can be resumed.
     Paused,
 }
@@ -148,6 +150,7 @@ impl Ending {
             Ending::ReviewReady => "review_ready",
             Ending::Blocked => "blocked",
             Ending::Failed => "failed",
+            Ending::NeedsReview => "needs_review",
             Ending::Paused => "paused",
         }
     }
@@ -528,10 +531,16 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         }
         c
     });
+    // A run that waited for a review decision is resumed as another review of what came after the escalated head.
+    let review_again = resumed
+        .as_ref()
+        .filter(|r| store.events(&r.from.run_id).is_ok_and(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::NeedsReview))
+        .and_then(|r| escalated(&r.from.worktree, &r.from.base_sha));
     let logs = root.join("logs").join(&run_id);
+    let resumed_from = Resumed { implement_inherited_from: inherited.map(|r| r.from.run_id.as_str()), paused_at: checkpoint.as_ref(), review_again: review_again.as_ref() };
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
-        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, inherited.map(|r| r.from.run_id.as_str()), checkpoint.as_ref()));
+        .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, &resumed_from));
     let mut report = match outcome {
         Ok(mut report) => {
             report.run_id = run_id;
@@ -574,6 +583,44 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         _ => announce(&settings, repo, &options.features.join(","), report.ending.name(), report.detail.as_deref(), report.review_url.as_deref()),
     }
     Ok(report)
+}
+
+/// The review in `worktree` that escalated, if one did. A ledger that cannot be read is said and
+/// counts as none, so the run fails as it would have.
+fn escalated(worktree: &Path, base: &str) -> Option<orq_orchestrator::EscalatedReview> {
+    orq_orchestrator::escalated_review(worktree, base)
+        .inspect_err(|err| eprintln!("orq: cannot read the review ledger: {err}"))
+        .ok()
+        .flatten()
+}
+
+fn escalation_reason(review: &orq_orchestrator::EscalatedReview) -> String {
+    let open = review.findings.iter().filter(|f| f.status == "open").count();
+    let rounds = if review.rounds == 1 { "round" } else { "rounds" };
+    let findings = if open == 1 { "finding" } else { "findings" };
+    format!("the review escalated after {} {rounds} with {open} {findings} open", review.rounds)
+}
+
+/// The findings still open in an escalated review, one line each, for the session that reviews again.
+fn open_findings_text(review: &orq_orchestrator::EscalatedReview) -> String {
+    let lines: Vec<String> = review
+        .findings
+        .iter()
+        .filter(|f| f.status == "open")
+        .map(|f| {
+            let place = match (&f.file, f.line) {
+                (Some(file), Some(line)) => format!(", {file}:{line}"),
+                (Some(file), None) => format!(", {file}"),
+                _ => String::new(),
+            };
+            format!("- {} ({}{place}): {}", f.id, f.severity, f.claim)
+        })
+        .collect();
+    if lines.is_empty() {
+        "(none: each was fixed, rejected or deferred since)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Whether the run's worktree has a commit since the run's base. A worktree that is gone has none.
@@ -785,6 +832,17 @@ fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)])
     Ok(env)
 }
 
+/// What a resumed run takes over from the run it continues; all `None` for a new run.
+#[derive(Clone, Copy)]
+struct Resumed<'a> {
+    /// That run's agent session finished, so this run does not start one.
+    implement_inherited_from: Option<&'a str>,
+    /// That run paused here, having done these stages.
+    paused_at: Option<&'a orq_orchestrator::Checkpoint>,
+    /// That run's review escalated, so this run's session reviews again from where it stopped.
+    review_again: Option<&'a orq_orchestrator::EscalatedReview>,
+}
+
 fn stages(
     store: &RunStore,
     record: &RunRecord,
@@ -792,9 +850,9 @@ fn stages(
     settings: &orq_orchestrator::RunSettings,
     provider_cli: &str,
     logs: &Path,
-    implement_inherited_from: Option<&str>,
-    paused_at: Option<&orq_orchestrator::Checkpoint>,
+    resumed: &Resumed<'_>,
 ) -> Result<Report, StoreError> {
+    let Resumed { implement_inherited_from, paused_at, review_again } = *resumed;
     let run_id = record.run_id.as_str();
     // A run continued from a pause does not redo what the checkpoint records as done: the push and
     // the review request are outward-facing and must happen once.
@@ -878,6 +936,7 @@ fn stages(
                     eprintln!("orq: cannot record the skipped {capability} of {run_id}: {err:?}");
                 }
             }
+            let open_findings = review_again.map(open_findings_text);
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     features: &features,
@@ -888,6 +947,7 @@ fn stages(
                     attended: options.interactive,
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
+                    review_again: review_again.zip(open_findings.as_deref()).map(|(review, findings)| orq_agents::ReviewAgain { from: &review.reviewed_head, findings }),
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
@@ -902,6 +962,13 @@ fn stages(
             };
             let outcome = run_implement_stage(store, run_id, &session)?;
             if !outcome.success {
+                // A session that stopped for its escalated review has done what it could; the
+                // decision is a human's, so the run waits for it instead of failing.
+                if outcome.reported.is_some() {
+                    if let Some(review) = escalated(worktree, &record.base_sha) {
+                        return stopped(Ending::NeedsReview, escalation_reason(&review));
+                    }
+                }
                 return stopped(Ending::Failed, match outcome.reported {
                     Some(problem) => format!("the implement session reported a problem: {problem}"),
                     None => "the implement session failed".to_string(),
