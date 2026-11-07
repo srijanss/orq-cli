@@ -174,3 +174,46 @@ fn resuming_a_run_waiting_for_a_review_decision_reviews_again_from_the_escalated
     assert!(second.contains("leak"), "{second}");
     assert!(second.contains("the token reaches the log"), "{second}");
 }
+
+/// The run's worktree.
+fn worktree_path(repo: &Path) -> PathBuf {
+    let list = git(repo, &["worktree", "list", "--porcelain"]);
+    let linked = list.split("\n\n").nth(1).expect("the run's worktree");
+    PathBuf::from(linked.lines().find_map(|l| l.strip_prefix("worktree ")).unwrap())
+}
+
+/// Bring a run to `needs_review`, let `spoil` change its review ledger, then resume it.
+fn resume_after(tag: &str, spoil: impl Fn(&Path)) -> (World, Output) {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world(tag, &agent, Some(3));
+    let first = run(&w);
+    assert!(text(&first.stdout).contains("state: needs_review"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    spoil(&worktree_path(w.repo.root()));
+    let run_id = std::fs::read_dir(w.state.join("orq/runs")).unwrap().next().unwrap().unwrap().file_name().into_string().unwrap();
+    let resumed = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()]);
+    (w, resumed)
+}
+
+fn sessions(w: &World) -> usize {
+    std::fs::read_to_string(&w.prompts).unwrap().split("\n--\n").filter(|p| !p.is_empty()).count()
+}
+
+#[test]
+fn a_run_waiting_for_a_review_decision_whose_ledger_is_unreadable_is_not_resumed_as_new_work() {
+    let (w, resumed) = resume_after("ledger-malformed", |worktree| std::fs::write(worktree.join(".tdd-review-rounds.json"), "not json").unwrap());
+
+    let stderr = text(&resumed.stderr);
+    assert_eq!(sessions(&w), 1, "no session starts after the escalated one\n{stderr}");
+    assert_ne!(resumed.status.code(), Some(0), "{}\n{stderr}", text(&resumed.stdout));
+    assert!(stderr.contains("review ledger"), "{stderr}");
+}
+
+#[test]
+fn a_run_waiting_for_a_review_decision_whose_ledger_is_gone_is_not_resumed_as_new_work() {
+    let (w, resumed) = resume_after("ledger-gone", |worktree| std::fs::remove_file(worktree.join(".tdd-review-rounds.json")).unwrap());
+
+    let stderr = text(&resumed.stderr);
+    assert_eq!(sessions(&w), 1, "no session starts after the escalated one\n{stderr}");
+    assert_ne!(resumed.status.code(), Some(0), "{}\n{stderr}", text(&resumed.stdout));
+    assert!(stderr.contains("no escalated review"), "{stderr}");
+}

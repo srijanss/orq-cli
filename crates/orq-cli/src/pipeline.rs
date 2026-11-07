@@ -532,10 +532,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         c
     });
     // A run that waited for a review decision is resumed as another review of what came after the escalated head.
-    let review_again = resumed
-        .as_ref()
-        .filter(|r| store.events(&r.from.run_id).is_ok_and(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::NeedsReview))
-        .and_then(|r| escalated(&r.from.worktree, &r.from.base_sha));
+    let review_again = resumed.as_ref().and_then(|r| r.review_again.clone());
     let logs = root.join("logs").join(&run_id);
     let resumed_from = Resumed { implement_inherited_from: inherited.map(|r| r.from.run_id.as_str()), paused_at: checkpoint.as_ref(), review_again: review_again.as_ref() };
     let outcome = std::fs::create_dir_all(&logs)

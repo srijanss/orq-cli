@@ -21,6 +21,8 @@ pub struct ResumePlan {
     pub skip_implement: bool,
     /// For a paused run: where it stopped and what it had already done (and pushed or opened).
     pub checkpoint: Option<crate::checkpoint::Checkpoint>,
+    /// For a run waiting on a review decision: the review that escalated, to review again from.
+    pub review_again: Option<crate::review_escalation::EscalatedReview>,
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -236,11 +238,27 @@ pub fn plan_group_resume_with(
             from.run_id
         ));
     }
+    // A run waiting on a review decision continues only as another review of the one that
+    // escalated; without it, nothing says what to review, so it is not resumed as new work.
+    let review_again = match summarize_run(&events).phase {
+        RunPhase::NeedsReview => Some(
+            crate::review_escalation::escalated_review(&from.worktree, &from.base_sha)
+                .map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
+                .ok_or_else(|| {
+                    format!(
+                        "{}: its worktree has no escalated review to review again; accept or discard it",
+                        from.run_id
+                    )
+                })?,
+        ),
+        _ => None,
+    };
     let skip_implement = implement_finished(&events);
     Ok(ResumePlan {
         from,
         skip_implement,
         checkpoint,
+        review_again,
     })
 }
 
