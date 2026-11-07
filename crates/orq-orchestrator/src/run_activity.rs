@@ -167,6 +167,27 @@ pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, sinc
     None
 }
 
+/// The gate and CI as a named step with its round and, for tests, how far they have come: the
+/// lines to keep up to date in place of the log lines. Other stages have none.
+pub fn step_lines(current: &RunActivity) -> Option<Vec<String>> {
+    let round = current.attempt.max(1);
+    match current.stage.as_deref()? {
+        "verify" => Some(match &current.tests {
+            Some(t) => {
+                let mut lines = vec![format!("Tests (Round {round}) - {}%", t.done * 100 / t.total.max(1))];
+                if let Some(name) = t.current.as_deref().map(printable).filter(|n| !n.is_empty()) {
+                    lines.push(format!("  - {name}"));
+                }
+                lines
+            }
+            None => vec![format!("Checks (Round {round})")],
+        }),
+        "ci" if current.last_output.as_deref().is_some_and(|o| o.contains("no checks reported")) => Some(vec!["CI pending".to_string()]),
+        "ci" => Some(vec![format!("CI running (Round {round})")]),
+        _ => None,
+    }
+}
+
 /// Text safe to write to a terminal: escape sequences (colour, cursor, title, clipboard, links) and
 /// every other control character are removed, so output can never redraw or rewrite the screen.
 fn printable(text: &str) -> String {

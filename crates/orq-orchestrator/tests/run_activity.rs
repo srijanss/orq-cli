@@ -174,6 +174,33 @@ fn the_tests_finished_in_the_newest_log_reach_the_activity_with_the_name_redacte
 }
 
 #[test]
+fn the_gate_and_ci_are_shown_as_a_step_with_its_round_and_percentage() {
+    use orq_orchestrator::step_lines;
+    let mut verify = event("stage.started", Some("verify"));
+    verify.attempt = 2;
+    let ci = {
+        let mut e = event("stage.started", Some("ci"));
+        e.attempt = 1;
+        e
+    };
+
+    let testing = seen(&[verify.clone()], "x", 1);
+    let with_tests = orq_orchestrator::RunActivity {
+        tests: Some(orq_orchestrator::TestProgress { done: 1, total: 2, current: Some("a::one\u{1b}[31m".to_string()) }),
+        ..testing.clone()
+    };
+    assert_eq!(step_lines(&with_tests), Some(vec!["Tests (Round 2) - 50%".to_string(), "  - a::one".to_string()]));
+    assert_eq!(step_lines(&testing), Some(vec!["Checks (Round 2)".to_string()]));
+
+    let waiting = seen(&[ci.clone()], "CI waiting: no checks reported for abc1234 yet (5s of 600s)", 1);
+    assert_eq!(step_lines(&waiting), Some(vec!["CI pending".to_string()]));
+    let running = seen(&[ci], "CI waiting: checks of abc1234 still running (5s of 600s)", 1);
+    assert_eq!(step_lines(&running), Some(vec!["CI running (Round 1)".to_string()]));
+
+    assert_eq!(step_lines(&seen(&[event("stage.started", Some("push"))], "x", 1)), None, "other stages keep their plain line");
+}
+
+#[test]
 fn test_progress_counts_the_tests_finished_since_the_latest_run_began() {
     use orq_orchestrator::{test_progress, TestProgress};
     let log = "running 4 tests\ntest a::one ... ok\ntest a::two ... FAILED\ntest a::three ... ignored\n";
