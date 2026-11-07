@@ -66,14 +66,18 @@ fn key(code: KeyCode) -> Event {
 }
 
 fn screen_after(rows: &[ReviewRow], events: Vec<Event>) -> (Vec<String>, Vec<String>) {
+    screen_sized(80, 24, rows, events)
+}
+
+fn screen_sized(width: u16, height: u16, rows: &[ReviewRow], events: Vec<Event>) -> (Vec<String>, Vec<String>) {
     let calls: Calls = Rc::default();
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut script = vec![key(KeyCode::Char('V'))];
     script.extend(events);
     let _ = run_browser(&mut terminal, &model, &mut Fake(rows.to_vec(), calls.clone()), &mut Script(script.into()));
     let buffer = terminal.backend().buffer();
-    let lines = (0..24u16).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect();
+    let lines = (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect();
     let recorded = calls.borrow().clone();
     (lines, recorded)
 }
@@ -165,4 +169,46 @@ fn a_card_without_a_link_has_no_open_or_copy_to_press() {
     let (lines, _) = screen_after(&rows, vec![key(KeyCode::Char('a'))]);
     let other = lines.iter().find(|l| l.contains("COM-01")).unwrap();
     assert!(!other.contains("[Open MR]") && other.contains("[Details]"), "{lines:?}");
+}
+
+fn position_in(lines: &[String], feature: &str, label: &str) -> (u16, u16) {
+    let y = lines.iter().position(|l| l.contains(feature)).unwrap_or_else(|| panic!("{feature} is shown: {lines:?}"));
+    let x = lines[y].chars().collect::<Vec<_>>().windows(label.chars().count()).position(|w| w.iter().collect::<String>() == label).unwrap_or_else(|| panic!("{label} is shown: {lines:?}"));
+    (u16::try_from(x).unwrap(), u16::try_from(y).unwrap())
+}
+
+#[test]
+fn one_line_rows_have_no_buttons_so_a_press_at_the_right_edge_only_selects() {
+    // 5 screen rows leave 3 list rows, too few for a card.
+    let rows = linked(3);
+    let (lines, calls) = screen_sized(80, 5, &rows, vec![click(70, 2)]);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert!(lines.iter().any(|l| l.contains("> COM-02")), "{lines:?}");
+}
+
+#[test]
+fn a_narrow_card_that_dropped_its_link_buttons_cannot_open_or_copy_but_still_opens_details() {
+    let rows = linked(1);
+    let (lines, _) = screen_sized(57, 24, &rows, vec![]);
+    assert!(!lines.iter().any(|l| l.contains("[Open MR]")), "{lines:?}");
+    let (x, y) = position_in(&lines, "COM-01", "[Details]");
+    // Where [Open MR] and [Copy link] sit when the card is wide enough for them.
+    for gap in [20, 8] {
+        let (_, calls) = screen_sized(57, 24, &rows, vec![click(x - gap, y)]);
+        assert!(calls.is_empty(), "press {gap} columns before Details: {calls:?}");
+    }
+    let (_, calls) = screen_sized(57, 24, &rows, vec![click(x + 2, y)]);
+    assert_eq!(calls, ["details run-1"]);
+}
+
+#[test]
+fn a_card_without_a_link_ignores_presses_where_open_and_copy_would_be() {
+    let rows = vec![review(1, false), review(2, true)];
+    let (lines, _) = screen_after(&rows, vec![key(KeyCode::Char('a'))]);
+    let (x, y) = position_in(&lines, "COM-01", "[Details]");
+    for gap in [20, 8] {
+        let (lines, calls) = screen_after(&rows, vec![key(KeyCode::Char('a')), click(x - gap, y)]);
+        assert!(calls.is_empty(), "press {gap} columns before Details: {calls:?}");
+        assert!(lines.iter().any(|l| l.contains("> COM-01")), "{lines:?}");
+    }
 }
