@@ -1,14 +1,14 @@
 //! Short activity lines on the terminal of a run orq started interactively, for the stages that
 //! follow the agent session: without them the pane looks frozen while the gate, push and CI run.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use orq_orchestrator::{activity_line, newest_log_tail, run_activity, RunActivity, RunStore};
+use orq_orchestrator::{activity_line, newest_log_tail, run_activity, step_lines, RunActivity, RunStore};
 
 const POLL: Duration = Duration::from_millis(500);
 /// A run that shows nothing new is looked at less and less often, up to this.
@@ -25,10 +25,17 @@ pub struct Progress {
 
 impl Progress {
     pub fn start(state_root: PathBuf, run_id: String, logs: PathBuf) -> Self {
-        Self::start_with(state_root, run_id, logs, HEARTBEAT, Box::new(std::io::stderr()))
+        let in_place = std::io::stderr().is_terminal();
+        Self::start_rendering(state_root, run_id, logs, HEARTBEAT, Box::new(std::io::stderr()), in_place)
     }
 
-    pub fn start_with(state_root: PathBuf, run_id: String, logs: PathBuf, heartbeat: Duration, mut out: Box<dyn Write + Send>) -> Self {
+    pub fn start_with(state_root: PathBuf, run_id: String, logs: PathBuf, heartbeat: Duration, out: Box<dyn Write + Send>) -> Self {
+        Self::start_rendering(state_root, run_id, logs, heartbeat, out, false)
+    }
+
+    /// With `in_place` the gate and CI are shown as step lines redrawn where they are; without it
+    /// every change is a plain appended line.
+    pub fn start_rendering(state_root: PathBuf, run_id: String, logs: PathBuf, heartbeat: Duration, mut out: Box<dyn Write + Send>, in_place: bool) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -36,8 +43,41 @@ impl Progress {
             let mut previous: Option<RunActivity> = None;
             let mut last_line = Instant::now();
             let mut wait = POLL;
+            let mut drawn: Vec<String> = Vec::new();
             while !flag.load(Ordering::SeqCst) {
                 if let Some(current) = look(&store, &run_id, &logs) {
+                    if session_has_terminal(&current) {
+                        drawn.clear();
+                    } else if let Some(mut lines) = step_lines(&current).filter(|_| in_place) {
+                        if current.may_be_stuck {
+                            lines[0].push_str(" (it may be stuck)");
+                        }
+                        if lines != drawn && !flag.load(Ordering::SeqCst) {
+                            let mut frame = String::new();
+                            if !drawn.is_empty() {
+                                frame.push_str(&format!("\x1b[{}A", drawn.len()));
+                            }
+                            for line in &lines {
+                                frame.push_str(&format!("\r\x1b[2K{line}\n"));
+                            }
+                            // A shorter step leaves no stale line below it.
+                            if lines.len() < drawn.len() {
+                                frame.push_str("\x1b[J");
+                            }
+                            let _ = out.write_all(frame.as_bytes());
+                            let _ = out.flush();
+                            last_line = Instant::now();
+                            drawn = lines;
+                        }
+                        wait = next_wait(previous.as_ref(), &current, wait);
+                        previous = Some(current);
+                        let slept = Instant::now();
+                        while slept.elapsed() < wait && !flag.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        continue;
+                    }
+                    drawn.clear();
                     // Checked again just before writing: a printer that was dropped while it looked says nothing.
                     if let Some(line) = activity_line(previous.as_ref(), &current, last_line.elapsed(), heartbeat).filter(|_| !session_has_terminal(&current) && !flag.load(Ordering::SeqCst)) {
                         let stuck = if current.may_be_stuck { " (it may be stuck)" } else { "" };
@@ -66,7 +106,7 @@ fn session_has_terminal(current: &RunActivity) -> bool {
 /// How long to wait before looking again: back to the short wait when something new was shown,
 /// else twice as long, up to the quiet maximum. Time passing in a silent log is not news.
 fn next_wait(previous: Option<&RunActivity>, current: &RunActivity, wait: Duration) -> Duration {
-    let news = previous.is_none_or(|p| p.phase != current.phase || p.stage != current.stage || p.last_output != current.last_output || p.may_be_stuck != current.may_be_stuck);
+    let news = previous.is_none_or(|p| p.phase != current.phase || p.stage != current.stage || p.last_output != current.last_output || p.tests != current.tests || p.may_be_stuck != current.may_be_stuck);
     if news { POLL } else { (wait * 2).min(POLL_QUIET_MAX) }
 }
 
@@ -148,6 +188,58 @@ mod tests {
 
         let text = String::from_utf8(written.lock().unwrap().clone()).unwrap();
         assert!(text.contains("gate") && text.contains("running 12 tests"), "{text}");
+    }
+
+    fn gate_run(tag: &str, log: &str) -> (PathBuf, PathBuf) {
+        let (root, logs) = running_run(tag);
+        RunStore::new(&root)
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: "e1".into(),
+                run_id: "run-1".into(),
+                project_id: "repo-1".into(),
+                feature_id: "COM-01".into(),
+                kind: "stage.started".into(),
+                stage: Some("verify".into()),
+                attempt: 1,
+                occurred_at: "2026-11-02T10:00:00Z".into(),
+                payload: serde_json::json!({}),
+            })
+            .unwrap();
+        std::fs::write(logs.join("gate.log"), log).unwrap();
+        (root, logs)
+    }
+
+    #[test]
+    fn on_a_terminal_the_step_is_redrawn_in_place_as_its_percentage_moves() {
+        let (root, logs) = gate_run("inplace", "running 2 tests\ntest a::one ... ok\n");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let progress = Progress::start_rendering(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Sink(written.clone())), true);
+        let text = || String::from_utf8_lossy(&written.lock().unwrap()).to_string();
+
+        wait_for("the first drawing", || text().contains("Tests (Round 1) - 50%"));
+        assert!(text().contains("  - a::one"), "{}", text());
+        assert!(!text().contains("orq: verify"), "no appended log line beside the step: {}", text());
+
+        std::fs::write(logs.join("gate.log"), "running 2 tests\ntest a::one ... ok\ntest a::two ... ok\n").unwrap();
+        wait_for("the redraw", || text().contains("Tests (Round 1) - 100%"));
+        drop(progress);
+        let text = text();
+        let redraw = text.split("Tests (Round 1) - 100%").next().unwrap();
+        assert!(redraw.ends_with("\r\u{1b}[2K"), "the step lines are rewritten, not appended: {text:?}");
+        assert!(redraw.contains("\u{1b}[2A"), "the cursor goes back up over the two lines drawn: {text:?}");
+    }
+
+    #[test]
+    fn off_a_terminal_the_step_keeps_its_plain_appended_lines() {
+        let (root, logs) = gate_run("plain", "running 2 tests\ntest a::one ... ok\n");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let progress = Progress::start_with(root, "run-1".into(), logs, Duration::from_secs(60), Box::new(Sink(written.clone())));
+        wait_for("a line", || !written.lock().unwrap().is_empty());
+        drop(progress);
+
+        let text = String::from_utf8_lossy(&written.lock().unwrap()).to_string();
+        assert!(text.contains("orq: verify") && !text.contains('\u{1b}'), "{text:?}");
     }
 
     struct Stalled(Arc<AtomicBool>);
