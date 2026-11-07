@@ -52,18 +52,23 @@ pub const UNRELATED_FAILURE_FILE: &str = "unrelated-failure.txt";
 /// What the fix session wrote in the report, if it is a plain file with something in it. A link
 /// (the session could point it at any file orq can read) or anything else is not read.
 fn read_report(report: &Path) -> Option<String> {
-    let meta = std::fs::symlink_metadata(report).ok()?;
-    if !meta.file_type().is_file() {
+    // Opened without following a link and without waiting on a pipe, then checked on the opened
+    // handle, so the path cannot be swapped between the check and the read.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(report).ok()?;
+    if !file.metadata().ok()?.file_type().is_file() {
         return None;
     }
     // Only the start of the file is read, and only its first line is kept, so a session cannot
     // make orq hold or print an unbounded amount of text.
     let mut bytes = Vec::new();
-    std::fs::File::open(report)
-        .ok()?
-        .take(MAX_REPORT_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(MAX_REPORT_BYTES).read_to_end(&mut bytes).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
     Some(line.chars().take(MAX_SUMMARY_CHARS).collect())

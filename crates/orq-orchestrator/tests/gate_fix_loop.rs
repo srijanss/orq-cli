@@ -684,6 +684,26 @@ fn an_earlier_report_that_cannot_be_cleared_is_an_error_and_no_fix_session_start
     assert_eq!(*calls.borrow(), 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_named_pipe_left_as_the_report_is_not_waited_on() {
+    let w = world("report-fifo");
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("mkfifo '{}'", report.display())),
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, GateFixOutcome::Failed { .. }), "{outcome:?}");
+}
+
 #[test]
 fn a_huge_report_is_cut_to_one_short_line() {
     let w = world("report-huge");
