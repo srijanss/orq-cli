@@ -233,17 +233,16 @@ fn captured_stdout(
     Some(bytes)
 }
 
-/// A private scratch file beside the log, gone from the folder as soon as it is open.
+/// A private scratch file beside the log, gone from the folder as soon as it is open. Only a file
+/// this call created is ever written or removed: anything already at that name is an error.
 fn open_listing(log_path: &Path) -> std::io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let path = log_path.with_extension("test-list");
+    let path = log_path.with_extension(format!("test-list-{}", std::process::id()));
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
         .open(&path)?;
     fs::remove_file(&path)?;
     Ok(file)

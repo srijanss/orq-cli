@@ -432,6 +432,24 @@ fn a_workspace_that_cannot_be_inspected_is_not_listed_and_the_tests_still_run() 
 }
 
 #[test]
+fn a_file_already_at_the_scratch_path_is_left_alone_and_only_costs_the_percentage() {
+    let w = world("scratch-taken");
+    let env = fake_cargo(&w, LISTING);
+    // The names the scratch file has had or has: neither may be emptied or removed.
+    let taken = [w.log.with_extension("test-list"), w.log.with_extension(format!("test-list-{}", std::process::id()))];
+    for path in &taken {
+        fs::write(path, "someone else's").unwrap();
+    }
+    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    for path in &taken {
+        assert_eq!(fs::read_to_string(path).unwrap(), "someone else's", "{}", path.display());
+    }
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert!(log.contains("the-tests-ran"), "{log}");
+    assert_eq!(orq_orchestrator::test_progress(&log), None, "{log}");
+}
+
+#[test]
 fn a_step_aimed_at_another_manifest_is_not_counted() {
     let w = world("manifest-path");
     let env = fake_cargo(&w, "exit 0");
