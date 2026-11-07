@@ -1411,8 +1411,10 @@ impl Drop for WorkerJob {
 
 /// Orq's storage roots, resolved the same way `orq review` does; nothing is created.
 /// The Reviews tab rows. A review has a link when a run of this project with the
-/// same id recorded a review URL; reviews of other projects never do.
-fn reviews_with_links(rows: Vec<orq_core::review_inbox::InboxRow>, runs: &[orq_orchestrator::RunListing]) -> Vec<orq_tui::ReviewRow> {
+/// same id recorded a review URL; reviews of other projects never do. When the
+/// runs could not be listed (`None`) every review is still shown, without a link.
+fn reviews_with_links(rows: Vec<orq_core::review_inbox::InboxRow>, runs: Option<&[orq_orchestrator::RunListing]>) -> Vec<orq_tui::ReviewRow> {
+    let runs = runs.unwrap_or_default();
     rows.into_iter()
         .map(|r| {
             let has_link = r.current && runs.iter().any(|run| run.run_id == r.run_id && run.review_url.is_some());
@@ -2293,8 +2295,8 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
         let roots = review_roots()?;
         let rows = orq_core::review_inbox::inbox(&roots, &pipeline::project_id(&project), &project.name)?;
-        let runs = self.listed_runs()?;
-        Ok(reviews_with_links(rows, &runs))
+        let runs = self.listed_runs().ok();
+        Ok(reviews_with_links(rows, runs.as_deref()))
     }
 
     fn load_review_detail(&mut self, run_id: &str) -> Result<orq_tui::ReviewDetail, String> {
@@ -3720,7 +3722,7 @@ mod ledger_backend_tests {
         };
         let runs = [run("run-1", Some("https://example.test/mr/1")), run("run-2", None)];
 
-        let rows = crate::reviews_with_links(vec![inbox("run-1"), inbox("run-2"), inbox("run-other")], &runs);
+        let rows = crate::reviews_with_links(vec![inbox("run-1"), inbox("run-2"), inbox("run-other")], Some(&runs));
 
         let linked: Vec<(&str, bool)> = rows.iter().map(|row| (row.run_id.as_str(), row.has_link)).collect();
         assert_eq!(linked, vec![("run-1", true), ("run-2", false), ("run-other", false)]);
@@ -3749,9 +3751,26 @@ mod ledger_backend_tests {
             review_url: Some("https://example.test/mr/1".into()),
         }];
 
-        let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], &runs);
+        let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], Some(&runs));
 
         assert_eq!(rows.iter().map(|row| row.has_link).collect::<Vec<_>>(), vec![true, false]);
+    }
+
+    #[test]
+    fn reviews_are_still_listed_without_links_when_the_runs_could_not_be_listed() {
+        let inbox = |run_id: &str| orq_core::review_inbox::InboxRow {
+            run_id: run_id.into(),
+            feature: "COM-01".into(),
+            project: "orq-cli".into(),
+            current: true,
+            status: "ready".into(),
+            risk: "low".into(),
+            stale: false,
+        };
+
+        let rows = crate::reviews_with_links(vec![inbox("run-1"), inbox("run-2")], None);
+
+        assert_eq!(rows.iter().map(|row| (row.run_id.as_str(), row.has_link)).collect::<Vec<_>>(), vec![("run-1", false), ("run-2", false)]);
     }
 
     #[test]
