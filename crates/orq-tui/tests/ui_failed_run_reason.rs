@@ -105,3 +105,16 @@ fn a_blank_reason_shows_no_panel() {
     let screen = show(vec![run("run-1", "failed", Some("   ".into()))]);
     assert!(screen.contains("feat-run-1"), "{screen}");
 }
+
+#[test]
+fn a_reason_with_room_for_one_line_shows_its_first_line_not_only_the_notice() {
+    let screen = show_in(vec![run("run-1", "failed", Some(long_reason()))], 6, vec![]);
+    assert!(screen.contains("HEADMARK"), "{screen}");
+}
+
+#[test]
+fn a_blank_reason_leaves_the_list_as_it_is_without_a_reason() {
+    let blank = show(vec![run("run-1", "failed", Some("   ".into()))]);
+    let none = show(vec![run("run-1", "failed", None)]);
+    assert_eq!(blank, none);
+}

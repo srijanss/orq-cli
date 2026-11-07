@@ -2674,7 +2674,8 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
             let reason = state.reason_lines(body.width);
             let shown = usize::from(panel);
             // A reason that does not fit ends in a line that says so, in place of its last line.
-            let cut = reason.len() > shown && shown > 0;
+            // A single line of room keeps the reason's first line: the notice would replace all of it.
+            let cut = reason.len() > shown && shown > 1;
             for (n, text) in reason.iter().take(shown).enumerate() {
                 let text = if cut && n + 1 == shown { "… the rest does not fit; enlarge the window" } else { text };
                 let row = below - body.y + u16::try_from(n).unwrap_or(0);
