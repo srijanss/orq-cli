@@ -1061,9 +1061,16 @@ fn stages(
         wait_for_ci_logged(store, run_id, &provider, &head_sha, &ci_config, Some(&ci_log))?
     } else {
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        // Where a fix session says that the failure is not the run's; the session is told in its environment too.
+        let unrelated_report = logs.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
+        let mut fix_env = database_env.to_vec();
+        fix_env.push(("ORQ_UNRELATED_FAILURE_FILE".to_string(), unrelated_report.to_string_lossy().into_owned()));
         let task = format!(
-            "CI failed on the pushed branch. The newest ci-failure-*.log in {} lists the failing checks. Read it, get each check's log with {provider_cli}, fix the cause in this worktree and commit the fix.",
-            logs.display()
+            "CI failed on the pushed branch. The newest ci-failure-*.log in {} lists the failing checks. Read it, get each check's log with {provider_cli}, fix the cause in this worktree and commit the fix. \
+             If the failure has nothing to do with your changes (a flaky check, a check already failing on the target branch, a broken CI environment), do not fix it: \
+             write a line saying what fails and why it is not caused by your changes to {} and stop.",
+            logs.display(),
+            unrelated_report.display()
         );
         let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
@@ -1090,7 +1097,7 @@ fn stages(
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,
-                env: database_env.to_vec(),
+                env: fix_env,
                 cwd: worktree.to_path_buf(),
                 session_id: None,
                 log: logs.join("ci-fix.log"),
@@ -1107,7 +1114,16 @@ fn stages(
             max_attempts: CI_FIX_ATTEMPTS,
             env: &gate_env,
         };
-        ci_verdict(run_ci_fix_loop(store, run_id, &head_sha, &config, &mut steps)?)
+        match run_ci_fix_loop(store, run_id, &head_sha, &config, &mut steps)? {
+            // Left alone on purpose: the person decides whether it is fixed first, in its own change.
+            CiFixOutcome::Unrelated { summary, .. } => {
+                return stopped(
+                    Ending::Blocked,
+                    format!("CI fails for a reason unrelated to this run: {summary}. Get that fixed separately and merged into the target branch, then resume this run"),
+                );
+            }
+            outcome => ci_verdict(outcome),
+        }
     };
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
     if !options.publish {
@@ -1194,6 +1210,8 @@ fn ci_verdict(outcome: CiFixOutcome) -> CiOutcome {
         CiFixOutcome::PushFailed { fix_attempts, reason } => CiOutcome::Errored {
             reason: format!("pushing CI fix attempt {fix_attempts} failed: {reason}"),
         },
+        // The pipeline stops on this before it gets here; a verdict is still never a pass.
+        CiFixOutcome::Unrelated { summary, .. } => CiOutcome::Errored { reason: format!("CI fails for a reason unrelated to this run: {summary}") },
     }
 }
 

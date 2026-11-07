@@ -29,6 +29,7 @@ impl Progress {
         Self::start_rendering(state_root, run_id, logs, HEARTBEAT, Box::new(std::io::stderr()), in_place)
     }
 
+    #[cfg(test)]
     pub fn start_with(state_root: PathBuf, run_id: String, logs: PathBuf, heartbeat: Duration, out: Box<dyn Write + Send>) -> Self {
         Self::start_rendering(state_root, run_id, logs, heartbeat, out, false)
     }

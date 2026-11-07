@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ci_wait::CiOutcome;
 use crate::gate::Gate;
-use crate::gate_fix::FixSessionSpec;
+use crate::gate_fix::{clear_report, read_report, FixSessionSpec, UNRELATED_FAILURE_FILE};
 use crate::gate_stage::{run_gate_attempt, GateOutcome};
 use crate::implement::{next_event_id, now_rfc3339, run_session_stage, ImplementSession};
 use crate::push_stage::PushOutcome;
@@ -62,6 +62,9 @@ pub enum CiFixOutcome {
     },
     /// A fix could not be pushed; the run has failed.
     PushFailed { fix_attempts: u32, reason: String },
+    /// The fix session reported that the failure is not caused by this run's changes and left it
+    /// alone; `summary` is what it wrote, for the person to decide on. The run has not failed.
+    Unrelated { fix_attempts: u32, summary: String },
 }
 
 /// Wait on CI for `head_sha`; while it is red and fewer than `config.max_attempts` fixes
@@ -115,6 +118,14 @@ pub fn run_ci_fix_loop(
             &steps.failure_log(&failing),
         )?;
 
+        // A report left by an earlier session or run must not speak for this one.
+        let report = config.log_dir.join(UNRELATED_FAILURE_FILE);
+        if let Err(e) = clear_report(&report) {
+            return Err(StoreError::Corrupt(format!(
+                "cannot clear the earlier unrelated-failure report {}: {e}",
+                report.display()
+            )));
+        }
         let spec = steps.fix_session(fix_attempts, &failure_log);
         let session = ImplementSession {
             program: &spec.program,
@@ -128,6 +139,9 @@ pub fn run_ci_fix_loop(
         };
         // The session's own result is not trusted: the gate and CI decide.
         run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
+        if let Some(summary) = read_report(&report) {
+            return Ok(CiFixOutcome::Unrelated { fix_attempts, summary });
+        }
 
         match run_gate_attempt(
             store,

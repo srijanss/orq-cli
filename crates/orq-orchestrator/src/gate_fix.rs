@@ -51,7 +51,7 @@ pub const UNRELATED_FAILURE_FILE: &str = "unrelated-failure.txt";
 
 /// What the fix session wrote in the report, if it is a plain file with something in it. A link
 /// (the session could point it at any file orq can read) or anything else is not read.
-fn read_report(report: &Path) -> Option<String> {
+pub(crate) fn read_report(report: &Path) -> Option<String> {
     // Opened without following a link and without waiting on a pipe, then checked on the opened
     // handle, so the path cannot be swapped between the check and the read.
     // Where no such open exists, no report is read at all rather than one that follows links.
@@ -89,7 +89,7 @@ fn read_report_from(file: std::fs::File) -> Option<String> {
 
 /// Remove whatever is in the report's place, so a session starts without one. A directory the
 /// session left there is removed too (links inside it are removed, never followed).
-fn clear_report(report: &Path) -> std::io::Result<()> {
+pub(crate) fn clear_report(report: &Path) -> std::io::Result<()> {
     let result = match std::fs::symlink_metadata(report) {
         Ok(meta) if meta.file_type().is_dir() => std::fs::remove_dir_all(report),
         Ok(_) => std::fs::remove_file(report),

@@ -710,3 +710,45 @@ fn the_gate_that_follows_a_ci_fix_runs_with_the_run_environment() {
 
     assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
 }
+
+#[test]
+fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_a_gate_a_push_or_a_failed_run() {
+    let w = world("unrelated");
+    let gate = gate_needing_fixed();
+    let report = w.worktree.join(".orq").join("unrelated-failure.txt");
+    let mut script = Script::new(
+        &w,
+        vec![red(&["lint"])],
+        vec![],
+        &format!("printf 'deploy check is flaky\\n' > '{}'", report.display()),
+    );
+
+    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+
+    assert_eq!(
+        outcome,
+        CiFixOutcome::Unrelated {
+            fix_attempts: 1,
+            summary: "deploy check is flaky".to_string()
+        }
+    );
+    assert_eq!(script.pushed, 0);
+    assert_eq!(script.waited, vec![SHA1]);
+    assert_eq!(
+        kinds(&w),
+        vec![pair("ci_fix", "stage.started"), pair("ci_fix", "stage.completed")]
+    );
+}
+
+#[test]
+fn a_report_left_by_an_earlier_session_does_not_stop_a_ci_fix_that_works() {
+    let w = world("unrelated-stale");
+    let gate = gate_needing_fixed();
+    fs::create_dir_all(w.worktree.join(".orq")).unwrap();
+    fs::write(w.worktree.join(".orq").join("unrelated-failure.txt"), "old news\n").unwrap();
+    let mut script = Script::new(&w, vec![red(&["lint"]), CiOutcome::Passed], vec![pushed(SHA2)], "touch fixed");
+
+    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+
+    assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
+}

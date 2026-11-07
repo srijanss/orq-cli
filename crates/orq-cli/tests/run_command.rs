@@ -861,6 +861,54 @@ fn a_red_ci_fails_the_run_but_still_reports_the_review_request() {
 }
 
 #[test]
+fn a_ci_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_to_fix_elsewhere() {
+    let w = world("unrelated-ci");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"deploy\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+    // Only a fix session is told where to report a failure that is not the run's.
+    let bin = orq_test_support::process_temp_dir().join(format!("orq-run-bin-{}-unrelated-ci", std::process::id()));
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nif [ -n \"$ORQ_UNRELATED_FAILURE_FILE\" ]; then echo 'deploy check is flaky' > \"$ORQ_UNRELATED_FAILURE_FILE\"; exit 0; fi\nexec '{}' \"$@\"\n",
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![bin, provider.bin_dir()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(EXIT_BLOCKED), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: blocked"), "{stdout}");
+    assert!(stderr(&output).contains("unrelated") && stderr(&output).contains("deploy check is flaky"), "{}", stderr(&output));
+    assert_eq!(git(w.repo.root(), &["worktree", "list"]).lines().count(), 2, "the worktree is kept");
+}
+
+#[test]
 fn a_feature_with_a_run_in_progress_is_refused_with_its_own_exit_code() {
     let w = world("busy");
     let slow_bin = orq_test_support::process_temp_dir().join(format!("orq-run-slow-{}", std::process::id()));
