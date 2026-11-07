@@ -665,6 +665,8 @@ enum RowAction {
     Stop,
     Resume,
     Discard,
+    OpenLink,
+    CopyLink,
 }
 
 impl RowAction {
@@ -675,6 +677,8 @@ impl RowAction {
             RowAction::Stop => "[Stop]",
             RowAction::Resume => "[Resume]",
             RowAction::Discard => "[Discard]",
+            RowAction::OpenLink => "[Open MR]",
+            RowAction::CopyLink => "[Copy link]",
         }
     }
 }
@@ -715,6 +719,24 @@ fn run_actions(status: &str) -> &'static [RowAction] {
         "blocked" => &[RowAction::Discard],
         _ => &[],
     }
+}
+
+/// The columns a run card's title keeps before the link buttons may join the status buttons.
+const RUN_TITLE_MIN_WIDTH: usize = 24;
+
+/// The buttons on `run`'s card: the ones its status allows, then opening and copying its review
+/// link when it has one and the title keeps room beside them. The keys `u` and `y` work either way.
+fn run_card_buttons(inner: Rect, run: &RunRow) -> Vec<(Rect, RowAction)> {
+    let status = run_actions(&run.status);
+    if run.has_review_link {
+        let all = [status, &[RowAction::OpenLink, RowAction::CopyLink]].concat();
+        let rects = row_button_rects(inner, &all);
+        let room = rects.first().map_or(0, |(rect, _)| usize::from(rect.x - inner.x));
+        if room > RUN_TITLE_MIN_WIDTH {
+            return rects;
+        }
+    }
+    row_button_rects(inner, status)
 }
 
 /// Where each of `actions` sits on the first line of a card's `inner` area: right-aligned, one
@@ -2497,13 +2519,13 @@ impl RunsState {
             return None;
         }
         self.selected = index;
-        let status = self.rows.as_ref().ok()?.get(index)?.status.as_str();
+        let run = self.rows.as_ref().ok()?.get(index)?;
         if height != CARD_HEIGHT {
             return None;
         }
         let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
         let inner = Block::bordered().inner(Rect::new(cards.x, top, cards.width, height));
-        row_button_rects(inner, run_actions(status)).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action)
+        run_card_buttons(inner, run).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action)
     }
 
     /// The area for run cards. The last body row is the hint, and the row above it holds the
@@ -2564,7 +2586,7 @@ fn render_run_card(frame: &mut Frame, area: Rect, run: &RunRow, selected: bool) 
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = usize::from(inner.width);
-    let buttons = row_button_rects(inner, run_actions(&run.status));
+    let buttons = run_card_buttons(inner, run);
     // The title gives way to the buttons, keeping a space before the first.
     let title_room = buttons.first().map_or(width, |(rect, _)| usize::from(rect.x - inner.x).saturating_sub(1));
     let detail = format!(
@@ -3413,6 +3435,8 @@ impl Browser {
                 ));
                 self.row_confirm = Some((action, run_id));
             }
+            RowAction::OpenLink => self.review_link_of_selected_run(backend, false),
+            RowAction::CopyLink => self.review_link_of_selected_run(backend, true),
             RowAction::Orchestrate => {}
         }
     }
@@ -3437,7 +3461,7 @@ impl Browser {
             RowAction::Stop => backend.stop_run(run_id),
             RowAction::Resume => backend.resume_run(run_id),
             RowAction::Discard => backend.discard_run(run_id),
-            RowAction::Pause | RowAction::Orchestrate => return,
+            RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink => return,
         };
         self.notice = Some(match done {
             Ok(message) | Err(message) => printable(&message),
@@ -3717,9 +3741,20 @@ impl Browser {
         let Ok(rows) = &self.runs.rows else { return };
         let Some(run) = rows.get(self.runs.selected) else { return };
         let run_id = run.run_id.clone();
-        let outcome = if copy { backend.copy_review_link(&run_id) } else { backend.open_review_link(&run_id) };
-        self.notice = Some(match outcome {
-            Ok(message) | Err(message) => message,
+        self.notice = Some(if copy {
+            match backend.copy_review_link(&run_id) {
+                Ok(message) | Err(message) => message,
+            }
+        } else {
+            match backend.open_review_link(&run_id) {
+                Ok(message) => message,
+                Err(why) => match backend.copy_review_link(&run_id) {
+                    Ok(copied) => format!("{why}; {copied}"),
+                    // The same reason twice is about the run itself, not the desktop's tools.
+                    Err(copy_why) if copy_why == why => why,
+                    Err(copy_why) => format!("{why}; {copy_why}"),
+                },
+            }
         });
     }
 
