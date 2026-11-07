@@ -60,7 +60,7 @@ impl BrowserBackend for Fake {
 }
 
 fn row(feature: &str, project: &str, status: &str, risk: &str, stale: bool) -> ReviewRow {
-    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into(), current: project == "orq-cli", stale }
+    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into(), current: project == "orq-cli", stale, has_link: false }
 }
 
 fn key(code: KeyCode) -> Event {

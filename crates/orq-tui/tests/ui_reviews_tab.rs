@@ -29,7 +29,7 @@ impl BrowserBackend for Fake {
 }
 
 fn row(feature: &str, project: &str, status: &str, risk: &str) -> ReviewRow {
-    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into(), current: true, stale: false }
+    ReviewRow { run_id: format!("run-{feature}"), feature: feature.into(), project: project.into(), status: status.into(), risk: risk.into(), current: true, stale: false, has_link: false }
 }
 
 fn click(column: u16, row: u16) -> Event {

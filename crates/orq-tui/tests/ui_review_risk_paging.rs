@@ -38,7 +38,7 @@ impl BrowserBackend for Fake {
         PromoteOutcome::Saved
     }
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
-        Ok(vec![ReviewRow { run_id: "run-1".into(), feature: "APP-01".into(), project: "orq-cli".into(), status: "ready".into(), risk: "low".into(), current: true, stale: false }])
+        Ok(vec![ReviewRow { run_id: "run-1".into(), feature: "APP-01".into(), project: "orq-cli".into(), status: "ready".into(), risk: "low".into(), current: true, stale: false, has_link: false }])
     }
     fn load_review_detail(&mut self, run_id: &str) -> Result<ReviewDetail, String> {
         self.load_review_detail_with_links(run_id).map(|(d, _)| d)

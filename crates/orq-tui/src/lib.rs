@@ -1669,6 +1669,8 @@ pub struct ReviewRow {
     pub current: bool,
     /// Whether the report no longer matches the reviewed code.
     pub stale: bool,
+    /// Whether the review has a link that can be opened or copied.
+    pub has_link: bool,
 }
 
 /// The stored report of one review, as text lines per section of the detail view.

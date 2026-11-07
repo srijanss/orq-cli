@@ -1410,6 +1410,17 @@ impl Drop for WorkerJob {
 }
 
 /// Orq's storage roots, resolved the same way `orq review` does; nothing is created.
+/// The Reviews tab rows. A review has a link when a run of this project with the
+/// same id recorded a review URL; reviews of other projects never do.
+fn reviews_with_links(rows: Vec<orq_core::review_inbox::InboxRow>, runs: &[orq_orchestrator::RunListing]) -> Vec<orq_tui::ReviewRow> {
+    rows.into_iter()
+        .map(|r| {
+            let has_link = runs.iter().any(|run| run.run_id == r.run_id && run.review_url.is_some());
+            orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, current: r.current, stale: r.stale, has_link }
+        })
+        .collect()
+}
+
 fn review_roots() -> Result<orq_core::storage::StorageRoots, String> {
     orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok())
         .map_err(|err| format!("cannot locate the Orq data directory: {err}"))
@@ -2282,10 +2293,8 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let project = orq_git::resolve_project(repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
         let roots = review_roots()?;
         let rows = orq_core::review_inbox::inbox(&roots, &pipeline::project_id(&project), &project.name)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| orq_tui::ReviewRow { run_id: r.run_id, feature: r.feature, project: r.project, status: r.status, risk: r.risk, current: r.current, stale: r.stale })
-            .collect())
+        let runs = self.listed_runs()?;
+        Ok(reviews_with_links(rows, &runs))
     }
 
     fn load_review_detail(&mut self, run_id: &str) -> Result<orq_tui::ReviewDetail, String> {
@@ -3685,6 +3694,36 @@ mod ledger_backend_tests {
 
         assert_eq!(orq_tui::BrowserBackend::launch_defaults(&mut backend), orq_tui::LaunchDefaults::default());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_review_has_a_link_when_a_run_of_this_project_recorded_a_review_url() {
+        let inbox = |run_id: &str| orq_core::review_inbox::InboxRow {
+            run_id: run_id.into(),
+            feature: "COM-01".into(),
+            project: "orq-cli".into(),
+            current: true,
+            status: "ready".into(),
+            risk: "low".into(),
+            stale: false,
+        };
+        let run = |run_id: &str, url: Option<&str>| orq_orchestrator::RunListing {
+            run_id: run_id.into(),
+            feature_id: "COM-01".into(),
+            members: vec!["COM-01".into()],
+            phase: orq_orchestrator::RunPhase::Failed,
+            stage: None,
+            reason: None,
+            implementer_model: None,
+            reviewer_model: None,
+            review_url: url.map(str::to_string),
+        };
+        let runs = [run("run-1", Some("https://example.test/mr/1")), run("run-2", None)];
+
+        let rows = crate::reviews_with_links(vec![inbox("run-1"), inbox("run-2"), inbox("run-other")], &runs);
+
+        let linked: Vec<(&str, bool)> = rows.iter().map(|row| (row.run_id.as_str(), row.has_link)).collect();
+        assert_eq!(linked, vec![("run-1", true), ("run-2", false), ("run-other", false)]);
     }
 
     #[test]

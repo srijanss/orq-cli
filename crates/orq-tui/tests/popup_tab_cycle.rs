@@ -49,6 +49,7 @@ impl BrowserBackend for Fake {
             risk: "-".into(),
             current: true,
             stale: false,
+            has_link: false,
         }])
     }
 }

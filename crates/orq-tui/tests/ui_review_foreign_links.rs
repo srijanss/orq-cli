@@ -26,7 +26,7 @@ impl BrowserBackend for Fake {
         PromoteOutcome::Saved
     }
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
-        Ok(vec![ReviewRow { run_id: "run-other".into(), feature: "APP-07".into(), project: "other".into(), status: "ready".into(), risk: "low".into(), current: false, stale: false }])
+        Ok(vec![ReviewRow { run_id: "run-other".into(), feature: "APP-07".into(), project: "other".into(), status: "ready".into(), risk: "low".into(), current: false, stale: false, has_link: false }])
     }
     fn open_review_link(&mut self, run_id: &str) -> Result<String, String> {
         self.0.borrow_mut().push(run_id.into());

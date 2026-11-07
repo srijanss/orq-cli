@@ -33,6 +33,7 @@ impl BrowserBackend for Fake {
             risk: "low".into(),
             current,
             stale: false,
+            has_link: false,
         };
         Ok(vec![row("MINE-01", true), row("TWIN-01", false)])
     }
