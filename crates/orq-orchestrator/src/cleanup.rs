@@ -119,11 +119,12 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
         return Ok(Some(UncommittedWork::Unreadable));
     }
     // Untracked files are listed one by one, so an ignored directory is never exempt as a whole: each
-    // file in it must be one orq recorded writing and still unchanged.
+    // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
     let own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
             let path = path.trim_matches('"');
-            !path.ends_with('/') && crate::orq_written::is_unchanged_orq_file(worktree, path)
+            !path.ends_with('/')
+                && (crate::orq_written::is_unchanged_orq_file(worktree, path) || in_cache_dir(worktree, path))
         })
     };
     Ok(status
@@ -131,6 +132,25 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
         .lines()
         .any(|line| !line.trim().is_empty() && !own(line))
         .then_some(UncommittedWork::Present))
+}
+
+/// The first line of the `CACHEDIR.TAG` that cargo and other tools put in a directory of rebuildable
+/// output (https://bford.info/cachedir/).
+const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+
+/// Whether `path` (relative to `worktree`) lies in a directory tagged as a cache: whatever is
+/// there can be rebuilt, so losing it with the worktree loses no work.
+fn in_cache_dir(worktree: &Path, path: &str) -> bool {
+    use std::io::Read;
+    Path::new(path).ancestors().skip(1).any(|dir| {
+        let tag = worktree.join(dir).join("CACHEDIR.TAG");
+        // A plain file only: a link could point anywhere.
+        std::fs::symlink_metadata(&tag).is_ok_and(|m| m.is_file())
+            && std::fs::File::open(&tag).is_ok_and(|file| {
+                let mut head = Vec::new();
+                file.take(CACHEDIR_SIGNATURE.len() as u64).read_to_end(&mut head).is_ok() && head == CACHEDIR_SIGNATURE.as_bytes()
+            })
+    })
 }
 
 /// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.

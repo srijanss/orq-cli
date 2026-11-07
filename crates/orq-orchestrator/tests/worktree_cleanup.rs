@@ -192,6 +192,29 @@ fn a_worktree_holding_an_ignored_file_is_kept_with_it_intact() {
 }
 
 #[test]
+fn a_worktree_holding_only_an_ignored_build_cache_has_it_removed_with_the_worktree() {
+    let w = world("build-cache");
+    fs::write(w.worktree.join(".gitignore"), "target/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore build output"]);
+    // What cargo leaves behind: a directory marked as a cache by the CACHEDIR.TAG convention.
+    let target = w.worktree.join("target/debug");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        w.worktree.join("target/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n",
+    )
+    .unwrap();
+    fs::write(target.join("orq"), "binary").unwrap();
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+    assert_eq!(kinds(&w), ["worktree.removed"]);
+}
+
+#[test]
 fn a_locked_worktree_is_kept_registered_with_its_branch() {
     let w = world("locked");
     git(
