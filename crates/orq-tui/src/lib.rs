@@ -1801,6 +1801,12 @@ pub trait BrowserBackend {
         Vec::new()
     }
 
+    /// What discarding `run_id` now would take with its branch, such as the commits the target branch
+    /// lacks, said for the question asked first; `None` when nothing beyond the run's own records goes.
+    fn discard_warning(&mut self, _run_id: &str) -> Option<String> {
+        None
+    }
+
     /// Removes the failed or blocked `run_id` for good (its worktree, branch, logs and record);
     /// `Ok` is what happened, `Err` why not.
     fn discard_run(&mut self, _run_id: &str) -> Result<String, String> {
@@ -3587,9 +3593,14 @@ impl Browser {
                 });
             }
             RowAction::Discard => {
-                self.notice = Some(format!(
-                    "Discard {run_id}? Logs, a clean worktree and its branch go; uncommitted work is kept. y confirms, other keys cancel"
-                ));
+                self.notice = Some(match backend.discard_warning(&run_id) {
+                    Some(warning) => format!(
+                        "Discard {run_id}? Logs and a clean worktree go, and {warning}; uncommitted work is kept. y confirms, other keys cancel"
+                    ),
+                    None => format!(
+                        "Discard {run_id}? Logs, a clean worktree and its branch go; uncommitted work is kept. y confirms, other keys cancel"
+                    ),
+                });
                 self.row_confirm = Some((action, run_id));
             }
             RowAction::Accept => {

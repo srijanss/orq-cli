@@ -45,7 +45,7 @@ fn seed(tag: &str, ending: Option<&str>) -> Seeded {
             feature_id: "F".into(),
             remote: "origin".into(),
             provider: "github".into(),
-            target_branch: "main".into(),
+            target_branch: current_branch(repo.root()),
             base_sha: "abc".into(),
             branch: "orq-run-1".into(),
             worktree: worktree.clone(),
@@ -61,6 +61,32 @@ fn seed(tag: &str, ending: Option<&str>) -> Seeded {
     std::fs::create_dir_all(&logs).unwrap();
     std::fs::write(logs.join("runner.log"), "log\n").unwrap();
     Seeded { home, store, repo, worktree }
+}
+
+fn current_branch(repo: &Path) -> String {
+    let out = Command::new("git").arg("-C").arg(repo).args(["symbolic-ref", "--short", "HEAD"]).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Commits `count` new files on the worktree's branch and returns the last commit's SHA.
+fn commit_ahead(worktree: &Path, count: usize) -> String {
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["-c", "user.name=Orq Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    for n in 0..count {
+        std::fs::write(worktree.join(format!("ahead-{n}.txt")), "committed work\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "--no-verify", "-m", &format!("ahead {n}")]);
+    }
+    git(&["rev-parse", "HEAD"])
 }
 
 fn branch_exists(repo: &Path, branch: &str) -> bool {
@@ -123,4 +149,46 @@ fn discard_keep_a_paused_run_with_uncommitted_work_is_discarded_and_says_where_i
     assert!(s.worktree.join("scratch.txt").exists() && branch_exists(s.repo.root(), "orq-run-1"));
     assert!(s.store.load("run-1").is_err());
     assert_eq!(s.store.active_run("p", "F").unwrap(), None);
+}
+
+#[test]
+fn discard_ahead_a_clean_worktree_whose_branch_has_commits_names_them_before_and_after_the_discard() {
+    let s = seed("ahead", Some("run.failed"));
+    std::fs::remove_file(s.worktree.join("scratch.txt")).unwrap();
+    let last = commit_ahead(&s.worktree, 2);
+    let repo = s.repo.root().to_str().unwrap();
+
+    let dry = orq(&s.home, &["run", "discard", "run-1", "--repo", repo]);
+    let stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(!dry.status.success() && stderr.contains("2 commits"), "{stderr}");
+
+    let out = orq(&s.home, &["run", "discard", "run-1", "--yes", "--repo", repo]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("2 commits") && stdout.contains(&last), "{stdout}");
+    assert!(!branch_exists(s.repo.root(), "orq-run-1"));
+}
+
+#[test]
+fn discard_ahead_one_commit_is_named_in_the_singular_and_a_branch_already_on_the_target_gets_no_warning() {
+    let s = seed("ahead-one", Some("run.failed"));
+    std::fs::remove_file(s.worktree.join("scratch.txt")).unwrap();
+    let last = commit_ahead(&s.worktree, 1);
+    let repo = s.repo.root().to_str().unwrap();
+    let dry = orq(&s.home, &["run", "discard", "run-1", "--repo", repo]);
+    let stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(stderr.contains("1 commit not on the target branch"), "{stderr}");
+    let out = orq(&s.home, &["run", "discard", "run-1", "--yes", "--repo", repo]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 commit not on the target branch") && stdout.contains(&last), "{stdout}");
+
+    let s = seed("ahead-none", Some("run.failed"));
+    std::fs::remove_file(s.worktree.join("scratch.txt")).unwrap();
+    let repo = s.repo.root().to_str().unwrap();
+    let dry = orq(&s.home, &["run", "discard", "run-1", "--repo", repo]);
+    let stderr = String::from_utf8_lossy(&dry.stderr);
+    assert!(!dry.status.success() && !stderr.contains("not on the target branch"), "{stderr}");
+    let out = orq(&s.home, &["run", "discard", "run-1", "--yes", "--repo", repo]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && !stdout.contains("not on the target branch"), "{stdout}");
 }

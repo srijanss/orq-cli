@@ -2199,6 +2199,12 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         Ok(format!("Discarded {}{}", printable(run_id), reopened.strip_suffix('.').map(|note| format!(".{note}")).unwrap_or_default()))
     }
 
+    fn discard_warning(&mut self, run_id: &str) -> Option<String> {
+        let root = self.state_root_override.clone().or_else(pipeline::state_root)?;
+        let warning = discard_warning(&root, run_id, self.repo_root.as_deref()?);
+        (!warning.is_empty()).then_some(warning)
+    }
+
     fn accept_run(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let store = orq_orchestrator::RunStore::new(&root);
@@ -4427,7 +4433,39 @@ fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, 
     if let Some(kept) = outcome.kept_worktree {
         note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
     }
+    if let Some(deleted) = outcome.deleted_branch {
+        if deleted.commits_ahead != Some(0) {
+            note.push_str(&format!(
+                " Deleted the branch {} with {}; its last commit was {}.",
+                printable(&deleted.name),
+                commits_not_on_target(deleted.commits_ahead),
+                printable(&deleted.last_commit)
+            ));
+        }
+    }
     Ok(note)
+}
+
+/// "2 commits not on the target branch", or "commits the target branch may not have" when the count
+/// could not be told.
+fn commits_not_on_target(count: Option<usize>) -> String {
+    match count {
+        Some(1) => "1 commit not on the target branch".to_string(),
+        Some(n) => format!("{n} commits not on the target branch"),
+        None => "commits the target branch may not have".to_string(),
+    }
+}
+
+/// What a discard of `run_id` would take with the branch, for a prompt shown before it: empty when
+/// no commit would go, or when that cannot be told.
+fn discard_warning(root: &Path, run_id: &str, repo: &Path) -> String {
+    let store = orq_orchestrator::RunStore::new(root);
+    match orq_orchestrator::discard_preview(&store, run_id, repo) {
+        Ok(Some(branch)) if branch.commits_ahead != Some(0) => {
+            format!("its branch {} goes with {}", printable(&branch.name), commits_not_on_target(branch.commits_ahead))
+        }
+        _ => String::new(),
+    }
 }
 
 /// Put the features of a discarded run back to `pending`, and say which were. Only the ledger of
@@ -4478,15 +4516,17 @@ fn run_discard(args: &[OsString]) -> ExitCode {
         }
     }
     let Some(run_id) = run_id else { return usage_error() };
-    if !yes {
-        return fail(format!(
-            "discarding {} deletes its logs, and its worktree and branch unless they hold uncommitted work, for good; re-run with --yes to confirm",
-            printable(run_id)
-        ));
-    }
     let Some(root) = pipeline::state_root() else {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };
+    if !yes {
+        let warning = discard_warning(&root, run_id, &repo);
+        let warning = if warning.is_empty() { String::new() } else { format!(" ({warning})") };
+        return fail(format!(
+            "discarding {} deletes its logs, and its worktree and branch unless they hold uncommitted work, for good{warning}; re-run with --yes to confirm",
+            printable(run_id)
+        ));
+    }
     match discard_and_reopen(&root, run_id, &repo) {
         Ok(note) => {
             println!("Discarded run {}.{note}", printable(run_id));

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_run, discard_run_before_remove, discard_run_then, Event, RunRecord, RunStore, StoreError};
+use orq_orchestrator::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, Event, RunRecord, RunStore, StoreError};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -413,5 +413,66 @@ fn discard_submodule_a_worktree_with_an_initialized_submodule_is_kept_and_the_ru
         assert!(worktree.join("sub").exists() && branch_exists(repo.root(), "orq-run-1"), "{tag}");
         assert!(store.load("run-1").is_err(), "{tag}");
         assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
+    }
+}
+
+fn current_branch(repo: &Path) -> String {
+    let out = Command::new("git").arg("-C").arg(repo).args(["symbolic-ref", "--short", "HEAD"]).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Commits `count` new files in `worktree` and returns the last commit's SHA.
+fn commit_ahead(worktree: &Path, count: usize) -> String {
+    for n in 0..count {
+        std::fs::write(worktree.join(format!("ahead-{n}.txt")), "committed work\n").unwrap();
+        git_in(worktree, &["add", "."]);
+        git_in(worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", &format!("ahead {n}")]);
+    }
+    head_sha(worktree)
+}
+
+/// A failed run whose clean worktree's branch is `ahead` commits past the repository's own branch.
+fn failed_run_ahead(tag: &str, repo: &GitFixture, ahead: usize) -> (PathBuf, String, RunStore) {
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let last = commit_ahead(&worktree, ahead);
+    let (_, store) = store(tag);
+    let mut rec = record(&worktree, "orq-run-1");
+    rec.target_branch = current_branch(repo.root());
+    store.start_run(&rec).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    (worktree, last, store)
+}
+
+#[test]
+fn discard_ahead_a_deleted_branch_is_reported_with_its_commits_past_the_target_and_its_last_commit() {
+    let repo = GitFixture::new();
+    let (_, last, store) = failed_run_ahead("ahead-outcome", &repo, 2);
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    let deleted = outcome.deleted_branch.expect("the branch was deleted");
+    assert_eq!((deleted.name.as_str(), deleted.commits_ahead, deleted.last_commit.as_str()), ("orq-run-1", Some(2), last.as_str()));
+    assert!(!branch_exists(repo.root(), "orq-run-1"));
+}
+
+#[test]
+fn discard_ahead_the_preview_names_the_commits_a_discard_would_delete_and_changes_nothing() {
+    for (tag, ahead, dirty, expected) in [("two", 2, false, Some(2)), ("none", 0, false, Some(0)), ("dirty", 2, true, None)] {
+        let repo = GitFixture::new();
+        let (worktree, last, store) = failed_run_ahead(&format!("preview-{tag}"), &repo, ahead);
+        if dirty {
+            std::fs::write(worktree.join("work.txt"), "unfinished").unwrap();
+        }
+
+        let preview = discard_preview(&store, "run-1", repo.root()).unwrap();
+
+        match expected {
+            Some(count) => {
+                let branch = preview.unwrap_or_else(|| panic!("{tag}: the branch would go"));
+                assert_eq!((branch.commits_ahead, branch.last_commit.as_str()), (Some(count), last.as_str()), "{tag}");
+            }
+            None => assert_eq!(preview, None, "{tag}: a dirty worktree keeps its branch"),
+        }
+        assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_ok(), "{tag}");
     }
 }

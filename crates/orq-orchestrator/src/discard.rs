@@ -15,6 +15,19 @@ pub struct DiscardOutcome {
     pub features: Vec<String>,
     /// The worktree left in place, with its branch, because it held uncommitted or untracked work.
     pub kept_worktree: Option<PathBuf>,
+    /// The branch deleted with the worktree, and the commits that went with it.
+    pub deleted_branch: Option<DeletedBranch>,
+}
+
+/// A run's branch deleted by a discard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedBranch {
+    /// The branch's name, without `refs/heads/`.
+    pub name: String,
+    /// How many of its commits the target branch does not have; `None` when that could not be told.
+    pub commits_ahead: Option<usize>,
+    /// The SHA the branch pointed at, from which its commits can still be recovered for a while.
+    pub last_commit: String,
 }
 
 /// Remove the run `run_id` for good: its feature locks, its logs and its record, and its worktree
@@ -121,11 +134,14 @@ pub fn discard_run_before_remove(
             }
         }
     }
+    let mut deleted_branch = None;
     if has_worktree && kept_worktree.is_none() {
+        let commits = branch_commits(repo, &record)?;
         let deleted = git(repo, &["update-ref", "-d", &format!("refs/heads/{branch}")])?;
         if !deleted.success {
             return Err(format!("the branch {branch} could not be deleted: {}", deleted.stderr.trim()));
         }
+        deleted_branch = Some(commits);
     }
     // Without its worktree nothing ties the run to `repo` (another clone may share the base commit
     // and a branch name), so no branch is deleted; only the run's own records go.
@@ -160,7 +176,45 @@ pub fn discard_run_before_remove(
         }
     }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
-    Ok(DiscardOutcome { features: members, kept_worktree })
+    Ok(DiscardOutcome { features: members, kept_worktree, deleted_branch })
+}
+
+/// The branch a discard of `run_id` would delete now, with its commits, without changing anything:
+/// `None` when the branch would stay, because the worktree is gone or holds uncommitted work.
+pub fn discard_preview(store: &RunStore, run_id: &str, repo: &Path) -> Result<Option<DeletedBranch>, String> {
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    if !record.worktree.exists() || is_dirty(&record.worktree)? {
+        return Ok(None);
+    }
+    branch_commits(repo, &record).map(Some)
+}
+
+/// The run's branch in `repo` with its last commit and how many of its commits the target lacks:
+/// counted against the local target branch, else the remote's copy of it, else the run's base.
+fn branch_commits(repo: &Path, record: &crate::store::RunRecord) -> Result<DeletedBranch, String> {
+    let resolve = |rev: &str| -> Result<Option<String>, String> {
+        let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| e.to_string())?;
+        Ok(out.success.then(|| out.stdout.trim().to_string()))
+    };
+    let name = record.branch.clone();
+    let last_commit = resolve(&format!("refs/heads/{name}"))?.ok_or_else(|| format!("the branch {name} does not resolve to a commit"))?;
+    let mut target = None;
+    for rev in [format!("refs/heads/{}", record.target_branch), format!("refs/remotes/{}/{}", record.remote, record.target_branch), record.base_sha.clone()] {
+        if !rev.is_empty() {
+            if let Some(sha) = resolve(&rev)? {
+                target = Some(sha);
+                break;
+            }
+        }
+    }
+    let commits_ahead = match target {
+        Some(target) => {
+            let out = git_raw(repo, &["rev-list", "--count", &last_commit, "--not", &target]).map_err(|e| e.to_string())?;
+            out.success.then(|| out.stdout.trim().parse().ok()).flatten()
+        }
+        None => None,
+    };
+    Ok(DeletedBranch { name, commits_ahead, last_commit })
 }
 
 /// Those of `features` that no other run of `run_id`'s project started later. A later run that took a

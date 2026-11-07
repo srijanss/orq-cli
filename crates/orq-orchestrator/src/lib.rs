@@ -51,7 +51,7 @@ pub use ci_wait::{wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
 pub use accept::{accept_run, run_steps, run_worktree_tests};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
-pub use discard::{discard_run, discard_run_before_remove, discard_run_then, features_no_later_run_took, DiscardOutcome};
+pub use discard::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, features_no_later_run_took, DeletedBranch, DiscardOutcome};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
 pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome};

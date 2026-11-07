@@ -28,6 +28,8 @@ struct Fake {
     fail_with: Option<String>,
     /// A run's status changing on its own once a read happens: (read, run, status).
     changes: Vec<(&'static str, &'static str, &'static str)>,
+    /// What a discard would take with the run's branch, when anything.
+    discard_warning: Option<String>,
 }
 
 impl Fake {
@@ -140,6 +142,9 @@ impl BrowserBackend for Fake {
         }
         self.store().retain(|run| run.run_id != run_id);
         Ok(format!("Discarded {run_id}"))
+    }
+    fn discard_warning(&mut self, run_id: &str) -> Option<String> {
+        self.discard_warning.as_ref().map(|warning| format!("{warning} of {run_id}"))
     }
     fn launch_profiles(&mut self) -> Result<Vec<String>, String> {
         self.calls.push("profiles".into());
@@ -297,4 +302,21 @@ fn discard_keep_a_paused_rows_discard_asks_first_and_says_uncommitted_work_is_ke
     let mut backend = Fake::default();
     show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Discard]")), key('y')]].concat());
     assert_eq!(acted(&backend), vec!["discard run-3"]);
+}
+
+#[test]
+fn discard_ahead_every_discardable_rows_prompt_names_the_commits_that_go_with_its_branch() {
+    for status in ["paused", "failed", "blocked", "needs_review"] {
+        let fake = || {
+            let mut fake = Fake { discard_warning: Some("2 commits go".into()), ..Fake::default() };
+            fake.set_status("run-3", status);
+            fake
+        };
+        let screen = show(&mut fake(), to_runs());
+        let mut backend = fake();
+        let asked = show(&mut backend, [to_runs(), vec![click(run_button(&screen, "charlie", 0, "[Discard]"))]].concat()).join("\n");
+        assert!(acted(&backend).is_empty(), "{status}: {:?}", backend.calls);
+        assert!(asked.contains("Discard run-3?") && asked.contains("2 commits go of run-3") && asked.contains("uncommitted work is kept"), "{status}: {asked}");
+        assert!(!asked.contains("a clean worktree and its branch go"), "{status}: the branch is not said to go silently: {asked}");
+    }
 }
