@@ -90,6 +90,11 @@ pub fn run_worktree_tests(worktree: &Path, configured: Option<&[String]>) -> Res
         Gate::Skipped { reason } => return Err(reason),
         Gate::Steps { steps, .. } => steps,
     };
+    run_steps(worktree, &steps)
+}
+
+/// Run each of `steps` in `worktree`, in order; the first to fail ends the run and the rest do not run.
+pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
     for argv in steps {
         let Some((program, args)) = argv.split_first() else { continue };
         let cannot_run = |e: std::io::Error| format!("could not run `{}`: {e}", argv.join(" "));
