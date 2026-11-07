@@ -1610,7 +1610,7 @@ fn claude_push_is_on_by_default_and_reaches_the_app_through_a_connected_terminal
     assert_eq!(lines[3], "memory=1", "{heard}");
     assert!(!lines.contains(&"-p"), "{heard}");
     assert!(lines.iter().any(|l| l.starts_with("--remote-control=")), "{heard}");
-    assert!(heard.contains("COM-01 review_ready"), "{heard}");
+    assert!(heard.contains("ready for review") && heard.contains(PR_URL), "{heard}");
 }
 
 #[test]
