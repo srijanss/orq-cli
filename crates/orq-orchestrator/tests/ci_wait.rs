@@ -247,6 +247,55 @@ fn a_repository_with_ci_config_but_no_checks_yet_keeps_waiting() {
     assert_eq!(outcome, CiOutcome::TimedOut);
 }
 
+#[test]
+fn the_skip_never_happens_before_the_grace_period_has_passed() {
+    let w = world("grace-lower", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks("", 0)).build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_millis(300),
+        no_ci_grace: Duration::from_secs(30),
+        ..config()
+    };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut, "skipped inside the grace period");
+}
+
+#[test]
+fn checks_that_appear_during_the_grace_period_are_waited_on_not_skipped() {
+    let w = world("grace-appear", "github", "https://github.example/o/r.git");
+    let green = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n";
+    let provider = github_provider().reply_once(&["api"], &gh_checks("", 0)).reply(&["api"], green).build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_secs(5),
+        no_ci_grace: Duration::from_secs(30),
+        ..config()
+    };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed);
+}
+
+#[test]
+fn a_gitlab_repository_without_a_pipeline_file_is_skipped_and_with_one_keeps_waiting() {
+    let w = world("glab-absent", "gitlab", "https://gitlab.example/group/r.git");
+    let provider = FakeProvider::builder().reply(&["api"], "[]\n").build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_millis(400),
+        no_ci_grace: Duration::from_millis(50),
+        ..config()
+    };
+    assert_eq!(wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(), CiOutcome::Skipped);
+
+    let w = world("glab-present", "gitlab", "https://gitlab.example/group/r.git");
+    let worktree = w.store.load("run-1").unwrap().worktree;
+    fs::write(worktree.join(".gitlab-ci.yml"), "test:\n  script: [true]\n").unwrap();
+    let provider = FakeProvider::builder().reply(&["api"], "[]\n").build();
+    assert_eq!(wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(), CiOutcome::TimedOut);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_gitlab_config_that_cannot_be_inspected_is_not_taken_for_absent() {
