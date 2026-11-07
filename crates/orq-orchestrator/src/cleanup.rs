@@ -1,6 +1,7 @@
 //! Removing a run's worktree once the run has finished well.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::ci_wait::CiOutcome;
 use crate::implement::{next_event_id, now_rfc3339};
@@ -122,10 +123,12 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     }
     // Untracked files are listed one by one, so an ignored directory is never exempt as a whole: each
     // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
-    let own = |line: &str| {
+    // Whether each directory holds a cache tag is looked up once: a build cache lists thousands of files.
+    let mut tagged: HashMap<PathBuf, bool> = HashMap::new();
+    let mut own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
             !path.ends_with('/')
-                && (crate::orq_written::is_unchanged_orq_file(worktree, path) || in_cache_dir(worktree, path))
+                && (in_cache_dir(worktree, path, &mut tagged) || crate::orq_written::is_unchanged_orq_file(worktree, path))
         })
     };
     Ok(status
@@ -141,8 +144,12 @@ const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 
 /// Whether `path` (relative to `worktree`) lies in a directory tagged as a cache: whatever is
 /// there can be rebuilt, so losing it with the worktree loses no work.
-fn in_cache_dir(worktree: &Path, path: &str) -> bool {
-    Path::new(path).ancestors().skip(1).any(|dir| is_cache_tag(&worktree.join(dir).join("CACHEDIR.TAG")))
+fn in_cache_dir(worktree: &Path, path: &str, tagged: &mut HashMap<PathBuf, bool>) -> bool {
+    Path::new(path).ancestors().skip(1).any(|dir| {
+        *tagged
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| is_cache_tag(&worktree.join(dir).join("CACHEDIR.TAG")))
+    })
 }
 
 /// Whether `tag` is a plain file that begins with the cache signature. It is opened without following

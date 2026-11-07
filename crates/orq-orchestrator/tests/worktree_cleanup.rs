@@ -215,6 +215,32 @@ fn a_worktree_holding_only_an_ignored_build_cache_has_it_removed_with_the_worktr
 }
 
 #[test]
+fn a_build_cache_of_many_files_in_nested_directories_is_removed_with_the_worktree() {
+    let w = world("build-cache-large");
+    fs::write(w.worktree.join(".gitignore"), "target/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore build output"]);
+    fs::create_dir_all(w.worktree.join("target")).unwrap();
+    fs::write(
+        w.worktree.join("target/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    for dir in 0..10 {
+        let nested = w.worktree.join(format!("target/debug/deps/{dir}/inner"));
+        fs::create_dir_all(&nested).unwrap();
+        for file in 0..30 {
+            fs::write(nested.join(format!("artifact-{file}")), "built").unwrap();
+        }
+    }
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+}
+
+#[test]
 fn a_build_cache_in_a_directory_with_a_non_ascii_name_is_removed_with_the_worktree() {
     let w = world("build-cache-non-ascii");
     fs::write(w.worktree.join(".gitignore"), "bygg-ö/\n").unwrap();
