@@ -584,6 +584,88 @@ fn the_commit_a_ci_fix_pushes_gets_its_own_review_report() {
     }
 }
 
+/// Keeps the TDD tooling's ledgers out of the run's commits, as a project using that tooling does.
+fn ignore_tdd_ledgers(w: &World) {
+    std::fs::write(w.repo.root().join(".gitignore"), ".tdd-*.json\n").unwrap();
+    git(w.repo.root(), &["add", ".gitignore"]);
+    git(w.repo.root(), &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "ignore ledgers"]);
+    git(w.repo.root(), &["push", "--quiet", &w.remote.display().to_string(), "main"]);
+}
+
+/// A `claude` that runs `agent`, then leaves in the worktree the review ledger an
+/// implement-and-review session writes: one round, by `pi`, of the commit the session ended on,
+/// with one rejected finding.
+fn path_with_reviewing_agent(w: &World, agent: &FakeAgent, provider: &FakeProvider) -> String {
+    let shims = orq_test_support::process_temp_dir().join(format!("orq-run-reviewing-claude-{}-{}", std::process::id(), w.tag));
+    std::fs::create_dir_all(&shims).unwrap();
+    std::fs::write(
+        shims.join("claude"),
+        format!(
+            r#"#!/bin/sh
+'{}' "$@"
+code=$?
+start=$(git rev-parse HEAD~1)
+head=$(git rev-parse HEAD)
+finding='{{"id":"F1","severity":"medium","file":"feature.txt","line":1,"category":"bugs","claim":"the feature says done too early","status":"rejected","reason":"it is done"}}'
+printf '{{"review:%s":[{{"start":"%s","head":"%s","reviewer":"pi","model":"m","round":1,"recordedAt":"2026-11-07T10:00:00Z","findings":[%s]}}]}}' "$start" "$start" "$head" "$finding" > .tdd-review-rounds.json
+printf '{{"review:%s":[%s]}}' "$start" "$finding" > .tdd-review-findings.json
+exit $code
+"#,
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(shims.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    format!("{}:{}", shims.display(), path_with(agent, provider, &w.tag).display())
+}
+
+/// A run that passed its gate and was reviewed shows a current report: the gate it ran and the
+/// review rounds the implement session recorded, both for the commit it pushed.
+#[test]
+fn a_run_that_passed_its_gate_and_review_has_a_current_report() {
+    let w = world("reportevidence");
+    ignore_tdd_ledgers(&w);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"true\"]\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = path_with_reviewing_agent(&w, &agent, &provider);
+
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &["--no-ci-check"]).env("PATH", path).output().unwrap();
+
+    let run_id = printed_run_id(&output);
+    let head = git(&w.remote, &["rev-parse", "fix--COM-01"]).trim().to_string();
+    let report = stored_report(&w, &run_id, &head);
+    assert_eq!(report["status"], "current", "{report}\n{}", stderr(&output));
+    assert_eq!(report["tests"]["status"], "passed", "{report}");
+    assert_eq!(report["tests"]["commands"], serde_json::json!([{"command": "true", "exit_code": 0}]), "{report}");
+    assert_eq!(report["review"]["status"], "available", "{report}");
+    assert_eq!(report["review"]["rounds_observed"], 1, "{report}");
+}
+
+/// A run whose CI check failed shows the failure in its report, named by the check, for the
+/// commit CI ran on, rather than leaving the tests unknown.
+#[test]
+fn a_run_whose_ci_failed_has_a_report_showing_failed_tests() {
+    let w = world("reportcired");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &[]).output().unwrap();
+
+    let run_id = printed_run_id(&output);
+    let head = git(&w.remote, &["rev-parse", "fix--COM-01"]).trim().to_string();
+    let report = stored_report(&w, &run_id, &head);
+    assert_eq!(report["tests"]["status"], "failed", "{report}\n{}", stderr(&output));
+    assert_eq!(report["tests"]["commands"], serde_json::json!([{"command": "CI check test", "exit_code": 1}]), "{report}");
+}
+
 #[test]
 fn a_run_that_succeeds_ends_at_review_ready_and_prints_the_run_id_state_and_url() {
     let w = world("happy");

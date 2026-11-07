@@ -1045,7 +1045,12 @@ fn stages(
             created
         }
     };
-    build_review_report(store, record, options, &head_sha, logs);
+    // The steps a passing gate ran; the report counts them for a commit only when the gate passed for it.
+    let gate_steps = match choose_gate(worktree, settings.gate.as_deref()) {
+        Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
+        _ => Vec::new(),
+    };
+    build_review_report(store, record, options, &gate_steps, &head_sha, None, logs);
 
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
@@ -1060,7 +1065,11 @@ fn stages(
     let ci_log = logs.join("ci.log");
     // A published branch is the user's own checkout, and no agent edits it: its CI is only reported.
     let ci = if options.publish || !options.ci_check {
-        wait_for_ci_logged(store, run_id, &provider, &head_sha, &ci_config, Some(&ci_log))?
+        let ci = wait_for_ci_logged(store, run_id, &provider, &head_sha, &ci_config, Some(&ci_log))?;
+        if ci != CiOutcome::Skipped {
+            build_review_report(store, record, options, &gate_steps, &head_sha, Some(&ci), logs);
+        }
+        ci
     } else {
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
         // Where a fix session says that the failure is not the run's; the session is told in its environment too.
@@ -1096,7 +1105,7 @@ fn stages(
             config: &ci_config,
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
-            report: &|head| build_review_report(store, record, options, head, logs),
+            report: &|head, ci| build_review_report(store, record, options, &gate_steps, head, ci, logs),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,
@@ -1164,18 +1173,41 @@ fn review_report_timeout() -> Duration {
 
 /// Leaves the report of the pushed commit for the Reviews tab. Best effort: a report that fails or takes too long
 /// never changes how the run ends, and is only noted in the run's logs.
-fn build_review_report(store: &RunStore, record: &RunRecord, options: &Options<'_>, head_sha: &str, logs: &Path) {
+///
+/// The report carries what the run knows about the commit: the gate steps, when the latest gate run passed (the gate
+/// runs before every push, so that is the pushed commit's), what `ci` said about it, and the review rounds the
+/// implement session recorded for the run's commits.
+fn build_review_report(
+    store: &RunStore,
+    record: &RunRecord,
+    options: &Options<'_>,
+    gate_steps: &[Vec<String>],
+    head_sha: &str,
+    ci: Option<&CiOutcome>,
+    logs: &Path,
+) {
+    let gate_passed = store.events(&record.run_id).is_ok_and(|events| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.stage.as_deref() == Some("verify") && matches!(e.kind.as_str(), "stage.completed" | "stage.failed" | "stage.skipped"))
+            .is_some_and(|e| e.kind == "stage.completed")
+    });
+    let tests = crate::run_evidence::tests_evidence(head_sha, if gate_passed { gate_steps } else { &[] }, ci);
     let built = orq_orchestrator::rebased_onto(store, &record.run_id)
         .map_err(|err| format!("cannot read what the branch was rebased onto: {err}"))
         .and_then(|rebased| {
             // Rebased, the branch no longer sits on the commit the run started from; the diff would claim the target's newer commits.
             let base = rebased.unwrap_or_else(|| record.base_sha.clone());
             let (repo, run_id, feature, head) = (options.project.root.clone(), record.run_id.clone(), record.feature_id.clone(), head_sha.to_string());
+            let (worktree, started_from) = (record.worktree.clone(), record.base_sha.clone());
             let (sender, receiver) = std::sync::mpsc::channel();
             // Detached on a timeout, so a late finish normally still leaves a report. If the run exits while it publishes,
             // the report can be left unindexed until the next build repairs it.
             std::thread::spawn(move || {
-                let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head));
+                // The rounds are of the commits the session made from where the run started, before any rebase.
+                let review = crate::run_evidence::review_from_ledger(&worktree, &started_from, &head);
+                let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head, &tests, review.as_ref()));
             });
             match receiver.recv_timeout(review_report_timeout()) {
                 Ok(built) => built,
@@ -1201,14 +1233,18 @@ struct PipelineCiSteps<'a> {
     config: &'a CiWaitConfig,
     ci_log: &'a Path,
     push_log: PathBuf,
-    /// Leaves the review report of a commit the loop just pushed.
-    report: &'a dyn Fn(&str),
+    /// Leaves the review report of a commit the loop just pushed, and again with what its CI said.
+    report: &'a dyn Fn(&str, Option<&CiOutcome>),
     session: FixSessionSpec,
 }
 
 impl CiFixSteps for PipelineCiSteps<'_> {
     fn wait(&mut self, head_sha: &str) -> Result<CiOutcome, StoreError> {
-        wait_for_ci_logged(self.store, self.run_id, self.provider, head_sha, self.config, Some(self.ci_log))
+        let ci = wait_for_ci_logged(self.store, self.run_id, self.provider, head_sha, self.config, Some(self.ci_log))?;
+        if ci != CiOutcome::Skipped {
+            (self.report)(head_sha, Some(&ci));
+        }
+        Ok(ci)
     }
 
     fn push(&mut self) -> Result<PushOutcome, StoreError> {
@@ -1218,7 +1254,7 @@ impl CiFixSteps for PipelineCiSteps<'_> {
         }
         let pushed = push_run_branch(self.store, self.run_id, &self.push_log)?;
         if let PushOutcome::Pushed { head_sha } = &pushed {
-            (self.report)(head_sha);
+            (self.report)(head_sha, None);
         }
         Ok(pushed)
     }

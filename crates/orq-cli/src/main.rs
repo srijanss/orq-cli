@@ -6,6 +6,7 @@ mod desktop;
 mod pipeline;
 mod progress;
 mod review;
+mod run_evidence;
 mod storage;
 
 use orq_git::ResolveError;

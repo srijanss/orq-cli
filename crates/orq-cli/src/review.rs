@@ -11,7 +11,7 @@ use orq_core::review_intelligence::{apply_intelligence, repository_base, LinkSou
 use orq_core::review_lifecycle::ReviewLifecycle;
 use orq_core::review_summary::{apply_model_summary, SummaryConfig};
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
-use orq_core::storage::{check_run_id, write_atomic, StorageRoots};
+use orq_core::storage::{check_run_id, save_run_file, write_atomic, RunFile, StorageRoots};
 use orq_core::store::Store;
 
 use crate::{fail, pipeline, usage_error};
@@ -164,14 +164,38 @@ enum Summary {
 
 /// The report a finished run leaves for its pushed commit. A run does not wait for the model session (up to 90
 /// seconds), so its report has no generated summary; `orq review build` adds one when asked.
-pub(crate) fn build_for_run(repo: &Path, run_id: &str, feature: &str, base: &str, head: &str) -> Result<PathBuf, String> {
+/// `tests` and `review` are what the run knows about `head`: they are stored with the run first, so
+/// the report reads the run's own evidence; without review details the report keeps that gap.
+pub(crate) fn build_for_run(
+    repo: &Path,
+    run_id: &str,
+    feature: &str,
+    base: &str,
+    head: &str,
+    tests: &serde_json::Value,
+    review: Option<&serde_json::Value>,
+) -> Result<PathBuf, String> {
+    check_run_id(run_id).map_err(|err| format!("invalid run id: {err}"))?;
+    let roots = roots()?;
+    let save = |file: RunFile, evidence: &serde_json::Value| {
+        let bytes = serde_json::to_vec_pretty(evidence).map_err(|err| err.to_string())?;
+        save_run_file(&roots.data, run_id, file, &bytes).map_err(|err| format!("cannot store the run's {}: {err}", file.file_name()))
+    };
+    save(RunFile::Tests, tests)?;
+    let review_input = match review {
+        Some(review) => {
+            save(RunFile::ReviewRounds, review)?;
+            Some(roots.runs().join(run_id).join(RunFile::ReviewRounds.file_name()))
+        }
+        None => None,
+    };
     let args = BuildArgs {
         run_id: run_id.to_string(),
         repo: repo.to_path_buf(),
         feature: feature.to_string(),
         base: base.to_string(),
         head: head.to_string(),
-        review_input: None,
+        review_input,
     };
     publish(&args, Summary::Never)
 }
