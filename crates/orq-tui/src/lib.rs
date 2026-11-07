@@ -3903,7 +3903,7 @@ impl Browser {
             self.notice = Some(format!("{run_id} is {status}; only a paused run can switch models"));
             return;
         }
-        self.notice = Some(format!("Switch {run_id} > _  (role profile, Enter records, Esc cancels)"));
+        self.notice = Some(format!("Switch > _  (role profile, Enter records, Esc cancels; {run_id})"));
         self.runs.switching = Some((run_id, String::new()));
     }
 
@@ -3928,7 +3928,7 @@ impl Browser {
                     }
                     _ => {}
                 }
-                self.notice = Some(format!("Switch {run_id} > {text}_  (role profile, Enter records, Esc cancels)"));
+                self.notice = Some(format!("Switch > {text}_  (role profile, Enter records, Esc cancels; {run_id})"));
                 self.runs.switching = Some((run_id, text));
             }
         }

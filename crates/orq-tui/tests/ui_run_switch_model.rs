@@ -17,6 +17,7 @@ impl EventSource for Script {
 #[derive(Default)]
 struct Fake {
     status: &'static str,
+    id: &'static str,
     reply: Option<Result<String, String>>,
     calls: Vec<String>,
 }
@@ -30,7 +31,7 @@ impl BrowserBackend for Fake {
     }
     fn load_runs(&mut self) -> Result<Vec<RunRow>, String> {
         Ok(vec![RunRow {
-            run_id: "run-1".into(),
+            run_id: if self.id.is_empty() { "run-1" } else { self.id }.into(),
             feature: "COM-01".into(),
             status: self.status.into(),
             stage: Some("gate".into()),
@@ -128,4 +129,16 @@ fn the_typed_text_is_visible_at_80_columns_with_a_long_run_id() {
     let buffer = terminal.backend().buffer();
     let lines: Vec<String> = (0..24u16).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect();
     assert!(has(&lines, "implementer fast"), "{lines:?}");
+}
+
+#[test]
+fn the_typed_text_stays_visible_when_the_run_id_alone_fills_the_row() {
+    let long_id: &'static str = "run-20261107T101500Z-0123456789abcdef0123456789abcdef-feature";
+    let mut backend = Fake { status: "paused", id: long_id, reply: Some(Ok(String::new())), ..Fake::default() };
+    let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
+    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    let _ = run_browser(&mut terminal, &model, &mut backend, &mut Script(keys("mimplementer fast").into()));
+    let buffer = terminal.backend().buffer();
+    let lines: Vec<String> = (0..24u16).map(|y| (0..60u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect();
+    assert!(has(&lines, "implementer fast_"), "{lines:#?}");
 }
