@@ -48,7 +48,8 @@ pub struct UnreviewedCommit {
 }
 
 /// The review in `worktree` that escalated, if its latest round did. Only reviews of this run's
-/// work count: one starting at `base` or after it, whose reviewed head is still in the branch.
+/// work count: one starting at `base` or after it, whose reviewed head comes after its start and
+/// is still in the branch. Reviews of anything else are passed over, however recent.
 /// No ledger, or a latest round that did not escalate, is `None`.
 pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedReview>, String> {
     let Some(rounds) = read_ledger(&worktree.join(ROUNDS_FILE))? else {
@@ -57,24 +58,29 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
     let Some(scopes) = rounds.as_object() else {
         return Err(format!("{ROUNDS_FILE} is not a JSON object"));
     };
-    // The latest round of all the reviews this run's work could have had.
-    let mut latest: Option<(&str, &Value)> = None;
-    for list in scopes.values() {
-        let Some(list) = list.as_array() else { continue };
-        for round in list {
-            let at = text(round, "recordedAt").unwrap_or("");
-            if latest.is_none_or(|(seen, _)| at > seen) {
-                latest = Some((at, round));
-            }
+    // Every round, newest first; the latest one of a review of this run's work is the one that
+    // counts. Only as many are checked against the history as it takes to find it.
+    let mut candidates: Vec<(&str, &Value)> = scopes
+        .values()
+        .filter_map(Value::as_array)
+        .flatten()
+        .map(|round| (text(round, "recordedAt").unwrap_or(""), round))
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(a.0));
+    let mut latest = None;
+    for (_, round) in candidates {
+        let (Some(start), Some(head)) = (text(round, "start"), text(round, "head")) else {
+            continue;
+        };
+        if is_ancestor(worktree, base, start)?
+            && is_ancestor(worktree, start, head)?
+            && is_ancestor(worktree, head, "HEAD")?
+        {
+            latest = Some((round, start, head));
+            break;
         }
     }
-    let Some((_, round)) = latest else { return Ok(None) };
-    let (Some(start), Some(head)) = (text(round, "start"), text(round, "head")) else {
-        return Ok(None);
-    };
-    if !is_ancestor(worktree, base, start)? || !is_ancestor(worktree, head, "HEAD")? {
-        return Ok(None);
-    }
+    let Some((round, start, head)) = latest else { return Ok(None) };
     let number = round.get("round").and_then(Value::as_u64).unwrap_or(0);
     let blocking: Vec<&Value> = round
         .get("findings")

@@ -142,3 +142,46 @@ fn a_run_ended_for_a_review_decision_waits_for_one_and_can_be_accepted() {
     assert_eq!(tested.into_inner(), Some(worktree));
     assert_eq!(summary(&store).phase, RunPhase::Completed);
 }
+
+#[test]
+fn a_newer_review_that_is_not_of_this_run_does_not_hide_the_one_that_escalated() {
+    let (dir, base) = repo("other-scopes");
+    let first = commit(&dir, "a.txt", "feature");
+    let reviewed = commit(&dir, "b.txt", "fix");
+    let later = |mut round: Value| {
+        round["recordedAt"] = json!("2026-11-07T13:00:00+00:00");
+        round
+    };
+    let scopes = json!({
+        format!("review:{base}"): [round(&base, &reviewed, 3, vec![finding("leak", "high", "open")])],
+        // A review of commits this repository does not have.
+        "review:abcdef0123": [later(round("abcdef0123", "abcdef4567", 1, vec![]))],
+        // A review whose head does not come after its start.
+        format!("review:{reviewed}"): [later(round(&reviewed, &first, 1, vec![]))],
+    });
+    fs::write(dir.join(".tdd-review-rounds.json"), scopes.to_string()).unwrap();
+    fs::write(dir.join(".tdd-review-findings.json"), json!({ format!("review:{base}"): [finding("leak", "high", "open")] }).to_string()).unwrap();
+
+    let review = escalated_review(&dir, &base).unwrap().expect("the run's review escalated");
+
+    assert_eq!(review.start, base);
+    assert_eq!(review.reviewed_head, reviewed);
+}
+
+#[test]
+fn a_newer_round_whose_head_is_not_after_its_start_is_not_taken_for_the_latest_review() {
+    let (dir, base) = repo("head-before-start");
+    let first = commit(&dir, "a.txt", "feature");
+    let reviewed = commit(&dir, "b.txt", "fix");
+    let mut backwards = round(&reviewed, &first, 1, vec![]);
+    backwards["recordedAt"] = json!("2026-11-07T13:00:00+00:00");
+    let scopes = json!({
+        format!("review:{base}"): [round(&base, &reviewed, 3, vec![finding("leak", "high", "open")])],
+        format!("review:{reviewed}"): [backwards],
+    });
+    fs::write(dir.join(".tdd-review-rounds.json"), scopes.to_string()).unwrap();
+
+    let review = escalated_review(&dir, &base).unwrap().expect("the run's review escalated");
+
+    assert_eq!(review.reviewed_head, reviewed);
+}
