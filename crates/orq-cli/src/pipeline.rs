@@ -1202,12 +1202,16 @@ fn build_review_report(
             let (repo, run_id, feature, head) = (options.project.root.clone(), record.run_id.clone(), record.feature_id.clone(), head_sha.to_string());
             let (worktree, started_from) = (record.worktree.clone(), record.base_sha.clone());
             let (sender, receiver) = std::sync::mpsc::channel();
+            // Taken before the worker starts, so a late finish of this build cannot overwrite a later build's report.
+            let turn = crate::run_evidence::report_turn(&run_id);
             // Detached on a timeout, so a late finish normally still leaves a report. If the run exits while it publishes,
             // the report can be left unindexed until the next build repairs it.
             std::thread::spawn(move || {
-                // The rounds are of the commits the session made from where the run started, before any rebase.
-                let review = crate::run_evidence::review_from_ledger(&worktree, &started_from);
-                let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head, &tests, review.as_ref()));
+                let _ = sender.send(turn.publish(|| {
+                    // The rounds are of the commits the session made from where the run started, before any rebase.
+                    let review = crate::run_evidence::review_from_ledger(&worktree, &started_from);
+                    crate::review::build_for_run(&repo, &run_id, &feature, &base, &head, &tests, review.as_ref())
+                }));
             });
             match receiver.recv_timeout(review_report_timeout()) {
                 Ok(built) => built,

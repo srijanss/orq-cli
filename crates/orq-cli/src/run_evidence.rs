@@ -52,6 +52,42 @@ fn review_from_ledger_with(worktree: &Path, base: &str, mut check: impl FnMut(&s
     Some(json!({"schema_version": 1, "head_sha": last_head, "outcome": null, "rounds": rounds}))
 }
 
+/// The newest report build of a run that published, shared by that run's builds.
+type Published = std::sync::Arc<std::sync::Mutex<u64>>;
+
+/// A report build's place among its run's builds, taken when the build starts. A build detached
+/// on a timeout can finish after the build that followed it; its turn keeps it from writing over
+/// what that later build published.
+pub(crate) struct ReportTurn {
+    generation: u64,
+    published: Published,
+}
+
+/// The next turn for a report build of `run_id`.
+pub(crate) fn report_turn(run_id: &str) -> ReportTurn {
+    static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u64, Published)>>> = std::sync::OnceLock::new();
+    let mut runs = RUNS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (taken, published) = runs.entry(run_id.to_string()).or_default();
+    *taken += 1;
+    ReportTurn { generation: *taken, published: published.clone() }
+}
+
+impl ReportTurn {
+    /// Runs `build`, which writes the run's evidence and publishes its report, while no other build
+    /// of the run does; unless a later build already published, in which case nothing is written.
+    pub(crate) fn publish<T>(self, build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let mut published = self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *published > self.generation {
+            return Err("a later build of this run's report already published".to_string());
+        }
+        let built = build();
+        if built.is_ok() {
+            *published = self.generation;
+        }
+        built
+    }
+}
+
 /// The test evidence (schema 1) for `head`: the gate steps that passed for it, then what CI said
 /// about it. A red check is named with exit 1; CI that timed out or could not be asked shows no
 /// result, so the report does not read it as a pass; a run without CI adds nothing.
@@ -196,6 +232,31 @@ mod tests {
             vec![vec![("F1".to_string(), "fixed".to_string()), ("F2".to_string(), "rejected".to_string())], vec![("F3".to_string(), "fixed".to_string())]],
             "{details}"
         );
+    }
+
+    /// A report build that timed out can finish after the one that followed it (the build before
+    /// CI, after the build with CI's verdict). Builds of one run publish one at a time, and a build
+    /// a later one already published over does not publish at all, so the CI result stays.
+    #[test]
+    fn a_report_build_that_finishes_after_a_later_one_published_does_not_overwrite_it() {
+        let run = "run-overlapping-builds";
+        let before_ci = report_turn(run);
+        let with_ci = report_turn(run);
+        let other_run = report_turn("run-overlapping-builds-other");
+
+        assert_eq!(with_ci.publish(|| Ok("with CI")), Ok("with CI"));
+        let mut late_build_ran = false;
+        let late = before_ci.publish(|| {
+            late_build_ran = true;
+            Ok("before CI")
+        });
+        assert!(late.is_err(), "{late:?}");
+        assert!(!late_build_ran, "the superseded build does not write the run's evidence");
+        assert_eq!(other_run.publish(|| Ok("other")), Ok("other"), "another run's builds are not held back");
+
+        let (first, second) = (report_turn(run), report_turn(run));
+        assert_eq!(first.publish(|| Ok(1)), Ok(1), "an earlier build still publishes when it finishes first");
+        assert_eq!(second.publish(|| Ok(2)), Ok(2));
     }
 
     /// Many rounds of one review share their start and head, so git is asked about each distinct
