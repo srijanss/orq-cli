@@ -1171,7 +1171,8 @@ fn build_review_report(store: &RunStore, record: &RunRecord, options: &Options<'
             let base = rebased.unwrap_or_else(|| record.base_sha.clone());
             let (repo, run_id, feature, head) = (options.project.root.clone(), record.run_id.clone(), record.feature_id.clone(), head_sha.to_string());
             let (sender, receiver) = std::sync::mpsc::channel();
-            // Detached on a timeout: publishing is atomic, so a late finish still leaves a whole report.
+            // Detached on a timeout, so a late finish normally still leaves a report. If the run exits while it publishes,
+            // the report can be left unindexed until the next build repairs it.
             std::thread::spawn(move || {
                 let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head));
             });
