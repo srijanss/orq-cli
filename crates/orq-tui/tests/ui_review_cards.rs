@@ -55,7 +55,7 @@ fn key(code: KeyCode) -> Event {
 fn screen(height: u16, count: usize, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
-    let mut script = vec![click(44, 2)];
+    let mut script = vec![key(KeyCode::Char('V'))];
     script.extend(events);
     let _ = run_browser(&mut terminal, &model, &mut Fake(reviews(count)), &mut Script(script.into()));
     let buffer = terminal.backend().buffer();
@@ -104,4 +104,50 @@ fn a_press_below_the_last_card_or_on_the_footer_changes_nothing() {
         let lines = screen(24, 6, vec![click(10, u16::try_from(y).unwrap())]);
         assert_eq!(selected(&lines), ["COM-01"], "row {y}: {lines:?}");
     }
+}
+
+// Below 14 rows the popup drops its header and tab bar, so the whole screen is the Reviews body:
+// the filter line, the list in `height - 2` rows, then the hint.
+
+#[test]
+fn a_window_too_short_for_a_card_lists_one_line_per_review_and_keeps_the_hint() {
+    for height in [2u16, 3, 4, 5] {
+        let lines = screen(height, 3, vec![]);
+        assert!(!lines.iter().any(|l| l.contains('╭') || l.contains('╰')), "height {height}: {lines:?}");
+        assert!(lines.last().unwrap().contains("move"), "height {height}: {lines:?}");
+        let listed = lines.iter().filter(|l| l.contains("COM-")).count();
+        assert_eq!(listed, usize::from(height - 2), "height {height}: {lines:?}");
+    }
+}
+
+#[test]
+fn a_window_with_room_for_exactly_one_card_draws_it_whole() {
+    let lines = screen(6, 3, vec![]);
+    assert_eq!(lines.iter().filter(|l| l.contains('╭')).count(), 1, "{lines:?}");
+    assert_eq!(lines.iter().filter(|l| l.contains('╰')).count(), 1, "{lines:?}");
+    assert_eq!(selected(&lines), ["COM-01"], "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("COM-02")), "{lines:?}");
+}
+
+#[test]
+fn a_spare_row_below_the_cards_is_not_filled_with_part_of_the_next_one() {
+    let lines = screen(7, 3, vec![]);
+    assert_eq!(lines.iter().filter(|l| l.contains('╭')).count(), 1, "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("COM-02")), "{lines:?}");
+    assert!(lines.last().unwrap().contains("move"), "{lines:?}");
+}
+
+#[test]
+fn the_selection_stays_on_screen_in_every_short_window() {
+    for height in [3u16, 4, 5, 6, 7] {
+        let lines = screen(height, 3, vec![key(KeyCode::Down), key(KeyCode::Down)]);
+        assert_eq!(selected(&lines), ["COM-03"], "height {height}: {lines:?}");
+    }
+}
+
+#[test]
+fn presses_in_a_window_with_no_room_for_any_review_change_nothing_and_do_not_panic() {
+    let lines = screen(2, 3, vec![click(10, 0), click(10, 1), key(KeyCode::Down)]);
+    assert!(lines[0].contains("Project"), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("COM-")), "{lines:?}");
 }
