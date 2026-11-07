@@ -2,6 +2,7 @@
 //! a number of attempts. A gate still red after that fails the run; the
 //! worktree is left as it is for inspection.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::gate::Gate;
@@ -55,10 +56,21 @@ fn read_report(report: &Path) -> Option<String> {
     if !meta.file_type().is_file() {
         return None;
     }
-    let text = std::fs::read_to_string(report).ok()?;
-    let summary = text.trim();
-    (!summary.is_empty()).then(|| summary.to_string())
+    // Only the start of the file is read, and only its first line is kept, so a session cannot
+    // make orq hold or print an unbounded amount of text.
+    let mut bytes = Vec::new();
+    std::fs::File::open(report)
+        .ok()?
+        .take(MAX_REPORT_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(MAX_SUMMARY_CHARS).collect())
 }
+
+const MAX_REPORT_BYTES: u64 = 4096;
+const MAX_SUMMARY_CHARS: usize = 500;
 
 /// Run the gate; while it fails and fewer than `max_attempts` fixes were tried,
 /// ask `fixer` for the session of attempt `n` (counting from 1, given the gate

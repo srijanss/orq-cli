@@ -556,6 +556,35 @@ fn a_report_left_by_an_earlier_session_does_not_stop_a_loop_whose_fix_works() {
 }
 
 #[test]
+fn a_huge_report_is_cut_to_one_short_line() {
+    let w = world("report-huge");
+    let report = w.root.join("unrelated-failure.txt");
+    let mut text = "x".repeat(100_000);
+    text.push('\n');
+    text.push_str(&"second line\n".repeat(100_000));
+    fs::write(w.root.join("big.txt"), text).unwrap();
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("cp '{}' '{}'", w.root.join("big.txt").display(), report.display())),
+    )
+    .unwrap();
+
+    match outcome {
+        GateFixOutcome::Unrelated { summary } => {
+            assert!(summary.chars().count() <= 500, "{} chars", summary.len());
+            assert!(!summary.contains('\n') && !summary.contains("second line"), "{summary}");
+        }
+        other => panic!("expected Unrelated, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_report_that_is_a_link_to_another_file_is_not_read() {
     let w = world("report-link");
     let secret = w.root.join("secret.txt");
