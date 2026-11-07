@@ -133,9 +133,16 @@ pub(crate) fn run_session_stage(
             }
         }
     }
+    // A session closed by orq never gets to undo what it did to the terminal, so orq does.
+    #[cfg(unix)]
+    let terminal_settings = session.terminal.then(saved_terminal_settings).flatten();
     let status = cleared
         .and_then(|()| crate::child_groups::spawn(&mut command))
         .and_then(|child| wait_for_session(child, session.exit_marker));
+    #[cfg(unix)]
+    if let Some(settings) = terminal_settings {
+        restore_terminal(&settings);
+    }
     let reported = session.exit_marker.and_then(marker_report);
     // A session that failed by its exit status has already failed, whatever its marker says.
     let finished = match &status {
@@ -322,6 +329,40 @@ fn take_back_terminal() {
             libc::tcsetpgrp(0, libc::getpgrp());
             libc::signal(libc::SIGTTOU, old);
         }
+    }
+}
+
+/// The terminal's settings, when stdin is a terminal.
+#[cfg(unix)]
+fn saved_terminal_settings() -> Option<libc::termios> {
+    // SAFETY: an all-zero termios is valid for tcgetattr to fill in.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: `settings` is valid for the call.
+    (unsafe { libc::isatty(0) == 1 && libc::tcgetattr(0, &mut settings) == 0 }).then_some(settings)
+}
+
+/// Undoes the screen modes an agent's own screen turns on: its alternate screen, a hidden cursor,
+/// bracketed paste, focus and mouse reports, and its keyboard mode. Then clears the screen, so what
+/// orq prints next is not drawn over what the session left.
+#[cfg(unix)]
+const SCREEN_RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<u\x1b[H\x1b[2J";
+
+/// Puts back settings taken by `saved_terminal_settings`: a session killed in raw mode would
+/// otherwise leave Enter unable to end a line. Then resets the screen, when stdout is a terminal.
+#[cfg(unix)]
+fn restore_terminal(settings: &libc::termios) {
+    // SAFETY: plain libc calls; SIGTTOU is ignored only for the duration of the calls.
+    unsafe {
+        let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::tcsetattr(0, libc::TCSANOW, settings);
+        if libc::isatty(1) == 1 {
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            let _ = stdout
+                .write_all(SCREEN_RESET.as_bytes())
+                .and_then(|()| stdout.flush());
+        }
+        libc::signal(libc::SIGTTOU, old);
     }
 }
 
