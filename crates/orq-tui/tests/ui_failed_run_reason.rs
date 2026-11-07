@@ -44,12 +44,17 @@ impl BrowserBackend for Fake {
 }
 
 fn show(rows: Vec<RunRow>) -> String {
+    show_in(rows, 30, vec![])
+}
+
+fn show_in(rows: Vec<RunRow>, height: u16, more: Vec<Event>) -> String {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
-    let events = vec![Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))];
+    let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+    let mut events = vec![Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))];
+    events.extend(more);
     let _ = run_browser(&mut terminal, &model, &mut Fake { rows }, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
-    (0..30u16).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    (0..height).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 fn long_reason() -> String {
@@ -75,4 +80,28 @@ fn a_blocked_run_shows_its_reason_too() {
 fn a_run_that_did_not_fail_shows_no_reason() {
     let screen = show(vec![run("run-1", "running", Some("stale reason text".into()))]);
     assert!(!screen.contains("stale reason text"), "{screen}");
+}
+
+#[test]
+fn a_reason_too_tall_for_the_window_says_it_is_cut_and_the_card_stays() {
+    let screen = show_in(vec![run("run-1", "failed", Some(long_reason()))], 12, vec![]);
+    assert!(screen.contains("HEADMARK"), "{screen}");
+    assert!(!screen.contains("TAILMARK"), "{screen}");
+    assert!(screen.contains("feat-run-1"), "{screen}");
+    assert!(screen.contains("enlarge the window"), "{screen}");
+}
+
+#[test]
+fn moving_the_selection_to_another_run_swaps_the_reason_and_keeps_the_selection_on_screen() {
+    let rows = vec![run("run-1", "failed", Some("first run reason".into())), run("run-2", "failed", Some(long_reason()))];
+    let down = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let screen = show_in(rows.clone(), 14, vec![down]);
+    assert!(screen.contains("feat-run-2") && screen.contains("HEADMARK"), "{screen}");
+    assert!(!screen.contains("first run reason"), "{screen}");
+}
+
+#[test]
+fn a_blank_reason_shows_no_panel() {
+    let screen = show(vec![run("run-1", "failed", Some("   ".into()))]);
+    assert!(screen.contains("feat-run-1"), "{screen}");
 }

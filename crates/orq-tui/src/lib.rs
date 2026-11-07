@@ -2671,7 +2671,12 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
             let below = cards.y + cards.height;
             let reserved = if state.unreadable > 0 && body.height > 1 { 2 } else { 1 };
             let panel = (body.y + body.height).saturating_sub(reserved).saturating_sub(below);
-            for (n, text) in state.reason_lines(body.width).iter().take(usize::from(panel)).enumerate() {
+            let reason = state.reason_lines(body.width);
+            let shown = usize::from(panel);
+            // A reason that does not fit ends in a line that says so, in place of its last line.
+            let cut = reason.len() > shown && shown > 0;
+            for (n, text) in reason.iter().take(shown).enumerate() {
+                let text = if cut && n + 1 == shown { "… the rest does not fit; enlarge the window" } else { text };
                 let row = below - body.y + u16::try_from(n).unwrap_or(0);
                 put(frame, row, Line::styled(format!("{}{text}", " ".repeat(MARKER_WIDTH)), Style::new().fg(Color::Red)));
             }
