@@ -203,6 +203,26 @@ fn a_finding_listed_twice_in_the_live_ledger_takes_the_status_of_its_first_entry
     assert_eq!(statuses, vec![("leak", "rejected"), ("race", "deferred")]);
 }
 
+#[test]
+fn a_review_whose_ledger_names_its_commits_abbreviated_is_still_the_one_that_escalated() {
+    let (dir, base) = repo("abbreviated");
+    let reviewed = commit(&dir, "a.txt", "feature");
+    let (short_base, short_reviewed) = (&base[..7], &reviewed[..9]);
+    ledger(
+        &dir,
+        short_base,
+        vec![round(short_base, short_reviewed, 3, vec![finding("leak", "high", "open")])],
+        vec![finding("leak", "high", "deferred")],
+    );
+
+    let review = escalated_review(&dir, &base).unwrap().expect("the review escalated");
+
+    assert_eq!(review.start, base);
+    assert_eq!(review.reviewed_head, reviewed);
+    let statuses: Vec<(&str, &str)> = review.findings.iter().map(|f| (f.id.as_str(), f.status.as_str())).collect();
+    assert_eq!(statuses, vec![("leak", "deferred")]);
+}
+
 /// `escalated_review` of `dir`, given at most a few seconds: a ledger that would block the read
 /// fails the test instead of hanging it.
 fn escalated_review_in_time(dir: &Path, base: &str) -> Result<Option<orq_orchestrator::EscalatedReview>, String> {

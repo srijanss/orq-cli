@@ -2,7 +2,7 @@
 //! review ledger the session left in its worktree. Such a run waits for a human decision; it has
 //! not failed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::Path;
 
@@ -76,12 +76,13 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
     let mut in_order: HashMap<(&str, &str), bool> = HashMap::new();
     let mut latest = None;
     for (_, round) in candidates {
-        let (Some(start), Some(head)) = (text(round, "start"), text(round, "head")) else {
+        let Some(named_start) = text(round, "start") else { continue };
+        // A ledger may name a commit by an abbreviation; it counts as the run commit it names.
+        let (Some(start), Some(head)) =
+            (run_commit(&run_commits, named_start), text(round, "head").and_then(|h| run_commit(&run_commits, h)))
+        else {
             continue;
         };
-        if !run_commits.contains(start) || !run_commits.contains(head) {
-            continue;
-        }
         let ordered = match in_order.get(&(start, head)) {
             Some(&known) => known,
             None => {
@@ -91,11 +92,11 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
             }
         };
         if ordered {
-            latest = Some((round, start, head));
+            latest = Some((round, named_start, start, head));
             break;
         }
     }
-    let Some((round, start, head)) = latest else { return Ok(None) };
+    let Some((round, named_start, start, head)) = latest else { return Ok(None) };
     let number = round.get("round").and_then(Value::as_u64).unwrap_or(0);
     let blocking: Vec<&Value> = round
         .get("findings")
@@ -111,7 +112,7 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
     let live = read_ledger(&worktree.join(FINDINGS_FILE))?;
     let live = live
         .as_ref()
-        .and_then(|l| l.get(format!("review:{start}")))
+        .and_then(|l| l.get(format!("review:{named_start}")))
         .and_then(Value::as_array);
     // Each finding's live status, by id; a finding listed twice keeps its first entry's status.
     let mut live_status: HashMap<&str, Option<&str>> = HashMap::new();
@@ -184,7 +185,7 @@ fn read_ledger(path: &Path) -> Result<Option<Value>, String> {
 
 /// The full names of the commits of this run's work: `base` and every commit after it that `HEAD`
 /// has. `None` when `base` is not a commit `HEAD` has, so no review can be of this run's work.
-fn run_commits(worktree: &Path, base: &str) -> Result<Option<HashSet<String>>, String> {
+fn run_commits(worktree: &Path, base: &str) -> Result<Option<BTreeSet<String>>, String> {
     if !is_commit_name(base) {
         return Ok(None);
     }
@@ -204,13 +205,25 @@ fn run_commits(worktree: &Path, base: &str) -> Result<Option<HashSet<String>>, S
     if !out.success {
         return Err(format!("git rev-list {range} failed: {}", out.stderr.trim()));
     }
-    let mut commits: HashSet<String> = out.stdout.lines().map(str::to_string).collect();
+    let mut commits: BTreeSet<String> = out.stdout.lines().map(str::to_string).collect();
     // An empty path means `HEAD` is `base` or does not have it.
     if commits.is_empty() && base != head {
         return Ok(None);
     }
     commits.insert(base.to_string());
     Ok(Some(commits))
+}
+
+/// The one commit of `commits` that `name` names in full or abbreviated, if exactly one has it
+/// as a prefix.
+fn run_commit<'a>(commits: &'a BTreeSet<String>, name: &str) -> Option<&'a str> {
+    if !is_commit_name(name) {
+        return None;
+    }
+    let name = name.to_ascii_lowercase();
+    let mut named = commits.range(name.clone()..).take_while(|c| c.starts_with(&name));
+    let commit = named.next()?;
+    named.next().is_none().then_some(commit.as_str())
 }
 
 /// Whether `ancestor` is `descendant` or one of its ancestors. A name git does not know is not.
