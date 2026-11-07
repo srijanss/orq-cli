@@ -608,4 +608,20 @@ mod tests {
         ));
         assert!(matches!(gitlab_verdict("{}", SHA), Verdict::Unusable(_)));
     }
+    #[cfg(unix)]
+    #[test]
+    fn a_config_that_cannot_be_inspected_counts_as_configured_not_absent() {
+        // `loop/x` fails with ELOOP, an error that is not NotFound.
+        let dir = std::env::temp_dir().join(format!("orq-ci-wait-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("loop", dir.join("loop")).unwrap();
+        let worktree = dir.join("loop");
+        assert!(has_ci_config(&worktree, Kind::GitLab));
+        assert!(has_ci_config(&worktree, Kind::GitHub));
+        // A missing directory is the only thing that proves absence.
+        assert!(!has_ci_config(&dir.join("missing"), Kind::GitLab));
+        assert!(!has_ci_config(&dir.join("missing"), Kind::GitHub));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
