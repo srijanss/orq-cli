@@ -52,39 +52,42 @@ fn review_from_ledger_with(worktree: &Path, base: &str, mut check: impl FnMut(&s
     Some(json!({"schema_version": 1, "head_sha": last_head, "outcome": null, "rounds": rounds}))
 }
 
-/// The newest report build of a run that published, shared by that run's builds.
-type Published = std::sync::Arc<std::sync::Mutex<u64>>;
+/// The latest report build of a run to start, shared by that run's builds.
+type Latest = std::sync::Arc<std::sync::Mutex<u64>>;
 
 /// A report build's place among its run's builds, taken when the build starts. A build detached
 /// on a timeout can finish after the build that followed it; its turn keeps it from writing over
-/// what that later build published.
+/// what that later build wrote, without the later build waiting for it.
 pub(crate) struct ReportTurn {
     generation: u64,
-    published: Published,
+    latest: Latest,
 }
 
-/// The next turn for a report build of `run_id`.
+/// The next turn for a report build of `run_id`; from now on, earlier builds of the run write nothing.
 pub(crate) fn report_turn(run_id: &str) -> ReportTurn {
-    static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u64, Published)>>> = std::sync::OnceLock::new();
+    static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Latest>>> = std::sync::OnceLock::new();
     let mut runs = RUNS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (taken, published) = runs.entry(run_id.to_string()).or_default();
+    let latest = runs.entry(run_id.to_string()).or_default().clone();
+    drop(runs);
+    let mut taken = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *taken += 1;
-    ReportTurn { generation: *taken, published: published.clone() }
+    let generation = *taken;
+    drop(taken);
+    ReportTurn { generation, latest }
 }
 
 impl ReportTurn {
-    /// Runs `build`, which writes the run's evidence and publishes its report, while no other build
-    /// of the run does; unless a later build already published, in which case nothing is written.
-    pub(crate) fn publish<T>(self, build: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        let mut published = self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *published > self.generation {
-            return Err("a later build of this run's report already published".to_string());
+    /// Runs `write`, one of the build's writes of the run's evidence or report, unless a later build
+    /// of the run has started. The check and the write are one step, so no later build's write
+    /// can come between them; keep `write` to local file writes, since later builds wait for it.
+    pub(crate) fn write<T>(&self, write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let latest = self.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *latest != self.generation {
+            return Err("a later build of this run's report has started".to_string());
         }
-        let built = build();
-        if built.is_ok() {
-            *published = self.generation;
-        }
-        built
+        let written = write();
+        drop(latest);
+        written
     }
 }
 
@@ -235,28 +238,52 @@ mod tests {
     }
 
     /// A report build that timed out can finish after the one that followed it (the build before
-    /// CI, after the build with CI's verdict). Builds of one run publish one at a time, and a build
-    /// a later one already published over does not publish at all, so the CI result stays.
+    /// CI, after the build with CI's verdict). Once a later build of the run started, the earlier
+    /// one writes nothing more, so the CI result stays; another run's builds are not affected.
     #[test]
-    fn a_report_build_that_finishes_after_a_later_one_published_does_not_overwrite_it() {
+    fn a_report_build_that_finishes_after_a_later_one_started_does_not_overwrite_it() {
         let run = "run-overlapping-builds";
         let before_ci = report_turn(run);
+        assert_eq!(before_ci.write(|| Ok("evidence before CI")), Ok("evidence before CI"), "a build writes while it is the latest");
         let with_ci = report_turn(run);
         let other_run = report_turn("run-overlapping-builds-other");
 
-        assert_eq!(with_ci.publish(|| Ok("with CI")), Ok("with CI"));
-        let mut late_build_ran = false;
-        let late = before_ci.publish(|| {
-            late_build_ran = true;
-            Ok("before CI")
+        assert_eq!(with_ci.write(|| Ok("with CI")), Ok("with CI"));
+        let mut late_write_ran = false;
+        let late = before_ci.write(|| {
+            late_write_ran = true;
+            Ok("report before CI")
         });
         assert!(late.is_err(), "{late:?}");
-        assert!(!late_build_ran, "the superseded build does not write the run's evidence");
-        assert_eq!(other_run.publish(|| Ok("other")), Ok("other"), "another run's builds are not held back");
+        assert!(!late_write_ran, "the superseded build does not write the run's evidence or report");
+        assert_eq!(other_run.write(|| Ok("other")), Ok("other"), "another run's builds are not held back");
+    }
 
-        let (first, second) = (report_turn(run), report_turn(run));
-        assert_eq!(first.publish(|| Ok(1)), Ok(1), "an earlier build still publishes when it finishes first");
-        assert_eq!(second.publish(|| Ok(2)), Ok(2));
+    /// A build that stalls between its writes (on git, say) holds nothing, so the build that
+    /// follows it writes without waiting for it.
+    #[test]
+    fn a_stalled_report_build_does_not_hold_back_the_one_that_follows_it() {
+        let run = "run-stalled-build";
+        let stalled = report_turn(run);
+        let (stall_tx, stall_rx) = std::sync::mpsc::channel::<()>();
+        let (wrote_tx, wrote_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let first = stalled.write(|| Ok("evidence"));
+            wrote_tx.send(()).unwrap();
+            stall_rx.recv().unwrap();
+            (first, stalled.write(|| Ok("report")))
+        });
+        wrote_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the first build wrote its evidence");
+
+        let following = report_turn(run);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done_tx.send(following.write(|| Ok("with CI"))).unwrap());
+        assert_eq!(done_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(Ok("with CI")), "the following build is not held back");
+
+        stall_tx.send(()).unwrap();
+        let (first, late) = worker.join().unwrap();
+        assert_eq!(first, Ok("evidence"));
+        assert!(late.is_err(), "{late:?}");
     }
 
     /// Many rounds of one review share their start and head, so git is asked about each distinct

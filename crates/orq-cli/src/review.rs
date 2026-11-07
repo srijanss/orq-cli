@@ -146,7 +146,7 @@ fn parse_build(args: &[OsString]) -> Option<BuildArgs> {
 
 fn build(args: &[OsString]) -> ExitCode {
     let Some(parsed) = parse_build(args) else { return usage_error() };
-    match publish(&parsed, Summary::IfConfigured) {
+    match publish(&parsed, Summary::IfConfigured, None) {
         Ok(path) => {
             println!("{}", path.display());
             ExitCode::SUCCESS
@@ -166,6 +166,7 @@ enum Summary {
 /// seconds), so its report has no generated summary; `orq review build` adds one when asked.
 /// `tests` and `review` are what the run knows about `head`: they are stored with the run first, so
 /// the report reads the run's own evidence; without review details the report keeps that gap.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_for_run(
     repo: &Path,
     run_id: &str,
@@ -174,6 +175,7 @@ pub(crate) fn build_for_run(
     head: &str,
     tests: &serde_json::Value,
     review: Option<&serde_json::Value>,
+    turn: &crate::run_evidence::ReportTurn,
 ) -> Result<PathBuf, String> {
     check_run_id(run_id).map_err(|err| format!("invalid run id: {err}"))?;
     let roots = roots()?;
@@ -181,14 +183,16 @@ pub(crate) fn build_for_run(
         let bytes = serde_json::to_vec_pretty(evidence).map_err(|err| err.to_string())?;
         save_run_file(&roots.data, run_id, file, &bytes).map_err(|err| format!("cannot store the run's {}: {err}", file.file_name()))
     };
-    save(RunFile::Tests, tests)?;
-    let review_input = match review {
-        Some(review) => {
-            save(RunFile::ReviewRounds, review)?;
-            Some(roots.runs().join(run_id).join(RunFile::ReviewRounds.file_name()))
+    let review_input = turn.write(|| {
+        save(RunFile::Tests, tests)?;
+        match review {
+            Some(review) => {
+                save(RunFile::ReviewRounds, review)?;
+                Ok(Some(roots.runs().join(run_id).join(RunFile::ReviewRounds.file_name())))
+            }
+            None => Ok(None),
         }
-        None => None,
-    };
+    })?;
     let args = BuildArgs {
         run_id: run_id.to_string(),
         repo: repo.to_path_buf(),
@@ -197,11 +201,12 @@ pub(crate) fn build_for_run(
         head: head.to_string(),
         review_input,
     };
-    publish(&args, Summary::Never)
+    publish(&args, Summary::Never, Some(turn))
 }
 
 /// Builds the report, stores both copies and indexes it. Returns where the report landed.
-fn publish(parsed: &BuildArgs, summary: Summary) -> Result<PathBuf, String> {
+/// A run's build stores nothing once a later build of the run has started (see [`crate::run_evidence::ReportTurn`]).
+fn publish(parsed: &BuildArgs, summary: Summary, turn: Option<&crate::run_evidence::ReportTurn>) -> Result<PathBuf, String> {
     check_run_id(&parsed.run_id).map_err(|err| format!("invalid run id: {err}"))?;
     let project = orq_git::resolve_project(&parsed.repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
     let diff = orq_git::diff_evidence(&project.root, &parsed.base, &parsed.head).map_err(|err| format!("cannot read the diff: {err:?}"))?;
@@ -257,26 +262,32 @@ fn publish(parsed: &BuildArgs, summary: Summary) -> Result<PathBuf, String> {
     // published or indexed, so a failed build leaves no half-visible report.
     let markdown = orq_core::redact::redact(&render_markdown(&report));
     let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
-    // One publisher per run and commit at a time, so a rollback can never undo
-    // another build's successful publication.
-    let _lock = lock_publication(&roots.data, &parsed.run_id, &diff.head_sha).map_err(|err| format!("cannot lock the report directory: {err}"))?;
-    let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
-    write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()).map_err(|err| format!("cannot store the readable report: {err}"))?;
-    let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
-        Ok(record) => record,
-        Err(err) => {
-            // Put the readable copy back as it was (the old one, or none).
-            let undo = match previous {
-                Some(old) => write_atomic(&roots.data, Path::new(&markdown_path), &old),
-                None => std::fs::remove_file(roots.data.join(&markdown_path)),
-            };
-            return Err(match undo {
-                Ok(()) => format!("cannot store the review report: {err}"),
-                Err(undo) => format!("cannot store the review report: {err}; and restoring the previous readable report failed: {undo}"),
-            });
-        }
+    let store_report = || {
+        // One publisher per run and commit at a time, so a rollback can never undo
+        // another build's successful publication.
+        let _lock = lock_publication(&roots.data, &parsed.run_id, &diff.head_sha).map_err(|err| format!("cannot lock the report directory: {err}"))?;
+        let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
+        write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()).map_err(|err| format!("cannot store the readable report: {err}"))?;
+        let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
+            Ok(record) => record,
+            Err(err) => {
+                // Put the readable copy back as it was (the old one, or none).
+                let undo = match previous {
+                    Some(old) => write_atomic(&roots.data, Path::new(&markdown_path), &old),
+                    None => std::fs::remove_file(roots.data.join(&markdown_path)),
+                };
+                return Err(match undo {
+                    Ok(()) => format!("cannot store the review report: {err}"),
+                    Err(undo) => format!("cannot store the review report: {err}; and restoring the previous readable report failed: {undo}"),
+                });
+            }
+        };
+        Ok(roots.data.join(&record.report_path))
     };
-    Ok(roots.data.join(&record.report_path))
+    match turn {
+        Some(turn) => turn.write(store_report),
+        None => store_report(),
+    }
 }
 
 /// The provider and repository page of the run's associated review, when it has one.
