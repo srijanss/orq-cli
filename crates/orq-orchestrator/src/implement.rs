@@ -138,11 +138,17 @@ pub(crate) fn run_session_stage(
     let terminal_settings = session.terminal.then(saved_terminal_settings).flatten();
     let status = cleared
         .and_then(|()| crate::child_groups::spawn(&mut command))
-        .and_then(|child| wait_for_session(child, session.exit_marker));
-    #[cfg(unix)]
-    if let Some(settings) = terminal_settings {
-        restore_terminal(&settings);
-    }
+        .and_then(|child| {
+            let end = wait_for_session(child, session.exit_marker);
+            #[cfg(unix)]
+            if let Some(settings) = &terminal_settings {
+                // A session that ended by itself has put its screen away and left its last words
+                // on it; only one orq ended still has its screen up.
+                let closed_by_orq = !matches!(end, Ok(SessionEnd::Exited(_)));
+                restore_terminal(settings, closed_by_orq);
+            }
+            end
+        });
     let reported = session.exit_marker.and_then(marker_report);
     // A session that failed by its exit status has already failed, whatever its marker says.
     let finished = match &status {
@@ -348,14 +354,15 @@ fn saved_terminal_settings() -> Option<libc::termios> {
 const SCREEN_RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<u\x1b[H\x1b[2J";
 
 /// Puts back settings taken by `saved_terminal_settings`: a session killed in raw mode would
-/// otherwise leave Enter unable to end a line. Then resets the screen, when stdout is a terminal.
+/// otherwise leave Enter unable to end a line. With `reset_screen`, also resets the screen, when
+/// stdout is a terminal.
 #[cfg(unix)]
-fn restore_terminal(settings: &libc::termios) {
+fn restore_terminal(settings: &libc::termios, reset_screen: bool) {
     // SAFETY: plain libc calls; SIGTTOU is ignored only for the duration of the calls.
     unsafe {
         let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
         libc::tcsetattr(0, libc::TCSANOW, settings);
-        if libc::isatty(1) == 1 {
+        if reset_screen && libc::isatty(1) == 1 {
             use std::io::Write;
             let mut stdout = std::io::stdout().lock();
             let _ = stdout

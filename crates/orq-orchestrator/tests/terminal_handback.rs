@@ -113,18 +113,27 @@ fn store_with_run(root: &Path) -> RunStore {
 /// (raw input, a hidden cursor, a screen of its own), draws, says it is finished and keeps running,
 /// so orq has to close it.
 fn run_an_agent_like_session_closed_by_its_marker(root: &Path) {
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "stty raw -echo; printf '\\033[?1049h\\033[?25l{DREW}'; touch {}; sleep 30",
+        marker.display()
+    );
+    let outcome = run_terminal_session(root, "sh", &["-c".to_string(), script]).unwrap();
+    assert!(outcome.success, "{outcome:?}");
+}
+
+/// Runs `program` as a terminal-attached session of run-1 whose finish marker is
+/// `worktree/done.marker`.
+fn run_terminal_session(
+    root: &Path,
+    program: &str,
+    args: &[String],
+) -> Result<orq_orchestrator::ImplementOutcome, orq_orchestrator::StoreError> {
     let store = store_with_run(root);
     let marker = root.join("worktree/done.marker");
-    let args = vec![
-        "-c".to_string(),
-        format!(
-            "stty raw -echo; printf '\\033[?1049h\\033[?25l{DREW}'; touch {}; sleep 30",
-            marker.display()
-        ),
-    ];
     let session = ImplementSession {
-        program: "sh",
-        args: &args,
+        program,
+        args,
         env: &[],
         cwd: &root.join("worktree"),
         session_id: None,
@@ -132,9 +141,16 @@ fn run_an_agent_like_session_closed_by_its_marker(root: &Path) {
         terminal: true,
         exit_marker: Some(&marker),
     };
-    let outcome = run_implement_stage(&store, "run-1", &session).unwrap();
-    assert!(outcome.success, "{outcome:?}");
+    run_implement_stage(&store, "run-1", &session)
 }
+
+/// What a session that ends by itself prints last, so the driver can tell its output from what orq
+/// writes after it.
+const LAST_WORDS: &str = "AGENT-GAVE-UP";
+
+/// The screen reset orq writes after closing a session, in part: leaving the session's own screen
+/// and clearing the screen.
+const RESET_PARTS: [&str; 2] = ["\x1b[?1049l", "\x1b[2J"];
 
 fn fresh_root(tag: &str) -> PathBuf {
     let root = orq_test_support::process_temp_dir()
@@ -191,4 +207,54 @@ fn a_terminal_session_closed_by_orq_has_its_screen_modes_undone_and_its_screen_c
             "orq did not {what} after the session: {after:?}"
         );
     }
+}
+
+#[test]
+fn a_terminal_session_that_cannot_start_leaves_the_screen_and_terminal_settings_alone() {
+    if let Some(root) = std::env::var_os(CHILD) {
+        let _ = run_terminal_session(Path::new(&root), "orq-handback-no-such-agent", &[]);
+        return;
+    }
+    let root = fresh_root("no-start");
+    let screen = run_on_terminal(
+        "a_terminal_session_that_cannot_start_leaves_the_screen_and_terminal_settings_alone",
+        &root,
+    );
+
+    assert!(screen.contains("1 passed"), "{screen:?}");
+    for part in RESET_PARTS {
+        assert!(
+            !screen.contains(part),
+            "orq reset a screen no session used: {screen:?}"
+        );
+    }
+    assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
+}
+
+#[test]
+fn a_terminal_session_that_ends_by_itself_keeps_what_it_printed_on_the_screen() {
+    if let Some(root) = std::env::var_os(CHILD) {
+        let script = format!("printf '{LAST_WORDS}'; exit 3");
+        let outcome =
+            run_terminal_session(Path::new(&root), "sh", &["-c".to_string(), script]).unwrap();
+        assert!(!outcome.success, "{outcome:?}");
+        return;
+    }
+    let root = fresh_root("own-end");
+    let screen = run_on_terminal(
+        "a_terminal_session_that_ends_by_itself_keeps_what_it_printed_on_the_screen",
+        &root,
+    );
+
+    assert!(screen.contains("1 passed"), "{screen:?}");
+    let (_, after) = screen
+        .split_once(LAST_WORDS)
+        .unwrap_or_else(|| panic!("the session never ran on the terminal: {screen:?}"));
+    for part in RESET_PARTS {
+        assert!(
+            !after.contains(part),
+            "orq cleared what the session printed: {after:?}"
+        );
+    }
+    assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
 }
