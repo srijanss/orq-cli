@@ -13,6 +13,8 @@ pub struct LogTail {
     /// How long since the log was last written.
     pub quiet_for: Duration,
     pub last_line: Option<String>,
+    /// How far the test run in this log has come, when it holds one.
+    pub tests: Option<TestProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,7 @@ pub struct RunActivity {
     /// The round (attempt) of the latest stage event; 0 before any stage has started.
     pub attempt: u32,
     pub last_output: Option<String>,
+    pub tests: Option<TestProgress>,
     pub may_be_stuck: bool,
     /// How long the newest log has been silent, when there is one.
     pub quiet_for: Option<Duration>,
@@ -34,6 +37,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
         phase: summary.phase,
         stage: summary.stage,
         attempt: events.iter().rev().find(|e| e.stage.is_some()).map_or(0, |e| e.attempt),
+        tests: log.and_then(|l| l.tests.clone()),
         last_output: log.and_then(|l| l.last_line.as_deref()).map(orq_core::redact::redact),
         quiet_for: log.map(|l| l.quiet_for),
         may_be_stuck: running && log.is_some_and(|l| l.quiet_for > stuck_after),
@@ -75,6 +79,8 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
 /// How much of the end of a log is looked at, and the longest line shown.
 const TAIL_BYTES: u64 = 8 * 1024;
 const MAX_LINE_CHARS: usize = 200;
+/// How much of the end of a log is read to count its tests.
+const TEST_SCAN_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The most recently written `*.log` under `dir` (a run's log folder or one stage's), if any.
 pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
@@ -108,7 +114,7 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
     let (modified, size) = (meta.modified().ok()?, meta.len());
     file.seek(SeekFrom::Start(size.saturating_sub(TAIL_BYTES))).ok()?;
     let mut bytes = Vec::new();
-    file.take(TAIL_BYTES).read_to_end(&mut bytes).ok()?;
+    file.by_ref().take(TAIL_BYTES).read_to_end(&mut bytes).ok()?;
     let start = size.saturating_sub(TAIL_BYTES);
     let text = String::from_utf8_lossy(&bytes);
     // A tail that begins mid-file starts mid-line: that cut line is dropped, since a secret
@@ -121,7 +127,23 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(|line| orq_core::redact::redact(line).chars().take(MAX_LINE_CHARS).collect());
-    Some(LogTail { size, quiet_for: modified.elapsed().unwrap_or_default(), last_line })
+    // The count needs more than the tail: the end of the log, up to a larger bound.
+    let scan_from = size.saturating_sub(TEST_SCAN_BYTES);
+    let mut scanned = Vec::new();
+    let tests = file
+        .seek(SeekFrom::Start(scan_from))
+        .and_then(|_| file.by_ref().take(TEST_SCAN_BYTES).read_to_end(&mut scanned))
+        .ok()
+        .and_then(|_| {
+            let text = String::from_utf8_lossy(&scanned);
+            let text = if scan_from > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+            test_progress(text)
+        })
+        .map(|mut t| {
+            t.current = t.current.map(|name| orq_core::redact::redact(&name).chars().take(MAX_LINE_CHARS).collect());
+            t
+        });
+    Some(LogTail { size, quiet_for: modified.elapsed().unwrap_or_default(), last_line, tests })
 }
 
 /// The line to show for `current`, or none: a changed stage or last line of output is shown as it

@@ -18,7 +18,7 @@ fn event(kind: &str, stage: Option<&str>) -> Event {
 }
 
 fn tail(line: &str, quiet_secs: u64) -> LogTail {
-    LogTail { size: 120, quiet_for: Duration::from_secs(quiet_secs), last_line: Some(line.to_string()) }
+    LogTail { size: 120, quiet_for: Duration::from_secs(quiet_secs), last_line: Some(line.to_string()), tests: None }
 }
 
 const STUCK_AFTER: Duration = Duration::from_secs(300);
@@ -149,6 +149,28 @@ fn the_round_of_the_latest_stage_event_is_carried_on_the_activity() {
     assert_eq!(seen(&[first.clone()], "running", 1).attempt, 1);
     assert_eq!(seen(&[first, second], "running", 1).attempt, 2);
     assert_eq!(seen(&[], "running", 1).attempt, 0, "no stage has started yet");
+}
+
+#[test]
+fn the_tests_finished_in_the_newest_log_reach_the_activity_with_the_name_redacted() {
+    let dir = log_dir("tests");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut log = String::from("running 4 tests\n");
+    for n in 0..2 {
+        log.push_str(&format!("test t{n} ... ok\n"));
+    }
+    log.push_str(&format!("test with::{token} ... ok\n"));
+    std::fs::write(dir.join("gate.log"), log).unwrap();
+
+    let tail = newest_log_tail(&dir).unwrap();
+    let progress = tail.tests.clone().unwrap();
+    assert_eq!((progress.done, progress.total), (3, 4));
+    assert!(!progress.current.unwrap().contains("ghp_"));
+
+    let events = [event("stage.started", Some("verify"))];
+    let activity = run_activity(&events, Some(&tail), STUCK_AFTER);
+    assert_eq!(activity.tests.map(|t| (t.done, t.total)), Some((3, 4)));
+    assert_eq!(seen(&events, "x", 1).tests, None, "a log without tests has no progress");
 }
 
 #[test]
