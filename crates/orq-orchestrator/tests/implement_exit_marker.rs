@@ -294,7 +294,24 @@ fn what_a_session_reports_is_cleaned_before_it_is_recorded() {
     assert!(reason.contains("first"), "{reason}");
     assert!(!reason.chars().any(char::is_control), "{reason:?}");
     assert!(!reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{reason}");
-    assert!(reason.chars().count() < 1000, "{} chars", reason.chars().count());
+    assert!(reason.chars().count() < 2500,"{} chars", reason.chars().count());
+}
+
+#[test]
+fn a_report_of_a_few_paragraphs_is_recorded_whole() {
+    let (store, root) = setup("long-report");
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "{{ printf 'HEADMARK '; for n in $(seq 1 250); do printf 'word%s ' $n; done; printf 'TAILMARK'; }} > {m}; sleep 30",
+        m = marker.display()
+    );
+    let args = args(&script);
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    let reason = stage_failure_reason(&store);
+    assert!(reason.contains("HEADMARK") && reason.contains("TAILMARK"), "{reason}");
 }
 
 #[test]

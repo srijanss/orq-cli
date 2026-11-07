@@ -207,8 +207,8 @@ pub(crate) fn run_session_stage(
 
 /// A marker is read only this far: it is a short note, and nothing limits what a session writes there.
 const MARKER_READ_LIMIT: u64 = 4096;
-/// The most of a report that goes into the run's events.
-const MARKER_REPORT_LIMIT: usize = 500;
+/// The most of a report that goes into the run's events: room for a few paragraphs of what went wrong.
+const MARKER_REPORT_LIMIT: usize = 2000;
 
 /// What the session wrote into its marker. An empty marker means it finished as asked.
 fn marker_report(marker: &Path) -> Option<String> {
