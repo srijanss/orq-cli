@@ -155,7 +155,7 @@ fn the_round_of_the_latest_stage_event_is_carried_on_the_activity() {
 fn the_tests_finished_in_the_newest_log_reach_the_activity_with_the_name_redacted() {
     let dir = log_dir("tests");
     let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut log = String::from("running 4 tests\n");
+    let mut log = format!("{}\nrunning 4 tests\n", orq_orchestrator::test_total_line(Some(4)));
     for n in 0..2 {
         log.push_str(&format!("test t{n} ... ok\n"));
     }
@@ -201,26 +201,48 @@ fn the_gate_and_ci_are_shown_as_a_step_with_its_round_and_percentage() {
 }
 
 #[test]
-fn test_progress_counts_the_tests_finished_since_the_latest_run_began() {
-    use orq_orchestrator::{test_progress, TestProgress};
-    let log = "running 4 tests\ntest a::one ... ok\ntest a::two ... FAILED\ntest a::three ... ignored\n";
-    assert_eq!(
-        test_progress(log),
-        Some(TestProgress { done: 3, total: 4, current: Some("a::three".to_string()) })
-    );
+fn test_progress_carries_the_count_across_test_binaries_up_to_the_whole_suite() {
+    use orq_orchestrator::{test_progress, test_total_line, TestProgress};
+    let total = test_total_line(Some(60));
 
-    // A later test binary starts the count again.
-    let two_binaries = "running 2 tests\ntest x ... ok\ntest y ... ok\n\nrunning 10 tests\ntest z ... ok\n";
-    assert_eq!(
-        test_progress(two_binaries),
-        Some(TestProgress { done: 1, total: 10, current: Some("z".to_string()) })
-    );
+    let mut log = format!("{total}\n");
+    let mut percentages = Vec::new();
+    for (binary, tests) in [10, 20, 30].into_iter().enumerate() {
+        log.push_str(&format!("\nrunning {tests} tests\n"));
+        percentages.push(test_progress(&log).map(|t| t.done * 100 / t.total));
+        for n in 0..tests {
+            log.push_str(&format!("test b{binary}::t{n} ... ok\n"));
+            percentages.push(test_progress(&log).map(|t| t.done * 100 / t.total));
+        }
+    }
+    let percentages: Vec<u64> = percentages.into_iter().map(Option::unwrap).collect();
+    assert!(percentages.windows(2).all(|pair| pair[0] <= pair[1]), "{percentages:?}");
+    assert_eq!(percentages.iter().filter(|p| **p == 100).count(), 1, "only the last test reaches 100%: {percentages:?}");
+    assert_eq!(percentages.last(), Some(&100));
 
-    assert_eq!(test_progress("running 3 tests\n").unwrap().current, None);
-    assert_eq!(test_progress("compiling\n"), None, "no test run has begun");
-    assert_eq!(test_progress("running 0 tests\n"), None, "nothing to measure");
+    // The count carries over a new header; every kind of result counts.
+    let two = format!("{total}\nrunning 2 tests\ntest x ... ok\ntest y ... FAILED\n\nrunning 10 tests\ntest z ... ignored\n");
+    assert_eq!(test_progress(&two), Some(TestProgress { done: 3, total: 60, current: Some("z".to_string()) }));
+    assert_eq!(test_progress(&format!("{total}\n")), Some(TestProgress { done: 0, total: 60, current: None }));
     // Never more than the total, however many lines look like results.
-    assert_eq!(test_progress("running 1 tests\ntest a ... ok\ntest b ... ok\n").unwrap().done, 1);
+    let one = test_total_line(Some(1));
+    assert_eq!(test_progress(&format!("{one}\ntest a ... ok\ntest b ... ok\n")).unwrap().done, 1);
+}
+
+#[test]
+fn test_progress_has_no_percentage_without_a_known_total() {
+    use orq_orchestrator::{test_progress, test_total_line};
+    assert_eq!(test_progress("compiling\n"), None, "no test run has begun");
+    assert_eq!(test_progress("running 4 tests\ntest a ... ok\n"), None, "one binary's header is not the suite");
+    assert_eq!(test_progress(&format!("{}\n", test_total_line(Some(0)))), None, "nothing to measure");
+    assert_eq!(test_progress(&format!("{}\nrunning 4 tests\ntest a ... ok\n", test_total_line(None))), None);
+
+    // A later round of the gate in the same log starts from its own total, or from none.
+    let round_one = format!("{}\nrunning 2 tests\ntest a ... ok\ntest b ... ok\n", test_total_line(Some(2)));
+    let known = format!("{round_one}{}\nrunning 3 tests\ntest c ... ok\n", test_total_line(Some(3)));
+    assert_eq!(test_progress(&known).map(|t| (t.done, t.total)), Some((1, 3)));
+    let unknown = format!("{round_one}{}\nrunning 3 tests\ntest c ... ok\n", test_total_line(None));
+    assert_eq!(test_progress(&unknown), None);
 }
 
 #[test]
@@ -264,4 +286,54 @@ fn control_sequences_in_output_never_reach_the_line_shown_on_a_terminal() {
 
     assert!(!line.chars().any(char::is_control), "{line:?}");
     assert!(line.contains("ok") && line.contains("fake: all passed"), "{line:?}");
+}
+
+/// A worktree and store for one gate run, and a `cargo` on the returned PATH running `script`.
+fn gate_with_cargo(tag: &str, script: &str) -> (orq_orchestrator::RunStore, std::path::PathBuf, Vec<(String, String)>) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = orq_test_support::process_temp_dir().join(format!("orq-run-activity-gate-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (bin, logs, worktree) = (root.join("bin"), root.join("logs"), root.join("worktree"));
+    for dir in [&bin, &logs, &worktree] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let cargo = bin.join("cargo");
+    std::fs::write(&cargo, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let store = orq_orchestrator::RunStore::new(&root.join("state"));
+    store
+        .create(&orq_orchestrator::RunRecord {
+            run_id: "run-1".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            remote: "origin".to_string(),
+            provider: "github".to_string(),
+            target_branch: "main".to_string(),
+            base_sha: "0".repeat(40),
+            branch: "fix--COM-02".to_string(),
+            worktree,
+            repository: String::new(),
+            profiles: Default::default(),
+        })
+        .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    (store, logs, vec![("PATH".to_string(), path)])
+}
+
+#[test]
+fn the_percentage_of_a_cargo_gate_covers_every_test_binary() {
+    let script = r#"case "$*" in
+metadata*) echo '{"packages":[]}' ;;
+*--list*) printf 'a: test\n10 tests, 0 benchmarks\n20 tests, 0 benchmarks\n30 tests, 0 benchmarks\n' ;;
+*) printf 'running 10 tests\n'; i=0; while [ $i -lt 10 ]; do echo "test a$i ... ok"; i=$((i+1)); done
+   printf 'running 20 tests\ntest b ... ok\n' ;;
+esac"#;
+    let (store, logs, env) = gate_with_cargo("whole", script);
+    let gate = orq_orchestrator::Gate::Steps { steps: vec![vec!["cargo".to_string(), "test".to_string(), "--workspace".to_string()]], notes: Vec::new() };
+
+    let outcome = orq_orchestrator::run_gate_stage_with_env(&store, "run-1", &gate, true, &logs.join("gate.log"), &env).unwrap();
+
+    assert_eq!(outcome, orq_orchestrator::GateOutcome::Passed);
+    let tests = newest_log_tail(&logs).unwrap().tests.unwrap();
+    assert_eq!((tests.done, tests.total), (11, 60));
 }
