@@ -237,6 +237,53 @@ fn a_build_cache_in_a_directory_with_a_non_ascii_name_is_removed_with_the_worktr
 }
 
 #[test]
+fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in_a_proven_build_cache() {
+    use std::os::unix::fs::symlink;
+    const SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
+    // Each case: how `target/CACHEDIR.TAG` is made (None: no tag), and a file outside the cache.
+    type Tag = Option<fn(&Path)>;
+    let cases: [(&str, Tag, bool); 6] = [
+        ("wrong-signature", Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap()), false),
+        ("truncated-signature", Some(|p| fs::write(p, &SIGNATURE[..20]).unwrap()), false),
+        ("empty-tag", Some(|p| fs::write(p, "").unwrap()), false),
+        (
+            "symlinked-tag",
+            Some(|p| {
+                let real = p.with_file_name("real-tag");
+                fs::write(&real, SIGNATURE).unwrap();
+                symlink(&real, p).unwrap();
+            }),
+            false,
+        ),
+        ("no-tag", None, false),
+        ("valid-tag-beside-an-unrelated-ignored-file", Some(|p| fs::write(p, SIGNATURE).unwrap()), true),
+    ];
+    for (tag, make_tag, unrelated) in cases {
+        let w = world(&format!("not-a-cache-{tag}"));
+        fs::write(w.worktree.join(".gitignore"), "target/\nlocal.env\n").unwrap();
+        git(&w.worktree, &["add", ".gitignore"]);
+        git(&w.worktree, &["commit", "-q", "-m", "ignore"]);
+        fs::create_dir_all(w.worktree.join("target")).unwrap();
+        fs::write(w.worktree.join("target/artifact"), "built").unwrap();
+        if let Some(make_tag) = make_tag {
+            make_tag(&w.worktree.join("target/CACHEDIR.TAG"));
+        }
+        if unrelated {
+            fs::write(w.worktree.join("local.env"), "SECRET=1\n").unwrap();
+        }
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{tag}: {outcome:?}");
+        assert_eq!(fs::read_to_string(w.worktree.join("target/artifact")).unwrap(), "built", "{tag}");
+        if unrelated {
+            assert_eq!(fs::read_to_string(w.worktree.join("local.env")).unwrap(), "SECRET=1\n", "{tag}");
+        }
+        assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
+    }
+}
+
+#[test]
 fn a_locked_worktree_is_kept_registered_with_its_branch() {
     let w = world("locked");
     git(
