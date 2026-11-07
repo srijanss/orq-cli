@@ -142,16 +142,27 @@ const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 /// Whether `path` (relative to `worktree`) lies in a directory tagged as a cache: whatever is
 /// there can be rebuilt, so losing it with the worktree loses no work.
 fn in_cache_dir(worktree: &Path, path: &str) -> bool {
+    Path::new(path).ancestors().skip(1).any(|dir| is_cache_tag(&worktree.join(dir).join("CACHEDIR.TAG")))
+}
+
+/// Whether `tag` is a plain file that begins with the cache signature. It is opened without following
+/// a link and without waiting on a pipe, then judged by the handle itself: the path may have been
+/// swapped for something else since it was listed.
+fn is_cache_tag(tag: &Path) -> bool {
     use std::io::Read;
-    Path::new(path).ancestors().skip(1).any(|dir| {
-        let tag = worktree.join(dir).join("CACHEDIR.TAG");
-        // A plain file only: a link could point anywhere.
-        std::fs::symlink_metadata(&tag).is_ok_and(|m| m.is_file())
-            && std::fs::File::open(&tag).is_ok_and(|file| {
-                let mut head = Vec::new();
-                file.take(CACHEDIR_SIGNATURE.len() as u64).read_to_end(&mut head).is_ok() && head == CACHEDIR_SIGNATURE.as_bytes()
-            })
-    })
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(tag)
+    else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let mut head = Vec::new();
+    file.take(CACHEDIR_SIGNATURE.len() as u64).read_to_end(&mut head).is_ok() && head == CACHEDIR_SIGNATURE.as_bytes()
 }
 
 /// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.

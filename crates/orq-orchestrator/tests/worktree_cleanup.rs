@@ -242,7 +242,9 @@ fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in
     const SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
     // Each case: how `target/CACHEDIR.TAG` is made (None: no tag), and a file outside the cache.
     type Tag = Option<fn(&Path)>;
-    let cases: [(&str, Tag, bool); 6] = [
+    let cases: [(&str, Tag, bool); 7] = [
+        // A pipe nobody writes to would block a reader forever.
+        ("fifo-tag", Some(|p| assert!(Command::new("mkfifo").arg(p).status().unwrap().success())), false),
         ("wrong-signature", Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap()), false),
         ("truncated-signature", Some(|p| fs::write(p, &SIGNATURE[..20]).unwrap()), false),
         ("empty-tag", Some(|p| fs::write(p, "").unwrap()), false),
