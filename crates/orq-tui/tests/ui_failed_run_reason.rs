@@ -113,6 +113,29 @@ fn a_reason_with_room_for_one_line_shows_its_first_line_not_only_the_notice() {
 }
 
 #[test]
+fn going_back_from_a_long_reason_to_a_short_one_after_scrolling_keeps_the_selected_card_and_its_reason() {
+    let rows = vec![
+        run("run-1", "failed", Some("short reason one".into())),
+        run("run-2", "running", None),
+        run("run-3", "failed", Some(long_reason())),
+        run("run-4", "failed", Some("short reason four".into())),
+    ];
+    let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    let moves = vec![key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)];
+    let screen = show_in(rows, 14, moves);
+    assert!(screen.contains("feat-run-1") && screen.contains("short reason one"), "{screen}");
+    assert!(!screen.contains("HEADMARK") && !screen.contains("short reason four"), "{screen}");
+}
+
+#[test]
+fn a_window_with_no_room_beyond_one_card_gives_the_reason_no_rows_and_keeps_the_card() {
+    for height in [3, 4, 5] {
+        let screen = show_in(vec![run("run-1", "failed", Some(long_reason()))], height, vec![]);
+        assert!(!screen.contains("TAILMARK"), "height {height}: {screen}");
+    }
+}
+
+#[test]
 fn a_blank_reason_leaves_the_list_as_it_is_without_a_reason() {
     let blank = show(vec![run("run-1", "failed", Some("   ".into()))]);
     let none = show(vec![run("run-1", "failed", None)]);
