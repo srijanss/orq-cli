@@ -2397,9 +2397,15 @@ impl ReviewsState {
         };
     }
 
-    /// Rows for reviews: the first row holds the filters, the last the hint.
+    /// The rows left for reviews: the first row holds the filters, the last the hint.
+    fn list_area(body: Rect) -> Rect {
+        Rect::new(body.x, body.y.saturating_add(1), body.width, body.height.saturating_sub(2))
+    }
+
+    /// How many reviews fit: a bordered card each, or one line each in a window too short for one.
     fn visible(body: Rect) -> usize {
-        usize::from(body.height.saturating_sub(2))
+        let list = Self::list_area(body);
+        usize::from(list.height / run_row_height(list))
     }
 
     fn offset(&self, visible: usize) -> usize {
@@ -2421,8 +2427,9 @@ impl ReviewsState {
         }
         let visible = Self::visible(body);
         let Some(list_row) = row.checked_sub(1) else { return };
-        let index = self.offset(visible) + list_row;
-        if list_row < visible && index < self.len() {
+        let slot = list_row / usize::from(run_row_height(Self::list_area(body)));
+        let index = self.offset(visible) + slot;
+        if slot < visible && index < self.len() {
             self.selected = index;
         }
     }
@@ -2472,6 +2479,47 @@ fn review_footer(hint: &str, notice: Option<&str>, width: usize) -> Line<'static
     }
 }
 
+/// A review as a bordered card: the feature, project and status on the first line, the risk,
+/// `stale` and run id on the second. In a single row it is the first line alone.
+fn render_review_card(frame: &mut Frame, area: Rect, review: &ReviewRow, selected: bool) {
+    let marker = if selected { "> " } else { "  " };
+    let title = |width: usize| {
+        let status = printable(&review.status);
+        let room = width.saturating_sub(MARKER_WIDTH + display_width(&status) + 1);
+        let name = truncate_right(&printable(&format!("{}  {}", review.feature, review.project)), room);
+        let pad = width.saturating_sub(MARKER_WIDTH + display_width(&name) + display_width(&status));
+        Line::from(vec![
+            Span::styled(format!("{marker}{name}"), name_style(selected)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(status, status_style(&review.status)),
+        ])
+    };
+    if area.height < CARD_HEIGHT {
+        frame.render_widget(Paragraph::new(title(usize::from(area.width))), area);
+        return;
+    }
+    let border = if selected {
+        Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = usize::from(inner.width);
+    let stale = if review.stale { " · stale" } else { "" };
+    let detail = format!("{}{} · {}", review.risk, stale, review.run_id);
+    let detail_style = if selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
+    let lines = vec![
+        title(width),
+        Line::styled(
+            format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&printable(&detail), width.saturating_sub(MARKER_WIDTH))),
+            detail_style,
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: Option<&str>) {
     if let Some(view) = &state.detail {
         render_review_detail(frame, body, view, notice);
@@ -2479,32 +2527,33 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: O
     }
     let width = usize::from(body.width);
     let dim = Style::new().fg(Color::DarkGray);
-    let mut put = |row: u16, line: Line<'static>| {
+    let put = |frame: &mut Frame, row: u16, line: Line<'static>| {
         if row < body.height {
             frame.render_widget(Paragraph::new(line), Rect::new(body.x, body.y + row, body.width, 1));
         }
     };
     match &state.rows {
-        Err(reason) => put(0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
-        Ok(rows) if rows.is_empty() => put(0, Line::from(Span::styled("No reviews yet", dim))),
+        Err(reason) => put(frame, 0, Line::from(Span::styled(truncate_right(&printable(reason), width), Style::new().fg(Color::Red)))),
+        Ok(rows) if rows.is_empty() => put(frame, 0, Line::from(Span::styled("No reviews yet", dim))),
         Ok(_) => {
-            put(0, Line::from(Span::styled(truncate_right(&printable(&state.filter_line()), width), dim)));
+            put(frame, 0, Line::from(Span::styled(truncate_right(&printable(&state.filter_line()), width), dim)));
             let shown = state.shown();
             if shown.is_empty() {
-                put(1, Line::from(Span::styled("No reviews match these filters (a: all projects, s/x/Esc: clear)", dim)));
+                put(frame, 1, Line::from(Span::styled("No reviews match these filters (a: all projects, s/x/Esc: clear)", dim)));
             }
             let visible = ReviewsState::visible(body);
             let offset = state.offset(visible);
-            for (i, review) in shown.iter().enumerate().skip(offset).take(visible) {
-                let stale = if review.stale { "  stale" } else { "" };
-                let text = format!("{}  {}  {}{}  {}", review.feature, review.project, review.status, stale, review.risk);
-                let style = if i == state.selected { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-                put(u16::try_from(i - offset + 1).unwrap_or(u16::MAX), Line::from(Span::styled(truncate_right(&printable(&text), width), style)));
+            let list = ReviewsState::list_area(body);
+            let height = run_row_height(list);
+            for (slot, (i, review)) in shown.iter().enumerate().skip(offset).take(visible).enumerate() {
+                let top = list.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
+                let area = Rect::new(list.x, top, list.width, height);
+                render_review_card(frame, area, review, i == state.selected);
             }
         }
     }
     if body.height > 0 {
-        put(body.height - 1, review_footer(REVIEWS_HINT, notice, width));
+        put(frame, body.height - 1, review_footer(REVIEWS_HINT, notice, width));
     }
 }
 

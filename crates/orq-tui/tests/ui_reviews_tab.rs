@@ -122,3 +122,24 @@ fn in_a_narrow_popup_the_tab_hides_but_the_keyboard_still_reaches_it() {
     let text: String = (0..24u16).flat_map(|y| (0..60u16).map(move |x| (x, y))).map(|(x, y)| buffer[(x, y)].symbol().to_string()).collect();
     assert!(text.contains("COM-01"), "{text}");
 }
+
+#[test]
+fn each_review_is_a_bordered_card_with_its_details_on_two_lines() {
+    let lines = show(inbox(), vec![click(44, 2)]);
+    let title = lines.iter().position(|l| l.contains("COM-01")).expect("the first review is listed");
+    assert!(lines[title - 1].contains('╭') && lines[title - 1].contains('╮'), "{lines:?}");
+    assert!(lines[title].contains("orq-cli") && lines[title].contains("ready"), "{lines:?}");
+    assert!(lines[title + 1].contains("high") && lines[title + 1].contains("run-COM-01"), "{lines:?}");
+    assert!(lines[title + 2].contains('╰') && lines[title + 2].contains('╯'), "{lines:?}");
+    assert!(has(&lines, "COM-02") && has(&lines, "draft"), "{lines:?}");
+}
+
+#[test]
+fn a_stale_review_says_so_on_its_card_and_a_fresh_one_does_not() {
+    let stale = ReviewRow { stale: true, ..row("COM-01", "orq-cli", "ready", "high") };
+    let lines = show(Ok(vec![stale, row("COM-02", "orq-cli", "ready", "low")]), vec![click(44, 2)]);
+    let first = lines.iter().position(|l| l.contains("COM-01")).unwrap();
+    let second = lines.iter().position(|l| l.contains("COM-02")).unwrap();
+    assert!(lines[first + 1].contains("stale"), "{lines:?}");
+    assert!(!lines[second + 1].contains("stale"), "{lines:?}");
+}

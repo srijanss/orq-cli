@@ -150,10 +150,10 @@ fn a_filter_that_matches_nothing_says_so_and_how_to_widen_it() {
 #[test]
 fn a_stale_report_is_marked_even_when_its_status_is_otherwise_ready() {
     let lines = screen(chars("a"));
-    let stale = lines.iter().find(|l| l.contains("COM-02")).unwrap();
-    assert!(stale.contains("stale"), "{stale}");
-    let fresh = lines.iter().find(|l| l.contains("COM-01")).unwrap();
-    assert!(!fresh.contains("stale"), "{fresh}");
+    // The card's second line holds the risk and the stale mark.
+    let detail = |feature: &str| lines[lines.iter().position(|l| l.contains(feature)).unwrap() + 1].clone();
+    assert!(detail("COM-02").contains("stale"), "{lines:?}");
+    assert!(!detail("COM-01").contains("stale"), "{lines:?}");
 }
 
 #[test]
