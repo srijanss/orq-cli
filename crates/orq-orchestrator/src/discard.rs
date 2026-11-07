@@ -120,6 +120,9 @@ pub fn discard_run_before_remove(
             }
         }
     }
+    // What the branch holds is learned while the worktree is still there, so a git that cannot tell
+    // stops the discard before anything is removed.
+    let commits = if has_worktree && kept_worktree.is_none() { Some(branch_commits(repo, &record)?) } else { None };
     if has_worktree && kept_worktree.is_none() {
         before_remove();
         // Without --force git checks again as it removes, so work written since the check above is
@@ -136,12 +139,11 @@ pub fn discard_run_before_remove(
     }
     let mut deleted_branch = None;
     if has_worktree && kept_worktree.is_none() {
-        let commits = branch_commits(repo, &record)?;
         let deleted = git(repo, &["update-ref", "-d", &format!("refs/heads/{branch}")])?;
         if !deleted.success {
             return Err(format!("the branch {branch} could not be deleted: {}", deleted.stderr.trim()));
         }
-        deleted_branch = Some(commits);
+        deleted_branch = commits;
     }
     // Without its worktree nothing ties the run to `repo` (another clone may share the base commit
     // and a branch name), so no branch is deleted; only the run's own records go.
