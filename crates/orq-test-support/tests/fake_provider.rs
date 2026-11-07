@@ -249,3 +249,17 @@ fn a_slow_reply_takes_at_least_its_delay() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "late\n");
     assert!(started.elapsed() >= std::time::Duration::from_millis(280), "{:?}", started.elapsed());
 }
+
+#[test]
+fn a_call_whose_record_cannot_be_written_fails_with_a_diagnostic_instead_of_answering() {
+    let provider = FakeProvider::builder().reply(&["pr", "create"], "{}\n").build();
+    // The slot is claimed, but no byte can be written to it, as on a full disk (file size limit 0).
+    let output = Command::new("sh")
+        .args(["-c", "trap '' XFSZ; ulimit -f 0; exec \"$0\" \"$@\"", provider.gh().to_str().unwrap(), "pr", "create"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(70), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot record call"), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty(), "no scripted reply is given for a call that was not recorded");
+}

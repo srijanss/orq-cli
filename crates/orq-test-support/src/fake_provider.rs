@@ -179,7 +179,7 @@ impl FakeProviderBuilder {
             \x20 n=$((n+1))\n\
             \x20 [ \"$n\" -le 100000 ] || { echo \"fake provider: cannot record call, no free slot\" >&2; exit 70; }\n\
             done\n\
-            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" END >> \"$data/calls/$n\"\n\
+            printf '%s\\0' \"$#\" \"${0##*/}\" \"$PWD\" \"$@\" END >> \"$data/calls/$n\" || { echo \"fake provider: cannot record call in $data/calls\" >&2; exit 70; }\n\
             for r in \"$data\"/replies/*; do\n\
             \x20 [ -d \"$r\" ] || continue\n\
             \x20 ok=1; i=0\n\
