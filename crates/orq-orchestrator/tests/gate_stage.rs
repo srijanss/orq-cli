@@ -432,6 +432,34 @@ fn a_workspace_that_cannot_be_inspected_is_not_listed_and_the_tests_still_run() 
 }
 
 #[test]
+fn real_cargo_reports_as_many_results_as_it_listed_whatever_the_selection() {
+    let selections: [(&str, &[&str], u64); 6] = [
+        ("all", &["test", "--workspace"], 5),
+        ("filter", &["test", "one"], 2),
+        ("lib", &["test", "--lib"], 3),
+        ("ignored", &["test", "--", "--ignored"], 1),
+        ("include-ignored", &["test", "--", "--include-ignored"], 5),
+        ("skip", &["test", "--", "--skip", "one"], 3),
+    ];
+    for (tag, args, expected) in selections {
+        let w = world(&format!("real-{tag}"));
+        real_crate(&w, &[
+            ("Cargo.toml", "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            (
+                "src/lib.rs",
+                "/// ```\n/// assert_eq!(fixture::two(), 2);\n/// ```\npub fn two() -> u32 {\n    2\n}\n\n#[test]\nfn one() {}\n#[test]\nfn another() {}\n#[test]\n#[ignore]\nfn slow() {}\n",
+            ),
+            ("tests/it.rs", "#[test]\nfn one_more() {}\n"),
+        ]);
+        let outcome = run_with(&w, &steps(vec![cargo_step(args)]), &[]);
+        let log = fs::read_to_string(&w.log).unwrap();
+        assert_eq!(outcome, GateOutcome::Passed, "{tag}: {log}");
+        let progress = orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total));
+        assert_eq!(progress, Some((expected, expected)), "{tag}: {log}");
+    }
+}
+
+#[test]
 fn a_file_already_at_the_scratch_path_is_left_alone_and_only_costs_the_percentage() {
     let w = world("scratch-taken");
     let env = fake_cargo(&w, LISTING);
