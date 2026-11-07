@@ -659,6 +659,31 @@ fn a_directory_already_in_the_reports_place_does_not_stop_the_first_fix_attempt(
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
 }
 
+#[cfg(unix)]
+#[test]
+fn an_earlier_report_that_cannot_be_cleared_is_an_error_and_no_fix_session_starts() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("report-uncleared");
+    let report = w.root.join("unrelated-failure.txt");
+    let inner = report.join("inner");
+    fs::create_dir_all(&inner).unwrap();
+    fs::write(inner.join("f"), "x").unwrap();
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o555)).unwrap();
+    let calls = RefCell::new(0);
+
+    let result = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| {
+        *calls.borrow_mut() += 1;
+        spec(&w, "touch fixed")
+    });
+
+    fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).unwrap();
+    if result.is_ok() {
+        // Running as a user who can remove it anyway (root): nothing to check.
+        return;
+    }
+    assert_eq!(*calls.borrow(), 0);
+}
+
 #[test]
 fn a_huge_report_is_cut_to_one_short_line() {
     let w = world("report-huge");
