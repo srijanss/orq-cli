@@ -166,7 +166,9 @@ fn run_gate_attempt_limited(
 /// What lists the tests of a `cargo test` step, with the same selection; `None` for any other step.
 fn listing_argv(argv: &[String]) -> Option<Vec<String>> {
     let [program, subcommand, ..] = argv else { return None };
-    if program != "cargo" || subcommand != "test" || argv.iter().any(|arg| arg == "--list") {
+    // Aimed at another manifest, the workspace looked at below would not be the one that runs.
+    let unsuited = |arg: &String| arg == "--list" || arg.starts_with("--manifest-path");
+    if program != "cargo" || subcommand != "test" || argv.iter().any(unsuited) {
         return None;
     }
     let mut listing = argv.to_vec();
@@ -187,15 +189,48 @@ fn count_tests(
     env: &[(String, String)],
     limit: std::time::Duration,
 ) -> Option<u64> {
-    let mut listed = open_listing(log_path).ok()?;
-    let (_, failure) = run_step(record, listing, &listed, log, env, limit).ok()?;
+    let metadata = ["cargo", "metadata", "--no-deps", "--format-version", "1"].map(String::from);
+    let metadata = captured_stdout(record, &metadata, log_path, log, env, limit)?;
+    if !all_targets_can_list(&metadata)? {
+        return None;
+    }
+    let listed = captured_stdout(record, listing, log_path, log, env, limit)?;
+    listed_total(&String::from_utf8_lossy(&listed))
+}
+
+/// Whether every target of the workspace uses the standard test harness. One with its own need not
+/// know `--list`: it would just run, and then run again as the step. Cargo does not report the
+/// setting, so the manifests are read; a comment that mentions it only costs the percentage.
+fn all_targets_can_list(metadata: &[u8]) -> Option<bool> {
+    let metadata: serde_json::Value = serde_json::from_slice(metadata).ok()?;
+    for package in metadata.get("packages")?.as_array()? {
+        let manifest = fs::read_to_string(package.get("manifest_path")?.as_str()?).ok()?;
+        let compact: String = manifest.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains("harness=false") {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// What `argv` printed to its standard output, if it succeeded.
+fn captured_stdout(
+    record: &RunRecord,
+    argv: &[String],
+    log_path: &Path,
+    log: &fs::File,
+    env: &[(String, String)],
+    limit: std::time::Duration,
+) -> Option<Vec<u8>> {
+    let mut captured = open_listing(log_path).ok()?;
+    let (_, failure) = run_step(record, argv, &captured, log, env, limit).ok()?;
     if failure.is_some() {
         return None;
     }
-    listed.seek(SeekFrom::Start(0)).ok()?;
+    captured.seek(SeekFrom::Start(0)).ok()?;
     let mut bytes = Vec::new();
-    listed.read_to_end(&mut bytes).ok()?;
-    listed_total(&String::from_utf8_lossy(&bytes))
+    captured.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// A private scratch file beside the log, gone from the folder as soon as it is open.

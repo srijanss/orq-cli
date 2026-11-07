@@ -323,6 +323,7 @@ fn gate_with_cargo(tag: &str, script: &str) -> (orq_orchestrator::RunStore, std:
 #[test]
 fn the_percentage_of_a_cargo_gate_covers_every_test_binary() {
     let script = r#"case "$*" in
+metadata*) echo '{"packages":[]}' ;;
 *--list*) printf 'a: test\n10 tests, 0 benchmarks\n20 tests, 0 benchmarks\n30 tests, 0 benchmarks\n' ;;
 *) printf 'running 10 tests\n'; i=0; while [ $i -lt 10 ]; do echo "test a$i ... ok"; i=$((i+1)); done
    printf 'running 20 tests\ntest b ... ok\n' ;;

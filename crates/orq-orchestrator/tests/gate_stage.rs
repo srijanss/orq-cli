@@ -274,7 +274,7 @@ fn fake_cargo(w: &World, script: &str) -> Vec<(String, String)> {
     fs::create_dir_all(&bin).unwrap();
     let calls = w.root.join("cargo-calls");
     let cargo = bin.join("cargo");
-    fs::write(&cargo, format!("#!/bin/sh\necho \"$*\" >> '{}'\n{script}\n", calls.display())).unwrap();
+    fs::write(&cargo, format!("#!/bin/sh\ncase \"$1\" in metadata) echo '{{\"packages\":[]}}'; exit 0 ;; esac\necho \"$*\" >> '{}'\n{script}\n", calls.display())).unwrap();
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     vec![("PATH".to_string(), path)]
@@ -388,4 +388,54 @@ esac"#,
     }
     let finished = fs::read_to_string(&w.log).unwrap();
     assert_eq!(orq_orchestrator::test_progress(&finished).map(|t| (t.done, t.total)), Some((1, 1)));
+}
+
+/// A real crate in the worktree, built by the real cargo: `files` are (path, content) pairs.
+fn real_crate(w: &World, files: &[(&str, &str)]) {
+    for (path, content) in files {
+        let path = w.worktree.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+}
+
+#[test]
+fn a_test_target_with_its_own_harness_runs_once_and_leaves_the_total_unknown() {
+    let w = world("own-harness");
+    real_crate(&w, &[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[test]]\nname = \"custom\"\npath = \"tests/custom.rs\"\nharness = false\n",
+        ),
+        ("src/lib.rs", "#[test]\nfn unit() {}\n"),
+        (
+            "tests/custom.rs",
+            "use std::io::Write;\nfn main() {\n    let mut ran = std::fs::OpenOptions::new().create(true).append(true).open(\"ran\").unwrap();\n    writeln!(ran, \"ran\").unwrap();\n}\n",
+        ),
+    ]);
+    let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--workspace"])]), &[]);
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert_eq!(outcome, GateOutcome::Passed, "{log}");
+    assert_eq!(fs::read_to_string(w.worktree.join("ran")).unwrap().lines().count(), 1, "{log}");
+    assert_eq!(orq_orchestrator::test_progress(&log), None, "{log}");
+}
+
+#[test]
+fn a_workspace_that_cannot_be_inspected_is_not_listed_and_the_tests_still_run() {
+    let w = world("no-metadata");
+    let env = fake_cargo(&w, "");
+    let bin = w.root.join("bin").join("cargo");
+    let script = fs::read_to_string(&bin).unwrap();
+    fs::write(&bin, script.replacen("#!/bin/sh\n", "#!/bin/sh\ncase \"$1\" in metadata) exit 1 ;; esac\n", 1)).unwrap();
+    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    assert_eq!(cargo_calls(&w), ["test"], "only the step itself ran");
+}
+
+#[test]
+fn a_step_aimed_at_another_manifest_is_not_counted() {
+    let w = world("manifest-path");
+    let env = fake_cargo(&w, "exit 0");
+    let gate = steps(vec![cargo_step(&["test", "--manifest-path", "other/Cargo.toml"]), cargo_step(&["test", "--manifest-path=other/Cargo.toml"])]);
+    assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
+    assert_eq!(cargo_calls(&w), ["test --manifest-path other/Cargo.toml", "test --manifest-path=other/Cargo.toml"]);
 }
