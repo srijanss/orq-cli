@@ -421,6 +421,59 @@ fn a_test_target_with_its_own_harness_runs_once_and_leaves_the_total_unknown() {
 }
 
 #[test]
+fn every_way_toml_can_spell_a_custom_harness_runs_the_target_once() {
+    const PACKAGE: &str = "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\nautotests = false\n\n";
+    const TARGET: &str = "name = \"custom\"\npath = \"tests/custom.rs\"\n";
+    let spellings = [
+        ("double-quoted", format!("{PACKAGE}[[test]]\n{TARGET}\"harness\" = false\n")),
+        ("single-quoted", format!("{PACKAGE}[[test]]\n{TARGET}'harness' = false\n")),
+        ("inline", format!("test = [{{ name = \"custom\", path = \"tests/custom.rs\", harness = false }}]\n\n{PACKAGE}")),
+    ];
+    for (tag, manifest) in spellings {
+        let w = world(&format!("spelling-{tag}"));
+        real_crate(&w, &[
+            ("Cargo.toml", manifest.as_str()),
+            ("src/lib.rs", ""),
+            (
+                "tests/custom.rs",
+                "use std::io::Write;\nfn main() {\n    let mut ran = std::fs::OpenOptions::new().create(true).append(true).open(\"ran\").unwrap();\n    writeln!(ran, \"ran\").unwrap();\n}\n",
+            ),
+        ]);
+        let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--workspace"])]), &[]);
+        let log = fs::read_to_string(&w.log).unwrap();
+        assert_eq!(outcome, GateOutcome::Passed, "{tag}: {log}");
+        assert_eq!(fs::read_to_string(w.worktree.join("ran")).unwrap().lines().count(), 1, "{tag}: {log}");
+    }
+}
+
+#[test]
+fn a_comment_that_mentions_a_custom_harness_does_not_cost_the_percentage() {
+    let w = world("harness-comment");
+    real_crate(&w, &[
+        ("Cargo.toml", "# harness = false\n[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("src/lib.rs", "#[test]\nfn unit() {}\n"),
+    ]);
+    let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--lib"])]), &[]);
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert_eq!(outcome, GateOutcome::Passed, "{log}");
+    assert_eq!(orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total)), Some((1, 1)), "{log}");
+}
+
+#[test]
+fn a_manifest_that_cannot_be_parsed_is_not_listed_and_the_tests_still_run() {
+    let w = world("bad-manifest");
+    let env = fake_cargo(&w, "");
+    let manifest = w.root.join("bad.toml");
+    fs::write(&manifest, "not [ toml").unwrap();
+    let bin = w.root.join("bin").join("cargo");
+    let script = fs::read_to_string(&bin).unwrap();
+    let packages = format!("{{\"packages\":[{{\"manifest_path\":\"{}\"}}]}}", manifest.display());
+    fs::write(&bin, script.replace("{\"packages\":[]}", &packages)).unwrap();
+    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    assert_eq!(cargo_calls(&w), ["test"], "only the step itself ran");
+}
+
+#[test]
 fn a_workspace_that_cannot_be_inspected_is_not_listed_and_the_tests_still_run() {
     let w = world("no-metadata");
     let env = fake_cargo(&w, "");

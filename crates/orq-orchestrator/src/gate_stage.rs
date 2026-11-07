@@ -200,17 +200,31 @@ fn count_tests(
 
 /// Whether every target of the workspace uses the standard test harness. One with its own need not
 /// know `--list`: it would just run, and then run again as the step. Cargo does not report the
-/// setting, so the manifests are read; a comment that mentions it only costs the percentage.
+/// setting, so the manifests are read.
 fn all_targets_can_list(metadata: &[u8]) -> Option<bool> {
     let metadata: serde_json::Value = serde_json::from_slice(metadata).ok()?;
     for package in metadata.get("packages")?.as_array()? {
         let manifest = fs::read_to_string(package.get("manifest_path")?.as_str()?).ok()?;
-        let compact: String = manifest.chars().filter(|c| !c.is_whitespace()).collect();
-        if compact.contains("harness=false") {
+        let manifest: toml_edit::DocumentMut = manifest.parse().ok()?;
+        if turns_off_harness(manifest.as_item()) {
             return Some(false);
         }
     }
     Some(true)
+}
+
+/// Whether `harness = false` is set anywhere under `item`, in any form TOML allows for a target.
+fn turns_off_harness(item: &toml_edit::Item) -> bool {
+    if let Some(table) = item.as_table_like() {
+        return table
+            .iter()
+            .any(|(key, value)| (key == "harness" && value.as_bool() == Some(false)) || turns_off_harness(value));
+    }
+    match item {
+        toml_edit::Item::ArrayOfTables(tables) => tables.iter().any(|table| turns_off_harness(&toml_edit::Item::Table(table.clone()))),
+        toml_edit::Item::Value(toml_edit::Value::Array(values)) => values.iter().any(|value| turns_off_harness(&toml_edit::Item::Value(value.clone()))),
+        _ => false,
+    }
 }
 
 /// What `argv` printed to its standard output, if it succeeded.
