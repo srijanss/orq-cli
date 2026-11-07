@@ -146,21 +146,42 @@ fn parse_build(args: &[OsString]) -> Option<BuildArgs> {
 
 fn build(args: &[OsString]) -> ExitCode {
     let Some(parsed) = parse_build(args) else { return usage_error() };
-    if let Err(err) = check_run_id(&parsed.run_id) {
-        return fail(format!("invalid run id: {err}"));
+    match publish(&parsed, Summary::IfConfigured) {
+        Ok(path) => {
+            println!("{}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
     }
-    let project = match orq_git::resolve_project(&parsed.repo) {
-        Ok(project) => project,
-        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+}
+
+/// Whether a build may start the optional model session.
+#[derive(Clone, Copy, PartialEq)]
+enum Summary {
+    IfConfigured,
+    Never,
+}
+
+/// The report a finished run leaves for its pushed commit. A run does not wait for the model session (up to 90
+/// seconds), so its report has no generated summary; `orq review build` adds one when asked.
+pub(crate) fn build_for_run(repo: &Path, run_id: &str, feature: &str, base: &str, head: &str) -> Result<PathBuf, String> {
+    let args = BuildArgs {
+        run_id: run_id.to_string(),
+        repo: repo.to_path_buf(),
+        feature: feature.to_string(),
+        base: base.to_string(),
+        head: head.to_string(),
+        review_input: None,
     };
-    let diff = match orq_git::diff_evidence(&project.root, &parsed.base, &parsed.head) {
-        Ok(diff) => diff,
-        Err(err) => return fail(format!("cannot read the diff: {err:?}")),
-    };
-    let roots = match roots() {
-        Ok(roots) => roots,
-        Err(err) => return fail(err),
-    };
+    publish(&args, Summary::Never)
+}
+
+/// Builds the report, stores both copies and indexes it. Returns where the report landed.
+fn publish(parsed: &BuildArgs, summary: Summary) -> Result<PathBuf, String> {
+    check_run_id(&parsed.run_id).map_err(|err| format!("invalid run id: {err}"))?;
+    let project = orq_git::resolve_project(&parsed.repo).map_err(|err| format!("cannot resolve project: {err:?}"))?;
+    let diff = orq_git::diff_evidence(&project.root, &parsed.base, &parsed.head).map_err(|err| format!("cannot read the diff: {err:?}"))?;
+    let roots = roots()?;
     let project_id = pipeline::project_id(&project);
     let inputs = ReportInputs {
         run_id: parsed.run_id.clone(),
@@ -176,10 +197,7 @@ fn build(args: &[OsString]) -> ExitCode {
         },
         generated_at: utc_now(),
     };
-    let store = match Store::open(&roots.database()) {
-        Ok(store) => store,
-        Err(err) => return fail(format!("cannot open the review index: {err}")),
-    };
+    let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let mut report = build_report(&inputs);
     let link_target = provider_link_target(&store, &parsed.run_id);
     let exists = |path: &str| {
@@ -207,25 +225,19 @@ fn build(args: &[OsString]) -> ExitCode {
             report["status"] = serde_json::json!("incomplete");
         }
     }
-    add_model_summary(&roots, &mut report);
-    let json = match serde_json::to_vec_pretty(&report) {
-        Ok(json) => json,
-        Err(err) => return fail(err),
-    };
+    if summary == Summary::IfConfigured {
+        add_model_summary(&roots, &mut report);
+    }
+    let json = serde_json::to_vec_pretty(&report).map_err(|err| err.to_string())?;
     // The readable copy goes first: if it cannot be written nothing is
     // published or indexed, so a failed build leaves no half-visible report.
     let markdown = orq_core::redact::redact(&render_markdown(&report));
     let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
     // One publisher per run and commit at a time, so a rollback can never undo
     // another build's successful publication.
-    let _lock = match lock_publication(&roots.data, &parsed.run_id, &diff.head_sha) {
-        Ok(lock) => lock,
-        Err(err) => return fail(format!("cannot lock the report directory: {err}")),
-    };
+    let _lock = lock_publication(&roots.data, &parsed.run_id, &diff.head_sha).map_err(|err| format!("cannot lock the report directory: {err}"))?;
     let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
-    if let Err(err) = write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()) {
-        return fail(format!("cannot store the readable report: {err}"));
-    }
+    write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()).map_err(|err| format!("cannot store the readable report: {err}"))?;
     let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
         Ok(record) => record,
         Err(err) => {
@@ -234,14 +246,13 @@ fn build(args: &[OsString]) -> ExitCode {
                 Some(old) => write_atomic(&roots.data, Path::new(&markdown_path), &old),
                 None => std::fs::remove_file(roots.data.join(&markdown_path)),
             };
-            return match undo {
-                Ok(()) => fail(format!("cannot store the review report: {err}")),
-                Err(undo) => fail(format!("cannot store the review report: {err}; and restoring the previous readable report failed: {undo}")),
-            };
+            return Err(match undo {
+                Ok(()) => format!("cannot store the review report: {err}"),
+                Err(undo) => format!("cannot store the review report: {err}; and restoring the previous readable report failed: {undo}"),
+            });
         }
     };
-    println!("{}", roots.data.join(&record.report_path).display());
-    ExitCode::SUCCESS
+    Ok(roots.data.join(&record.report_path))
 }
 
 /// The provider and repository page of the run's associated review, when it has one.
