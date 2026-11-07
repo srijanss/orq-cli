@@ -2428,9 +2428,11 @@ impl ReviewsState {
         (self.selected + 1).saturating_sub(visible)
     }
 
-    fn click(&mut self, body: Rect, press: Position) {
+    /// A press on a review's card selects it; a press on one of that card's buttons is also the
+    /// action it names. One-line rows have no buttons.
+    fn click(&mut self, body: Rect, press: Position) -> Option<RowAction> {
         if !body.contains(press) {
-            return;
+            return None;
         }
         let row = usize::from(press.y - body.y);
         if let Some(detail) = &mut self.detail {
@@ -2439,15 +2441,25 @@ impl ReviewsState {
                     detail.select(section);
                 }
             }
-            return;
+            return None;
         }
         let visible = Self::visible(body);
-        let Some(list_row) = row.checked_sub(1) else { return };
-        let slot = list_row / usize::from(run_row_height(Self::list_area(body)));
+        let list = Self::list_area(body);
+        let height = run_row_height(list);
+        let list_row = row.checked_sub(1)?;
+        let slot = list_row / usize::from(height);
         let index = self.offset(visible) + slot;
-        if slot < visible && index < self.len() {
-            self.selected = index;
+        if slot >= visible || index >= self.len() {
+            return None;
         }
+        self.selected = index;
+        if height != CARD_HEIGHT {
+            return None;
+        }
+        let review = self.shown().get(index).copied()?;
+        let card = Rect::new(list.x, list.y + u16::try_from(slot).unwrap_or(u16::MAX) * height, list.width, height);
+        let inner = Block::bordered().inner(card);
+        review_card_buttons(inner, review).into_iter().find(|(rect, _)| rect.contains(press)).map(|(_, action)| action)
     }
 }
 
@@ -4823,7 +4835,15 @@ where
                 }
                 if browser.tab == Tab::Reviews {
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        browser.reviews.click(chrome_body(full), Position::new(mouse.column, mouse.row));
+                        browser.notice = None;
+                        if let Some(action) = browser.reviews.click(chrome_body(full), Position::new(mouse.column, mouse.row)) {
+                            match action {
+                                RowAction::OpenLink => browser.review_link_of_selected_review(backend, false),
+                                RowAction::CopyLink => browser.review_link_of_selected_review(backend, true),
+                                RowAction::Details => browser.open_selected_review(backend),
+                                _ => {}
+                            }
+                        }
                         dirty = true;
                     }
                     continue;
