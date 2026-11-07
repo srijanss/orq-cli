@@ -616,6 +616,50 @@ fn a_report_that_cannot_be_read_is_no_report() {
 }
 
 #[test]
+fn a_directory_left_as_the_report_does_not_stop_the_next_fix_attempt() {
+    let w = world("report-directory-twice");
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |attempt, _| {
+            if attempt == 1 {
+                spec(&w, &format!("mkdir -p '{}/inner'; touch '{}/inner/f'", report.display(), report.display()))
+            } else {
+                spec(&w, "touch fixed")
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 2 });
+}
+
+#[test]
+fn a_directory_already_in_the_reports_place_does_not_stop_the_first_fix_attempt() {
+    let w = world("report-directory-before");
+    fs::create_dir_all(w.root.join("unrelated-failure.txt")).unwrap();
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, "touch fixed"),
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+}
+
+#[test]
 fn a_huge_report_is_cut_to_one_short_line() {
     let w = world("report-huge");
     let report = w.root.join("unrelated-failure.txt");

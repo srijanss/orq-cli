@@ -69,6 +69,20 @@ fn read_report(report: &Path) -> Option<String> {
     Some(line.chars().take(MAX_SUMMARY_CHARS).collect())
 }
 
+/// Remove whatever is in the report's place, so a session starts without one. A directory the
+/// session left there is removed too (links inside it are removed, never followed).
+fn clear_report(report: &Path) -> std::io::Result<()> {
+    let result = match std::fs::symlink_metadata(report) {
+        Ok(meta) if meta.file_type().is_dir() => std::fs::remove_dir_all(report),
+        Ok(_) => std::fs::remove_file(report),
+        Err(e) => Err(e),
+    };
+    match result {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 const MAX_REPORT_BYTES: u64 = 4096;
 const MAX_SUMMARY_CHARS: usize = 500;
 
@@ -142,15 +156,11 @@ pub fn run_gate_with_fixes_env(
                 fix_attempts += 1;
                 // A report left by an earlier session or run must not speak for this one.
                 let report = gate_log.with_file_name(UNRELATED_FAILURE_FILE);
-                match std::fs::remove_file(&report) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        return Err(StoreError::Corrupt(format!(
-                            "cannot clear the earlier unrelated-failure report {}: {e}",
-                            report.display()
-                        )))
-                    }
+                if let Err(e) = clear_report(&report) {
+                    return Err(StoreError::Corrupt(format!(
+                        "cannot clear the earlier unrelated-failure report {}: {e}",
+                        report.display()
+                    )));
                 }
                 let spec = fixer(fix_attempts, gate_log);
                 let session = ImplementSession {
