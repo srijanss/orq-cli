@@ -48,6 +48,18 @@ pub enum GateFixOutcome {
 /// The file, next to the gate log, in which a fix session says the failure is not this run's.
 pub const UNRELATED_FAILURE_FILE: &str = "unrelated-failure.txt";
 
+/// What the fix session wrote in the report, if it is a plain file with something in it. A link
+/// (the session could point it at any file orq can read) or anything else is not read.
+fn read_report(report: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(report).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(report).ok()?;
+    let summary = text.trim();
+    (!summary.is_empty()).then(|| summary.to_string())
+}
+
 /// Run the gate; while it fails and fewer than `max_attempts` fixes were tried,
 /// ask `fixer` for the session of attempt `n` (counting from 1, given the gate
 /// log so the session can be told what failed) and rerun the gate.
@@ -141,11 +153,8 @@ pub fn run_gate_with_fixes_env(
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
-                if let Ok(text) = std::fs::read_to_string(&report) {
-                    let summary = text.trim();
-                    if !summary.is_empty() {
-                        return Ok(GateFixOutcome::Unrelated { summary: summary.to_string() });
-                    }
+                if let Some(summary) = read_report(&report) {
+                    return Ok(GateFixOutcome::Unrelated { summary });
                 }
             }
         }

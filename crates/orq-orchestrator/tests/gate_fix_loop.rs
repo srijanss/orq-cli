@@ -554,3 +554,27 @@ fn a_report_left_by_an_earlier_session_does_not_stop_a_loop_whose_fix_works() {
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
 }
+
+#[test]
+fn a_report_that_is_a_link_to_another_file_is_not_read() {
+    let w = world("report-link");
+    let secret = w.root.join("secret.txt");
+    fs::write(&secret, "hunter2-private-contents\n").unwrap();
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| spec(&w, &format!("ln -s '{}' '{}'", secret.display(), report.display())),
+    )
+    .unwrap();
+
+    assert!(
+        !matches!(outcome, GateFixOutcome::Unrelated { .. }),
+        "a linked report was read: {outcome:?}"
+    );
+}
