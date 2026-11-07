@@ -1,6 +1,7 @@
 //! Finding the review that escalated costs a handful of git commands however many rounds the
 //! review ledger holds. Its own test binary: it puts a git that counts its calls on `PATH`.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,12 +38,20 @@ fn round(start: &str, head: &str, number: u32, recorded_at: &str, findings: Vec<
 /// Held by each test: they all change the process's `PATH`.
 static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A `git` on a new `PATH` that logs each call to `calls` and runs the real one.
-fn counting_git(root: &Path) -> PathBuf {
-    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|dir| dir.join("git"))
-        .find(|git| git.is_file())
-        .expect("a git on PATH");
+/// Puts `PATH` back as it was when dropped, also when the test panics.
+struct RestorePath(OsString);
+
+impl Drop for RestorePath {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.0);
+    }
+}
+
+/// A `git` on a new `PATH` that logs each call to `calls` and runs the real one, until the
+/// returned guard is dropped.
+fn counting_git(root: &Path) -> (PathBuf, RestorePath) {
+    let path = std::env::var_os("PATH").unwrap();
+    let real = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()).expect("a git on PATH");
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let calls = root.join("calls");
@@ -51,9 +60,9 @@ fn counting_git(root: &Path) -> PathBuf {
         .unwrap();
     fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin];
-    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
-    calls
+    (calls, RestorePath(path))
 }
 
 /// A repository with base, feature and fix commits, and a review ledger whose round 3 reviewed
@@ -76,12 +85,12 @@ fn escalated_then(root: &Path, newer: impl Fn(&str, &str, &str) -> Vec<Value>) -
 
 #[test]
 fn the_same_out_of_order_round_repeated_is_checked_against_the_history_once() {
-    let _path = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = orq_test_support::process_temp_dir().join(format!("orq-review-escalation-repeats-{}", std::process::id()));
     let (dir, base, reviewed) = escalated_then(&root, |_, first, reviewed| {
         (0..300).map(|i| round(reviewed, first, 1, &format!("2026-11-07T13:{:02}:{:02}+00:00", i / 60, i % 60), vec![])).collect()
     });
-    let calls = counting_git(&root);
+    let (calls, _path) = counting_git(&root);
 
     let review = escalated_review(&dir, &base).unwrap().expect("the run's review escalated");
 
@@ -92,7 +101,7 @@ fn the_same_out_of_order_round_repeated_is_checked_against_the_history_once() {
 
 #[test]
 fn many_newer_rounds_that_are_not_of_this_run_cost_a_handful_of_git_commands() {
-    let _path = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = orq_test_support::process_temp_dir().join(format!("orq-review-escalation-calls-{}", std::process::id()));
     let (dir, base, reviewed) = escalated_then(&root, |_, first, reviewed| {
         let mut rounds = Vec::new();
@@ -105,7 +114,7 @@ fn many_newer_rounds_that_are_not_of_this_run_cost_a_handful_of_git_commands() {
         }
         rounds
     });
-    let calls = counting_git(&root);
+    let (calls, _path) = counting_git(&root);
 
     let review = escalated_review(&dir, &base).unwrap().expect("the run's review escalated");
 
