@@ -33,6 +33,18 @@ fn a_worktree_with_nothing_to_test_is_not_a_pass() {
 }
 
 #[test]
+fn a_failing_command_that_prints_a_lot_says_only_the_end_of_it_in_the_order_it_was_printed() {
+    let worktree = dir("noisy");
+    let script = "i=0; while [ $i -lt 3000 ]; do echo \"out line $i padding padding padding\"; echo \"err line $i\" >&2; i=$((i+1)); done; echo final-\"\"out; echo final-\"\"err >&2; exit 1";
+    let noisy = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
+    let err = run_worktree_tests(&worktree, Some(noisy.as_slice())).unwrap_err();
+    assert!(err.len() < 4000, "{} bytes", err.len());
+    assert!(err.contains("final-out") && err.contains("final-err"), "{err}");
+    assert!(err.find("final-out") < err.find("final-err"), "the end of the output is in the order it was printed: {err}");
+    assert!(!err.contains("out line 0 "), "{err}");
+}
+
+#[test]
 fn a_command_that_cannot_start_is_a_failure() {
     let missing = vec!["definitely-not-a-program-orq".to_string()];
     assert!(run_worktree_tests(&dir("missing"), Some(missing.as_slice())).is_err());

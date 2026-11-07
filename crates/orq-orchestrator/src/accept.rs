@@ -92,16 +92,38 @@ pub fn run_worktree_tests(worktree: &Path, configured: Option<&[String]>) -> Res
     };
     for argv in steps {
         let Some((program, args)) = argv.split_first() else { continue };
-        let out = std::process::Command::new(program)
+        let cannot_run = |e: std::io::Error| format!("could not run `{}`: {e}", argv.join(" "));
+        let (mut reader, writer) = std::io::pipe().map_err(cannot_run)?;
+        let mut command = std::process::Command::new(program);
+        command
             .args(args)
             .current_dir(worktree)
             .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("could not run `{}`: {e}", argv.join(" ")))?;
-        if !out.status.success() {
-            let printed = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&printed)));
+            .stdout(writer.try_clone().map_err(cannot_run)?)
+            .stderr(writer);
+        let mut child = command.spawn().map_err(cannot_run)?;
+        drop(command);
+        let printed = read_tail(&mut reader);
+        let status = child.wait().map_err(cannot_run)?;
+        if !status.success() {
+            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&String::from_utf8_lossy(&printed))));
         }
     }
     Ok(())
+}
+
+/// Read `source` to its end, keeping only the last bytes of it so a noisy command costs bounded memory.
+fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = source.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        kept.extend_from_slice(&chunk[..n]);
+        if kept.len() > 2 * OUTPUT_TAIL {
+            kept.drain(..kept.len() - OUTPUT_TAIL);
+        }
+    }
+    kept
 }
