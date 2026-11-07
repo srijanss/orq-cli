@@ -2058,6 +2058,7 @@ fn run_row(run: &orq_orchestrator::RunListing) -> orq_tui::RunRow {
         implementer_model: run.implementer_model.clone(),
         reviewer_model: run.reviewer_model.clone(),
         has_review_link: run.review_url.is_some(),
+        reason: run.reason.clone(),
     }
 }
 
@@ -3280,6 +3281,7 @@ mod ledger_backend_tests {
                 implementer_model: Some("opus".into()),
                 reviewer_model: Some("kimi-k3".into()),
                 has_review_link: false,
+                reason: None,
             }]
         );
         let _ = std::fs::remove_dir_all(root);

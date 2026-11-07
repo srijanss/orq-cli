@@ -1270,6 +1270,28 @@ fn detail_section_rows(detail: &FeatureDetail, width: usize) -> Vec<(String, boo
     rows
 }
 
+/// Break `text` into lines of at most `width` columns at spaces; a word wider than a line is broken hard.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let pieces = if display_width(word) > width { wrap_hard(word, width) } else { vec![word.to_string()] };
+        for piece in pieces {
+            if !line.is_empty() && display_width(&line) + 1 + display_width(&piece) > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&piece);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// Break `text` into lines of at most `width` display columns, at grapheme
 /// cluster boundaries, so joined emoji and combining marks are never split.
 fn wrap_hard(text: &str, width: usize) -> Vec<String> {
@@ -1627,6 +1649,8 @@ pub struct RunRow {
     pub reviewer_model: Option<String>,
     /// Whether the run has a review request to open or copy.
     pub has_review_link: bool,
+    /// Why the run failed or is blocked, in full.
+    pub reason: Option<String>,
 }
 
 /// One review as the Reviews tab lists it. Every field is text from a stored report.
@@ -2532,7 +2556,21 @@ impl RunsState {
     /// unreadable-runs warning when there is one.
     fn layout(&self, body: Rect) -> Rect {
         let reserved = if self.unreadable > 0 && body.height > 1 { 2 } else { 1 };
-        Rect::new(body.x, body.y, body.width, body.height.saturating_sub(reserved))
+        let list = body.height.saturating_sub(reserved);
+        let reason = u16::try_from(self.reason_lines(body.width).len()).unwrap_or(u16::MAX).min(list.saturating_sub(CARD_HEIGHT));
+        Rect::new(body.x, body.y, body.width, list - reason)
+    }
+
+    /// The reason of the selected run when it failed or is blocked, wrapped to `width`.
+    fn reason_lines(&self, width: u16) -> Vec<String> {
+        let Ok(rows) = &self.rows else { return Vec::new() };
+        let Some(run) = rows.get(self.selected).filter(|run| matches!(run.status.as_str(), "failed" | "blocked")) else {
+            return Vec::new();
+        };
+        let Some(reason) = run.reason.as_deref().map(printable).filter(|r| !r.trim().is_empty()) else {
+            return Vec::new();
+        };
+        wrap_words(&reason, usize::from(width).saturating_sub(MARKER_WIDTH))
     }
 
     /// Cards that fit, or one-line rows when there is no room for a whole card.
@@ -2629,6 +2667,13 @@ fn render_runs(frame: &mut Frame, body: Rect, state: &RunsState, notice: Option<
                 let top = cards.y + u16::try_from(slot).unwrap_or(u16::MAX).saturating_mul(height);
                 let area = Rect::new(cards.x, top, cards.width, height);
                 render_run_card(frame, area, run, i == state.selected);
+            }
+            let below = cards.y + cards.height;
+            let reserved = if state.unreadable > 0 && body.height > 1 { 2 } else { 1 };
+            let panel = (body.y + body.height).saturating_sub(reserved).saturating_sub(below);
+            for (n, text) in state.reason_lines(body.width).iter().take(usize::from(panel)).enumerate() {
+                let row = below - body.y + u16::try_from(n).unwrap_or(0);
+                put(frame, row, Line::styled(format!("{}{text}", " ".repeat(MARKER_WIDTH)), Style::new().fg(Color::Red)));
             }
         }
     }

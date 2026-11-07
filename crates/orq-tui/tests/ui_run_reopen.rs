@@ -39,6 +39,7 @@ impl BrowserBackend for Fake {
             implementer_model: None,
             reviewer_model: None,
             has_review_link: true,
+            reason: None,
         }])
     }
     fn focus_run_pane(&mut self, _run_id: &str) -> PaneFocus {

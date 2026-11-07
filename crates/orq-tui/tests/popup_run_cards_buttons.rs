@@ -36,6 +36,7 @@ impl BrowserBackend for Fake {
                 implementer_model: Some("opus".into()),
                 reviewer_model: Some("kimi".into()),
                 has_review_link: false,
+                reason: None,
             },
             RunRow {
                 run_id: "run-2".into(),
@@ -45,6 +46,7 @@ impl BrowserBackend for Fake {
                 implementer_model: None,
                 reviewer_model: None,
                 has_review_link: false,
+                reason: None,
             },
         ])
     }

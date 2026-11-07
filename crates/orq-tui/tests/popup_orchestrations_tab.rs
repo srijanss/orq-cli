@@ -32,6 +32,7 @@ impl BrowserBackend for Fake {
             implementer_model: None,
             reviewer_model: None,
             has_review_link: false,
+            reason: None,
         }])
     }
 }

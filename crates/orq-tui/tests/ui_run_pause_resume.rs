@@ -38,6 +38,7 @@ impl BrowserBackend for Fake {
             implementer_model: None,
             reviewer_model: None,
             has_review_link: !self.no_link,
+            reason: None,
         }])
     }
     fn pause_run(&mut self, run_id: &str) -> Result<String, String> {

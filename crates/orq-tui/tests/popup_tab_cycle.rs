@@ -36,6 +36,7 @@ impl BrowserBackend for Fake {
             implementer_model: None,
             reviewer_model: None,
             has_review_link: false,
+            reason: None,
         }])
     }
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {

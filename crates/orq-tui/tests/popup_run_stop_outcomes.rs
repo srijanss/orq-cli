@@ -30,6 +30,7 @@ fn row(run_id: &str, feature: &str, status: &str) -> RunRow {
         implementer_model: None,
         reviewer_model: None,
         has_review_link: false,
+        reason: None,
     }
 }
 

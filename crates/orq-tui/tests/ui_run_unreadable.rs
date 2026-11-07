@@ -51,6 +51,7 @@ fn run_row() -> RunRow {
         implementer_model: Some("opus".into()),
         reviewer_model: Some("kimi-k3".into()),
         has_review_link: true,
+        reason: None,
     }
 }
 

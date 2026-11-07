@@ -37,6 +37,7 @@ impl BrowserBackend for Fake {
             implementer_model: None,
             reviewer_model: None,
             has_review_link: true,
+            reason: None,
         }])
     }
     fn switch_model(&mut self, run_id: &str, role: &str, profile: &str) -> Result<String, String> {

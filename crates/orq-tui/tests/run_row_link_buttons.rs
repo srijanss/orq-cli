@@ -30,6 +30,7 @@ fn run(run_id: &str, feature: &str, status: &str, has_review_link: bool) -> RunR
         implementer_model: None,
         reviewer_model: None,
         has_review_link,
+        reason: None,
     }
 }
 
