@@ -262,10 +262,10 @@ fn publish(parsed: &BuildArgs, summary: Summary, turn: Option<&crate::run_eviden
     // published or indexed, so a failed build leaves no half-visible report.
     let markdown = orq_core::redact::redact(&render_markdown(&report));
     let markdown_path = format!("runs/{}/review/{}/review.md", parsed.run_id, diff.head_sha);
-    let store_report = || {
-        // One publisher per run and commit at a time, so a rollback can never undo
-        // another build's successful publication.
-        let _lock = lock_publication(&roots.data, &parsed.run_id, &diff.head_sha).map_err(|err| format!("cannot lock the report directory: {err}"))?;
+    // One publisher per run and commit at a time, so a rollback can never undo
+    // another build's successful publication.
+    let lock = || lock_publication(&roots.data, &parsed.run_id, &diff.head_sha).map_err(|err| format!("cannot lock the report directory: {err}"));
+    let store_report = |_lock: std::fs::File| {
         let previous = std::fs::read(roots.data.join(&markdown_path)).ok();
         write_atomic(&roots.data, Path::new(&markdown_path), markdown.as_bytes()).map_err(|err| format!("cannot store the readable report: {err}"))?;
         let record = match store.save_review(&roots.data, &parsed.run_id, &project_id, &parsed.feature, &diff.head_sha, &json) {
@@ -285,8 +285,10 @@ fn publish(parsed: &BuildArgs, summary: Summary, turn: Option<&crate::run_eviden
         Ok(roots.data.join(&record.report_path))
     };
     match turn {
-        Some(turn) => turn.write(store_report),
-        None => store_report(),
+        // The publication lock is taken outside the turn: waiting on another publisher must not
+        // hold back the run's next build.
+        Some(turn) => turn.write_holding(lock, store_report),
+        None => store_report(lock()?),
     }
 }
 
@@ -296,7 +298,7 @@ fn provider_link_target(store: &Store, run_id: &str) -> Option<(String, String)>
     lifecycles.iter().find_map(|l| repository_base(&l.provider, &l.url).map(|base| (l.provider.clone(), base)))
 }
 
-fn lock_publication(data_root: &Path, run_id: &str, head_sha: &str) -> std::io::Result<std::fs::File> {
+pub(crate) fn lock_publication(data_root: &Path, run_id: &str, head_sha: &str) -> std::io::Result<std::fs::File> {
     let dir = data_root.join("runs").join(run_id).join("review").join(head_sha);
     std::fs::create_dir_all(&dir)?;
     let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(".publish.lock"))?;

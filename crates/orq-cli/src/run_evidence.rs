@@ -52,8 +52,15 @@ fn review_from_ledger_with(worktree: &Path, base: &str, mut check: impl FnMut(&s
     Some(json!({"schema_version": 1, "head_sha": last_head, "outcome": null, "rounds": rounds}))
 }
 
-/// The latest report build of a run to start, shared by that run's builds.
-type Latest = std::sync::Arc<std::sync::Mutex<u64>>;
+/// The latest report build of a run to start, shared by that run's builds, and the lock their
+/// writes take one at a time. Starting a build only counts it, so it never waits on a write.
+#[derive(Default)]
+struct RunBuilds {
+    latest: std::sync::atomic::AtomicU64,
+    writing: std::sync::Mutex<()>,
+}
+
+type Latest = std::sync::Arc<RunBuilds>;
 
 /// A report build's place among its run's builds, taken when the build starts. A build detached
 /// on a timeout can finish after the build that followed it; its turn keeps it from writing over
@@ -69,25 +76,30 @@ pub(crate) fn report_turn(run_id: &str) -> ReportTurn {
     let mut runs = RUNS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let latest = runs.entry(run_id.to_string()).or_default().clone();
     drop(runs);
-    let mut taken = latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    *taken += 1;
-    let generation = *taken;
-    drop(taken);
+    let generation = latest.latest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     ReportTurn { generation, latest }
 }
 
 impl ReportTurn {
     /// Runs `write`, one of the build's writes of the run's evidence or report, unless a later build
     /// of the run has started. The check and the write are one step, so no later build's write
-    /// can come between them; keep `write` to local file writes, since later builds wait for it.
+    /// can come between them; keep `write` to local file writes, since later builds' writes wait for it.
     pub(crate) fn write<T>(&self, write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        let latest = self.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *latest != self.generation {
+        let writing = self.latest.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.latest.latest.load(std::sync::atomic::Ordering::SeqCst) != self.generation {
             return Err("a later build of this run's report has started".to_string());
         }
         let written = write();
-        drop(latest);
+        drop(writing);
         written
+    }
+
+    /// Like [`ReportTurn::write`], after taking `hold` (a lock other processes share, say) outside
+    /// the turn, so waiting on it holds back none of the run's other builds. `write` gets what
+    /// `hold` returned, and a build superseded while it waited writes nothing.
+    pub(crate) fn write_holding<H, T>(&self, hold: impl FnOnce() -> Result<H, String>, write: impl FnOnce(H) -> Result<T, String>) -> Result<T, String> {
+        let held = hold()?;
+        self.write(|| write(held))
     }
 }
 
@@ -284,6 +296,47 @@ mod tests {
         let (first, late) = worker.join().unwrap();
         assert_eq!(first, Ok("evidence"));
         assert!(late.is_err(), "{late:?}");
+    }
+
+    /// A build waiting for the report's publication lock, held by another `orq review build`,
+    /// holds back neither the next build's turn (taken on the pipeline thread before its timeout
+    /// starts) nor its writes; once the lock frees, the superseded build stores nothing.
+    #[test]
+    fn a_build_waiting_on_the_publication_lock_holds_back_neither_the_next_build_nor_its_report() {
+        let run = "run-publication-contention";
+        let data = GitFixture::new();
+        let held_elsewhere = crate::review::lock_publication(data.root(), run, "abc").unwrap();
+        let waiting = report_turn(run);
+        let (locking_tx, locking_rx) = std::sync::mpsc::channel();
+        let root = data.root().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            let mut stored = false;
+            let late = waiting.write_holding(
+                || {
+                    locking_tx.send(()).unwrap();
+                    crate::review::lock_publication(&root, run, "abc").map_err(|err| err.to_string())
+                },
+                |_lock| {
+                    stored = true;
+                    Ok("report before CI")
+                },
+            );
+            (late, stored)
+        });
+        locking_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the first build reached the publication lock");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let (turn_tx, turn_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || turn_tx.send(report_turn(run)).unwrap());
+        let following = turn_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the next build's turn is not held back");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done_tx.send(following.write(|| Ok("evidence with CI"))).unwrap());
+        assert_eq!(done_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(Ok("evidence with CI")), "the next build's writes are not held back");
+
+        drop(held_elsewhere);
+        let (late, stored) = worker.join().unwrap();
+        assert!(late.is_err(), "{late:?}");
+        assert!(!stored, "the superseded build does not store its report");
     }
 
     /// Many rounds of one review share their start and head, so git is asked about each distinct
