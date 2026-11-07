@@ -142,7 +142,15 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
         .split('\0')
         .find(|entry| !entry.is_empty() && !own(entry))
         // An entry is "XY path": the two status letters, a space, then the path.
-        .map(|entry| UncommittedWork::Present(entry.get(3..).unwrap_or(entry).to_string())))
+        .map(|entry| UncommittedWork::Present(printable(entry.get(3..).unwrap_or(entry)))))
+}
+
+/// `name` with control characters (a newline, an escape sequence) written out as `\n`, `\u{1b}`, so a
+/// file name cannot forge lines or move the cursor where the reason is shown.
+fn printable(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] })
+        .collect()
 }
 
 /// Whether `path` is state the TDD and MCP tooling keeps in the worktree while a run works (`.tdd-*`,

@@ -575,3 +575,18 @@ fn files_orq_itself_writes_stay_work_unless_recorded_unchanged_even_though_the_t
         assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{file}: {outcome:?}");
     }
 }
+
+#[test]
+fn the_kept_reason_shows_control_characters_in_a_file_name_escaped_not_raw() {
+    let w = world("hostile-name");
+    ignore(&w, "*.cfg\n");
+    write(&w, "a\nforged: line\x1b[31m.cfg", "mine\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(!reason.contains('\n') && !reason.contains('\x1b'), "{reason:?}");
+    assert!(reason.contains("forged: line"), "{reason:?}");
+}
