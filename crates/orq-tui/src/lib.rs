@@ -2187,6 +2187,7 @@ pub enum Tab {
 
 const REVIEWS_TAB: &str = "Reviews";
 const REVIEWS_FILE: &str = "reviews";
+const REVIEWS_DRAFT_HINT: &str = " draft: report not current yet · ↑↓ move · Enter open · Esc ";
 const REVIEWS_HINT: &str = " ↑↓ move · Enter open · a scope · s status · x risk · / search · u open link · y copy link · Esc ";
 
 /// What the Reviews tab holds: the rows last loaded, or why there are none.
@@ -2346,6 +2347,11 @@ impl ReviewsState {
     /// Whether the selected review belongs to the project the popup is in.
     fn selected_is_current(&self) -> bool {
         self.shown().get(self.selected).is_some_and(|r| r.current)
+    }
+
+    /// Whether the selected review is a draft: its stored report is not current yet.
+    fn selected_is_draft(&self) -> bool {
+        self.shown().get(self.selected).is_some_and(|r| r.status == "draft")
     }
 
     fn toggle_scope(&mut self) {
@@ -2587,7 +2593,8 @@ fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: O
         }
     }
     if body.height > 0 {
-        put(frame, body.height - 1, review_footer(REVIEWS_HINT, notice, width));
+        let hint = if state.selected_is_draft() { REVIEWS_DRAFT_HINT } else { REVIEWS_HINT };
+        put(frame, body.height - 1, review_footer(hint, notice, width));
     }
 }
 

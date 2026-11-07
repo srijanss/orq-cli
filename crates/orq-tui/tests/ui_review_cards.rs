@@ -215,3 +215,36 @@ fn a_card_too_narrow_for_any_button_shows_none_and_stays_within_its_border() {
     let title = lines.iter().find(|l| l.contains("COM-0")).cloned().unwrap_or_default();
     assert!(title.chars().count() <= 12, "{title}");
 }
+
+fn with_status(statuses: &[&str]) -> Vec<ReviewRow> {
+    statuses.iter().zip(reviews(statuses.len())).map(|(status, row)| ReviewRow { status: (*status).into(), ..row }).collect()
+}
+
+#[test]
+fn the_footer_explains_draft_while_a_draft_review_is_selected() {
+    let lines = screen_of(24, with_status(&["draft", "ready"]), vec![]);
+    let footer = lines.last().unwrap();
+    assert!(footer.contains("draft") && footer.contains("not current"), "{footer}");
+}
+
+#[test]
+fn the_footer_shows_the_usual_hint_when_the_selected_review_is_not_a_draft() {
+    let lines = screen_of(24, with_status(&["draft", "ready"]), vec![key(KeyCode::Down)]);
+    let footer = lines.last().unwrap();
+    assert!(footer.contains("move") && !footer.contains("not current"), "{footer}");
+}
+
+#[test]
+fn the_draft_explanation_follows_the_selection_back_and_forth() {
+    let there = screen_of(24, with_status(&["ready", "draft"]), vec![key(KeyCode::Down)]);
+    assert!(there.last().unwrap().contains("not current"), "{there:?}");
+    let back = screen_of(24, with_status(&["ready", "draft"]), vec![key(KeyCode::Down), key(KeyCode::Up)]);
+    assert!(!back.last().unwrap().contains("not current"), "{back:?}");
+}
+
+#[test]
+fn the_draft_footer_keeps_the_way_to_open_the_review_and_fits_the_window() {
+    let lines = screen_sized(60, 24, with_status(&["draft"]), vec![]);
+    let footer = lines.last().unwrap();
+    assert!(footer.contains("not current") && footer.contains("Enter"), "{footer}");
+}
