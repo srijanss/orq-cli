@@ -115,3 +115,26 @@ fn only_a_failed_run_can_be_accepted() {
     assert!(accept_run(&store, "run-1", &|_: &Path| Ok(())).is_err());
     assert_eq!(phase(&store), RunPhase::Blocked);
 }
+
+#[test]
+fn tests_that_leave_the_worktree_changed_or_move_its_head_do_not_make_the_run_review_ready() {
+    let (_repo, _worktree, store) = failed_run("mutated", 1);
+    let err = accept_run(&store, "run-1", &|dir: &Path| {
+        std::fs::write(dir.join("generated.txt"), "left by the tests").unwrap();
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(err.contains("changed the worktree"), "{err}");
+    assert_eq!(phase(&store), RunPhase::Failed);
+
+    let (_repo2, _worktree2, store) = failed_run("moved", 1);
+    let err = accept_run(&store, "run-1", &|dir: &Path| {
+        std::fs::write(dir.join("more.txt"), "x").unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moved"]);
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(err.contains("changed the worktree"), "{err}");
+    assert_eq!(phase(&store), RunPhase::Failed);
+}

@@ -38,7 +38,13 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
     if commits.trim() == "0" {
         return Err(format!("{run_id} left no committed work to accept"));
     }
+    let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     tests(&record.worktree).map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
+    let head_after = git(&record.worktree, &["rev-parse", "HEAD"])?;
+    let status_after = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    if head_after != head_before || !status_after.trim().is_empty() {
+        return Err(format!("the tests changed the worktree of {run_id}; what they left is not the work that was tested"));
+    }
     record_run_completed(store, &record, "review_ready", None).map_err(|e| format!("{e:?}"))?;
     Ok(format!("Accepted {run_id}: its tests pass and it is review ready"))
 }
