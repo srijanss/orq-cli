@@ -202,3 +202,53 @@ fn a_finding_listed_twice_in_the_live_ledger_takes_the_status_of_its_first_entry
     let statuses: Vec<(&str, &str)> = review.findings.iter().map(|f| (f.id.as_str(), f.status.as_str())).collect();
     assert_eq!(statuses, vec![("leak", "rejected"), ("race", "deferred")]);
 }
+
+/// `escalated_review` of `dir`, given at most a few seconds: a ledger that would block the read
+/// fails the test instead of hanging it.
+fn escalated_review_in_time(dir: &Path, base: &str) -> Result<Option<orq_orchestrator::EscalatedReview>, String> {
+    let (dir, base) = (dir.to_path_buf(), base.to_string());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(escalated_review(&dir, &base));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10)).expect("reading the ledger does not block")
+}
+
+#[test]
+fn a_ledger_that_is_not_a_plain_readable_json_file_is_an_error_and_a_missing_one_is_no_review() {
+    let (dir, base) = repo("ledger-kinds");
+    let reviewed = commit(&dir, "a.txt", "feature");
+    let rounds = dir.join(".tdd-review-rounds.json");
+    let findings = dir.join(".tdd-review-findings.json");
+    let escalated = json!({ format!("review:{base}"): [round(&base, &reviewed, 3, vec![finding("leak", "high", "open")])] }).to_string();
+    let elsewhere = dir.join("elsewhere.json");
+    fs::write(&elsewhere, &escalated).unwrap();
+
+    assert_eq!(escalated_review_in_time(&dir, &base).unwrap(), None, "no ledger, no review");
+
+    std::os::unix::fs::symlink(&elsewhere, &rounds).unwrap();
+    let err = escalated_review_in_time(&dir, &base).unwrap_err();
+    assert!(err.contains(".tdd-review-rounds.json"), "a symlinked ledger is refused: {err}");
+    fs::remove_file(&rounds).unwrap();
+
+    let made = Command::new("mkfifo").arg(&rounds).status().unwrap();
+    assert!(made.success());
+    let err = escalated_review_in_time(&dir, &base).unwrap_err();
+    assert!(err.contains("not a regular file"), "a FIFO ledger is refused without waiting on a writer: {err}");
+    fs::remove_file(&rounds).unwrap();
+
+    let mut oversized = escalated.clone().into_bytes();
+    oversized.resize(4 * 1024 * 1024 + 1, b' ');
+    fs::write(&rounds, oversized).unwrap();
+    let err = escalated_review_in_time(&dir, &base).unwrap_err();
+    assert!(err.contains("larger than"), "an oversized ledger is refused: {err}");
+
+    fs::write(&rounds, "{ not json").unwrap();
+    let err = escalated_review_in_time(&dir, &base).unwrap_err();
+    assert!(err.contains("not valid JSON"), "a malformed ledger is refused: {err}");
+
+    fs::write(&rounds, &escalated).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &findings).unwrap();
+    let err = escalated_review_in_time(&dir, &base).unwrap_err();
+    assert!(err.contains(".tdd-review-findings.json"), "a symlinked findings ledger is refused too: {err}");
+}
