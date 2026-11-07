@@ -59,6 +59,7 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
     }
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     tests(&record.worktree).map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
+    verify_own_worktree(run_id, &record.worktree, &record.branch)?;
     let head_after = git(&record.worktree, &["rev-parse", "HEAD"])?;
     let status_after = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
     if head_after != head_before || !status_after.trim().is_empty() {

@@ -149,6 +149,27 @@ fn a_directory_that_is_not_the_runs_own_worktree_is_not_accepted() {
 }
 
 #[test]
+fn tests_that_switch_the_branch_or_detach_head_at_the_same_commit_do_not_make_the_run_review_ready() {
+    let (_repo, _worktree, store) = failed_run("switched", 1);
+    let err = accept_run(&store, "run-1", &|dir: &Path| {
+        git(dir, &["checkout", "-q", "-b", "someone-elses-branch"]);
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(err.contains("orq-run-1"), "{err}");
+    assert_eq!(phase(&store), RunPhase::Failed);
+
+    let (_repo2, _worktree2, store) = failed_run("detached", 1);
+    let err = accept_run(&store, "run-1", &|dir: &Path| {
+        git(dir, &["checkout", "-q", "--detach"]);
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(err.contains("orq-run-1"), "{err}");
+    assert_eq!(phase(&store), RunPhase::Failed);
+}
+
+#[test]
 fn tests_that_leave_the_worktree_changed_or_move_its_head_do_not_make_the_run_review_ready() {
     let (_repo, _worktree, store) = failed_run("mutated", 1);
     let err = accept_run(&store, "run-1", &|dir: &Path| {
