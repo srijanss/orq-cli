@@ -248,3 +248,28 @@ fn the_draft_footer_keeps_the_way_to_open_the_review_and_fits_the_window() {
     let footer = lines.last().unwrap();
     assert!(footer.contains("not current") && footer.contains("Enter"), "{footer}");
 }
+
+#[test]
+fn a_one_line_row_shows_marker_name_project_and_status_without_card_details() {
+    let rows = with_status(&["ready", "draft"]);
+    let lines = screen_of(4, rows, vec![]);
+    let first = lines.iter().find(|l| l.contains("COM-01")).unwrap();
+    assert!(first.trim_start().starts_with("> COM-01  orq-cli") && first.ends_with("ready"), "{first}");
+    assert!(!lines.iter().any(|l| l.contains("run-1") || l.contains("low")), "{lines:?}");
+}
+
+#[test]
+fn a_one_line_row_offers_no_buttons_even_when_the_review_has_a_link() {
+    let lines = screen_of(5, linked(), vec![]);
+    assert!(lines.iter().any(|l| l.contains("COM-")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("[Open MR]") || l.contains("[Copy link]") || l.contains("[Details]")), "{lines:?}");
+}
+
+#[test]
+fn a_stale_review_is_not_marked_on_its_one_line_row() {
+    let mut rows = reviews(1);
+    rows[0].stale = true;
+    let lines = screen_of(4, rows, vec![]);
+    assert!(lines.iter().any(|l| l.contains("COM-01")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("stale")), "{lines:?}");
+}
