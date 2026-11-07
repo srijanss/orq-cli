@@ -215,6 +215,28 @@ fn a_worktree_holding_only_an_ignored_build_cache_has_it_removed_with_the_worktr
 }
 
 #[test]
+fn a_build_cache_in_a_directory_with_a_non_ascii_name_is_removed_with_the_worktree() {
+    let w = world("build-cache-non-ascii");
+    fs::write(w.worktree.join(".gitignore"), "bygg-ö/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore build output"]);
+    // Git reports such a name quoted, with octal escapes, unless asked for it plainly.
+    let cache = w.worktree.join("bygg-ö/debug");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        w.worktree.join("bygg-ö/CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    fs::write(cache.join("orq"), "binary").unwrap();
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+}
+
+#[test]
 fn a_locked_worktree_is_kept_registered_with_its_branch() {
     let w = world("locked");
     git(

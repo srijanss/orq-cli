@@ -111,6 +111,8 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
         &[
             "status",
             "--porcelain",
+            // NUL-delimited: paths come out as they are, not quoted and escaped.
+            "-z",
             "--untracked-files=all",
             "--ignored",
         ],
@@ -122,15 +124,14 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
     let own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
-            let path = path.trim_matches('"');
             !path.ends_with('/')
                 && (crate::orq_written::is_unchanged_orq_file(worktree, path) || in_cache_dir(worktree, path))
         })
     };
     Ok(status
         .stdout
-        .lines()
-        .any(|line| !line.trim().is_empty() && !own(line))
+        .split('\0')
+        .any(|entry| !entry.is_empty() && !own(entry))
         .then_some(UncommittedWork::Present))
 }
 
