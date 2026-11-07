@@ -535,3 +535,22 @@ fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing
     assert_eq!(*calls.borrow(), 1);
     assert!(!kinds(&w).contains(&pair("gate", "run.failed")), "{:?}", kinds(&w));
 }
+
+#[test]
+fn a_report_left_by_an_earlier_session_does_not_stop_a_loop_whose_fix_works() {
+    let w = world("stale-report");
+    fs::write(w.root.join("unrelated-failure.txt"), "billing clock test is flaky\n").unwrap();
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        3,
+        |_, _| spec(&w, "touch fixed"),
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+}

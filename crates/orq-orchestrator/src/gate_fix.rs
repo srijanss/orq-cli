@@ -116,6 +116,18 @@ pub fn run_gate_with_fixes_env(
                     });
                 }
                 fix_attempts += 1;
+                // A report left by an earlier session or run must not speak for this one.
+                let report = gate_log.with_file_name(UNRELATED_FAILURE_FILE);
+                match std::fs::remove_file(&report) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(StoreError::Corrupt(format!(
+                            "cannot clear the earlier unrelated-failure report {}: {e}",
+                            report.display()
+                        )))
+                    }
+                }
                 let spec = fixer(fix_attempts, gate_log);
                 let session = ImplementSession {
                     program: &spec.program,
@@ -129,7 +141,6 @@ pub fn run_gate_with_fixes_env(
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
-                let report = gate_log.with_file_name(UNRELATED_FAILURE_FILE);
                 if let Ok(text) = std::fs::read_to_string(&report) {
                     let summary = text.trim();
                     if !summary.is_empty() {
