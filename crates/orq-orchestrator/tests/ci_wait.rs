@@ -247,6 +247,25 @@ fn a_repository_with_ci_config_but_no_checks_yet_keeps_waiting() {
     assert_eq!(outcome, CiOutcome::TimedOut);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_gitlab_config_that_cannot_be_inspected_is_not_taken_for_absent() {
+    let w = world("glab-unreadable", "gitlab", "https://gitlab.example/group/r.git");
+    let worktree = w.store.load("run-1").unwrap().worktree;
+    // A symlink loop: the path exists but cannot be inspected (ELOOP, not NotFound).
+    std::os::unix::fs::symlink(".gitlab-ci.yml", worktree.join(".gitlab-ci.yml")).unwrap();
+    let provider = FakeProvider::builder().reply(&["api"], "[]\n").build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_millis(400),
+        no_ci_grace: Duration::from_millis(50),
+        ..config()
+    };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+}
+
 #[test]
 fn a_provider_that_keeps_erroring_is_recorded_as_an_error_not_as_green() {
     let w = world("err", "github", "https://github.example/o/r.git");

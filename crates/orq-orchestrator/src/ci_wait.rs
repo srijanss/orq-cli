@@ -202,10 +202,16 @@ pub fn wait_for_ci_logged(
 /// unreadable one is waited on, never skipped.
 fn has_ci_config(worktree: &Path, kind: Kind) -> bool {
     match kind {
-        Kind::GitLab => worktree.join(".gitlab-ci.yml").exists(),
+        // Only a missing file proves there is no config: any other error means "unknown".
+        Kind::GitLab => match std::fs::symlink_metadata(worktree.join(".gitlab-ci.yml")) {
+            Ok(_) => true,
+            Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+        },
         Kind::GitHub => match std::fs::read_dir(worktree.join(".github/workflows")) {
-            Ok(entries) => entries.filter_map(Result::ok).any(|entry| {
-                matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
+            // An unreadable entry might be a workflow: treat it as configured.
+            Ok(entries) => entries.into_iter().any(|entry| match entry {
+                Ok(entry) => matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml")),
+                Err(_) => true,
             }),
             Err(err) => err.kind() != std::io::ErrorKind::NotFound,
         },
@@ -434,7 +440,7 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
     }
     let latest = matching.into_iter().max_by_key(|(id, _)| *id);
     match latest {
-        None => Verdict::Pending,
+        None => Verdict::Empty,
         Some((_, "success")) => Verdict::Passed,
         Some((id, "failed" | "canceled")) => Verdict::Failed(vec![format!("pipeline {id}")]),
         Some((
@@ -595,7 +601,7 @@ mod tests {
             gitlab_verdict(&pipelines(&[(9, SHA, "running")]), SHA),
             Verdict::Pending
         );
-        assert_eq!(gitlab_verdict("[]", SHA), Verdict::Pending);
+        assert_eq!(gitlab_verdict("[]", SHA), Verdict::Empty);
         assert!(matches!(
             gitlab_verdict(&pipelines(&[(9, SHA, "manual")]), SHA),
             Verdict::Unusable(_)
