@@ -718,7 +718,7 @@ fn run_actions(status: &str) -> &'static [RowAction] {
         "pause_requested" => &[RowAction::Stop],
         "paused" => &[RowAction::Resume, RowAction::Discard],
         "failed" => &[RowAction::Resume, RowAction::Accept, RowAction::Discard],
-        "blocked" => &[RowAction::Discard],
+        "blocked" => &[RowAction::Resume, RowAction::Discard],
         _ => &[],
     }
 }

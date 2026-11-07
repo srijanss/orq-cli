@@ -209,7 +209,7 @@ fn each_orchestrations_row_shows_the_buttons_its_runs_status_allows() {
         ("bravo", 1, &["[Pause]", "[Stop]"][..]),
         ("charlie", 0, &["[Resume]", "[Discard]"][..]),
         ("delta", 0, &["[Resume]", "[Discard]"][..]),
-        ("echo", 0, &["[Discard]"][..]),
+        ("echo", 0, &["[Resume]", "[Discard]"][..]),
         ("foxtrot", 0, &[][..]),
     ] {
         let (_, line) = run_line(&screen, feature, nth);

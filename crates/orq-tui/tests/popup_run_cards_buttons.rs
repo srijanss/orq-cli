@@ -120,7 +120,7 @@ fn a_run_card_offers_the_buttons_its_status_allows() {
         ("pause_requested", vec!["[Stop]"], vec!["[Pause]", "[Resume]"]),
         ("paused", vec!["[Resume]"], vec!["[Pause]", "[Stop]"]),
         ("failed", vec!["[Resume]", "[Discard]"], vec!["[Pause]", "[Stop]"]),
-        ("blocked", vec!["[Discard]"], vec!["[Pause]", "[Stop]", "[Resume]"]),
+        ("blocked", vec!["[Resume]", "[Discard]"], vec!["[Pause]", "[Stop]"]),
         ("completed", vec![], vec!["[Pause]", "[Stop]", "[Resume]", "[Discard]"]),
     ] {
         let rows = show(&mut Fake { status, calls: vec![] }, vec![]);
@@ -177,6 +177,15 @@ fn clicking_resume_asks_to_resume_and_y_resumes() {
     let rows = show(&mut Fake { status: "paused", calls: vec![] }, vec![]);
     let (x, y) = find(&rows, "[Resume]").unwrap();
     let mut backend = Fake { status: "paused", calls: vec![] };
+    show(&mut backend, vec![click(x + 2, y), key('y')]);
+    assert_eq!(backend.calls, vec!["check run-1", "resume run-1"]);
+}
+
+#[test]
+fn clicking_resume_on_a_blocked_run_checks_then_resumes_after_y() {
+    let rows = show(&mut Fake { status: "blocked", calls: vec![] }, vec![]);
+    let (x, y) = find(&rows, "[Resume]").expect("a blocked run offers Resume");
+    let mut backend = Fake { status: "blocked", calls: vec![] };
     show(&mut backend, vec![click(x + 2, y), key('y')]);
     assert_eq!(backend.calls, vec!["check run-1", "resume run-1"]);
 }
