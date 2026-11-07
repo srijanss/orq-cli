@@ -113,12 +113,17 @@ fn store_with_run(root: &Path) -> RunStore {
 /// (raw input, a hidden cursor, a screen of its own), draws, says it is finished and keeps running,
 /// so orq has to close it.
 fn run_an_agent_like_session_closed_by_its_marker(root: &Path) {
+    run_an_agent_like_session(root, true);
+}
+
+/// `run_an_agent_like_session_closed_by_its_marker`, given orq's terminal only when `terminal`.
+fn run_an_agent_like_session(root: &Path, terminal: bool) {
     let marker = root.join("worktree/done.marker");
     let script = format!(
         "stty raw -echo; printf '\\033[?1049h\\033[?25l{DREW}'; touch {}; sleep 30",
         marker.display()
     );
-    let outcome = run_terminal_session(root, "sh", &["-c".to_string(), script]).unwrap();
+    let outcome = run_session(root, "sh", &["-c".to_string(), script], terminal).unwrap();
     assert!(outcome.success, "{outcome:?}");
 }
 
@@ -129,6 +134,16 @@ fn run_terminal_session(
     program: &str,
     args: &[String],
 ) -> Result<orq_orchestrator::ImplementOutcome, orq_orchestrator::StoreError> {
+    run_session(root, program, args, true)
+}
+
+/// `run_terminal_session`, given orq's terminal only when `terminal`.
+fn run_session(
+    root: &Path,
+    program: &str,
+    args: &[String],
+    terminal: bool,
+) -> Result<orq_orchestrator::ImplementOutcome, orq_orchestrator::StoreError> {
     let store = store_with_run(root);
     let marker = root.join("worktree/done.marker");
     let session = ImplementSession {
@@ -138,7 +153,7 @@ fn run_terminal_session(
         cwd: &root.join("worktree"),
         session_id: None,
         log: &root.join("implement.log"),
-        terminal: true,
+        terminal,
         exit_marker: Some(&marker),
     };
     run_implement_stage(&store, "run-1", &session)
@@ -254,6 +269,59 @@ fn a_terminal_session_that_ends_by_itself_keeps_what_it_printed_on_the_screen() 
         assert!(
             !after.contains(part),
             "orq cleared what the session printed: {after:?}"
+        );
+    }
+    assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
+}
+
+#[test]
+fn a_session_not_given_the_terminal_leaves_the_screen_and_terminal_settings_alone() {
+    if let Some(root) = std::env::var_os(CHILD) {
+        return run_an_agent_like_session(Path::new(&root), false);
+    }
+    let root = fresh_root("no-terminal");
+    let screen = run_on_terminal(
+        "a_session_not_given_the_terminal_leaves_the_screen_and_terminal_settings_alone",
+        &root,
+    );
+
+    assert!(screen.contains("1 passed"), "{screen:?}");
+    for part in RESET_PARTS {
+        assert!(
+            !screen.contains(part),
+            "orq reset a screen no session used: {screen:?}"
+        );
+    }
+    assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
+}
+
+#[test]
+fn a_terminal_session_closed_by_orq_writes_no_screen_reset_into_a_redirected_stdout() {
+    if let Some(root) = std::env::var_os(CHILD) {
+        let root = Path::new(&root);
+        let file = fs::File::create(root.join("stdout.txt")).unwrap();
+        // SAFETY: points stdout at a file this process owns, before anything else uses it.
+        assert_eq!(
+            unsafe { libc::dup2(std::os::fd::AsRawFd::as_raw_fd(&file), 1) },
+            1
+        );
+        return run_an_agent_like_session_closed_by_its_marker(root);
+    }
+    let root = fresh_root("redirected");
+    let screen = run_on_terminal(
+        "a_terminal_session_closed_by_orq_writes_no_screen_reset_into_a_redirected_stdout",
+        &root,
+    );
+    let stdout = fs::read_to_string(root.join("stdout.txt")).unwrap();
+
+    assert!(stdout.contains("1 passed"), "{screen:?} {stdout:?}");
+    let (_, after) = stdout
+        .split_once(DREW)
+        .unwrap_or_else(|| panic!("the session never wrote to stdout: {stdout:?}"));
+    for part in RESET_PARTS {
+        assert!(
+            !after.contains(part),
+            "orq wrote a screen reset into a file: {after:?}"
         );
     }
     assert!(screen.ends_with("[termios-restored]"), "{screen:?}");
