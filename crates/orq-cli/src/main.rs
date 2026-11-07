@@ -1593,7 +1593,8 @@ fn sh_quote(text: &str) -> String {
 
 /// The command a Herdr pane runs to start `run_id` in its foreground: `<exe> <args> --run-id
 /// <run_id>` with `env` set, then a prompt that keeps the pane open until Enter so the run's last
-/// words stay readable. It runs under `sh`, whatever shell the pane has.
+/// words stay readable. It runs under `sh`, whatever shell the pane has, and `exec` makes that `sh`
+/// replace the pane's shell, so the pane closes once Enter is pressed.
 fn foreground_command(exe: &Path, args: &[OsString], run_id: &str, env: &[(&str, &std::ffi::OsStr)]) -> String {
     let mut words: Vec<String> = Vec::new();
     if !env.is_empty() {
@@ -1605,7 +1606,7 @@ fn foreground_command(exe: &Path, args: &[OsString], run_id: &str, env: &[(&str,
     words.push(sh_quote("--run-id"));
     words.push(sh_quote(run_id));
     let script = format!("{}; printf '\\n[orq run ended; press Enter to close the pane]\\n'; read _", words.join(" "));
-    format!("sh -c {}", sh_quote(&script))
+    format!("exec sh -c {}", sh_quote(&script))
 }
 
 /// Opens a Herdr pane (in the shared `grid` when there is one) that runs `command`, and records it
@@ -3703,9 +3704,10 @@ mod ledger_backend_tests {
             "run-5",
             &[("XDG_STATE_HOME", std::ffi::OsStr::new("/st ate"))],
         );
-        // Whatever shell the pane runs, the script runs under sh.
-        assert!(command.starts_with("sh -c '"), "{command}");
-        let script = std::process::Command::new("sh").args(["-c", &format!("printf %s {}", &command["sh -c ".len()..])]).output().unwrap();
+        // Whatever shell the pane runs, the script runs under sh, and sh replaces the pane's shell, so
+        // the pane closes when the script ends instead of returning to a prompt.
+        assert!(command.starts_with("exec sh -c '"), "{command}");
+        let script = std::process::Command::new("sh").args(["-c", &format!("printf %s {}", &command["exec sh -c ".len()..])]).output().unwrap();
         let script = String::from_utf8(script.stdout).unwrap();
         assert!(
             script.starts_with("env XDG_STATE_HOME='/st ate' '/bin/o rq' 'run' '--repo' '/my repo'\\''s' '--feature' 'COM-01' '--run-id' 'run-5'"),
