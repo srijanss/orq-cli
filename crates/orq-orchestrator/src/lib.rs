@@ -96,7 +96,7 @@ pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
 pub use run_settings::{
     load_run_settings, model as checked_model, save_mcp_servers_setting, RunSettings, SettingsError,
 };
-pub use run_activity::{activity_line, newest_log_tail, run_activity, LogTail, RunActivity};
+pub use run_activity::{activity_line, newest_log_tail, run_activity, test_progress, LogTail, RunActivity, TestProgress};
 pub use run_status::{
     record_capability_skipped, record_model_switched, record_run_completed, request_model_switch,
     request_pause, summarize_run, RunPhase, RunSummary,

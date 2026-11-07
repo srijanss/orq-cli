@@ -40,6 +40,38 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     }
 }
 
+/// How far a test run has come, read from `cargo test` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestProgress {
+    pub done: u64,
+    pub total: u64,
+    /// The name of the test that finished last.
+    pub current: Option<String>,
+}
+
+/// The progress of the latest test run in `text`: the total comes from its `running N tests` line
+/// and the count from the result lines after it. A run that has not begun, or has no tests, has none.
+pub fn test_progress(text: &str) -> Option<TestProgress> {
+    let mut progress: Option<TestProgress> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(count) = line.strip_prefix("running ").and_then(|r| r.strip_suffix(" tests").or_else(|| r.strip_suffix(" test"))) {
+            if let Ok(total) = count.trim().parse::<u64>() {
+                progress = (total > 0).then_some(TestProgress { done: 0, total, current: None });
+            }
+            continue;
+        }
+        let Some(p) = progress.as_mut() else { continue };
+        let Some(result) = line.strip_prefix("test ") else { continue };
+        let Some((name, outcome)) = result.rsplit_once(" ... ") else { continue };
+        if matches!(outcome, "ok" | "FAILED" | "ignored") || outcome.starts_with("ignored,") {
+            p.done = (p.done + 1).min(p.total);
+            p.current = Some(name.to_string());
+        }
+    }
+    progress
+}
+
 /// How much of the end of a log is looked at, and the longest line shown.
 const TAIL_BYTES: u64 = 8 * 1024;
 const MAX_LINE_CHARS: usize = 200;

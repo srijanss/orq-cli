@@ -152,6 +152,29 @@ fn the_round_of_the_latest_stage_event_is_carried_on_the_activity() {
 }
 
 #[test]
+fn test_progress_counts_the_tests_finished_since_the_latest_run_began() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "running 4 tests\ntest a::one ... ok\ntest a::two ... FAILED\ntest a::three ... ignored\n";
+    assert_eq!(
+        test_progress(log),
+        Some(TestProgress { done: 3, total: 4, current: Some("a::three".to_string()) })
+    );
+
+    // A later test binary starts the count again.
+    let two_binaries = "running 2 tests\ntest x ... ok\ntest y ... ok\n\nrunning 10 tests\ntest z ... ok\n";
+    assert_eq!(
+        test_progress(two_binaries),
+        Some(TestProgress { done: 1, total: 10, current: Some("z".to_string()) })
+    );
+
+    assert_eq!(test_progress("running 3 tests\n").unwrap().current, None);
+    assert_eq!(test_progress("compiling\n"), None, "no test run has begun");
+    assert_eq!(test_progress("running 0 tests\n"), None, "nothing to measure");
+    // Never more than the total, however many lines look like results.
+    assert_eq!(test_progress("running 1 tests\ntest a ... ok\ntest b ... ok\n").unwrap().done, 1);
+}
+
+#[test]
 fn a_line_is_shown_when_the_stage_or_output_changes_and_not_otherwise() {
     let verify = [event("stage.started", Some("verify"))];
     let push = [event("stage.started", Some("push"))];
