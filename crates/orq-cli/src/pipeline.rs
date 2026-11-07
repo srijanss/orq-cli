@@ -1045,6 +1045,7 @@ fn stages(
             created
         }
     };
+    build_review_report(store, record, options, &head_sha, logs);
 
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
@@ -1094,6 +1095,7 @@ fn stages(
             config: &ci_config,
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
+            report: &|head| build_review_report(store, record, options, head, logs),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,
@@ -1151,6 +1153,43 @@ fn stages(
     Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url), ci_green })
 }
 
+/// How long a run waits for its review report before moving on without it.
+const REVIEW_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The wait for the report; `ORQ_REVIEW_BUILD_TIMEOUT_MS` shortens it for tests.
+fn review_report_timeout() -> Duration {
+    std::env::var("ORQ_REVIEW_BUILD_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(REVIEW_REPORT_TIMEOUT)
+}
+
+/// Leaves the report of the pushed commit for the Reviews tab. Best effort: a report that fails or takes too long
+/// never changes how the run ends, and is only noted in the run's logs.
+fn build_review_report(store: &RunStore, record: &RunRecord, options: &Options<'_>, head_sha: &str, logs: &Path) {
+    let built = orq_orchestrator::rebased_onto(store, &record.run_id)
+        .map_err(|err| format!("cannot read what the branch was rebased onto: {err}"))
+        .and_then(|rebased| {
+            // Rebased, the branch no longer sits on the commit the run started from; the diff would claim the target's newer commits.
+            let base = rebased.unwrap_or_else(|| record.base_sha.clone());
+            let (repo, run_id, feature, head) = (options.project.root.clone(), record.run_id.clone(), record.feature_id.clone(), head_sha.to_string());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            // Detached on a timeout: publishing is atomic, so a late finish still leaves a whole report.
+            std::thread::spawn(move || {
+                let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head));
+            });
+            match receiver.recv_timeout(review_report_timeout()) {
+                Ok(built) => built,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("the build did not finish in time".to_string()),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the build stopped unexpectedly".to_string()),
+            }
+        });
+    let note = match built {
+        Ok(path) => format!("report for {head_sha}: {}", path.display()),
+        Err(err) => format!("no report for {head_sha}: {err}"),
+    };
+    use std::io::Write;
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("review-report.log"));
+    let _ = log.and_then(|mut file| writeln!(file, "{note}"));
+}
+
 /// How the pipeline talks to CI and the remote while the fix loop runs.
 struct PipelineCiSteps<'a> {
     store: &'a RunStore,
@@ -1160,6 +1199,8 @@ struct PipelineCiSteps<'a> {
     config: &'a CiWaitConfig,
     ci_log: &'a Path,
     push_log: PathBuf,
+    /// Leaves the review report of a commit the loop just pushed.
+    report: &'a dyn Fn(&str),
     session: FixSessionSpec,
 }
 
@@ -1173,7 +1214,11 @@ impl CiFixSteps for PipelineCiSteps<'_> {
         if let ImplementCheck::Blocked { reason } = check_implement_outcome(self.store, self.run_id)? {
             return Ok(PushOutcome::Failed { reason });
         }
-        push_run_branch(self.store, self.run_id, &self.push_log)
+        let pushed = push_run_branch(self.store, self.run_id, &self.push_log)?;
+        if let PushOutcome::Pushed { head_sha } = &pushed {
+            (self.report)(head_sha);
+        }
+        Ok(pushed)
     }
 
     fn failure_log(&mut self, failing: &[String]) -> String {

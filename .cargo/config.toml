@@ -2,3 +2,7 @@
 # agent session because of it; the tests of that push turn it back on for themselves.
 [env]
 ORQ_CLAUDE_PUSH = { value = "0", force = true }
+
+# Every finished run now leaves a review report, so a test that starts a run must not write into the real
+# data directory. Tests that look at the data set their own XDG_DATA_HOME on the command they start.
+XDG_DATA_HOME = { value = "target/test-xdg-data", relative = true, force = true }

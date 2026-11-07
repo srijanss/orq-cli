@@ -13,6 +13,7 @@ const EXIT_FAILED: i32 = 31;
 struct Env {
     state: PathBuf,
     config: PathBuf,
+    data: PathBuf,
 }
 
 fn env(tag: &str) -> Env {
@@ -20,7 +21,7 @@ fn env(tag: &str) -> Env {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config/orq")).unwrap();
     std::fs::create_dir_all(root.join("state")).unwrap();
-    Env { state: root.join("state"), config: root.join("config") }
+    Env { state: root.join("state"), config: root.join("config"), data: root.join("data") }
 }
 
 fn run(repo: &Path, env: &Env, extra: &[&str]) -> Output {
@@ -419,7 +420,12 @@ fn run_with(w: &World, agent: &FakeAgent, provider: &FakeProvider, extra: &[&str
 
 /// As `run_with`, but the feature is chosen by `selection` (`--feature COM-01`, `--group COM-01`, ...).
 fn run_selecting(w: &World, agent: &FakeAgent, provider: &FakeProvider, selection: &[&str], extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    run_command(w, agent, provider, selection, extra).output().unwrap()
+}
+
+fn run_command(w: &World, agent: &FakeAgent, provider: &FakeProvider, selection: &[&str], extra: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    command
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(selection)
@@ -427,12 +433,155 @@ fn run_selecting(w: &World, agent: &FakeAgent, provider: &FakeProvider, selectio
         .args(extra)
         .env("XDG_CONFIG_HOME", &w.env.config)
         .env("XDG_STATE_HOME", &w.env.state)
+        .env("XDG_DATA_HOME", &w.env.data)
         .env("ORQ_FORGE", "gh")
         .env("GIT_SSH_COMMAND", &w.ssh)
         .env("PATH", path_with(agent, provider, &w.tag))
-        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .env_remove("HERDR_ACTIVE_PANE_CWD");
+    command
+}
+
+/// What the run noted about its review report.
+fn report_log(w: &World, run_id: &str) -> String {
+    std::fs::read_to_string(w.env.state.join("orq/logs").join(run_id).join("review-report.log")).unwrap_or_default()
+}
+
+/// The run id `orq run` printed.
+fn printed_run_id(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().find_map(|line| line.strip_prefix("run: "));
+    line.unwrap_or_else(|| panic!("no run id in: {stdout}\n{}", stderr(output))).to_string()
+}
+
+/// The `(feature, head_sha)` rows of the review index for `run_id`.
+fn review_rows(w: &World, run_id: &str) -> Vec<(String, String)> {
+    let conn = rusqlite::Connection::open(w.env.data.join("orq/orq.db")).unwrap();
+    let mut rows = conn.prepare("SELECT feature, head_sha FROM reviews WHERE run_id = ?1 ORDER BY recorded_at").unwrap();
+    rows.query_map([run_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+}
+
+fn stored_report(w: &World, run_id: &str, head_sha: &str) -> serde_json::Value {
+    let path = w.env.data.join("orq/runs").join(run_id).join("review").join(head_sha).join("review.json");
+    serde_json::from_slice(&std::fs::read(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))).unwrap()
+}
+
+/// The Reviews tab reads what the run itself published. The model summary is left to
+/// `orq review build`: a run does not wait on, or pay for, a session it does not need.
+#[test]
+fn a_finished_run_leaves_its_review_report_without_the_model_summary() {
+    let w = world("report");
+    std::fs::write(w.env.config.join("orq/config.toml"), "[review_summary]\nenabled = true\nmodel = \"haiku\"\n").unwrap();
+    let base = git(w.repo.root(), &["rev-parse", "HEAD"]).trim().to_string();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let run_id = printed_run_id(&output);
+    let head = git(&w.remote, &["rev-parse", "fix--COM-01"]).trim().to_string();
+    assert_eq!(review_rows(&w, &run_id), vec![("COM-01".to_string(), head.clone())]);
+    let report = stored_report(&w, &run_id, &head);
+    assert_eq!(report["base_sha"], base.as_str(), "{report}");
+    assert_eq!(report["head_sha"], head.as_str(), "{report}");
+    assert!(report.get("generated_summary").is_none(), "{report}");
+    assert!(w.env.data.join("orq/runs").join(&run_id).join("review").join(&head).join("review.md").exists());
+}
+
+/// The diff is `base..head`: measured from the commit the run started on, a rebased branch would
+/// claim the target's newer commits as its own changes.
+#[test]
+fn the_review_report_of_a_rebased_run_starts_at_the_commit_it_was_rebased_onto() {
+    let w = world("reportrebase");
+    let moved = target_moves_during_setup(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let run_id = printed_run_id(&output);
+    let head = git(&w.remote, &["rev-parse", "fix--COM-01"]).trim().to_string();
+    assert_eq!(stored_report(&w, &run_id, &head)["base_sha"], moved.as_str(), "{}", stderr(&output));
+}
+
+/// The report is a convenience: a data directory it cannot be written to costs the run nothing.
+#[test]
+fn a_review_report_that_cannot_be_built_is_noted_and_the_run_still_finishes() {
+    let w = world("reportfails");
+    let not_a_directory = w.env.config.join("not-a-directory");
+    std::fs::write(&not_a_directory, "").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_command(&w, &agent, &github(), &["--feature", "COM-01"], &["--no-ci-check"])
+        .env("XDG_DATA_HOME", &not_a_directory)
         .output()
-        .unwrap()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let log = report_log(&w, &printed_run_id(&output));
+    assert!(log.contains("no report for"), "{log}");
+}
+
+/// Reading the diff hangs: the run moves on and says so.
+#[test]
+fn a_slow_review_report_does_not_hold_up_the_run() {
+    let w = world("reportslow");
+    let shims = orq_test_support::process_temp_dir().join(format!("orq-run-slow-git-{}", std::process::id()));
+    std::fs::create_dir_all(&shims).unwrap();
+    let real_git = String::from_utf8(Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap();
+    std::fs::write(shims.join("git"), format!("#!/bin/sh\ncase \"$*\" in *--numstat*) sleep 10;; esac\nexec {} \"$@\"\n", real_git.trim())).unwrap();
+    std::fs::set_permissions(shims.join("git"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let path = format!("{}:{}", shims.display(), path_with(&agent, &provider, &w.tag).display());
+    let started = std::time::Instant::now();
+
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &["--no-ci-check"])
+        .env("PATH", path)
+        .env("ORQ_REVIEW_BUILD_TIMEOUT_MS", "100")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "the run waited for the report: {:?}", started.elapsed());
+    let log = report_log(&w, &printed_run_id(&output));
+    assert!(log.contains("did not finish in time"), "{log}");
+}
+
+/// The Reviews tab shows what the branch holds now, so the commit a CI fix pushed gets a report too.
+#[test]
+fn the_commit_a_ci_fix_pushes_gets_its_own_review_report() {
+    let w = world("reportfix");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+    // Every fix session commits something new; every other session is the plain fake agent.
+    let shims = orq_test_support::process_temp_dir().join(format!("orq-run-fixing-claude-{}", std::process::id()));
+    std::fs::create_dir_all(&shims).unwrap();
+    std::fs::write(
+        shims.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'CI failed on the pushed branch'*)\n  echo fixed > \"fix-$$.txt\"\n  git add -A\n  exec git -c user.name=Fixer -c user.email=fixer@example.invalid commit -q -m fix\nesac\nexec '{}' \"$@\"\n",
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(shims.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", shims.display(), path_with(&agent, &provider, &w.tag).display());
+
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &[]).env("PATH", path).output().unwrap();
+
+    let run_id = printed_run_id(&output);
+    let pushed = git(&w.remote, &["rev-list", "--reverse", "main..fix--COM-01"]);
+    let pushed: Vec<&str> = pushed.lines().collect();
+    assert!(pushed.len() > 1, "a fix was pushed: {pushed:?}\n{}", stderr(&output));
+    for head in pushed {
+        assert_eq!(stored_report(&w, &run_id, head)["head_sha"], head);
+    }
 }
 
 #[test]
