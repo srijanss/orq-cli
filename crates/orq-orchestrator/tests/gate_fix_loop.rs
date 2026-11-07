@@ -665,22 +665,34 @@ fn an_earlier_report_that_cannot_be_cleared_is_an_error_and_no_fix_session_start
     use std::os::unix::fs::PermissionsExt;
     let w = world("report-uncleared");
     let report = w.root.join("unrelated-failure.txt");
-    let inner = report.join("inner");
-    fs::create_dir_all(&inner).unwrap();
-    fs::write(inner.join("f"), "x").unwrap();
-    fs::set_permissions(&inner, fs::Permissions::from_mode(0o555)).unwrap();
-    let calls = RefCell::new(0);
+    let locked = |dir: &std::path::Path| {
+        fs::create_dir_all(dir.join("inner")).unwrap();
+        fs::write(dir.join("inner/f"), "x").unwrap();
+        fs::set_permissions(dir.join("inner"), fs::Permissions::from_mode(0o555)).unwrap();
+    };
+    let unlock = |dir: &std::path::Path| {
+        let _ = fs::set_permissions(dir.join("inner"), fs::Permissions::from_mode(0o755));
+    };
 
+    // Whether this account is held back by directory permissions at all (root is not).
+    let probe = w.root.join("probe");
+    locked(&probe);
+    let enforced = fs::remove_dir_all(&probe).is_err();
+    unlock(&probe);
+    if !enforced {
+        eprintln!("skipped: directory permissions are not enforced for this user");
+        return;
+    }
+
+    locked(&report);
+    let calls = RefCell::new(0);
     let result = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| {
         *calls.borrow_mut() += 1;
         spec(&w, "touch fixed")
     });
+    unlock(&report);
 
-    fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).unwrap();
-    if result.is_ok() {
-        // Running as a user who can remove it anyway (root): nothing to check.
-        return;
-    }
+    assert!(result.is_err(), "{result:?}");
     assert_eq!(*calls.borrow(), 0);
 }
 

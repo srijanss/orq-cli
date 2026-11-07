@@ -54,14 +54,27 @@ pub const UNRELATED_FAILURE_FILE: &str = "unrelated-failure.txt";
 fn read_report(report: &Path) -> Option<String> {
     // Opened without following a link and without waiting on a pipe, then checked on the opened
     // handle, so the path cannot be swapped between the check and the read.
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
+    // Where no such open exists, no report is read at all rather than one that follows links.
+    #[cfg(not(unix))]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let _ = report;
+        return None;
     }
-    let file = options.open(report).ok()?;
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(report)
+            .ok()?
+    };
+    #[cfg(unix)]
+    read_report_from(file)
+}
+
+#[cfg(unix)]
+fn read_report_from(file: std::fs::File) -> Option<String> {
     if !file.metadata().ok()?.file_type().is_file() {
         return None;
     }
