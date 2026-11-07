@@ -16,6 +16,24 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     Ok(out.stdout)
 }
 
+/// The recorded path must be the root of a git worktree with the run's own branch checked out;
+/// a subdirectory, a symlink to elsewhere or a switched branch would test work that is not the run's.
+fn verify_own_worktree(run_id: &str, worktree: &Path, branch: &str) -> Result<(), String> {
+    let top = git(worktree, &["rev-parse", "--show-toplevel"])?;
+    let same_root = match (std::fs::canonicalize(top.trim()), std::fs::canonicalize(worktree)) {
+        (Ok(top), Ok(recorded)) => top == recorded,
+        _ => false,
+    };
+    if !same_root {
+        return Err(format!("{} is not the root of the worktree of {run_id}", worktree.display()));
+    }
+    let current = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current.trim() != branch {
+        return Err(format!("the worktree of {run_id} has {} checked out, not its branch {branch}", current.trim()));
+    }
+    Ok(())
+}
+
 /// Mark the failed run `run_id` review ready when its worktree holds committed work, nothing is
 /// left uncommitted and `tests(worktree)` passes. The tests run only once the run is known to be
 /// acceptable; a failure leaves the run failed and is returned as the reason.
@@ -29,6 +47,7 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
     if !record.worktree.is_dir() {
         return Err(format!("the worktree of {run_id} is gone; there is no work to accept"));
     }
+    verify_own_worktree(run_id, &record.worktree, &record.branch)?;
     let status = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
     if !status.trim().is_empty() {
         return Err(format!("{run_id} has uncommitted changes in its worktree; commit or discard them first"));

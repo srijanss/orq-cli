@@ -29,6 +29,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A failed run whose worktree has `commits` commits on its branch beyond the base.
 fn failed_run(tag: &str, commits: usize) -> (GitFixture, PathBuf, RunStore) {
+    failed_run_recorded_as(tag, commits, |worktree| worktree.to_path_buf())
+}
+
+/// Like `failed_run`, but the record names `recorded(worktree)` as the run's worktree.
+fn failed_run_recorded_as(tag: &str, commits: usize, recorded: impl Fn(&Path) -> PathBuf) -> (GitFixture, PathBuf, RunStore) {
     let repo = GitFixture::new();
     let base = git(repo.root(), &["rev-parse", "HEAD"]);
     let worktree = repo.add_linked_worktree("orq-run-1");
@@ -49,7 +54,7 @@ fn failed_run(tag: &str, commits: usize) -> (GitFixture, PathBuf, RunStore) {
         target_branch: "main".into(),
         base_sha: base,
         branch: "orq-run-1".into(),
-        worktree: worktree.clone(),
+        worktree: recorded(&worktree),
         repository: String::new(),
         profiles: BTreeMap::new(),
     };
@@ -114,6 +119,33 @@ fn only_a_failed_run_can_be_accepted() {
     store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
     assert!(accept_run(&store, "run-1", &|_: &Path| Ok(())).is_err());
     assert_eq!(phase(&store), RunPhase::Blocked);
+}
+
+#[test]
+fn a_directory_that_is_not_the_runs_own_worktree_is_not_accepted() {
+    let ran = RefCell::new(false);
+    let never = |_: &Path| {
+        *ran.borrow_mut() = true;
+        Ok(())
+    };
+
+    // The worktree was switched to another branch: its work is not the run's work.
+    let (_repo, worktree, store) = failed_run("other-branch", 1);
+    git(&worktree, &["checkout", "-q", "-b", "someone-elses-branch"]);
+    let err = accept_run(&store, "run-1", &never).unwrap_err();
+    assert!(err.contains("orq-run-1"), "{err}");
+    assert_eq!(phase(&store), RunPhase::Failed);
+
+    // The recorded path is a subdirectory of the worktree, not its root.
+    let (_repo2, _worktree2, store2) = failed_run_recorded_as("subdir", 1, |worktree| {
+        let sub = worktree.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        sub
+    });
+    assert!(accept_run(&store2, "run-1", &never).is_err());
+    assert_eq!(phase(&store2), RunPhase::Failed);
+
+    assert!(!*ran.borrow(), "the tests are not run in a directory that is not the run's worktree");
 }
 
 #[test]
