@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn on_a_terminal_the_step_is_redrawn_in_place_as_its_percentage_moves() {
-        let (root, logs) = gate_run("inplace", "running 2 tests\ntest a::one ... ok\n");
+        let (root, logs) = gate_run("inplace", "orq: tests to run: 2\nrunning 2 tests\ntest a::one ... ok\n");
         let written = Arc::new(Mutex::new(Vec::new()));
         let progress = Progress::start_rendering(root, "run-1".into(), logs.clone(), Duration::from_secs(60), Box::new(Sink(written.clone())), true);
         let text = || String::from_utf8_lossy(&written.lock().unwrap()).to_string();
@@ -222,7 +222,7 @@ mod tests {
         assert!(text().contains("  - a::one"), "{}", text());
         assert!(!text().contains("orq: verify"), "no appended log line beside the step: {}", text());
 
-        std::fs::write(logs.join("gate.log"), "running 2 tests\ntest a::one ... ok\ntest a::two ... ok\n").unwrap();
+        std::fs::write(logs.join("gate.log"), "orq: tests to run: 2\nrunning 2 tests\ntest a::one ... ok\ntest a::two ... ok\n").unwrap();
         wait_for("the redraw", || text().contains("Tests (Round 1) - 100%"));
         drop(progress);
         let text = text();
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn off_a_terminal_the_step_keeps_its_plain_appended_lines() {
-        let (root, logs) = gate_run("plain", "running 2 tests\ntest a::one ... ok\n");
+        let (root, logs) = gate_run("plain", "orq: tests to run: 2\nrunning 2 tests\ntest a::one ... ok\n");
         let written = Arc::new(Mutex::new(Vec::new()));
         let progress = Progress::start_with(root, "run-1".into(), logs, Duration::from_secs(60), Box::new(Sink(written.clone())));
         wait_for("a line", || !written.lock().unwrap().is_empty());

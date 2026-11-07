@@ -3,12 +3,13 @@
 //! happens after a pass.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::gate::Gate;
 use crate::implement::{next_event_id, now_rfc3339, open_log};
+use crate::run_activity::test_total_line;
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "verify";
@@ -122,9 +123,17 @@ fn run_gate_attempt_limited(
         serde_json::json!({ "log": log_name, "steps": steps.len() }),
     )?;
 
+    let counts_tests = steps.iter().any(|argv| listing_argv(argv).is_some());
     for (index, argv) in steps.iter().enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
-        let (exit_code, failure) = run_step(&record, argv, &log, env, limit)?;
+        if counts_tests {
+            // The log is kept across rounds: an earlier step's total says nothing about this one.
+            writeln!(log, "{}", test_total_line(None))?;
+        }
+        if let Some(total) = listing_argv(argv).and_then(|listing| count_tests(&record, &listing, log_path, &log, env, limit)) {
+            writeln!(log, "{}", test_total_line(Some(total)))?;
+        }
+        let (exit_code, failure) = run_step(&record, argv, &log, &log, env, limit)?;
         if let Some(failure) = failure {
             let reason = format!(
                 "gate step {} ({}) {failure}",
@@ -154,10 +163,79 @@ fn run_gate_attempt_limited(
     Ok(GateOutcome::Passed)
 }
 
+/// What lists the tests of a `cargo test` step, with the same selection; `None` for any other step.
+fn listing_argv(argv: &[String]) -> Option<Vec<String>> {
+    let [program, subcommand, ..] = argv else { return None };
+    if program != "cargo" || subcommand != "test" || argv.iter().any(|arg| arg == "--list") {
+        return None;
+    }
+    let mut listing = argv.to_vec();
+    if !argv.iter().any(|arg| arg == "--") {
+        listing.push("--".to_string());
+    }
+    listing.push("--list".to_string());
+    Some(listing)
+}
+
+/// How many tests `listing` says there are. Anything going wrong only costs the percentage: the
+/// step itself decides the gate. What the build says goes to the log, so a long compile shows life.
+fn count_tests(
+    record: &RunRecord,
+    listing: &[String],
+    log_path: &Path,
+    log: &fs::File,
+    env: &[(String, String)],
+    limit: std::time::Duration,
+) -> Option<u64> {
+    let mut listed = open_listing(log_path).ok()?;
+    let (_, failure) = run_step(record, listing, &listed, log, env, limit).ok()?;
+    if failure.is_some() {
+        return None;
+    }
+    listed.seek(SeekFrom::Start(0)).ok()?;
+    let mut bytes = Vec::new();
+    listed.read_to_end(&mut bytes).ok()?;
+    listed_total(&String::from_utf8_lossy(&bytes))
+}
+
+/// A private scratch file beside the log, gone from the folder as soon as it is open.
+fn open_listing(log_path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = log_path.with_extension("test-list");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    fs::remove_file(&path)?;
+    Ok(file)
+}
+
+/// The sum of the `N tests, M benchmarks` line each test binary ends its listing with.
+fn listed_total(text: &str) -> Option<u64> {
+    let mut total: Option<u64> = None;
+    for count in text.lines().filter_map(listed_count) {
+        total = Some(total.unwrap_or(0).checked_add(count?)?);
+    }
+    total.filter(|total| *total > 0)
+}
+
+/// `Some` when `line` is a binary's summary; inside it, `None` when its count does not fit.
+fn listed_count(line: &str) -> Option<Option<u64>> {
+    let (tests, benchmarks) = line.split_once(", ")?;
+    let tests: u64 = tests.strip_suffix(" tests").or_else(|| tests.strip_suffix(" test"))?.parse().ok()?;
+    let benchmarks: u64 = benchmarks.strip_suffix(" benchmarks").or_else(|| benchmarks.strip_suffix(" benchmark"))?.parse().ok()?;
+    Some(tests.checked_add(benchmarks))
+}
+
 /// Run one step; the second value is why it failed, if it did.
 fn run_step(
     record: &RunRecord,
     argv: &[String],
+    stdout: &fs::File,
     log: &fs::File,
     env: &[(String, String)],
     limit: std::time::Duration,
@@ -175,7 +253,7 @@ fn run_step(
     command.envs(env.iter().map(|(name, value)| (name, value)));
     command
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
+        .stdout(stdout.try_clone()?)
         .stderr(log.try_clone()?);
     use std::os::unix::process::CommandExt;
     command.process_group(0);

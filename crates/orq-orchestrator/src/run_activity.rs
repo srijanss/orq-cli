@@ -53,20 +53,30 @@ pub struct TestProgress {
     pub current: Option<String>,
 }
 
-/// The progress of the latest test run in `text`: the total comes from its `running N tests` line
-/// and the count from the result lines after it. A run that has not begun, or has no tests, has none.
+/// What a line of the log starts with when it says how many tests the whole suite has.
+const TEST_TOTAL_PREFIX: &str = "orq: tests to run: ";
+
+/// The line a gate writes to its log before a test run: the number of tests across every test
+/// binary, or that it is not known.
+pub fn test_total_line(total: Option<u64>) -> String {
+    match total {
+        Some(total) => format!("{TEST_TOTAL_PREFIX}{total}"),
+        None => format!("{TEST_TOTAL_PREFIX}unknown"),
+    }
+}
+
+/// The progress of the latest test run in `text`: the total comes from its [`test_total_line`] and
+/// the count from every result line after it, whichever test binary printed it, so it only goes up.
+/// A run with no known total has none: one binary's `running N tests` says nothing about the suite.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
     for line in text.lines() {
-        let line = line.trim();
-        if let Some(count) = line.strip_prefix("running ").and_then(|r| r.strip_suffix(" tests").or_else(|| r.strip_suffix(" test"))) {
-            if let Ok(total) = count.trim().parse::<u64>() {
-                progress = (total > 0).then_some(TestProgress { done: 0, total, current: None });
-            }
+        if let Some(total) = line.strip_prefix(TEST_TOTAL_PREFIX) {
+            progress = total.parse::<u64>().ok().filter(|total| *total > 0).map(|total| TestProgress { done: 0, total, current: None });
             continue;
         }
         let Some(p) = progress.as_mut() else { continue };
-        let Some(result) = line.strip_prefix("test ") else { continue };
+        let Some(result) = line.trim().strip_prefix("test ") else { continue };
         let Some((name, outcome)) = result.rsplit_once(" ... ") else { continue };
         if matches!(outcome, "ok" | "FAILED" | "ignored") || outcome.starts_with("ignored,") {
             p.done = (p.done + 1).min(p.total);
