@@ -40,11 +40,14 @@ pub struct CiWaitConfig {
     pub timeout: Duration,
     /// How long one provider call may take.
     pub command_timeout: Duration,
+    /// How long a repository with no CI configuration may report no checks before the stage
+    /// is skipped: a workflow file just pushed can take a moment to register.
+    pub no_ci_grace: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CiOutcome {
-    /// The stage is disabled.
+    /// The stage is disabled, or the repository has no CI configured.
     Skipped,
     /// Every check for the head SHA finished green.
     Passed,
@@ -152,6 +155,16 @@ pub fn wait_for_ci_logged(
             Verdict::Unusable(_) => note(log, &format!("CI waiting: the provider did not answer usably, trying again ({failures_so_far} so far)", failures_so_far = failures + 1)),
             _ => {}
         }
+        if verdict == Verdict::Empty && waited >= config.no_ci_grace && !has_ci_config(&record.worktree, kind) {
+            note(log, &format!("CI skipped: no CI is configured and no checks were reported for {}", short(head_sha)));
+            record_event(
+                store,
+                &record,
+                "stage.skipped",
+                serde_json::json!({ "reason": "no CI configured", "head_sha": head_sha }),
+            )?;
+            return Ok(CiOutcome::Skipped);
+        }
         match verdict {
             Verdict::Passed => {
                 record_event(
@@ -181,6 +194,21 @@ pub fn wait_for_ci_logged(
                 .max(MIN_POLL_INTERVAL)
                 .min(deadline.saturating_duration_since(Instant::now())),
         );
+    }
+}
+
+/// Whether the checked-out head defines any CI for the provider: a workflow file for GitHub,
+/// the pipeline file for GitLab. A directory that cannot be read counts as configured, so an
+/// unreadable one is waited on, never skipped.
+fn has_ci_config(worktree: &Path, kind: Kind) -> bool {
+    match kind {
+        Kind::GitLab => worktree.join(".gitlab-ci.yml").exists(),
+        Kind::GitHub => match std::fs::read_dir(worktree.join(".github/workflows")) {
+            Ok(entries) => entries.filter_map(Result::ok).any(|entry| {
+                matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml"))
+            }),
+            Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+        },
     }
 }
 
@@ -225,6 +253,8 @@ fn poll_once(
         Verdict::Pending
     } else if verdicts.contains(&Verdict::Passed) {
         Verdict::Passed
+    } else if !verdicts.is_empty() && verdicts.iter().all(|v| *v == Verdict::Empty) {
+        Verdict::Empty
     } else {
         Verdict::Pending
     }

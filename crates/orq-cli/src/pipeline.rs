@@ -1055,6 +1055,7 @@ fn stages(
         poll_interval: Duration::from_secs(15),
         timeout: settings.ci_timeout.unwrap_or(Duration::from_secs(30 * 60)),
         command_timeout: Duration::from_secs(60),
+        no_ci_grace: Duration::from_secs(90),
     };
     let ci_log = logs.join("ci.log");
     // A published branch is the user's own checkout, and no agent edits it: its CI is only reported.

@@ -59,6 +59,7 @@ fn config() -> CiWaitConfig {
         poll_interval: Duration::from_millis(20),
         timeout: Duration::from_secs(2),
         command_timeout: Duration::from_secs(10),
+        no_ci_grace: Duration::from_secs(60),
     }
 }
 
@@ -203,6 +204,45 @@ fn a_commit_without_any_check_is_waited_for_not_called_green() {
     };
 
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &short).unwrap();
+
+    assert_eq!(outcome, CiOutcome::TimedOut);
+}
+
+#[test]
+fn a_repository_with_no_ci_config_and_no_checks_is_skipped_after_the_grace_period() {
+    let w = world("no-ci", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["api"], &gh_checks("", 0)).build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_secs(30),
+        no_ci_grace: Duration::from_millis(100),
+        ..config()
+    };
+    let started = std::time::Instant::now();
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Skipped);
+    assert!(started.elapsed() < Duration::from_secs(10), "it waited out the CI timeout");
+    let events = w.store.events("run-1").unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.kind, "stage.skipped");
+    assert_eq!(last.payload["reason"], "no CI configured");
+}
+
+#[test]
+fn a_repository_with_ci_config_but_no_checks_yet_keeps_waiting() {
+    let w = world("ci-config", "github", "https://github.example/o/r.git");
+    let worktree = w.store.load("run-1").unwrap().worktree;
+    fs::create_dir_all(worktree.join(".github/workflows")).unwrap();
+    fs::write(worktree.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
+    let provider = github_provider().reply(&["api"], &gh_checks("", 0)).build();
+    let cfg = CiWaitConfig {
+        timeout: Duration::from_millis(400),
+        no_ci_grace: Duration::from_millis(50),
+        ..config()
+    };
+
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
 
     assert_eq!(outcome, CiOutcome::TimedOut);
 }
