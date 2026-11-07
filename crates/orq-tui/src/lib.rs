@@ -668,6 +668,7 @@ enum RowAction {
     Accept,
     OpenLink,
     CopyLink,
+    Details,
 }
 
 impl RowAction {
@@ -681,6 +682,7 @@ impl RowAction {
             RowAction::Accept => "[Accept]",
             RowAction::OpenLink => "[Open MR]",
             RowAction::CopyLink => "[Copy link]",
+            RowAction::Details => "[Details]",
         }
     }
 }
@@ -739,6 +741,20 @@ fn run_card_buttons(inner: Rect, run: &RunRow) -> Vec<(Rect, RowAction)> {
         }
     }
     row_button_rects(inner, status)
+}
+
+/// The buttons on a review's card: opening and copying its link when it has one, and Details
+/// always. When the title would be squeezed too far the link buttons are left off (the keys `u`
+/// and `y` work either way), and when even Details does not fit there are none.
+fn review_card_buttons(inner: Rect, review: &ReviewRow) -> Vec<(Rect, RowAction)> {
+    if review.has_link {
+        let rects = row_button_rects(inner, &[RowAction::OpenLink, RowAction::CopyLink, RowAction::Details]);
+        let room = rects.first().map_or(0, |(rect, _)| usize::from(rect.x - inner.x));
+        if room > RUN_TITLE_MIN_WIDTH {
+            return rects;
+        }
+    }
+    row_button_rects(inner, &[RowAction::Details])
 }
 
 /// Where each of `actions` sits on the first line of a card's `inner` area: right-aligned, one
@@ -2507,17 +2523,23 @@ fn render_review_card(frame: &mut Frame, area: Rect, review: &ReviewRow, selecte
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = usize::from(inner.width);
+    let buttons = review_card_buttons(inner, review);
+    // The title gives way to the buttons, keeping a space before the first.
+    let title_room = buttons.first().map_or(width, |(rect, _)| usize::from(rect.x - inner.x).saturating_sub(1));
     let stale = if review.stale { " · stale" } else { "" };
     let detail = format!("{}{} · {}", review.risk, stale, review.run_id);
     let detail_style = if selected { name_style(true) } else { Style::new().fg(Color::DarkGray) };
     let lines = vec![
-        title(width),
+        title(title_room),
         Line::styled(
             format!("{}{}", " ".repeat(MARKER_WIDTH.min(width)), truncate_right(&printable(&detail), width.saturating_sub(MARKER_WIDTH))),
             detail_style,
         ),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
+    for (rect, action) in buttons {
+        frame.render_widget(Paragraph::new(Span::styled(action.label(), Style::new().fg(Color::Cyan))), rect);
+    }
 }
 
 fn render_reviews(frame: &mut Frame, body: Rect, state: &ReviewsState, notice: Option<&str>) {
@@ -3553,7 +3575,7 @@ impl Browser {
             }
             RowAction::OpenLink => self.review_link_of_selected_run(backend, false),
             RowAction::CopyLink => self.review_link_of_selected_run(backend, true),
-            RowAction::Orchestrate => {}
+            RowAction::Orchestrate | RowAction::Details => {}
         }
     }
 
@@ -3579,7 +3601,7 @@ impl Browser {
             RowAction::Resume => backend.resume_run(run_id),
             RowAction::Discard => backend.discard_run(run_id),
             RowAction::Accept => backend.accept_run(run_id),
-            RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink => return,
+            RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink | RowAction::Details => return,
         };
         self.notice = Some(match done {
             Ok(message) | Err(message) => printable(&message),

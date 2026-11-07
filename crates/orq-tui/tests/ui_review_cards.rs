@@ -53,11 +53,15 @@ fn key(code: KeyCode) -> Event {
 
 /// The Reviews tab (opened with a click on its tab) after `events`, as one string per screen row.
 fn screen(height: u16, count: usize, events: Vec<Event>) -> Vec<String> {
+    screen_of(height, reviews(count), events)
+}
+
+fn screen_of(height: u16, rows: Vec<ReviewRow>, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
     let mut script = vec![key(KeyCode::Char('V'))];
     script.extend(events);
-    let _ = run_browser(&mut terminal, &model, &mut Fake(reviews(count)), &mut Script(script.into()));
+    let _ = run_browser(&mut terminal, &model, &mut Fake(rows), &mut Script(script.into()));
     let buffer = terminal.backend().buffer();
     (0..height).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect()
 }
@@ -150,4 +154,29 @@ fn presses_in_a_window_with_no_room_for_any_review_change_nothing_and_do_not_pan
     let lines = screen(2, 3, vec![click(10, 0), click(10, 1), key(KeyCode::Down)]);
     assert!(lines[0].contains("Project"), "{lines:?}");
     assert!(!lines.iter().any(|l| l.contains("COM-")), "{lines:?}");
+}
+
+#[test]
+fn a_card_with_a_link_offers_open_copy_and_details_right_aligned_on_its_first_line() {
+    let rows = vec![ReviewRow { has_link: true, ..reviews(1).remove(0) }];
+    let lines = screen_of(24, rows, vec![click(44, 2)]);
+    let title = lines.iter().find(|l| l.contains("COM-01")).unwrap();
+    assert!(title.contains("[Open MR] [Copy link] [Details]"), "{lines:?}");
+    assert!(title.trim_end().ends_with("[Details]│"), "{lines:?}");
+}
+
+#[test]
+fn a_card_without_a_link_offers_only_details() {
+    let lines = screen(24, 1, vec![click(44, 2)]);
+    let title = lines.iter().find(|l| l.contains("COM-01")).unwrap();
+    assert!(title.contains("[Details]"), "{lines:?}");
+    assert!(!title.contains("[Open MR]") && !title.contains("[Copy link]"), "{lines:?}");
+}
+
+#[test]
+fn every_card_shows_its_own_buttons_not_only_the_selected_one() {
+    let rows = vec![ReviewRow { has_link: true, ..reviews(2).remove(0) }, reviews(2).remove(1)];
+    let lines = screen_of(24, rows, vec![click(44, 2)]);
+    assert_eq!(lines.iter().filter(|l| l.contains("[Details]")).count(), 2, "{lines:?}");
+    assert_eq!(lines.iter().filter(|l| l.contains("[Open MR]")).count(), 1, "{lines:?}");
 }
