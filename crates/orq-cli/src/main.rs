@@ -1785,9 +1785,13 @@ fn open_url(url: &str) -> Result<String, String> {
     desktop::open_url_with(url, &find_program)
 }
 
-/// Puts `text` on the clipboard with the first clipboard tool that works.
+/// Puts `text` on the clipboard with the first clipboard tool that works, else through the
+/// terminal the TUI is drawn on.
 fn copy_text(text: &str) -> Result<String, String> {
-    desktop::copy_text_with(text, &find_program)
+    use std::io::IsTerminal;
+    let mut stdout = std::io::stdout();
+    let terminal: Option<&mut dyn std::io::Write> = if stdout.is_terminal() { Some(&mut stdout) } else { None };
+    desktop::copy_text_with(text, &find_program, terminal)
 }
 
 /// The branch a run's review targets: the remote's default branch when known, else `main`.
