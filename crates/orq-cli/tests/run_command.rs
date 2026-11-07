@@ -1388,7 +1388,9 @@ fn a_configured_notification_command_hears_how_the_run_ended_and_its_failure_cha
 
     assert!(output.status.success(), "{}", stderr(&output));
     let message = std::fs::read_to_string(&heard).expect("the notifier ran");
-    assert!(message.starts_with("orq: COM-01 review_ready"), "{message}");
+    // The orchestrate script's words: `<repo>: <PR|MR> ready for review, <CI>. <url> (<branch>)`.
+    let repo = w.repo.root().file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(message, format!("{repo}: PR ready for review, CI not watched. {PR_URL} (fix--COM-01)"));
 
     let w = world("notifyfails");
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
@@ -1630,7 +1632,7 @@ fn claude_push_stays_off_when_turned_off_or_remote_control_is_off_and_follows_no
 }
 
 #[test]
-fn a_group_run_is_announced_once_naming_every_feature_of_the_group() {
+fn a_group_run_is_announced_once_for_its_one_branch_and_review() {
     let (w, heard) = notify_world("notifygroup", None);
     write_ledger(
         w.repo.root(),
@@ -1644,7 +1646,8 @@ fn a_group_run_is_announced_once_naming_every_feature_of_the_group() {
     let heard = std::fs::read_to_string(&heard).expect("the notifier ran");
     let lines: Vec<_> = heard.lines().collect();
     assert_eq!(lines.len(), 1, "{heard}");
-    assert!(lines[0].starts_with("orq: COM-01,COM-02 review_ready"), "{heard}");
+    assert!(lines[0].contains("ready for review, CI not watched. https://"), "{heard}");
+    assert!(lines[0].ends_with("(fix--COM-01)"), "the group's one branch: {heard}");
 }
 
 /// Runs `orq run push-send` with a `claude` that is the given shell script, in a directory of its own.

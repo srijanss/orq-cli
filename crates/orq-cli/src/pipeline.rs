@@ -158,6 +158,8 @@ pub struct Report {
     pub ending: Ending,
     pub detail: Option<String>,
     pub review_url: Option<String>,
+    /// For a review that is ready: whether CI was watched and green (`false`: it was not watched).
+    pub ci_green: Option<bool>,
 }
 
 /// Why no run was started.
@@ -535,7 +537,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             report.run_id = run_id;
             report
         }
-        Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None },
+        Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None, ci_green: None },
     };
     // Reopened while the run still holds the locks, so a run launched next is never reset.
     if matches!(report.ending, Ending::Blocked | Ending::Failed) && !has_commits(&record) {
@@ -563,7 +565,14 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if report.ending == Ending::Failed && settings.explain_failures != Some(false) {
         explain_failure(options, &settings, &record, &logs, report.detail.as_deref().unwrap_or("the run failed"));
     }
-    announce(&settings, repo, &options.features.join(","), report.ending.name(), report.detail.as_deref(), report.review_url.as_deref());
+    match (report.ending, report.review_url.as_deref(), report.ci_green) {
+        (Ending::ReviewReady, Some(url), Some(ci_green)) => {
+            let repo_name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let message = orq_orchestrator::review_ready_message(&repo_name, &record.provider, ci_green, url, &record.branch);
+            deliver(&settings, repo, report.ending.name(), &message);
+        }
+        _ => announce(&settings, repo, &options.features.join(","), report.ending.name(), report.detail.as_deref(), report.review_url.as_deref()),
+    }
     Ok(report)
 }
 
@@ -613,18 +622,23 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
 /// Tell the configured notifier how a run ended. Best effort: a notifier that fails never
 /// changes how the run ended.
 pub(crate) fn announce(settings: &orq_orchestrator::RunSettings, cwd: &Path, feature: &str, ending: &str, detail: Option<&str>, url: Option<&str>) {
+    let message = orq_orchestrator::notification_message(feature, ending, detail, url);
+    deliver(settings, cwd, ending, &message);
+}
+
+/// Send `message` to the configured notifier and the Claude app, unless `notify_on` excludes `ending`.
+fn deliver(settings: &orq_orchestrator::RunSettings, cwd: &Path, ending: &str, message: &str) {
     if !orq_orchestrator::wants_notification(settings.notify_on.as_deref(), ending) {
         return;
     }
-    let message = orq_orchestrator::notification_message(feature, ending, detail, url);
     if let Some(argv) = settings.notify_cmd.as_deref() {
-        if let Err(err) = orq_orchestrator::send_notification_with(argv, cwd, &message, Duration::from_secs(30), settings.notify_env.as_deref().unwrap_or(&[])) {
+        if let Err(err) = orq_orchestrator::send_notification_with(argv, cwd, message, Duration::from_secs(30), settings.notify_env.as_deref().unwrap_or(&[])) {
             eprintln!("orq: the notification command failed: {err}");
         }
     }
     // The push goes through Remote Control, so a project that turned that off gets none.
     if settings.claude_push != Some(false) && settings.remote_control != Some(false) {
-        push_to_claude_app(cwd, &message);
+        push_to_claude_app(cwd, message);
     }
 }
 
@@ -738,7 +752,7 @@ fn published_branch(repo: &Path, target: &str, base_sha: &str) -> Result<String,
 }
 
 fn paused(next_stage: &str) -> Result<Report, StoreError> {
-    Ok(Report { run_id: String::new(), ending: Ending::Paused, detail: Some(format!("paused before {next_stage}")), review_url: None })
+    Ok(Report { run_id: String::new(), ending: Ending::Paused, detail: Some(format!("paused before {next_stage}")), review_url: None, ci_green: None })
 }
 
 fn at_boundary(store: &RunStore, run_id: &str, done: &[&str], next: &str, push_ref: Option<&str>, review_ref: Option<&str>) -> Result<bool, StoreError> {
@@ -746,7 +760,7 @@ fn at_boundary(store: &RunStore, run_id: &str, done: &[&str], next: &str, push_r
 }
 
 fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreError> {
-    Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None })
+    Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None, ci_green: None })
 }
 
 /// A group's review request names every feature in its title and lists them in its description.
@@ -1097,9 +1111,11 @@ fn stages(
             ending: Ending::Failed,
             detail: Some(format!("CI did not pass: {ci:?}")),
             review_url: Some(review_url),
+            ci_green: None,
         });
     }
-    Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url) })
+    let ci_green = Some(matches!(ci, CiOutcome::Passed));
+    Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url), ci_green })
 }
 
 /// How the pipeline talks to CI and the remote while the fix loop runs.

@@ -29,7 +29,27 @@ pub fn notification_message(
         (None, Some(url)) => text.push_str(&format!(": {url}")),
         (None, None) => {}
     }
-    let flat: String = orq_core::redact::redact(&text)
+    sanitize(&text)
+}
+
+/// The message for a review that is ready, in the orchestrate script's words:
+/// `<repo>: <PR|MR> ready for review, <CI>. <url> (<branch>)`. `forge` is the run's provider
+/// (`github` says PR, anything else MR); `ci_green` is false when CI was not watched.
+pub fn review_ready_message(
+    repo: &str,
+    forge: &str,
+    ci_green: bool,
+    url: &str,
+    branch: &str,
+) -> String {
+    let kind = if forge == "github" { "PR" } else { "MR" };
+    let ci = if ci_green { "CI green" } else { "CI not watched" };
+    sanitize(&format!("{repo}: {kind} ready for review, {ci}. {url} ({branch})"))
+}
+
+/// Redacted, on one line and bounded, so a notifier never gets a secret or a control character.
+fn sanitize(text: &str) -> String {
+    let flat: String = orq_core::redact::redact(text)
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();

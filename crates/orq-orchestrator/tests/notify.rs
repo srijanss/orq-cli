@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use orq_orchestrator::{
-    notification_message, send_notification, send_notification_with, wants_notification,
+    notification_message, review_ready_message, send_notification, send_notification_with,
+    wants_notification,
 };
 
 fn dir(tag: &str) -> PathBuf {
@@ -43,6 +44,29 @@ fn the_message_names_the_feature_how_it_ended_and_the_review_without_secrets_or_
 
     let long = notification_message("COM-01", "failed", Some(&"x".repeat(5000)), None);
     assert!(long.chars().count() <= 1000, "{}", long.chars().count());
+}
+
+#[test]
+fn the_review_ready_message_uses_the_orchestrate_scripts_words() {
+    let url = "https://github.example/o/r/pull/7";
+    assert_eq!(
+        review_ready_message("my-repo", "github", true, url, "fix--COM-01"),
+        "my-repo: PR ready for review, CI green. https://github.example/o/r/pull/7 (fix--COM-01)"
+    );
+    assert_eq!(
+        review_ready_message("my-repo", "gitlab", false, url, "fix--COM-01"),
+        "my-repo: MR ready for review, CI not watched. https://github.example/o/r/pull/7 (fix--COM-01)"
+    );
+
+    let hostile = review_ready_message(
+        "my-repo",
+        "github",
+        true,
+        "https://user:hunter2@git.example/o/r/pull/7",
+        "fix--a\nb\u{7}",
+    );
+    assert!(!hostile.contains("hunter2"), "{hostile}");
+    assert!(!hostile.chars().any(|c| c.is_control()), "{hostile:?}");
 }
 
 #[test]
