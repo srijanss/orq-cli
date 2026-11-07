@@ -57,13 +57,17 @@ fn screen(height: u16, count: usize, events: Vec<Event>) -> Vec<String> {
 }
 
 fn screen_of(height: u16, rows: Vec<ReviewRow>, events: Vec<Event>) -> Vec<String> {
+    screen_sized(80, height, rows, events)
+}
+
+fn screen_sized(width: u16, height: u16, rows: Vec<ReviewRow>, events: Vec<Event>) -> Vec<String> {
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
-    let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut script = vec![key(KeyCode::Char('V'))];
     script.extend(events);
     let _ = run_browser(&mut terminal, &model, &mut Fake(rows), &mut Script(script.into()));
     let buffer = terminal.backend().buffer();
-    (0..height).map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect()
+    (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect()
 }
 
 fn selected(lines: &[String]) -> Vec<String> {
@@ -179,4 +183,35 @@ fn every_card_shows_its_own_buttons_not_only_the_selected_one() {
     let lines = screen_of(24, rows, vec![click(44, 2)]);
     assert_eq!(lines.iter().filter(|l| l.contains("[Details]")).count(), 2, "{lines:?}");
     assert_eq!(lines.iter().filter(|l| l.contains("[Open MR]")).count(), 1, "{lines:?}");
+}
+
+fn linked() -> Vec<ReviewRow> {
+    vec![ReviewRow { has_link: true, ..reviews(1).remove(0) }]
+}
+
+fn title_at(width: u16) -> String {
+    screen_sized(width, 24, linked(), vec![]).into_iter().find(|l| l.contains("COM-0") || l.contains("[Details]")).unwrap_or_default()
+}
+
+#[test]
+fn the_link_buttons_join_details_only_when_the_title_keeps_its_room() {
+    // 31 columns of buttons plus 24 of title, inside a border of one column each side.
+    assert!(title_at(58).contains("[Open MR] [Copy link] [Details]"), "{}", title_at(58));
+    let squeezed = title_at(57);
+    assert!(squeezed.contains("[Details]") && !squeezed.contains("[Open MR]") && !squeezed.contains("[Copy link]"), "{squeezed}");
+}
+
+#[test]
+fn a_narrow_card_keeps_its_title_and_marker_beside_the_details_button() {
+    let title = title_at(40);
+    assert!(title.contains("> COM-01") && title.contains("[Details]") && title.contains("ready"), "{title}");
+}
+
+#[test]
+fn a_card_too_narrow_for_any_button_shows_none_and_stays_within_its_border() {
+    let lines = screen_sized(12, 24, linked(), vec![]);
+    assert!(!lines.iter().any(|l| l.contains("[Details]") || l.contains("[Open MR]")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("COM-0") || l.contains('╭')), "{lines:?}");
+    let title = lines.iter().find(|l| l.contains("COM-0")).cloned().unwrap_or_default();
+    assert!(title.chars().count() <= 12, "{title}");
 }
