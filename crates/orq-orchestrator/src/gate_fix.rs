@@ -40,7 +40,13 @@ pub enum GateFixOutcome {
         step: usize,
         exit_code: Option<i32>,
     },
+    /// The fix session reported that the failure is not caused by this run's changes and left it
+    /// alone; `summary` is what it wrote, for the person to decide on.
+    Unrelated { summary: String },
 }
+
+/// The file, next to the gate log, in which a fix session says the failure is not this run's.
+pub const UNRELATED_FAILURE_FILE: &str = "unrelated-failure.txt";
 
 /// Run the gate; while it fails and fewer than `max_attempts` fixes were tried,
 /// ask `fixer` for the session of attempt `n` (counting from 1, given the gate
@@ -123,6 +129,13 @@ pub fn run_gate_with_fixes_env(
                 };
                 // The session's own result is not trusted: the rerun gate decides.
                 run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
+                let report = gate_log.with_file_name(UNRELATED_FAILURE_FILE);
+                if let Ok(text) = std::fs::read_to_string(&report) {
+                    let summary = text.trim();
+                    if !summary.is_empty() {
+                        return Ok(GateFixOutcome::Unrelated { summary: summary.to_string() });
+                    }
+                }
             }
         }
     }

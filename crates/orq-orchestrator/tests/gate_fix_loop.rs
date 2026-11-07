@@ -502,3 +502,36 @@ fn a_marker_from_before_the_loop_does_not_close_the_first_fix_session() {
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
 }
+
+#[test]
+fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing_or_failing_the_run() {
+    let w = world("unrelated");
+    let calls = RefCell::new(0);
+    let report = w.root.join("unrelated-failure.txt");
+
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        3,
+        |_, _| {
+            *calls.borrow_mut() += 1;
+            spec(
+                &w,
+                &format!("printf 'billing clock test is flaky\\n' > {}", report.display()),
+            )
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        GateFixOutcome::Unrelated {
+            summary: "billing clock test is flaky".to_string()
+        }
+    );
+    assert_eq!(*calls.borrow(), 1);
+    assert!(!kinds(&w).contains(&pair("gate", "run.failed")), "{:?}", kinds(&w));
+}
