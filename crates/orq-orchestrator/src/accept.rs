@@ -110,6 +110,7 @@ pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
         let mut child = command.spawn().map_err(cannot_run)?;
         drop(command);
         let printed = read_tail(&mut reader);
+        drop(reader); // a child still writing after a failed read gets a broken pipe, not a full one
         let status = child.wait().map_err(cannot_run)?;
         if !status.success() {
             return Err(format!("`{}` failed: {}", argv.join(" "), tail(&String::from_utf8_lossy(&printed))));
@@ -122,14 +123,45 @@ pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
 fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
     let mut kept: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
-    while let Ok(n) = source.read(&mut chunk) {
-        if n == 0 {
-            break;
-        }
+    loop {
+        let n = match source.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
         kept.extend_from_slice(&chunk[..n]);
         if kept.len() > 2 * OUTPUT_TAIL {
             kept.drain(..kept.len() - OUTPUT_TAIL);
         }
     }
     kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_tail;
+    use std::io::{Error, ErrorKind, Read};
+
+    /// Fails with `Interrupted` before every chunk, as a read cut short by a signal does.
+    struct Interrupted<'a>(&'a [&'a [u8]], bool);
+
+    impl Read for Interrupted<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.1 = !self.1;
+            if self.1 {
+                return Err(Error::from(ErrorKind::Interrupted));
+            }
+            let Some((first, rest)) = self.0.split_first() else { return Ok(0) };
+            self.0 = rest;
+            buf[..first.len()].copy_from_slice(first);
+            Ok(first.len())
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_not_taken_for_the_end_of_the_output() {
+        let mut source = Interrupted(&[b"first ", b"last"], false);
+        assert_eq!(read_tail(&mut source), b"first last");
+    }
 }
