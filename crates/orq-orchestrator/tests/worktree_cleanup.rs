@@ -474,3 +474,104 @@ fn cleanup_events_of_a_successful_run_complete_it_whether_removed_or_kept_dirty(
     cleanup_worktree(&dirty.store, "run-1", true, &CiOutcome::Passed).unwrap();
     assert_eq!(summary(&dirty).phase, orq_orchestrator::RunPhase::Completed);
 }
+
+/// Commits a `.gitignore` in the worktree so the files a test then writes are ignored, not untracked.
+fn ignore(w: &World, patterns: &str) {
+    fs::write(w.worktree.join(".gitignore"), patterns).unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore local files"]);
+}
+
+fn write(w: &World, path: &str, text: &str) {
+    let path = w.worktree.join(path);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+const TDD_STATE_FILES: [&str; 8] = [
+    ".tdd-config.json",
+    ".tdd-state.json",
+    ".tdd-state.json.lock",
+    ".tdd-review-findings.json",
+    ".tdd-review-findings.json.lock",
+    ".tdd-review-rounds.json",
+    ".tdd-session.log",
+    ".project-mcp/index.db",
+];
+
+#[test]
+fn a_worktree_holding_only_the_tdd_tooling_state_files_has_them_removed_with_the_worktree() {
+    let w = world("tdd-state");
+    ignore(&w, ".tdd-*\n.project-mcp/\n");
+    for file in TDD_STATE_FILES {
+        write(&w, file, "{}\n");
+    }
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+    assert_eq!(kinds(&w), ["worktree.removed"]);
+}
+
+#[test]
+fn an_ignored_file_of_the_agent_keeps_the_worktree_and_the_reason_names_it_not_the_tooling_files() {
+    let w = world("named-reason");
+    ignore(&w, ".tdd-*\nlocal.cfg\n");
+    write(&w, ".tdd-state.json", "{}\n");
+    write(&w, "local.cfg", "SECRET=1\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.contains("local.cfg"), "{reason}");
+    assert!(!reason.contains(".tdd-state.json"), "{reason}");
+    assert_eq!(fs::read_to_string(w.worktree.join("local.cfg")).unwrap(), "SECRET=1\n");
+    assert_eq!(kinds(&w), ["worktree.kept"]);
+}
+
+#[test]
+fn the_tooling_folders_a_session_installs_are_removed_with_the_worktree() {
+    let w = world("tool-dirs");
+    ignore(&w, ".agents/\n.codex/\n.pi/\n.claude/\n");
+    for file in [
+        ".agents/skills/tdd-start/SKILL.md",
+        ".codex/config.toml",
+        ".pi/APPEND_SYSTEM.md",
+        ".claude/agents/reviewer.md",
+        ".claude/commands/tdd.md",
+        ".claude/settings.json",
+    ] {
+        write(&w, file, "x\n");
+    }
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists());
+}
+
+#[test]
+fn a_run_worktree_nested_under_the_claude_folder_is_never_swept_away_with_its_parent() {
+    let w = world("nested-worktrees");
+    ignore(&w, ".claude/\n");
+    write(&w, ".claude/worktrees/other/work.txt", "someone's work\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert!(w.worktree.join(".claude/worktrees/other/work.txt").exists());
+}
+
+#[test]
+fn files_orq_itself_writes_stay_work_unless_recorded_unchanged_even_though_the_tooling_names_them() {
+    for file in [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json"] {
+        let w = world("orq-named");
+        ignore(&w, ".mcp.json\n.mcpctl*\n.claude/\n");
+        write(&w, file, "mine\n");
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{file}: {outcome:?}");
+    }
+}

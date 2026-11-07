@@ -51,11 +51,11 @@ pub fn cleanup_worktree(
                 true,
             )
         }
-        Some(UncommittedWork::Present) => {
+        Some(UncommittedWork::Present(path)) => {
             return keep(
                 store,
                 &record,
-                "the worktree has uncommitted changes".to_string(),
+                format!("the worktree has uncommitted changes: {path}"),
                 true,
             )
         }
@@ -102,7 +102,8 @@ pub fn cleanup_worktree(
 
 pub(crate) enum UncommittedWork {
     Unreadable,
-    Present,
+    /// Something is uncommitted; this is the first path git listed for it.
+    Present(String),
 }
 
 /// Whether `worktree` holds anything uncommitted besides the ignored files orq wrote itself.
@@ -130,14 +131,39 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     let mut own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
             !path.ends_with('/')
-                && (in_cache_dir(worktree, path, &mut tagged) || crate::orq_written::is_unchanged_orq_file(worktree, path))
+                && (in_cache_dir(worktree, path, &mut tagged)
+                    || crate::orq_written::is_unchanged_orq_file(worktree, path)
+                    || is_tooling_state(path)
+                    || is_tooling_folder(path))
         })
     };
     Ok(status
         .stdout
         .split('\0')
-        .any(|entry| !entry.is_empty() && !own(entry))
-        .then_some(UncommittedWork::Present))
+        .find(|entry| !entry.is_empty() && !own(entry))
+        // An entry is "XY path": the two status letters, a space, then the path.
+        .map(|entry| UncommittedWork::Present(entry.get(3..).unwrap_or(entry).to_string())))
+}
+
+/// Whether `path` is state the TDD and MCP tooling keeps in the worktree while a run works (`.tdd-*`,
+/// `.project-mcp/`). The tooling rewrites it during the run, so it cannot be fingerprinted at setup; it
+/// is known by name, and losing it loses no work. The files orq itself writes at setup (`.mcp.json`,
+/// `.mcpctl*`) are not here: they are exempt only while unchanged since orq recorded them.
+fn is_tooling_state(path: &str) -> bool {
+    let top = path.split('/').next().unwrap_or(path);
+    let orq_written = top == ".mcp.json" || top.starts_with(".mcpctl");
+    !orq_written && orq_core::ownership::classify(top) == orq_core::ownership::Ownership::Mcp
+}
+
+/// Whether `path` lies in a folder the agent tooling installs into a session's worktree (skills, hooks,
+/// agent and command definitions). `.claude/worktrees` is not one: it holds other runs' worktrees.
+fn is_tooling_folder(path: &str) -> bool {
+    let mut parts = path.split('/');
+    match parts.next() {
+        Some(".agents" | ".codex" | ".pi") => true,
+        Some(".claude") => matches!(parts.next(), Some("agents" | "commands" | "settings.json")),
+        _ => false,
+    }
 }
 
 /// The first line of the `CACHEDIR.TAG` that cargo and other tools put in a directory of rebuildable

@@ -152,7 +152,7 @@ fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
         Some(UncommittedWork::Unreadable) => {
             Some("the worktree state could not be read".to_string())
         }
-        Some(UncommittedWork::Present) => Some("the worktree has uncommitted changes".to_string()),
+        Some(UncommittedWork::Present(path)) => Some(format!("the worktree has uncommitted changes: {path}")),
         None => None,
     })
 }
