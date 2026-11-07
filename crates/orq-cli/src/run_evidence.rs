@@ -12,10 +12,12 @@ const FINDINGS_FILE: &str = ".tdd-review-findings.json";
 /// A ledger bigger than this is not read: the tooling's own files stay far below it.
 const MAX_LEDGER_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The review details (schema 1) for `head`, from the TDD tooling's review ledger in `worktree`:
-/// the rounds that reviewed the run's own commits (from `base` up to `head`), oldest first, naming
-/// the commit the last of them reviewed. `None` when no round of this run was recorded.
-pub(crate) fn review_from_ledger(worktree: &Path, base: &str, head: &str) -> Option<Value> {
+/// The review details (schema 1) from the TDD tooling's review ledger in `worktree`: the rounds
+/// that reviewed the run's own commits (made on top of `base`), oldest first, naming the commit
+/// the last of them reviewed. The report checks that commit against the one it reports on, so a
+/// round of a commit a rebase or a later fix replaced shows as review of another commit.
+/// `None` when no round of this run was recorded.
+pub(crate) fn review_from_ledger(worktree: &Path, base: &str) -> Option<Value> {
     let rounds = read_object(&worktree.join(ROUNDS_FILE))?;
     let open = read_object(&worktree.join(FINDINGS_FILE));
     let mut kept: Vec<(&str, &Map<String, Value>)> = Vec::new();
@@ -24,7 +26,7 @@ pub(crate) fn review_from_ledger(worktree: &Path, base: &str, head: &str) -> Opt
             let (Some(start), Some(reviewed)) = (round.get("start").and_then(Value::as_str), round.get("head").and_then(Value::as_str)) else {
                 continue;
             };
-            if is_commit_id(start) && is_commit_id(reviewed) && is_ancestor(worktree, base, start) && is_ancestor(worktree, reviewed, head) {
+            if is_commit_id(start) && is_commit_id(reviewed) && is_ancestor(worktree, base, start) && is_ancestor(worktree, start, reviewed) {
                 kept.push((scope, round));
             }
         }
@@ -167,7 +169,7 @@ mod tests {
             }),
         );
 
-        let details = review_from_ledger(repo.root(), &base, &second).expect("the run's rounds");
+        let details = review_from_ledger(repo.root(), &base).expect("the run's rounds");
 
         assert_eq!(details["schema_version"], 1, "{details}");
         assert_eq!(details["head_sha"], second.as_str(), "{details}");
@@ -185,6 +187,25 @@ mod tests {
         );
     }
 
+    /// A rebase rewrites the commits the session reviewed, so the pushed head no longer holds them.
+    /// The rounds are still the run's: they name the commit they reviewed, and the report shows
+    /// them as review of another commit rather than as no review at all.
+    #[test]
+    fn rounds_of_commits_a_rebase_rewrote_still_name_the_commit_they_reviewed() {
+        let repo = GitFixture::new();
+        let base = commit(&repo, "base");
+        let reviewed = commit(&repo, "reviewed");
+        git(repo.root(), &["reset", "-q", "--hard", &base]);
+        commit(&repo, "target");
+        commit(&repo, "rebased");
+        ledger(&repo, json!({format!("review:{base}"): [round(&base, &reviewed, 1, &[])]}), json!({}));
+
+        let details = review_from_ledger(repo.root(), &base).expect("the rounds of the rewritten commits");
+
+        assert_eq!(details["head_sha"], reviewed.as_str(), "{details}");
+        assert_eq!(details["rounds"].as_array().map(Vec::len), Some(1), "{details}");
+    }
+
     /// The ledger is written by the agent's tooling inside the worktree, so it is not trusted: a
     /// symlinked ledger is not followed, and a round naming something other than a commit id is
     /// not handed to git (where `--output=…` would be read as an option).
@@ -197,7 +218,7 @@ mod tests {
         let real = elsewhere.root().join("rounds.json");
         std::fs::write(&real, json!({format!("review:{base}"): [round(&base, &head, 1, &[])]}).to_string()).unwrap();
         std::os::unix::fs::symlink(&real, repo.root().join(".tdd-review-rounds.json")).unwrap();
-        assert_eq!(review_from_ledger(repo.root(), &base, &head), None, "a symlinked ledger is not followed");
+        assert_eq!(review_from_ledger(repo.root(), &base), None, "a symlinked ledger is not followed");
 
         std::fs::remove_file(repo.root().join(".tdd-review-rounds.json")).unwrap();
         let marker = repo.root().join("written-by-git");
@@ -206,7 +227,7 @@ mod tests {
             json!({"review:x": [round(&format!("--output={}", marker.display()), &head, 1, &[]), round(&base, "HEAD", 2, &[])]}),
             json!({}),
         );
-        assert_eq!(review_from_ledger(repo.root(), &base, &head), None, "only commit ids are rounds of this run");
+        assert_eq!(review_from_ledger(repo.root(), &base), None, "only commit ids are rounds of this run");
         assert!(!marker.exists(), "a round's start was passed to git as an option");
     }
 

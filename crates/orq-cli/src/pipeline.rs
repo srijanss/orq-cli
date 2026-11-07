@@ -1206,7 +1206,7 @@ fn build_review_report(
             // the report can be left unindexed until the next build repairs it.
             std::thread::spawn(move || {
                 // The rounds are of the commits the session made from where the run started, before any rebase.
-                let review = crate::run_evidence::review_from_ledger(&worktree, &started_from, &head);
+                let review = crate::run_evidence::review_from_ledger(&worktree, &started_from);
                 let _ = sender.send(crate::review::build_for_run(&repo, &run_id, &feature, &base, &head, &tests, review.as_ref()));
             });
             match receiver.recv_timeout(review_report_timeout()) {
