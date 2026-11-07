@@ -140,6 +140,18 @@ fn seen(events: &[Event], line: &str, quiet: u64) -> orq_orchestrator::RunActivi
 }
 
 #[test]
+fn the_round_of_the_latest_stage_event_is_carried_on_the_activity() {
+    let mut first = event("stage.started", Some("verify"));
+    first.attempt = 1;
+    let mut second = event("stage.started", Some("verify"));
+    second.attempt = 2;
+
+    assert_eq!(seen(&[first.clone()], "running", 1).attempt, 1);
+    assert_eq!(seen(&[first, second], "running", 1).attempt, 2);
+    assert_eq!(seen(&[], "running", 1).attempt, 0, "no stage has started yet");
+}
+
+#[test]
 fn a_line_is_shown_when_the_stage_or_output_changes_and_not_otherwise() {
     let verify = [event("stage.started", Some("verify"))];
     let push = [event("stage.started", Some("push"))];

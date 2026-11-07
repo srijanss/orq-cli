@@ -19,6 +19,8 @@ pub struct LogTail {
 pub struct RunActivity {
     pub phase: RunPhase,
     pub stage: Option<String>,
+    /// The round (attempt) of the latest stage event; 0 before any stage has started.
+    pub attempt: u32,
     pub last_output: Option<String>,
     pub may_be_stuck: bool,
     /// How long the newest log has been silent, when there is one.
@@ -31,6 +33,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     RunActivity {
         phase: summary.phase,
         stage: summary.stage,
+        attempt: events.iter().rev().find(|e| e.stage.is_some()).map_or(0, |e| e.attempt),
         last_output: log.and_then(|l| l.last_line.as_deref()).map(orq_core::redact::redact),
         quiet_for: log.map(|l| l.quiet_for),
         may_be_stuck: running && log.is_some_and(|l| l.quiet_for > stuck_after),

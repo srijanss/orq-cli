@@ -241,6 +241,7 @@ mod tests {
         RunActivity {
             phase: orq_orchestrator::RunPhase::Running,
             stage: Some("gate".into()),
+            attempt: 1,
             last_output: Some(output.into()),
             may_be_stuck: false,
             quiet_for: Some(Duration::from_secs(quiet)),
