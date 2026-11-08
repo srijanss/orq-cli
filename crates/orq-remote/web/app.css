@@ -210,3 +210,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .shell.collapsed .project-switcher { display: none; }
 
 .signin .brand { align-self: center; }
+.sidebar-foot { gap: 0.5rem; align-items: center; justify-content: space-between; }
+.sign-out { display: inline-flex; align-items: center; gap: 0.5rem; }
+.shell.collapsed .sidebar-foot { flex-direction: column; }
+.shell.collapsed .sign-out .label { display: none; }

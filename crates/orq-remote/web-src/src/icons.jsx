@@ -14,6 +14,7 @@ const PATHS = {
   chevronsLeft: "m11 17-5-5 5-5m7 10-5-5 5-5",
   chevronsRight: "m13 17 5-5-5-5M6 17l5-5-5-5",
   menu: "M4 6h16M4 12h16M4 18h16",
+  logout: "M9 21H5V3h4m7 4 5 5-5 5m5-5H9",
   close: "M6 6l12 12M18 6 6 18",
 };
 

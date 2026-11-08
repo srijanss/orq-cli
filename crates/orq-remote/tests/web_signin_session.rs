@@ -76,3 +76,22 @@ fn storage_that_cannot_be_used_still_lets_you_sign_in_for_this_page_view() {
     let Some(out) = run_with(json!({"url": "/", "storage_blocked": true, "responses": [list()], "steps": [{"submit": TOKEN}]})) else { return };
     assert!(shown(&out["frames"][1]).contains("alpha"), "{out}");
 }
+
+#[test]
+fn signing_out_forgets_the_token_and_asks_for_it_again_without_an_error_message() {
+    let Some(out) = run("/dashboard", json!([{"status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"nav": "[data-sign-out]"}])) else { return };
+    let before = &out["frames"][1]["settled"];
+    assert_eq!(before["sessionKept"], json!({"orq.token": "<the token>"}), "{out}");
+    let after = &out["frames"][2]["settled"];
+    assert_eq!(after["inputs"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(after["sessionKept"], Value::Null, "{out}");
+    assert!(!shown(&out["frames"][2]).contains("Could not sign in"), "{out}");
+    assert_eq!(after["shell"], false, "the shell goes with the session: {out}");
+}
+
+#[test]
+fn after_signing_out_a_refresh_asks_again_and_a_new_sign_in_works() {
+    let Some(out) = run("/dashboard", json!([{"status": 200, "json": {"projects": []}}, {"status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"nav": "[data-sign-out]"}, {"submit": TOKEN}])) else { return };
+    assert_eq!(out["requests"].as_array().unwrap().len(), 2, "{out}");
+    assert_eq!(out["frames"][3]["settled"]["sessionKept"], json!({"orq.token": "<the token>"}), "{out}");
+}

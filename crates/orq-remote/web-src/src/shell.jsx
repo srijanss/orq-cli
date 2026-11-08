@@ -24,7 +24,7 @@ export function navigationEntries(projectId) {
   return entries;
 }
 
-export function Shell({ projectId = null, projects = null, children }) {
+export function Shell({ projectId = null, projects = null, onSignOut = null, children }) {
   const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -136,6 +136,12 @@ export function Shell({ projectId = null, projects = null, children }) {
         </nav>
         <div className="sidebar-foot">
           <ThemeToggle />
+          {onSignOut ? (
+            <button type="button" className="sign-out" data-sign-out aria-label="Sign out" title="Sign out" onClick={onSignOut}>
+              <Icon name="logout" />
+              <span className="label">Sign out</span>
+            </button>
+          ) : null}
         </div>
       </aside>
       <div className="content">{children}</div>

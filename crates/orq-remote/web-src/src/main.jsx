@@ -344,7 +344,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
 
 // Which project the address names, and the list of projects the sidebar switches between. The list
 // is read only inside a project, and a list that cannot be read just hides the switcher.
-function Scoped({ token, onSignedOut }) {
+function Scoped({ token, onSignedOut, onSignOut }) {
   const path = useSyncExternalStore(subscribeToLocation, currentPath);
   const [projects, setProjects] = useState(null);
   const match = /^\/projects\/([^/]+)/.exec(path);
@@ -384,7 +384,7 @@ function Scoped({ token, onSignedOut }) {
   }, [token, inProject]);
   const known = projects !== null && projects.some((project) => project.id === named);
   return (
-    <Shell projectId={projects === null || known ? named : null} projects={projects}>
+    <Shell projectId={projects === null || known ? named : null} projects={projects} onSignOut={onSignOut}>
       <SignedIn token={token} onSignedOut={onSignedOut} projectId={named} projects={projects} />
     </Shell>
   );
@@ -427,7 +427,7 @@ function App() {
     setMessage(SIGN_IN_FAILED);
   };
   return (
-    <Scoped token={token} onSignedOut={signedOut} />
+    <Scoped token={token} onSignedOut={signedOut} onSignOut={() => { setMessage(""); setToken(null); }} />
   );
 }
 
