@@ -1083,8 +1083,8 @@ function EnrolPasskey({ token, onDone, another = false }) {
     } catch (cancelled) {
       ok = false;
     }
+    setState(ok ? "idle" : "failed");
     if (ok) onDone();
-    else setState("failed");
   };
   return (
     <div className="card passkey-enrol">

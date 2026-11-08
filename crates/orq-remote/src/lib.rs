@@ -168,8 +168,8 @@ async fn effective_authorization(shared: &Arc<Shared>, peer: std::net::IpAddr, f
     if auth.session_live(cookie.as_deref()) {
         return Some(format!("Bearer {}", shared.state.config.token));
     }
-    // Only a bearer credential could be accepted, so nothing else costs a look at the store.
-    if !authorization.as_deref().is_some_and(|value| value.starts_with("Bearer ")) || (peer.is_loopback() && !forwarded) {
+    // Only the right token could be accepted, so nothing else costs a look at the store.
+    if !orq_core::remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) || (peer.is_loopback() && !forwarded) {
         return authorization;
     }
     let roots = shared.state.roots.clone();

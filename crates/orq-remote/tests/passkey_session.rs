@@ -17,10 +17,20 @@ use sha2::{Digest, Sha256};
 const TOKEN: &str = "passkey-session-test-token-0123456789";
 const RP: &str = "box.tail1234.ts.net";
 
+/// One run: its first look has event e1, and once the flag is raised the next look has e2.
 struct NoProjects;
+static GROW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 impl ProjectsProvider for NoProjects {
     fn projects(&self) -> Result<serde_json::Value, String> {
         Ok(serde_json::json!([]))
+    }
+    fn run_timeline(&self, _id: &str, _run: &str, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {
+        let events = match after {
+            None => vec![serde_json::json!({"event_id": "e1"})],
+            Some("e1") if GROW.load(std::sync::atomic::Ordering::SeqCst) => vec![serde_json::json!({"event_id": "e2"})],
+            Some(_) => vec![],
+        };
+        Ok(Some(serde_json::json!({"run": {"run_id": "r1"}, "events": events, "next_cursor": null})))
     }
 }
 
@@ -186,4 +196,50 @@ fn an_unreadable_passkey_store_refuses_the_token_through_a_proxy() {
     let auth = format!("Bearer {TOKEN}");
     let (status, _, _) = send(server.addr(), "GET", "/api/projects", &[("Authorization", &auth), ("X-Forwarded-For", "100.64.0.9")], b"");
     assert!(status.contains("401"), "{status}");
+}
+
+/// Reads a stream until it ends or `limit` passes; whether it ended, and everything it said.
+fn drain(stream: &mut TcpStream, limit: std::time::Duration) -> (bool, String) {
+    let start = std::time::Instant::now();
+    let mut got = Vec::new();
+    let mut buf = [0u8; 1024];
+    while start.elapsed() < limit {
+        match stream.read(&mut buf) {
+            Ok(0) => return (true, String::from_utf8_lossy(&got).to_string()),
+            Ok(n) => got.extend(&buf[..n]),
+            Err(_) => {}
+        }
+        // The body's last chunk ends the stream even though keep-alive holds the socket.
+        if got.ends_with(b"0\r\n\r\n") {
+            return (true, String::from_utf8_lossy(&got).to_string());
+        }
+    }
+    (false, String::from_utf8_lossy(&got).to_string())
+}
+
+#[test]
+fn a_stream_already_open_stops_when_its_session_is_ended_and_never_sees_the_next_event() {
+    let (server, _roots) = start("stream");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let mut phone = Device::new(33);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let (_, head, _) = send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body)));
+    let cookie = cookie_from(&head);
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+    write!(stream, "GET /api/projects/p1/runs/r1/events HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 100.64.0.9\r\nCookie: {cookie}\r\n\r\n").unwrap();
+    let (ended, first) = drain(&mut stream, std::time::Duration::from_millis(1500));
+    assert!(!ended && first.contains("200") && first.contains("e1"), "{first}");
+
+    // Sign out, then let the run grow: the open connection must close without the new event.
+    let proxied = [("Cookie", cookie.as_str()), ("X-Forwarded-For", "100.64.0.9")];
+    assert!(send(addr, "POST", "/auth/logout", &proxied, b"{}").0.contains("200"));
+    GROW.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (ended, rest) = drain(&mut stream, std::time::Duration::from_secs(6));
+    assert!(ended, "the stream stayed open: {rest}");
+    assert!(!rest.contains("e2"), "{rest}");
 }

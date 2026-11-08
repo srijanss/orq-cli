@@ -167,7 +167,7 @@ pub fn safe_link(url: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-pub(crate) fn token_matches(expected: &str, header: Option<&str>) -> bool {
+pub fn token_matches(expected: &str, header: Option<&str>) -> bool {
     let Some(given) = header.and_then(|h| h.strip_prefix("Bearer ")) else { return false };
     if expected.is_empty() || given.len() != expected.len() {
         return false;
