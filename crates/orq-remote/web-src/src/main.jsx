@@ -29,6 +29,20 @@ const DETAIL_SECTIONS = [
   ["Review rounds", "rounds"],
 ];
 
+// The server sends the time as plain UTC text; anything else is not shown.
+const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+function Generated({ at }) {
+  if (typeof at !== "string" || !UTC_TIME.test(at)) return null;
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return null;
+  return (
+    <span className="generated">
+      Generated <time dateTime={at}>{when.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time>
+    </span>
+  );
+}
+
 function isRun(run) {
   return run !== null && typeof run === "object" && typeof run.feature === "string" && typeof run.status === "string";
 }
@@ -105,6 +119,7 @@ function RunRow({ run, detailPrefix }) {
       )}
       <span>{String(run.status)}</span>
       {run.risk !== undefined && run.risk !== null && <span>{"risk: " + String(run.risk)}</span>}
+      <Generated at={run.generated_at} />
       {run.stale === true && <em>{STALE_MARKER}</em>}
     </li>
   );
@@ -130,6 +145,7 @@ function Detail({ report, listPath = "/" }) {
       <button type="button" onClick={() => navigate(listPath)}>
         Back to the list
       </button>
+      <Generated at={report.generated_at} />
       {report.stale && <p>{STALE_MARKER}</p>}
       {href !== null && (
         <a href={href} rel="noopener noreferrer" referrerPolicy="no-referrer">
