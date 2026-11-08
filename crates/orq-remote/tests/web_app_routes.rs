@@ -20,7 +20,7 @@ fn application_paths_are_answered_with_the_page() {
 
 #[test]
 fn the_api_and_unknown_or_odd_paths_are_not_answered_with_the_page() {
-    for path in ["/api/projects", "/api/reviews", "/api/projects/app/reviews", "/nope", "/dashboardx", "/projects//x", "/projects/../api/projects", "/projects/a/../../api", "/settings/", "//dashboard"] {
+    for path in ["/api/projects", "/api/reviews", "/api/projects/app/reviews", "/nope", "/dashboardx", "/projects//x", "/projects/../api/projects", "/projects/a/../../api", "/reviews/run-1/extra", "/reviews/", "/projects/app/unknown", "/projects/app/reviews/extra", "/projects/app/features/x", "/settings/", "//dashboard"] {
         assert_eq!(served("127.0.0.1", "GET", path), None, "{path}");
     }
 }

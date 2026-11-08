@@ -153,13 +153,18 @@ pub fn page_asset(peer: std::net::IpAddr, method: &str, path: &str) -> Option<&'
     ASSETS.iter().find(|asset| asset.path == path)
 }
 
-/// Places the page itself draws, so a reload or a shared address opens them. Only these shapes
-/// count, with plain non-empty segments, so the API, dot segments and odd paths keep their answers.
+/// Places the page itself draws, so a reload or a shared address opens them. Only these exact
+/// shapes count, with plain non-empty segments, so the API, dot segments, extra segments and
+/// unknown sections keep their answers.
 fn is_application_path(path: &str) -> bool {
-    let plain = |rest: &str| rest.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..");
-    match path {
-        "/dashboard" | "/settings" | "/projects" => true,
-        _ => ["/projects/", "/reviews/"].iter().any(|prefix| path.strip_prefix(prefix).is_some_and(plain)),
+    let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
+    let segments: Vec<&str> = path.strip_prefix('/').map(|rest| rest.split('/').collect()).unwrap_or_default();
+    match segments.as_slice() {
+        ["dashboard"] | ["settings"] | ["projects"] => true,
+        ["projects", project] => plain(project),
+        ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
+        ["reviews", run] => plain(run),
+        _ => false,
     }
 }
 
