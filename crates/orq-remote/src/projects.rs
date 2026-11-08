@@ -30,6 +30,26 @@ pub fn discover(root: &Path) -> Vec<Project> {
     found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
 }
 
+/// One listed run: its sort time, id and JSON row. `None` when the run belongs to another project
+/// or was removed after its record was read; an unreadable event log is an error.
+fn run_row(store: &orq_orchestrator::RunStore, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
+    use orq_orchestrator::StoreError;
+    if record.project_id != key {
+        return Ok(None);
+    }
+    let events = match store.events(&record.run_id) {
+        Ok(events) => events,
+        Err(StoreError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(format!("run {} is unreadable: {error:?}", record.run_id)),
+    };
+    let summary = orq_orchestrator::summarize_run(&events);
+    let started = events.first().map(|event| event.occurred_at.clone());
+    let updated = events.last().map(|event| event.occurred_at.clone());
+    let sort_key = updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
+    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": started, "updated_at": updated});
+    Ok(Some((sort_key, record.run_id, row)))
+}
+
 /// How many plain folders may be nested above a repository: `~/code/pitstop/eGiftit/egiftit-backend`
 /// has two, and nothing deeper is looked at.
 const GROUP_DEPTH: usize = 2;
@@ -160,15 +180,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
                 Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
             };
-            if record.project_id != key {
-                continue;
+            if let Some(row) = run_row(&store, record, &key)? {
+                rows.push(row);
             }
-            let events = store.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
-            let summary = orq_orchestrator::summarize_run(&events);
-            let started = events.first().map(|event| event.occurred_at.clone());
-            let updated = events.last().map(|event| event.occurred_at.clone());
-            let sort_key = updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-            rows.push((sort_key, run_id, serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": started, "updated_at": updated})));
         }
         // Newest first; a run with no readable time goes last, ties by run id.
         rows.sort_by(|a, b| match (a.0, b.0) {
@@ -301,4 +315,28 @@ fn read_ledger(path: &Path) -> Result<Vec<orq_features::FeatureEntry>, String> {
     }
     let text = String::from_utf8(bytes).map_err(|_| "the ledger is not text".to_string())?;
     orq_features::parse_ledger(&text).map_err(|error| format!("the ledger is malformed: {error}"))
+}
+
+#[cfg(test)]
+mod run_row_tests {
+    use super::run_row;
+    use orq_orchestrator::{RunRecord, RunStore};
+
+    #[test]
+    fn run_row_skips_a_run_removed_after_its_record_was_read() {
+        let dir = std::env::temp_dir().join(format!("orq-run-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = RunStore::new(&dir);
+        let record = RunRecord { run_id: "gone".into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: "b".into(), worktree: dir.join("w"), repository: String::new(), profiles: Default::default() };
+        store.create(&record).unwrap();
+        let loaded = store.load("gone").unwrap();
+        // Cleanup removes the run between the two reads.
+        std::fs::remove_dir_all(dir.join("runs")).ok();
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+        assert!(matches!(run_row(&store, loaded, "p"), Ok(None)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
