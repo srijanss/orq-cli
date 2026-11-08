@@ -207,6 +207,9 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
       <div className="card not-found">
         <h2>Not found</h2>
         <p>This page does not exist or is not available to you.</p>
+        <button type="button" onClick={() => navigate("/")}>
+          Back to the list
+        </button>
       </div>
     );
   }

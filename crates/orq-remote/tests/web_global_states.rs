@@ -72,3 +72,27 @@ fn an_unknown_and_an_unauthorised_page_look_the_same_and_keep_the_token() {
     }
     assert_eq!(pages[0], pages[1], "the two must not be told apart");
 }
+
+#[test]
+fn the_not_found_screen_offers_a_way_back_to_the_inbox() {
+    for status in [404, 403] {
+        let Some(out) = run(json!([list(), {"status": status}, list()]), json!([{"submit": TOKEN}, {"go": "/reviews/run-1"}, {"click": "button", "index": 0}])) else { return };
+        assert_eq!(out["frames"][2]["settled"]["buttons"], json!(["Back to the list"]), "{status}: {out}");
+        let back = &out["frames"][3]["settled"];
+        assert_eq!(back["path"], "/", "{status}: {out}");
+        assert!(shown(&out["frames"][3]).contains("alpha"), "{status}: {out}");
+    }
+}
+
+#[test]
+fn retrying_after_a_failed_refresh_replaces_the_old_data_and_clears_the_markers() {
+    let fresh = json!({"status": 200, "json": {"reviews": [{"run_id": "run-2", "feature": "beta", "status": "approved", "stale": false}]}});
+    for failure in [json!({"status": 503}), json!({"reject": true}), json!({"status": 200, "json": {"nope": 1}})] {
+        let Some(out) = run(json!([list(), failure.clone(), fresh.clone()]), json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}, {"click": "button", "index": 0}])) else { return };
+        assert!(shown(&out["frames"][2]).contains("Outdated"), "{failure}: {out}");
+        let text = shown(&out["frames"][3]);
+        assert!(text.contains("beta") && !text.contains("alpha"), "{failure}: {text}");
+        assert!(!text.contains("Outdated") && !text.contains("Disconnected") && !text.contains("could not be read"), "{failure}: {text}");
+        assert_eq!(out["requests"][2]["headers"], out["requests"][0]["headers"], "{failure}");
+    }
+}
