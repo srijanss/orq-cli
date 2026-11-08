@@ -89,3 +89,26 @@ fn a_refused_token_asks_again_and_the_project_id_is_encoded_in_the_request() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
     assert!(source.contains("\"/api/projects/\" + encodeURIComponent(projectId) + \"/features\""), "the project id is encoded");
 }
+
+fn ledger_of(name: &str) -> Value {
+    json!({"status": 200, "json": {"features": [feature(name, "pending", Value::Null, json!([]))]}})
+}
+
+#[test]
+fn switching_project_never_shows_the_other_projects_features_loaded_or_late() {
+    // Loaded: alpha's ledger is gone once beta is chosen, and beta's own endpoint is read.
+    let Some(out) = run("/projects/alpha/features", json!([ledger_of("alpha-only"), projects(), ledger_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}])) else { return };
+    assert!(shown(&out["frames"][1]).iter().any(|t| t == "alpha-only"), "{out}");
+    assert_eq!(out["frames"][2]["settled"]["path"], "/projects/beta/features", "{out}");
+    assert_eq!(out["requests"][2]["url"], "/api/projects/beta/features", "{out}");
+    let after = shown(&out["frames"][2]);
+    assert!(after.iter().any(|t| t == "beta-only") && !after.iter().any(|t| t == "alpha-only"), "{after:?}");
+
+    // Late: alpha's answer is still waiting when beta is chosen, and arriving afterwards changes nothing.
+    let held = json!({"hold": "fetch", "status": 200, "json": {"features": [feature("alpha-late", "pending", Value::Null, json!([]))]}});
+    let Some(out) = run("/projects/alpha/features", json!([held, projects(), ledger_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
+    assert_eq!(out["requests"][0]["aborted"], true, "{out}");
+    assert_eq!(out["requests"][2]["url"], "/api/projects/beta/features", "{out}");
+    let late = shown(&out["frames"][3]);
+    assert!(late.iter().any(|t| t == "beta-only") && !late.iter().any(|t| t == "alpha-late"), "{late:?}");
+}
