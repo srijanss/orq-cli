@@ -145,3 +145,14 @@ fn leaving_the_page_while_a_reconnect_is_pending_cancels_it() {
     let streams = urls(&out).iter().filter(|u| u.contains("/events")).count();
     assert_eq!(streams, 1, "no stream is reopened for the page that was left: {:?}", urls(&out));
 }
+
+#[test]
+fn a_cr_then_its_lf_alone_then_a_blank_line_lf_still_ends_the_record() {
+    let line = sse("e1", "one").replace('\n', "\r\n");
+    let head = line.trim_end_matches("\r\n\r\n").to_string();
+    // CR | LF | LF: the second chunk completes the line break and the third is the blank line.
+    let chunks = vec![format!("{head}\r"), "\n".to_string(), "\n".to_string()];
+    let responses = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), stream(chunks, "hold")]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
+    assert_eq!(count(&out["frames"][1], "one"), 1, "{:?}", texts(&out["frames"][1]));
+}

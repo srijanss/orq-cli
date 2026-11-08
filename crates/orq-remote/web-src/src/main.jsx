@@ -554,8 +554,10 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
           if (!current) return;
           if (done || buffer.length > 1048576) break;
           let text = decoder.decode(value, { stream: true });
-          if (afterCr && text.startsWith("\n")) text = text.slice(1);
-          if (text.length > 0) afterCr = text.endsWith("\r");
+          if (text.length > 0) {
+            if (afterCr && text.startsWith("\n")) text = text.slice(1);
+            afterCr = text.endsWith("\r");
+          }
           buffer += text.replace(/\r\n?/g, "\n");
           const blocks = buffer.split("\n\n");
           buffer = blocks.pop();
