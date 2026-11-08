@@ -107,7 +107,10 @@ export function Shell({ projectId = null, projects = null, children }) {
           </button>
         </div>
         {projectId !== null && projects !== null && projects.length > 0 ? (
-          <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId} onChange={(event) => navigate("/projects/" + encodeURIComponent(event.target.value) + "/" + (path.split("/")[3] || "reviews"))}>
+          <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId} onChange={(event) => {
+              navigate("/projects/" + encodeURIComponent(event.target.value) + "/" + (path.split("/")[3] || "reviews"));
+              setDrawerOpen(false);
+            }}>
             {projects.some((project) => project.id === projectId) ? null : <option value={projectId}>{projectId}</option>}
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
