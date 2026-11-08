@@ -214,6 +214,89 @@ fn a_worktree_holding_only_an_ignored_build_cache_has_it_removed_with_the_worktr
     assert_eq!(kinds(&w), ["worktree.removed"]);
 }
 
+const CACHE_SIGNATURE: &str =
+    "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n";
+
+/// A worktree that ignores `target/`, holds a tagged cache there, and has a git repository of its own
+/// at `target/tmp/holder` (what a test leaves behind). Git lists such a repository as one folder entry.
+fn world_with_nested_repo(tag: &str, cache_tag: Option<&str>) -> World {
+    let w = world(tag);
+    fs::write(w.worktree.join(".gitignore"), "target/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore build output"]);
+    let holder = w.worktree.join("target/tmp/holder");
+    fs::create_dir_all(&holder).unwrap();
+    git(&holder, &["init", "-q"]);
+    if let Some(text) = cache_tag {
+        fs::write(w.worktree.join("target/CACHEDIR.TAG"), text).unwrap();
+    }
+    w
+}
+
+#[test]
+fn a_nested_repository_inside_a_build_cache_is_removed_with_the_worktree() {
+    let w = world_with_nested_repo("nested-in-cache", Some(CACHE_SIGNATURE));
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+    assert_eq!(kinds(&w), ["worktree.removed"]);
+}
+
+#[test]
+fn a_nested_repository_without_a_proven_cache_around_it_keeps_the_worktree_and_is_named() {
+    use std::os::unix::fs::symlink;
+    // Each case: how `target/CACHEDIR.TAG` is made (None: no tag at all).
+    type Tag = Option<fn(&Path)>;
+    let cases: [(&str, Tag); 4] = [
+        ("no-tag", None),
+        ("wrong-signature", Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap())),
+        ("empty-tag", Some(|p| fs::write(p, "").unwrap())),
+        (
+            "symlinked-tag",
+            Some(|p| {
+                let real = p.with_file_name("real-tag");
+                fs::write(&real, CACHE_SIGNATURE).unwrap();
+                symlink(&real, p).unwrap();
+            }),
+        ),
+    ];
+    for (tag, make_tag) in cases {
+        let w = world_with_nested_repo(&format!("nested-not-cache-{tag}"), None);
+        if let Some(make_tag) = make_tag {
+            make_tag(&w.worktree.join("target/CACHEDIR.TAG"));
+        }
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        let CleanupOutcome::Kept { reason } = outcome else { panic!("{tag}: the worktree was removed") };
+        // Git may list the odd tag file before the folder, so the reason names the first of them.
+        assert!(reason.contains("target/"), "{tag}: the reason names what it kept: {reason}");
+        assert!(w.worktree.join("target/tmp/holder/.git").exists(), "{tag}: the repository is intact");
+        assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
+    }
+}
+
+#[test]
+fn a_nested_repository_beside_a_tagged_cache_not_inside_it_keeps_the_worktree() {
+    let w = world("nested-beside-cache");
+    fs::write(w.worktree.join(".gitignore"), "target/\nscratch/\n").unwrap();
+    git(&w.worktree, &["add", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore"]);
+    fs::create_dir_all(w.worktree.join("target")).unwrap();
+    fs::write(w.worktree.join("target/CACHEDIR.TAG"), CACHE_SIGNATURE).unwrap();
+    let holder = w.worktree.join("scratch/holder");
+    fs::create_dir_all(&holder).unwrap();
+    git(&holder, &["init", "-q"]);
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("the worktree was removed") };
+    assert!(reason.contains("scratch/holder"), "{reason}");
+    assert!(holder.join(".git").exists(), "the repository is intact");
+}
+
 #[test]
 fn a_build_cache_of_many_files_in_nested_directories_is_removed_with_the_worktree() {
     let w = world("build-cache-large");

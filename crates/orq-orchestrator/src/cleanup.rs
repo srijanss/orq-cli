@@ -130,11 +130,13 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     let mut tagged: HashMap<PathBuf, bool> = HashMap::new();
     let mut own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
-            !path.ends_with('/')
-                && (in_cache_dir(worktree, path, &mut tagged)
-                    || crate::orq_written::is_unchanged_orq_file(worktree, path)
-                    || is_tooling_state(path)
-                    || is_tooling_folder(path))
+            // A folder git lists whole (a repository nested in it) is exempt only below a tagged cache
+            // directory: anywhere else it may hold commits that exist nowhere else.
+            in_cache_dir(worktree, path, &mut tagged)
+                || (!path.ends_with('/')
+                    && (crate::orq_written::is_unchanged_orq_file(worktree, path)
+                        || is_tooling_state(path)
+                        || is_tooling_folder(path)))
         })
     };
     Ok(status
