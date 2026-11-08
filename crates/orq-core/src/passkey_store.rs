@@ -234,13 +234,14 @@ impl PasskeyStore {
     }
 
     /// Removes the passkey with this label.
-    /// Moves a passkey's signature counter from `previous` to `new`, only if it still holds
-    /// `previous`: of two sign-ins that read the same counter, only one gets to advance it.
-    pub fn advance_counter(&self, credential_id: &str, previous: u32, new: u32) -> Result<(), String> {
+    /// Under the lock, confirms the passkey is still registered with the same key and counter as
+    /// `seen`, then sets its counter to `new`. Of two sign-ins that read the same counter only one
+    /// gets through, and a passkey removed since it was read is refused, counter or no counter.
+    pub fn advance_counter(&self, seen: &Passkey, new: u32) -> Result<(), String> {
         self.change(|keys| {
-            let key = keys.iter_mut().find(|key| key.credential_id == credential_id).ok_or("the passkey is no longer registered")?;
-            if key.sign_count != previous {
-                return Err("the signature counter changed".into());
+            let key = keys.iter_mut().find(|key| key.credential_id == seen.credential_id).ok_or("the passkey is no longer registered")?;
+            if key.public_key != seen.public_key || key.sign_count != seen.sign_count {
+                return Err("the passkey changed".into());
             }
             key.sign_count = new;
             Ok(())

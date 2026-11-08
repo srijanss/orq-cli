@@ -76,7 +76,8 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
         return Err(Refused);
     }
     let flags = authenticator_data[32];
-    if flags & 0x01 == 0 || flags & 0x04 == 0 {
+    // Backed up (0x10) without being eligible for backup (0x08) is not a state an authenticator has.
+    if flags & 0x01 == 0 || flags & 0x04 == 0 || (flags & 0x10 != 0 && flags & 0x08 == 0) {
         return Err(Refused);
     }
     let counter = u32::from_be_bytes([authenticator_data[33], authenticator_data[34], authenticator_data[35], authenticator_data[36]]);
@@ -91,9 +92,9 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
     if !p256::verify(&x, &y, &digest, &signature) {
         return Err(Refused);
     }
-    if counter != key.sign_count {
-        store.advance_counter(&key.credential_id, key.sign_count, counter).map_err(|_| Refused)?;
-    }
+    // Always under the lock, even when the counter stays at zero: it also confirms the passkey was
+    // not removed while the signature was being checked.
+    store.advance_counter(&key, counter).map_err(|_| Refused)?;
     sessions.issue(PasskeySignIn::verified(), now).map_err(|_| Refused)
 }
 
@@ -211,6 +212,7 @@ mod tests {
             ("wrong rp id", Box::new(|a| a.rp_id = "other.tailnet.ts.net".into())),
             ("no presence", Box::new(|a| a.flags = 0x04)),
             ("no verification", Box::new(|a| a.flags = 0x01)),
+            ("backed up but not eligible", Box::new(|a| a.flags = 0x15)),
             ("unknown credential", Box::new(|a| a.credential = vec![6; 32])),
             ("counter equal", Box::new(|a| a.counter = 4)),
             ("counter backwards", Box::new(|a| a.counter = 3)),
@@ -265,13 +267,71 @@ mod tests {
     }
 
     #[test]
-    fn two_sign_ins_with_the_same_counter_cannot_both_succeed() {
-        let f = fixture("race", 4);
-        let (one, two) = (challenge(&f, 100), challenge(&f, 100));
-        let (a, b) = (Assertion::good(5).response(&one), Assertion::good(5).response(&two));
-        let results = [finish(&f.host, &f.challenges, &f.store, &f.sessions, &a, 120), finish(&f.host, &f.challenges, &f.store, &f.sessions, &b, 120)];
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    fn backup_flags_are_accepted_when_consistent() {
+        let f = fixture("backup", 0);
+        for (flags, counter) in [(0x0d, 1), (0x1d, 2), (0x05, 3)] {
+            let mut assertion = Assertion::good(counter);
+            assertion.flags = flags;
+            assert!(sign_in(&f, &assertion, 120).is_ok(), "{flags:#x}");
+        }
+    }
+
+    #[test]
+    fn a_second_sign_in_with_a_counter_already_used_is_refused() {
+        let f = fixture("reuse", 4);
+        assert!(sign_in(&f, &Assertion::good(5), 120).is_ok());
+        assert_eq!(sign_in(&f, &Assertion::good(5), 121), Err(Refused));
         assert_eq!(f.sessions.count(), 1);
+    }
+
+    #[test]
+    fn of_two_simultaneous_sign_ins_with_the_same_counter_exactly_one_succeeds() {
+        for round in 0..5 {
+            let f = fixture(&format!("race-{round}"), 4);
+            let responses = [Assertion::good(5).response(&challenge(&f, 100)), Assertion::good(5).response(&challenge(&f, 100))];
+            let barrier = std::sync::Barrier::new(2);
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = responses.iter().map(|response| scope.spawn(|| {
+                    barrier.wait();
+                    finish(&f.host, &f.challenges, &f.store, &f.sessions, response, 120)
+                })).collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "round {round}");
+            assert_eq!((f.sessions.count(), f.store.list().unwrap()[0].sign_count), (1, 5));
+        }
+    }
+
+    #[test]
+    fn two_counter_advances_from_the_same_snapshot_let_exactly_one_through_and_a_removed_passkey_none() {
+        let f = fixture("advance", 4);
+        let seen = f.store.find(&encode_b64url(ID)).unwrap().unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let (store, seen, barrier) = (&f.store, &seen, &barrier);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let one = scope.spawn(move || {
+                barrier.wait();
+                store.advance_counter(seen, 5)
+            });
+            let two = scope.spawn(move || {
+                barrier.wait();
+                store.advance_counter(seen, 6)
+            });
+            vec![one.join().unwrap(), two.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert!(matches!(f.store.list().unwrap()[0].sign_count, 5 | 6));
+        f.store.remove("laptop").unwrap();
+        assert!(f.store.advance_counter(&seen, 7).is_err());
+    }
+
+    #[test]
+    fn a_counterless_passkey_removed_before_the_session_is_issued_gets_none() {
+        let f = fixture("revoked", 0);
+        let seen = f.store.find(&encode_b64url(ID)).unwrap().unwrap();
+        f.store.remove("laptop").unwrap();
+        // What finish does after the signature checks out, with the passkey gone in between.
+        assert!(f.store.advance_counter(&seen, 0).is_err());
     }
 
     #[test]

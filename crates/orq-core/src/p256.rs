@@ -58,16 +58,64 @@ fn sub_mod(a: &U256, b: &U256, m: &U256) -> U256 {
     if less(a, b) { sub_wrapping(m, &sub_wrapping(b, a)) } else { sub_wrapping(a, b) }
 }
 
-/// Double-and-add: slow, but verifying a sign-in needs only a few thousand of these.
-fn mul_mod(a: &U256, b: &U256, m: &U256) -> U256 {
-    let mut out = [0u64; 4];
-    for bit in (0..256).rev() {
-        out = add_mod(&out, &out, m);
-        if (b[bit / 64] >> (bit % 64)) & 1 == 1 {
-            out = add_mod(&out, a, m);
-        }
+/// What Montgomery multiplication needs to know about a modulus.
+struct Field {
+    m: U256,
+    /// -m^-1 modulo 2^64.
+    n0: u64,
+    /// 2^512 modulo m.
+    r2: U256,
+}
+
+fn field(m: U256) -> Field {
+    let mut inverse: u64 = 1;
+    for _ in 0..6 {
+        inverse = inverse.wrapping_mul(2u64.wrapping_sub(m[0].wrapping_mul(inverse)));
     }
-    out
+    // m is above 2^255, so 2^256 mod m is 2^256 - m, and doubling it 256 times gives 2^512 mod m.
+    let mut r2 = sub_wrapping(&[0; 4], &m);
+    for _ in 0..256 {
+        r2 = add_mod(&r2, &r2, &m);
+    }
+    Field { m, n0: inverse.wrapping_neg(), r2 }
+}
+
+static P_FIELD: std::sync::LazyLock<Field> = std::sync::LazyLock::new(|| field(P));
+static N_FIELD: std::sync::LazyLock<Field> = std::sync::LazyLock::new(|| field(N));
+
+/// `a * b / 2^256` modulo the field's modulus, for `a` and `b` below it.
+fn montgomery(a: &U256, b: &U256, f: &Field) -> U256 {
+    let mut t = [0u64; 6];
+    for &bi in b {
+        let mut carry = 0u128;
+        for j in 0..4 {
+            let v = u128::from(t[j]) + u128::from(a[j]) * u128::from(bi) + carry;
+            t[j] = v as u64;
+            carry = v >> 64;
+        }
+        let v = u128::from(t[4]) + carry;
+        t[4] = v as u64;
+        t[5] = (v >> 64) as u64;
+        let q = t[0].wrapping_mul(f.n0);
+        let mut carry = (u128::from(t[0]) + u128::from(q) * u128::from(f.m[0])) >> 64;
+        for j in 1..4 {
+            let v = u128::from(t[j]) + u128::from(q) * u128::from(f.m[j]) + carry;
+            t[j - 1] = v as u64;
+            carry = v >> 64;
+        }
+        let v = u128::from(t[4]) + carry;
+        t[3] = v as u64;
+        t[4] = t[5] + (v >> 64) as u64;
+        t[5] = 0;
+    }
+    let r = [t[0], t[1], t[2], t[3]];
+    if t[4] != 0 || !less(&r, &f.m) { sub_wrapping(&r, &f.m) } else { r }
+}
+
+/// `a * b` modulo `m` (which is P or N), for `a` and `b` below it.
+fn mul_mod(a: &U256, b: &U256, m: &U256) -> U256 {
+    let f = if *m == P { &*P_FIELD } else { &*N_FIELD };
+    montgomery(&montgomery(a, b, f), &f.r2, f)
 }
 
 /// `a` to the power `exponent` modulo `m`.
@@ -308,6 +356,38 @@ pub(crate) mod tests {
 
     fn sample_digest() -> [u8; 32] {
         Sha256::digest(b"sample").into()
+    }
+
+    /// The bit-at-a-time product, which is obviously right, to check the fast one against.
+    fn slow_mul_mod(a: &U256, b: &U256, m: &U256) -> U256 {
+        let mut out = [0u64; 4];
+        for bit in (0..256).rev() {
+            out = add_mod(&out, &out, m);
+            if (b[bit / 64] >> (bit % 64)) & 1 == 1 {
+                out = add_mod(&out, a, m);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_fast_product_matches_the_slow_one_including_at_the_edges() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed
+        };
+        let mut values: Vec<U256> = vec![[0; 4], [1, 0, 0, 0], sub_wrapping(&P, &[1, 0, 0, 0]), sub_wrapping(&N, &[1, 0, 0, 0]), sub_wrapping(&N, &[2, 0, 0, 0])];
+        for _ in 0..40 {
+            values.push([next(), next(), next(), next()]);
+        }
+        for m in [P, N] {
+            for a in values.iter().filter(|v| less(v, &m)) {
+                for b in values.iter().filter(|v| less(v, &m)) {
+                    assert_eq!(mul_mod(a, b, &m), slow_mul_mod(a, b, &m));
+                }
+            }
+        }
     }
 
     #[test]
