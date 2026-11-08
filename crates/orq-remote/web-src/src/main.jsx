@@ -351,7 +351,11 @@ function Scoped({ token, onSignedOut }) {
   }
   const inProject = named !== null;
   useEffect(() => {
-    if (!inProject) return undefined;
+    if (!inProject) {
+      // Leaving the project forgets its list, so the next visit is never judged by an old one.
+      setProjects(null);
+      return undefined;
+    }
     let current = true;
     const controller = new AbortController();
     (async () => {

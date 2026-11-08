@@ -78,3 +78,18 @@ fn a_refused_token_on_the_project_list_asks_for_the_token_again() {
     let Some(out) = run("/projects/alpha/features", json!([{"status": 401}]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
 }
+
+#[test]
+fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit() {
+    let Some(out) = run("/projects/alpha/features", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}, {"go": "/projects/gamma/features"}])) else { return };
+    let text = shown(&out["frames"][3]);
+    assert!(!text.contains("Not found"), "an old list decided a new visit: {text}");
+    assert_eq!(out["frames"][3]["settled"]["switchers"], json!([]), "{out}");
+}
+
+#[test]
+fn choosing_a_project_closes_the_phone_drawer() {
+    let Some(out) = run("/projects/alpha/features", json!([two()]), json!([{"submit": TOKEN}, {"nav": "[data-menu-button]"}, {"select": "beta"}])) else { return };
+    assert_eq!(out["frames"][2]["settled"]["scrim"], true, "the drawer opened: {out}");
+    assert_eq!(out["frames"][3]["settled"]["scrim"], false, "{out}");
+}

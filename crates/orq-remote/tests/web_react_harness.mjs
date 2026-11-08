@@ -73,7 +73,7 @@ function snapshot() {
   }
   const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.value, options: [...el.options].map((o) => o.value) }));
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
-  return { switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
