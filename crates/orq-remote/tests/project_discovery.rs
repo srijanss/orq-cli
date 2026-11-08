@@ -87,3 +87,48 @@ fn a_symlinked_root_is_allowed_on_purpose_and_projects_are_reported_under_its_re
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].path, fs::canonicalize(&real).unwrap().join("app"), "paths must name the real location, not the link");
 }
+
+#[test]
+fn a_linked_worktree_marker_file_counts_but_a_symlinked_git_entry_does_not() {
+    let root = web_deps::private_temp_dir("markers");
+    fs::create_dir(root.join("worktree")).unwrap();
+    fs::write(root.join("worktree/.git"), "gitdir: /elsewhere/.git/worktrees/w\n").unwrap();
+    let outside = web_deps::private_temp_dir("markers-outside");
+    fs::create_dir(outside.join(".git")).unwrap();
+    fs::create_dir(root.join("borrowed")).unwrap();
+    symlink(outside.join(".git"), root.join("borrowed/.git")).unwrap();
+    let names: Vec<_> = discover(&root).into_iter().map(|p| p.name).collect();
+    assert_eq!(names, ["worktree"]);
+}
+
+#[test]
+fn a_root_that_is_a_file_gives_no_projects() {
+    let root = web_deps::private_temp_dir("file-root");
+    fs::write(root.join("plain"), "x").unwrap();
+    assert!(discover(&root.join("plain")).is_empty());
+}
+
+#[test]
+fn a_root_or_a_project_folder_that_cannot_be_read_is_skipped_without_failing() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = web_deps::private_temp_dir("denied");
+    repo(&root, "open");
+    repo(&root, "closed");
+    let closed = root.join("closed");
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).unwrap();
+    let restricted = fs::read_dir(&closed).is_err();
+    let names: Vec<_> = discover(&root).into_iter().map(|p| p.name).collect();
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o700)).unwrap();
+    if restricted {
+        assert_eq!(names, ["open"]);
+    } else {
+        eprintln!("skipped the permission check: this user bypasses file permissions");
+    }
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = fs::read_dir(&root).is_err();
+    let none = discover(&root);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    if blocked {
+        assert!(none.is_empty());
+    }
+}
