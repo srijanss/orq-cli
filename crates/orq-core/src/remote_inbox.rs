@@ -246,7 +246,8 @@ fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
 /// One read of the newest report record fixes the project, the commit and the lifecycle facts together.
 /// A missing index or run is `None`; an index that cannot be read is an error, never "not found".
 fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, String> {
-    if !roots.database().exists() {
+    // Only a genuinely absent index is "none"; one that cannot be looked at is an error.
+    if !roots.database().try_exists().map_err(|err| format!("cannot look for the review index: {err}"))? {
         return Ok(None);
     }
     let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;

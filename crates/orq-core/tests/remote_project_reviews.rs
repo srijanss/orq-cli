@@ -138,3 +138,21 @@ fn a_run_saved_again_under_another_project_is_served_only_with_the_newest_report
     assert_eq!(report["reported_head_sha"], newer.as_str());
     assert_eq!(get(&roots, &p, "/api/reviews/run-ours").1["reported_head_sha"], newer.as_str());
 }
+
+#[test]
+fn an_index_that_cannot_be_reached_is_a_server_error_not_a_missing_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let roots = roots("unreachable");
+    let p = Fixed { asked: Cell::new(0) };
+    let dir = roots.database().parent().unwrap().to_path_buf();
+    let original = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let reached = std::fs::metadata(roots.database()).is_ok();
+    let status = get(&roots, &p, "/api/projects/other/reviews/run-other").0;
+    std::fs::set_permissions(&dir, original).unwrap();
+    if reached {
+        eprintln!("skipped: permissions are not enforced for this user");
+        return;
+    }
+    assert_eq!(status, 500);
+}
