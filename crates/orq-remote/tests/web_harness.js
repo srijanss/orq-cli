@@ -50,6 +50,20 @@ const root = new Node("main");
 const requests = [];
 const responses = [...scenario.responses];
 
+// A page address with a history, so Back can be tried: setting the hash adds an
+// entry and tells the page asynchronously, as a browser does.
+const pageListeners = {};
+const entries = [""];
+const location = {
+  get hash() {
+    return entries[entries.length - 1];
+  },
+  set hash(value) {
+    entries.push(String(value));
+    setImmediate(() => pageListeners.hashchange && pageListeners.hashchange());
+  },
+};
+
 const sandbox = {
   document: { getElementById: () => root, createElement: (tag) => new Node(tag) },
   fetch: (url, options) => {
@@ -61,26 +75,33 @@ const sandbox = {
     return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: async () => { if (next.badjson) throw new SyntaxError("bad json"); return next.json; } });
   },
   Array,
+  URL,
+  location,
+  addEventListener: (name, handler) => {
+    pageListeners[name] = handler;
+  },
 };
 
 function snapshot() {
   const texts = [];
   const inputs = [];
   const buttons = [];
+  const links = [];
   walk(root, (node) => {
     if (node.text) texts.push(node.text);
     if (node.tag === "input") inputs.push({ type: node.type, value: node.value, autocomplete: node.autocomplete });
     if (node.tag === "button") buttons.push(node.text);
+    if (node.tag === "a") links.push({ href: node.attrs.href, rel: node.attrs.rel, text: node.text });
   });
-  return { texts, inputs, buttons };
+  return { texts, inputs, buttons, links, hash: location.hash };
 }
 
-function find(tag) {
-  let found = null;
+function find(tag, index = 0) {
+  const all = [];
   walk(root, (node) => {
-    if (!found && node.tag === tag) found = node;
+    if (node.tag === tag) all.push(node);
   });
-  return found;
+  return all[index] || null;
 }
 
 const settle = async () => {
@@ -97,8 +118,11 @@ const settle = async () => {
       field.value = step.submit;
       find("button").listeners.click();
       fieldAfter = field.value;
+    } else if (step.back) {
+      entries.pop();
+      pageListeners.hashchange && pageListeners.hashchange();
     } else {
-      find(step.click).listeners.click();
+      find(step.click, step.index || 0).listeners.click();
     }
     const sync = snapshot();
     await settle();

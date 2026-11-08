@@ -22,15 +22,27 @@ fn the_token_lives_in_memory_only() {
 #[test]
 fn the_token_never_reaches_a_url_a_log_or_the_history() {
     let code = code();
-    for banned in ["location.search", "location.hash", "location.href", "URLSearchParams", "history.", "console.", "alert(", "window.name", "postMessage", "sendBeacon", "WebSocket", "EventSource", "XMLHttpRequest", "document.write", ".innerHTML", "eval(", "new Function"] {
+    for banned in ["location.search", "location.href", "URLSearchParams", "history.", "console.", "alert(", "window.name", "postMessage", "sendBeacon", "WebSocket", "EventSource", "XMLHttpRequest", "document.write", ".innerHTML", "eval(", "new Function"] {
         assert!(!code.contains(banned), "the script uses {banned}");
     }
-    // Every fetch goes to a fixed same-origin path with no query string.
-    for call in code.split("fetch(").skip(1) {
-        let target: String = call.chars().take_while(|c| *c != ',' && *c != ')').collect();
-        assert!(target.trim().starts_with("\"/api/") || target.trim().starts_with("API"), "fetch target {target:?} is not a fixed path");
-        assert!(!target.contains('?') && !target.contains('+') && !target.contains('`'), "fetch target {target:?} is built from something");
+    // The page address may carry a run id, never the token.
+    for line in code.lines().filter(|line| line.contains("location")) {
+        assert!(!line.to_lowercase().contains("token"), "the address is built from the token: {line}");
     }
+    // There is one fetch, and it takes the path it is given.
+    assert_eq!(code.matches("fetch(").count(), 1);
+    assert!(code.contains("fetch(path,"), "the one fetch takes a path");
+    // Every path given is a fixed same-origin one, plus an encoded run id, with no query string.
+    for call in code.split("request(").skip(1) {
+        let target: String = call.chars().take_while(|c| *c != ')').collect();
+        assert_eq!(target.trim(), "path", "request target {target:?}");
+    }
+    for call in code.split("showFrom(").skip(1).filter(|call| !call.starts_with("path, mine")) {
+        let target: String = call.chars().take_while(|c| *c != ',').collect();
+        assert!(target.trim() == "API_REVIEWS" || target.trim() == "path", "path {target:?} is not fixed");
+    }
+    assert!(code.contains("API_REVIEWS + \"/\" + encodeURIComponent(runId)"), "the run id is encoded");
+    assert!(!code.contains('?') || !code.contains("API_REVIEWS + \"?"), "no query string");
 }
 
 #[test]

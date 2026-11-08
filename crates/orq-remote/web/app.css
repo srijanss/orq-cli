@@ -4,3 +4,6 @@ ul { list-style: none; margin: 0; padding: 0; }
 .run.stale { border-left: 4px solid #b45309; padding-left: 0.5rem; font-style: italic; }
 .run.stale em { color: #b45309; font-weight: bold; }
 button { min-height: 44px; min-width: 44px; }
+h2 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+li { overflow-wrap: anywhere; }
+a { display: inline-block; min-height: 44px; line-height: 44px; }
