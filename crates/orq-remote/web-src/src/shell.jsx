@@ -9,6 +9,9 @@ function subscribeToHash(notify) {
   return () => window.removeEventListener("hashchange", notify);
 }
 
+// The same breakpoint the stylesheet uses for the drawer.
+const PHONE_QUERY = "(max-width: 700px)";
+
 const currentHash = () => window.location.hash;
 
 export function navigationEntries(projectId) {
@@ -72,6 +75,17 @@ export function Shell({ projectId = null, children }) {
     };
   }, [drawerOpen]);
 
+  // Leaving the phone width turns the drawer back into the plain sidebar, so it must not stay modal.
+  useEffect(() => {
+    if (!drawerOpen || typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia(PHONE_QUERY);
+    const onChange = (event) => {
+      if (!event.matches) setDrawerOpen(false);
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [drawerOpen]);
+
   const classes = ["shell", collapsed ? "collapsed" : "", drawerOpen ? "drawer-open" : ""].filter(Boolean).join(" ");
 
   return (
@@ -91,7 +105,7 @@ export function Shell({ projectId = null, children }) {
         </button>
         <nav>
           {entries.map((entry) => (
-            <a key={entry.href} href={entry.href} aria-current={hash === entry.href ? "page" : undefined} title={entry.label}>
+            <a key={entry.href} href={entry.href} aria-current={hash === entry.href ? "page" : undefined} title={entry.label} onClick={() => setDrawerOpen(false)}>
               <span aria-hidden="true">{entry.icon}</span>
               <span className="label">{entry.label}</span>
             </a>

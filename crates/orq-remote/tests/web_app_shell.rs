@@ -114,3 +114,23 @@ fn the_served_page_is_framed_by_the_shell() {
         assert_eq!(frame["settled"]["shell"], true, "every state of the page sits inside the shell: {out}");
     }
 }
+
+#[test]
+fn choosing_a_destination_closes_the_drawer_and_releases_scroll() {
+    for link in ["nav a:nth-child(1)", "nav a:nth-child(2)"] {
+        let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-menu-button]"}, {"click": link}]})) else { return };
+        let after = &out["frames"][2];
+        assert_eq!(after["drawerOpen"], false, "{link}: {out}");
+        assert_eq!(after["bodyOverflow"], "", "{link}: {out}");
+        assert_eq!(after["scrimPresent"], false, "{link}: {out}");
+    }
+}
+
+#[test]
+fn growing_past_the_phone_width_closes_an_open_drawer() {
+    let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-menu-button]"}, {"viewport": "desktop"}]})) else { return };
+    let after = &out["frames"][2];
+    assert_eq!(after["drawerOpen"], false, "{out}");
+    assert_eq!(after["bodyOverflow"], "", "scroll is released: {out}");
+    assert_eq!(after["menuExpanded"], "false", "{out}");
+}

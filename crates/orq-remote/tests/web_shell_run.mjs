@@ -19,6 +19,15 @@ for (const name of ["window", "document", "navigator", "HTMLElement", "Node", "E
   Object.defineProperty(globalThis, name, { value: name === "window" ? window : window[name], configurable: true });
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = false;
+// A phone-width query that a step can flip, since jsdom has no layout.
+let phone = true;
+const phoneListeners = new Set();
+window.matchMedia = (query) => ({
+  media: query,
+  get matches() { return phone; },
+  addEventListener: (_, listener) => phoneListeners.add(listener),
+  removeEventListener: (_, listener) => phoneListeners.delete(listener),
+});
 
 const dir = mkdtempSync(join(tmpdir(), "orq-shell-"));
 try {
@@ -64,6 +73,9 @@ try {
         const next = items[(at + (step.shift ? -1 : 1) + items.length) % items.length];
         next.focus();
       }
+    } else if (step.viewport) {
+      phone = step.viewport === "phone";
+      for (const listener of [...phoneListeners]) listener({ matches: phone });
     } else if (step.hash !== undefined) {
       window.location.hash = step.hash;
     }
