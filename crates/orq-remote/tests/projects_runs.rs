@@ -32,9 +32,13 @@ fn setup(label: &str) -> Setup {
 
 fn ask(setup: &Setup, method: &str, path: &str, authorization: Option<&str>) -> (u16, Value) {
     let provider = StoreProjects::new(setup.roots.clone(), setup.scan.clone());
+    ask_with(&provider, setup, method, path, authorization)
+}
+
+fn ask_with(provider: &StoreProjects, setup: &Setup, method: &str, path: &str, authorization: Option<&str>) -> (u16, Value) {
     let config = RemoteConfig { token: "tok".into() };
     let request = Request { method, path, peer: "127.0.0.1".parse().unwrap(), authorization };
-    let r = handle_with(&setup.roots, &config, "server-project", "server", &request, &provider);
+    let r = handle_with(&setup.roots, &config, "server-project", "server", &request, provider);
     (r.status, r.body)
 }
 
@@ -118,4 +122,30 @@ fn an_unreadable_run_gives_a_generic_error_that_names_nothing() {
     let (status, body) = get(&s, "/api/projects/alpha/runs");
     assert_eq!(status, 500, "{body}");
     assert!(!body.to_string().contains(s.roots.state.to_str().unwrap()) && !body.to_string().contains("bad"), "{body}");
+}
+
+#[test]
+fn a_log_that_has_not_changed_is_not_read_again_and_one_that_grew_is() {
+    let s = setup("runs-cache");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha), "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let list = |p: &StoreProjects| ask_with(p, &s, "GET", "/api/projects/alpha/runs", Some("Bearer tok"));
+    let (status, first) = list(&provider);
+    assert_eq!((status, first["runs"][0]["state"].clone()), (200, json!("running")), "{first}");
+
+    // Damage the log without changing its size or time: only a re-read would notice.
+    let log = s.roots.state.join("runs/r1/events.jsonl");
+    let (len, modified) = { let m = std::fs::metadata(&log).unwrap(); (m.len() as usize, m.modified().unwrap()) };
+    std::fs::write(&log, "x".repeat(len)).unwrap();
+    std::fs::File::options().write(true).open(&log).unwrap().set_modified(modified).unwrap();
+    let (status, again) = list(&provider);
+    assert_eq!((status, &again), (200, &first), "an unchanged log is served from what was learned");
+
+    // A longer log is read afresh (here it is unreadable, so the damage now shows).
+    std::fs::write(&log, "x".repeat(len + 5)).unwrap();
+    assert_eq!(list(&provider).0, 500);
+    // A new provider (a restart) never trusts anything it was not told.
+    std::fs::write(&log, "x".repeat(len)).unwrap();
+    assert_eq!(list(&StoreProjects::new(s.roots.clone(), s.scan.clone())).0, 500);
 }

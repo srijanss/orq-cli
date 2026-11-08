@@ -30,24 +30,61 @@ pub fn discover(root: &Path) -> Vec<Project> {
     found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
 }
 
+/// What a run's event log said when it was last read, and the size and time it had then.
+struct LogSummary {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    state: &'static str,
+    stage: Option<String>,
+    started: Option<String>,
+    updated: Option<String>,
+}
+
+type LogCache = std::collections::HashMap<String, LogSummary>;
+
 /// One listed run: its sort time, id and JSON row. `None` when the run belongs to another project
-/// or was removed after its record was read; an unreadable event log is an error.
-fn run_row(store: &orq_orchestrator::RunStore, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
+/// or was removed after its record was read; an unreadable event log is an error. A log whose size
+/// and time are what they were is not read again (the log only ever grows), so polling the list
+/// costs a stat per run, not a replay of its history.
+fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCache, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
     use orq_orchestrator::StoreError;
     if record.project_id != key {
         return Ok(None);
     }
-    let events = match store.events(&record.run_id) {
-        Ok(events) => events,
-        Err(StoreError::NotFound(_)) => return Ok(None),
-        Err(error) => return Err(format!("run {} is unreadable: {error:?}", record.run_id)),
-    };
-    let summary = orq_orchestrator::summarize_run(&events);
-    let started = events.first().map(|event| event.occurred_at.clone());
-    let updated = events.last().map(|event| event.occurred_at.clone());
-    let sort_key = updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": started, "updated_at": updated});
-    Ok(Some((sort_key, record.run_id, row)))
+    let stat = std::fs::metadata(state.join("runs").join(&record.run_id).join("events.jsonl")).ok().map(|meta| (meta.len(), meta.modified().ok()));
+    let fresh = stat.is_some_and(|(len, modified)| cache.get(&record.run_id).is_some_and(|known| known.len == len && known.modified == modified && modified.is_some()));
+    if !fresh {
+        let events = match store.events(&record.run_id) {
+            Ok(events) => events,
+            Err(StoreError::NotFound(_)) => {
+                cache.remove(&record.run_id);
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("run {} is unreadable: {error:?}", record.run_id)),
+        };
+        let summary = orq_orchestrator::summarize_run(&events);
+        let learned = LogSummary {
+            len: stat.map_or(0, |(len, _)| len),
+            modified: stat.and_then(|(_, modified)| modified),
+            state: summary.phase.as_str(),
+            stage: summary.stage,
+            started: events.first().map(|event| event.occurred_at.clone()),
+            updated: events.last().map(|event| event.occurred_at.clone()),
+        };
+        if stat.is_some() {
+            cache.insert(record.run_id.clone(), learned);
+        } else {
+            cache.remove(&record.run_id);
+            return Ok(Some(row_of(&record, &learned)));
+        }
+    }
+    Ok(Some(row_of(&record, &cache[&record.run_id])))
+}
+
+fn row_of(record: &orq_orchestrator::RunRecord, log: &LogSummary) -> (Option<u64>, String, serde_json::Value) {
+    let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
+    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
+    (sort_key, record.run_id.clone(), row)
 }
 
 /// How many plain folders may be nested above a repository: `~/code/pitstop/eGiftit/egiftit-backend`
@@ -126,11 +163,12 @@ fn fnv1a(text: &str, seed: u64) -> u64 {
 pub struct StoreProjects {
     roots: orq_core::storage::StorageRoots,
     scan_root: std::path::PathBuf,
+    run_logs: std::sync::Mutex<LogCache>,
 }
 
 impl StoreProjects {
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
-        StoreProjects { roots, scan_root }
+        StoreProjects { roots, scan_root, run_logs: Default::default() }
     }
 }
 
@@ -174,13 +212,18 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
         let store = orq_orchestrator::RunStore::new(&self.roots.state);
         let mut rows = Vec::new();
-        for run_id in store.run_ids().map_err(|error| format!("{error:?}"))? {
+        // A poisoned lock only means an earlier request panicked; what it holds is still valid to re-check.
+        let mut cache = self.run_logs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_ids = store.run_ids().map_err(|error| format!("{error:?}"))?;
+        // Runs that are gone are forgotten, so the cache never outgrows the store.
+        cache.retain(|id, _| run_ids.contains(id));
+        for run_id in run_ids {
             let record = match store.load(&run_id) {
                 Ok(record) => record,
                 Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
                 Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
             };
-            if let Some(row) = run_row(&store, record, &key)? {
+            if let Some(row) = run_row(&store, &self.roots.state, &mut cache, record, &key)? {
                 rows.push(row);
             }
         }
@@ -336,7 +379,7 @@ mod run_row_tests {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
             let _ = std::fs::remove_dir_all(entry.path());
         }
-        assert!(matches!(run_row(&store, loaded, "p"), Ok(None)));
+        assert!(matches!(run_row(&store, &dir, &mut Default::default(), loaded, "p"), Ok(None)));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
