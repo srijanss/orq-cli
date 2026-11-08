@@ -120,6 +120,7 @@ impl PasskeyStore {
         if create {
             std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.dir).map_err(|e| format!("cannot create the Orq state directory: {}", e.kind()))?;
         }
+        self.check_ancestors()?;
         let fd = match rustix::fs::open(&self.dir, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
             Ok(fd) => fd,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
@@ -134,6 +135,28 @@ impl PasskeyStore {
             return Err("the Orq state directory must not be writable by anyone else".into());
         }
         Ok(Some(fd))
+    }
+
+    /// Nobody but this user (or root) may be able to rename or replace a directory on the way to the
+    /// state directory: each ancestor must belong to this user or root and must not be writable by
+    /// everyone, unless it is sticky (like /tmp). Ancestors that do not exist yet are skipped.
+    fn check_ancestors(&self) -> Result<(), String> {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        for ancestor in self.dir.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
+            let meta = match std::fs::metadata(ancestor) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("cannot inspect {}: {}", ancestor.display(), e.kind())),
+            };
+            if meta.uid() != me && meta.uid() != 0 {
+                return Err(format!("{} must belong to the user running the server or to root", ancestor.display()));
+            }
+            if meta.mode() & 0o002 != 0 && meta.mode() & 0o1000 == 0 {
+                return Err(format!("{} must not be writable by everyone", ancestor.display()));
+            }
+        }
+        Ok(())
     }
 
     /// Every registered passkey. No file is none; an unreadable or doubtful file is an error.
@@ -226,20 +249,49 @@ impl PasskeyStore {
             .map_err(|e| e.to_string())
             .and_then(|fd| {
                 let mut file = std::fs::File::from(fd);
-                file.write_all(text.as_bytes()).and_then(|()| file.sync_all()).map_err(|e| e.to_string())
+                fault(Stage::Write)?;
+                file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+                fault(Stage::FileSync)?;
+                file.sync_all().map_err(|e| e.to_string())
             })
             .and_then(|()| rustix::fs::renameat(dir, temp.as_str(), dir, FILE_NAME).map_err(|e| e.to_string()));
         if let Err(e) = published {
             let _ = rustix::fs::unlinkat(dir, temp.as_str(), AtFlags::empty());
             return Err(format!("cannot write the passkey file {}: {e}", self.file().display()));
         }
-        rustix::fs::fsync(dir).map_err(|e| format!("cannot sync the Orq state directory: {e}"))
+        // The new file is now the store. If only the directory sync fails, the change is applied but
+        // might not survive a crash, and the message says so rather than claiming nothing changed.
+        fault(Stage::DirSync).and_then(|()| rustix::fs::fsync(dir).map_err(|e| e.to_string())).map_err(|e| format!("{APPLIED_NOT_DURABLE}: {e}"))
     }
+}
+
+/// Starts the error of a change that was applied but could not be confirmed durable.
+pub const APPLIED_NOT_DURABLE: &str = "the change was applied but could not be confirmed durable (cannot sync the Orq state directory)";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Stage {
+    Write,
+    FileSync,
+    DirSync,
+}
+
+#[cfg(test)]
+thread_local!(static FAULT: std::cell::Cell<Option<Stage>> = const { std::cell::Cell::new(None) });
+
+#[cfg(test)]
+fn fault(at: Stage) -> Result<(), String> {
+    if FAULT.with(|f| f.get()) == Some(at) { Err("injected failure".into()) } else { Ok(()) }
+}
+
+#[cfg(not(test))]
+fn fault(_: Stage) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     /// A rename that cannot happen (a directory is in the way) leaves the store as it was and no
     /// temporary file behind.
@@ -254,5 +306,69 @@ mod tests {
         assert!(store.write(&dir, &[key]).is_err());
         let names: Vec<_> = std::fs::read_dir(&store.dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert_eq!(names, [FILE_NAME], "{names:?}");
+    }
+
+    fn store(tag: &str) -> PasskeyStore {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        PasskeyStore { dir: base.join("state") }
+    }
+
+    fn key(id: &str, label: &str) -> Passkey {
+        Passkey { credential_id: id.into(), public_key: "b".into(), sign_count: 0, label: label.into(), created_at: 1 }
+    }
+
+    fn entries(store: &PasskeyStore) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(&store.dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        names
+    }
+
+    /// A failure while writing or syncing the new file leaves the earlier store as it was, no
+    /// temporary file, and the lock free for the next change.
+    #[test]
+    fn a_failed_write_or_file_sync_keeps_the_existing_store_and_releases_the_lock() {
+        for stage in [Stage::Write, Stage::FileSync] {
+            let store = store("fail");
+            store.add(key("a", "one")).unwrap();
+            let before = std::fs::read_to_string(store.file()).unwrap();
+            FAULT.with(|f| f.set(Some(stage)));
+            let failed = store.add(key("b", "two"));
+            FAULT.with(|f| f.set(None));
+            assert!(failed.is_err());
+            assert_eq!(std::fs::read_to_string(store.file()).unwrap(), before);
+            assert_eq!(entries(&store), [".passkeys.lock", "passkeys.json"]);
+            store.add(key("b", "two")).expect("the lock is free");
+            assert_eq!(store.list().unwrap().len(), 2);
+        }
+    }
+
+    /// When only the directory sync fails the new file is already the store, and the error says the
+    /// change was applied rather than that nothing changed.
+    #[test]
+    fn a_directory_sync_failure_is_reported_as_applied_not_as_unchanged() {
+        let store = store("dirsync");
+        store.add(key("a", "one")).unwrap();
+        FAULT.with(|f| f.set(Some(Stage::DirSync)));
+        let result = store.add(key("b", "two"));
+        FAULT.with(|f| f.set(None));
+        assert!(result.unwrap_err().starts_with(APPLIED_NOT_DURABLE));
+        assert_eq!(store.list().unwrap().len(), 2, "the change is in the store");
+        assert_eq!(entries(&store), [".passkeys.lock", "passkeys.json"]);
+    }
+
+    /// An ancestor that anyone can write to (and is not sticky) could be used to swap the state
+    /// directory away, so it is refused; a sticky one like /tmp is fine.
+    #[test]
+    fn an_ancestor_writable_by_everyone_is_refused() {
+        let store = store("ancestor");
+        let parent = store.dir.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(store.list().is_err() && store.add(key("a", "one")).is_err() && !store.any_registered());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        store.add(key("a", "one")).expect("a sticky ancestor is trusted");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 }
