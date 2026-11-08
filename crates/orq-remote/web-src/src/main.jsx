@@ -416,6 +416,10 @@ function byState(runs) {
 
 // The runs as the server ordered them (newest first), or grouped by state when asked. A state the
 // page does not know is "Unknown", never a success.
+function runAddress(runId) {
+  return currentPath().replace(/\/+$/, "") + "/" + encodeURIComponent(runId);
+}
+
 function OrchestrationList({ runs }) {
   const [sort, setSort] = useState("newest");
   if (runs.length === 0) {
@@ -436,6 +440,7 @@ function OrchestrationList({ runs }) {
         {shown.map((run) => (
           <li key={run.run_id} className="run card">
             <strong>{run.feature}</strong>
+            {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate(runAddress(run.run_id))}>Open timeline</button> : null}
             <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
             {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
             <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
@@ -444,6 +449,45 @@ function OrchestrationList({ runs }) {
           </li>
         ))}
       </ul>
+    </>
+  );
+}
+
+function isEvent(event) {
+  const text = (value) => value === null || typeof value === "string";
+  return event !== null && typeof event === "object" && typeof event.event_id === "string" && typeof event.kind === "string" && text(event.stage) && Number.isInteger(event.attempt) && text(event.occurred_at);
+}
+
+function parseTimeline(data) {
+  const ok = data && isOrchestration(data.run) && Array.isArray(data.events) && data.events.every(isEvent) && (data.next_cursor === null || (typeof data.next_cursor === "string" && RUN_ID.test(data.next_cursor)));
+  return ok ? data : null;
+}
+
+// One run: its header, then a page of its events in the order they happened. The next page is
+// its own address, so every request stays one plain GET.
+function RunTimeline({ timeline, listPath, runPath }) {
+  const { run, events, next_cursor: next } = timeline;
+  return (
+    <>
+      <button type="button" data-back="list" onClick={() => navigate(listPath)}>Back to the runs</button>
+      <h2>{run.feature}</h2>
+      <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+      {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
+      <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
+      {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
+      {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
+      {events.length === 0 ? <p>No events recorded.</p> : null}
+      <ol>
+        {events.map((event) => (
+          <li key={event.event_id} className="event card">
+            <strong>{event.kind}</strong>
+            {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
+            <span>{"Attempt " + event.attempt}</span>
+            {event.occurred_at ? <time>{event.occurred_at}</time> : null}
+          </li>
+        ))}
+      </ol>
+      {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
     </>
   );
 }
@@ -466,6 +510,27 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
       <>
         <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
         <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(runs) => <OrchestrationList runs={runs} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
+  const timeline = /^\/projects\/[^/]+\/orchestrations\/([^/]+)(?:\/after\/([^/]+))?$/.exec(address);
+  if (timeline !== null) {
+    let run = null;
+    let cursor = null;
+    try {
+      run = decodeURIComponent(timeline[1]);
+      cursor = timeline[2] === undefined ? null : decodeURIComponent(timeline[2]);
+    } catch (malformed) {
+      return <NotFound />;
+    }
+    if (!RUN_ID.test(run) || (cursor !== null && !RUN_ID.test(cursor))) return <NotFound />;
+    const listPath = "/projects/" + encodeURIComponent(projectId) + "/orchestrations";
+    const runPath = listPath + "/" + encodeURIComponent(run);
+    const timelinePath = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
+    return (
+      <>
+        <PageHeader title="Run" subtitle="The run's timeline" onRefresh={onRefresh} />
+        <Loaded key={timelinePath} reloads={reloads} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} />} onSignedOut={onSignedOut} />
       </>
     );
   }
