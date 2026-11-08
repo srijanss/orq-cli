@@ -186,3 +186,42 @@ fn a_logs_directory_that_cannot_be_read_is_an_error_not_an_empty_list() {
     assert_eq!(status, 500, "{body}");
     assert!(!body.to_string().contains(dir.to_str().unwrap()), "{body}");
 }
+
+#[test]
+fn a_log_over_the_read_cap_shows_its_readable_prefix_marked_truncated_with_secrets_and_odd_bytes_handled() {
+    const CAP: usize = 8 * 1024 * 1024;
+    let s = setup("logs-cap");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha));
+    // Exactly at the cap: not truncated.
+    log(&s, "r1", "exact.log", &format!("{}\n", "a".repeat(999)).repeat(CAP / 1000 + 1)[..CAP]);
+    let (status, exact) = get(&s, "/api/projects/alpha/runs/r1/logs/exact.log");
+    assert_eq!((status, &exact["truncated"]), (200, &json!(false)), "{}", &exact.to_string()[..200]);
+
+    // A key block begins before the cap and ends after it; a two-byte character is cut by the cap.
+    let mut bytes = format!("{}\n", "l".repeat(999)).repeat((CAP - 4000) / 1000).into_bytes();
+    bytes.extend_from_slice(b"-----BEGIN PRIVATE KEY-----\nSECRETKEYBODYSECRETKEYBODY\n");
+    bytes.resize(CAP - 1, b'S');
+    bytes.extend_from_slice("é".as_bytes());
+    bytes.extend_from_slice(b"\n-----END PRIVATE KEY-----\nafter\n");
+    let dir = s.roots.state.join("logs/r1");
+    std::fs::write(dir.join("big.log"), &bytes).unwrap();
+    let mut cursor = String::new();
+    let mut seen = String::new();
+    let mut pages = 0;
+    loop {
+        let path = if cursor.is_empty() { "/api/projects/alpha/runs/r1/logs/big.log".to_string() } else { format!("/api/projects/alpha/runs/r1/logs/big.log/after/{cursor}") };
+        let (status, page) = get(&s, &path);
+        assert_eq!(status, 200);
+        assert_eq!(page["truncated"], true);
+        seen.push_str(&page["lines"].to_string());
+        pages += 1;
+        match page["next_cursor"].as_str() {
+            Some(next) => cursor = next.to_string(),
+            None => break,
+        }
+        assert!(pages < 5000, "paging must end");
+    }
+    assert!(!seen.contains("SECRETKEYBODY") && !seen.contains("after"), "the cut key block and everything past the cap is gone");
+    assert!(seen.contains("[REDACTED]"));
+}
