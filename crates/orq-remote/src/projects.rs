@@ -319,7 +319,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let meta = path.symlink_metadata().map_err(|error| format!("log {file} is unreadable: {error}"))?;
         let (len, modified) = (meta.len(), meta.modified().ok());
         let mut slot = self.log_snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = match slot.as_ref().filter(|known| known.path == path && known.len == len && known.modified == modified && modified.is_some()) {
+        let snapshot = match slot.as_ref().filter(|known| after.is_some() && known.path == path && known.len == len && known.modified == modified && modified.is_some()) {
             Some(known) => (known.text.clone(), known.truncated),
             None => {
                 let mut bytes = Vec::new();

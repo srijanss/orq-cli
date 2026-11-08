@@ -253,3 +253,21 @@ fn a_log_that_has_not_changed_is_not_read_and_redacted_again_for_the_next_page()
     let fresh = StoreProjects::new(s.roots.clone(), s.scan.clone());
     assert_eq!(page(&fresh, "/api/projects/alpha/runs/r1/logs/gate.log/after/500").1["lines"][0], "LINE 0500");
 }
+
+#[test]
+fn starting_a_log_again_reads_it_afresh_even_when_its_size_and_time_are_unchanged() {
+    let s = setup("logs-restart");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha));
+    let text: String = (0..600).map(|n| format!("line {n:04}\n")).collect();
+    log(&s, "r1", "gate.log", &text);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let first = ask(&provider, &s, "GET", "/api/projects/alpha/runs/r1/logs/gate.log", Some("Bearer tok")).1;
+    assert_eq!(first["lines"][0], "line 0000");
+    let file = s.roots.state.join("logs/r1/gate.log");
+    let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, text.replace("line", "LINE")).unwrap();
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+    let again = ask(&provider, &s, "GET", "/api/projects/alpha/runs/r1/logs/gate.log", Some("Bearer tok")).1;
+    assert_eq!(again["lines"][0], "LINE 0000", "{again}");
+}
