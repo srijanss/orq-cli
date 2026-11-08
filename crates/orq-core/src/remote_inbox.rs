@@ -46,6 +46,28 @@ impl RemoteConfig {
         roots.config.join("remote-token")
     }
 
+    /// Like `load`, but a missing token file is created first: 32 random bytes as hex, written
+    /// for its owner only, never replacing a file that is already there.
+    pub fn load_or_create(roots: &StorageRoots) -> Result<RemoteConfig, String> {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let path = Self::token_path(roots);
+        if std::fs::symlink_metadata(&path).is_err() {
+            if let Some(dir) = path.parent() {
+                std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("cannot create the Orq config directory: {}", e.kind()))?;
+            }
+            let mut bytes = [0u8; 32];
+            std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).map_err(|e| format!("cannot generate a remote token: {}", e.kind()))?;
+            let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
+                Ok(mut file) => file.write_all(token.as_bytes()).map_err(|e| format!("cannot write the remote token file: {}", e.kind()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(format!("cannot create the remote token file {}: {}", path.display(), e.kind())),
+            }
+        }
+        Self::load(roots)
+    }
+
     /// Reads the token file. It must be a regular file (not a link) that only
     /// its owner can access, and hold a token of at least 32 characters. An
     /// error never contains the token.

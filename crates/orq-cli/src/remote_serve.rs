@@ -6,9 +6,23 @@ use std::process::ExitCode;
 
 use crate::{fail, usage_error};
 
+/// Where a plain `orq serve` listens unless told otherwise: this machine only.
+const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
+
+/// `orq serve [--repo <path>] [--listen <addr:port>]`: the same server with nothing to set up. The
+/// command itself is the opt-in, so the run settings need not enable remote control, a missing
+/// token is created, and the repository defaults to the current directory.
+pub fn serve_plain(args: &[OsString]) -> ExitCode {
+    run(args, false)
+}
+
 pub fn serve(args: &[OsString]) -> ExitCode {
+    run(args, true)
+}
+
+fn run(args: &[OsString], strict: bool) -> ExitCode {
     let mut repo = None;
-    let mut listen = String::from("127.0.0.1:7878");
+    let mut listen = String::from(DEFAULT_LISTEN);
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match word.to_str() {
@@ -23,19 +37,27 @@ pub fn serve(args: &[OsString]) -> ExitCode {
             _ => return usage_error(),
         }
     }
-    let Some(repo) = repo else { return usage_error() };
+    let repo = match repo {
+        Some(repo) => repo,
+        None if !strict => match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(err) => return fail(format!("cannot read the current directory: {:?}", err.kind())),
+        },
+        None => return usage_error(),
+    };
     let settings = match orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok()) {
         Ok(settings) => settings,
         Err(err) => return fail(format!("cannot read the run settings: {err}")),
     };
-    if settings.remote_control != Some(true) {
+    if strict && settings.remote_control != Some(true) {
         return fail("remote control is off; set remote_control = true to serve the review inbox");
     }
     let roots = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
         Ok(roots) => roots,
         Err(err) => return fail(format!("cannot locate the Orq directories: {err}")),
     };
-    let config = match orq_core::remote_inbox::RemoteConfig::load(&roots) {
+    let loaded = if strict { orq_core::remote_inbox::RemoteConfig::load(&roots) } else { orq_core::remote_inbox::RemoteConfig::load_or_create(&roots) };
+    let config = match loaded {
         Ok(config) => config,
         Err(reason) => return fail(reason),
     };
@@ -52,6 +74,7 @@ pub fn serve(args: &[OsString]) -> ExitCode {
     let override_root = std::env::var_os("ORQ_REMOTE_PROJECTS_ROOT").map(PathBuf::from).filter(|root| root.is_absolute());
     let scan_root = orq_remote::projects::default_root(home.as_deref(), override_root.as_deref());
     let projects = std::sync::Arc::new(orq_remote::projects::StoreProjects::new(roots.clone(), scan_root));
+    let state_roots = roots.clone();
     let state = std::sync::Arc::new(orq_remote::ServerState {
         roots,
         config,
@@ -63,6 +86,11 @@ pub fn serve(args: &[OsString]) -> ExitCode {
         Err(err) => return fail(format!("cannot start the server: {:?}", err.kind())),
     };
     println!("orq remote: listening on http://{}", server.addr());
+    if !strict {
+        let token = orq_core::remote_inbox::RemoteConfig::token_path(&state_roots);
+        println!("sign in with the token stored in {}", token.display());
+        println!("read it with: cat {}", token.display());
+    }
     let _ = std::io::Write::flush(&mut std::io::stdout());
     wait_for_interrupt();
     drop(server);
