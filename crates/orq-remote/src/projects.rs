@@ -19,14 +19,21 @@ pub fn default_root(home: Option<&Path>, override_root: Option<&Path>) -> PathBu
     }
 }
 
-/// Scans the root now. A missing or unreadable root, or an unreadable entry, gives no project.
+/// Scans the root now. A symlinked root is allowed on purpose and is resolved once; every project
+/// is then checked to still resolve to a direct child of that real root, so a folder swapped for a
+/// link to somewhere else is dropped. A missing or unreadable root, or entry, gives no project.
 pub fn discover(root: &Path) -> Vec<Project> {
-    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let Ok(real_root) = std::fs::canonicalize(root) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&real_root) else { return Vec::new() };
     let mut found: Vec<(String, PathBuf)> = entries
         .flatten()
         .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
-        .filter(|entry| is_repository(&entry.path()))
-        .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.path())))
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let path = real_root.join(&name);
+            let resolved = std::fs::canonicalize(&path).ok()?;
+            (resolved == path && is_repository(&path)).then_some((name, path))
+        })
         .collect();
     found.sort();
     found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()

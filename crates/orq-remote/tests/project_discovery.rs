@@ -76,3 +76,14 @@ fn an_id_depends_only_on_its_own_folder_name_and_never_equals_another_projects_i
     let unique: std::collections::HashSet<_> = all.iter().collect();
     assert_eq!(unique.len(), all.len(), "{all:?}");
 }
+
+#[test]
+fn a_symlinked_root_is_allowed_on_purpose_and_projects_are_reported_under_its_real_location() {
+    let real = web_deps::private_temp_dir("real-root");
+    repo(&real, "app");
+    let holder = web_deps::private_temp_dir("link-holder");
+    symlink(&real, holder.join("code")).unwrap();
+    let found = discover(&holder.join("code"));
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, fs::canonicalize(&real).unwrap().join("app"), "paths must name the real location, not the link");
+}
