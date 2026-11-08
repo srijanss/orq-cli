@@ -151,3 +151,21 @@ fn a_plain_group_folder_lends_the_repositories_directly_inside_it_but_no_deeper(
     repo(&root.join("top"), "inner");
     assert_eq!(discover(&root).len(), 3);
 }
+
+#[test]
+fn a_nested_project_with_long_names_still_gets_a_short_stable_distinct_id_the_page_accepts() {
+    let root = web_deps::private_temp_dir("long");
+    let group = "a-group-folder-with-a-long-name";
+    fs::create_dir(root.join(group)).unwrap();
+    let shared = "a-repository-name-that-is-long-and-shared";
+    repo(&root.join(group), &format!("{shared}-one"));
+    repo(&root.join(group), &format!("{shared}-two"));
+    let found = discover(&root);
+    assert_eq!(found.len(), 2);
+    for project in &found {
+        assert!(project.id.len() <= 100, "{}: {}", project.id.len(), project.id);
+        assert!(project.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{}", project.id);
+    }
+    assert_ne!(found[0].id, found[1].id);
+    assert_eq!(found.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), discover(&root).iter().map(|p| p.id.clone()).collect::<Vec<_>>());
+}

@@ -79,7 +79,21 @@ fn project_id(name: &str) -> String {
         return readable;
     }
     let hex: String = name.bytes().map(|byte| format!("{byte:02x}")).collect();
-    format!("{readable}_{hex}")
+    if readable.len() + 1 + hex.len() <= MAX_ID_LEN {
+        return format!("{readable}_{hex}");
+    }
+    // A long name would overflow what the page accepts: keep a short readable start and a fixed
+    // 128-bit digest instead. The `__` never occurs in the other two kinds, so they cannot meet.
+    let start: String = readable.chars().take(40).collect();
+    format!("{}__{:016x}{:016x}", start.trim_end_matches('-'), fnv1a(name, 0xcbf2_9ce4_8422_2325), fnv1a(name, 0x8422_2325_cbf2_9ce4))
+}
+
+/// The longest id the page accepts is 128 characters; stay well under it.
+const MAX_ID_LEN: usize = 100;
+
+/// FNV-1a: a stable hash that never changes between releases, unlike the standard hasher.
+fn fnv1a(text: &str, seed: u64) -> u64 {
+    text.bytes().fold(seed, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// The projects provider the server hands to the handler: it rescans the scan root on each
