@@ -165,3 +165,40 @@ fn a_ledger_that_is_a_link_a_pipe_or_far_too_large_makes_its_project_unavailable
     }
     assert_eq!(entry(&list, "plain")["features"], 1, "{list}");
 }
+
+fn run_record(base: &Path, run: &str, project: &str) -> RunRecord {
+    RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(run), repository: String::new(), profiles: Default::default() }
+}
+
+fn event(run: &str, project: &str, n: u32, kind: &str, payload: serde_json::Value) -> orq_orchestrator::Event {
+    orq_orchestrator::Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), kind: kind.into(), stage: None, attempt: 1, occurred_at: "2026-11-08T00:00:00Z".into(), payload }
+}
+
+#[test]
+fn only_runs_that_are_running_or_pausing_count_as_active_and_a_bad_event_log_makes_projects_unavailable() {
+    let base = web_deps::private_temp_dir("projects-events");
+    let scan = base.join("code");
+    let repo = git_repo(&scan, "evented");
+    let roots = roots(&base);
+    let id = id_of(&repo);
+    let runs = RunStore::new(&roots.state);
+    let histories: [(&str, Vec<(&str, serde_json::Value)>); 4] = [
+        ("r-running", vec![]),
+        ("r-paused", vec![("run.pause_requested", serde_json::json!({})), ("run.paused", serde_json::json!({}))]),
+        ("r-done", vec![("run.completed", serde_json::json!({"ending": "review_ready"}))]),
+        ("r-failed", vec![("run.failed", serde_json::json!({"reason": "x"}))]),
+    ];
+    for (run, history) in &histories {
+        runs.create(&run_record(&base, run, &id)).unwrap();
+        for (n, (kind, payload)) in history.iter().enumerate() {
+            runs.append_event(&event(run, &id, n as u32, kind, payload.clone())).unwrap();
+        }
+    }
+    let list = StoreProjects::new(roots.clone(), scan.clone()).projects().unwrap();
+    assert_eq!(entry(&list, "evented")["active_runs"], 2, "{list}");
+
+    std::fs::write(roots.state.join("runs").join("r-running").join("events.jsonl"), "not an event\n").unwrap();
+    let list = StoreProjects::new(roots, scan).projects().unwrap();
+    assert_eq!(entry(&list, "evented")["available"], false, "{list}");
+    assert!(entry(&list, "evented")["active_runs"].is_null(), "{list}");
+}
