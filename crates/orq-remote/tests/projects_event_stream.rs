@@ -118,3 +118,22 @@ fn the_stream_needs_the_token_and_only_reads() {
     write!(post, "POST {PATH} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\n\r\n").unwrap();
     assert!(read_until(&mut post, "\r\n\r\n").starts_with("HTTP/1.1 405"));
 }
+
+#[test]
+fn head_answers_like_get_with_the_stream_headers_and_no_body() {
+    let (server, _events) = start(&["e0"]);
+    let head = |path: &str, token: Option<&str>| {
+        let mut stream = TcpStream::connect(server.addr()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+        write!(stream, "HEAD {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{auth}\r\n").unwrap();
+        let mut raw = Vec::new();
+        let _ = stream.read_to_end(&mut raw);
+        String::from_utf8_lossy(&raw).to_string()
+    };
+    let ok = head(PATH, Some(TOKEN));
+    assert!(ok.starts_with("HTTP/1.1 200") && ok.to_lowercase().contains("content-type: text/event-stream"), "{ok}");
+    assert!(ok.ends_with("\r\n\r\n"), "no body: {ok}");
+    assert!(head(PATH, None).starts_with("HTTP/1.1 401"));
+    assert!(head("/api/projects/a/runs/nope/events", Some(TOKEN)).starts_with("HTTP/1.1 404"));
+}

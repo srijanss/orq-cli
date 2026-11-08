@@ -107,10 +107,10 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         return asset_response(asset, method == "HEAD");
     }
 
-    if method == "GET" {
+    if method == "GET" || method == "HEAD" {
         let last_event_id = headers.get("last-event-id").and_then(|value| value.to_str().ok()).map(str::to_string);
         if let Some((base, cursor)) = event_stream_target(&path, last_event_id.as_deref()) {
-            return follow(shared, peer, authorization, base, cursor).await;
+            return follow(shared, peer, authorization, base, cursor, method == "HEAD").await;
         }
     }
 
@@ -170,7 +170,7 @@ fn event_stream_target(path: &str, last_event_id: Option<&str>) -> Option<(Strin
 
 /// Answers a stream request: the handler's own refusal when it refuses, otherwise server-sent events,
 /// each carrying the event id so a dropped connection resumes after the last one seen.
-async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<String>, base: String, cursor: Option<String>) -> Response {
+async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<String>, base: String, cursor: Option<String>, head: bool) -> Response {
     struct Follow {
         shared: Arc<Shared>,
         peer: SocketAddr,
@@ -244,7 +244,9 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<Str
             }
         }
     });
-    let mut response = Response::new(axum::body::Body::from_stream(stream));
+    // A HEAD gets the stream's headers and nothing to follow.
+    let body = if head { axum::body::Body::empty() } else { axum::body::Body::from_stream(stream) };
+    let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
