@@ -85,6 +85,8 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String, StoreError> {
 
 pub(crate) struct GitOutput {
     pub success: bool,
+    /// The exit code, or `None` when git was ended by a signal.
+    pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
 }
@@ -117,6 +119,7 @@ pub(crate) fn run_sanitized(mut command: Command) -> Result<GitOutput, StoreErro
     let out = command.stdin(Stdio::null()).output()?;
     Ok(GitOutput {
         success: out.status.success(),
+        code: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })

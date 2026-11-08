@@ -101,8 +101,8 @@ pub fn work_is_on_target(repo: &Path, record: &RunRecord) -> bool {
     work_on_target(repo, record).unwrap_or(false)
 }
 
-/// [`work_is_on_target`], but a git that fails to answer is an error rather than "not merged": a
-/// run whose branch, base or target branch does not resolve is not merged.
+/// [`work_is_on_target`], but a git that fails to answer is an error rather than "not merged": only
+/// a run whose branch, base or target branch does not exist is not merged.
 pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, String> {
     if record.branch.is_empty() || record.base_sha.is_empty() || record.target_branch.is_empty() {
         return Ok(false);
@@ -112,8 +112,11 @@ pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, St
     let failed = |e: String| format!("could not tell whether {}'s work is on its target branch {}: {e}", record.run_id, record.target_branch);
     for rev in [&branch, &record.base_sha, &target] {
         let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| failed(e.to_string()))?;
-        if !out.success {
-            return Ok(false);
+        // With --quiet, a revision that does not exist exits 1 and says nothing; anything else is git failing.
+        match out.code {
+            Some(0) => {}
+            Some(1) => return Ok(false),
+            _ => return Err(failed(out.stderr.trim().to_string())),
         }
     }
     // Whether the branch has any commit `not` lacks: git stops at the first one it finds.
