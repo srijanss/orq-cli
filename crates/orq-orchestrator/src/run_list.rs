@@ -98,16 +98,30 @@ pub fn mark_merged_runs(store: &RunStore, list: &mut RunList, repo: &Path) {
 /// least one commit past the run's base, and every one of them is reachable from the local target
 /// branch. A run with no commits, a branch or base git cannot resolve, or a git that fails, is not.
 pub fn work_is_on_target(repo: &Path, record: &RunRecord) -> bool {
+    work_on_target(repo, record).unwrap_or(false)
+}
+
+/// [`work_is_on_target`], but a git that fails to answer is an error rather than "not merged": a
+/// run whose branch, base or target branch does not resolve is not merged.
+pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, String> {
     if record.branch.is_empty() || record.base_sha.is_empty() || record.target_branch.is_empty() {
-        return false;
+        return Ok(false);
     }
     let branch = format!("refs/heads/{}", record.branch);
-    let count = |not: &str| -> Option<u64> {
-        let out = git_raw(repo, &["rev-list", "--count", "--end-of-options", &branch, &format!("^{not}")]).ok()?;
+    let target = format!("refs/heads/{}", record.target_branch);
+    let failed = |e: String| format!("could not tell whether {}'s work is on its target branch {}: {e}", record.run_id, record.target_branch);
+    for rev in [&branch, &record.base_sha, &target] {
+        let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| failed(e.to_string()))?;
         if !out.success {
-            return None;
+            return Ok(false);
         }
-        out.stdout.trim().parse().ok()
+    }
+    let count = |not: &str| -> Result<u64, String> {
+        let out = git_raw(repo, &["rev-list", "--count", "--end-of-options", &branch, &format!("^{not}")]).map_err(|e| failed(e.to_string()))?;
+        if !out.success {
+            return Err(failed(out.stderr.trim().to_string()));
+        }
+        out.stdout.trim().parse().map_err(|_| failed(format!("git printed {:?}", out.stdout.trim())))
     };
-    matches!(count(&record.base_sha), Some(n) if n > 0) && count(&format!("refs/heads/{}", record.target_branch)) == Some(0)
+    Ok(count(&record.base_sha)? > 0 && count(&target)? == 0)
 }

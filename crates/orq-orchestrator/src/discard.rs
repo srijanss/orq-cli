@@ -129,7 +129,7 @@ pub fn discard_run_before_remove(
     // stops the discard before anything is removed.
     let commits = if has_worktree && kept_worktree.is_none() { Some(branch_commits(repo, &record)?) } else { None };
     // Told while the branch is still there.
-    let merged = matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::work_is_on_target(repo, &record);
+    let merged = matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::run_list::work_on_target(repo, &record)?;
     if has_worktree && kept_worktree.is_none() {
         before_remove();
         // Without --force git checks again as it removes, so work written since the check above is
