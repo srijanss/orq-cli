@@ -146,6 +146,17 @@ fn token_matches(expected: &str, header: Option<&str>) -> bool {
 pub trait ProjectsProvider {
     /// The projects as JSON, or why they cannot be listed.
     fn projects(&self) -> Result<Value, String>;
+
+    /// The review scope of project `id`, `None` when there is no such project.
+    fn review_scope(&self, _id: &str) -> Result<Option<ReviewScope>, String> {
+        Ok(None)
+    }
+}
+
+/// How the review store knows a project: the id its reports are saved under and its display name.
+pub struct ReviewScope {
+    pub review_key: String,
+    pub name: String,
 }
 
 pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
@@ -185,12 +196,37 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             None => error(404, "not found"),
         };
     }
+    if let Some(rest) = path.strip_prefix("/api/projects/") {
+        return match (provider, project_path(rest)) {
+            (Some(provider), Some((id, run))) => match provider.review_scope(id) {
+                Ok(Some(scope)) => match run {
+                    None => list(roots, &scope.review_key, &scope.name, true),
+                    Some(run_id) => one(roots, run_id, Some(&scope.review_key)),
+                },
+                Ok(None) => error(404, "not found"),
+                Err(why) => error(500, &why),
+            },
+            _ => error(404, "not found"),
+        };
+    }
     if path == "/api/reviews" {
-        return list(roots, project_id, project_name);
+        return list(roots, project_id, project_name, false);
     }
     match path.strip_prefix("/api/reviews/") {
-        Some(run_id) if !run_id.contains('/') => one(roots, run_id),
+        Some(run_id) if !run_id.contains('/') => one(roots, run_id, None),
         _ => error(404, "not found"),
+    }
+}
+
+/// `{id}/reviews` gives (id, None); `{id}/reviews/{run}` gives (id, Some(run)).
+fn project_path(rest: &str) -> Option<(&str, Option<&str>)> {
+    let (id, tail) = rest.split_once('/')?;
+    if id.is_empty() {
+        return None;
+    }
+    match tail.strip_prefix("reviews")? {
+        "" => Some((id, None)),
+        run => run.strip_prefix('/').filter(|run| !run.contains('/')).map(|run| (id, Some(run))),
     }
 }
 
@@ -218,13 +254,14 @@ fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
     })
 }
 
-fn list(roots: &StorageRoots, project_id: &str, project_name: &str) -> Response {
+fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool) -> Response {
     let rows = match review_inbox::inbox(roots, project_id, project_name) {
         Ok(rows) => rows,
         Err(why) => return error(500, &why),
     };
     let reviews: Vec<Value> = rows
         .into_iter()
+        .filter(|row| row.current || !only_this_project)
         .map(|row| {
             let link = facts(roots, &row.run_id).and_then(|f| f.link);
             json!({
@@ -236,9 +273,16 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str) -> Response 
     reply(200, json!({ "reviews": reviews }))
 }
 
-fn one(roots: &StorageRoots, run_id: &str) -> Response {
+fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Response {
     if check_run_id(run_id).is_err() {
         return error(400, "invalid run id");
+    }
+    if let Some(owner_id) = only_project {
+        // A report of another project is not found here, exactly like a run that does not exist.
+        let owner = Store::open_read_only(&roots.database()).ok().and_then(|store| store.reviews_for_run(run_id).ok()).and_then(|mut all| all.pop()).map(|record| record.project);
+        if owner.as_deref() != Some(owner_id) {
+            return error(404, "no review report for this run");
+        }
     }
     // The commit is fixed first and the report is read for that very commit, so
     // a report saved in between cannot be paired with another commit's facts.
