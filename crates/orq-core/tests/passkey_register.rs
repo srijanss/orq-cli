@@ -9,6 +9,9 @@ use orq_core::storage::StorageRoots;
 use sha2::{Digest, Sha256};
 
 const HOST: &str = "box.tailnet.ts.net";
+/// The P-256 generator point, a real public key.
+const GX: [u8; 32] = [0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96];
+const GY: [u8; 32] = [0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e, 0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6, 0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5];
 
 struct Fixture {
     host: PasskeyHost,
@@ -70,7 +73,7 @@ struct Answer {
 
 impl Answer {
     fn good() -> Answer {
-        Answer { rp_id: HOST.into(), flags: 0x45, sign_count: 0, credential_id: vec![7; 32], cose: cose_key(&[1; 32], &[2; 32]), extra: vec![], client_type: "webauthn.create".into(), origin: format!("https://{HOST}"), cross_origin: Some(false), fmt: "none".into() }
+        Answer { rp_id: HOST.into(), flags: 0x45, sign_count: 0, credential_id: vec![7; 32], cose: cose_key(&GX, &GY), extra: vec![], client_type: "webauthn.create".into(), origin: format!("https://{HOST}"), cross_origin: Some(false), fmt: "none".into() }
     }
 
     fn response(&self, challenge: &str) -> RegistrationResponse {
@@ -140,7 +143,7 @@ fn a_good_answer_stores_the_key_with_its_id_count_and_label() {
     assert_eq!(stored.credential_id, encode_b64url(&[7; 32]));
     assert_eq!((stored.sign_count, stored.label.as_str()), (5, "laptop"));
     assert_eq!(f.store.list().unwrap(), vec![stored.clone()]);
-    assert_eq!(stored.public_key, encode_b64url(&cose_key(&[1; 32], &[2; 32])));
+    assert_eq!(stored.public_key, encode_b64url(&cose_key(&GX, &GY)));
 }
 
 #[test]
@@ -166,10 +169,15 @@ fn every_check_refuses_and_stores_nothing() {
         ("no credential data", Box::new(|a| a.flags = 0x05)),
         ("empty credential id", Box::new(|a| a.credential_id = vec![])),
         ("oversized credential id", Box::new(|a| a.credential_id = vec![1; 769])),
-        ("wrong algorithm", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-257)), (int(-1), int(1)), (int(-2), bytes(&[1; 32])), (int(-3), bytes(&[2; 32]))]))),
-        ("wrong curve", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-7)), (int(-1), int(2)), (int(-2), bytes(&[1; 32])), (int(-3), bytes(&[2; 32]))]))),
-        ("short coordinate", Box::new(|a| a.cose = cose_key(&[1; 31], &[2; 32]))),
-        ("extra key entry", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-7)), (int(-1), int(1)), (int(-2), bytes(&[1; 32])), (int(-3), bytes(&[2; 32])), (int(9), int(9))]))),
+        ("wrong algorithm", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-257)), (int(-1), int(1)), (int(-2), bytes(&GX)), (int(-3), bytes(&GY))]))),
+        ("wrong curve", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-7)), (int(-1), int(2)), (int(-2), bytes(&GX)), (int(-3), bytes(&GY))]))),
+        ("point off the curve", Box::new(|a| {
+            let mut y = GY;
+            y[31] ^= 1;
+            a.cose = cose_key(&GX, &y);
+        })),
+        ("short coordinate", Box::new(|a| a.cose = cose_key(&GX[1..], &GY))),
+        ("extra key entry", Box::new(|a| a.cose = map(vec![(int(1), int(2)), (int(3), int(-7)), (int(-1), int(1)), (int(-2), bytes(&GX)), (int(-3), bytes(&GY)), (int(9), int(9))]))),
         ("trailing bytes", Box::new(|a| a.extra = vec![0])),
         ("extension flag without data", Box::new(|a| a.flags |= 0x80)),
     ];
@@ -207,22 +215,47 @@ fn a_refused_answer_uses_up_its_challenge_and_a_login_challenge_is_not_accepted(
     assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &Answer::good().response(&unknown), 112).is_err());
 }
 
-#[test]
-fn garbage_answers_are_refused_without_a_panic() {
-    let f = fixture("garbage");
+/// A response whose client data names a freshly issued challenge, with the given attestation text.
+fn with_attestation(f: &Fixture, attestation: String) -> RegistrationResponse {
     let options = begin(&f.host, &f.challenges, &f.store, 100).unwrap();
-    let good = Answer::good().response(&challenge_of(&options));
-    for (client, attestation) in [("!!", good.attestation_object.as_str()), (good.client_data_json.as_str(), "!!"), (good.client_data_json.as_str(), ""), ("", ""), (good.client_data_json.as_str(), "oA")] {
-        let response = RegistrationResponse { client_data_json: client.into(), attestation_object: attestation.into(), label: "x".into() };
-        assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &response, 110).is_err());
+    RegistrationResponse { attestation_object: attestation, ..Answer::good().response(&challenge_of(&options)) }
+}
+
+#[test]
+fn garbage_answers_are_refused_without_a_panic_and_store_nothing() {
+    let f = fixture("garbage");
+    let nested = [vec![0x81; 50], vec![0]].concat();
+    let cases: Vec<(&str, String)> = vec![
+        ("not base64url", "!!".into()),
+        ("empty", String::new()),
+        ("truncated map", "oA".into()),
+        ("indefinite length", encode_b64url(&[0x9f, 0xff])),
+        ("nested too deeply", encode_b64url(&nested)),
+        ("trailing bytes", encode_b64url(&[0xa0, 0x00])),
+        ("too large", "A".repeat(30_000)),
+    ];
+    for (name, attestation) in cases {
+        let response = with_attestation(&f, attestation);
+        let error = finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &response, 110).unwrap_err();
+        assert!(!error.contains("challenge"), "{name} failed at the challenge, not the attestation: {error}");
     }
-    let huge = RegistrationResponse { client_data_json: "A".repeat(10_000), attestation_object: good.attestation_object.clone(), label: "x".into() };
+    let huge = RegistrationResponse { client_data_json: "A".repeat(10_000), ..with_attestation(&f, String::new()) };
     assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &huge, 110).is_err());
-    // Deeply nested and indefinite-length CBOR.
-    for raw in [vec![0x9f, 0xff], [vec![0x81; 50], vec![0]].concat()] {
-        let response = RegistrationResponse { client_data_json: good.client_data_json.clone(), attestation_object: encode_b64url(&raw), label: "x".into() };
+    for client in ["!!", "", "e30"] {
+        let response = RegistrationResponse { client_data_json: client.into(), ..with_attestation(&f, String::new()) };
         assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &response, 110).is_err());
     }
+    assert!(f.store.list().unwrap().is_empty());
+}
+
+#[test]
+fn a_malformed_attestation_uses_up_the_challenge() {
+    let f = fixture("malformed-spent");
+    let options = begin(&f.host, &f.challenges, &f.store, 100).unwrap();
+    let challenge = challenge_of(&options);
+    let broken = RegistrationResponse { attestation_object: "!!".into(), ..Answer::good().response(&challenge) };
+    assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &broken, 110).is_err());
+    assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithToken, &Answer::good().response(&challenge), 111).is_err());
     assert!(f.store.list().unwrap().is_empty());
 }
 
