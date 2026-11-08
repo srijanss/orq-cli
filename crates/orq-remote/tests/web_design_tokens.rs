@@ -1,5 +1,7 @@
 //! Semantic colour tokens for light and dark, and badges that never rely on colour alone.
 
+mod web_deps;
+
 use std::path::{Path, PathBuf};
 
 const TOKENS: [&str; 10] = [
@@ -67,4 +69,44 @@ fn every_token_has_a_badge_with_a_label_and_an_icon_that_uses_it() {
         assert!(rule.contains(&format!("var(--{token})")) && rule.contains(&format!("var(--{token}-bg)")), "{token}: rule must use its tokens: {rule}");
     }
     assert!(source.contains("{icon}") && source.contains("{label}"), "a badge renders both its icon and its text");
+}
+
+/// Renders the given kinds with the real component; None when node or the web dependencies are missing.
+fn render(kinds: &[serde_json::Value]) -> Option<serde_json::Value> {
+    web_deps::ready().then(|| {
+        let output = std::process::Command::new("node")
+            .arg(crate_dir().join("tests/web_badge_render.mjs"))
+            .arg(serde_json::Value::Array(kinds.to_vec()).to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice(&output.stdout).unwrap()
+    })
+}
+
+#[test]
+fn each_badge_renders_its_icon_hidden_from_readers_its_text_and_its_class() {
+    let kinds: Vec<serde_json::Value> = TOKENS.iter().map(|t| serde_json::json!(t)).collect();
+    let Some(out) = render(&kinds) else { return };
+    for token in TOKENS {
+        let entry = &out["html"][token];
+        assert_eq!(entry["ok"], true, "{token}: {entry}");
+        let html = entry["html"].as_str().unwrap();
+        assert!(html.contains(&format!("class=\"badge badge-{token}\"")), "{token}: {html}");
+        assert!(html.contains("<span aria-hidden=\"true\">") && !html.contains("<span aria-hidden=\"true\"></span>"), "{token}: {html}");
+        let words = html.split("</span><span>").nth(1).unwrap_or_else(|| panic!("{token}: the words follow the icon: {html}"));
+        assert!(words.starts_with(|c: char| c.is_alphabetic()), "{token}: the words follow the icon: {html}");
+    }
+}
+
+#[test]
+fn an_unknown_or_omitted_kind_renders_a_plain_badge_instead_of_throwing() {
+    let kinds = [serde_json::json!("nonsense"), serde_json::json!(null), serde_json::json!("constructor")];
+    let Some(out) = render(&kinds) else { return };
+    for key in ["nonsense", "null", "constructor"] {
+        let entry = &out["html"][key];
+        assert_eq!(entry["ok"], true, "{key}: {entry}");
+        let html = entry["html"].as_str().unwrap();
+        assert!(html.contains("class=\"badge\"") && html.contains("Unknown"), "{key}: {html}");
+    }
 }

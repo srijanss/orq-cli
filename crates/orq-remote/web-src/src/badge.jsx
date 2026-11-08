@@ -12,10 +12,14 @@ export const BADGES = {
   "freshness-outdated": { label: "Outdated", icon: "○" },
 };
 
+const UNKNOWN = { label: "Unknown", icon: "?" };
+
 export function Badge({ kind }) {
-  const { label, icon } = BADGES[kind];
+  // Only an own entry counts, so a kind such as "constructor" cannot reach inherited properties.
+  const known = typeof kind === "string" && Object.hasOwn(BADGES, kind);
+  const { label, icon } = known ? BADGES[kind] : UNKNOWN;
   return (
-    <span className={`badge badge-${kind}`}>
+    <span className={known ? `badge badge-${kind}` : "badge"}>
       <span aria-hidden="true">{icon}</span>
       <span>{label}</span>
     </span>
