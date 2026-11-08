@@ -163,6 +163,7 @@ fn is_application_path(path: &str) -> bool {
         ["dashboard"] | ["settings"] | ["projects"] => true,
         ["projects", project] => plain(project),
         ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
+        ["projects", project, "reviews", run] => plain(project) && plain(run),
         ["reviews", run] => plain(run),
         _ => false,
     }

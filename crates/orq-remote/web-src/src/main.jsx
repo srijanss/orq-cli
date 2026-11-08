@@ -91,13 +91,13 @@ function TokenPrompt({ message, onToken }) {
   );
 }
 
-function RunRow({ run }) {
+function RunRow({ run, detailPrefix }) {
   const open = typeof run.run_id === "string" && RUN_ID.test(run.run_id);
   return (
     <li className={run.stale === true ? "run stale card" : "run card"}>
       {open ? <span className="ticket-id">{run.run_id}</span> : null}
       {open ? (
-        <button type="button" onClick={() => navigate(DETAIL_PREFIX + run.run_id)}>
+        <button type="button" onClick={() => navigate(detailPrefix + run.run_id)}>
           {String(run.feature)}
         </button>
       ) : (
@@ -110,24 +110,24 @@ function RunRow({ run }) {
   );
 }
 
-function RunList({ runs }) {
+function RunList({ runs, detailPrefix = DETAIL_PREFIX }) {
   if (runs.length === 0) {
     return <p>No reviews in the inbox.</p>;
   }
   return (
     <ul>
       {runs.map((run, index) => (
-        <RunRow key={index} run={run} />
+        <RunRow key={index} run={run} detailPrefix={detailPrefix} />
       ))}
     </ul>
   );
 }
 
-function Detail({ report }) {
+function Detail({ report, listPath = "/" }) {
   const href = report.stale ? null : safeHttpsLink(report.link);
   return (
     <>
-      <button type="button" onClick={() => navigate("/")}>
+      <button type="button" onClick={() => navigate(listPath)}>
         Back to the list
       </button>
       {report.stale && <p>{STALE_MARKER}</p>}
@@ -309,6 +309,26 @@ function PageHeader({ title, subtitle, onRefresh }) {
   );
 }
 
+// What a project's address shows. Only the Reviews tab is built: its list and reports come from
+// the project's own endpoints and stay under the project's address.
+function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, onRefresh }) {
+  const match = /^\/projects\/[^/]+\/reviews(?:\/([^/]*))?$/.exec(address);
+  if (match === null) return <p>This page is not available yet.</p>;
+  const base = "/api/projects/" + encodeURIComponent(projectId) + "/reviews";
+  const listPath = "/projects/" + encodeURIComponent(projectId) + "/reviews";
+  if (match[1] === undefined) {
+    return (
+      <>
+        <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />
+        <Loaded key={base} reloads={reloads} token={token} path={base} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} detailPrefix={listPath + "/"} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
+  if (!RUN_ID.test(match[1])) return <NotFound />;
+  const path = base + "/" + encodeURIComponent(match[1]);
+  return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} listPath={listPath} />} onSignedOut={onSignedOut} />;
+}
+
 function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   const [reloads, setReloads] = useState(0);
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
@@ -316,7 +336,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     return <NotFound />;
   }
   if (projectId !== null) {
-    return <p>This page is not available yet.</p>;
+    return <ProjectPage token={token} onSignedOut={onSignedOut} projectId={projectId} path={hash} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} />;
   }
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
