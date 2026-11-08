@@ -151,6 +151,8 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let current = true;
+    // Leaving the page (or asking again) cancels the request, so nothing outlives its screen.
+    const controller = new AbortController();
     setState({ kind: "loading" });
     (async () => {
       try {
@@ -159,6 +161,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
           headers: { Authorization: "Bearer " + token },
           cache: "no-store",
           referrerPolicy: "no-referrer",
+          signal: controller.signal,
         });
         if (!current) return;
         if (response.status === 401) {
@@ -183,6 +186,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
     })();
     return () => {
       current = false;
+      controller.abort();
     };
   }, [token, path, attempt]);
   if (state.kind === "loading") {

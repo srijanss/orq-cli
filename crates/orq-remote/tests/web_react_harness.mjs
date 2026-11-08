@@ -27,7 +27,8 @@ const held = {};
 const responses = [...scenario.responses];
 
 window.fetch = (url, options) => {
-  requests.push({ url, method: options.method, headers: options.headers });
+  const signal = options.signal;
+  requests.push({ url, method: options.method, headers: options.headers, get aborted() { return signal ? signal.aborted : null; } });
   const index = requests.length - 1;
   const next = responses.shift();
   if (!next || (next.reject && next.hold !== "fetch")) {
@@ -49,6 +50,7 @@ window.fetch = (url, options) => {
   if (next.hold === "fetch") {
     return new Promise((resolve, reject) => {
       held[index] = () => (next.reject ? reject(new Error("offline")) : resolve(reply()));
+      if (signal) signal.addEventListener("abort", () => reject(new window.DOMException("aborted", "AbortError")));
     });
   }
   return Promise.resolve(reply());
