@@ -268,13 +268,13 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
 }
 
 fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool) -> Response {
-    let rows = match review_inbox::inbox(roots, project_id, project_name) {
+    let rows = if only_this_project { review_inbox::inbox_of_project(roots, project_id, project_name) } else { review_inbox::inbox(roots, project_id, project_name) };
+    let rows = match rows {
         Ok(rows) => rows,
         Err(why) => return error(500, &why),
     };
     let reviews: Vec<Value> = rows
         .into_iter()
-        .filter(|row| row.current || !only_this_project)
         .map(|row| {
             let link = facts(roots, &row.run_id).and_then(|f| f.link);
             json!({

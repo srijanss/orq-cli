@@ -38,6 +38,16 @@ pub struct InboxDetail {
 /// their id without the trailing hash. A missing database is an empty inbox
 /// and is not created.
 pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_name: &str) -> Result<Vec<InboxRow>, String> {
+    rows(roots, current_project_id, current_project_name, false)
+}
+
+/// Like [`inbox`], for the reviews of one project only. Other projects' records are dropped before
+/// any report or lifecycle is read, so they cost nothing.
+pub fn inbox_of_project(roots: &StorageRoots, project_id: &str, project_name: &str) -> Result<Vec<InboxRow>, String> {
+    rows(roots, project_id, project_name, true)
+}
+
+fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &str, only_current: bool) -> Result<Vec<InboxRow>, String> {
     if !roots.database().exists() {
         return Ok(Vec::new());
     }
@@ -55,6 +65,9 @@ pub fn inbox(roots: &StorageRoots, current_project_id: &str, current_project_nam
                 latest.push(record);
             }
         }
+    }
+    if only_current {
+        latest.retain(|record| record.project == current_project_id);
     }
     let mut rows = Vec::new();
     for record in latest {
