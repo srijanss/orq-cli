@@ -87,3 +87,18 @@ fn unusable_data_draws_no_lines_and_an_odd_address_is_not_found() {
         assert_eq!(out["requests"].as_array().unwrap().iter().filter(|r| r["url"].as_str().unwrap_or("").contains("/runs")).count(), 0, "{odd}: {out}");
     }
 }
+
+#[test]
+fn every_file_name_the_server_lists_can_be_opened() {
+    let names = ["my build é.log", "a+b (1).log", &format!("{}.log", "n".repeat(200))];
+    let list = files(json!(names.iter().map(|n| json!({"name": n, "bytes": 1})).collect::<Vec<_>>()));
+    let page = lines(names[0], json!(["ok"]), Value::Null, false);
+    let Some(out) = run(&format!("{RUN}/logs"), json!([list, projects(), page]), json!([{"submit": TOKEN}, {"click": "button[data-file]", "index": 0}])) else { return };
+    assert_eq!(out["frames"][1]["settled"]["texts"].as_array().unwrap().iter().filter(|t| t.as_str() == Some("Show")).count(), 3, "{out}");
+    assert_eq!(out["requests"][2]["url"], "/api/projects/alpha/runs/run-1/logs/my%20build%20%C3%A9.log", "{out}");
+    assert!(texts(&out["frames"][2]).iter().any(|x| x == "ok"), "{out}");
+    // A direct address with such a name is opened, not refused.
+    let page = lines("a+b (1).log", json!(["direct"]), Value::Null, false);
+    let Some(out) = run(&format!("{RUN}/logs/a%2Bb%20(1).log"), json!([page, projects()]), json!([{"submit": TOKEN}])) else { return };
+    assert!(texts(&out["frames"][1]).iter().any(|x| x == "direct"), "{out}");
+}

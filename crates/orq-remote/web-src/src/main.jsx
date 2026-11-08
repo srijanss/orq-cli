@@ -493,8 +493,9 @@ function RunTimeline({ timeline, listPath, runPath }) {
   );
 }
 
-// A log file the server could have listed: a plain, visible `.log` name.
-const LOG_FILE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\.log$/;
+// A log file the server could have listed: a `.log` name that is not hidden and holds no path
+// separator, exactly the server's own rule. The name is always encoded into the address.
+const LOG_FILE = /^[^./\\][^/\\]*\.log$/;
 const LINE_CURSOR = /^[0-9]{1,12}$/;
 
 function parseLogFiles(data) {
