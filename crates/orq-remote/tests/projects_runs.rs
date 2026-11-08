@@ -149,3 +149,38 @@ fn a_log_that_has_not_changed_is_not_read_again_and_one_that_grew_is() {
     std::fs::write(&log, "x".repeat(len)).unwrap();
     assert_eq!(list(&StoreProjects::new(s.roots.clone(), s.scan.clone())).0, 500);
 }
+
+#[test]
+fn appending_valid_events_refreshes_the_learned_summary_and_a_removed_run_is_forgotten() {
+    let s = setup("runs-refresh");
+    let alpha = git_repo(&s.scan, "alpha");
+    let key = project_id(&alpha);
+    add_run(&s, "r1", &key, "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+    add_run(&s, "r2", &key, "main", &[("run.started", None, "2026-11-01T12:00:00Z")]);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let list = || ask_with(&provider, &s, "GET", "/api/projects/alpha/runs", Some("Bearer tok")).1;
+    let first = list();
+    assert_eq!(first["runs"][0]["run_id"], "r2", "{first}");
+    assert_eq!(first["runs"][1]["state"], "running", "{first}");
+
+    // r1 moves on: a stage starts, then the run fails later than r2's last event.
+    let store = RunStore::new(&s.roots.state);
+    for (n, (kind, stage, at)) in [("stage.started", Some("implement"), "2026-11-01T13:00:00Z"), ("run.failed", None, "2026-11-01T14:00:00Z")].into_iter().enumerate() {
+        let event = Event { schema_version: 1, event_id: format!("r1-more-{n}"), run_id: "r1".into(), project_id: key.clone(), feature_id: "f-r1".into(), kind: kind.into(), stage: stage.map(String::from), attempt: 1, occurred_at: at.into(), payload: json!({}) };
+        store.append_event(&event).unwrap();
+        let body = list();
+        let top = &body["runs"][0];
+        assert_eq!(top["run_id"], "r1", "{body}");
+        assert_eq!(top["updated_at"], at, "{body}");
+        assert_eq!(top["state"], if n == 0 { "running" } else { "failed" }, "{body}");
+        assert_eq!(top["stage"], "implement", "{body}");
+    }
+    // Polling again with nothing new gives the same answer.
+    assert_eq!(list(), list());
+
+    // A run that is deleted disappears from the list.
+    std::fs::remove_dir_all(s.roots.state.join("runs/r2")).unwrap();
+    let body = list();
+    let ids: Vec<_> = body["runs"].as_array().unwrap().iter().map(|r| r["run_id"].clone()).collect();
+    assert_eq!(ids, [json!("r1")], "{body}");
+}

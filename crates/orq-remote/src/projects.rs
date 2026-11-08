@@ -216,7 +216,8 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let mut cache = self.run_logs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let run_ids = store.run_ids().map_err(|error| format!("{error:?}"))?;
         // Runs that are gone are forgotten, so the cache never outgrows the store.
-        cache.retain(|id, _| run_ids.contains(id));
+        let live: std::collections::HashSet<&String> = run_ids.iter().collect();
+        cache.retain(|id, _| live.contains(id));
         for run_id in run_ids {
             let record = match store.load(&run_id) {
                 Ok(record) => record,
