@@ -97,8 +97,10 @@ fn an_explicit_theme_on_the_page_overrides_the_device_setting_both_ways() {
 
 fn harness(steps: Value) -> Value {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let reply = json!({"status": 200, "json": {"reviews": []}});
-    let scenario = json!({"responses": [reply.clone(), reply], "steps": steps});
+    let first = json!({"status": 200, "json": {"reviews": []}});
+    let review = json!({"run_id": "r9", "feature": "after-refresh", "project": "p", "current": true, "status": "waiting", "risk": "low", "stale": false, "link": null});
+    let second = json!({"status": 200, "json": {"reviews": [review]}});
+    let scenario = json!({"responses": [first, second], "steps": steps});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     serde_json::from_slice(&output.stdout).unwrap()
@@ -151,5 +153,6 @@ fn the_inbox_has_a_page_header_with_title_subtitle_and_a_refresh_that_reloads() 
     assert!(texts.contains(&"Reviews") && texts.contains(&"Code reviews and agent reports"), "{texts:?}");
     assert_eq!(settled["refreshButtons"], 1, "{out}");
     assert_eq!(out["frames"][2]["settled"]["refreshButtons"], 1, "{out}");
-    assert!(out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().any(|t| t == "No reviews in the inbox."), "the list is loaded again: {out}");
+    let after: Vec<&str> = out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
+    assert!(after.contains(&"after-refresh") && !after.contains(&"No reviews in the inbox."), "the second answer replaces the list: {after:?}");
 }
