@@ -138,35 +138,26 @@ impl PasskeyStore {
     }
 
     /// Nobody but this user (or root) may be able to rename or replace a directory on the way to the
-    /// state directory. A relative path is made absolute first. Every directory up to the root on the
-    /// path as written, and again on the path after links are resolved, must belong to this user or
-    /// root and must not be writable by group or others, unless it is sticky (like /tmp).
-    /// Directories that do not exist yet are created by this user, so the check starts at the
-    /// nearest existing one.
+    /// state directory. Every directory the path passes through, including each one a link leads
+    /// into along the way, must belong to this user or root and must not be writable by group or
+    /// others, unless it is sticky (like /tmp).
     fn check_ancestors(&self) -> Result<(), String> {
+        let here = if self.dir.is_absolute() { PathBuf::new() } else { std::env::current_dir().map_err(|e| format!("cannot find the current directory: {}", e.kind()))? };
+        self.check_ancestors_from(&here)
+    }
+
+    /// `check_ancestors` with a relative state path taken to start in `here`.
+    fn check_ancestors_from(&self, here: &std::path::Path) -> Result<(), String> {
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        let absolute = if self.dir.is_absolute() {
-            self.dir.clone()
-        } else {
-            std::env::current_dir().map_err(|e| format!("cannot find the current directory: {}", e.kind()))?.join(&self.dir)
-        };
-        let mut start = absolute.parent();
-        let existing = loop {
-            let Some(candidate) = start.filter(|c| !c.as_os_str().is_empty()) else { return Ok(()) };
-            match std::fs::canonicalize(candidate) {
-                Ok(real) => break (candidate.to_path_buf(), real),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => start = candidate.parent(),
-                Err(e) => return Err(format!("cannot resolve {}: {}", candidate.display(), e.kind())),
-            }
-        };
-        for ancestor in existing.0.ancestors().chain(existing.1.ancestors()) {
-            let meta = std::fs::metadata(ancestor).map_err(|e| format!("cannot inspect {}: {}", ancestor.display(), e.kind()))?;
+        let absolute = here.join(&self.dir);
+        for directory in directories_passed(absolute.parent().unwrap_or(std::path::Path::new("/")))? {
+            let meta = std::fs::metadata(&directory).map_err(|e| format!("cannot inspect {}: {}", directory.display(), e.kind()))?;
             if meta.uid() != me && meta.uid() != 0 {
-                return Err(format!("{} must belong to the user running the server or to root", ancestor.display()));
+                return Err(format!("{} must belong to the user running the server or to root", directory.display()));
             }
             if meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0 {
-                return Err(format!("{} must not be writable by group or others", ancestor.display()));
+                return Err(format!("{} must not be writable by group or others", directory.display()));
             }
         }
         Ok(())
@@ -279,6 +270,51 @@ impl PasskeyStore {
         // might not survive a crash, and the message says so rather than claiming nothing changed.
         fault(Stage::DirSync).and_then(|()| rustix::fs::fsync(dir).map_err(|e| e.to_string())).map_err(|e| format!("{APPLIED_NOT_DURABLE}: {e}"))
     }
+}
+
+/// Every real directory visited while resolving `path` (absolute) component by component: the
+/// directory holding each link and each directory a link leads through are included, not only the
+/// start and the end. It stops at the first component that does not exist yet.
+fn directories_passed(path: &std::path::Path) -> Result<Vec<PathBuf>, String> {
+    use std::ffi::OsString;
+    use std::path::Component;
+    const MAX_LINKS: u32 = 40;
+    let words = |p: &std::path::Path| -> Vec<OsString> { p.components().rev().filter_map(|c| match c { Component::Normal(n) => Some(n.to_os_string()), Component::ParentDir => Some("..".into()), _ => None }).collect() };
+    let mut pending = words(path);
+    let mut current = PathBuf::from("/");
+    let mut seen = vec![current.clone()];
+    let mut links = 0;
+    while let Some(word) = pending.pop() {
+        if word == ".." {
+            current.pop();
+            continue;
+        }
+        let next = current.join(&word);
+        let meta = match std::fs::symlink_metadata(&next) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("cannot inspect {}: {}", next.display(), e.kind())),
+        };
+        if meta.file_type().is_symlink() {
+            links += 1;
+            if links > MAX_LINKS {
+                return Err(format!("too many links on the way to {}", path.display()));
+            }
+            let target = std::fs::read_link(&next).map_err(|e| format!("cannot read the link {}: {}", next.display(), e.kind()))?;
+            if target.is_absolute() {
+                current = PathBuf::from("/");
+            }
+            pending.extend(words(&target));
+        } else if meta.is_dir() {
+            current = next;
+            if !seen.contains(&current) {
+                seen.push(current.clone());
+            }
+        } else {
+            return Err(format!("{} is not a directory", next.display()));
+        }
+    }
+    Ok(seen)
 }
 
 /// Starts the error of a change that was applied but could not be confirmed durable.
@@ -424,22 +460,49 @@ mod tests {
         store.add(key("a", "one")).expect("private holder and target");
     }
 
-    /// A relative state path is checked from the current directory up. (Changing the directory is
-    /// process-wide, so this is the only test that does it.)
+    /// A relative state path is checked from the directory it is relative to, up.
     #[test]
-    fn a_relative_state_path_is_checked_from_the_current_directory() {
+    fn a_relative_state_path_is_checked_from_its_starting_directory() {
         let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-relative", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&base).unwrap();
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let store = PasskeyStore { dir: base.join("state").strip_prefix(&base).unwrap().to_path_buf() };
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&base).unwrap();
-        let loose = store.add(key("a", "one")).is_err();
+        let store = PasskeyStore { dir: "state".into() };
+        assert!(store.check_ancestors_from(&base).is_err(), "a world-writable starting directory is refused");
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let tight = store.add(key("a", "one"));
-        std::env::set_current_dir(previous).unwrap();
-        assert!(loose, "a world-writable working directory is refused");
-        tight.expect("a private working directory is fine");
+        store.check_ancestors_from(&base).expect("a private starting directory is fine");
+    }
+
+    /// A chain of links is followed all the way: a writable directory that only an intermediate link
+    /// passes through is refused.
+    #[test]
+    fn a_chain_of_links_is_checked_at_every_step() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-chain", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let private = |p: std::path::PathBuf| std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p).unwrap();
+        private(base.join("trusted"));
+        private(base.join("private/owned"));
+        let shared = base.join("shared");
+        private(shared.clone());
+        std::os::unix::fs::symlink(base.join("private/owned"), shared.join("next")).unwrap();
+        std::os::unix::fs::symlink(shared.join("next"), base.join("trusted/first")).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let store = PasskeyStore { dir: base.join("trusted/first/state") };
+        assert!(store.add(key("a", "one")).is_err() && !store.any_registered());
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+        store.add(key("a", "one")).expect("every directory on the chain is private");
+    }
+
+    /// Dot-dot steps and a loop of links are handled rather than followed forever.
+    #[test]
+    fn dot_dot_steps_resolve_and_a_loop_of_links_is_refused() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-loop", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("a/b")).unwrap();
+        let dirs = directories_passed(&base.join("a/b/../b")).unwrap();
+        assert!(dirs.contains(&base.join("a/b")) && dirs.contains(&base.join("a")));
+        std::os::unix::fs::symlink(base.join("l2"), base.join("l1")).unwrap();
+        std::os::unix::fs::symlink(base.join("l1"), base.join("l2")).unwrap();
+        assert!(directories_passed(&base.join("l1/x")).is_err());
     }
 }
