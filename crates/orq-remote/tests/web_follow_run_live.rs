@@ -134,3 +134,14 @@ fn records_ended_by_crlf_or_cr_are_read_even_when_a_separator_is_split_across_re
     let frame = &out["frames"][1];
     assert_eq!((count(frame, "one"), count(frame, "two"), count(frame, "three")), (1, 1, 1), "{:?}", texts(frame));
 }
+
+#[test]
+fn leaving_the_page_while_a_reconnect_is_pending_cancels_it() {
+    let responses = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), stream(vec![sse("e1", "one")], "error")]);
+    let steps = json!([{"submit": TOKEN}, {"click": "button[data-back=list]", "index": 0}, {"fire": 3000}]);
+    let Some(out) = run(RUN, responses, steps) else { return };
+    assert_eq!(out["frames"][1]["settled"]["retries"], 1, "a retry is waiting before the page is left: {out}");
+    assert_eq!(out["frames"][2]["settled"]["retries"], 0, "leaving cancels it: {out}");
+    let streams = urls(&out).iter().filter(|u| u.contains("/events")).count();
+    assert_eq!(streams, 1, "no stream is reopened for the page that was left: {:?}", urls(&out));
+}
