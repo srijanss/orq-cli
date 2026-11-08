@@ -1027,6 +1027,7 @@ dependencies = [
  "axum",
  "orq-core",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
