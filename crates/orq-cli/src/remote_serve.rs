@@ -89,12 +89,17 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     if !strict {
         let token = orq_core::remote_inbox::RemoteConfig::token_path(&state_roots);
         println!("sign in with the token stored in {}", token.display());
-        println!("read it with: cat {}", token.display());
+        println!("read it with: cat -- {}", shell_quote(&token.display().to_string()));
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
     wait_for_interrupt();
     drop(server);
     ExitCode::SUCCESS
+}
+
+/// Single-quotes `text` for a POSIX shell, so a path with spaces or metacharacters pastes safely.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

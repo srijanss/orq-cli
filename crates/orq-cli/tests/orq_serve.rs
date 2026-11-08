@@ -91,3 +91,12 @@ fn an_existing_token_is_kept() {
     drop(start(&root, &repo));
     assert_eq!(fs::read_to_string(token_file(&root)).unwrap(), first);
 }
+
+#[test]
+fn the_command_that_reads_the_token_is_safe_to_paste_whatever_the_path_holds() {
+    let (root, repo) = bare_repo("q uote$(echo hi)'s");
+    let server = start(&root, &repo);
+    let path = token_file(&root).display().to_string();
+    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+    assert!(server.printed.lines().any(|line| line == format!("read it with: cat -- {quoted}")), "{}", server.printed);
+}
