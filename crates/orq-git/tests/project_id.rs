@@ -28,3 +28,12 @@ fn two_repositories_with_the_same_name_get_different_ids_and_odd_characters_are_
     assert_ne!(project_id(&one), project_id(&two));
     assert!(project_id(&one).starts_with("my_app-"));
 }
+
+#[test]
+fn ids_match_the_literals_the_cli_produced_before_the_function_moved() {
+    // Stored runs and reviews are filed under these ids, so a change here would orphan them.
+    let project = |name: &str, common: &str| orq_git::Project { name: name.into(), root: "/unused".into(), git_common_dir: common.into(), is_linked_worktree: false };
+    assert_eq!(project_id(&project("orq-cli", "/home/dev/code/orq-cli/.git")), "orq-cli-1dfcff58");
+    assert_eq!(project_id(&project("my app", "/srv/my app/.git")), "my_app-8e842125");
+    assert_eq!(project_id(&project("repo.git", "/srv/git/repo.git")), "repo.git-8903ed5d");
+}
