@@ -29,3 +29,10 @@ export function navigate(target) {
 export function isPlainLeftClick(event) {
   return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.defaultPrevented;
 }
+
+// Addresses shared before the place moved into the path look like /#/reviews/<id>. Rewrite a
+// recognised one to its path in place (no new history entry) so the old link still opens.
+export function migrateLegacyHash() {
+  const match = /^#(\/(?:dashboard|settings|projects(?:\/[^/]+){0,2}|reviews\/[^/]+))$/.exec(window.location.hash);
+  if (match && window.location.pathname === "/") window.history.replaceState(null, "", match[1] + window.location.search);
+}

@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
-import { currentPath, navigate, subscribeToLocation } from "./router.js";
+import { currentPath, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
@@ -216,6 +216,7 @@ function App() {
   return <Loaded key={API_REVIEWS} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={signedOut} />;
 }
 
+migrateLegacyHash();
 createRoot(document.getElementById("app")).render(
   <Shell>
     <App />

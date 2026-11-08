@@ -63,3 +63,13 @@ fn a_modified_click_on_a_sidebar_link_is_left_to_the_browser() {
     let Some(out) = run(json!({"responses": [inbox()], "steps": [{"submit": "token"}, {"nav_modified": "nav a[href='/settings']"}]})) else { return };
     assert_eq!(out["frames"][2]["settled"]["path"], "/", "a ctrl-click must not navigate this tab: {out}");
 }
+
+#[test]
+fn an_old_hash_report_address_still_opens_that_report_and_becomes_a_path() {
+    let Some(out) = run(json!({"url": "/#/reviews/run-1", "responses": [report()], "steps": [{"submit": "token"}]})) else { return };
+    assert!(texts(&out["frames"][1]).contains("the summary line"), "{out}");
+    assert_eq!(out["requests"][0]["url"], "/api/reviews/run-1", "{out}");
+    let settled = &out["frames"][1]["settled"];
+    assert_eq!(settled["path"], "/reviews/run-1", "{out}");
+    assert_eq!(settled["hash"], "", "the old hash is gone from the address: {out}");
+}
