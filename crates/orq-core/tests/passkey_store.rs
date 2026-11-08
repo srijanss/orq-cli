@@ -55,6 +55,7 @@ fn an_added_passkey_is_kept_in_a_private_file_that_holds_only_public_facts() {
 
 fn write(roots: &StorageRoots, text: &str) -> std::path::PathBuf {
     fs::create_dir_all(&roots.state).unwrap();
+    fs::set_permissions(&roots.state, fs::Permissions::from_mode(0o700)).unwrap();
     let path = PasskeyStore::path(roots);
     fs::write(&path, text).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -180,4 +181,79 @@ fn removing_by_label_cuts_that_passkey_off_and_removing_the_last_leaves_an_empty
     assert_eq!(mode(&PasskeyStore::path(&roots)), 0o600);
     store.add(key("cred-3", "phone")).unwrap();
     assert!(store.any_registered(), "a passkey can be added again after the store was emptied");
+}
+
+#[test]
+fn a_state_directory_that_is_a_link_or_open_to_others_is_refused() {
+    let roots = roots("dirs");
+    let real = roots.state.with_file_name("elsewhere");
+    fs::create_dir_all(&real).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&real, &roots.state).unwrap();
+    let store = PasskeyStore::open(&roots);
+    assert!(store.list().is_err() && store.add(key("a", "one")).is_err() && !store.any_registered());
+    assert!(fs::read_dir(&real).unwrap().next().is_none(), "nothing is written through the link");
+    fs::remove_file(&roots.state).unwrap();
+    for loose in [0o770, 0o707, 0o777] {
+        fs::create_dir_all(&roots.state).unwrap();
+        fs::set_permissions(&roots.state, fs::Permissions::from_mode(loose)).unwrap();
+        assert!(store.list().is_err() && store.add(key("a", "one")).is_err(), "{loose:o}");
+        assert!(!store.any_registered());
+        fs::remove_dir_all(&roots.state).unwrap();
+    }
+}
+
+#[test]
+fn a_store_cannot_grow_past_the_size_it_can_be_read_back_at() {
+    let roots = roots("limit");
+    let store = PasskeyStore::open(&roots);
+    let big = |n: usize| Passkey { credential_id: format!("id{n}"), public_key: "A".repeat(4096), sign_count: 0, label: format!("label-{n}"), created_at: 1 };
+    let mut added = 0;
+    for n in 0..400 {
+        if store.add(big(n)).is_err() {
+            break;
+        }
+        added += 1;
+    }
+    assert!(added > 10 && added < 400, "the limit was reached after {added}");
+    let path = PasskeyStore::path(&roots);
+    assert!(fs::metadata(&path).unwrap().len() <= 1 << 20);
+    assert_eq!(store.list().unwrap().len(), added, "the store is still readable and unchanged by the refused add");
+    assert!(store.any_registered());
+    let names: Vec<_> = fs::read_dir(&roots.state).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert!(names.iter().all(|n| n == "passkeys.json" || n == ".passkeys.lock"), "{names:?}");
+}
+
+#[test]
+fn a_write_that_fails_leaves_the_store_as_it_was_and_the_lock_free() {
+    let roots = roots("fail");
+    let store = PasskeyStore::open(&roots);
+    store.add(key("a", "one")).unwrap();
+    let before = fs::read_to_string(PasskeyStore::path(&roots)).unwrap();
+    // A state directory that cannot be written to: creating the temporary file fails.
+    fs::set_permissions(&roots.state, fs::Permissions::from_mode(0o500)).unwrap();
+    let denied = store.add(key("b", "two"));
+    fs::set_permissions(&roots.state, fs::Permissions::from_mode(0o700)).unwrap();
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    assert!(denied.is_err());
+    assert_eq!(fs::read_to_string(PasskeyStore::path(&roots)).unwrap(), before);
+    let names: Vec<_> = fs::read_dir(&roots.state).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert!(names.iter().all(|n| n == "passkeys.json" || n == ".passkeys.lock"), "{names:?}");
+    store.add(key("b", "two")).expect("the lock was released, so a later change goes through");
+    assert_eq!(store.list().unwrap().len(), 2);
+}
+
+#[test]
+fn an_unwritable_lock_file_refuses_the_change() {
+    let roots = roots("lock");
+    let store = PasskeyStore::open(&roots);
+    store.add(key("a", "one")).unwrap();
+    let before = fs::read_to_string(PasskeyStore::path(&roots)).unwrap();
+    let lock = roots.state.join(".passkeys.lock");
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    assert!(store.add(key("b", "two")).is_err());
+    assert_eq!(fs::read_to_string(PasskeyStore::path(&roots)).unwrap(), before);
 }

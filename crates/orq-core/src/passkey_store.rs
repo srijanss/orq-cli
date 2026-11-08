@@ -7,9 +7,12 @@
 
 use crate::storage::StorageRoots;
 use serde_json::{json, Value};
+use rustix::fs::{AtFlags, Mode, OFlags};
+use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::path::PathBuf;
 
 const FILE_NAME: &str = "passkeys.json";
 const LOCK_NAME: &str = ".passkeys.lock";
@@ -54,11 +57,13 @@ fn validate(key: &Passkey) -> Result<(), String> {
 }
 
 fn check_unique(keys: &[Passkey]) -> Result<(), String> {
-    for (at, key) in keys.iter().enumerate() {
-        if keys[..at].iter().any(|other| other.credential_id == key.credential_id) {
+    let mut ids = HashSet::new();
+    let mut labels = HashSet::new();
+    for key in keys {
+        if !ids.insert(key.credential_id.as_str()) {
             return Err("two passkeys share a credential id".into());
         }
-        if keys[..at].iter().any(|other| other.label == key.label) {
+        if !labels.insert(key.label.as_str()) {
             return Err("two passkeys share a label".into());
         }
     }
@@ -108,13 +113,42 @@ impl PasskeyStore {
         self.dir.join(FILE_NAME)
     }
 
+    /// Opens the state directory itself, never following a link, and only if it is this user's and
+    /// cannot be written by anyone else. Every later open, rename and removal is relative to this
+    /// descriptor, so the directory cannot be swapped under a running change.
+    fn directory(&self, create: bool) -> Result<Option<OwnedFd>, String> {
+        if create {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.dir).map_err(|e| format!("cannot create the Orq state directory: {}", e.kind()))?;
+        }
+        let fd = match rustix::fs::open(&self.dir, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(e) => return Err(format!("cannot open the Orq state directory {} (it must be a real directory, not a link): {e}", self.dir.display())),
+        };
+        let meta = std::fs::File::from(fd.try_clone().map_err(|e| format!("cannot inspect the state directory: {}", e.kind()))?).metadata().map_err(|e| format!("cannot inspect the state directory: {}", e.kind()))?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if meta.uid() != unsafe { libc::geteuid() } {
+            return Err("the Orq state directory must belong to the user running the server".into());
+        }
+        if meta.mode() & 0o022 != 0 {
+            return Err("the Orq state directory must not be writable by anyone else".into());
+        }
+        Ok(Some(fd))
+    }
+
     /// Every registered passkey. No file is none; an unreadable or doubtful file is an error.
     pub fn list(&self) -> Result<Vec<Passkey>, String> {
-        let path = self.file();
-        let file = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(format!("cannot open the passkey file {}: {}", path.display(), e.kind())),
+        match self.directory(false)? {
+            None => Ok(Vec::new()),
+            Some(dir) => self.read(&dir),
+        }
+    }
+
+    fn read(&self, dir: &OwnedFd) -> Result<Vec<Passkey>, String> {
+        let file = match rustix::fs::openat(dir, FILE_NAME, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()) {
+            Ok(fd) => std::fs::File::from(fd),
+            Err(rustix::io::Errno::NOENT) => return Ok(Vec::new()),
+            Err(e) => return Err(format!("cannot open the passkey file {}: {e}", self.file().display())),
         };
         let meta = file.metadata().map_err(|e| format!("cannot inspect the passkey file: {}", e.kind()))?;
         // SAFETY: geteuid has no preconditions and cannot fail.
@@ -146,8 +180,9 @@ impl PasskeyStore {
         Ok(self.list()?.into_iter().find(|key| key.credential_id == credential_id))
     }
 
-    /// Registers a passkey. A duplicate credential id or label, a bad value, or a file that cannot
-    /// be trusted is refused and nothing changes.
+    /// Registers a passkey. A duplicate credential id or label, a bad value, a store that would
+    /// outgrow the size it can be read back at, or a file that cannot be trusted is refused and
+    /// nothing changes.
     pub fn add(&self, key: Passkey) -> Result<(), String> {
         validate(&key)?;
         self.change(|keys| {
@@ -167,39 +202,57 @@ impl PasskeyStore {
 
     /// Reads, changes and writes back under an exclusive lock, so simultaneous changes are all kept.
     fn change(&self, edit: impl FnOnce(&mut Vec<Passkey>) -> Result<(), String>) -> Result<(), String> {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.dir).map_err(|e| format!("cannot create the Orq state directory: {}", e.kind()))?;
-        let lock = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(self.dir.join(LOCK_NAME))
-            .map_err(|e| format!("cannot open the passkey lock: {}", e.kind()))?;
+        let dir = self.directory(true)?.ok_or("the Orq state directory is missing")?;
+        let lock = rustix::fs::openat(&dir, LOCK_NAME, OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o600)).map_err(|e| format!("cannot open the passkey lock: {e}"))?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).map_err(|e| format!("cannot lock the passkey file: {e}"))?;
-        let mut keys = self.list()?;
+        let mut keys = self.read(&dir)?;
         edit(&mut keys)?;
-        self.write(&keys)
+        self.write(&dir, &keys)
     }
 
-    /// Written whole to a private temporary file, then renamed into place: a reader sees the old
-    /// file or the new one, never a partial one.
-    fn write(&self, keys: &[Passkey]) -> Result<(), String> {
+    /// Written whole to a private temporary file, then renamed into place, then the directory is
+    /// synced: a reader sees the old file or the new one, never a partial one, and a finished
+    /// change (a removal above all) survives a crash. Anything over the size a read accepts is
+    /// refused before a file is made.
+    fn write(&self, dir: &OwnedFd, keys: &[Passkey]) -> Result<(), String> {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let temp = self.dir.join(format!(".passkeys.{}.{}.tmp", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        let _ = std::fs::remove_file(&temp);
-        let written = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)
-            .and_then(|mut file| file.write_all(render(keys).as_bytes()).and_then(|()| file.sync_all()))
-            .and_then(|()| std::fs::rename(&temp, self.file()));
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&temp);
-            return Err(format!("cannot write the passkey file {}: {}", Path::new(&self.file()).display(), e.kind()));
+        let text = render(keys);
+        if text.len() as u64 > MAX_FILE {
+            return Err(format!("the passkey file would be larger than {MAX_FILE} bytes"));
         }
-        Ok(())
+        let temp = format!(".passkeys.{}.{}.tmp", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let _ = rustix::fs::unlinkat(dir, temp.as_str(), AtFlags::empty());
+        let published = rustix::fs::openat(dir, temp.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o600))
+            .map_err(|e| e.to_string())
+            .and_then(|fd| {
+                let mut file = std::fs::File::from(fd);
+                file.write_all(text.as_bytes()).and_then(|()| file.sync_all()).map_err(|e| e.to_string())
+            })
+            .and_then(|()| rustix::fs::renameat(dir, temp.as_str(), dir, FILE_NAME).map_err(|e| e.to_string()));
+        if let Err(e) = published {
+            let _ = rustix::fs::unlinkat(dir, temp.as_str(), AtFlags::empty());
+            return Err(format!("cannot write the passkey file {}: {e}", self.file().display()));
+        }
+        rustix::fs::fsync(dir).map_err(|e| format!("cannot sync the Orq state directory: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rename that cannot happen (a directory is in the way) leaves the store as it was and no
+    /// temporary file behind.
+    #[test]
+    fn a_failed_publish_reports_an_error_and_leaves_no_temporary_file() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let store = PasskeyStore { dir: base.join("state") };
+        let dir = store.directory(true).unwrap().unwrap();
+        std::fs::create_dir(store.file()).unwrap();
+        let key = Passkey { credential_id: "a".into(), public_key: "b".into(), sign_count: 0, label: "c".into(), created_at: 1 };
+        assert!(store.write(&dir, &[key]).is_err());
+        let names: Vec<_> = std::fs::read_dir(&store.dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, [FILE_NAME], "{names:?}");
     }
 }
