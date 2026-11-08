@@ -169,3 +169,28 @@ fn a_nested_project_with_long_names_still_gets_a_short_stable_distinct_id_the_pa
     assert_ne!(found[0].id, found[1].id);
     assert_eq!(found.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), discover(&root).iter().map(|p| p.id.clone()).collect::<Vec<_>>());
 }
+
+#[test]
+fn inside_a_group_a_linked_folder_a_linked_git_marker_and_an_unreadable_folder_are_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = web_deps::private_temp_dir("group-edges");
+    let outside = web_deps::private_temp_dir("group-edges-outside");
+    repo(&outside, "secret");
+    fs::create_dir(root.join("group")).unwrap();
+    repo(&root.join("group"), "good");
+    symlink(outside.join("secret"), root.join("group/linked")).unwrap();
+    fs::create_dir(root.join("group/borrowed")).unwrap();
+    symlink(outside.join("secret/.git"), root.join("group/borrowed/.git")).unwrap();
+    fs::create_dir(root.join("sealed")).unwrap();
+    repo(&root.join("sealed"), "hidden");
+    let sealed = root.join("sealed");
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+    let restricted = fs::read_dir(&sealed).is_err();
+    let names: Vec<_> = discover(&root).into_iter().map(|p| p.name).collect();
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o700)).unwrap();
+    if restricted {
+        assert_eq!(names, ["group/good"]);
+    } else {
+        assert_eq!(names, ["group/good", "sealed/hidden"]);
+    }
+}
