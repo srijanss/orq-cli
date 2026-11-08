@@ -5,6 +5,8 @@
 //! crate adds nothing but the transport: it never reads a request body, never
 //! routes by itself and never answers anything the handler did not.
 
+pub mod projects;
+
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 
