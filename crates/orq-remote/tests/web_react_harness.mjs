@@ -45,6 +45,15 @@ window.setTimeout = (run, delay, ...rest) => { if (delay === 3000) { timeouts.pu
 window.clearTimeout = (id) => { if (id < 0) { if (timeouts[-id - 1]) timeouts[-id - 1].active = false; } else realClearTimeout(id); };
 window.TextDecoder = TextDecoder;
 
+// A download is a Blob given to createObjectURL and an anchor with a `download` name that is clicked;
+// both are recorded, and the blobs are read at the end as `downloads: [{name, type, text, revoked}]`.
+const blobs = [];
+const downloads = [];
+window.URL.createObjectURL = (blob) => { blobs.push({ blob, revoked: false }); return "blob:harness-" + (blobs.length - 1); };
+window.URL.revokeObjectURL = (url) => { const entry = blobs[Number(String(url).replace("blob:harness-", ""))]; if (entry) entry.revoked = true; };
+window.HTMLAnchorElement.prototype.click = function () { downloads.push({ name: this.getAttribute("download"), href: this.getAttribute("href"), entry: blobs[Number(String(this.getAttribute("href")).replace("blob:harness-", ""))] }); };
+const readBlob = (blob) => new Promise((resolve) => { const reader = new window.FileReader(); reader.onload = () => resolve(reader.result); reader.readAsText(blob); });
+
 const requests = [];
 const held = {};
 const responses = [...scenario.responses];
@@ -165,6 +174,12 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     } else if (step.nav !== undefined) {
       // A click on a link anywhere in the page, shell included.
       root.querySelector(step.nav).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+    } else if (step.set !== undefined) {
+      // Types into a field or picks an option, the way React sees a real change.
+      const el = root.querySelector(step.set);
+      const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, step.value);
+      el.dispatchEvent(new window.Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
     } else if (step.select !== undefined) {
       const el = root.querySelector("[data-project-switcher]");
       el.value = step.select;
@@ -178,11 +193,14 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     await settle();
     frames.push({ step: JSON.stringify(step), fieldAfter, sync, settled: snapshot() });
   }
+  // Blobs are read while the window is still open; a closed window never finishes a read.
+  const saved = [];
+  for (const d of downloads) saved.push({ name: d.name, type: d.entry ? d.entry.blob.type : null, text: d.entry ? await readBlob(d.entry.blob) : null, revoked: d.entry ? d.entry.revoked : null });
   window.close();
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, frames }));
+  process.stdout.write(JSON.stringify({ requests, frames, downloads: saved }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

@@ -634,16 +634,57 @@ function LogFiles({ files, runPath }) {
   );
 }
 
+// A line's level is the first level word in it, whatever its case; "warning" counts as "warn".
+const LOG_LEVELS = ["error", "warn", "info", "debug"];
+
+function lineLevel(line) {
+  const found = /\b(error|warn|warning|info|debug)\b/i.exec(line);
+  if (found === null) return "other";
+  const name = found[1].toLowerCase();
+  return name === "warning" ? "warn" : name;
+}
+
+// The lines holding the text (any case) and, unless the level is "all", of that level. Done in the page only.
+function filterLines(lines, text, level) {
+  const wanted = text.toLowerCase();
+  return lines.filter((line) => (wanted === "" || line.toLowerCase().includes(wanted)) && (level === "all" || lineLevel(line) === level));
+}
+
+// Hands the browser the shown lines as a plain-text file, then releases its temporary address.
+function saveLines(name, lines) {
+  const url = URL.createObjectURL(new Blob([lines.map((line) => line + "\n").join("")], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 // One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
 function LogPage({ page, logsPath, filePath }) {
   const { lines, next_cursor: next, truncated } = page;
+  const [text, setText] = useState("");
+  const [level, setLevel] = useState("all");
+  const shown = filterLines(lines, text, level);
   return (
     <>
       <button type="button" data-back="logs" onClick={() => navigate(logsPath)}>Back to the logs</button>
       <h2>{page.name}</h2>
+      <div className="log-tools">
+        <input type="search" data-log-filter aria-label="Filter lines" placeholder="Filter lines" autoComplete="off" spellCheck={false} value={text} onChange={(event) => setText(event.target.value)} />
+        <select data-log-level aria-label="Level" value={level} onChange={(event) => setLevel(event.target.value)}>
+          <option value="all">All levels</option>
+          {LOG_LEVELS.map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+        </select>
+        <button type="button" data-log-download disabled={shown.length === 0} onClick={() => saveLines(LOG_FILE.test(page.name) ? page.name : "log.log", shown)}>Download</button>
+        <span>{shown.length + " of " + lines.length + " lines"}</span>
+      </div>
       {lines.length === 0 ? <p>This log has no more lines.</p> : null}
+      {lines.length > 0 && shown.length === 0 ? <p>No lines match the filter.</p> : null}
       <pre className="log-lines">
-        {lines.map((line, at) => (
+        {shown.map((line, at) => (
           <div key={at}>{line}</div>
         ))}
       </pre>
