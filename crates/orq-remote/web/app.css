@@ -200,3 +200,8 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 1rem; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
 .banner p { margin: 0; }
 .not-found { max-width: 24rem; }
+
+.projects { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.75rem; }
+.project { display: flex; flex-direction: column; gap: 0.5rem; }
+.counts { margin: 0; display: grid; gap: 0.25rem; }
+.counts p { margin: 0; color: var(--text-muted); }

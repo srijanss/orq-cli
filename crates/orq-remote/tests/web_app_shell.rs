@@ -139,7 +139,7 @@ fn destinations_without_a_page_say_so_instead_of_showing_the_inbox() {
     if !web_deps::ready() {
         return;
     }
-    for hash in ["/dashboard", "/settings", "/projects/app/features"] {
+    for hash in ["/settings", "/projects/app/features"] {
         let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": [{"submit": "token"}, {"go": hash}]});
         let output = Command::new("node")
             .arg(crate_dir().join("tests/web_react_harness.mjs"))

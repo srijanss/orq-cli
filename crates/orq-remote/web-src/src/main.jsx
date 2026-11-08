@@ -15,7 +15,8 @@ const SIGN_IN_FAILED = "Could not sign in. Check the token and try again.";
 const STALE_MARKER = "stale, may be out of date";
 const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
-const UNBUILT_DESTINATIONS = ["/dashboard", "/settings", "/projects"];
+const UNBUILT_DESTINATIONS = ["/settings", "/projects"];
+const API_PROJECTS = "/api/projects";
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -239,6 +240,51 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
   );
 }
 
+function isCount(value) {
+  return value === null || (Number.isInteger(value) && value >= 0);
+}
+
+function isProject(project) {
+  return project !== null && typeof project === "object" && typeof project.id === "string" && RUN_ID.test(project.id) && typeof project.name === "string" && typeof project.available === "boolean" && ["features", "active_runs", "reviews_waiting", "failed_runs"].every((key) => isCount(project[key]));
+}
+
+function parseProjects(data) {
+  return data && Array.isArray(data.projects) && data.projects.every(isProject) ? data.projects : null;
+}
+
+function ProjectCard({ project }) {
+  return (
+    <li className="project card">
+      <button type="button" onClick={() => navigate("/projects/" + project.id)}>
+        {project.name}
+      </button>
+      {project.available ? (
+        <div className="counts">
+          <p>{"Features: " + project.features}</p>
+          <p>{"Active runs: " + project.active_runs}</p>
+          <p>{"Reviews waiting: " + project.reviews_waiting}</p>
+          <p>{"Failed runs (last " + (Number.isInteger(project.failed_window_hours) ? project.failed_window_hours : 24) + "h): " + project.failed_runs}</p>
+        </div>
+      ) : (
+        <em>Unavailable</em>
+      )}
+    </li>
+  );
+}
+
+function Dashboard({ projects }) {
+  if (projects.length === 0) {
+    return <p>No projects found.</p>;
+  }
+  return (
+    <ul className="projects">
+      {projects.map((project) => (
+        <ProjectCard key={project.id} project={project} />
+      ))}
+    </ul>
+  );
+}
+
 function PageHeader({ title, subtitle, onRefresh }) {
   return (
     <header className="page-header">
@@ -260,6 +306,14 @@ function SignedIn({ token, onSignedOut }) {
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
+  }
+  if (hash === "/dashboard") {
+    return (
+      <>
+        <PageHeader title="Dashboard" subtitle="Your projects" onRefresh={() => setReloads(reloads + 1)} />
+        <Loaded reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
+      </>
+    );
   }
   const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
   if (RUN_ID.test(runId)) {
