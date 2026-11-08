@@ -71,10 +71,13 @@ fn it_refuses_a_token_file_that_is_missing_too_short_or_too_open() {
 const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A running server that is killed and reaped when the test ends, however it ends.
+/// Both its output streams are collected as they arrive.
 struct Running {
     child: std::process::Child,
-    first: String,
     addr: String,
+    out: std::sync::Arc<std::sync::Mutex<String>>,
+    err: std::sync::Arc<std::sync::Mutex<String>>,
+    readers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Running {
@@ -84,22 +87,37 @@ impl Drop for Running {
     }
 }
 
+fn collect(stream: impl std::io::Read + Send + 'static, into: std::sync::Arc<std::sync::Mutex<String>>) -> std::thread::JoinHandle<()> {
+    use std::io::BufRead;
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stream).lines().map_while(Result::ok) {
+            let mut text = into.lock().unwrap();
+            text.push_str(&line);
+            text.push('\n');
+        }
+    })
+}
+
 /// Starts the server and waits, bounded, for its listening line.
 fn start(root: &Path, repo: &Path) -> Running {
-    use std::io::{BufRead, BufReader};
     use std::process::Stdio;
-    let mut child = command(root, repo, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut first = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut first);
-        let _ = sender.send(first);
-    });
-    let first = receiver.recv_timeout(WAIT).expect("the server announces its address in time");
-    let addr = first.trim().rsplit("http://").next().unwrap().to_string();
+    let mut child = command(root, repo, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    // The guard exists before anything below can fail.
+    let mut running = Running { child, addr: String::new(), out: Default::default(), err: Default::default(), readers: Vec::new() };
+    running.readers.push(collect(stdout, running.out.clone()));
+    running.readers.push(collect(stderr, running.err.clone()));
+    let deadline = std::time::Instant::now() + WAIT;
+    let first = loop {
+        if let Some(line) = running.out.lock().unwrap().lines().next() {
+            break line.to_string();
+        }
+        assert!(std::time::Instant::now() < deadline, "the server did not announce its address in time");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert!(first.contains("http://127.0.0.1:"), "{first:?}");
-    Running { child, first, addr }
+    running.addr = first.trim().rsplit("http://").next().unwrap().to_string();
+    running
 }
 
 impl Running {
@@ -110,11 +128,19 @@ impl Running {
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 assert!(status.success(), "a clean stop after {signal}: {status:?}");
-                return;
+                break;
             }
             assert!(std::time::Instant::now() < deadline, "the server did not stop after {signal}");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        for reader in self.readers.drain(..) {
+            reader.join().unwrap();
+        }
+    }
+
+    /// Everything the server printed, on either stream, up to now.
+    fn output(&self) -> String {
+        format!("{}{}", self.out.lock().unwrap(), self.err.lock().unwrap())
     }
 }
 
@@ -137,7 +163,7 @@ fn a_started_server_answers_401_without_the_token_and_200_with_it_and_stops_on_i
     assert!(get(&server.addr, None).starts_with("HTTP/1.1 401"));
     assert!(get(&server.addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
     server.stop_with("-INT");
-    assert!(!server.first.contains(TOKEN));
+    assert!(!server.output().contains(TOKEN), "the token reached the output");
 }
 
 #[test]
