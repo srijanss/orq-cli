@@ -133,23 +133,27 @@ fn a_root_or_a_project_folder_that_cannot_be_read_is_skipped_without_failing() {
 }
 
 #[test]
-fn a_plain_group_folder_lends_the_repositories_directly_inside_it_but_no_deeper() {
+fn plain_group_folders_lend_their_repositories_two_levels_down_but_no_deeper() {
     let root = web_deps::private_temp_dir("group");
     repo(&root, "top");
     fs::create_dir(root.join("pitstop")).unwrap();
     repo(&root.join("pitstop"), "payment_hub");
     repo(&root.join("pitstop"), "guard-check");
-    fs::create_dir(root.join("pitstop").join("deeper")).unwrap();
-    repo(&root.join("pitstop").join("deeper"), "too-deep");
+    // `~/code/pitstop/eGiftit/egiftit-backend`: a group inside a group.
+    fs::create_dir_all(root.join("pitstop/eGiftit")).unwrap();
+    repo(&root.join("pitstop/eGiftit"), "egiftit-backend");
+    // A fourth level is still too deep.
+    fs::create_dir_all(root.join("pitstop/eGiftit/more")).unwrap();
+    repo(&root.join("pitstop/eGiftit/more"), "too-deep");
     let found = discover(&root);
     let names: Vec<_> = found.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["pitstop/guard-check", "pitstop/payment_hub", "top"]);
-    assert_eq!(found[1].path, root.join("pitstop").join("payment_hub"));
+    assert_eq!(names, ["pitstop/eGiftit/egiftit-backend", "pitstop/guard-check", "pitstop/payment_hub", "top"]);
+    assert_eq!(found[0].path, root.join("pitstop/eGiftit/egiftit-backend"));
     let ids: std::collections::HashSet<_> = found.iter().map(|p| p.id.clone()).collect();
-    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.len(), 4);
     // A repository is a project; its own subfolders are never looked into.
     repo(&root.join("top"), "inner");
-    assert_eq!(discover(&root).len(), 3);
+    assert_eq!(discover(&root).len(), 4);
 }
 
 #[test]

@@ -25,22 +25,26 @@ pub fn default_root(home: Option<&Path>, override_root: Option<&Path>) -> PathBu
 pub fn discover(root: &Path) -> Vec<Project> {
     let Ok(real_root) = std::fs::canonicalize(root) else { return Vec::new() };
     let mut found: Vec<(String, PathBuf)> = Vec::new();
-    for name in child_folders(&real_root) {
-        let path = real_root.join(&name);
-        if is_repository(&path) {
-            found.push((name, path));
-        } else {
-            // A plain folder groups repositories (`~/code/pitstop/payment_hub`): one level, no deeper.
-            for inner in child_folders(&path) {
-                let inner_path = path.join(&inner);
-                if is_repository(&inner_path) {
-                    found.push((format!("{name}/{inner}"), inner_path));
-                }
-            }
-        }
-    }
+    collect(&real_root, "", GROUP_DEPTH, &mut found);
     found.sort();
     found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
+}
+
+/// How many plain folders may be nested above a repository: `~/code/pitstop/eGiftit/egiftit-backend`
+/// has two, and nothing deeper is looked at.
+const GROUP_DEPTH: usize = 2;
+
+/// Adds the repositories inside `dir`; a plain folder is looked into while `groups` allows it.
+fn collect(dir: &Path, prefix: &str, groups: usize, found: &mut Vec<(String, PathBuf)>) {
+    for name in child_folders(dir) {
+        let path = dir.join(&name);
+        let shown = format!("{prefix}{name}");
+        if is_repository(&path) {
+            found.push((shown, path));
+        } else if groups > 0 {
+            collect(&path, &format!("{shown}/"), groups - 1, found);
+        }
+    }
 }
 
 /// The names of the real directories directly inside `dir`: a link, a file or an unreadable
