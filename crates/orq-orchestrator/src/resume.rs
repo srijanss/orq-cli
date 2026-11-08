@@ -191,7 +191,12 @@ pub fn plan_group_resume_with(
         ));
     }
     let mut checkpoint = None;
-    match summarize_run(&events).phase {
+    let mut phase = summarize_run(&events).phase;
+    // The events never say a run was merged by hand: only its branch and the target can tell.
+    if matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::work_is_on_target(repo, &from) {
+        phase = RunPhase::Merged;
+    }
+    match phase {
         RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview => {}
         RunPhase::Running => {
             return Err(format!(
@@ -202,6 +207,12 @@ pub fn plan_group_resume_with(
         RunPhase::Completed => {
             return Err(format!(
                 "{} ended with a review ready; there is nothing to resume",
+                from.run_id
+            ))
+        }
+        RunPhase::Merged => {
+            return Err(format!(
+                "{}'s work is already on its target branch; there is nothing to resume",
                 from.run_id
             ))
         }

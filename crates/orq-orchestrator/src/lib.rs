@@ -95,7 +95,7 @@ pub use review_request::{
     create_review_request, create_review_request_with, recorded_review, resolve_repository_url,
     ReviewPeople, ReviewRef, ReviewRequestOutcome,
 };
-pub use run_list::{list_runs, list_runs_report, RunList, RunListing};
+pub use run_list::{list_runs, list_runs_report, mark_merged_runs, work_is_on_target, RunList, RunListing};
 pub use run_settings::{
     load_run_settings, model as checked_model, save_mcp_servers_setting, RunSettings, SettingsError,
 };

@@ -3,7 +3,10 @@
 
 use crate::resume::members_of;
 use crate::run_status::{summarize_run, RunPhase};
-use crate::store::{RunStore, StoreError};
+use std::path::Path;
+
+use crate::outcome::git_raw;
+use crate::store::{RunRecord, RunStore, StoreError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunListing {
@@ -75,4 +78,54 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
         });
     }
     Ok(list)
+}
+
+/// Show as [`RunPhase::Merged`] each failed or review-waiting run of `list` whose work is on its
+/// target branch in `repo` (see [`work_is_on_target`]). A run whose record or branch cannot be
+/// read is left as it is.
+pub fn mark_merged_runs(store: &RunStore, list: &mut RunList, repo: &Path) {
+    for run in &mut list.runs {
+        if !matches!(run.phase, RunPhase::Failed | RunPhase::NeedsReview) {
+            continue;
+        }
+        if store.load(&run.run_id).is_ok_and(|record| work_is_on_target(repo, &record)) {
+            run.phase = RunPhase::Merged;
+        }
+    }
+}
+
+/// Whether the run's work was merged into its target branch: its local branch in `repo` has at
+/// least one commit past the run's base, and every one of them is reachable from the local target
+/// branch. A run with no commits, a branch or base git cannot resolve, or a git that fails, is not.
+pub fn work_is_on_target(repo: &Path, record: &RunRecord) -> bool {
+    work_on_target(repo, record).unwrap_or(false)
+}
+
+/// [`work_is_on_target`], but a git that fails to answer is an error rather than "not merged": only
+/// a run whose branch, base or target branch does not exist is not merged.
+pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, String> {
+    if record.branch.is_empty() || record.base_sha.is_empty() || record.target_branch.is_empty() {
+        return Ok(false);
+    }
+    let branch = format!("refs/heads/{}", record.branch);
+    let target = format!("refs/heads/{}", record.target_branch);
+    let failed = |e: String| format!("could not tell whether {}'s work is on its target branch {}: {e}", record.run_id, record.target_branch);
+    for rev in [&branch, &record.base_sha, &target] {
+        let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| failed(e.to_string()))?;
+        // With --quiet, a revision that does not exist exits 1 and says nothing; anything else is git failing.
+        match out.code {
+            Some(0) => {}
+            Some(1) => return Ok(false),
+            _ => return Err(failed(out.stderr.trim().to_string())),
+        }
+    }
+    // Whether the branch has any commit `not` lacks: git stops at the first one it finds.
+    let has_commit_past = |not: &str| -> Result<bool, String> {
+        let out = git_raw(repo, &["rev-list", "--max-count=1", "--end-of-options", &branch, &format!("^{not}")]).map_err(|e| failed(e.to_string()))?;
+        if !out.success {
+            return Err(failed(out.stderr.trim().to_string()));
+        }
+        Ok(!out.stdout.trim().is_empty())
+    };
+    Ok(has_commit_past(&record.base_sha)? && !has_commit_past(&target)?)
 }

@@ -17,6 +17,9 @@ pub struct DiscardOutcome {
     pub kept_worktree: Option<PathBuf>,
     /// The branch deleted with the worktree, and the commits that went with it.
     pub deleted_branch: Option<DeletedBranch>,
+    /// The run's work was on its target branch (see [`crate::work_is_on_target`]), so its features
+    /// were not handed back to be reopened.
+    pub merged: bool,
 }
 
 /// A run's branch deleted by a discard.
@@ -42,7 +45,9 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Discar
 
 /// [`discard_run`], calling `orphaned(project_id, features)` once the worktree is gone and before any
 /// lock is released, with the run's features that no other run holds: nothing continues those, and
-/// no new run can take them while the call runs.
+/// no new run can take them while the call runs. A failed or review-waiting run whose work is
+/// already on its target branch was merged by hand: its features are done, and `orphaned` is not
+/// called.
 pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<DiscardOutcome, String> {
     discard_run_before_remove(store, run_id, repo, orphaned, &mut || {})
 }
@@ -123,6 +128,8 @@ pub fn discard_run_before_remove(
     // What the branch holds is learned while the worktree is still there, so a git that cannot tell
     // stops the discard before anything is removed.
     let commits = if has_worktree && kept_worktree.is_none() { Some(branch_commits(repo, &record)?) } else { None };
+    // Told while the branch is still there.
+    let merged = matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::run_list::work_on_target(repo, &record)?;
     if has_worktree && kept_worktree.is_none() {
         before_remove();
         // Without --force git checks again as it removes, so work written since the check above is
@@ -167,7 +174,7 @@ pub fn discard_run_before_remove(
         }
         ours.push(member.clone());
     }
-    if !ours.is_empty() {
+    if !ours.is_empty() && !merged {
         orphaned(&record.project_id, &ours);
     }
     for member in &members {
@@ -178,7 +185,7 @@ pub fn discard_run_before_remove(
         }
     }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
-    Ok(DiscardOutcome { features: members, kept_worktree, deleted_branch })
+    Ok(DiscardOutcome { features: members, kept_worktree, deleted_branch, merged })
 }
 
 /// The branch a discard of `run_id` would delete now, with its commits, without changing anything:

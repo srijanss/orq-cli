@@ -46,6 +46,9 @@ pub enum RunPhase {
     PauseRequested,
     /// The run stopped at a stage boundary and can be resumed.
     Paused,
+    /// A failed or review-waiting run whose commits were all merged into its target branch by
+    /// hand. Never read off the events: only [`crate::mark_merged_runs`] says so, from git.
+    Merged,
 }
 
 impl RunPhase {
@@ -58,6 +61,7 @@ impl RunPhase {
             RunPhase::NeedsReview => "needs_review",
             RunPhase::PauseRequested => "pause_requested",
             RunPhase::Paused => "paused",
+            RunPhase::Merged => "merged",
         }
     }
 }
