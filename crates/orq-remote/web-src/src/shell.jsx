@@ -3,6 +3,7 @@
 // drawer that behaves like a dialog (Escape, scrim or close button close it, focus is trapped and
 // returned, page scroll is locked); on a desktop the same sidebar collapses to an icon rail.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ThemeToggle } from "./theme.jsx";
 import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
 
 // The same breakpoint the stylesheet uses for the drawer.
@@ -91,6 +92,7 @@ export function Shell({ projectId = null, children }) {
         <button type="button" className="rail-button" data-rail-button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-pressed={collapsed ? "true" : "false"} onClick={() => setCollapsed(!collapsed)}>
           {collapsed ? "»" : "«"}
         </button>
+        <ThemeToggle />
       </header>
       {drawerOpen ? <div className="scrim" data-scrim onClick={() => setDrawerOpen(false)} /> : null}
       <aside id="sidebar" className="sidebar" ref={panel} role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen ? "true" : undefined} aria-label="Navigation">

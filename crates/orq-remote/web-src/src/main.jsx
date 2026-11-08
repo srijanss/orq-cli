@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
+import { ThemeToggle } from "./theme.jsx";
 import { currentPath, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -77,6 +78,7 @@ function TokenPrompt({ message, onToken }) {
       </button>
       <p role="alert">{message}</p>
       <div className="alternatives" />
+      <ThemeToggle />
     </div>
   );
 }

@@ -85,3 +85,32 @@ fn the_top_bar_keeps_its_own_height_and_the_content_row_takes_the_rest() {
     let phone = &css[css.find("@media (max-width: 700px)").unwrap()..];
     assert!(phone.contains("grid-template-rows: auto 1fr"), "the phone layout too");
 }
+
+#[test]
+fn an_explicit_theme_on_the_page_overrides_the_device_setting_both_ways() {
+    let css = css();
+    assert!(block(&css, ":root[data-theme=\"light\"] {").contains("--bg: #ffffff"));
+    assert!(block(&css, ":root[data-theme=\"dark\"] {").contains("--bg: #0d1117"));
+    let media = &css[css.find("@media (prefers-color-scheme: light)").unwrap()..];
+    assert!(media[..media.find("}\n}").unwrap()].contains(":root:not([data-theme=\"dark\"])"), "the device's light setting must not beat an explicit dark choice");
+}
+
+fn harness(steps: Value) -> Value {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": steps});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn the_sign_in_screen_and_the_signed_in_page_both_offer_a_theme_toggle_that_flips_the_theme() {
+    if !web_deps::ready() {
+        return;
+    }
+    let out = harness(json!([{"nav": "[data-theme-toggle]"}, {"nav": "[data-theme-toggle]"}, {"submit": "typed-token-0123456789abcdef0123456789"}, {"nav": "[data-theme-toggle]"}]));
+    let themes: Vec<&Value> = out["frames"].as_array().unwrap().iter().map(|f| &f["settled"]["theme"]).collect();
+    assert_eq!(themes, ["", "light", "dark", "dark", "light"], "{out}");
+    assert_eq!(out["frames"][0]["settled"]["toggles"], 1, "{out}");
+    assert_eq!(out["frames"][3]["settled"]["toggles"], 1, "one toggle after signing in, not two: {out}");
+}
