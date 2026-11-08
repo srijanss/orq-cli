@@ -1073,13 +1073,13 @@ function keepToken(token) {
 
 // Offered once the page is signed in with the token and no passkey exists yet: the token then
 // enrols the first one, and later visits sign in with it.
-function EnrolPasskey({ token, onDone }) {
+function EnrolPasskey({ token, onDone, another = false }) {
   const [state, setState] = useState("idle");
   const go = async () => {
     setState("working");
     let ok = false;
     try {
-      ok = await registerPasskey(token, "This device");
+      ok = await registerPasskey(typeof token === "string" ? token : null, "Passkey " + new Date().toISOString().slice(0, 16).replace("T", " "));
     } catch (cancelled) {
       ok = false;
     }
@@ -1089,7 +1089,7 @@ function EnrolPasskey({ token, onDone }) {
   return (
     <div className="card passkey-enrol">
       <button type="button" onClick={go} disabled={state === "working"}>
-        Add a passkey for this device
+        {another ? "Add another passkey" : "Add a passkey for this device"}
       </button>
       {state === "failed" && <p role="alert">The passkey could not be added.</p>}
     </div>
@@ -1123,10 +1123,11 @@ function App() {
     setToken(null);
     if (session) signOutOfSession().then(refresh);
   };
-  const offer = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
+  const first = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
+  const another = session && passkeysAvailable();
   return (
     <>
-      {offer && <EnrolPasskey token={active} onDone={refresh} />}
+      {(first || another) && <EnrolPasskey token={active} another={another} onDone={refresh} />}
       <Scoped token={active} onSignedOut={signedOut} onSignOut={signOut} />
     </>
   );

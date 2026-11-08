@@ -1152,6 +1152,7 @@ dependencies = [
  "orq-features",
  "orq-git",
  "orq-orchestrator",
+ "p256",
  "serde_json",
  "sha2",
  "tokio",

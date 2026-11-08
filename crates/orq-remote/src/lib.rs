@@ -106,7 +106,7 @@ impl Drop for Server {
 }
 
 async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap, body: axum::body::Body) -> Response {
-    let mut authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
     let cookie = headers.get(header::COOKIE).and_then(|value| value.to_str().ok()).map(str::to_string);
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
@@ -118,7 +118,6 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     }
 
     if let Some(auth) = shared.auth.clone() {
-        let forwarded = is_forwarded(&headers);
         if path.starts_with("/auth/") {
             let Ok(bytes) = axum::body::to_bytes(body, orq_core::passkey_routes::MAX_AUTH_BODY).await else {
                 return json_reply(413, b"{\"error\":\"too large\"}".to_vec());
@@ -136,34 +135,46 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             }
             return response;
         }
-        // A live session stands in for the token. Otherwise, once a passkey exists, the token is
-        // honoured only on a direct loopback connection: `tailscale serve` also connects from
-        // loopback, but it adds forwarding headers, which a direct caller does not.
-        let token = shared.state.config.token.clone();
-        let roots = shared.state.roots.clone();
-        let live = auth.session_live(cookie.as_deref());
-        let direct = peer.ip().is_loopback() && !forwarded;
-        authorization = if live {
-            Some(format!("Bearer {token}"))
-        } else if direct {
-            authorization
-        } else {
-            let registered = tokio::task::spawn_blocking(move || orq_core::passkey_store::PasskeyStore::open(&roots).any_registered()).await.unwrap_or(true);
-            if registered { None } else { authorization }
-        };
     }
 
     if method == "GET" || method == "HEAD" {
         let last_event_id = headers.get("last-event-id").and_then(|value| value.to_str().ok()).map(str::to_string);
         if let Some((base, cursor)) = event_stream_target(&path, last_event_id.as_deref()) {
-            return follow(shared, peer, authorization, base, cursor, method == "HEAD").await;
+            let credentials = Credentials { forwarded: is_forwarded(&headers), authorization, cookie };
+            return follow(shared, peer, credentials, base, cursor, method == "HEAD").await;
         }
     }
+    let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
 
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &path, authorization.as_deref())).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     json_reply(reply.0, reply.1)
+}
+
+/// What a request presented, kept for as long as a stream stays open so each look can be judged afresh.
+struct Credentials {
+    forwarded: bool,
+    authorization: Option<String>,
+    cookie: Option<String>,
+}
+
+/// The authorization the handler should see. A live session stands in for the token. Otherwise, once
+/// a passkey exists, the token is honoured only on a direct loopback connection (`tailscale serve`
+/// also connects from loopback, but adds forwarding headers). Whatever cannot be established, such as
+/// an unreadable passkey store, refuses the token rather than allowing it.
+async fn effective_authorization(shared: &Arc<Shared>, peer: std::net::IpAddr, forwarded: bool, authorization: Option<String>, cookie: Option<String>) -> Option<String> {
+    let Some(auth) = shared.auth.as_ref() else { return authorization };
+    if auth.session_live(cookie.as_deref()) {
+        return Some(format!("Bearer {}", shared.state.config.token));
+    }
+    // Only a bearer credential could be accepted, so nothing else costs a look at the store.
+    if !authorization.as_deref().is_some_and(|value| value.starts_with("Bearer ")) || (peer.is_loopback() && !forwarded) {
+        return authorization;
+    }
+    let roots = shared.state.roots.clone();
+    let empty = tokio::task::spawn_blocking(move || orq_core::passkey_store::PasskeyStore::open(&roots).list().is_ok_and(|keys| keys.is_empty())).await.unwrap_or(false);
+    if empty { authorization } else { None }
 }
 
 /// Whether a proxy put its marks on the request: `tailscale serve` adds `Tailscale-*` and forwarding headers.
@@ -224,11 +235,11 @@ fn event_stream_target(path: &str, last_event_id: Option<&str>) -> Option<(Strin
 
 /// Answers a stream request: the handler's own refusal when it refuses, otherwise server-sent events,
 /// each carrying the event id so a dropped connection resumes after the last one seen.
-async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<String>, base: String, cursor: Option<String>, head: bool) -> Response {
+async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials, base: String, cursor: Option<String>, head: bool) -> Response {
     struct Follow {
         shared: Arc<Shared>,
         peer: SocketAddr,
-        authorization: Option<String>,
+        credentials: Credentials,
         base: String,
         cursor: Option<String>,
         queue: std::collections::VecDeque<String>,
@@ -256,7 +267,10 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<Str
     // Reads what came after the last event; false when the run can no longer be read.
     async fn fetch(state: &mut Follow) -> bool {
         let path = page_path(state);
-        let (shared, peer, authorization) = (state.shared.clone(), state.peer.ip(), state.authorization.clone());
+        let shared = state.shared.clone();
+        let peer = state.peer.ip();
+        // Judged on every look, so a logout, an expired session or a newly enrolled passkey ends the stream.
+        let authorization = effective_authorization(&shared, peer, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
         let Ok((200, body)) = tokio::task::spawn_blocking(move || reply_to(&shared, peer, "GET", &path, authorization.as_deref())).await else { return false };
         let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) else { return false };
         if absorb(state, &page) {
@@ -271,10 +285,11 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<Str
         true
     }
 
-    let mut state = Follow { shared, peer, authorization, base, cursor, queue: Default::default(), quiet: Default::default(), hurry: false };
+    let mut state = Follow { shared, peer, credentials, base, cursor, queue: Default::default(), quiet: Default::default(), hurry: false };
     // The first look decides the answer: a refused or unknown request is the handler's plain reply.
     let first = {
-        let (shared, ip, authorization, path) = (state.shared.clone(), peer.ip(), state.authorization.clone(), page_path(&state));
+        let (shared, ip, path) = (state.shared.clone(), peer.ip(), page_path(&state));
+        let authorization = effective_authorization(&shared, ip, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
         tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref())).await
     };
     let Ok((code, body)) = first else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
