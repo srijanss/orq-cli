@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_run_then, list_runs_report, mark_merged_runs, Event, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{discard_run_then, list_runs_report, mark_merged_runs, plan_resume, Event, RunPhase, RunRecord, RunStore};
 use orq_test_support::GitFixture;
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -156,4 +156,19 @@ fn discarding_a_failed_run_whose_work_is_not_on_the_target_still_reopens_its_fea
 
     assert!(!outcome.merged);
     assert_eq!(reopened, vec!["F".to_string()]);
+}
+
+#[test]
+fn a_run_merged_by_hand_is_not_resumed_but_an_unmerged_failed_run_gets_past_the_phase_check() {
+    let s = setup("resume-merged");
+    commit(&s.worktree, "a.txt");
+    s.ended_run("failed");
+    // The fixture's worktree is not where resume looks for one, so an unmerged run gets past the
+    // phase check and stops at the worktree check.
+    let unmerged = plan_resume(&s.store, s.repo.root(), "p", "F").expect_err("the fixture's worktree is elsewhere");
+    assert!(unmerged.contains("worktrees directory"), "{unmerged}");
+    s.merge_by_hand();
+
+    let refused = plan_resume(&s.store, s.repo.root(), "p", "F").expect_err("a merged run is not resumed");
+    assert!(refused.contains("already on its target branch"), "{refused}");
 }
