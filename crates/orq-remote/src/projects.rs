@@ -171,19 +171,20 @@ fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::coll
         };
         let events = runs.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
         let entry: &mut RunCounts = counts.entry(record.project_id).or_default();
-        match orq_orchestrator::summarize_run(&events).phase {
+        let summary = orq_orchestrator::summarize_run(&events);
+        match summary.phase {
             RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused => entry.active += 1,
-            RunPhase::Failed if failed_recently(&events, now) => entry.failed += 1,
+            RunPhase::Failed if failed_recently(summary.phase_at.as_deref(), now) => entry.failed += 1,
             _ => {}
         }
     }
     Ok(counts)
 }
 
-/// Whether the run's last event is no older than the window. An event with no readable time, or one
-/// from the future, is not counted.
-fn failed_recently(events: &[orq_orchestrator::Event], now: u64) -> bool {
-    let Some(at) = events.last().and_then(|event| orq_orchestrator::parse_rfc3339(&event.occurred_at)) else { return false };
+/// Whether the event that failed the run is no older than the window. A failure with no readable
+/// time, or one from the future, is not counted.
+fn failed_recently(failed_at: Option<&str>, now: u64) -> bool {
+    let Some(at) = failed_at.and_then(orq_orchestrator::parse_rfc3339) else { return false };
     at <= now && now - at <= FAILED_WINDOW_HOURS * 3600
 }
 

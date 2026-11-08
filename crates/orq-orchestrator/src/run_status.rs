@@ -184,6 +184,8 @@ pub struct RunSummary {
     pub stage: Option<String>,
     /// Why the run failed or is blocked, when the event said.
     pub reason: Option<String>,
+    /// When the event that last set the phase happened, as that event wrote it.
+    pub phase_at: Option<String>,
 }
 
 /// Summarize a run from its events in order. The latest event that says something about the
@@ -194,6 +196,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
         phase: RunPhase::Running,
         stage: None,
         reason: None,
+        phase_at: None,
     };
     for event in events {
         let phase = match event.kind.as_str() {
@@ -234,6 +237,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             _ => continue,
         };
         summary.phase = phase;
+        summary.phase_at = Some(event.occurred_at.clone());
         summary.reason = match phase {
             RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview => event
                 .payload

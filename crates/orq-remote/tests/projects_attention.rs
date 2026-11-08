@@ -62,3 +62,47 @@ fn failed_runs_are_counted_only_inside_the_stated_window() {
     assert_eq!(busy["failed_runs"], 1, "{list}");
     assert_eq!(busy["failed_window_hours"], 24, "{list}");
 }
+
+fn event_with(run: &str, project: &str, kind: &str, at: &str, payload: serde_json::Value) -> Event {
+    Event { payload, ..event(run, project, kind, at) }
+}
+
+#[test]
+fn the_window_is_measured_from_the_event_that_failed_the_run() {
+    let base = web_deps::private_temp_dir("projects-attention-failure-time");
+    let scan = base.join("code");
+    let repo = git_repo(&scan, "busy");
+    let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+    roots.create_all().unwrap();
+    let id = orq_git::project_id(&orq_git::resolve_project(&repo).unwrap());
+    let runs = RunStore::new(&roots.state);
+    let none = serde_json::json!({});
+    let recent = at(-3_600);
+    let old = at(-3 * 86_400);
+    let inside = at(-(86_400 - 60));
+    let outside = at(-(86_400 + 60));
+    let histories: Vec<(&str, Vec<(&str, String, serde_json::Value)>)> = vec![
+        // Failed long ago; an unrelated event now must not make it recent again.
+        ("old-then-kept", vec![("run.failed", old.clone(), none.clone()), ("worktree.kept", recent.clone(), none.clone())]),
+        // Failed recently; an unrelated trailing event with a bad time must not hide it.
+        ("recent-then-garbage", vec![("run.failed", recent.clone(), none.clone()), ("worktree.kept", "garbage".into(), none.clone())]),
+        ("recent-then-garbage-2", vec![("run.failed", recent.clone(), none.clone()), ("worktree.kept", "garbage".into(), none.clone())]),
+        ("stage-failed", vec![("stage.failed", recent.clone(), none.clone())]),
+        ("ended-failed", vec![("run.completed", recent.clone(), serde_json::json!({"ending": "failed"}))]),
+        ("completed", vec![("run.completed", recent.clone(), serde_json::json!({"ending": "review_ready"}))]),
+        ("just-inside", vec![("run.failed", inside, none.clone())]),
+        ("just-outside", vec![("run.failed", outside, none.clone())]),
+        ("bad-time", vec![("run.failed", "garbage".into(), none.clone())]),
+    ];
+    for (run, history) in &histories {
+        runs.create(&record(&base, run, &id)).unwrap();
+        for (n, (kind, time, payload)) in history.iter().enumerate() {
+            let mut e = event_with(run, &id, kind, time, payload.clone());
+            e.event_id = format!("{run}-{n}");
+            runs.append_event(&e).unwrap();
+        }
+    }
+    let list = StoreProjects::new(roots, scan).projects().unwrap();
+    // both recent-then-garbage runs, stage-failed, ended-failed and just-inside.
+    assert_eq!(list.as_array().unwrap()[0]["failed_runs"], 5, "{list}");
+}
