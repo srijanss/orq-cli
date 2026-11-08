@@ -53,3 +53,21 @@ fn the_documented_settings_and_files_exist() {
         assert!(guide.contains(topic), "the guide covers {topic}");
     }
 }
+
+#[test]
+fn the_token_is_created_private_from_the_start_in_the_directory_the_server_reads() {
+    let guide = guide();
+    let steps: Vec<&str> = guide.lines().map(str::trim).collect();
+    let position = |needle: &str| steps.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("the guide shows {needle}"));
+    assert!(position("umask 077") < position("> \"$config_dir/remote-token\""), "umask comes before the file is written");
+    assert!(guide.contains("${XDG_CONFIG_HOME:-$HOME/.config}/orq"), "the directory follows XDG_CONFIG_HOME like the server");
+    assert!(!guide.contains("> ~/.config/orq/remote-token"), "no hard-coded directory is written to");
+}
+
+#[test]
+fn the_phone_sequence_listens_on_the_tailscale_address() {
+    let guide = guide();
+    assert!(guide.contains("tailscale ip -4"), "the guide shows how to find the address");
+    let listening = guide.lines().map(str::trim).any(|line| line.starts_with("orq remote serve") && line.contains("--listen") && !line.contains("127.0.0.1"));
+    assert!(listening, "a documented serve command listens on a non-loopback address");
+}

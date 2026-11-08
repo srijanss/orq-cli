@@ -14,33 +14,33 @@ or set `ORQ_REMOTE_CONTROL=1` in the environment. With it off, the command refus
 
 ## 2. Create the token file
 
-The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone:
+The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads:
 
 ```sh
-mkdir -p ~/.config/orq
-head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > ~/.config/orq/remote-token
-chmod 600 ~/.config/orq/remote-token
+(
+  umask 077
+  config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/orq"
+  mkdir -p "$config_dir"
+  head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$config_dir/remote-token"
+  chmod 600 "$config_dir/remote-token"
+)
 ```
 
 The command never prints the token. Copy it to your phone from the file.
 
-## 3. Start the server
+## 3. Start the server on your Tailscale address
 
-```sh
-orq remote serve --repo .
-```
-
-It prints `listening on http://127.0.0.1:7878` and runs until Ctrl-C. It refuses to start, with one line and a non-zero exit, when remote control is off, the token file is missing, too short or too open, or the address cannot be bound.
-
-To listen on another address, such as your Tailscale address, name it:
+A server listening on `127.0.0.1` (the default) cannot be reached from a phone, so name the machine's Tailscale address. Find it with `tailscale ip -4`, then:
 
 ```sh
 orq remote serve --repo . --listen 100.64.0.1:7878
 ```
 
+Use your own address in place of `100.64.0.1`. It prints `listening on http://100.64.0.1:7878` and runs until Ctrl-C. It refuses to start, with one line and a non-zero exit, when remote control is off, the token file is missing, too short or too open, or the address cannot be bound.
+
 ## 4. Reach it over Tailscale
 
-Install Tailscale on the machine and the phone, then open `http://<tailscale-address>:7878` in the phone's browser. The server answers only loopback and Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48); every other address is refused. It is plain HTTP, so keep it on the tailnet and never expose it to the internet.
+Install Tailscale on the machine and the phone, then open the printed address in the phone's browser. The server answers only loopback and Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48); every other address is refused. It is plain HTTP, so keep it on the tailnet and never expose it to the internet.
 
 ## 5. What the page shows
 
