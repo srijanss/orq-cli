@@ -38,8 +38,14 @@ fn list() -> Value {
 }
 
 fn detail(stale: bool, link: Value) -> Value {
+    let freshness = if stale { "stale" } else { "current" };
+    detail_with(freshness, !stale && !link.is_null(), link)
+}
+
+fn detail_with(freshness: &str, link_allowed: bool, link: Value) -> Value {
     json!({"status": 200, "json": {
-        "run_id": "run-1", "reported_head_sha": "abc1234", "observed_head_sha": "abc1234", "stale": stale, "link": link,
+        "run_id": "run-1", "reported_head_sha": "abc1234", "observed_head_sha": "abc1234", "stale": freshness == "stale", "freshness": freshness, "link_allowed": link_allowed, "link": link,
+        "reviewed_head_sha": "1111111aaaa", "provider_head_sha": if freshness == "unverified" { Value::Null } else { json!("2222222bbbb") }, "checked_at": "2026-11-09T10:00:00Z",
         "summary": ["adds the thing"], "risks": ["<b>risky</b> change"], "files": ["src/a.rs"],
         "tests": ["12 passed, 0 failed"], "rounds": ["round 1: 1 finding open <img src=x onerror=alert(1)>"]
     }})
@@ -87,7 +93,48 @@ fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
 #[test]
 fn a_stale_report_shows_the_marker_and_no_link_even_when_the_link_is_safe() {
     let Some(out) = open_first(detail(true, json!("https://github.com/o/r/pull/7"))) else { return };
-    assert!(page(&out, 2).contains(STALE_MARKER), "{out}");
+    assert!(page(&out, 2).contains("STALE"), "{out}");
+    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+}
+
+const LINK: &str = "https://github.com/o/r/pull/7";
+
+#[test]
+fn a_stale_report_shows_a_red_banner_with_both_hashes_above_the_summary_and_no_link() {
+    let Some(out) = open_first(detail_with("stale", false, json!(LINK))) else { return };
+    let shown = page(&out, 2);
+    for expected in ["STALE", "1111111aaaa", "2222222bbbb"] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    assert!(shown.find("STALE").unwrap() < shown.find("adds the thing").unwrap(), "{shown}");
+    assert!(!shown.contains("UNVERIFIED"), "{shown}");
+    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+}
+
+#[test]
+fn an_unverified_report_shows_an_amber_banner_and_no_link_and_names_no_provider_head() {
+    let Some(out) = open_first(detail_with("unverified", false, json!(LINK))) else { return };
+    let shown = page(&out, 2);
+    assert!(shown.contains("UNVERIFIED") && shown.contains("1111111aaaa"), "{shown}");
+    assert!(shown.find("UNVERIFIED").unwrap() < shown.find("adds the thing").unwrap(), "{shown}");
+    assert!(!shown.contains("STALE") && !shown.contains("2222222bbbb"), "{shown}");
+    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+}
+
+#[test]
+fn a_current_report_has_no_banner_and_the_link_needs_the_server_to_allow_it() {
+    let Some(out) = open_first(detail_with("current", true, json!(LINK))) else { return };
+    let shown = page(&out, 2);
+    assert!(!shown.contains("STALE") && !shown.contains("UNVERIFIED"), "{shown}");
+    assert_eq!(out["frames"][2]["settled"]["links"].as_array().unwrap().len(), 1, "{out}");
+    // A current report whose link the server does not allow, or one with no freshness at all, gets no link.
+    let Some(out) = open_first(detail_with("current", false, json!(LINK))) else { return };
+    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    let mut old = detail_with("current", true, json!(LINK));
+    old["json"].as_object_mut().unwrap().remove("freshness");
+    let Some(out) = open_first(old) else { return };
+    let shown = page(&out, 2);
+    assert!(shown.contains("UNVERIFIED"), "a report without a freshness is unverified: {shown}");
     assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
 }
 

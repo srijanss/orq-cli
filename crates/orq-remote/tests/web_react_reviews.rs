@@ -42,7 +42,8 @@ fn list() -> Value {
 }
 
 fn detail(stale: bool, link: Value) -> Value {
-    json!({"status": 200, "json": {"stale": stale, "link": link, "summary": ["adds the thing"], "risks": [], "files": ["a.rs"], "tests": ["t"], "rounds": []}})
+    let freshness = if stale { "stale" } else { "current" };
+    json!({"status": 200, "json": {"stale": stale, "freshness": freshness, "link_allowed": !stale, "link": link, "summary": ["adds the thing"], "risks": [], "files": ["a.rs"], "tests": ["t"], "rounds": []}})
 }
 
 #[test]
@@ -107,7 +108,7 @@ fn a_report_opens_with_its_sections_and_a_safe_link_and_back_returns_to_the_list
 #[test]
 fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offered() {
     let Some(out) = run(json!([list(), detail(true, json!("https://github.com/o/r/pull/7"))]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
-    assert!(page(&out, 2).contains(STALE_MARKER), "{out}");
+    assert!(page(&out, 2).contains("STALE"), "{out}");
     assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
     for link in ["http://x.test/a", "javascript:alert(1)", "https://user:pw@x.test/a"] {
         let Some(out) = run(json!([list(), detail(false, json!(link))]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };

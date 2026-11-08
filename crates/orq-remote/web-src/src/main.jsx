@@ -139,15 +139,48 @@ function RunList({ runs, detailPrefix = DETAIL_PREFIX }) {
   );
 }
 
+const FRESHNESS_BANNERS = {
+  stale: { icon: "⚠", label: "STALE", text: "The provider's head differs from the reviewed commit; this report may be out of date." },
+  unverified: { icon: "?", label: "UNVERIFIED", text: "The provider's head could not be checked against the reviewed commit." },
+};
+
+// The server decides; anything it does not clearly call current or stale is unverified.
+function freshnessOf(report) {
+  return report.freshness === "current" || report.freshness === "stale" ? report.freshness : "unverified";
+}
+
+function shortHash(value) {
+  return typeof value === "string" && /^[0-9a-f]{4,64}$/i.test(value) ? value : "none";
+}
+
+function FreshnessBanner({ report, freshness }) {
+  const banner = FRESHNESS_BANNERS[freshness];
+  if (banner === undefined) {
+    return null;
+  }
+  return (
+    <div className={"banner freshness-banner " + freshness} role="status" data-freshness={freshness}>
+      <strong>
+        <span aria-hidden="true">{banner.icon} </span>
+        {banner.label}
+      </strong>
+      <p>{banner.text}</p>
+      <p>{"Reviewed commit: " + shortHash(report.reviewed_head_sha)}</p>
+      <p>{"Provider head: " + shortHash(report.provider_head_sha)}</p>
+    </div>
+  );
+}
+
 function Detail({ report, listPath = "/" }) {
-  const href = report.stale ? null : safeHttpsLink(report.link);
+  const freshness = freshnessOf(report);
+  const href = freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
   return (
     <>
       <button type="button" onClick={() => navigate(listPath)}>
         Back to the list
       </button>
       <Generated at={report.generated_at} />
-      {report.stale && <p>{STALE_MARKER}</p>}
+      <FreshnessBanner report={report} freshness={freshness} />
       {href !== null && (
         <a href={href} rel="noopener noreferrer" referrerPolicy="no-referrer">
           Open at the provider
