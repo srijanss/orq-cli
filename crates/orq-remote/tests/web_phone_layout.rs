@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-const PHONE: &str = "(max-width: 700px)";
-
 fn read(path: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap().to_lowercase()
 }
@@ -55,24 +53,101 @@ fn parse(css: &str, media: Option<&str>) -> Vec<Rule> {
     rules
 }
 
-/// What a phone ends up with for `property` on `selector`: top-level and phone-breakpoint rules
-/// apply, the later one wins, and rules in other conditions (the colour scheme) are skipped.
-fn effective(css: &str, selector: &str, property: &str) -> String {
-    parse(css, None)
-        .iter()
-        .filter(|r| r.media.as_deref().map_or(true, |m| m == PHONE) && r.selectors.iter().any(|s| s == selector))
-        .flat_map(|r| r.declarations.iter().filter(|(p, _)| p == property))
-        .last()
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| panic!("no {property} for {selector} on a phone"))
+/// Whether a media condition holds at `width` pixels. Colour-scheme conditions only hold tokens and
+/// are skipped; any other condition this does not understand fails the test rather than hiding.
+fn applies(media: &Option<String>, width: f64) -> bool {
+    let Some(condition) = media else { return true };
+    if condition.contains("prefers-color-scheme") {
+        return false;
+    }
+    condition.split(" and ").all(|part| {
+        let part = part.trim().trim_start_matches('(').trim_end_matches(')');
+        let (feature, value) = part.split_once(':').unwrap_or_else(|| panic!("media condition {condition:?} is not understood"));
+        let px: f64 = value.trim().strip_suffix("px").and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("media condition {condition:?} is not understood"));
+        match feature.trim() {
+            "max-width" => width <= px,
+            "min-width" => width >= px,
+            _ => panic!("media condition {condition:?} is not understood"),
+        }
+    })
+}
+
+/// The last compound selector (the part that names the element itself).
+fn subject(selector: &str) -> &str {
+    selector.rsplit([' ', '>', '+', '~']).next().unwrap_or(selector)
+}
+
+/// Whether a rule's selector can match an element that `target` (a class or a tag) names. A
+/// selector that adds ancestors or other classes is assumed to match, which is the safe direction.
+fn can_match(selector: &str, target: &str) -> bool {
+    let compound = subject(selector);
+    if let Some(class) = target.strip_prefix('.') {
+        compound.split('.').skip(1).any(|c| c.split([':', '[', '#']).next() == Some(class))
+    } else {
+        compound.split(['.', ':', '[', '#']).next() == Some(target)
+    }
+}
+
+/// (ids, classes/attributes/pseudo-classes, tags) as one comparable number.
+fn specificity(selector: &str) -> usize {
+    let mut score = 0;
+    for compound in selector.split([' ', '>', '+', '~']).filter(|c| !c.is_empty()) {
+        score += compound.matches('#').count() * 10_000 + (compound.matches('.').count() + compound.matches('[').count() + compound.matches(':').count()) * 100;
+        if compound.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            score += 1;
+        }
+    }
+    score
+}
+
+/// What an element named by `target` ends up with for `property` on a screen `width` pixels wide:
+/// every rule whose media condition holds and whose selector can match, ordered by importance,
+/// specificity and source order, the last one winning.
+fn effective_at(css: &str, target: &str, property: &str, width: f64) -> String {
+    let mut best: Option<((bool, usize, usize), String)> = None;
+    let mut order = 0;
+    for rule in parse(css, None).iter().filter(|r| applies(&r.media, width)) {
+        for selector in rule.selectors.iter().filter(|s| can_match(s, target)) {
+            for (_, v) in rule.declarations.iter().filter(|(p, _)| p == property) {
+                order += 1;
+                let key = (v.contains("!important"), specificity(selector), order);
+                if best.as_ref().map_or(true, |(k, _)| key > *k) {
+                    best = Some((key, v.replace("!important", "").trim().to_string()));
+                }
+            }
+        }
+    }
+    best.unwrap_or_else(|| panic!("no {property} for {target} at {width}px")).1
+}
+
+const WIDTHS: [f64; 3] = [320.0, 360.0, 430.0];
+
+/// The value on every phone width, which must be one value.
+fn effective(css: &str, target: &str, property: &str) -> String {
+    let values: Vec<String> = WIDTHS.iter().map(|w| effective_at(css, target, property, *w)).collect();
+    assert!(values.iter().all(|v| *v == values[0]), "{target} {property} differs between phone widths: {values:?}");
+    values[0].clone()
 }
 
 #[test]
-fn a_later_or_desktop_only_rule_changes_what_the_phone_gets() {
-    let sheet = ".a { white-space: pre-wrap; }\n.a { white-space: pre; }\n@media (min-width: 701px) { .b { white-space: pre-wrap; } }\n@media (max-width: 700px) { .c { padding: 1px; } }";
-    assert_eq!(effective(sheet, ".a", "white-space"), "pre");
-    assert_eq!(effective(sheet, ".c", "padding"), "1px");
-    assert!(std::panic::catch_unwind(|| effective(".b { x: y; }\n@media (min-width: 701px) { .b { white-space: pre-wrap; } }", ".b", "white-space")).is_err(), "a desktop-only rule is not a phone rule");
+fn the_cascade_is_resolved_by_width_specificity_importance_and_order() {
+    let at = |sheet: &str, target: &str, width: f64| effective_at(sheet, target, "white-space", width);
+    // A later rule for the same selector wins.
+    assert_eq!(at(".a { white-space: pre-wrap; }\n.a { white-space: pre; }", ".a", 360.0), "pre");
+    // A more specific selector wins even when it comes first, and a descendant selector counts.
+    assert_eq!(at("body .a { white-space: pre; }\n.a { white-space: pre-wrap; }", ".a", 360.0), "pre");
+    assert_eq!(at("pre.a { white-space: pre; }\n.a { white-space: pre-wrap; }", ".a", 360.0), "pre");
+    // !important beats specificity.
+    assert_eq!(at(".a { white-space: pre-wrap !important; }\nbody .a { white-space: pre; }", ".a", 360.0), "pre-wrap");
+    // Narrower and compound conditions apply at the widths inside them and not outside.
+    let narrow = ".a { white-space: pre-wrap; }\n@media (max-width: 400px) { .a { white-space: pre; } }";
+    assert_eq!((at(narrow, ".a", 360.0), at(narrow, ".a", 430.0)), ("pre".into(), "pre-wrap".into()));
+    let compound = ".a { white-space: pre-wrap; }\n@media (min-width: 300px) and (max-width: 340px) { .a { white-space: pre; } }";
+    assert_eq!((at(compound, ".a", 320.0), at(compound, ".a", 360.0)), ("pre".into(), "pre-wrap".into()));
+    // A desktop-only rule is not a phone rule.
+    assert_eq!(at(".a { white-space: pre-wrap; }\n@media (min-width: 701px) { .a { white-space: pre; } }", ".a", 360.0), "pre-wrap");
+    // A value that differs between phone widths is reported rather than averaged away.
+    assert!(std::panic::catch_unwind(|| effective(narrow, ".a", "white-space")).is_err());
 }
 
 #[test]
@@ -94,7 +169,7 @@ fn log_lines_wrap_instead_of_running_off_the_screen() {
 fn no_rule_fixes_a_width_wider_than_the_smallest_phone() {
     // 320 css pixels less the content padding on both sides.
     let css = css();
-    for rule in parse(&css, None).iter().filter(|r| r.media.as_deref().map_or(true, |m| m == PHONE)) {
+    for rule in parse(&css, None).iter().filter(|r| WIDTHS.iter().any(|w| applies(&r.media, *w))) {
         for (property, value) in &rule.declarations {
             if property == "width" || property == "min-width" {
                 if let Some(px) = value.strip_suffix("px") {
@@ -129,6 +204,6 @@ fn on_a_phone_the_content_is_tighter_and_never_scrolls_sideways() {
     let css = css();
     assert_eq!(effective(&css, ".content", "padding"), "0.75rem");
     assert_eq!(effective(&css, "body", "overflow-x"), "hidden");
-    // The phone value comes from the breakpoint, not only the desktop rule.
-    assert!(parse(&css, None).iter().any(|r| r.media.as_deref() == Some(PHONE) && r.selectors.iter().any(|s| s == ".content")));
+    // The phone value comes from the breakpoint: a wide screen keeps the roomier padding.
+    assert_ne!(effective_at(&css, ".content", "padding", 1200.0), "0.75rem");
 }
