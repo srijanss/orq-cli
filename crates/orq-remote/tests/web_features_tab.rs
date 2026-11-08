@@ -188,3 +188,18 @@ fn an_answer_that_finishes_after_switching_project_is_ignored() {
     assert!(!late.iter().any(|t| t == "alpha-late"), "a late answer from the other project was drawn: {late:?}");
     assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
 }
+
+#[test]
+fn following_a_dependency_that_already_matches_the_filters_keeps_them() {
+    let ledger = json!({"status": 200, "json": {"features": [
+        feature("base-work", "pending", Value::Null, json!([])),
+        feature("top-work", "pending", Value::Null, json!(["base-work"])),
+        feature("other-work", "draft", Value::Null, json!([]))
+    ]}});
+    let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-status]", "value": "pending"}, {"set": "[data-feature-search]", "value": "work"}, {"click": "button", "index": 0}, {"nav": "a[data-dependency=\"base-work\"]"}]);
+    let Some(out) = run("/projects/alpha/features", json!([ledger, projects()]), steps) else { return };
+    let after = &out["frames"][5];
+    assert_eq!(after["settled"]["inputs"][0]["value"], "work", "the search is kept: {after}");
+    assert!(!shown(after).iter().any(|t| t == "other-work"), "the status filter is kept: {after}");
+    assert_eq!(after["settled"]["focused"], "feature-base-work", "{after}");
+}

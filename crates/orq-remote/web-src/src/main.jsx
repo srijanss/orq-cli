@@ -485,8 +485,9 @@ function FeatureList({ features, listPath }) {
   const shown = features.filter((feature) => (only === "all" || feature.status === only) && feature.name.toLowerCase().includes(needle));
   const toggle = (name) => setOpen((was) => { const next = new Set(was); if (next.has(name)) next.delete(name); else next.add(name); return next; });
   const openDependency = (name) => {
-    setQuery("");
-    setOnly("all");
+    const target = features.find((feature) => feature.name === name);
+    if (target !== undefined && !target.name.toLowerCase().includes(needle)) setQuery("");
+    if (target !== undefined && only !== "all" && target.status !== only) setOnly("all");
     setOpen((was) => new Set(was).add(name));
     setReveal(name);
   };
