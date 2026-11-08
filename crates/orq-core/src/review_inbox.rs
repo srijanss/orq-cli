@@ -21,6 +21,8 @@ pub struct InboxRow {
     pub status: String,
     pub risk: String,
     pub stale: bool,
+    /// When the report was generated, as plain UTC text (`2026-11-03T10:20:30Z`); `None` when absent or odd.
+    pub generated_at: Option<String>,
 }
 
 /// The sections of one review, as plain lines.
@@ -31,6 +33,8 @@ pub struct InboxDetail {
     pub files: Vec<String>,
     pub tests: Vec<String>,
     pub rounds: Vec<String>,
+    /// As on [`InboxRow`].
+    pub generated_at: Option<String>,
 }
 
 /// Every stored review, newest report per run. `current_project_id` names the
@@ -99,6 +103,7 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
             status,
             risk,
             stale: unknown || lifecycle.is_some_and(|l| l.stale),
+            generated_at: report.as_ref().ok().and_then(generated_at),
         });
     }
     Ok(rows)
@@ -128,13 +133,12 @@ pub fn detail_with_links(roots: &StorageRoots, run_id: &str) -> Result<(InboxDet
     Ok((sections(&report), links))
 }
 
-/// When the latest stored report of `run_id` for `head_sha` was generated, as the plain UTC time
-/// it was written with (`2026-11-03T10:20:30Z`). Anything else, or a report that cannot be read, is `None`.
-pub fn generated_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Option<String> {
-    let report = report_where(roots, run_id, |record| record.head_sha == head_sha).ok()?;
+/// The time a report says it was generated, when it is a plain UTC time
+/// (`2026-11-03T10:20:30Z`); anything else is `None`.
+fn generated_at(report: &Value) -> Option<String> {
     let text = report["generated_at"].as_str()?;
     let b = text.as_bytes();
-    let shape = b.len() == 20 && b[19] == b'Z' && b.iter().enumerate().all(|(i, c)| match i {
+    let shape = b.len() == 20 && b.iter().enumerate().all(|(i, c)| match i {
         4 | 7 => *c == b'-',
         10 => *c == b'T',
         13 | 16 => *c == b':',
@@ -263,6 +267,6 @@ fn sections(report: &Value) -> InboxDetail {
             format!("round {}: {summary} ({} findings, {} unresolved)", text(&r["round"]), text(&r["findings"]), text(&r["unresolved"]))
         })
         .collect();
-    InboxDetail { summary, risks, files, tests, rounds }
+    InboxDetail { summary, risks, files, tests, rounds, generated_at: generated_at(report) }
 }
 

@@ -3718,6 +3718,7 @@ mod ledger_backend_tests {
             status: "ready".into(),
             risk: "low".into(),
             stale: false,
+            generated_at: None,
         };
         let run = |run_id: &str, url: Option<&str>| orq_orchestrator::RunListing {
             run_id: run_id.into(),
@@ -3748,6 +3749,7 @@ mod ledger_backend_tests {
             status: "ready".into(),
             risk: "low".into(),
             stale: false,
+            generated_at: None,
         };
         let runs = [orq_orchestrator::RunListing {
             run_id: "run-1".into(),
@@ -3776,6 +3778,7 @@ mod ledger_backend_tests {
             status: "ready".into(),
             risk: "low".into(),
             stale: false,
+            generated_at: None,
         };
 
         let rows = crate::reviews_with_links(vec![inbox("run-1"), inbox("run-2")], None);
