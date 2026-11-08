@@ -465,7 +465,7 @@ function parseTimeline(data) {
 
 // One run: its header, then a page of its events in the order they happened. The next page is
 // its own address, so every request stays one plain GET.
-function RunTimeline({ timeline, listPath, runPath }) {
+function RunTimeline({ timeline, listPath, runPath, follow }) {
   const { run, events, next_cursor: next } = timeline;
   return (
     <>
@@ -489,6 +489,100 @@ function RunTimeline({ timeline, listPath, runPath }) {
         ))}
       </ol>
       {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
+      {next === null && follow !== null ? <FollowLive key={follow.base} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
+    </>
+  );
+}
+
+const RECONNECT_MS = 3000;
+// A block of the event stream that carries an event: its `data:` line, read as an event.
+function streamedEvent(block) {
+  const line = block.split("\n").find((text) => text.startsWith("data: "));
+  if (line === undefined) return null;
+  try {
+    const event = JSON.parse(line.slice(6));
+    return isEvent(event) && RUN_ID.test(event.event_id) ? event : null;
+  } catch (unreadable) {
+    return null;
+  }
+}
+
+// The events that came after the page was drawn, read from the run's event stream with the token in
+// the header (the browser's own stream object cannot send one). A stream that ends or breaks is
+// opened again from the last event seen, and an event already shown is never shown twice.
+function FollowLive({ token, base, from, shown, onSignedOut }) {
+  const [more, setMore] = useState([]);
+  const [status, setStatus] = useState("live");
+  const [retry, setRetry] = useState(0);
+  const last = useRef(from);
+  useEffect(() => {
+    let current = true;
+    let timer = null;
+    const controller = new AbortController();
+    const path = base + "/events" + (last.current === null ? "" : "/after/" + encodeURIComponent(last.current));
+    const again = () => {
+      if (!current) return;
+      setStatus("reconnecting");
+      timer = setTimeout(() => setRetry((count) => count + 1), RECONNECT_MS);
+    };
+    (async () => {
+      try {
+        const response = await get(path, token, controller.signal);
+        if (!current) return;
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        if (response.status === 404 || response.status === 403) {
+          setStatus("stopped");
+          return;
+        }
+        if (!response.ok || !response.body) {
+          again();
+          return;
+        }
+        setStatus("live");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (!current) return;
+          if (done || buffer.length > 1048576) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop();
+          const fresh = blocks.map(streamedEvent).filter((event) => event !== null);
+          if (fresh.length > 0) {
+            last.current = fresh[fresh.length - 1].event_id;
+            setMore((known) => [...known, ...fresh.filter((event) => !known.some((have) => have.event_id === event.event_id))]);
+          }
+        }
+        again();
+      } catch (failure) {
+        again();
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [token, base, retry]);
+  const have = new Set(shown.map((event) => event.event_id));
+  return (
+    <>
+      <ol>
+        {more.filter((event) => !have.has(event.event_id)).map((event) => (
+          <li key={event.event_id} className="event card">
+            <strong>{event.kind}</strong>
+            {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
+            <span>{"Attempt " + event.attempt}</span>
+            {event.occurred_at ? <time>{event.occurred_at}</time> : null}
+          </li>
+        ))}
+      </ol>
+      <p className="live-status" data-live>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );
 }
@@ -616,7 +710,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Run" subtitle="The run's timeline" onRefresh={onRefresh} />
-        <Loaded key={timelinePath} reloads={reloads} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} />} onSignedOut={onSignedOut} />
+        <Loaded key={timelinePath} reloads={reloads} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} follow={{ token, onSignedOut, cursor, base: "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) }} />} onSignedOut={onSignedOut} />
       </>
     );
   }

@@ -45,10 +45,12 @@ fn timeline() -> Value {
 #[test]
 fn the_run_page_opens_its_log_files_listed_with_their_sizes() {
     let list = files(json!([{"name": "implement.log", "bytes": 2048}, {"name": "<b>x</b>.log", "bytes": 5}]));
-    let Some(out) = run(RUN, json!([timeline(), projects(), list]), json!([{"submit": TOKEN}, {"click": "button[data-open=logs]", "index": 0}])) else { return };
+    // The run page follows its events, so its stream is the third request.
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = run(RUN, json!([timeline(), projects(), stream, list]), json!([{"submit": TOKEN}, {"click": "button[data-open=logs]", "index": 0}])) else { return };
     assert_eq!(out["frames"][2]["settled"]["path"], format!("{RUN}/logs"), "{out}");
-    assert_eq!(out["requests"][2]["url"], "/api/projects/alpha/runs/run-1/logs", "{out}");
-    assert_eq!(out["requests"][2]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
+    assert_eq!(out["requests"][3]["url"], "/api/projects/alpha/runs/run-1/logs", "{out}");
+    assert_eq!(out["requests"][3]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let t = texts(&out["frames"][2]);
     assert!(t.iter().any(|x| x == "implement.log") && t.iter().any(|x| x == "2048 bytes") && t.iter().any(|x| x == "<b>x</b>.log"), "{t:?}");
 

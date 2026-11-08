@@ -37,6 +37,14 @@ let visibility = "visible";
 Object.defineProperty(window.document, "visibilityState", { get() { return visibility; } });
 Object.defineProperty(window.document, "hidden", { get() { return visibility === "hidden"; } });
 
+// Retry timers of the live follower (3000 ms) are faked too, so a test fires them: {fire: 3000}.
+const timeouts = [];
+const realSetTimeout = window.setTimeout.bind(window);
+const realClearTimeout = window.clearTimeout.bind(window);
+window.setTimeout = (run, delay, ...rest) => { if (delay === 3000) { timeouts.push({ active: true, run }); return -timeouts.length; } return realSetTimeout(run, delay, ...rest); };
+window.clearTimeout = (id) => { if (id < 0) { if (timeouts[-id - 1]) timeouts[-id - 1].active = false; } else realClearTimeout(id); };
+window.TextDecoder = TextDecoder;
+
 const requests = [];
 const held = {};
 const responses = [...scenario.responses];
@@ -49,9 +57,26 @@ window.fetch = (url, options) => {
   if (!next || (next.reject && next.hold !== "fetch")) {
     return Promise.reject(new Error("offline"));
   }
+  // A streamed body: {stream: [text chunks], end: "close" (default) | "hold" | "error"}.
+  const body = () => {
+    const chunks = [...next.stream];
+    const aborted = () => signal && signal.aborted;
+    return {
+      getReader: () => ({
+        read: () => {
+          if (aborted()) return Promise.reject(new window.DOMException("aborted", "AbortError"));
+          if (chunks.length > 0) return Promise.resolve({ done: false, value: new TextEncoder().encode(chunks.shift()) });
+          if (next.end === "error") return Promise.reject(new Error("dropped"));
+          if (next.end === "hold") return new Promise((resolve, reject) => { if (signal) signal.addEventListener("abort", () => reject(new window.DOMException("aborted", "AbortError"))); });
+          return Promise.resolve({ done: true });
+        },
+      }),
+    };
+  };
   const reply = () => ({
     status: next.status,
     ok: next.status >= 200 && next.status < 300,
+    body: next.stream ? body() : null,
     json: () => {
       if (next.hold === "json") {
         return new Promise((resolve) => {
@@ -90,7 +115,7 @@ function snapshot() {
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
   const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
   const checked = [...root.querySelectorAll("[data-last-checked]")].map((el) => el.textContent);
-  return { visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -124,6 +149,8 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     } else if (step.tick !== undefined) {
       // The interval of that length fires once.
       for (const interval of intervals.filter((i) => i.active && i.delay === step.tick)) interval.run();
+    } else if (step.fire !== undefined) {
+      for (const timer of timeouts.filter((t) => t.active)) { timer.active = false; timer.run(); }
     } else if (step.visibility !== undefined) {
       visibility = step.visibility;
       window.document.dispatchEvent(new window.Event("visibilitychange"));
