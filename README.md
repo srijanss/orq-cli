@@ -53,3 +53,7 @@ GIT_SSH_COMMAND=$PWD/ssh ORQ_FORGE=gh orq run --repo . --feature <name> --remote
 ```
 
 The run stops at the review request, since no forge answers.
+
+## Reading reviews from a phone
+
+`orq remote serve` starts a read-only page for the review inbox. See [docs/remote-inbox.md](docs/remote-inbox.md).
