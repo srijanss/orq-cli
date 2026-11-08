@@ -16,7 +16,7 @@ const [, , bundlePath, scenarioText] = process.argv;
 const scenario = JSON.parse(scenarioText);
 
 const dom = new JSDOM('<!doctype html><html><body><main id="app"><p>Loading the review inbox…</p></main></body></html>', {
-  url: "http://localhost/",
+  url: "http://localhost" + (scenario.url || "/"),
   runScripts: "outside-only",
 });
 const { window } = dom;
@@ -69,7 +69,7 @@ function snapshot() {
     if (node.tagName === "BUTTON") buttons.push(node.textContent);
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
-  return { shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash };
+  return { shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -96,8 +96,15 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       fieldAfter = field.value;
     } else if (step.release !== undefined) {
       held[step.release]();
-    } else if (step.hash !== undefined) {
-      window.location.hash = step.hash;
+    } else if (step.go !== undefined) {
+      // What Back and Forward do: the address changes and the page is told.
+      window.history.pushState(null, "", step.go);
+      window.dispatchEvent(new window.PopStateEvent("popstate"));
+    } else if (step.nav_modified !== undefined) {
+      root.querySelector(step.nav_modified).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+    } else if (step.nav !== undefined) {
+      // A click on a link anywhere in the page, shell included.
+      root.querySelector(step.nav).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
     } else if (step.back) {
       window.history.back();
     } else {

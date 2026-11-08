@@ -28,31 +28,31 @@ fn current(frame: &Value) -> Vec<String> {
 
 #[test]
 fn without_a_project_the_sidebar_offers_the_dashboard_and_settings_only() {
-    let Some(out) = run(json!({"hash": "#/dashboard"})) else { return };
+    let Some(out) = run(json!({"path": "/dashboard"})) else { return };
     assert_eq!(names(&out["frames"][0]), ["Dashboard", "Settings"], "{out}");
 }
 
 #[test]
 fn a_chosen_project_adds_its_features_orchestrations_and_reviews() {
-    let Some(out) = run(json!({"projectId": "my app", "hash": "#/projects/my%20app/reviews"})) else { return };
+    let Some(out) = run(json!({"projectId": "my app", "path": "/projects/my%20app/reviews"})) else { return };
     let frame = &out["frames"][0];
     assert_eq!(names(frame), ["Dashboard", "Features", "Orchestrations", "Reviews", "Settings"], "{out}");
     let hrefs: Vec<&str> = frame["links"].as_array().unwrap().iter().map(|l| l["href"].as_str().unwrap()).collect();
-    assert_eq!(hrefs, ["#/dashboard", "#/projects/my%20app/features", "#/projects/my%20app/orchestrations", "#/projects/my%20app/reviews", "#/settings"]);
+    assert_eq!(hrefs, ["/dashboard", "/projects/my%20app/features", "/projects/my%20app/orchestrations", "/projects/my%20app/reviews", "/settings"]);
     assert_eq!(current(frame), ["Reviews"], "the place comes from the address: {out}");
 }
 
 #[test]
 fn a_change_of_address_moves_the_highlight() {
-    let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"hash": "#/settings"}]})) else { return };
+    let Some(out) = run(json!({"path": "/dashboard", "steps": [{"go": "/settings"}]})) else { return };
     let frame = &out["frames"][1];
-    assert_eq!(frame["hash"], "#/settings");
+    assert_eq!(frame["path"], "/settings");
     assert_eq!(current(frame), ["Settings"], "{out}");
 }
 
 #[test]
 fn the_phone_drawer_opens_locks_scroll_and_traps_focus() {
-    let Some(out) = run(json!({"hash": "#/dashboard", "steps": [
+    let Some(out) = run(json!({"path": "/dashboard", "steps": [
         {"click": "[data-menu-button]"},
         {"press": "Tab", "shift": true},
         {"press": "Tab"}
@@ -71,7 +71,7 @@ fn the_phone_drawer_opens_locks_scroll_and_traps_focus() {
 #[test]
 fn escape_scrim_and_close_button_each_close_the_drawer_and_give_focus_back() {
     for closer in [json!({"press": "Escape"}), json!({"click": "[data-scrim]"}), json!({"click": "[data-close-button]"})] {
-        let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-menu-button]"}, closer.clone()]})) else { return };
+        let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, closer.clone()]})) else { return };
         let closed = &out["frames"][2];
         assert_eq!(closed["drawerOpen"], false, "{closer}: {out}");
         assert_eq!(closed["menuExpanded"], "false", "{closer}: {out}");
@@ -83,7 +83,7 @@ fn escape_scrim_and_close_button_each_close_the_drawer_and_give_focus_back() {
 
 #[test]
 fn the_desktop_rail_collapses_and_expands() {
-    let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-rail-button]"}, {"click": "[data-rail-button]"}]})) else { return };
+    let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-rail-button]"}, {"click": "[data-rail-button]"}]})) else { return };
     assert_eq!(out["frames"][0]["railCollapsed"], false);
     assert_eq!(out["frames"][1]["railCollapsed"], true, "{out}");
     assert_eq!(out["frames"][2]["railCollapsed"], false, "{out}");
@@ -118,7 +118,7 @@ fn the_served_page_is_framed_by_the_shell() {
 #[test]
 fn choosing_a_destination_closes_the_drawer_and_releases_scroll() {
     for link in ["nav a:nth-child(1)", "nav a:nth-child(2)"] {
-        let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-menu-button]"}, {"click": link}]})) else { return };
+        let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, {"click": link}]})) else { return };
         let after = &out["frames"][2];
         assert_eq!(after["drawerOpen"], false, "{link}: {out}");
         assert_eq!(after["bodyOverflow"], "", "{link}: {out}");
@@ -128,7 +128,7 @@ fn choosing_a_destination_closes_the_drawer_and_releases_scroll() {
 
 #[test]
 fn growing_past_the_phone_width_closes_an_open_drawer() {
-    let Some(out) = run(json!({"hash": "#/dashboard", "steps": [{"click": "[data-menu-button]"}, {"viewport": "desktop"}]})) else { return };
+    let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, {"viewport": "desktop"}]})) else { return };
     let after = &out["frames"][2];
     assert_eq!(after["drawerOpen"], false, "{out}");
     assert_eq!(after["bodyOverflow"], "", "scroll is released: {out}");
@@ -140,8 +140,8 @@ fn destinations_without_a_page_say_so_instead_of_showing_the_inbox() {
     if !web_deps::ready() {
         return;
     }
-    for hash in ["#/dashboard", "#/settings", "#/projects/app/features"] {
-        let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": [{"submit": "token"}, {"hash": hash}]});
+    for hash in ["/dashboard", "/settings", "/projects/app/features"] {
+        let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": [{"submit": "token"}, {"go": hash}]});
         let output = Command::new("node")
             .arg(crate_dir().join("tests/web_react_harness.mjs"))
             .arg(crate_dir().join("web/app.react.js"))

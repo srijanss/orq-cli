@@ -1,35 +1,29 @@
 // The page frame: a sidebar with the Dashboard, the chosen project's sections and Settings.
-// The place lives in the address hash, so Back and Forward move it. On a phone the sidebar is a
+// The place lives in the address path, so Back and Forward move it. On a phone the sidebar is a
 // drawer that behaves like a dialog (Escape, scrim or close button close it, focus is trapped and
 // returned, page scroll is locked); on a desktop the same sidebar collapses to an icon rail.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-
-function subscribeToHash(notify) {
-  window.addEventListener("hashchange", notify);
-  return () => window.removeEventListener("hashchange", notify);
-}
+import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
 
 // The same breakpoint the stylesheet uses for the drawer.
 const PHONE_QUERY = "(max-width: 700px)";
 
-const currentHash = () => window.location.hash;
-
 export function navigationEntries(projectId) {
-  const entries = [{ label: "Dashboard", icon: "▦", href: "#/dashboard" }];
+  const entries = [{ label: "Dashboard", icon: "▦", href: "/dashboard" }];
   if (typeof projectId === "string" && projectId !== "") {
-    const base = `#/projects/${encodeURIComponent(projectId)}`;
+    const base = `/projects/${encodeURIComponent(projectId)}`;
     entries.push(
       { label: "Features", icon: "✦", href: `${base}/features` },
       { label: "Orchestrations", icon: "⇄", href: `${base}/orchestrations` },
       { label: "Reviews", icon: "✔", href: `${base}/reviews` },
     );
   }
-  entries.push({ label: "Settings", icon: "⚙", href: "#/settings" });
+  entries.push({ label: "Settings", icon: "⚙", href: "/settings" });
   return entries;
 }
 
 export function Shell({ projectId = null, children }) {
-  const hash = useSyncExternalStore(subscribeToHash, currentHash, () => "");
+  const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const menuButton = useRef(null);
@@ -105,7 +99,14 @@ export function Shell({ projectId = null, children }) {
         </button>
         <nav>
           {entries.map((entry) => (
-            <a key={entry.href} href={entry.href} aria-current={hash === entry.href ? "page" : undefined} title={entry.label} onClick={() => setDrawerOpen(false)}>
+            <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
+                if (isPlainLeftClick(event)) {
+                  event.preventDefault();
+                  navigate(entry.href);
+                }
+                setDrawerOpen(false);
+              }}
+            >
               <span aria-hidden="true">{entry.icon}</span>
               <span className="label">{entry.label}</span>
             </a>

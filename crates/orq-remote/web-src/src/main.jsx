@@ -4,14 +4,15 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
+import { currentPath, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
 const SIGN_IN_FAILED = "Could not sign in. Check the token and try again.";
 const STALE_MARKER = "stale, may be out of date";
-const DETAIL_PREFIX = "#/reviews/";
+const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
-const UNBUILT_DESTINATIONS = ["#/dashboard", "#/settings", "#/projects"];
+const UNBUILT_DESTINATIONS = ["/dashboard", "/settings", "/projects"];
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -54,15 +55,6 @@ function safeHttpsLink(value) {
   }
 }
 
-function subscribeToHash(listener) {
-  addEventListener("hashchange", listener);
-  return () => removeEventListener("hashchange", listener);
-}
-
-function currentHash() {
-  return location.hash;
-}
-
 function TokenPrompt({ message, onToken }) {
   const field = useRef(null);
   const submit = () => {
@@ -91,7 +83,7 @@ function RunRow({ run }) {
   return (
     <li className={run.stale === true ? "run stale" : "run"}>
       {open ? (
-        <button type="button" onClick={() => (location.hash = DETAIL_PREFIX + run.run_id)}>
+        <button type="button" onClick={() => navigate(DETAIL_PREFIX + run.run_id)}>
           {String(run.feature)}
         </button>
       ) : (
@@ -121,7 +113,7 @@ function Detail({ report }) {
   const href = report.stale ? null : safeHttpsLink(report.link);
   return (
     <>
-      <button type="button" onClick={() => (location.hash = "")}>
+      <button type="button" onClick={() => navigate("/")}>
         Back to the list
       </button>
       {report.stale && <p>{STALE_MARKER}</p>}
@@ -205,7 +197,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
 function App() {
   const [token, setToken] = useState(null);
   const [message, setMessage] = useState("");
-  const hash = useSyncExternalStore(subscribeToHash, currentHash);
+  const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (token === null) {
     return <TokenPrompt message={message} onToken={setToken} />;
   }

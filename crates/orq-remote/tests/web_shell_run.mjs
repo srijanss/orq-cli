@@ -1,6 +1,6 @@
 // Mounts the app shell in jsdom and plays steps against it, printing a snapshot after each.
 // Usage: node web_shell_run.mjs '<{projectId, hash, steps}>'
-// steps: {click: selector} | {press: "Escape"|"Tab", shift?: bool} | {hash: "#/..."}
+// steps: {click: selector} | {press: "Escape"|"Tab", shift?: bool} | {go: "/path"}
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,9 +13,9 @@ const { build } = require("esbuild");
 const { JSDOM } = require("jsdom");
 const scenario = JSON.parse(process.argv[2]);
 
-const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', { url: "http://localhost/" + (scenario.hash || ""), pretendToBeVisual: true });
+const dom = new JSDOM('<!doctype html><html><body><div id="app"></div></body></html>', { url: "http://localhost" + (scenario.path || "/"), pretendToBeVisual: true });
 const { window } = dom;
-for (const name of ["window", "document", "navigator", "HTMLElement", "Node", "Event", "KeyboardEvent", "MouseEvent"]) {
+for (const name of ["window", "document", "navigator", "HTMLElement", "Node", "Event", "KeyboardEvent", "MouseEvent", "PopStateEvent"]) {
   Object.defineProperty(globalThis, name, { value: name === "window" ? window : window[name], configurable: true });
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = false;
@@ -53,7 +53,7 @@ try {
       bodyOverflow: doc.body.style.overflow,
       focus: active ? (active.hasAttribute("data-menu-button") ? "menu" : active.hasAttribute("data-close-button") ? "close" : active.tagName === "A" ? "link:" + (active.querySelector(".label")?.textContent.trim() ?? "") : active.tagName.toLowerCase()) : null,
       content: doc.getElementById("content")?.textContent ?? null,
-      hash: window.location.hash,
+      path: window.location.pathname + window.location.search,
     };
   };
   mount(window.document.getElementById("app"), scenario.projectId ?? null);
@@ -76,8 +76,9 @@ try {
     } else if (step.viewport) {
       phone = step.viewport === "phone";
       for (const listener of [...phoneListeners]) listener({ matches: phone });
-    } else if (step.hash !== undefined) {
-      window.location.hash = step.hash;
+    } else if (step.go !== undefined) {
+      window.history.pushState(null, "", step.go);
+      window.dispatchEvent(new window.PopStateEvent("popstate"));
     }
     await tick();
     frames.push(snapshot());
