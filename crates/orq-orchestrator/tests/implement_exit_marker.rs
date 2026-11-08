@@ -385,3 +385,80 @@ fn a_marker_that_cannot_be_read_fails_an_otherwise_successful_session() {
     let reason = stage_failure_reason(&store);
     assert!(reason.contains("could not be read"), "{reason}");
 }
+
+fn notes_events(store: &RunStore) -> Vec<String> {
+    store
+        .events("run-1")
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "session.notes")
+        .map(|e| e.payload["notes"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_marker_saying_ok_with_notes_passes_the_stage_and_records_the_notes() {
+    let (store, root) = setup("ok-notes");
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "printf 'OK\\nthe review found one low finding, left open\\ntoken=ghp_abcdefghijklmnopqrstuvwxyz0123456789\\n' > {}; sleep 30",
+        marker.display()
+    );
+    let args = args(&script);
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(outcome.success, "{outcome:?}");
+    assert_eq!(outcome.reported, None);
+    let notes = notes_events(&store);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("one low finding"), "{notes:?}");
+    assert!(!notes[0].contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{notes:?}");
+    assert!(!notes[0].chars().any(char::is_control), "{notes:?}");
+}
+
+#[test]
+fn only_the_first_line_decides_and_anything_but_ok_or_empty_is_a_problem() {
+    // (marker text as printf format, passes, text the failure reason must hold)
+    let cases: [(&str, bool, &str); 8] = [
+        ("", true, ""),
+        ("OK\\n", true, ""),
+        ("OK", true, ""),
+        ("  OK  \\n\\nnothing else to report\\n", true, ""),
+        ("PROBLEM\\nthe review never ended done\\n", false, "the review never ended done"),
+        ("PROBLEM: tests are failing\\n", false, "tests are failing"),
+        ("all done, one low left open\\n", false, "all done, one low left open"),
+        ("a note first\\nPROBLEM the build is red\\n", false, "the build is red"),
+    ];
+    for (n, (text, passes, says)) in cases.into_iter().enumerate() {
+        let (store, root) = setup(&format!("first-line-{n}"));
+        let marker = root.join("worktree/done.marker");
+        let args = args(&format!("printf '{text}' > {}; sleep 30", marker.display()));
+
+        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+        assert_eq!(outcome.success, passes, "{text:?}: {outcome:?}");
+        if !passes {
+            let reason = stage_failure_reason(&store);
+            assert!(reason.contains(says), "{text:?}: {reason}");
+        }
+    }
+}
+
+#[test]
+fn a_problem_or_a_failed_stage_records_no_notes_and_a_bare_problem_says_it_had_no_reason() {
+    let (store, root) = setup("bare-problem");
+    let marker = root.join("worktree/done.marker");
+    let bare_args = args(&format!("printf 'PROBLEM\\n' > {}; sleep 30", marker.display()));
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &bare_args, &marker)).unwrap();
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(stage_failure_reason(&store).contains("without saying what"));
+    assert!(notes_events(&store).is_empty());
+
+    let (store, root) = setup("ok-alone");
+    let marker = root.join("worktree/done.marker");
+    let ok_args = args(&format!("printf 'OK\\n' > {}; sleep 30", marker.display()));
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &ok_args, &marker)).unwrap();
+    assert!(outcome.success, "{outcome:?}");
+    assert!(notes_events(&store).is_empty());
+}

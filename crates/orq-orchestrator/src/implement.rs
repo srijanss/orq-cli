@@ -150,7 +150,12 @@ pub(crate) fn run_session_stage(
             }
             end
         });
-    let reported = session.exit_marker.and_then(marker_report);
+    let marker = session.exit_marker.and_then(marker_report);
+    let (reported, notes) = match marker {
+        Some(Marker::Problem(problem)) => (Some(problem), None),
+        Some(Marker::Finished { notes }) => (None, notes),
+        None => (None, None),
+    };
     // A session that failed by its exit status has already failed, whatever its marker says.
     let finished = match &status {
         Ok(SessionEnd::Closed) => true,
@@ -216,6 +221,10 @@ pub(crate) fn run_session_stage(
         ),
     };
     store.append_event(&closing)?;
+    // Notes from a session that finished are kept for the report; a failed stage already says why.
+    if let Some(notes) = notes.filter(|_| outcome.success) {
+        store.append_event(&event("session.notes", serde_json::json!({ "notes": notes })))?;
+    }
     Ok(outcome)
 }
 
@@ -224,14 +233,33 @@ const MARKER_READ_LIMIT: u64 = 4096;
 /// The most of a report that goes into the run's events: room for a few paragraphs of what went wrong.
 const MARKER_REPORT_LIMIT: usize = 2000;
 
-/// What the session wrote into its marker. An empty marker means it finished as asked.
-fn marker_report(marker: &Path) -> Option<String> {
+/// What a session's finish marker says. The first line decides: `OK` (or nothing at all) is finished,
+/// with anything after `OK` kept as notes; `PROBLEM` is a failure with the text after it as the reason;
+/// anything else is a failure with the whole text as the reason.
+#[derive(Debug, PartialEq, Eq)]
+enum Marker {
+    Finished { notes: Option<String> },
+    Problem(String),
+}
+
+impl Marker {
+    #[cfg(test)]
+    fn into_problem(self) -> Option<String> {
+        match self {
+            Marker::Problem(text) => Some(text),
+            Marker::Finished { .. } => None,
+        }
+    }
+}
+
+/// What the session wrote into its marker, `None` when there is no marker.
+fn marker_report(marker: &Path) -> Option<Marker> {
     marker_report_with(marker, || {})
 }
 
 /// `marker_report`, running `between` just before the path is opened, so a test can swap the path at
 /// exactly that point.
-fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<String> {
+fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
     const NOT_PLAIN: &str = "its finish marker is not a plain file";
     let mut open = fs::OpenOptions::new();
     open.read(true);
@@ -247,30 +275,50 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<String> {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         #[cfg(unix)]
-        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => return Some(NOT_PLAIN.to_string()),
-        Err(err) => return Some(format!("its finish marker could not be read: {err}")),
+        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => return Some(Marker::Problem(NOT_PLAIN.to_string())),
+        Err(err) => return Some(Marker::Problem(format!("its finish marker could not be read: {err}"))),
     };
     match file.metadata() {
         Ok(found) if found.is_file() => {}
-        Ok(_) => return Some(NOT_PLAIN.to_string()),
-        Err(err) => return Some(format!("its finish marker could not be read: {err}")),
+        Ok(_) => return Some(Marker::Problem(NOT_PLAIN.to_string())),
+        Err(err) => return Some(Marker::Problem(format!("its finish marker could not be read: {err}"))),
     }
     let mut bytes = Vec::new();
     if let Err(err) = file.take(MARKER_READ_LIMIT).read_to_end(&mut bytes) {
-        return Some(format!("its finish marker could not be read: {err}"));
+        return Some(Marker::Problem(format!("its finish marker could not be read: {err}")));
     }
     let redacted = orq_core::redact::redact(&String::from_utf8_lossy(&bytes));
-    let cleaned: String = redacted
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let cleaned = cleaned.trim();
-    if !cleaned.is_empty() {
-        return Some(cleaned.chars().take(MARKER_REPORT_LIMIT).collect());
+    let text = redacted.trim_start();
+    if text.is_empty() {
+        // Blanks up to the read limit say nothing about what comes after them, so that is not a finish.
+        return Some(if bytes.len() as u64 >= MARKER_READ_LIMIT {
+            Marker::Problem("its finish marker holds more than orq reads, and the part it read is blank".to_string())
+        } else {
+            Marker::Finished { notes: None }
+        });
     }
-    // Blanks up to the read limit say nothing about what comes after them, so that is not a finish.
-    (bytes.len() as u64 >= MARKER_READ_LIMIT)
-        .then(|| "its finish marker holds more than orq reads, and the part it read is blank".to_string())
+    let (first, after) = text.split_once('\n').unwrap_or((text, ""));
+    let first = first.trim();
+    if first == "OK" {
+        let notes = clean(after);
+        return Some(Marker::Finished { notes: (!notes.is_empty()).then_some(notes) });
+    }
+    // `PROBLEM` alone, or followed by the reason on the same line or the lines after it.
+    let reason = first
+        .strip_prefix("PROBLEM")
+        .filter(|rest| rest.is_empty() || rest.starts_with([' ', ':']))
+        .map(|rest| clean(&format!("{} {after}", rest.trim_start_matches(':'))));
+    Some(Marker::Problem(match reason {
+        Some(reason) if reason.is_empty() => "it reported a problem without saying what".to_string(),
+        Some(reason) => reason,
+        None => clean(text),
+    }))
+}
+
+/// `text` as one line of at most `MARKER_REPORT_LIMIT` characters, with control characters as spaces.
+fn clean(text: &str) -> String {
+    let spaced: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    spaced.trim().chars().take(MARKER_REPORT_LIMIT).collect()
 }
 
 enum SessionEnd {
@@ -568,6 +616,7 @@ mod tests {
             fs::remove_file(&marker).unwrap();
             std::os::unix::fs::symlink(&secret, &marker).unwrap();
         })
+        .and_then(Marker::into_problem)
         .expect("a link is a problem to report");
         assert!(!report.contains("another file"), "{report}");
 
@@ -585,6 +634,6 @@ mod tests {
             let _ = sender.send(report);
         });
         let report = answer.recv_timeout(std::time::Duration::from_secs(5)).expect("the read blocked on a pipe");
-        assert!(report.is_some(), "a pipe is a problem to report");
+        assert!(report.and_then(Marker::into_problem).is_some(), "a pipe is a problem to report");
     }
 }
