@@ -187,7 +187,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .sidebar { display: flex; flex-direction: column; }
 .sidebar nav { flex: 1; }
 .sidebar nav a { color: var(--text); border-radius: 0.5rem; margin-bottom: 0.25rem; }
-.sidebar nav a[aria-current="page"] { color: var(--accent); }
+.sidebar nav a[aria-current="page"] { color: var(--status-running); }
 .sidebar-foot { border-top: 1px solid var(--border); padding-top: 0.5rem; display: flex; }
 .sidebar-foot .theme-toggle { margin-left: 0; }
 .shell.collapsed .sidebar-head { flex-direction: column; gap: 0.5rem; }

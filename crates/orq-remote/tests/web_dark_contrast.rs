@@ -105,3 +105,21 @@ fn no_rule_carries_a_colour_literal_so_both_themes_reach_every_element() {
     let literals: Vec<&str> = rest.lines().filter(|l| l.contains('#') && l.contains(':') && !l.trim_start().starts_with("--")).filter(|l| l.split(|c: char| !c.is_ascii_hexdigit() && c != '#').any(|w| w.starts_with('#') && w.len() >= 4)).collect();
     assert!(literals.is_empty(), "colours must come from tokens: {literals:#?}");
 }
+
+/// The token a declaration of `property` in the last rule starting with `head` names.
+fn rule_token(css: &str, head: &str, property: &str) -> String {
+    let body = css.lines().filter(|l| l.starts_with(head)).map(|l| l.to_string()).collect::<Vec<_>>().join(" ");
+    let after = body.split(&format!("{property}: var(--")).nth(1).unwrap_or_else(|| panic!("`{head}` has no {property} token"));
+    after.split(')').next().unwrap().to_string()
+}
+
+#[test]
+fn the_active_navigation_link_is_readable_on_its_own_background_in_both_themes() {
+    let css = css();
+    let head = ".sidebar nav a[aria-current=\"page\"]";
+    let (fg, bg) = (rule_token(&css, head, "color"), rule_token(&css, head, "background"));
+    for (theme, t) in themes() {
+        let ratio = contrast(&t[&fg], &t[&bg]);
+        assert!(ratio >= 4.5, "{theme}: active link --{fg} on --{bg} is {ratio:.2}:1");
+    }
+}
