@@ -48,6 +48,7 @@ function walk(node, visit) {
 
 const root = new Node("main");
 const requests = [];
+const held = {};
 const responses = [...scenario.responses];
 
 // A page address with a history, so Back can be tried: setting the hash adds an
@@ -68,11 +69,31 @@ const sandbox = {
   document: { getElementById: () => root, createElement: (tag) => new Node(tag) },
   fetch: (url, options) => {
     requests.push({ url, method: options.method, headers: options.headers });
+    const index = requests.length - 1;
     const next = responses.shift();
-    if (!next || next.reject) {
+    if (!next || (next.reject && next.hold !== "fetch")) {
       return Promise.reject(new Error("offline"));
     }
-    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: async () => { if (next.badjson) throw new SyntaxError("bad json"); return next.json; } });
+    const reply = () => ({
+      status: next.status,
+      ok: next.status >= 200 && next.status < 300,
+      json: () => {
+        if (next.hold === "json") {
+          return new Promise((resolve) => {
+            held[index] = () => resolve(next.json);
+          });
+        }
+        if (next.badjson) return Promise.reject(new SyntaxError("bad json"));
+        return Promise.resolve(next.json);
+      },
+    });
+    // A held reply stays pending until a {release: n} step lets request n finish.
+    if (next.hold === "fetch") {
+      return new Promise((resolve, reject) => {
+        held[index] = () => (next.reject ? reject(new Error("offline")) : resolve(reply()));
+      });
+    }
+    return Promise.resolve(reply());
   },
   Array,
   URL,
@@ -118,6 +139,8 @@ const settle = async () => {
       field.value = step.submit;
       find("button").listeners.click();
       fieldAfter = field.value;
+    } else if (step.release !== undefined) {
+      held[step.release]();
     } else if (step.back) {
       entries.pop();
       pageListeners.hashchange && pageListeners.hashchange();
