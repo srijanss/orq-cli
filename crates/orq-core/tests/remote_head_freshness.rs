@@ -135,3 +135,14 @@ fn damage_the_stored_state(roots: &StorageRoots) {
     let conn = rusqlite::Connection::open(roots.database()).unwrap();
     conn.execute("UPDATE review_lifecycles SET state = 'bogus'", []).unwrap();
 }
+
+#[test]
+fn a_check_time_that_cannot_be_read_makes_an_observed_matching_review_unverified() {
+    let r = roots("bad-time", Some(associated(URL).apply(seen(HEAD))));
+    rusqlite::Connection::open(r.database()).unwrap().execute("UPDATE review_lifecycles SET last_checked = 'not a time'", []).unwrap();
+    let (d, l) = both(&r);
+    for body in [&d, &l] {
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+    }
+    assert_eq!((&d["checked_at"], &d["provider_head_sha"]), (&Value::Null, &Value::Null), "{d}");
+}
