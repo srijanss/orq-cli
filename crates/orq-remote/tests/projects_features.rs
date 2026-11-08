@@ -93,3 +93,38 @@ fn the_same_token_peer_and_method_checks_apply() {
     assert_eq!(ask(&s, "POST", "/api/projects/alpha/features", Some("Bearer tok")).0, 405);
     assert_eq!(ask(&s, "HEAD", "/api/projects/alpha/features", Some("Bearer tok")).0, 200);
 }
+
+/// Asks for alpha's features and fails if the answer takes more than a few seconds, so a ledger
+/// that blocks the server cannot hang the suite.
+fn get_within_a_bound(s: Setup) -> (u16, Value) {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(get(&s, "/api/projects/alpha/features"));
+    });
+    receive.recv_timeout(std::time::Duration::from_secs(10)).expect("the ledger blocked the request")
+}
+
+#[test]
+fn a_ledger_that_is_a_link_a_pipe_too_large_or_not_text_is_refused_without_naming_anything() {
+    use std::os::unix::fs::symlink;
+    let outside = web_deps::private_temp_dir("features-outside");
+    let secret = outside.join("secret.json");
+    std::fs::write(&secret, json!([{"featureName": "leaked", "status": "pending"}]).to_string()).unwrap();
+
+    let cases: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![
+        ("link", Box::new(move |ledger| symlink(&secret, ledger).unwrap())),
+        ("pipe", Box::new(|ledger| assert!(Command::new("mkfifo").arg(ledger).status().unwrap().success()))),
+        ("large", Box::new(|ledger| std::fs::write(ledger, vec![b' '; 1024 * 1024 + 1]).unwrap())),
+        ("binary", Box::new(|ledger| std::fs::write(ledger, [0xff, 0xfe, 0x00]).unwrap())),
+    ];
+    for (name, make) in cases {
+        let s = setup(&format!("features-hostile-{name}"));
+        let alpha = git_repo(&s.scan, "alpha");
+        make(&alpha.join(".tdd-features.json"));
+        let scan = s.scan.to_str().unwrap().to_string();
+        let (status, body) = get_within_a_bound(s);
+        assert_eq!(status, 500, "{name}: {body}");
+        let text = body.to_string();
+        assert!(!text.contains("leaked") && !text.contains(&scan) && !text.contains("secret"), "{name}: {text}");
+    }
+}
