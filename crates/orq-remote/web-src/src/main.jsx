@@ -70,6 +70,10 @@ function TokenPrompt({ message, onToken }) {
   };
   return (
     <div className="signin card">
+      <span className="brand">
+        <Icon name="logo" size={28} />
+        Orq
+      </span>
       <h1>Sign in</h1>
       <p>Sign in with token: paste the access token printed by orq serve.</p>
       <label>

@@ -208,3 +208,5 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 
 .project-switcher { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.5rem; margin-bottom: 0.5rem; }
 .shell.collapsed .project-switcher { display: none; }
+
+.signin .brand { align-self: center; }
