@@ -27,6 +27,12 @@ const root = window.document.getElementById("app");
 const intervals = [];
 window.setInterval = (run, delay) => { intervals.push({ delay, active: true, run }); return intervals.length; };
 window.clearInterval = (id) => { if (intervals[id - 1]) intervals[id - 1].active = false; };
+// Listeners for the tab being shown or hidden, so a test can see that leaving a page removes its own.
+const visibilityListeners = new Set();
+const addListener = window.document.addEventListener.bind(window.document);
+const removeListener = window.document.removeEventListener.bind(window.document);
+window.document.addEventListener = (type, listener, options) => { if (type === "visibilitychange") visibilityListeners.add(listener); return addListener(type, listener, options); };
+window.document.removeEventListener = (type, listener, options) => { if (type === "visibilitychange") visibilityListeners.delete(listener); return removeListener(type, listener, options); };
 let visibility = "visible";
 Object.defineProperty(window.document, "visibilityState", { get() { return visibility; } });
 Object.defineProperty(window.document, "hidden", { get() { return visibility === "hidden"; } });
@@ -84,7 +90,7 @@ function snapshot() {
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
   const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
   const checked = [...root.querySelectorAll("[data-last-checked]")].map((el) => el.textContent);
-  return { activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.

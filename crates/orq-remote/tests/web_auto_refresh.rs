@@ -96,5 +96,7 @@ fn leaving_during_a_waiting_refresh_cancels_it_and_nothing_asks_again_afterwards
     let last = out["frames"].as_array().unwrap().last().unwrap();
     assert_eq!(last["settled"]["path"], "/settings", "{out}");
     assert_eq!(last["settled"]["activeIntervals"], json!([]), "{out}");
+    assert_eq!(out["frames"][1]["settled"]["visibilityListeners"], 1, "the page listens while it is open: {out}");
+    assert_eq!(last["settled"]["visibilityListeners"], 0, "leaving removes the listener: {out}");
     assert!(!texts(last).contains("late") && !texts(last).contains("first"), "{out}");
 }
