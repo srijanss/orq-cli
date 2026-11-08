@@ -143,3 +143,26 @@ fn only_the_runs_own_plain_log_files_are_served_to_a_valid_token() {
     add_run(&s, "r2", &project_id(&alpha));
     assert_eq!(get(&s, "/api/projects/alpha/runs/r2/logs").1, json!({"files": []}));
 }
+
+#[test]
+#[cfg(unix)]
+fn a_logs_directory_that_is_a_link_serves_nothing_from_where_it_points() {
+    let s = setup("logs-dirlink");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha));
+    let elsewhere = s.scan.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("stolen.log"), "not this run's\n").unwrap();
+    std::fs::create_dir_all(s.roots.state.join("logs")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, s.roots.state.join("logs/r1")).unwrap();
+    assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs").0, 404);
+    assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs/stolen.log").0, 404);
+    // The same for the logs directory itself.
+    std::fs::remove_file(s.roots.state.join("logs/r1")).unwrap();
+    std::fs::create_dir_all(elsewhere.join("r1")).unwrap();
+    std::fs::write(elsewhere.join("r1/stolen.log"), "x\n").unwrap();
+    std::fs::remove_dir(s.roots.state.join("logs")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, s.roots.state.join("logs")).unwrap();
+    assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs").0, 404);
+    assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs/stolen.log").0, 404);
+}

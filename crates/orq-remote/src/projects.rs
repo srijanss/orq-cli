@@ -258,7 +258,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         if record.project_id != key {
             return Ok(None);
         }
-        let dir = self.roots.state.join("logs").join(run);
+        let logs_root = self.roots.state.join("logs");
+        let dir = logs_root.join(run);
+        // A link in place of either directory would lead outside the run's own logs.
+        let real_dir = |path: &std::path::Path| match path.symlink_metadata() {
+            Ok(meta) => Some(meta.is_dir()),
+            Err(_) => None,
+        };
+        if real_dir(&logs_root) == Some(false) || real_dir(&dir) == Some(false) {
+            return Ok(None);
+        }
         // Only plain, non-hidden `.log` files that are not links are logs.
         let plain = |name: &str| name.ends_with(".log") && !name.starts_with('.') && !name.contains(['/', '\\']);
         let Some(file) = file else {
