@@ -174,5 +174,8 @@ fn the_theme_choice_is_kept_only_in_the_page_nothing_stored_and_nothing_sent() {
     assert_ne!(out["frames"][2]["settled"]["theme"], before, "{out}");
     assert_eq!(out["requests"].as_array().unwrap().len(), 1, "only the sign-in read, none for the theme: {out}");
     assert!(out["frames"][2]["settled"]["localKept"].is_null(), "{out}");
-    assert_eq!(out["frames"][2]["settled"]["sessionKept"], out["frames"][1]["settled"]["sessionKept"], "{out}");
+    // Compared by a digest of the real entries: an overwritten value would change it.
+    let digest = |i: usize| out["frames"][i]["settled"]["sessionDigest"].clone();
+    assert!(digest(1).as_str().is_some_and(|d| d.len() == 64), "{out}");
+    assert_eq!(digest(2), digest(1), "{out}");
 }
