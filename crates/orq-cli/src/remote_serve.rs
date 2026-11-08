@@ -9,7 +9,7 @@ use crate::{fail, usage_error};
 /// Where a plain `orq serve` listens unless told otherwise: this machine only.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 
-/// `orq serve [--repo <path>] [--listen <addr:port>]`: the same server with nothing to set up. The
+/// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name>]`: the same server with nothing to set up. The
 /// command itself is the opt-in, so the run settings need not enable remote control, a missing
 /// token is created, and the repository defaults to the current directory.
 pub fn serve_plain(args: &[OsString]) -> ExitCode {
@@ -23,6 +23,7 @@ pub fn serve(args: &[OsString]) -> ExitCode {
 fn run(args: &[OsString], strict: bool) -> ExitCode {
     let mut repo = None;
     let mut listen = String::from(DEFAULT_LISTEN);
+    let mut passkey_host = None;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match word.to_str() {
@@ -34,9 +35,18 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
                 Some(address) => listen = address.to_string(),
                 None => return usage_error(),
             },
+            Some("--passkey-host") => match words.next().and_then(|a| a.to_str()) {
+                Some(host) if passkey_host.is_none() => passkey_host = Some(host.to_string()),
+                _ => return usage_error(),
+            },
             _ => return usage_error(),
         }
     }
+    let auth = match passkey_host.as_deref().map(orq_core::passkey_register::PasskeyHost::from_setting) {
+        Some(Ok(host)) => Some(std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host))),
+        Some(Err(reason)) => return fail(reason),
+        None => None,
+    };
     let repo = match repo {
         Some(repo) => repo,
         None if !strict => match std::env::current_dir() {
@@ -81,11 +91,18 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
         project_id: crate::pipeline::project_id(&project),
         project_name: project.name.clone(),
     });
-    let server = match orq_remote::Server::start_with_projects(listener, state, projects) {
+    let started = match auth.clone() {
+        Some(auth) => orq_remote::Server::start_with_auth(listener, state, projects, auth),
+        None => orq_remote::Server::start_with_projects(listener, state, projects),
+    };
+    let server = match started {
         Ok(server) => server,
         Err(err) => return fail(format!("cannot start the server: {:?}", err.kind())),
     };
     println!("orq remote: listening on http://{}", server.addr());
+    if let Some(auth) = &auth {
+        println!("passkeys: sign in at {} (serve it over HTTPS, for example `tailscale serve --bg {}`)", auth.host().origin(), server.addr().port());
+    }
     if !strict {
         let token = orq_core::remote_inbox::RemoteConfig::token_path(&state_roots);
         println!("sign in with the token stored in {}", token.display());

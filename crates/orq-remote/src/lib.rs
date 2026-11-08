@@ -32,6 +32,8 @@ pub struct ServerState {
 struct Shared {
     state: Arc<ServerState>,
     projects: Option<Arc<dyn ProjectsProvider + Send + Sync>>,
+    /// Passkey sign-in, when the server was started with a passkey host.
+    auth: Option<Arc<orq_core::passkey_routes::PasskeyAuth>>,
 }
 
 /// A running server; dropping it stops it.
@@ -44,12 +46,19 @@ pub struct Server {
 impl Server {
     /// Serves on `listener` until the returned value is dropped.
     pub fn start(listener: TcpListener, state: Arc<ServerState>) -> std::io::Result<Server> {
-        Server::serve(listener, Shared { state, projects: None })
+        Server::serve(listener, Shared { state, projects: None, auth: None })
     }
 
     /// Like `start`, and also answers `/api/projects` from `projects`.
     pub fn start_with_projects(listener: TcpListener, state: Arc<ServerState>, projects: Arc<dyn ProjectsProvider + Send + Sync>) -> std::io::Result<Server> {
-        Server::serve(listener, Shared { state, projects: Some(projects) })
+        Server::serve(listener, Shared { state, projects: Some(projects), auth: None })
+    }
+
+    /// Like `start_with_projects`, and also serves the `/auth/*` passkey routes: a live session cookie
+    /// opens `/api`, and once a passkey exists the bearer token no longer does from anywhere but this
+    /// machine's own direct loopback.
+    pub fn start_with_auth(listener: TcpListener, state: Arc<ServerState>, projects: Arc<dyn ProjectsProvider + Send + Sync>, auth: Arc<orq_core::passkey_routes::PasskeyAuth>) -> std::io::Result<Server> {
+        Server::serve(listener, Shared { state, projects: Some(projects), auth: Some(auth) })
     }
 
     fn serve(listener: TcpListener, state: Shared) -> std::io::Result<Server> {
@@ -96,8 +105,9 @@ impl Drop for Server {
     }
 }
 
-async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap) -> Response {
-    let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
+async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap, body: axum::body::Body) -> Response {
+    let mut authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let cookie = headers.get(header::COOKIE).and_then(|value| value.to_str().ok()).map(str::to_string);
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
 
@@ -105,6 +115,42 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     // allowed peer. Anything else about the request goes to the handler below.
     if let Some(asset) = page_asset(peer.ip(), &method, &path) {
         return asset_response(asset, method == "HEAD");
+    }
+
+    if let Some(auth) = shared.auth.clone() {
+        let forwarded = is_forwarded(&headers);
+        if path.starts_with("/auth/") {
+            let Ok(bytes) = axum::body::to_bytes(body, orq_core::passkey_routes::MAX_AUTH_BODY).await else {
+                return json_reply(413, b"{\"error\":\"too large\"}".to_vec());
+            };
+            let (shared, path, method) = (shared.clone(), path.clone(), method.clone());
+            let result = tokio::task::spawn_blocking(move || {
+                let request = orq_core::passkey_routes::AuthRequest { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref(), cookie: cookie.as_deref(), body: &bytes };
+                auth.handle(&shared.state.roots, &shared.state.config, &request)
+            })
+            .await;
+            let Ok(Some(reply)) = result else { return json_reply(404, b"{\"error\":\"not found\"}".to_vec()) };
+            let mut response = json_reply(reply.status, reply.body.to_string().into_bytes());
+            if let Some(cookie) = reply.set_cookie.and_then(|value| HeaderValue::from_str(&value).ok()) {
+                response.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            return response;
+        }
+        // A live session stands in for the token. Otherwise, once a passkey exists, the token is
+        // honoured only on a direct loopback connection: `tailscale serve` also connects from
+        // loopback, but it adds forwarding headers, which a direct caller does not.
+        let token = shared.state.config.token.clone();
+        let roots = shared.state.roots.clone();
+        let live = auth.session_live(cookie.as_deref());
+        let direct = peer.ip().is_loopback() && !forwarded;
+        authorization = if live {
+            Some(format!("Bearer {token}"))
+        } else if direct {
+            authorization
+        } else {
+            let registered = tokio::task::spawn_blocking(move || orq_core::passkey_store::PasskeyStore::open(&roots).any_registered()).await.unwrap_or(true);
+            if registered { None } else { authorization }
+        };
     }
 
     if method == "GET" || method == "HEAD" {
@@ -118,6 +164,14 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &path, authorization.as_deref())).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     json_reply(reply.0, reply.1)
+}
+
+/// Whether a proxy put its marks on the request: `tailscale serve` adds `Tailscale-*` and forwarding headers.
+fn is_forwarded(headers: &HeaderMap) -> bool {
+    headers.keys().any(|name| {
+        let name = name.as_str();
+        name == "x-forwarded-for" || name == "x-forwarded-host" || name == "x-real-ip" || name == "forwarded" || name.starts_with("tailscale-")
+    })
 }
 
 /// The handler's status and body as a JSON response that is never cached.

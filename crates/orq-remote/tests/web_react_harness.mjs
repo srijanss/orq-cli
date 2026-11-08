@@ -63,7 +63,15 @@ const requests = [];
 const held = {};
 const responses = [...scenario.responses];
 
-window.fetch = (url, options) => {
+// The /auth routes are answered apart from the scripted responses, so they never shift them: a
+// scenario may give `auth` (the status answer), otherwise the server has no passkey support (404).
+const authRequests = [];
+window.fetch = (url, options = {}) => {
+  if (String(url).startsWith("/auth/")) {
+    authRequests.push({ url, method: options.method || "GET" });
+    const known = scenario.auth && String(url) === "/auth/status";
+    return Promise.resolve({ status: known ? 200 : 404, ok: !!known, json: () => Promise.resolve(known ? scenario.auth : {}) });
+  }
   const signal = options.signal;
   requests.push({ url, method: options.method, headers: options.headers, get aborted() { return signal ? signal.aborted : null; } });
   const index = requests.length - 1;

@@ -8,6 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
+import { authStatus, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -75,7 +76,30 @@ function safeHttpsLink(value) {
   }
 }
 
-function TokenPrompt({ message, onToken }) {
+function PasskeyButton({ onSignedIn }) {
+  const [failed, setFailed] = useState(false);
+  const go = async () => {
+    setFailed(false);
+    let ok = false;
+    try {
+      ok = await signInWithPasskey();
+    } catch (cancelled) {
+      ok = false;
+    }
+    if (ok) onSignedIn();
+    else setFailed(true);
+  };
+  return (
+    <div className="passkey-signin">
+      <button type="button" onClick={go}>
+        Sign in with a passkey
+      </button>
+      {failed && <p role="alert">Could not sign in with a passkey.</p>}
+    </div>
+  );
+}
+
+function TokenPrompt({ message, onToken, passkeys = false, onPasskey }) {
   const field = useRef(null);
   const submit = () => {
     const typed = field.current.value.trim();
@@ -91,6 +115,7 @@ function TokenPrompt({ message, onToken }) {
         Orq
       </span>
       <h1>Sign in</h1>
+      {passkeys && passkeysAvailable() && <PasskeyButton onSignedIn={onPasskey} />}
       <p>Sign in with token: paste the access token printed by orq serve.</p>
       <label>
         Access token
@@ -206,8 +231,12 @@ function Detail({ report, listPath = "/" }) {
 // 404 and 403 give the same generic Not found screen. A slow answer for a page that is no
 // longer showing is dropped.
 // The one request the page makes: a GET of a fixed same-origin path with the token in a header.
+// A passkey session is the cookie alone, so it sends no header; the token path sends the token.
+const SESSION = Symbol("passkey session");
+
 function get(path, token, signal) {
-  return fetch(path, { method: "GET", headers: { Authorization: "Bearer " + token }, cache: "no-store", referrerPolicy: "no-referrer", signal });
+  const headers = token === SESSION ? {} : { Authorization: "Bearer " + token };
+  return fetch(path, { method: "GET", headers, cache: "no-store", referrerPolicy: "no-referrer", signal });
 }
 
 function NotFound() {
@@ -1042,22 +1071,64 @@ function keepToken(token) {
   }
 }
 
+// Offered once the page is signed in with the token and no passkey exists yet: the token then
+// enrols the first one, and later visits sign in with it.
+function EnrolPasskey({ token, onDone }) {
+  const [state, setState] = useState("idle");
+  const go = async () => {
+    setState("working");
+    let ok = false;
+    try {
+      ok = await registerPasskey(token, "This device");
+    } catch (cancelled) {
+      ok = false;
+    }
+    if (ok) onDone();
+    else setState("failed");
+  };
+  return (
+    <div className="card passkey-enrol">
+      <button type="button" onClick={go} disabled={state === "working"}>
+        Add a passkey for this device
+      </button>
+      {state === "failed" && <p role="alert">The passkey could not be added.</p>}
+    </div>
+  );
+}
+
 function App() {
   const [token, setTokenState] = useState(keptToken);
+  const [status, setStatus] = useState(null);
   const setToken = (next) => {
     keepToken(next);
     setTokenState(next);
   };
   const [message, setMessage] = useState("");
-  if (token === null) {
-    return <TokenPrompt message={message} onToken={setToken} />;
+  const refresh = () => authStatus().then(setStatus);
+  useEffect(() => {
+    refresh();
+  }, []);
+  const session = status !== null && status.signed_in === true;
+  const active = session && token === null ? SESSION : token;
+  if (active === null) {
+    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} onPasskey={refresh} />;
   }
   const signedOut = () => {
     setToken(null);
     setMessage(SIGN_IN_FAILED);
+    refresh();
   };
+  const signOut = () => {
+    setMessage("");
+    setToken(null);
+    if (session) signOutOfSession().then(refresh);
+  };
+  const offer = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
   return (
-    <Scoped token={token} onSignedOut={signedOut} onSignOut={() => { setMessage(""); setToken(null); }} />
+    <>
+      {offer && <EnrolPasskey token={active} onDone={refresh} />}
+      <Scoped token={active} onSignedOut={signedOut} onSignOut={signOut} />
+    </>
   );
 }
 

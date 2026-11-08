@@ -7,6 +7,7 @@ pub mod passkey_login;
 pub mod passkey_register;
 pub mod passkey_store;
 mod es256;
+pub mod passkey_routes;
 pub mod provider_observation;
 pub mod prune;
 pub mod redact;
