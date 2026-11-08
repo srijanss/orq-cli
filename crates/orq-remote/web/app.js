@@ -81,6 +81,20 @@ function showRuns(runs) {
   show(list);
 }
 
+function isRun(run) {
+  return run !== null && typeof run === "object" && typeof run.feature === "string" && typeof run.status === "string";
+}
+
+// The token is still held, so trying again does not ask for it again.
+function showUnreadable() {
+  const retry = element("button", "Try again");
+  retry.type = "button";
+  retry.addEventListener("click", load);
+  const notice = element("p", "The inbox could not be read just now.");
+  notice.setAttribute("role", "alert");
+  show(notice, retry);
+}
+
 async function load() {
   show(element("p", "Loading the review inbox…"));
   try {
@@ -96,17 +110,23 @@ async function load() {
       return;
     }
     if (!response.ok) {
-      // The token is still held, so trying again does not ask for it again.
-      const retry = element("button", "Try again");
-      retry.type = "button";
-      retry.addEventListener("click", load);
-      const notice = element("p", "The inbox could not be read just now.");
-      notice.setAttribute("role", "alert");
-      show(notice, retry);
+      showUnreadable();
       return;
     }
-    const data = await response.json();
-    showRuns(Array.isArray(data.reviews) ? data.reviews : []);
+    // A reply that is not the expected list is a problem with the inbox, not
+    // with the token, so the token is kept and trying again is offered.
+    let runs = null;
+    try {
+      const data = await response.json();
+      runs = data && Array.isArray(data.reviews) && data.reviews.every(isRun) ? data.reviews : null;
+    } catch (unreadable) {
+      runs = null;
+    }
+    if (runs === null) {
+      showUnreadable();
+      return;
+    }
+    showRuns(runs);
   } catch (failure) {
     token = null;
     askForToken(SIGN_IN_FAILED);

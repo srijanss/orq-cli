@@ -71,3 +71,27 @@ fn the_page_is_sized_for_a_phone() {
     let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
     assert!(css.contains("min-height: 44px"), "tap targets are at least 44px");
 }
+
+#[test]
+fn a_malformed_inbox_keeps_the_token_and_offers_a_retry_instead_of_asking_to_sign_in() {
+    let good = review("fine", "approved", false);
+    for bad in [json!(null), json!("text"), json!({"status": "approved"}), json!({"feature": "no-status"}), json!({"feature": 7, "status": "x"})] {
+        let Some(out) = run(json!([good.clone(), bad.clone()])) else { return };
+        let settled = &out["frames"][1]["settled"];
+        assert!(settled["inputs"].as_array().unwrap().is_empty(), "{bad}: the token field must not come back: {out}");
+        assert_eq!(settled["buttons"].as_array().unwrap().len(), 1, "{bad}: a retry button is offered: {out}");
+        let shown = texts(&out).join(" | ");
+        assert!(!shown.contains("undefined") && !shown.contains("Could not sign in"), "{bad}: {shown}");
+    }
+}
+
+#[test]
+fn a_reply_that_is_not_json_keeps_the_token_too() {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let scenario = json!({"responses": [{"status": 200, "badjson": true}], "steps": [{"submit": TOKEN}]});
+    let Ok(output) = Command::new("node").arg(format!("{dir}/tests/web_harness.js")).arg(format!("{dir}/web/app.js")).arg(scenario.to_string()).output() else { return };
+    assert!(output.status.success());
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
+    assert_eq!(out["frames"][1]["settled"]["buttons"].as_array().unwrap().len(), 1, "{out}");
+}

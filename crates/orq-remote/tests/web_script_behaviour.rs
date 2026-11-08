@@ -24,7 +24,7 @@ fn run(scenario: Value) -> Option<Value> {
 
 #[test]
 fn a_typed_token_is_sent_once_as_a_bearer_header_on_a_get_to_the_inbox_and_the_field_is_emptied() {
-    let Some(out) = run(json!({"responses": [{"status": 200, "json": {"reviews": [{"feature": "alpha"}, {"feature": "beta"}]}}], "steps": [{"submit": TOKEN}]})) else { return };
+    let Some(out) = run(json!({"responses": [{"status": 200, "json": {"reviews": [{"feature": "alpha", "status": "ok"}, {"feature": "beta", "status": "ok"}]}}], "steps": [{"submit": TOKEN}]})) else { return };
 
     // Before anything is typed there is a masked, non-storable field.
     let start = &out["frames"][0]["settled"];
@@ -95,7 +95,7 @@ fn after_a_failed_sign_in_only_the_newly_typed_token_is_sent() {
 #[test]
 fn a_server_error_leaves_a_way_to_try_again_without_retyping_the_token() {
     for status in [429, 500, 503] {
-        let scenario = json!({"responses": [{"status": status}, {"status": 200, "json": {"reviews": [{"feature": "gamma"}]}}], "steps": [{"submit": TOKEN}, {"click": "button"}]});
+        let scenario = json!({"responses": [{"status": status}, {"status": 200, "json": {"reviews": [{"feature": "gamma", "status": "ok"}]}}], "steps": [{"submit": TOKEN}, {"click": "button"}]});
         let Some(out) = run(scenario) else { return };
         let failed = &out["frames"][1]["settled"];
         assert_eq!(failed["buttons"].as_array().unwrap().len(), 1, "{status}: a retry button is offered: {out}");

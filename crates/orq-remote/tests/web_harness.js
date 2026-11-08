@@ -58,7 +58,7 @@ const sandbox = {
     if (!next || next.reject) {
       return Promise.reject(new Error("offline"));
     }
-    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: async () => next.json });
+    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: async () => { if (next.badjson) throw new SyntaxError("bad json"); return next.json; } });
   },
   Array,
 };
