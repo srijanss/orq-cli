@@ -12,7 +12,11 @@ const STALE_MARKER: &str = "stale, may be out of date";
 fn run(reviews: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": [{"status": 200, "json": {"reviews": reviews}}], "steps": [{"submit": TOKEN}]});
-    match Command::new("node").arg(format!("{dir}/tests/web_harness.js")).arg(format!("{dir}/web/app.js")).arg(scenario.to_string()).output() {
+    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
+        eprintln!("skipped: the web-src dependencies are not installed");
+        return None;
+    }
+    match Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() {
         Ok(output) => {
             assert!(output.status.success(), "the harness failed: {}", String::from_utf8_lossy(&output.stderr));
             Some(serde_json::from_slice(&output.stdout).expect("the harness prints JSON"))
@@ -89,7 +93,10 @@ fn a_malformed_inbox_keeps_the_token_and_offers_a_retry_instead_of_asking_to_sig
 fn a_reply_that_is_not_json_keeps_the_token_too() {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": [{"status": 200, "badjson": true}], "steps": [{"submit": TOKEN}]});
-    let Ok(output) = Command::new("node").arg(format!("{dir}/tests/web_harness.js")).arg(format!("{dir}/web/app.js")).arg(scenario.to_string()).output() else { return };
+    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
+        return;
+    }
+    let Ok(output) = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() else { return };
     assert!(output.status.success());
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");

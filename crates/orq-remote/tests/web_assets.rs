@@ -43,7 +43,7 @@ fn header(reply: &Reply, name: &str) -> Option<String> {
     })
 }
 
-const ASSETS: [(&str, &str); 3] = [("/", "text/html"), ("/app.js", "text/javascript"), ("/app.css", "text/css")];
+const ASSETS: [(&str, &str); 3] = [("/", "text/html"), ("/app.react.js", "text/javascript"), ("/app.css", "text/css")];
 
 #[test]
 fn the_page_and_its_assets_are_served_without_a_token_with_safe_headers() {
@@ -91,7 +91,7 @@ fn the_token_free_page_is_only_for_get_and_head_from_an_allowed_peer() {
 fn the_page_pulls_in_its_script_and_style_by_url_and_carries_no_inline_code() {
     let server = start("page");
     let page = request(server.addr(), "GET", "/", None).body;
-    assert!(page.contains("src=\"/app.js\"") && page.contains("href=\"/app.css\""), "{page}");
+    assert!(page.contains("src=\"/app.react.js\"") && page.contains("href=\"/app.css\""), "{page}");
     let lower = page.to_lowercase();
     assert!(!lower.contains("<style") && !lower.contains(" style=") && !lower.contains(" onclick=") && !lower.contains("javascript:"), "{page}");
     assert!(!lower.contains("<form"), "{page}");
@@ -119,7 +119,7 @@ fn data_paths_still_need_the_token_and_unknown_paths_get_the_usual_refusal() {
     let server = start("data");
     let refusal = request(server.addr(), "GET", "/api/reviews", None);
     assert_eq!(refusal.status, 401);
-    for path in ["/nowhere", "/index.html", "/app.js/", "/app.js/extra", "/api", "//app.js", "/APP.JS"] {
+    for path in ["/nowhere", "/index.html", "/app.js", "/app.react.js/", "/app.js/extra", "/api", "//app.js", "/APP.JS"] {
         let reply = request(server.addr(), "GET", path, None);
         assert_eq!(reply.status, 401, "{path}");
         assert_eq!(reply.body, refusal.body, "{path}");

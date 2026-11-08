@@ -12,7 +12,11 @@ const STALE_MARKER: &str = "stale, may be out of date";
 fn run(responses: Value, steps: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": responses, "steps": steps});
-    match Command::new("node").arg(format!("{dir}/tests/web_harness.js")).arg(format!("{dir}/web/app.js")).arg(scenario.to_string()).output() {
+    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
+        eprintln!("skipped: the web-src dependencies are not installed");
+        return None;
+    }
+    match Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() {
         Ok(output) => {
             assert!(output.status.success(), "the harness failed: {}", String::from_utf8_lossy(&output.stderr));
             Some(serde_json::from_slice(&output.stdout).expect("the harness prints JSON"))
@@ -119,7 +123,7 @@ fn a_401_on_the_detail_asks_for_the_token_again() {
 
 #[test]
 fn the_page_never_sends_anything_but_a_get() {
-    let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.js")).unwrap();
+    let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
     let code: String = code.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
     for banned in ["\"POST\"", "\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
         assert!(!code.contains(banned), "{banned}");

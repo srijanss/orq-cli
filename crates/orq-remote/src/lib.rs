@@ -132,9 +132,8 @@ pub fn page_asset(peer: std::net::IpAddr, method: &str, path: &str) -> Option<&'
 
 /// The whole set of files the page path can ever serve. No request path is
 /// ever joined to a directory, so nothing outside this list can be read.
-const ASSETS: [Asset; 4] = [
+const ASSETS: [Asset; 3] = [
     Asset { path: "/", content_type: "text/html; charset=utf-8", body: include_str!("../web/index.html") },
-    Asset { path: "/app.js", content_type: "text/javascript; charset=utf-8", body: include_str!("../web/app.js") },
     Asset { path: "/app.css", content_type: "text/css; charset=utf-8", body: include_str!("../web/app.css") },
     // Built from web-src by `node crates/orq-remote/web-src/build.mjs`; a test fails when it is stale.
     Asset { path: "/app.react.js", content_type: "text/javascript; charset=utf-8", body: include_str!("../web/app.react.js") },

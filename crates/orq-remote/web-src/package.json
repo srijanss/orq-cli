@@ -11,6 +11,7 @@
     "react-dom": "19.3.1"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "jsdom": "31.0.0"
   }
 }
