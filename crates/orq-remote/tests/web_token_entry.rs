@@ -35,7 +35,7 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
     // Every path is a fixed same-origin one, plus an encoded run id, with no query string.
     for call in code.split("<Loaded ").skip(1) {
         let target: String = call.split("path={").nth(1).unwrap().chars().take_while(|c| *c != '}').collect();
-        assert!(["API_REVIEWS", "API_PROJECTS", "path", "base"].contains(&target.trim()), "path {target:?} is not fixed");
+        assert!(["API_REVIEWS", "API_PROJECTS", "path", "base", "featuresPath"].contains(&target.trim()), "path {target:?} is not fixed");
     }
     assert!(code.contains("API_REVIEWS + \"/\" + encodeURIComponent(runId)"), "the run id is encoded");
     assert!(code.contains("\"/api/projects/\" + encodeURIComponent(projectId) + \"/reviews\""), "the project id is encoded");

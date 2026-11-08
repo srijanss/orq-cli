@@ -352,9 +352,57 @@ function PageHeader({ title, subtitle, onRefresh }) {
   );
 }
 
+const FEATURE_GROUPS = ["draft", "pending", "in_progress", "completed", "abandoned"];
+
+function isFeature(feature) {
+  return feature !== null && typeof feature === "object" && typeof feature.name === "string" && typeof feature.status === "string" && (feature.description === null || typeof feature.description === "string") && isTextList(feature.depends_on);
+}
+
+function parseFeatures(data) {
+  return data && Array.isArray(data.features) && data.features.every(isFeature) ? data.features : null;
+}
+
+// Features grouped by status in the order work moves through, a status the page does not know last.
+function FeatureList({ features }) {
+  if (features.length === 0) {
+    return <p>No features in this project's ledger.</p>;
+  }
+  const known = new Set(features.map((feature) => feature.name));
+  const statuses = [...FEATURE_GROUPS.filter((status) => features.some((feature) => feature.status === status)), ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
+  return (
+    <>
+      {statuses.map((status) => (
+        <section key={status} className="feature-group">
+          <h2 className="feature-status">{status}</h2>
+          <ul>
+            {features
+              .filter((feature) => feature.status === status)
+              .map((feature) => (
+                <li key={feature.name} className="feature card">
+                  <strong>{feature.name}</strong>
+                  {feature.description ? <p>{feature.description}</p> : null}
+                  {feature.depends_on.length > 0 ? <p className="depends-on">{"Depends on: " + feature.depends_on.map((name) => (known.has(name) ? name : name + " (not in this ledger)")).join(", ")}</p> : null}
+                </li>
+              ))}
+          </ul>
+        </section>
+      ))}
+    </>
+  );
+}
+
 // What a project's address shows. Only the Reviews tab is built: its list and reports come from
 // the project's own endpoints and stay under the project's address.
 function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, onRefresh }) {
+  if (/^\/projects\/[^/]+\/features$/.test(address)) {
+    const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
+    return (
+      <>
+        <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
+        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(features) => <FeatureList features={features} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
   const match = /^\/projects\/[^/]+\/reviews(?:\/([^/]*))?$/.exec(address);
   if (match === null) return <p>This page is not available yet.</p>;
   const base = "/api/projects/" + encodeURIComponent(projectId) + "/reviews";
