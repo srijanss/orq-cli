@@ -1,3 +1,50 @@
+:root {
+  color-scheme: light dark;
+  --status-running: #1d4ed8;
+  --status-running-bg: #dbeafe;
+  --status-completed: #166534;
+  --status-completed-bg: #dcfce7;
+  --status-failed: #991b1b;
+  --status-failed-bg: #fee2e2;
+  --status-waiting: #92400e;
+  --status-waiting-bg: #fef3c7;
+  --status-queued: #374151;
+  --status-queued-bg: #e5e7eb;
+  --risk-low: #166534;
+  --risk-low-bg: #dcfce7;
+  --risk-medium: #92400e;
+  --risk-medium-bg: #fef3c7;
+  --risk-high: #991b1b;
+  --risk-high-bg: #fee2e2;
+  --freshness-fresh: #166534;
+  --freshness-fresh-bg: #dcfce7;
+  --freshness-outdated: #92400e;
+  --freshness-outdated-bg: #fef3c7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --status-running: #93c5fd;
+    --status-running-bg: #1e3a8a;
+    --status-completed: #86efac;
+    --status-completed-bg: #14532d;
+    --status-failed: #fca5a5;
+    --status-failed-bg: #7f1d1d;
+    --status-waiting: #fcd34d;
+    --status-waiting-bg: #78350f;
+    --status-queued: #d1d5db;
+    --status-queued-bg: #374151;
+    --risk-low: #86efac;
+    --risk-low-bg: #14532d;
+    --risk-medium: #fcd34d;
+    --risk-medium-bg: #78350f;
+    --risk-high: #fca5a5;
+    --risk-high-bg: #7f1d1d;
+    --freshness-fresh: #86efac;
+    --freshness-fresh-bg: #14532d;
+    --freshness-outdated: #fcd34d;
+    --freshness-outdated-bg: #78350f;
+  }
+}
 body { font-family: system-ui, sans-serif; margin: 1rem; }
 ul { list-style: none; margin: 0; padding: 0; }
 .run { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: center; min-height: 44px; padding: 0.5rem 0; border-bottom: 1px solid #ccc; }
@@ -7,3 +54,14 @@ button { min-height: 44px; min-width: 44px; }
 h2 { font-size: 1rem; margin: 1rem 0 0.25rem; }
 li { overflow-wrap: anywhere; }
 a { display: inline-block; min-height: 44px; line-height: 44px; }
+.badge { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.125rem 0.5rem; border-radius: 0.75rem; font-size: 0.875rem; font-weight: 600; }
+.badge-status-running { color: var(--status-running); background: var(--status-running-bg); border: 1px solid var(--status-running); }
+.badge-status-completed { color: var(--status-completed); background: var(--status-completed-bg); border: 1px solid var(--status-completed); }
+.badge-status-failed { color: var(--status-failed); background: var(--status-failed-bg); border: 1px solid var(--status-failed); }
+.badge-status-waiting { color: var(--status-waiting); background: var(--status-waiting-bg); border: 1px solid var(--status-waiting); }
+.badge-status-queued { color: var(--status-queued); background: var(--status-queued-bg); border: 1px solid var(--status-queued); }
+.badge-risk-low { color: var(--risk-low); background: var(--risk-low-bg); border: 1px solid var(--risk-low); }
+.badge-risk-medium { color: var(--risk-medium); background: var(--risk-medium-bg); border: 1px solid var(--risk-medium); }
+.badge-risk-high { color: var(--risk-high); background: var(--risk-high-bg); border: 1px solid var(--risk-high); }
+.badge-freshness-fresh { color: var(--freshness-fresh); background: var(--freshness-fresh-bg); border: 1px solid var(--freshness-fresh); }
+.badge-freshness-outdated { color: var(--freshness-outdated); background: var(--freshness-outdated-bg); border: 1px solid var(--freshness-outdated); }
