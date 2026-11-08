@@ -2,7 +2,7 @@
 //! browser answers with an assertion, checks everything before it issues a session. Every refusal is
 //! the same value and sets no session, so the answer reveals nothing about which check failed.
 
-use crate::p256;
+use crate::es256;
 use crate::passkey_challenge::{decode_b64url, Challenges, Purpose};
 use crate::passkey_register::{encoded_len, es256_coordinates, PasskeyHost};
 use crate::passkey_store::PasskeyStore;
@@ -88,8 +88,8 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
     }
     let cose = decode_b64url(&key.public_key).map_err(|_| Refused)?;
     let (x, y) = es256_coordinates(&cose).map_err(|_| Refused)?;
-    let digest: [u8; 32] = Sha256::new().chain_update(&authenticator_data).chain_update(Sha256::digest(&client_data)).finalize().into();
-    if !p256::verify(&x, &y, &digest, &signature) {
+    let signed = [authenticator_data.as_slice(), Sha256::digest(&client_data).as_slice()].concat();
+    if !es256::verify(&x, &y, &signed, &signature) {
         return Err(Refused);
     }
     // Always under the lock, even when the counter stays at zero: it also confirms the passkey was
@@ -101,7 +101,7 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p256::tests::{hex, sign, KEY_X, KEY_Y};
+    use crate::es256::tests::{hex, sign, KEY_X, KEY_Y};
     use crate::passkey_challenge::encode_b64url;
     use crate::passkey_store::Passkey;
     use crate::storage::StorageRoots;
@@ -160,8 +160,8 @@ mod tests {
                 client["crossOrigin"] = cross.into();
             }
             let client = client.to_string();
-            let digest: [u8; 32] = Sha256::new().chain_update(&auth).chain_update(Sha256::digest(client.as_bytes())).finalize().into();
-            AssertionResponse { credential_id: encode_b64url(&self.credential), client_data_json: encode_b64url(client.as_bytes()), authenticator_data: encode_b64url(&auth), signature: encode_b64url(&sign(&digest)) }
+            let signed = [auth.as_slice(), Sha256::digest(client.as_bytes()).as_slice()].concat();
+            AssertionResponse { credential_id: encode_b64url(&self.credential), client_data_json: encode_b64url(client.as_bytes()), authenticator_data: encode_b64url(&auth), signature: encode_b64url(&sign(&signed)) }
         }
     }
 

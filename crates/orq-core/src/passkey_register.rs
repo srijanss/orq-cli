@@ -205,7 +205,7 @@ fn check_es256(cose: &Cbor) -> Result<(), String> {
     if entry(1) != Some(&Cbor::Int(2)) || entry(3) != Some(&Cbor::Int(-7)) || entry(-1) != Some(&Cbor::Int(1)) || !coordinate(-2) || !coordinate(-3) {
         return Err("the public key is not ES256 on P-256".into());
     }
-    if !crate::p256::on_curve(x, y) {
+    if !crate::es256::on_curve(x, y) {
         return Err("the public key is not a point on P-256".into());
     }
     Ok(())

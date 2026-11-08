@@ -6,7 +6,7 @@ pub mod passkey_enroll;
 pub mod passkey_login;
 pub mod passkey_register;
 pub mod passkey_store;
-mod p256;
+mod es256;
 pub mod provider_observation;
 pub mod prune;
 pub mod redact;

@@ -11,3 +11,4 @@ sha2 = "0.10"
 regex = "1"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 toml_edit = "0.22"
+p256 = { version = "0.13", features = ["ecdsa"] }
