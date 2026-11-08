@@ -149,7 +149,18 @@ pub fn page_asset(peer: std::net::IpAddr, method: &str, path: &str) -> Option<&'
     if !matches!(method, "GET" | "HEAD") || !remote_inbox::peer_allowed(peer) {
         return None;
     }
+    let path = if is_application_path(path) { "/" } else { path };
     ASSETS.iter().find(|asset| asset.path == path)
+}
+
+/// Places the page itself draws, so a reload or a shared address opens them. Only these shapes
+/// count, with plain non-empty segments, so the API, dot segments and odd paths keep their answers.
+fn is_application_path(path: &str) -> bool {
+    let plain = |rest: &str| rest.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+    match path {
+        "/dashboard" | "/settings" | "/projects" => true,
+        _ => ["/projects/", "/reviews/"].iter().any(|prefix| path.strip_prefix(prefix).is_some_and(plain)),
+    }
 }
 
 /// The whole set of files the page path can ever serve. No request path is
