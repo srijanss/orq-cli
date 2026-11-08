@@ -234,3 +234,9 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .log-lines { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; margin: 0; font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.8125rem; }
 .feature { overflow-wrap: anywhere; margin-bottom: 0.5rem; }
 .event { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: center; margin-bottom: 0.5rem; }
+
+.feature-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+.feature-filters input { flex: 1 1 12rem; }
+.dependencies li { margin: 0; }
+.missing-dependency em { color: var(--stale); font-style: normal; font-weight: 600; }
+.feature:focus { outline: 2px solid var(--accent); }

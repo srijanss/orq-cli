@@ -60,7 +60,65 @@ fn the_features_tab_reads_the_projects_own_ledger_and_groups_features_by_status(
 fn dependencies_are_listed_and_one_missing_from_the_ledger_is_marked() {
     let Some(out) = run("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     let texts = shown(&out["frames"][1]).join(" | ");
-    assert!(texts.contains("Depends on: done-one, ghost (not in this ledger)"), "{texts}");
+    assert!(!texts.contains("ghost"), "dependencies stay folded until asked for: {texts}");
+    assert_eq!(out["frames"][1]["settled"]["buttons"], json!(["Dependencies (2)"]), "{out}");
+}
+
+#[test]
+fn an_expanded_feature_lists_its_dependencies_as_links_and_marks_a_missing_one() {
+    let Some(out) = run("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let frame = &out["frames"][2]["settled"];
+    let links = frame["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "{frame}");
+    assert_eq!((&links[0]["text"], &links[0]["href"]), (&json!("done-one"), &json!("/projects/alpha/features")), "{frame}");
+    let texts = shown(&out["frames"][2]);
+    let at = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
+    assert!(at("ghost") > 0 && texts.iter().any(|t| t.contains("Missing dependency")), "{texts:?}");
+    assert!(!links.iter().any(|l| l["text"].as_str().unwrap().contains("ghost")), "a missing dependency is not a link");
+    // Folding it again hides them.
+    let Some(out) = run("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
+    assert!(!shown(&out["frames"][3]).join(" | ").contains("ghost"), "{out}");
+}
+
+fn chain() -> Value {
+    json!({"status": 200, "json": {"features": [
+        feature("base-work", "completed", Value::Null, json!([])),
+        feature("middle-work", "pending", Value::Null, json!(["base-work"])),
+        feature("top-work", "draft", Value::Null, json!(["middle-work"]))
+    ]}})
+}
+
+#[test]
+fn a_dependency_link_opens_its_feature_even_when_a_filter_hides_it() {
+    let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "top"}, {"click": "button", "index": 0}, {"nav": "a[data-dependency=\"middle-work\"]"}]);
+    let Some(out) = run("/projects/alpha/features", json!([chain(), projects()]), steps) else { return };
+    let filtered = shown(&out["frames"][2]);
+    assert!(filtered.iter().any(|t| t == "top-work") && !filtered.iter().any(|t| t == "middle-work"), "{filtered:?}");
+    let after = &out["frames"][4];
+    let texts = shown(after);
+    assert!(texts.iter().any(|t| t == "middle-work") && texts.iter().any(|t| t == "base-work"), "the filter was cleared to show the target: {texts:?}");
+    assert_eq!(after["settled"]["inputs"][0]["value"], "", "{after}");
+    // The target is opened too, so its own dependency shows as a link.
+    assert!(after["settled"]["links"].as_array().unwrap().iter().any(|l| l["text"] == "base-work"), "{after}");
+    assert_eq!(after["settled"]["path"], "/projects/alpha/features", "no new address is made up");
+}
+
+#[test]
+fn features_are_searched_by_name_and_filtered_by_status() {
+    let Some(out) = run("/projects/alpha/features", json!([chain(), projects()]), json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "MIDDLE"}, {"set": "[data-feature-status]", "value": "draft"}, {"set": "[data-feature-search]", "value": ""}, {"set": "[data-feature-status]", "value": "all"}])) else { return };
+    let names = |i: usize| shown(&out["frames"][i]).into_iter().filter(|t| t.ends_with("-work")).collect::<Vec<_>>();
+    assert_eq!(names(1), ["top-work", "middle-work", "base-work"]);
+    assert_eq!(names(2), ["middle-work"], "search ignores case and hides the other groups");
+    // Each status is one option in the filter, and a group heading would be a second mention.
+    for status in ["draft", "completed"] {
+        assert_eq!(shown(&out["frames"][2]).iter().filter(|t| *t == status).count(), 1, "the {status} group is hidden");
+        assert_eq!(shown(&out["frames"][1]).iter().filter(|t| *t == status).count(), 2, "the {status} group is shown");
+    }
+    assert!(shown(&out["frames"][3]).iter().any(|t| t == "No features match the filters."), "search and status together");
+    assert_eq!(names(4), ["top-work"]);
+    assert_eq!(names(5), ["top-work", "middle-work", "base-work"]);
+    let options = out["frames"][1]["settled"]["texts"].as_array().unwrap();
+    assert!(options.iter().any(|t| t == "All statuses"), "{options:?}");
 }
 
 #[test]
@@ -68,7 +126,9 @@ fn feature_text_is_drawn_as_text_and_there_are_no_controls_to_change_anything() 
     let Some(out) = run("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "<b>bold</b> idea"), "{out}");
     let frame = &out["frames"][1]["settled"];
-    assert!(frame["buttons"].as_array().unwrap().is_empty(), "{frame}");
+    // The only buttons fold and unfold dependencies; the only inputs are the search and status filter.
+    assert!(frame["buttons"].as_array().unwrap().iter().all(|b| b.as_str().unwrap().starts_with("Dependencies (")), "{frame}");
+    assert_eq!(frame["inputs"].as_array().unwrap().len(), 1, "{frame}");
 }
 
 #[test]

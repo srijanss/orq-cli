@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
-import { currentPath, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
+import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
@@ -440,26 +440,82 @@ function parseFeatures(data) {
   return data && Array.isArray(data.features) && data.features.every(isFeature) ? data.features : null;
 }
 
+// A feature's dependencies: a link for each one in this ledger, a marker for one that is not.
+function Dependencies({ names, known, onOpen, listPath }) {
+  return (
+    <ul className="dependencies">
+      {names.map((name) => (
+        <li key={name}>
+          {known.has(name) ? (
+            <a href={listPath} data-dependency={name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); onOpen(name); } }}>{name}</a>
+          ) : (
+            <span className="missing-dependency">{name}<em>{" — Missing dependency"}</em></span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // Features grouped by status in the order work moves through, a status the page does not know last.
-function FeatureList({ features }) {
+// Dependencies are folded until asked for; a link to one opens that feature, clearing any filter
+// that would hide it.
+function FeatureList({ features, listPath }) {
+  const [query, setQuery] = useState("");
+  const [only, setOnly] = useState("all");
+  const [open, setOpen] = useState(() => new Set());
+  const [reveal, setReveal] = useState(null);
+  useEffect(() => {
+    if (reveal === null) {
+      return;
+    }
+    const target = document.getElementById("feature-" + reveal);
+    if (target !== null) {
+      if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "nearest" });
+      target.focus();
+    }
+    setReveal(null);
+  }, [reveal]);
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
   const known = new Set(features.map((feature) => feature.name));
   const statuses = [...FEATURE_GROUPS.filter((status) => features.some((feature) => feature.status === status)), ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
+  const needle = query.trim().toLowerCase();
+  const shown = features.filter((feature) => (only === "all" || feature.status === only) && feature.name.toLowerCase().includes(needle));
+  const toggle = (name) => setOpen((was) => { const next = new Set(was); if (next.has(name)) next.delete(name); else next.add(name); return next; });
+  const openDependency = (name) => {
+    setQuery("");
+    setOnly("all");
+    setOpen((was) => new Set(was).add(name));
+    setReveal(name);
+  };
   return (
     <>
-      {statuses.map((status) => (
+      <div className="feature-filters">
+        <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+        <select data-feature-status aria-label="Status" value={only} onChange={(event) => setOnly(event.target.value)}>
+          <option value="all">All statuses</option>
+          {statuses.map((status) => (
+            <option key={status} value={status}>{status}</option>
+          ))}
+        </select>
+      </div>
+      {shown.length === 0 ? <p>No features match the filters.</p> : null}
+      {statuses.filter((status) => shown.some((feature) => feature.status === status)).map((status) => (
         <section key={status} className="feature-group">
           <h2 className="feature-status">{status}</h2>
           <ul>
-            {features
+            {shown
               .filter((feature) => feature.status === status)
               .map((feature) => (
-                <li key={feature.name} className="feature card">
+                <li key={feature.name} id={"feature-" + feature.name} tabIndex={-1} className="feature card">
                   <strong>{feature.name}</strong>
                   {feature.description ? <p>{feature.description}</p> : null}
-                  {feature.depends_on.length > 0 ? <p className="depends-on">{"Depends on: " + feature.depends_on.map((name) => (known.has(name) ? name : name + " (not in this ledger)")).join(", ")}</p> : null}
+                  {feature.depends_on.length > 0 ? (
+                    <button type="button" aria-expanded={open.has(feature.name)} onClick={() => toggle(feature.name)}>{"Dependencies (" + feature.depends_on.length + ")"}</button>
+                  ) : null}
+                  {feature.depends_on.length > 0 && open.has(feature.name) ? <Dependencies names={feature.depends_on} known={known} onOpen={openDependency} listPath={listPath} /> : null}
                 </li>
               ))}
           </ul>
@@ -787,7 +843,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
-        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(features) => <FeatureList features={features} />} onSignedOut={onSignedOut} />
+        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(features) => <FeatureList features={features} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
       </>
     );
   }
