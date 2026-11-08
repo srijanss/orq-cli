@@ -109,12 +109,33 @@ fn the_command_that_reads_the_token_is_safe_to_paste_whatever_the_path_holds() {
     assert!(server.printed.lines().any(|line| line == format!("read it with: cat -- {quoted}")), "{}", server.printed);
 }
 
-/// Runs a plain serve that must refuse: non-zero exit, no listening line.
+/// Runs a plain serve that must refuse: non-zero exit, no listening line. The wait for it to exit
+/// is bounded, and a server that kept running is killed and reaped, then reported as a failure.
 fn refused(root: &Path, repo: &Path) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
-    command.args(["serve", "--listen", "127.0.0.1:0"]).current_dir(repo);
+    command.args(["serve", "--listen", "127.0.0.1:0"]).current_dir(repo).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     command.envs([("XDG_STATE_HOME", root.join("state")), ("XDG_DATA_HOME", root.join("data")), ("XDG_CONFIG_HOME", root.join("config")), ("HOME", root.join("home"))]);
-    let out = command.output().unwrap();
+    let mut guard = Running { child: command.spawn().unwrap(), addr: String::new(), printed: String::new() };
+    let (mut stdout, mut stderr) = (guard.child.stdout.take().unwrap(), guard.child.stderr.take().unwrap());
+    let out_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = guard.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the server kept running instead of refusing the token");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = std::process::Output { status, stdout: out_reader.join().unwrap(), stderr: err_reader.join().unwrap() };
     assert!(!out.status.success(), "must refuse: {}", String::from_utf8_lossy(&out.stdout));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("listening"), "it must not announce an address");
     out
