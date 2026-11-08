@@ -24,9 +24,13 @@ fn raw(addr: SocketAddr, method: &str, path: &str, auth: Option<&str>) -> (Strin
     let auth = auth.map(|a| format!("Authorization: {a}\r\n")).unwrap_or_default();
     write!(stream, "{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{auth}Content-Length: 0\r\n\r\n").unwrap();
     let mut bytes = Vec::new();
-    let _ = stream.read_to_end(&mut bytes);
+    stream.read_to_end(&mut bytes).expect("the response was cut short or the read failed");
     let text = String::from_utf8_lossy(&bytes).to_string();
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let (head, body) = text.split_once("\r\n\r\n").expect("the response has no header/body separator");
+    if method != "HEAD" {
+        let length = head.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).expect("no content-length");
+        assert_eq!(body.len(), length, "the body is not the advertised length");
+    }
     let head: Vec<&str> = head.lines().filter(|line| !line.to_lowercase().starts_with("date:")).collect();
     (head.join("\n"), body.to_string())
 }
@@ -56,7 +60,8 @@ fn every_kind_of_refusal_looks_the_same_on_the_wire() {
     }
     // The same paths with the right token are answered differently, so the
     // comparison above is not vacuous.
-    assert_ne!(raw(addr, "GET", "/nowhere", Some(&good)), reference);
+    assert!(raw(addr, "GET", "/nowhere", Some(&good)).0.starts_with("HTTP/1.1 404"));
+    assert!(raw(addr, "GET", "/api/reviews", Some(&good)).0.starts_with("HTTP/1.1 200"));
 }
 
 #[test]
