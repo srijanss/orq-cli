@@ -3,7 +3,10 @@
 
 use crate::resume::members_of;
 use crate::run_status::{summarize_run, RunPhase};
-use crate::store::{RunStore, StoreError};
+use std::path::Path;
+
+use crate::outcome::git_raw;
+use crate::store::{RunRecord, RunStore, StoreError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunListing {
@@ -75,4 +78,36 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
         });
     }
     Ok(list)
+}
+
+/// Show as [`RunPhase::Merged`] each failed or review-waiting run of `list` whose work is on its
+/// target branch in `repo` (see [`work_is_on_target`]). A run whose record or branch cannot be
+/// read is left as it is.
+pub fn mark_merged_runs(store: &RunStore, list: &mut RunList, repo: &Path) {
+    for run in &mut list.runs {
+        if !matches!(run.phase, RunPhase::Failed | RunPhase::NeedsReview) {
+            continue;
+        }
+        if store.load(&run.run_id).is_ok_and(|record| work_is_on_target(repo, &record)) {
+            run.phase = RunPhase::Merged;
+        }
+    }
+}
+
+/// Whether the run's work was merged into its target branch: its local branch in `repo` has at
+/// least one commit past the run's base, and every one of them is reachable from the local target
+/// branch. A run with no commits, a branch or base git cannot resolve, or a git that fails, is not.
+pub fn work_is_on_target(repo: &Path, record: &RunRecord) -> bool {
+    if record.branch.is_empty() || record.base_sha.is_empty() || record.target_branch.is_empty() {
+        return false;
+    }
+    let branch = format!("refs/heads/{}", record.branch);
+    let count = |not: &str| -> Option<u64> {
+        let out = git_raw(repo, &["rev-list", "--count", "--end-of-options", &branch, &format!("^{not}")]).ok()?;
+        if !out.success {
+            return None;
+        }
+        out.stdout.trim().parse().ok()
+    };
+    matches!(count(&record.base_sha), Some(n) if n > 0) && count(&format!("refs/heads/{}", record.target_branch)) == Some(0)
 }

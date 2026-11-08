@@ -58,7 +58,8 @@ fn facts_of(
         RunPhase::Running => RunState::Running,
         // Waiting on a human decision, like a blocked run.
         RunPhase::Blocked | RunPhase::NeedsReview => RunState::Blocked,
-        RunPhase::Failed => RunState::Failed,
+        // Only a listing marks a run merged; its events say it failed or waits for review.
+        RunPhase::Failed | RunPhase::Merged => RunState::Failed,
         RunPhase::Completed => RunState::Completed,
         RunPhase::PauseRequested => RunState::PauseRequested,
         RunPhase::Paused => RunState::Paused,

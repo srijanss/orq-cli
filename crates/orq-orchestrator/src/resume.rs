@@ -205,6 +205,12 @@ pub fn plan_group_resume_with(
                 from.run_id
             ))
         }
+        RunPhase::Merged => {
+            return Err(format!(
+                "{}'s work is already on its target branch; there is nothing to resume",
+                from.run_id
+            ))
+        }
         RunPhase::Paused => {
             // A paused run continues only from a checkpoint that still describes its checkout.
             checkpoint = Some(crate::checkpoint::validate_checkpoint(
