@@ -14,8 +14,7 @@ fn run_page(tag: &str, script: &str) -> Option<Output> {
     if !web_deps::ready() {
         return None;
     }
-    let dir = std::env::temp_dir().join(format!("orq-harness-errors-{}-{tag}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = web_deps::private_temp_dir(tag);
     let page = dir.join("page.js");
     std::fs::write(&page, script).unwrap();
     let scenario = r#"{"responses": [], "steps": []}"#;

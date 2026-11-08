@@ -6,7 +6,7 @@ mod web_deps;
 
 use std::io::ErrorKind;
 
-use web_deps::{classify_node_probe, decide, Decision, NodeProbe};
+use web_deps::{classify_node_probe, create_private_dir, decide, private_temp_dir, Decision, NodeProbe};
 
 #[test]
 fn everything_present_means_run() {
@@ -49,4 +49,29 @@ fn a_node_that_cannot_be_started_or_exits_badly_is_a_broken_environment_not_a_sk
             other => panic!("expected a broken environment, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn a_private_directory_is_new_owner_only_and_never_a_path_someone_else_made() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = private_temp_dir("policy-base");
+    let fresh = create_private_dir(&base, "fresh").expect("a new name works");
+    assert_eq!(std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o700);
+    // A name that already exists, as a directory or as a link someone planted, is refused.
+    assert!(create_private_dir(&base, "fresh").is_err());
+    let target = base.join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, base.join("planted")).unwrap();
+    assert!(create_private_dir(&base, "planted").is_err(), "a planted link must not be followed");
+    assert!(std::fs::read_dir(&target).unwrap().next().is_none());
+}
+
+#[test]
+fn temp_directories_differ_each_time_and_are_not_the_old_pid_and_tag_path() {
+    let first = private_temp_dir("same-tag");
+    let second = private_temp_dir("same-tag");
+    assert_ne!(first, second);
+    let guessable = std::env::temp_dir().join(format!("orq-web-test-{}-same-tag", std::process::id()));
+    assert_ne!(first, guessable);
+    assert_ne!(second, guessable);
 }

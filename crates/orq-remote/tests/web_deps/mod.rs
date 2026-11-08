@@ -3,7 +3,7 @@
 //! forgot the install cannot pass with nothing checked; `ORQ_SKIP_WEB_TESTS=1` opts out on purpose.
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,4 +66,30 @@ pub fn ready() -> bool {
         }
         Decision::Fail(message) => panic!("{message}"),
     }
+}
+
+/// Makes one new directory under `base`, owner-only. It fails when the name already exists,
+/// as a directory, a file or a link someone planted, so a guessed path is never reused or followed.
+pub fn create_private_dir(base: &Path, name: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let path = base.join(name);
+    std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+    Ok(path)
+}
+
+/// A fresh private directory in the system temp dir with an unpredictable name.
+pub fn private_temp_dir(tag: &str) -> PathBuf {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..16 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        let name = format!("orq-web-{tag}-{:016x}", hasher.finish());
+        match create_private_dir(&std::env::temp_dir(), &name) {
+            Ok(path) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("cannot create a private temp dir: {error}"),
+        }
+    }
+    panic!("cannot find an unused private temp dir name");
 }
