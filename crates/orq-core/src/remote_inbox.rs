@@ -311,8 +311,11 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
     let reviews: Vec<Value> = rows
         .into_iter()
         .map(|row| {
-            let link = facts(roots, &row.run_id).and_then(|f| f.link);
+            let facts = facts(roots, &row.run_id);
+            let generated_at = facts.as_ref().and_then(|f| review_inbox::generated_at(roots, &row.run_id, &f.head));
+            let link = facts.and_then(|f| f.link);
             json!({
+                "generated_at": generated_at,
                 "run_id": row.run_id, "feature": row.feature, "project": row.project, "current": row.current,
                 "status": row.status, "risk": row.risk, "stale": row.stale, "link": link,
             })
@@ -339,6 +342,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
     reply(
         200,
         json!({
+            "generated_at": review_inbox::generated_at(roots, run_id, &f.head),
             "run_id": run_id, "reported_head_sha": f.head, "observed_head_sha": f.observed, "stale": f.stale, "link": f.link,
             "summary": summary, "risks": risks, "files": files, "tests": tests, "rounds": rounds,
         }),

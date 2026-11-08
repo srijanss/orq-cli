@@ -128,6 +128,22 @@ pub fn detail_with_links(roots: &StorageRoots, run_id: &str) -> Result<(InboxDet
     Ok((sections(&report), links))
 }
 
+/// When the latest stored report of `run_id` for `head_sha` was generated, as the plain UTC time
+/// it was written with (`2026-11-03T10:20:30Z`). Anything else, or a report that cannot be read, is `None`.
+pub fn generated_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Option<String> {
+    let report = report_where(roots, run_id, |record| record.head_sha == head_sha).ok()?;
+    let text = report["generated_at"].as_str()?;
+    let b = text.as_bytes();
+    let shape = b.len() == 20 && b[19] == b'Z' && b.iter().enumerate().all(|(i, c)| match i {
+        4 | 7 => *c == b'-',
+        10 => *c == b'T',
+        13 | 16 => *c == b':',
+        19 => *c == b'Z',
+        _ => c.is_ascii_digit(),
+    });
+    shape.then(|| text.to_string())
+}
+
 fn detail_where(roots: &StorageRoots, run_id: &str, wanted: impl Fn(&ReviewRecord) -> bool) -> Result<InboxDetail, String> {
     Ok(sections(&report_where(roots, run_id, wanted)?))
 }
