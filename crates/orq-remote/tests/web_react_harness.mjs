@@ -54,19 +54,22 @@ window.fetch = (url, options) => {
   return Promise.resolve(reply());
 };
 
+// The page proper: inside the app shell when there is one, so its menu does not count as page content.
+const page = () => root.querySelector(".content") || root;
+
 function snapshot() {
   const texts = [];
   const inputs = [];
   const buttons = [];
   const links = [];
-  for (const node of root.querySelectorAll("*")) {
+  for (const node of page().querySelectorAll("*")) {
     const own = [...node.childNodes].filter((child) => child.nodeType === 3).map((child) => child.data).join("");
     if (own) texts.push(own);
     if (node.tagName === "INPUT") inputs.push({ type: node.type, value: node.value, autocomplete: node.autocomplete });
     if (node.tagName === "BUTTON") buttons.push(node.textContent);
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
-  return { texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash };
+  return { shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -78,7 +81,7 @@ const settle = async () => {
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 5));
 };
 
-const all = (tag) => [...root.querySelectorAll(tag)];
+const all = (tag) => [...page().querySelectorAll(tag)];
 
 (async () => {
   window.eval(readFileSync(bundlePath, "utf8"));

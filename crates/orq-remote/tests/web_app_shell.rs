@@ -95,3 +95,22 @@ fn the_rail_is_64px_wide_when_collapsed_and_the_drawer_has_a_phone_layout() {
     assert!(css.contains(".shell.collapsed") && css.contains("64px"), "{css}");
     assert!(css.contains("@media (max-width: 700px)"), "a phone layout exists");
 }
+
+#[test]
+fn the_served_page_is_framed_by_the_shell() {
+    if !web_deps::ready() {
+        return;
+    }
+    let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": [{"submit": "token"}]});
+    let output = Command::new("node")
+        .arg(crate_dir().join("tests/web_react_harness.mjs"))
+        .arg(crate_dir().join("web/app.react.js"))
+        .arg(scenario.to_string())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for frame in out["frames"].as_array().unwrap() {
+        assert_eq!(frame["settled"]["shell"], true, "every state of the page sits inside the shell: {out}");
+    }
+}

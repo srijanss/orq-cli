@@ -3,6 +3,7 @@
 // or reloading the page forgets it. Every string from the API is rendered as text.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { Shell } from "./shell.jsx";
 
 const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
@@ -218,4 +219,8 @@ function App() {
   return <Loaded key={API_REVIEWS} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={signedOut} />;
 }
 
-createRoot(document.getElementById("app")).render(<App />);
+createRoot(document.getElementById("app")).render(
+  <Shell>
+    <App />
+  </Shell>,
+);
