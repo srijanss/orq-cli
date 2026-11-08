@@ -1,14 +1,12 @@
 //! The React source builds, offline, to the bundle that is committed and served.
 
+mod web_deps;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn crate_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
-}
-
-fn node_available() -> bool {
-    Command::new("node").arg("--version").output().is_ok()
 }
 
 fn sources() -> Vec<(PathBuf, String)> {
@@ -33,8 +31,7 @@ fn sources() -> Vec<(PathBuf, String)> {
 fn the_committed_bundle_is_what_the_source_builds_to() {
     let committed = std::fs::read(crate_dir().join("web/app.react.js")).expect("the bundle is committed");
     assert!(!committed.is_empty());
-    if !node_available() || !crate_dir().join("web-src/node_modules").exists() {
-        eprintln!("skipped: node or the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return;
     }
     let out = std::env::temp_dir().join(format!("orq-react-build-{}", std::process::id()));

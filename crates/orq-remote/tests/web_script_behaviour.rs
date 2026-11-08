@@ -1,6 +1,8 @@
 //! Runs the page script (`web/app.react.js`) under node with a fake page and a
 //! scripted `fetch`, and checks what it actually does with the token.
 
+mod web_deps;
+
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -10,8 +12,7 @@ const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 /// The harness output, or None when node is not installed.
 fn run(scenario: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
-    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
-        eprintln!("skipped: the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return None;
     }
     let output = match Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() {

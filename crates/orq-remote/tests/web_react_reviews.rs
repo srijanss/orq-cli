@@ -1,6 +1,7 @@
 //! The React page behaves like the page it replaces: the built bundle runs in jsdom against scripted replies.
 
-use std::path::Path;
+mod web_deps;
+
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -11,8 +12,7 @@ const STALE_MARKER: &str = "stale, may be out of date";
 /// The harness output, or None when node or the web-src dependencies are not installed.
 fn run(responses: Value, steps: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
-    if !Path::new(dir).join("web-src/node_modules/jsdom").exists() {
-        eprintln!("skipped: node or the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return None;
     }
     let scenario = json!({"responses": responses, "steps": steps});

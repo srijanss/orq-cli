@@ -1,5 +1,7 @@
 //! The build writes a stamp next to the bundle: a fingerprint of its inputs and of the bundle.
 
+mod web_deps;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,8 +13,7 @@ fn crate_dir() -> PathBuf {
 
 #[test]
 fn the_build_writes_a_stamp_holding_the_hash_of_the_bundle_it_made() {
-    if Command::new("node").arg("--version").output().is_err() || !crate_dir().join("web-src/node_modules").exists() {
-        eprintln!("skipped: node or the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return;
     }
     let out = std::env::temp_dir().join(format!("orq-react-stamp-{}", std::process::id()));

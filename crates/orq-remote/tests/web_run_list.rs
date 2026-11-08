@@ -1,6 +1,8 @@
 //! The run list the page draws from the inbox list endpoint, checked by running
 //! the page script under node against scripted replies.
 
+mod web_deps;
+
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -12,8 +14,7 @@ const STALE_MARKER: &str = "stale, may be out of date";
 fn run(reviews: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": [{"status": 200, "json": {"reviews": reviews}}], "steps": [{"submit": TOKEN}]});
-    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
-        eprintln!("skipped: the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return None;
     }
     match Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() {
@@ -93,7 +94,7 @@ fn a_malformed_inbox_keeps_the_token_and_offers_a_retry_instead_of_asking_to_sig
 fn a_reply_that_is_not_json_keeps_the_token_too() {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": [{"status": 200, "badjson": true}], "steps": [{"submit": TOKEN}]});
-    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
+    if !web_deps::ready() {
         return;
     }
     let Ok(output) = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() else { return };

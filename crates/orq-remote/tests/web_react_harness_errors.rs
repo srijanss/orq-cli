@@ -1,5 +1,7 @@
 //! The jsdom harness fails when the page raises an error, so a crashed page is never mistaken for an empty one.
 
+mod web_deps;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -9,8 +11,7 @@ fn crate_dir() -> PathBuf {
 
 /// Runs the harness on a page script, or None when node or the web-src dependencies are missing.
 fn run_page(tag: &str, script: &str) -> Option<Output> {
-    if !crate_dir().join("web-src/node_modules/jsdom").exists() {
-        eprintln!("skipped: node or the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return None;
     }
     let dir = std::env::temp_dir().join(format!("orq-harness-errors-{}-{tag}", std::process::id()));

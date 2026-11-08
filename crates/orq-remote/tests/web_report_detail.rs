@@ -2,6 +2,8 @@
 //! endpoint, its link, the stale marker and the Back route, checked by running
 //! the page script under node against scripted replies.
 
+mod web_deps;
+
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -12,8 +14,7 @@ const STALE_MARKER: &str = "stale, may be out of date";
 fn run(responses: Value, steps: Value) -> Option<Value> {
     let dir = env!("CARGO_MANIFEST_DIR");
     let scenario = json!({"responses": responses, "steps": steps});
-    if !std::path::Path::new(dir).join("web-src/node_modules/jsdom").exists() {
-        eprintln!("skipped: the web-src dependencies are not installed");
+    if !web_deps::ready() {
         return None;
     }
     match Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output() {
