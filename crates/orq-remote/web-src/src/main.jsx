@@ -1,6 +1,7 @@
-// The review inbox page. The bearer token is typed in, held in this one piece of state
-// and sent as a header on each request; it is never written anywhere else, so closing
-// or reloading the page forgets it. Every string from the API is rendered as text.
+// The review inbox page. The bearer token is typed in, held in one piece of state and sent as a
+// header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
+// ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
+// Every string from the API is rendered as text.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
@@ -389,8 +390,34 @@ function Scoped({ token, onSignedOut }) {
   );
 }
 
+// Storage can be missing or refuse to work (private windows, blocked site data); the page then
+// simply keeps the token for this page view alone.
+const TOKEN_KEY = "orq.token";
+
+function keptToken() {
+  try {
+    const kept = window.sessionStorage.getItem(TOKEN_KEY);
+    return typeof kept === "string" && kept !== "" ? kept : null;
+  } catch (unavailable) {
+    return null;
+  }
+}
+
+function keepToken(token) {
+  try {
+    if (token === null) window.sessionStorage.removeItem(TOKEN_KEY);
+    else window.sessionStorage.setItem(TOKEN_KEY, token);
+  } catch (unavailable) {
+    // nothing to keep it in
+  }
+}
+
 function App() {
-  const [token, setToken] = useState(null);
+  const [token, setTokenState] = useState(keptToken);
+  const setToken = (next) => {
+    keepToken(next);
+    setTokenState(next);
+  };
   const [message, setMessage] = useState("");
   if (token === null) {
     return <TokenPrompt message={message} onToken={setToken} />;

@@ -87,8 +87,11 @@ fn the_stamp_ties_the_committed_bundle_to_the_sources_without_node() {
 #[test]
 fn the_source_never_stores_anything_or_writes_html_from_text() {
     for (path, text) in sources() {
-        for banned in ["localStorage", "sessionStorage", "indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
+        for banned in ["localStorage", "indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
         }
+        // The tab's own session storage holds the token across a refresh, and only main.jsx may touch it.
+        let is_main = path.file_name().map_or(false, |n| n == "main.jsx");
+        assert!(is_main || !text.contains("sessionStorage"), "{} uses sessionStorage", path.display());
     }
 }

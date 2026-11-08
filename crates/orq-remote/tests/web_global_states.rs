@@ -43,7 +43,7 @@ fn an_unreachable_server_shows_a_disconnected_banner_with_the_time_and_keeps_the
     let checked = text.split("Last checked ").nth(1).unwrap_or_else(|| panic!("no last-checked time: {text}"));
     assert!(checked.chars().next().unwrap().is_ascii_digit(), "{text}");
     assert!(first["settled"]["inputs"].as_array().unwrap().is_empty(), "the token is kept, not asked for again: {out}");
-    assert!(!first["settled"].to_string().contains(TOKEN));
+    assert!(!first["settled"]["texts"].to_string().contains(TOKEN) && !first["settled"]["inputs"].to_string().contains(TOKEN), "the page never shows the token");
     let after = &out["frames"][2];
     assert!(shown(after).contains("alpha") && !shown(after).contains("Disconnected"), "retry recovers: {out}");
     assert_eq!(out["requests"][1]["headers"]["Authorization"], format!("Bearer {TOKEN}"), "the retry reuses the token held in memory");

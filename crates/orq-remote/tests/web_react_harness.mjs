@@ -73,7 +73,8 @@ function snapshot() {
   }
   const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.value, options: [...el.options].map((o) => o.value) }));
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
-  return { brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
+  return { sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -88,6 +89,12 @@ const settle = async () => {
 const all = (tag) => [...page().querySelectorAll(tag)];
 
 (async () => {
+  // A refresh keeps what the tab stored; storage that throws is what a locked-down browser does.
+  if (scenario.storage_blocked) {
+    for (const name of ["sessionStorage", "localStorage"]) Object.defineProperty(window, name, { get() { throw new Error("blocked"); } });
+  } else {
+    for (const [key, value] of Object.entries(scenario.session || {})) window.sessionStorage.setItem(key, value);
+  }
   window.eval(readFileSync(bundlePath, "utf8"));
   await settle();
   const frames = [{ step: "start", settled: snapshot() }];

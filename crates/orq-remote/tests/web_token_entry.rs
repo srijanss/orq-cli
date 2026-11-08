@@ -11,12 +11,12 @@ fn code() -> String {
 }
 
 #[test]
-fn the_token_lives_in_memory_only() {
+fn the_token_lives_in_memory_and_this_tabs_session_storage_only() {
     let code = code();
-    for banned in ["localStorage", "sessionStorage", "indexedDB", "document.cookie", "caches.", "cookieStore", "serviceWorker", "openDatabase"] {
+    for banned in ["localStorage", "indexedDB", "document.cookie", "caches.", "cookieStore", "serviceWorker", "openDatabase"] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }
-    assert!(code.contains("useState(null)"), "the token is held in one piece of in-memory state");
+    assert!(code.contains("useState(keptToken)"), "the token is held in one piece of state, restored from this tab only");
 }
 
 #[test]
