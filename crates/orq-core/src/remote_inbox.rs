@@ -56,12 +56,12 @@ impl RemoteConfig {
             if let Some(dir) = path.parent() {
                 std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("cannot create the Orq config directory: {}", e.kind()))?;
             }
-            let mut bytes = [0u8; 32];
+            let mut bytes = [0u8; 40];
             std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).map_err(|e| format!("cannot generate a remote token: {}", e.kind()))?;
-            let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            let token: String = bytes[..32].iter().map(|b| format!("{b:02x}")).collect();
             // Written whole to a private temporary file, then linked into place without replacing
             // anything: a reader sees the finished token or no file, never a partial one.
-            let temp = path.with_file_name(format!(".remote-token.{}.tmp", &token[..16]));
+            let temp = path.with_file_name(format!(".remote-token.{}.tmp", bytes[32..].iter().map(|b| format!("{b:02x}")).collect::<String>()));
             let written = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
