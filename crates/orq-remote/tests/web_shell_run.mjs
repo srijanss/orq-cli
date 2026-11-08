@@ -68,7 +68,7 @@ try {
       const proceed = target.dispatchEvent(event);
       if (step.press === "Tab" && proceed) {
         // The browser's own Tab move, for the case the page lets it happen.
-        const items = [...window.document.querySelectorAll("a[href], button")];
+        const items = [...window.document.querySelectorAll("a[href], button:not([data-rail-button])")];
         const at = items.indexOf(target);
         const next = items[(at + (step.shift ? -1 : 1) + items.length) % items.length];
         next.focus();

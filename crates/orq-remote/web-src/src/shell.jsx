@@ -3,6 +3,7 @@
 // drawer that behaves like a dialog (Escape, scrim or close button close it, focus is trapped and
 // returned, page scroll is locked); on a desktop the same sidebar collapses to an icon rail.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
 
@@ -10,16 +11,16 @@ import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./
 const PHONE_QUERY = "(max-width: 700px)";
 
 export function navigationEntries(projectId) {
-  const entries = [{ label: "Dashboard", icon: "▦", href: "/dashboard" }];
+  const entries = [{ label: "Dashboard", icon: "home", href: "/dashboard" }];
   if (typeof projectId === "string" && projectId !== "") {
     const base = `/projects/${encodeURIComponent(projectId)}`;
     entries.push(
-      { label: "Features", icon: "✦", href: `${base}/features` },
-      { label: "Orchestrations", icon: "⇄", href: `${base}/orchestrations` },
-      { label: "Reviews", icon: "✔", href: `${base}/reviews` },
+      { label: "Features", icon: "flag", href: `${base}/features` },
+      { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
+      { label: "Reviews", icon: "doc", href: `${base}/reviews` },
     );
   }
-  entries.push({ label: "Settings", icon: "⚙", href: "/settings" });
+  entries.push({ label: "Settings", icon: "gear", href: "/settings" });
   return entries;
 }
 
@@ -50,7 +51,7 @@ export function Shell({ projectId = null, children }) {
         return;
       }
       if (event.key !== "Tab" || !panel.current) return;
-      const items = [...panel.current.querySelectorAll("a[href], button")];
+      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button])")];
       if (items.length === 0) return;
       const first = items[0];
       const last = items[items.length - 1];
@@ -87,18 +88,24 @@ export function Shell({ projectId = null, children }) {
     <div className={classes} data-shell>
       <header className="topbar">
         <button type="button" ref={menuButton} data-menu-button aria-expanded={drawerOpen ? "true" : "false"} aria-controls="sidebar" aria-label="Menu" onClick={() => setDrawerOpen(true)}>
-          ☰
+          <Icon name="menu" />
         </button>
-        <button type="button" className="rail-button" data-rail-button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-pressed={collapsed ? "true" : "false"} onClick={() => setCollapsed(!collapsed)}>
-          {collapsed ? "»" : "«"}
-        </button>
-        <ThemeToggle />
+        <span className="brand"><Icon name="logo" size={24} />Orq</span>
       </header>
       {drawerOpen ? <div className="scrim" data-scrim onClick={() => setDrawerOpen(false)} /> : null}
       <aside id="sidebar" className="sidebar" ref={panel} role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen ? "true" : undefined} aria-label="Navigation">
         <button type="button" ref={closeButton} className="close-button" data-close-button aria-label="Close menu" onClick={() => setDrawerOpen(false)}>
-          ✕
+          <Icon name="close" />
         </button>
+        <div className="sidebar-head">
+          <span className="brand" data-brand>
+            <Icon name="logo" size={24} />
+            <span className="label">Orq</span>
+          </span>
+          <button type="button" className="rail-button" data-rail-button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-pressed={collapsed ? "true" : "false"} onClick={() => setCollapsed(!collapsed)}>
+            <Icon name={collapsed ? "chevronsRight" : "chevronsLeft"} />
+          </button>
+        </div>
         <nav>
           {entries.map((entry) => (
             <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
@@ -109,11 +116,14 @@ export function Shell({ projectId = null, children }) {
                 setDrawerOpen(false);
               }}
             >
-              <span aria-hidden="true">{entry.icon}</span>
+              <Icon name={entry.icon} />
               <span className="label">{entry.label}</span>
             </a>
           ))}
         </nav>
+        <div className="sidebar-foot">
+          <ThemeToggle />
+        </div>
       </aside>
       <div className="content">{children}</div>
     </div>

@@ -66,10 +66,10 @@ function snapshot() {
     const own = [...node.childNodes].filter((child) => child.nodeType === 3).map((child) => child.data).join("");
     if (own) texts.push(own);
     if (node.tagName === "INPUT") inputs.push({ type: node.type, value: node.value, autocomplete: node.autocomplete });
-    if (node.tagName === "BUTTON") buttons.push(node.textContent);
+    if (node.tagName === "BUTTON" && !node.hasAttribute("data-refresh")) buttons.push(node.textContent);
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
-  return { theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -108,7 +108,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     } else if (step.back) {
       window.history.back();
     } else {
-      all(step.click)[step.index || 0].click();
+      all(step.click).filter((el) => !el.hasAttribute("data-refresh"))[step.index || 0].click();
     }
     const sync = snapshot();
     await settle();

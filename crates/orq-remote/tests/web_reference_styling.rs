@@ -97,7 +97,8 @@ fn an_explicit_theme_on_the_page_overrides_the_device_setting_both_ways() {
 
 fn harness(steps: Value) -> Value {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": steps});
+    let reply = json!({"status": 200, "json": {"reviews": []}});
+    let scenario = json!({"responses": [reply.clone(), reply], "steps": steps});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     serde_json::from_slice(&output.stdout).unwrap()
@@ -113,4 +114,42 @@ fn the_sign_in_screen_and_the_signed_in_page_both_offer_a_theme_toggle_that_flip
     assert_eq!(themes, ["", "light", "dark", "dark", "light"], "{out}");
     assert_eq!(out["frames"][0]["settled"]["toggles"], 1, "{out}");
     assert_eq!(out["frames"][3]["settled"]["toggles"], 1, "one toggle after signing in, not two: {out}");
+}
+
+#[test]
+fn the_sidebar_carries_the_brand_the_collapse_control_icons_and_the_theme_switch_like_the_reference() {
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let out = Command::new("node").arg(format!("{dir}/tests/web_shell_structure.mjs")).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let shape: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(shape["brand"], "Orq", "{shape}");
+    assert_eq!(shape["railInSidebar"], true, "the collapse chevron sits in the sidebar header: {shape}");
+    assert_eq!(shape["themeInSidebar"], true, "{shape}");
+    assert_eq!(shape["linksWithIcon"], shape["links"], "every destination has an svg icon: {shape}");
+    assert_eq!(shape["iconsHidden"], true, "icons are decoration only: {shape}");
+}
+
+#[test]
+fn the_top_bar_is_only_for_phones() {
+    let css = css();
+    assert!(block(&css, ".topbar {").contains("display: none"), "no empty bar above the desktop layout");
+    let phone = &css[css.find("@media (max-width: 700px)").unwrap()..];
+    assert!(phone.contains(".topbar { display: flex"), "the phone keeps the bar for its menu button");
+}
+
+#[test]
+fn the_inbox_has_a_page_header_with_title_subtitle_and_a_refresh_that_reloads() {
+    if !web_deps::ready() {
+        return;
+    }
+    let out = harness(json!([{"submit": "typed-token-0123456789abcdef0123456789"}, {"nav": "[data-refresh]"}]));
+    let settled = &out["frames"][1]["settled"];
+    let texts: Vec<&str> = settled["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
+    assert!(texts.contains(&"Reviews") && texts.contains(&"Code reviews and agent reports"), "{texts:?}");
+    assert_eq!(settled["refreshButtons"], 1, "{out}");
+    assert_eq!(out["frames"][2]["settled"]["refreshButtons"], 1, "{out}");
+    assert!(out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().any(|t| t == "No reviews in the inbox."), "the list is loaded again: {out}");
 }

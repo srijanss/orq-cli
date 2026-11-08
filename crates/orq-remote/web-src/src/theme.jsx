@@ -1,6 +1,7 @@
 // A light/dark switch that lives only in the page: it sets an attribute on the document and
 // stores nothing and sends nothing. Without a choice the stylesheet follows the device setting.
 import { useState } from "react";
+import { Icon } from "./icons.jsx";
 
 function deviceTheme() {
   if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
@@ -22,7 +23,7 @@ export function ThemeToggle() {
         setTheme(next);
       }}
     >
-      {theme === "dark" ? "☀" : "☾"}
+      <Icon name={theme === "dark" ? "sun" : "moon"} />
     </button>
   );
 }

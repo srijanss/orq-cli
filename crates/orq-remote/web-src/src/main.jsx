@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
+import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
@@ -200,7 +201,24 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
   return draw(state.data);
 }
 
+function PageHeader({ title, subtitle, onRefresh }) {
+  return (
+    <header className="page-header">
+      <div>
+        <h1>{title}</h1>
+        <p className="subtitle">{subtitle}</p>
+      </div>
+      {onRefresh ? (
+        <button type="button" className="icon-button" data-refresh aria-label="Refresh" title="Refresh" onClick={onRefresh}>
+          <Icon name="refresh" />
+        </button>
+      ) : null}
+    </header>
+  );
+}
+
 function SignedIn({ token, onSignedOut }) {
+  const [reloads, setReloads] = useState(0);
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
@@ -210,7 +228,12 @@ function SignedIn({ token, onSignedOut }) {
     const path = API_REVIEWS + "/" + encodeURIComponent(runId);
     return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} />} onSignedOut={onSignedOut} />;
   }
-  return <Loaded key={API_REVIEWS} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />;
+  return (
+    <>
+      <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={() => setReloads(reloads + 1)} />
+      <Loaded key={API_REVIEWS + "#" + reloads} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />
+    </>
+  );
 }
 
 function App() {

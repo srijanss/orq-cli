@@ -64,7 +64,7 @@ fn the_phone_drawer_opens_locks_scroll_and_traps_focus() {
     assert_eq!(open["bodyOverflow"], "hidden", "page scroll is locked: {out}");
     assert_eq!(open["focus"], "close", "focus moves into the drawer: {out}");
     // Shift+Tab from the first control wraps to the last, and Tab from the last wraps back.
-    assert_eq!(out["frames"][2]["focus"], "link:Settings", "{out}");
+    assert_eq!(out["frames"][2]["focus"], "button", "the theme switch is the last control: {out}");
     assert_eq!(out["frames"][3]["focus"], "close", "{out}");
 }
 
