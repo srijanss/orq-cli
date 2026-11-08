@@ -77,9 +77,19 @@ impl StoreProjects {
     }
 }
 
+/// Failures older than this are not counted as needing attention; the API states it with the count.
+pub const FAILED_WINDOW_HOURS: u64 = 24;
+
+#[derive(Clone, Copy, Default)]
+struct RunCounts {
+    active: usize,
+    failed: usize,
+}
+
 struct Counts {
     features: usize,
     active_runs: usize,
+    failed_runs: usize,
     reviews_waiting: usize,
 }
 
@@ -102,24 +112,24 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let list = discover(&self.scan_root)
             .into_iter()
             .map(|project| match counts(&project, reviews.as_ref(), &active) {
-                Ok(counts) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active_runs, "reviews_waiting": counts.reviews_waiting}),
-                Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null}),
+                Ok(counts) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active_runs, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
+                Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null, "failed_runs": null, "failed_window_hours": FAILED_WINDOW_HOURS}),
             })
             .collect::<Vec<_>>();
         Ok(serde_json::Value::Array(list))
     }
 }
 
-fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &Result<std::collections::HashMap<String, usize>, String>) -> Result<Counts, String> {
+fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &Result<std::collections::HashMap<String, RunCounts>, String>) -> Result<Counts, String> {
     let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
     let key = orq_git::project_id(&git);
     let features = ledger_entries(&orq_features::ledger_path(&git))?;
-    let active_runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or(0);
+    let runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or_default();
     let reviews_waiting = match reviews {
         Some(store) => waiting_reviews(store, &key)?,
         None => 0,
     };
-    Ok(Counts { features, active_runs, reviews_waiting })
+    Ok(Counts { features, active_runs: runs.active, failed_runs: runs.failed, reviews_waiting })
 }
 
 /// The runs of `project` whose latest report is still waiting on a human: no lifecycle recorded for
@@ -149,8 +159,9 @@ fn waiting_reviews(store: &orq_core::store::Store, project: &str) -> Result<usiz
 
 /// Active runs per project id, read in one pass over the run store. A record or event log that
 /// cannot be read has no known owner, so no project's count can be trusted and this is an error.
-fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::collections::HashMap<String, usize>, String> {
+fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::collections::HashMap<String, RunCounts>, String> {
     use orq_orchestrator::{RunPhase, StoreError};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let mut counts = std::collections::HashMap::new();
     for run_id in runs.run_ids().map_err(|error| format!("{error:?}"))? {
         let record = match runs.load(&run_id) {
@@ -159,11 +170,21 @@ fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::coll
             Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
         };
         let events = runs.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
-        if matches!(orq_orchestrator::summarize_run(&events).phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused) {
-            *counts.entry(record.project_id).or_insert(0) += 1;
+        let entry: &mut RunCounts = counts.entry(record.project_id).or_default();
+        match orq_orchestrator::summarize_run(&events).phase {
+            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused => entry.active += 1,
+            RunPhase::Failed if failed_recently(&events, now) => entry.failed += 1,
+            _ => {}
         }
     }
     Ok(counts)
+}
+
+/// Whether the run's last event is no older than the window. An event with no readable time, or one
+/// from the future, is not counted.
+fn failed_recently(events: &[orq_orchestrator::Event], now: u64) -> bool {
+    let Some(at) = events.last().and_then(|event| orq_orchestrator::parse_rfc3339(&event.occurred_at)) else { return false };
+    at <= now && now - at <= FAILED_WINDOW_HOURS * 3600
 }
 
 /// The most a feature ledger may weigh before the server refuses to read it.

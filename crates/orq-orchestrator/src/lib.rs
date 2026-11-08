@@ -86,7 +86,7 @@ pub use resume::{
     record_inherited_implement, run_members,
     supersede_paused, ResumePlan,
 };
-pub use retention_facts::{collect_run_facts, collect_run_facts_for};
+pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{
     draft_review_description, issue_number, link_issue, DraftSession, DraftSource, ReviewDraft,
 };
