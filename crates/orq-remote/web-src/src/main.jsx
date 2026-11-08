@@ -188,6 +188,8 @@ function NotFound() {
   );
 }
 
+const REFRESH_MS = 30000;
+
 function checkedTime() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -195,8 +197,24 @@ function checkedTime() {
 function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
+  // True while a request of this page is waiting, so a refresh never starts on top of it.
+  const busy = useRef(false);
+  // About every 30 seconds, and as soon as the tab is shown again, ask once more; a hidden tab or a
+  // request still waiting is left alone. Leaving the page stops it.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible" && !busy.current) setAttempt((count) => count + 1);
+    };
+    const timer = setInterval(refresh, REFRESH_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
   useEffect(() => {
     let current = true;
+    busy.current = true;
     // Leaving the page (or asking again) cancels the request, so nothing outlives its screen.
     const controller = new AbortController();
     const fail = (kind) => setState((previous) => ({ kind, data: previous.data, checked: checkedTime() }));
@@ -225,9 +243,11 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
         }
         if (!current) return;
         if (data === null) fail("error");
-        else setState({ kind: "ready", data });
+        else setState({ kind: "ready", data, checked: checkedTime() });
       } catch (failure) {
         if (current) fail("disconnected");
+      } finally {
+        if (current) busy.current = false;
       }
     })();
     return () => {
@@ -248,7 +268,14 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
     );
   }
   if (state.kind === "ready") {
-    return draw(state.data);
+    return (
+      <>
+        {draw(state.data)}
+        <p className="last-checked" data-last-checked>
+          Last checked {state.checked}
+        </p>
+      </>
+    );
   }
   return (
     <>

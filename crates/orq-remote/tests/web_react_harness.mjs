@@ -22,6 +22,15 @@ const dom = new JSDOM('<!doctype html><html><body><main id="app"><p>Loading the 
 const { window } = dom;
 const root = window.document.getElementById("app");
 
+// Intervals are faked so a test can fire them: {id, delay, active, run}. Only setInterval is faked;
+// React schedules its own work with other timers.
+const intervals = [];
+window.setInterval = (run, delay) => { intervals.push({ delay, active: true, run }); return intervals.length; };
+window.clearInterval = (id) => { if (intervals[id - 1]) intervals[id - 1].active = false; };
+let visibility = "visible";
+Object.defineProperty(window.document, "visibilityState", { get() { return visibility; } });
+Object.defineProperty(window.document, "hidden", { get() { return visibility === "hidden"; } });
+
 const requests = [];
 const held = {};
 const responses = [...scenario.responses];
@@ -74,7 +83,8 @@ function snapshot() {
   const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.value, options: [...el.options].map((o) => o.value) }));
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
   const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
-  return { sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  const checked = [...root.querySelectorAll("[data-last-checked]")].map((el) => el.textContent);
+  return { activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -105,6 +115,12 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       field.value = step.submit;
       all("button")[0].click();
       fieldAfter = field.value;
+    } else if (step.tick !== undefined) {
+      // The interval of that length fires once.
+      for (const interval of intervals.filter((i) => i.active && i.delay === step.tick)) interval.run();
+    } else if (step.visibility !== undefined) {
+      visibility = step.visibility;
+      window.document.dispatchEvent(new window.Event("visibilitychange"));
     } else if (step.release !== undefined) {
       held[step.release]();
     } else if (step.go !== undefined) {
