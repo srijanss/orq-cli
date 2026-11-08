@@ -83,6 +83,14 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
 
+    // The page holds nothing private, so it needs no token; it still needs an
+    // allowed peer. Anything else about the request goes to the handler below.
+    if matches!(method.as_str(), "GET" | "HEAD") && remote_inbox::peer_allowed(peer.ip()) {
+        if let Some(asset) = ASSETS.iter().find(|asset| asset.path == path) {
+            return asset_response(asset, method == "HEAD");
+        }
+    }
+
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
@@ -104,6 +112,36 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+}
+
+/// A file compiled into the binary and the exact path it is served at.
+struct Asset {
+    path: &'static str,
+    content_type: &'static str,
+    body: &'static str,
+}
+
+/// The whole set of files the page path can ever serve. No request path is
+/// ever joined to a directory, so nothing outside this list can be read.
+const ASSETS: [Asset; 3] = [
+    Asset { path: "/", content_type: "text/html; charset=utf-8", body: include_str!("../web/index.html") },
+    Asset { path: "/app.js", content_type: "text/javascript; charset=utf-8", body: include_str!("../web/app.js") },
+    Asset { path: "/app.css", content_type: "text/css; charset=utf-8", body: include_str!("../web/app.css") },
+];
+
+/// Only same-origin scripts, styles and requests; no inline code, framing,
+/// form posts or base tag.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
+
+fn asset_response(asset: &Asset, head_only: bool) -> Response {
+    let body = if head_only { String::new() } else { asset.body.to_string() };
+    let mut response = (StatusCode::OK, body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(asset.content_type));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CONTENT_SECURITY_POLICY));
     response
 }
 
