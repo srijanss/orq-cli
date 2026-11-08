@@ -112,3 +112,15 @@ fn switching_project_never_shows_the_other_projects_features_loaded_or_late() {
     let late = shown(&out["frames"][3]);
     assert!(late.iter().any(|t| t == "beta-only") && !late.iter().any(|t| t == "alpha-late"), "{late:?}");
 }
+
+#[test]
+fn an_answer_that_finishes_after_switching_project_is_ignored() {
+    // The status arrives, then the body is held: aborting does not reject it, so it really does finish late.
+    let held = json!({"hold": "json", "status": 200, "json": {"features": [feature("alpha-late", "pending", Value::Null, json!([]))]}});
+    let Some(out) = run("/projects/alpha/features", json!([held, projects(), ledger_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
+    assert_eq!(out["requests"][2]["url"], "/api/projects/beta/features", "{out}");
+    let late = shown(&out["frames"][3]);
+    assert!(late.iter().any(|t| t == "beta-only"), "{late:?}");
+    assert!(!late.iter().any(|t| t == "alpha-late"), "a late answer from the other project was drawn: {late:?}");
+    assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
+}
