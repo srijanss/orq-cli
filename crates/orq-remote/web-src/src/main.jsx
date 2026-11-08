@@ -402,24 +402,49 @@ function parseOrchestrations(data) {
   return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? data.runs : null;
 }
 
-// The runs as the server ordered them. A state the page does not know is "Unknown", never a success.
+// Needs-attention first when sorted by state; a state the page does not know goes last.
+const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "merged"];
+
+function byState(runs) {
+  const rank = (run) => {
+    const at = STATE_ORDER.indexOf(run.state);
+    return at === -1 ? STATE_ORDER.length : at;
+  };
+  // Array.prototype.sort is stable, so runs of one state keep the server's newest-first order.
+  return [...runs].sort((a, b) => rank(a) - rank(b));
+}
+
+// The runs as the server ordered them (newest first), or grouped by state when asked. A state the
+// page does not know is "Unknown", never a success.
 function OrchestrationList({ runs }) {
+  const [sort, setSort] = useState("newest");
   if (runs.length === 0) {
     return <p>No runs in this project yet.</p>;
   }
+  const running = runs.filter((run) => run.state === "running").length;
+  const shown = sort === "state" ? byState(runs) : runs;
+  const choices = [["newest", "Newest first"], ["state", "By state"]];
   return (
-    <ul>
-      {runs.map((run) => (
-        <li key={run.run_id} className="run card">
-          <strong>{run.feature}</strong>
-          <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
-          {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
-          <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
-          {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
-          {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
-        </li>
-      ))}
-    </ul>
+    <>
+      <p>{runs.length + (runs.length === 1 ? " run" : " runs") + " · " + running + " running"}</p>
+      <div role="group" aria-label="Sort runs">
+        {choices.map(([key, label]) => (
+          <button key={key} type="button" data-sort={key} aria-pressed={sort === key} onClick={() => setSort(key)}>{label}</button>
+        ))}
+      </div>
+      <ul>
+        {shown.map((run) => (
+          <li key={run.run_id} className="run card">
+            <strong>{run.feature}</strong>
+            <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+            {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
+            <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
+            {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
+            {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
