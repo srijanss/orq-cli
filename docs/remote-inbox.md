@@ -14,15 +14,17 @@ or set `ORQ_REMOTE_CONTROL=1` in the environment. With it off, the command refus
 
 ## 2. Create the token file
 
-The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads:
+The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads. The new token goes into a fresh file (mode 600, made by the command below) that is then renamed over `remote-token`, so a token file that already exists, with loose permissions or as a symlink, is replaced and never written through:
 
 ```sh
 (
   umask 077
   config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/orq"
   mkdir -p "$config_dir"
-  head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$config_dir/remote-token"
-  chmod 600 "$config_dir/remote-token"
+  tmp="$(mktemp "$config_dir/remote-token.XXXXXX")"
+  head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$config_dir/remote-token"
 )
 ```
 

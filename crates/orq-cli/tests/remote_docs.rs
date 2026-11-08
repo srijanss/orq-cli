@@ -59,7 +59,7 @@ fn the_token_is_created_private_from_the_start_in_the_directory_the_server_reads
     let guide = guide();
     let steps: Vec<&str> = guide.lines().map(str::trim).collect();
     let position = |needle: &str| steps.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("the guide shows {needle}"));
-    assert!(position("umask 077") < position("> \"$config_dir/remote-token\""), "umask comes before the file is written");
+    assert!(position("umask 077") < position("> \"$tmp\""), "umask comes before the file is written");
     assert!(guide.contains("${XDG_CONFIG_HOME:-$HOME/.config}/orq"), "the directory follows XDG_CONFIG_HOME like the server");
     assert!(!guide.contains("> ~/.config/orq/remote-token"), "no hard-coded directory is written to");
 }
@@ -70,4 +70,14 @@ fn the_phone_sequence_listens_on_the_tailscale_address() {
     assert!(guide.contains("tailscale ip -4"), "the guide shows how to find the address");
     let listening = guide.lines().map(str::trim).any(|line| line.starts_with("orq remote serve") && line.contains("--listen") && !line.contains("127.0.0.1"));
     assert!(listening, "a documented serve command listens on a non-loopback address");
+}
+
+#[test]
+fn the_token_is_written_to_a_fresh_file_and_renamed_over_the_old_one() {
+    let guide = guide();
+    let lines: Vec<&str> = guide.lines().map(str::trim).collect();
+    let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("the guide shows {needle}"));
+    assert!(at("mktemp") < at("mv -f"), "a fresh file is made before it replaces the token");
+    assert!(lines[at("mktemp")].contains("$config_dir/"), "the fresh file is in the config directory");
+    assert!(!guide.contains("> \"$config_dir/remote-token\""), "the token is never written through the existing path");
 }
