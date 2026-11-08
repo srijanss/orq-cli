@@ -135,7 +135,14 @@ fn log_refusal(peer: std::net::IpAddr, method: &str, path: &str) {
     if !allowed {
         return;
     }
+    eprintln!("{}", refusal_line(peer, method, path));
+}
+
+/// One log line for a refused request: the peer, the method and a bounded,
+/// escaped path, on a single line. It takes no header, so no credential can
+/// reach it.
+pub fn refusal_line(peer: std::net::IpAddr, method: &str, path: &str) -> String {
     let shown: String = path.chars().take(100).flat_map(char::escape_default).collect();
     let method: String = method.chars().take(16).flat_map(char::escape_default).collect();
-    eprintln!("orq-remote: refused {peer} {method} {shown}");
+    format!("orq-remote: refused {peer} {method} {shown}")
 }
