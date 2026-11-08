@@ -24,7 +24,7 @@ export function navigationEntries(projectId) {
   return entries;
 }
 
-export function Shell({ projectId = null, children }) {
+export function Shell({ projectId = null, projects = null, children }) {
   const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -51,7 +51,7 @@ export function Shell({ projectId = null, children }) {
         return;
       }
       if (event.key !== "Tab" || !panel.current) return;
-      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button])")];
+      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button]), select")];
       if (items.length === 0) return;
       const first = items[0];
       const last = items[items.length - 1];
@@ -106,6 +106,16 @@ export function Shell({ projectId = null, children }) {
             <Icon name={collapsed ? "chevronsRight" : "chevronsLeft"} />
           </button>
         </div>
+        {projectId !== null && projects !== null && projects.length > 0 ? (
+          <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId} onChange={(event) => navigate("/projects/" + encodeURIComponent(event.target.value) + "/" + (path.split("/")[3] || "reviews"))}>
+            {projects.some((project) => project.id === projectId) ? null : <option value={projectId}>{projectId}</option>}
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <nav>
           {entries.map((entry) => (
             <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {

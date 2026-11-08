@@ -150,6 +150,23 @@ function Detail({ report }) {
 // error banner, both with a retry and both keeping what was already loaded, marked Outdated.
 // 404 and 403 give the same generic Not found screen. A slow answer for a page that is no
 // longer showing is dropped.
+// The one request the page makes: a GET of a fixed same-origin path with the token in a header.
+function get(path, token, signal) {
+  return fetch(path, { method: "GET", headers: { Authorization: "Bearer " + token }, cache: "no-store", referrerPolicy: "no-referrer", signal });
+}
+
+function NotFound() {
+  return (
+    <div className="card not-found">
+      <h2>Not found</h2>
+      <p>This page does not exist or is not available to you.</p>
+      <button type="button" onClick={() => navigate("/")}>
+        Back to the list
+      </button>
+    </div>
+  );
+}
+
 function checkedTime() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -165,13 +182,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
     setState((previous) => (previous.data === null ? { kind: "loading", data: null } : previous));
     (async () => {
       try {
-        const response = await fetch(path, {
-          method: "GET",
-          headers: { Authorization: "Bearer " + token },
-          cache: "no-store",
-          referrerPolicy: "no-referrer",
-          signal: controller.signal,
-        });
+        const response = await get(path, token, controller.signal);
         if (!current) return;
         if (response.status === 401) {
           onSignedOut();
@@ -204,15 +215,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
     };
   }, [token, path, attempt, reloads]);
   if (state.kind === "notfound") {
-    return (
-      <div className="card not-found">
-        <h2>Not found</h2>
-        <p>This page does not exist or is not available to you.</p>
-        <button type="button" onClick={() => navigate("/")}>
-          Back to the list
-        </button>
-      </div>
-    );
+    return <NotFound />;
   }
   if (state.kind === "loading") {
     return (
@@ -301,9 +304,15 @@ function PageHeader({ title, subtitle, onRefresh }) {
   );
 }
 
-function SignedIn({ token, onSignedOut }) {
+function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   const [reloads, setReloads] = useState(0);
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
+  if (projectId !== null && projects !== null && !projects.some((project) => project.id === projectId)) {
+    return <NotFound />;
+  }
+  if (projectId !== null) {
+    return <p>This page is not available yet.</p>;
+  }
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
   }
@@ -328,6 +337,50 @@ function SignedIn({ token, onSignedOut }) {
   );
 }
 
+// Which project the address names, and the list of projects the sidebar switches between. The list
+// is read only inside a project, and a list that cannot be read just hides the switcher.
+function Scoped({ token, onSignedOut }) {
+  const path = useSyncExternalStore(subscribeToLocation, currentPath);
+  const [projects, setProjects] = useState(null);
+  const match = /^\/projects\/([^/]+)/.exec(path);
+  let named = null;
+  try {
+    named = match ? decodeURIComponent(match[1]) : null;
+  } catch (malformed) {
+    named = null;
+  }
+  const inProject = named !== null;
+  useEffect(() => {
+    if (!inProject) return undefined;
+    let current = true;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get(API_PROJECTS, token, controller.signal);
+        if (!current) return;
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        const list = response.ok ? parseProjects(await response.json()) : null;
+        if (current) setProjects(list);
+      } catch (failure) {
+        if (current) setProjects(null);
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [token, inProject]);
+  const known = projects !== null && projects.some((project) => project.id === named);
+  return (
+    <Shell projectId={projects === null || known ? named : null} projects={projects}>
+      <SignedIn token={token} onSignedOut={onSignedOut} projectId={named} projects={projects} />
+    </Shell>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(null);
   const [message, setMessage] = useState("");
@@ -339,9 +392,7 @@ function App() {
     setMessage(SIGN_IN_FAILED);
   };
   return (
-    <Shell>
-      <SignedIn token={token} onSignedOut={signedOut} />
-    </Shell>
+    <Scoped token={token} onSignedOut={signedOut} />
   );
 }
 

@@ -31,7 +31,7 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
     }
     // There is one fetch, and it takes the path it is given.
     assert_eq!(code.matches("fetch(").count(), 1);
-    assert!(code.contains("fetch(path,"), "the one fetch takes a path");
+    assert!(code.contains("fetch(path,") && code.contains("get(path, token"), "the one fetch takes a path");
     // Every path is a fixed same-origin one, plus an encoded run id, with no query string.
     for call in code.split("<Loaded ").skip(1) {
         let target: String = call.split("path={").nth(1).unwrap().chars().take_while(|c| *c != '}').collect();
@@ -64,7 +64,7 @@ fn a_401_clears_the_token_and_asks_again_with_one_message_that_blames_neither_si
     for blamed in ["wrong", "invalid", "incorrect", "expired", "network", "offline", "unreachable", "timeout"] {
         assert!(!lower.contains(blamed), "the message says {blamed}: {message}");
     }
-    assert_eq!(code.matches("onSignedOut()").count(), 1, "used for a 401 only");
+    assert_eq!(code.matches("onSignedOut()").count(), 2, "used for a 401 on a page and on the project list, never for a failed request");
 }
 
 #[test]
