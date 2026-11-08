@@ -141,8 +141,24 @@ fn token_matches(expected: &str, header: Option<&str>) -> bool {
     given.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
 }
 
+/// What the server supplies to answer `/api/projects`. Peer, token and method are checked here
+/// before it is asked, so a provider never sees a request that was refused.
+pub trait ProjectsProvider {
+    /// The projects as JSON, or why they cannot be listed.
+    fn projects(&self) -> Result<Value, String>;
+}
+
 pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
-    let mut response = route(roots, config, project_id, project_name, request);
+    answer(roots, config, project_id, project_name, request, None)
+}
+
+/// Like [`handle`], and `/api/projects` is answered by `provider`.
+pub fn handle_with(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: &dyn ProjectsProvider) -> Response {
+    answer(roots, config, project_id, project_name, request, Some(provider))
+}
+
+fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
+    let mut response = route(roots, config, project_id, project_name, request, provider);
     if request.method == "HEAD" {
         // Same status as GET, never a body.
         response.body = Value::Null;
@@ -150,7 +166,7 @@ pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, pro
     response
 }
 
-fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
+fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
     // A stranger's address and a bad token are refused identically, so a
     // caller learns nothing about which check failed.
     if !peer_allowed(request.peer) || !token_matches(&config.token, request.authorization) {
@@ -160,6 +176,15 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return error(405, "this view is read-only");
     }
     let path = request.path;
+    if path == "/api/projects" {
+        return match provider {
+            Some(provider) => match provider.projects() {
+                Ok(projects) => reply(200, json!({ "projects": projects })),
+                Err(why) => error(500, &why),
+            },
+            None => error(404, "not found"),
+        };
+    }
     if path == "/api/reviews" {
         return list(roots, project_id, project_name);
     }
