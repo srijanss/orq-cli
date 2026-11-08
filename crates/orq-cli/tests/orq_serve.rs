@@ -40,16 +40,24 @@ fn start(root: &Path, repo: &Path) -> Running {
     let mut child = command.spawn().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut running = Running { child, addr: String::new(), printed: String::new() };
-    let mut lines = std::io::BufReader::new(stdout).lines();
+    // Read on a worker so a stalled start cannot hang the test: every wait is bounded, and on a
+    // timeout the guard above kills and reaps the child.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
     // The address line comes first; the guidance on reading the token follows it.
-    let first = lines.next().expect("the server printed nothing").unwrap();
+    let first = receiver.recv_timeout(WAIT).expect("the server did not announce its address in time");
     running.addr = first.trim().rsplit("http://").next().unwrap().to_string();
     running.printed = first;
     for _ in 0..2 {
-        if let Some(Ok(line)) = lines.next() {
-            running.printed.push('\n');
-            running.printed.push_str(&line);
-        }
+        let line = receiver.recv_timeout(WAIT).unwrap_or_else(|_| panic!("the server stopped printing its guidance: {}", running.printed));
+        running.printed.push('\n');
+        running.printed.push_str(&line);
     }
     running
 }
