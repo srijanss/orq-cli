@@ -300,6 +300,10 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
     let (first, after) = text.split_once('\n').unwrap_or((text, ""));
     let first = first.trim();
     if first == "OK" {
+        // Read up to the limit with no line end seen, the line may go on past it ("OK tests are failing").
+        if after.is_empty() && !text.contains('\n') && bytes.len() as u64 >= MARKER_READ_LIMIT {
+            return Some(Marker::Problem("its finish marker holds more than orq reads, and its first line is cut".to_string()));
+        }
         let notes = clean(after);
         return Some(Marker::Finished { notes: (!notes.is_empty()).then_some(notes) });
     }

@@ -462,3 +462,20 @@ fn a_problem_or_a_failed_stage_records_no_notes_and_a_bare_problem_says_it_had_n
     assert!(outcome.success, "{outcome:?}");
     assert!(notes_events(&store).is_empty());
 }
+
+#[test]
+fn a_first_line_cut_by_the_read_limit_right_after_ok_is_not_taken_as_ok() {
+    let (store, root) = setup("cut-after-ok");
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "head -c 4094 /dev/zero | tr '\\0' ' ' > {m}; printf 'OK tests are failing' >> {m}; sleep 30",
+        m = marker.display()
+    );
+    let args = args(&script);
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(stage_failure_reason(&store).contains("more than orq reads"));
+    assert!(notes_events(&store).is_empty());
+}
