@@ -96,3 +96,25 @@ fn settings_need_the_token_and_only_read() {
     let (status, body) = ask(&s, "HEAD", Some("Bearer tok"));
     assert_eq!((status, body), (200, Value::Null));
 }
+
+#[test]
+fn inline_tables_give_the_same_settings_as_standard_tables() {
+    let standard = setup("settings-std", Some("[implementer]\nharness = \"claude\"\nmodel = \"opus\"\n[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n"));
+    let inline = setup("settings-inline", Some("implementer = { harness = \"claude\", model = \"opus\", token = \"SECRET\" }\n[models]\nopus = { harness = \"claude\", model = \"opus\" }\n"));
+    let (a, b) = (ask(&standard, "GET", Some("Bearer tok")), ask(&inline, "GET", Some("Bearer tok")));
+    assert_eq!(a, b);
+    assert_eq!(b.1["settings"]["implementer"]["model"], "opus", "{b:?}");
+    assert_eq!(b.1["settings"]["models"].as_array().unwrap().len(), 1, "{b:?}");
+}
+
+#[test]
+fn a_config_that_cannot_be_read_is_an_error_not_empty_settings() {
+    let dir = setup("settings-dir", None);
+    std::fs::create_dir(dir.1.config_file()).unwrap();
+    let (status, body) = ask(&dir, "GET", Some("Bearer tok"));
+    assert_eq!(status, 500, "{body}");
+    assert!(!body.to_string().contains(dir.1.config.to_str().unwrap()), "{body}");
+    let bytes = setup("settings-bytes", None);
+    std::fs::write(bytes.1.config_file(), [0xff, 0xfe, 0x00]).unwrap();
+    assert_eq!(ask(&bytes, "GET", Some("Bearer tok")).0, 500);
+}

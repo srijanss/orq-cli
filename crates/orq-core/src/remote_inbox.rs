@@ -227,10 +227,10 @@ pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
         Err(_) => return Err("the settings could not be read".to_string()),
     };
     let doc: toml_edit::DocumentMut = text.parse().map_err(|_| "the settings could not be read".to_string())?;
-    let field = |table: &toml_edit::Table, key: &str| table.get(key).and_then(|item| item.as_str()).map(|value| Value::String(crate::redact::redact(value))).unwrap_or(Value::Null);
-    let agent = |table: &toml_edit::Table| json!({"harness": field(table, "harness"), "model": field(table, "model"), "effort": field(table, "effort")});
-    let section = |name: &str| doc.get(name).and_then(|item| item.as_table()).map(agent).unwrap_or(Value::Null);
-    let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table()).map(|table| table.iter().filter_map(|(name, item)| item.as_table().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
+    let field = |table: &dyn toml_edit::TableLike, key: &str| table.get(key).and_then(|item| item.as_str()).map(|value| Value::String(crate::redact::redact(value))).unwrap_or(Value::Null);
+    let agent = |table: &dyn toml_edit::TableLike| json!({"harness": field(table, "harness"), "model": field(table, "model"), "effort": field(table, "effort")});
+    let section = |name: &str| doc.get(name).and_then(|item| item.as_table_like()).map(agent).unwrap_or(Value::Null);
+    let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table_like()).map(|table| table.iter().filter_map(|(name, item)| item.as_table_like().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
     Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models}))
 }
 
