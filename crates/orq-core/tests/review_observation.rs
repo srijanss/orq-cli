@@ -21,6 +21,7 @@ fn lifecycle(state: ProviderState, error: Option<&str>) -> ReviewLifecycle {
         gate: Gate::AwaitingHumanReview,
         stale: false,
         last_error: error.map(String::from),
+        observed: true,
     }
 }
 

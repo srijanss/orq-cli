@@ -31,7 +31,7 @@ fn seed(roots: &StorageRoots, url: &str) {
     }))
     .unwrap();
     store.save_review(&roots.data, "run-1", OURS, "COM-01", HEAD_A, &body).unwrap();
-    store.save_lifecycle("run-1", &ReviewLifecycle::associate("github", "7", url, HEAD_A)).unwrap();
+    store.save_lifecycle("run-1", &ReviewLifecycle::associate("github", "7", url, HEAD_A).apply(Ok(orq_core::review_lifecycle::Observation { state: orq_core::review_lifecycle::ProviderState::Open, head_sha: HEAD_A.into() }))).unwrap();
 }
 
 fn cfg() -> RemoteConfig {

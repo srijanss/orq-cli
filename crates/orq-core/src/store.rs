@@ -24,7 +24,7 @@ pub struct ReviewRecord {
 
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended.
-const MIGRATIONS: [&str; 4] = ["
+const MIGRATIONS: [&str; 5] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -62,6 +62,8 @@ const MIGRATIONS: [&str; 4] = ["
         run_id   TEXT    NOT NULL,
         begun_at INTEGER NOT NULL
     );
+", "
+    ALTER TABLE review_lifecycles ADD COLUMN observed INTEGER NOT NULL DEFAULT 0;
 "];
 
 pub struct Store {
@@ -199,7 +201,7 @@ impl Store {
         let error = lifecycle.last_error.as_deref().map(crate::redact::redact);
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO review_lifecycles (run_id, reported_head_sha, provider, review_id, url, state, gate, stale, observed_head_sha, last_error, last_checked) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT OR REPLACE INTO review_lifecycles (run_id, reported_head_sha, provider, review_id, url, state, gate, stale, observed_head_sha, last_error, last_checked, observed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     run_id,
                     lifecycle.reported_head_sha,
@@ -211,7 +213,8 @@ impl Store {
                     lifecycle.stale,
                     lifecycle.observed_head_sha,
                     error,
-                    checked
+                    checked,
+                    lifecycle.observed
                 ],
             )
             .map(drop)
@@ -221,7 +224,7 @@ impl Store {
     pub fn lifecycles_for_run(&self, run_id: &str) -> Result<Vec<ReviewLifecycle>> {
         let mut statement = self
             .conn
-            .prepare("SELECT provider, review_id, url, reported_head_sha, observed_head_sha, state, gate, stale, last_error FROM review_lifecycles WHERE run_id = ?1 ORDER BY last_checked, rowid")
+            .prepare("SELECT provider, review_id, url, reported_head_sha, observed_head_sha, state, gate, stale, last_error, observed FROM review_lifecycles WHERE run_id = ?1 ORDER BY last_checked, rowid")
             .map_err(db)?;
         let rows = statement
             .query_map(params![run_id], |row| {
@@ -237,6 +240,7 @@ impl Store {
                         gate: Gate::AwaitingHumanReview,
                         stale: row.get(7)?,
                         last_error: row.get(8)?,
+                        observed: row.get(9)?,
                     },
                     state,
                     gate,

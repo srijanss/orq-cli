@@ -184,6 +184,7 @@ fn pins_and_the_last_review_observation_are_carried() {
                 gate: Gate::AwaitingHumanReview,
                 stale: false,
                 last_error: None,
+                observed: true,
             },
         )
         .unwrap();

@@ -121,6 +121,8 @@ pub struct ReviewLifecycle {
     pub gate: Gate,
     pub stale: bool,
     pub last_error: Option<String>,
+    /// Whether a look at the provider has ever succeeded. An association alone proves nothing.
+    pub observed: bool,
 }
 
 impl ReviewLifecycle {
@@ -136,6 +138,7 @@ impl ReviewLifecycle {
             gate: Gate::AwaitingHumanReview,
             stale: false,
             last_error: None,
+            observed: false,
         }
     }
 
@@ -150,6 +153,7 @@ impl ReviewLifecycle {
             }
         };
         next.last_error = None;
+        next.observed = true;
         // A merge is final: a provider that later reports otherwise changes nothing.
         if self.state == ProviderState::Merged {
             return next;

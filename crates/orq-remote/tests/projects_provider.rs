@@ -101,7 +101,7 @@ fn only_reviews_still_awaiting_a_human_count_as_waiting() {
     let roots = roots(&base);
     let id = id_of(&repo);
     let store = Store::open(&roots.database()).unwrap();
-    let lifecycle = |head: &str, state, gate| ReviewLifecycle { provider: "github".into(), review_id: "1".into(), url: "https://github.com/o/r/pull/1".into(), reported_head_sha: head.into(), observed_head_sha: None, state, gate, stale: false, last_error: None };
+    let lifecycle = |head: &str, state, gate| ReviewLifecycle { provider: "github".into(), review_id: "1".into(), url: "https://github.com/o/r/pull/1".into(), reported_head_sha: head.into(), observed_head_sha: None, state, gate, stale: false, last_error: None, observed: true };
     for (run, head, lifecycle_to_save) in [
         ("waiting-none", 'a', None),
         ("waiting-open", 'b', Some(lifecycle(&"b".repeat(40), ProviderState::Open, Gate::AwaitingHumanReview))),

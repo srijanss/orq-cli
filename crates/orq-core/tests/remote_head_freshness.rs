@@ -110,3 +110,28 @@ fn a_link_that_is_not_plain_https_is_never_allowed_even_for_a_current_review() {
     let (d, _) = both(&r);
     assert_eq!((&d["freshness"], &d["link_allowed"], &d["link"]), (&json!("current"), &json!(false), &Value::Null), "{d}");
 }
+
+#[test]
+fn an_association_that_was_never_checked_is_unverified_whatever_it_stores() {
+    let r = roots("association-only", Some(associated(URL)));
+    let (d, l) = both(&r);
+    for body in [&d, &l] {
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+    }
+    assert_eq!(d["provider_head_sha"], Value::Null, "{d}");
+}
+
+#[test]
+fn a_lifecycle_that_cannot_be_read_is_unverified_and_allows_no_link() {
+    let r = roots("corrupt", Some(associated(URL).apply(seen(HEAD))));
+    damage_the_stored_state(&r);
+    let (d, l) = both(&r);
+    for body in [&d, &l] {
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+    }
+}
+
+fn damage_the_stored_state(roots: &StorageRoots) {
+    let conn = rusqlite::Connection::open(roots.database()).unwrap();
+    conn.execute("UPDATE review_lifecycles SET state = 'bogus'", []).unwrap();
+}

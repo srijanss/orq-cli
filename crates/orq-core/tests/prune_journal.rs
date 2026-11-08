@@ -22,6 +22,7 @@ fn lifecycle() -> ReviewLifecycle {
         gate: Gate::AwaitingHumanReview,
         stale: false,
         last_error: None,
+        observed: true,
     }
 }
 
@@ -85,7 +86,7 @@ fn a_version_three_database_is_upgraded_keeping_its_reviews() {
     store.save_review(&roots.data, "run-1", "p-0a1b2c3d", "F", &"a".repeat(40), br#"{"status":"current","risks":[]}"#).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("ALTER TABLE prune_journal RENAME TO prune_journal_old;").unwrap();
+    conn.execute_batch("ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed;").unwrap();
     conn.pragma_update(None, "user_version", 3).unwrap();
     drop(conn);
     let store = Store::open(&db).unwrap();

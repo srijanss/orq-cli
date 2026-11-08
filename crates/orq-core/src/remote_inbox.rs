@@ -410,9 +410,11 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
         // Never looked at the provider: not current, but not known to be out of date either.
         return Ok(Some(Facts { stale: false, ..unknown(project, head) }));
     };
-    let checked_at = store.lifecycle_checked_at(run_id, &head).ok().flatten().map(utc_text);
+    // A look whose time cannot be read is not evidence either.
+    let checked = store.lifecycle_checked_at(run_id, &head);
+    let checked_at = checked.as_ref().ok().copied().flatten().map(utc_text);
     // The newest look decides: a mismatch stays stale whatever came after; a failed look is unverified.
-    let freshness = if lifecycle.stale { "stale" } else if lifecycle.last_error.is_some() { "unverified" } else { "current" };
+    let freshness = if lifecycle.stale { "stale" } else if lifecycle.last_error.is_some() || !lifecycle.observed || checked_at.is_none() { "unverified" } else { "current" };
     let link = safe_link(&lifecycle.url).filter(|_| freshness == "current");
     let provider_head = match freshness {
         "current" => Some(head.clone()),
