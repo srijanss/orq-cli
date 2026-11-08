@@ -116,12 +116,13 @@ pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, St
             return Ok(false);
         }
     }
-    let count = |not: &str| -> Result<u64, String> {
-        let out = git_raw(repo, &["rev-list", "--count", "--end-of-options", &branch, &format!("^{not}")]).map_err(|e| failed(e.to_string()))?;
+    // Whether the branch has any commit `not` lacks: git stops at the first one it finds.
+    let has_commit_past = |not: &str| -> Result<bool, String> {
+        let out = git_raw(repo, &["rev-list", "--max-count=1", "--end-of-options", &branch, &format!("^{not}")]).map_err(|e| failed(e.to_string()))?;
         if !out.success {
             return Err(failed(out.stderr.trim().to_string()));
         }
-        out.stdout.trim().parse().map_err(|_| failed(format!("git printed {:?}", out.stdout.trim())))
+        Ok(!out.stdout.trim().is_empty())
     };
-    Ok(count(&record.base_sha)? > 0 && count(&target)? == 0)
+    Ok(has_commit_past(&record.base_sha)? && !has_commit_past(&target)?)
 }
