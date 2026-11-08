@@ -96,3 +96,25 @@ fn retrying_after_a_failed_refresh_replaces_the_old_data_and_clears_the_markers(
         assert_eq!(out["requests"][2]["headers"], out["requests"][0]["headers"], "{failure}");
     }
 }
+
+fn list_of(feature: &str) -> Value {
+    json!({"status": 200, "json": {"reviews": [{"run_id": "run-2", "feature": feature, "status": "approved", "stale": false}]}})
+}
+
+#[test]
+fn a_successful_retry_after_a_failed_refresh_replaces_the_old_data_and_clears_the_warnings() {
+    // A 503, a dropped connection and an unreadable body all leave the old data marked outdated.
+    for failure in [json!({"status": 503}), json!({"reject": true}), json!({"status": 200, "badjson": true})] {
+        let responses = json!([list(), failure.clone(), list_of("newer-feature")]);
+        let Some(first) = run(responses.clone(), json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}])) else { return };
+        let buttons = first["frames"][2]["settled"]["buttons"].as_array().unwrap().clone();
+        let retry = buttons.iter().position(|b| b == "Try again").unwrap_or_else(|| panic!("{failure}: no retry: {first}"));
+        assert!(shown(&first["frames"][2]).contains("Outdated") && shown(&first["frames"][2]).contains("alpha"), "{failure}: {first}");
+        let Some(out) = run(responses, json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}, {"click": "button", "index": retry}])) else { return };
+        let text = shown(&out["frames"][3]);
+        assert!(text.contains("newer-feature") && !text.contains("alpha"), "{failure}: the new data replaces the old: {text}");
+        assert!(!text.contains("Outdated") && !text.contains("Disconnected"), "{failure}: the warnings are gone: {text}");
+        assert!(!out["frames"][3]["settled"]["buttons"].as_array().unwrap().iter().any(|b| b == "Try again"), "{failure}: {out}");
+        assert_eq!(out["requests"][2]["headers"]["Authorization"], format!("Bearer {TOKEN}"), "{failure}: the retry reuses the held token");
+    }
+}
