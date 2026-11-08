@@ -59,8 +59,20 @@ impl RemoteConfig {
             let mut bytes = [0u8; 32];
             std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).map_err(|e| format!("cannot generate a remote token: {}", e.kind()))?;
             let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-            match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
-                Ok(mut file) => file.write_all(token.as_bytes()).map_err(|e| format!("cannot write the remote token file: {}", e.kind()))?,
+            // Written whole to a private temporary file, then linked into place without replacing
+            // anything: a reader sees the finished token or no file, never a partial one.
+            let temp = path.with_file_name(format!(".remote-token.{}.tmp", &token[..16]));
+            let written = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&temp)
+                .and_then(|mut file| file.write_all(token.as_bytes()).and_then(|()| file.sync_all()));
+            let published = written.and_then(|()| std::fs::hard_link(&temp, &path));
+            let _ = std::fs::remove_file(&temp);
+            match published {
+                Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(format!("cannot create the remote token file {}: {}", path.display(), e.kind())),
             }
