@@ -69,6 +69,25 @@ fn the_page_and_its_assets_are_served_without_a_token_with_safe_headers() {
 }
 
 #[test]
+fn the_token_free_page_is_only_for_get_and_head_from_an_allowed_peer() {
+    for peer in ["127.0.0.1", "::1", "100.64.0.1", "fd7a:115c:a1e0::1"] {
+        for (path, _) in ASSETS {
+            for method in ["GET", "HEAD"] {
+                assert!(orq_remote::page_asset(peer.parse().unwrap(), method, path).is_some(), "{peer} {method} {path}");
+            }
+            assert!(orq_remote::page_asset(peer.parse().unwrap(), "POST", path).is_none(), "{peer} POST {path}");
+        }
+    }
+    for peer in ["8.8.8.8", "192.168.1.5", "10.0.0.1", "100.63.255.255", "100.128.0.1", "2001:db8::1", "fd7a:115c:a1e1::1"] {
+        for (path, _) in ASSETS {
+            for method in ["GET", "HEAD"] {
+                assert!(orq_remote::page_asset(peer.parse().unwrap(), method, path).is_none(), "{peer} {method} {path} must be refused");
+            }
+        }
+    }
+}
+
+#[test]
 fn the_page_pulls_in_its_script_and_style_by_url_and_carries_no_inline_code() {
     let server = start("page");
     let page = request(server.addr(), "GET", "/", None).body;

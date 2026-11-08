@@ -85,10 +85,8 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
 
     // The page holds nothing private, so it needs no token; it still needs an
     // allowed peer. Anything else about the request goes to the handler below.
-    if matches!(method.as_str(), "GET" | "HEAD") && remote_inbox::peer_allowed(peer.ip()) {
-        if let Some(asset) = ASSETS.iter().find(|asset| asset.path == path) {
-            return asset_response(asset, method == "HEAD");
-        }
+    if let Some(asset) = page_asset(peer.ip(), &method, &path) {
+        return asset_response(asset, method == "HEAD");
     }
 
     // Reading storage is blocking work.
@@ -116,10 +114,20 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
 }
 
 /// A file compiled into the binary and the exact path it is served at.
-struct Asset {
-    path: &'static str,
-    content_type: &'static str,
-    body: &'static str,
+pub struct Asset {
+    pub path: &'static str,
+    pub content_type: &'static str,
+    pub body: &'static str,
+}
+
+/// The compiled-in file to serve without a token, if there is one: only for
+/// GET or HEAD, only from a peer allowed to connect, only on an exact path.
+/// Everything else is left to the handler, which refuses it.
+pub fn page_asset(peer: std::net::IpAddr, method: &str, path: &str) -> Option<&'static Asset> {
+    if !matches!(method, "GET" | "HEAD") || !remote_inbox::peer_allowed(peer) {
+        return None;
+    }
+    ASSETS.iter().find(|asset| asset.path == path)
 }
 
 /// The whole set of files the page path can ever serve. No request path is
