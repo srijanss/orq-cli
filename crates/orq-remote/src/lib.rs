@@ -107,29 +107,146 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         return asset_response(asset, method == "HEAD");
     }
 
-    // Reading storage is blocking work.
-    let result = tokio::task::spawn_blocking(move || {
-        let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
-        let state = &shared.state;
-        let reply = match &shared.projects {
-            Some(projects) => remote_inbox::handle_with(&state.roots, &state.config, &state.project_id, &state.project_name, &request, projects.as_ref()),
-            None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
-        };
-        if reply.status == 401 {
-            log_refusal(peer.ip(), request.method, request.path);
+    if method == "GET" {
+        let last_event_id = headers.get("last-event-id").and_then(|value| value.to_str().ok()).map(str::to_string);
+        if let Some((base, cursor)) = event_stream_target(&path, last_event_id.as_deref()) {
+            return follow(shared, peer, authorization, base, cursor).await;
         }
-        // Serializing a large report is work too, so it stays off the async workers.
-        let body = reply.body_bytes();
-        (reply.status, body)
-    })
-    .await;
-    let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-    let (code, body) = reply;
+    }
 
+    // Reading storage is blocking work.
+    let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &path, authorization.as_deref())).await;
+    let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    json_reply(reply.0, reply.1)
+}
+
+/// The handler's status and body as a JSON response that is never cached.
+fn json_reply(code: u16, body: Vec<u8>) -> Response {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = (status, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+}
+
+/// What the handler answers for one request: its status and body.
+fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>) -> (u16, Vec<u8>) {
+    let request = remote_inbox::Request { method, path, peer, authorization };
+    let state = &shared.state;
+    let reply = match &shared.projects {
+        Some(projects) => remote_inbox::handle_with(&state.roots, &state.config, &state.project_id, &state.project_name, &request, projects.as_ref()),
+        None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
+    };
+    if reply.status == 401 {
+        log_refusal(peer, request.method, request.path);
+    }
+    // Serializing a large report is work too, so it stays off the async workers.
+    (reply.status, reply.body_bytes())
+}
+
+/// How often a followed run is looked at again, and how long a quiet stream goes without a line.
+const FOLLOW_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+const FOLLOW_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `/api/projects/{id}/runs/{run}/events[/after/{event}]`: the timeline path to read, and the event to
+/// resume after (the address wins over `Last-Event-ID`). Nothing else is a stream.
+fn event_stream_target(path: &str, last_event_id: Option<&str>) -> Option<(String, Option<String>)> {
+    let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
+    let segments: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
+    let (project, run, cursor) = match segments.as_slice() {
+        ["api", "projects", project, "runs", run, "events"] => (project, run, last_event_id),
+        ["api", "projects", project, "runs", run, "events", "after", cursor] => (project, run, Some(*cursor)),
+        _ => return None,
+    };
+    // The cursor becomes a path segment again, so only a plain one is accepted.
+    let sound = |cursor: &str| plain(cursor) && !cursor.contains(['/', '?', '#', '\\']) && !cursor.chars().any(char::is_control);
+    if !plain(project) || !plain(run) || !cursor.map_or(true, sound) {
+        return None;
+    }
+    Some((format!("/api/projects/{project}/runs/{run}"), cursor.map(String::from)))
+}
+
+/// Answers a stream request: the handler's own refusal when it refuses, otherwise server-sent events,
+/// each carrying the event id so a dropped connection resumes after the last one seen.
+async fn follow(shared: Arc<Shared>, peer: SocketAddr, authorization: Option<String>, base: String, cursor: Option<String>) -> Response {
+    struct Follow {
+        shared: Arc<Shared>,
+        peer: SocketAddr,
+        authorization: Option<String>,
+        base: String,
+        cursor: Option<String>,
+        queue: std::collections::VecDeque<String>,
+        quiet: std::time::Duration,
+        hurry: bool,
+    }
+    // The path of the timeline page after the last event sent.
+    fn page_path(state: &Follow) -> String {
+        match &state.cursor {
+            Some(cursor) => format!("{}/after/{cursor}", state.base),
+            None => state.base.clone(),
+        }
+    }
+    // Queues the page's events as stream lines; says whether there were any.
+    fn absorb(state: &mut Follow, page: &serde_json::Value) -> bool {
+        let events = page["events"].as_array().cloned().unwrap_or_default();
+        for event in &events {
+            let Some(id) = event["event_id"].as_str().filter(|id| !id.chars().any(char::is_control)) else { continue };
+            state.queue.push_back(format!("id: {id}\nevent: event\ndata: {event}\n\n"));
+            state.cursor = Some(id.to_string());
+        }
+        state.hurry = !page["next_cursor"].is_null();
+        !events.is_empty()
+    }
+    // Reads what came after the last event; false when the run can no longer be read.
+    async fn fetch(state: &mut Follow) -> bool {
+        let path = page_path(state);
+        let (shared, peer, authorization) = (state.shared.clone(), state.peer.ip(), state.authorization.clone());
+        let Ok((200, body)) = tokio::task::spawn_blocking(move || reply_to(&shared, peer, "GET", &path, authorization.as_deref())).await else { return false };
+        let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) else { return false };
+        if absorb(state, &page) {
+            state.quiet = std::time::Duration::ZERO;
+        } else {
+            state.quiet += FOLLOW_POLL;
+            if state.quiet >= FOLLOW_KEEPALIVE {
+                state.queue.push_back(": keepalive\n\n".to_string());
+                state.quiet = std::time::Duration::ZERO;
+            }
+        }
+        true
+    }
+
+    let mut state = Follow { shared, peer, authorization, base, cursor, queue: Default::default(), quiet: Default::default(), hurry: false };
+    // The first look decides the answer: a refused or unknown request is the handler's plain reply.
+    let first = {
+        let (shared, ip, authorization, path) = (state.shared.clone(), peer.ip(), state.authorization.clone(), page_path(&state));
+        tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref())).await
+    };
+    let Ok((code, body)) = first else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    if code != 200 {
+        return json_reply(code, body);
+    }
+    state.queue.push_back(": connected\n\n".to_string());
+    if let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) {
+        absorb(&mut state, &page);
+    }
+    let stream = futures_util::stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(chunk) = state.queue.pop_front() {
+                return Some((Ok::<_, std::convert::Infallible>(chunk), state));
+            }
+            if !state.hurry {
+                tokio::time::sleep(FOLLOW_POLL).await;
+            }
+            if !fetch(&mut state).await {
+                return None;
+            }
+        }
+    });
+    let mut response = Response::new(axum::body::Body::from_stream(stream));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     response
