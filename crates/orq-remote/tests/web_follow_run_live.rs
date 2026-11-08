@@ -119,3 +119,18 @@ fn an_event_repeated_within_one_read_is_shown_once() {
     let frame = &out["frames"][1];
     assert_eq!((count(frame, "zero"), count(frame, "one"), count(frame, "two")), (1, 1, 1), "{:?}", texts(frame));
 }
+
+#[test]
+fn records_ended_by_crlf_or_cr_are_read_even_when_a_separator_is_split_across_reads() {
+    let crlf = |id: &str, kind: &str| sse(id, kind).replace('\n', "\r\n");
+    let cr = |id: &str, kind: &str| sse(id, kind).replace('\n', "\r");
+    let whole = crlf("e1", "one");
+    // The blank line of e2 is cut between its CR and LF.
+    let split = crlf("e2", "two");
+    let (a, b) = split.split_at(split.len() - 3);
+    let chunks = vec![whole, a.to_string(), b.to_string(), cr("e3", "three")];
+    let responses = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), stream(chunks, "hold")]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1];
+    assert_eq!((count(frame, "one"), count(frame, "two"), count(frame, "three")), (1, 1, 1), "{:?}", texts(frame));
+}

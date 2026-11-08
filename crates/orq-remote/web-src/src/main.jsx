@@ -547,11 +547,16 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        // A CR ends a line at once; an LF straight after it, even in the next read, is its other half.
+        let afterCr = false;
         for (;;) {
           const { done, value } = await reader.read();
           if (!current) return;
           if (done || buffer.length > 1048576) break;
-          buffer += decoder.decode(value, { stream: true });
+          let text = decoder.decode(value, { stream: true });
+          if (afterCr && text.startsWith("\n")) text = text.slice(1);
+          if (text.length > 0) afterCr = text.endsWith("\r");
+          buffer += text.replace(/\r\n?/g, "\n");
           const blocks = buffer.split("\n\n");
           buffer = blocks.pop();
           const fresh = [];
