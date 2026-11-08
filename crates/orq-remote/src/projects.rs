@@ -24,19 +24,38 @@ pub fn default_root(home: Option<&Path>, override_root: Option<&Path>) -> PathBu
 /// link to somewhere else is dropped. A missing or unreadable root, or entry, gives no project.
 pub fn discover(root: &Path) -> Vec<Project> {
     let Ok(real_root) = std::fs::canonicalize(root) else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&real_root) else { return Vec::new() };
-    let mut found: Vec<(String, PathBuf)> = entries
+    let mut found: Vec<(String, PathBuf)> = Vec::new();
+    for name in child_folders(&real_root) {
+        let path = real_root.join(&name);
+        if is_repository(&path) {
+            found.push((name, path));
+        } else {
+            // A plain folder groups repositories (`~/code/pitstop/payment_hub`): one level, no deeper.
+            for inner in child_folders(&path) {
+                let inner_path = path.join(&inner);
+                if is_repository(&inner_path) {
+                    found.push((format!("{name}/{inner}"), inner_path));
+                }
+            }
+        }
+    }
+    found.sort();
+    found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
+}
+
+/// The names of the real directories directly inside `dir`: a link, a file or an unreadable
+/// entry is left out, and so is a folder that no longer resolves to itself.
+fn child_folders(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
         .flatten()
         .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            let path = real_root.join(&name);
-            let resolved = std::fs::canonicalize(&path).ok()?;
-            (resolved == path && is_repository(&path)).then_some((name, path))
+            let path = dir.join(&name);
+            (std::fs::canonicalize(&path).ok()? == path).then_some(name)
         })
-        .collect();
-    found.sort();
-    found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
+        .collect()
 }
 
 /// A `.git` directory, or a `.git` file as linked worktrees have, that is not itself a symlink.
