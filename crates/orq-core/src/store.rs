@@ -254,6 +254,16 @@ impl Store {
         Ok(lifecycles)
     }
 
+    /// When the provider was last looked at for the review of `run_id` at `reported_head_sha`, in
+    /// seconds since the epoch; `None` when it never was.
+    pub fn lifecycle_checked_at(&self, run_id: &str, reported_head_sha: &str) -> Result<Option<i64>> {
+        check_run_id(run_id)?;
+        self.conn
+            .query_row("SELECT last_checked FROM review_lifecycles WHERE run_id = ?1 AND reported_head_sha = ?2", params![run_id, reported_head_sha], |row| row.get(0))
+            .optional()
+            .map_err(db)
+    }
+
     /// What the provider last showed about the run's review, and when.
     pub fn review_observation(&self, run_id: &str) -> Result<Option<crate::retention::ReviewFacts>> {
         check_run_id(run_id)?;

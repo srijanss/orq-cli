@@ -366,6 +366,26 @@ struct Facts {
     observed: Option<String>,
     link: Option<String>,
     stale: bool,
+    /// `current`, `stale` or `unverified`, decided here and nowhere else.
+    freshness: &'static str,
+    /// The head the provider showed: the reviewed commit when current, the other one when stale.
+    provider_head: Option<String>,
+    checked_at: Option<String>,
+}
+
+/// Seconds since the epoch as plain UTC text, `2026-11-09T10:00:00Z`.
+fn utc_text(seconds: i64) -> String {
+    let (days, rem) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
 fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
@@ -384,17 +404,22 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
     let Some(record) = records.into_iter().last() else { return Ok(None) };
     let (project, head) = (record.project, record.head_sha);
     // A lifecycle that cannot be read is unknown, never "fresh": it counts as stale and offers no link.
-    let Ok(all) = store.lifecycles_for_run(run_id) else {
-        return Ok(Some(Facts { project, head, observed: None, link: None, stale: true }));
+    let unknown = |project, head| Facts { project, head, observed: None, link: None, stale: true, freshness: "unverified", provider_head: None, checked_at: None };
+    let Ok(all) = store.lifecycles_for_run(run_id) else { return Ok(Some(unknown(project, head))) };
+    let Some(lifecycle) = all.into_iter().rev().find(|l| l.reported_head_sha == head) else {
+        // Never looked at the provider: not current, but not known to be out of date either.
+        return Ok(Some(Facts { stale: false, ..unknown(project, head) }));
     };
-    let lifecycle = all.into_iter().rev().find(|l| l.reported_head_sha == head);
-    Ok(Some(Facts {
-        observed: lifecycle.as_ref().and_then(|l| l.observed_head_sha.clone()),
-        link: lifecycle.as_ref().and_then(|l| safe_link(&l.url)),
-        stale: lifecycle.as_ref().is_some_and(|l| l.stale),
-        project,
-        head,
-    }))
+    let checked_at = store.lifecycle_checked_at(run_id, &head).ok().flatten().map(utc_text);
+    // The newest look decides: a mismatch stays stale whatever came after; a failed look is unverified.
+    let freshness = if lifecycle.stale { "stale" } else if lifecycle.last_error.is_some() { "unverified" } else { "current" };
+    let link = safe_link(&lifecycle.url).filter(|_| freshness == "current");
+    let provider_head = match freshness {
+        "current" => Some(head.clone()),
+        "stale" => lifecycle.observed_head_sha.clone(),
+        _ => None,
+    };
+    Ok(Some(Facts { observed: lifecycle.observed_head_sha, link, stale: lifecycle.stale, freshness, provider_head, checked_at, project, head }))
 }
 
 fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool) -> Response {
@@ -406,11 +431,15 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
     let reviews: Vec<Value> = rows
         .into_iter()
         .map(|row| {
-            let link = facts(roots, &row.run_id).and_then(|f| f.link);
+            let f = facts(roots, &row.run_id);
+            let freshness = f.as_ref().map_or("unverified", |f| f.freshness);
+            let link = f.and_then(|f| f.link);
+            let link_allowed = link.is_some();
             json!({
                 "generated_at": row.generated_at,
                 "run_id": row.run_id, "feature": row.feature, "project": row.project, "current": row.current,
                 "status": row.status, "risk": row.risk, "stale": row.stale, "link": link,
+                "freshness": freshness, "link_allowed": link_allowed,
             })
         })
         .collect();
@@ -437,6 +466,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
         json!({
             "generated_at": generated_at,
             "run_id": run_id, "reported_head_sha": f.head, "observed_head_sha": f.observed, "stale": f.stale, "link": f.link,
+            "freshness": f.freshness, "link_allowed": f.link.is_some(), "reviewed_head_sha": f.head, "provider_head_sha": f.provider_head, "checked_at": f.checked_at,
             "summary": summary, "risks": risks, "files": files, "tests": tests, "rounds": rounds,
         }),
     )
