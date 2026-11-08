@@ -190,6 +190,11 @@ pub trait ProjectsProvider {
     fn features(&self, _id: &str) -> Result<Option<Value>, String> {
         Ok(None)
     }
+
+    /// The orchestration runs of project `id`, newest first, as a JSON array; `None` when there is no such project.
+    fn runs(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -241,6 +246,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
                 Some(Ok(Some(features))) => reply(200, json!({ "features": features })),
                 // The reason can name a path on this machine, so the caller is only told it failed.
                 Some(Err(_)) => error(500, "the feature ledger could not be read"),
+                _ => error(404, "not found"),
+            };
+        }
+        if let Some(id) = rest.strip_suffix("/runs").filter(|id| !id.is_empty() && !id.contains('/')) {
+            return match provider.map(|provider| provider.runs(id)) {
+                Some(Ok(Some(runs))) => reply(200, json!({ "runs": runs })),
+                Some(Err(_)) => error(500, "the runs could not be read"),
                 _ => error(404, "not found"),
             };
         }

@@ -144,6 +144,38 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(serde_json::Value::Array(list)))
     }
 
+    fn runs(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        use orq_orchestrator::StoreError;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let mut rows = Vec::new();
+        for run_id in store.run_ids().map_err(|error| format!("{error:?}"))? {
+            let record = match store.load(&run_id) {
+                Ok(record) => record,
+                Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
+                Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
+            };
+            if record.project_id != key {
+                continue;
+            }
+            let events = store.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
+            let summary = orq_orchestrator::summarize_run(&events);
+            let started = events.first().map(|event| event.occurred_at.clone());
+            let updated = events.last().map(|event| event.occurred_at.clone());
+            let sort_key = updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
+            rows.push((sort_key, run_id, serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": started, "updated_at": updated})));
+        }
+        // Newest first; a run with no readable time goes last, ties by run id.
+        rows.sort_by(|a, b| match (a.0, b.0) {
+            (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.1.cmp(&b.1)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.1.cmp(&b.1),
+        });
+        Ok(Some(serde_json::Value::Array(rows.into_iter().map(|row| row.2).collect())))
+    }
+
     fn projects(&self) -> Result<serde_json::Value, String> {
         use serde_json::json;
         let reviews = if self.roots.database().exists() {
