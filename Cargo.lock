@@ -960,6 +960,7 @@ dependencies = [
  "orq-git",
  "orq-herdr",
  "orq-orchestrator",
+ "orq-remote",
  "orq-test-support",
  "orq-tui",
  "rusqlite",
