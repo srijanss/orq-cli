@@ -1,7 +1,9 @@
 pub mod naming;
 pub mod no_merge;
 pub mod ownership;
+pub mod passkey_challenge;
 pub mod passkey_enroll;
+pub mod passkey_register;
 pub mod passkey_store;
 pub mod provider_observation;
 pub mod prune;
