@@ -12,6 +12,12 @@ fn roots(tag: &str) -> StorageRoots {
     StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") }
 }
 
+/// Directories only this user can enter or change, as the store requires all the way up.
+fn private_dirs(path: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new().recursive(true).mode(0o700).create(path).unwrap();
+}
+
 fn key(id: &str, label: &str) -> Passkey {
     Passkey { credential_id: id.into(), public_key: "pQECAyYgASFYIA".into(), sign_count: 0, label: label.into(), created_at: 1_700_000_000 }
 }
@@ -54,8 +60,7 @@ fn an_added_passkey_is_kept_in_a_private_file_that_holds_only_public_facts() {
 }
 
 fn write(roots: &StorageRoots, text: &str) -> std::path::PathBuf {
-    fs::create_dir_all(&roots.state).unwrap();
-    fs::set_permissions(&roots.state, fs::Permissions::from_mode(0o700)).unwrap();
+    private_dirs(&roots.state);
     let path = PasskeyStore::path(roots);
     fs::write(&path, text).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -127,7 +132,7 @@ fn a_file_others_can_reach_or_that_is_not_a_plain_file_is_refused() {
     symlink(&real, &path).unwrap();
     assert!(!PasskeyStore::open(&roots1).any_registered(), "a link is not followed");
     let roots2 = roots("dir");
-    fs::create_dir_all(PasskeyStore::path(&roots2)).unwrap();
+    private_dirs(&PasskeyStore::path(&roots2));
     let store = PasskeyStore::open(&roots2);
     assert!(store.list().is_err() && !store.any_registered(), "a directory");
 }
@@ -187,15 +192,14 @@ fn removing_by_label_cuts_that_passkey_off_and_removing_the_last_leaves_an_empty
 fn a_state_directory_that_is_a_link_or_open_to_others_is_refused() {
     let roots = roots("dirs");
     let real = roots.state.with_file_name("elsewhere");
-    fs::create_dir_all(&real).unwrap();
-    fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+    private_dirs(&real);
     symlink(&real, &roots.state).unwrap();
     let store = PasskeyStore::open(&roots);
     assert!(store.list().is_err() && store.add(key("a", "one")).is_err() && !store.any_registered());
     assert!(fs::read_dir(&real).unwrap().next().is_none(), "nothing is written through the link");
     fs::remove_file(&roots.state).unwrap();
     for loose in [0o770, 0o707, 0o777] {
-        fs::create_dir_all(&roots.state).unwrap();
+        private_dirs(&roots.state);
         fs::set_permissions(&roots.state, fs::Permissions::from_mode(loose)).unwrap();
         assert!(store.list().is_err() && store.add(key("a", "one")).is_err(), "{loose:o}");
         assert!(!store.any_registered());

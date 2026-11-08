@@ -138,22 +138,30 @@ impl PasskeyStore {
     }
 
     /// Nobody but this user (or root) may be able to rename or replace a directory on the way to the
-    /// state directory: each ancestor must belong to this user or root and must not be writable by
-    /// everyone, unless it is sticky (like /tmp). Ancestors that do not exist yet are skipped.
+    /// state directory. The path is resolved first (so a link on the way is followed to the real
+    /// directories), then each directory from the real parent up to the root must belong to this
+    /// user or root and must not be writable by group or others, unless it is sticky (like /tmp).
+    /// Directories that do not exist yet are created by this user, so the nearest existing one is
+    /// where the check starts.
     fn check_ancestors(&self) -> Result<(), String> {
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        for ancestor in self.dir.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
-            let meta = match std::fs::metadata(ancestor) {
-                Ok(meta) => meta,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(format!("cannot inspect {}: {}", ancestor.display(), e.kind())),
-            };
+        let mut start = self.dir.parent();
+        let resolved = loop {
+            let Some(candidate) = start.filter(|c| !c.as_os_str().is_empty()) else { return Ok(()) };
+            match std::fs::canonicalize(candidate) {
+                Ok(real) => break real,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => start = candidate.parent(),
+                Err(e) => return Err(format!("cannot resolve {}: {}", candidate.display(), e.kind())),
+            }
+        };
+        for ancestor in resolved.ancestors() {
+            let meta = std::fs::metadata(ancestor).map_err(|e| format!("cannot inspect {}: {}", ancestor.display(), e.kind()))?;
             if meta.uid() != me && meta.uid() != 0 {
                 return Err(format!("{} must belong to the user running the server or to root", ancestor.display()));
             }
-            if meta.mode() & 0o002 != 0 && meta.mode() & 0o1000 == 0 {
-                return Err(format!("{} must not be writable by everyone", ancestor.display()));
+            if meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0 {
+                return Err(format!("{} must not be writable by group or others", ancestor.display()));
             }
         }
         Ok(())
@@ -249,12 +257,15 @@ impl PasskeyStore {
             .map_err(|e| e.to_string())
             .and_then(|fd| {
                 let mut file = std::fs::File::from(fd);
-                fault(Stage::Write)?;
-                file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+                // An injected write failure happens after half the bytes are written.
+                let injected = fault(Stage::Write);
+                let end = if injected.is_err() { text.len() / 2 } else { text.len() };
+                file.write_all(&text.as_bytes()[..end]).map_err(|e| e.to_string())?;
+                injected?;
                 fault(Stage::FileSync)?;
                 file.sync_all().map_err(|e| e.to_string())
             })
-            .and_then(|()| rustix::fs::renameat(dir, temp.as_str(), dir, FILE_NAME).map_err(|e| e.to_string()));
+            .and_then(|()| fault(Stage::Rename).and_then(|()| rustix::fs::renameat(dir, temp.as_str(), dir, FILE_NAME).map_err(|e| e.to_string())));
         if let Err(e) = published {
             let _ = rustix::fs::unlinkat(dir, temp.as_str(), AtFlags::empty());
             return Err(format!("cannot write the passkey file {}: {e}", self.file().display()));
@@ -272,6 +283,7 @@ pub const APPLIED_NOT_DURABLE: &str = "the change was applied but could not be c
 enum Stage {
     Write,
     FileSync,
+    Rename,
     DirSync,
 }
 
@@ -324,11 +336,11 @@ mod tests {
         names
     }
 
-    /// A failure while writing or syncing the new file leaves the earlier store as it was, no
+    /// A failure while writing (half the bytes written), syncing or renaming the new file over a valid store leaves the earlier store as it was, no
     /// temporary file, and the lock free for the next change.
     #[test]
     fn a_failed_write_or_file_sync_keeps_the_existing_store_and_releases_the_lock() {
-        for stage in [Stage::Write, Stage::FileSync] {
+        for stage in [Stage::Write, Stage::FileSync, Stage::Rename] {
             let store = store("fail");
             store.add(key("a", "one")).unwrap();
             let before = std::fs::read_to_string(store.file()).unwrap();
@@ -366,9 +378,28 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(store.list().is_err() && store.add(key("a", "one")).is_err() && !store.any_registered());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(store.list().is_err() && store.add(key("a", "one")).is_err(), "group-writable");
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
         store.add(key("a", "one")).expect("a sticky ancestor is trusted");
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    /// A link on the way is followed and the directories it leads through are checked too.
+    #[test]
+    fn a_link_ancestor_is_resolved_and_its_real_parents_are_checked() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-link", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("safe")).unwrap();
+        let shared = base.join("shared");
+        std::fs::DirBuilder::new().mode(0o777).create(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::DirBuilder::new().mode(0o700).create(shared.join("owned")).unwrap();
+        std::os::unix::fs::symlink(shared.join("owned"), base.join("safe/link")).unwrap();
+        let store = PasskeyStore { dir: base.join("safe/link/state") };
+        assert!(store.add(key("a", "one")).is_err() && store.list().is_err() && !store.any_registered());
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+        store.add(key("a", "one")).expect("a link into a private tree is fine");
     }
 }
