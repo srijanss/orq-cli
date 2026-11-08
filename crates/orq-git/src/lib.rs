@@ -74,6 +74,15 @@ pub fn resolve_project(path: &Path) -> Result<Project, ResolveError> {
     })
 }
 
+/// The id a project's runs and reviews are stored under: its cleaned name and a hash of the
+/// common git directory, so every worktree of one repository shares it and two repositories with
+/// one name do not. FNV-1a keeps it stable across releases, unlike the std hashers.
+pub fn project_id(project: &Project) -> String {
+    let hash = project.git_common_dir.as_os_str().as_encoded_bytes().iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));
+    let name: String = project.name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect();
+    format!("{name}-{:08x}", hash >> 32)
+}
+
 /// The owning project's name, taken from the common directory so that every
 /// worktree of one repository reports the same name: `<repo>/.git` -> `repo`,
 /// a bare `repo.git` -> `repo`. Any other bare directory keeps its full name.

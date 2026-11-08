@@ -210,9 +210,7 @@ fn git_ok(repo: &Path, args: &[&str]) -> bool {
 /// directory, so two repositories with the same name are different projects while a repository
 /// and its linked worktrees are one.
 pub(crate) fn project_id(project: &orq_git::Project) -> String {
-    // FNV-1a: stable across releases, unlike the std hashers.
-    let hash = project.git_common_dir.as_os_str().as_encoded_bytes().iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));
-    format!("{}-{:08x}", slug(&project.name), hash >> 32)
+    orq_git::project_id(project)
 }
 
 pub(crate) fn slug(text: &str) -> String {
