@@ -69,8 +69,9 @@ function snapshot() {
   return { texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash };
 }
 
-// Page errors are reported on stderr so a crashed render is not mistaken for an empty page.
-window.addEventListener("error", (event) => process.stderr.write("page error: " + (event.error && event.error.stack ? event.error.stack : event.message) + "\n"));
+// Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
+const pageErrors = [];
+window.addEventListener("error", (event) => pageErrors.push(event.error && event.error.stack ? event.error.stack : event.message));
 
 // React and jsdom schedule work on timers, so wait a little for it to finish.
 const settle = async () => {
@@ -101,8 +102,11 @@ const all = (tag) => [...root.querySelectorAll(tag)];
     await settle();
     frames.push({ step: JSON.stringify(step), fieldAfter, sync, settled: snapshot() });
   }
-  process.stdout.write(JSON.stringify({ requests, frames }));
   window.close();
+  if (pageErrors.length > 0) {
+    throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
+  }
+  process.stdout.write(JSON.stringify({ requests, frames }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);
