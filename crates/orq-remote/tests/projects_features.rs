@@ -94,6 +94,25 @@ fn the_same_token_peer_and_method_checks_apply() {
     assert_eq!(ask(&s, "HEAD", "/api/projects/alpha/features", Some("Bearer tok")).0, 200);
 }
 
+/// A valid ledger of exactly `size` bytes, so only its size can make it unacceptable.
+fn ledger_of_size(size: usize) -> String {
+    let frame = json!([{"featureName": "big", "description": "", "status": "pending"}]).to_string();
+    let filler = "x".repeat(size - frame.len());
+    json!([{"featureName": "big", "description": filler, "status": "pending"}]).to_string()
+}
+
+#[test]
+fn a_valid_ledger_at_the_size_limit_is_served_and_one_byte_more_is_not() {
+    let limit = 1024 * 1024;
+    let s = setup("features-limit-at");
+    std::fs::write(git_repo(&s.scan, "alpha").join(".tdd-features.json"), ledger_of_size(limit)).unwrap();
+    let (status, body) = get_within_a_bound(s);
+    assert_eq!((status, body["features"][0]["name"].as_str()), (200, Some("big")), "{status}");
+    let s = setup("features-limit-over");
+    std::fs::write(git_repo(&s.scan, "alpha").join(".tdd-features.json"), ledger_of_size(limit + 1)).unwrap();
+    assert_eq!(get_within_a_bound(s).0, 500);
+}
+
 /// Asks for alpha's features and fails if the answer takes more than a few seconds, so a ledger
 /// that blocks the server cannot hang the suite.
 fn get_within_a_bound(s: Setup) -> (u16, Value) {
@@ -114,7 +133,7 @@ fn a_ledger_that_is_a_link_a_pipe_too_large_or_not_text_is_refused_without_namin
     let cases: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![
         ("link", Box::new(move |ledger| symlink(&secret, ledger).unwrap())),
         ("pipe", Box::new(|ledger| assert!(Command::new("mkfifo").arg(ledger).status().unwrap().success()))),
-        ("large", Box::new(|ledger| std::fs::write(ledger, vec![b' '; 1024 * 1024 + 1]).unwrap())),
+        ("large", Box::new(|ledger| std::fs::write(ledger, ledger_of_size(1024 * 1024 + 1)).unwrap())),
         ("binary", Box::new(|ledger| std::fs::write(ledger, [0xff, 0xfe, 0x00]).unwrap())),
     ];
     for (name, make) in cases {
