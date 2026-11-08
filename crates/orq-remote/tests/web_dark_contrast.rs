@@ -106,10 +106,10 @@ fn no_rule_carries_a_colour_literal_so_both_themes_reach_every_element() {
     assert!(literals.is_empty(), "colours must come from tokens: {literals:#?}");
 }
 
-/// The token a declaration of `property` in the last rule starting with `head` names.
+/// The token the last declaration of `property` in the rules starting with `head` names, as the cascade picks it.
 fn rule_token(css: &str, head: &str, property: &str) -> String {
     let body = css.lines().filter(|l| l.starts_with(head)).map(|l| l.to_string()).collect::<Vec<_>>().join(" ");
-    let after = body.split(&format!("{property}: var(--")).nth(1).unwrap_or_else(|| panic!("`{head}` has no {property} token"));
+    let after = body.split(&format!("{property}: var(--")).skip(1).last().filter(|_| body.contains(&format!("{property}: var(--"))).unwrap_or_else(|| panic!("`{head}` has no {property} token"));
     after.split(')').next().unwrap().to_string()
 }
 
@@ -122,4 +122,10 @@ fn the_active_navigation_link_is_readable_on_its_own_background_in_both_themes()
         let ratio = contrast(&t[&fg], &t[&bg]);
         assert!(ratio >= 4.5, "{theme}: active link --{fg} on --{bg} is {ratio:.2}:1");
     }
+}
+
+#[test]
+fn a_later_declaration_overrides_an_earlier_one_when_the_rule_token_is_read() {
+    let css = ".a { color: var(--text); }\n.a { color: var(--accent); }";
+    assert_eq!(rule_token(css, ".a", "color"), "accent");
 }
