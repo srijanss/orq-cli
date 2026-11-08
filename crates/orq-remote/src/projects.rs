@@ -120,15 +120,13 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &
 /// cannot be read is an error, never a guess.
 fn waiting_reviews(store: &orq_core::store::Store, project: &str) -> Result<usize, String> {
     use orq_core::review_lifecycle::{Gate, ProviderState};
-    let mut latest: Vec<orq_core::store::ReviewRecord> = Vec::new();
+    // Records come oldest first, so a later one for the same run replaces the earlier.
+    let mut latest: std::collections::HashMap<String, orq_core::store::ReviewRecord> = std::collections::HashMap::new();
     for record in store.reviews_for_project(project).map_err(|error| error.to_string())? {
-        match latest.iter().position(|seen| seen.run_id == record.run_id) {
-            Some(at) => latest[at] = record,
-            None => latest.push(record),
-        }
+        latest.insert(record.run_id.clone(), record);
     }
     let mut waiting = 0;
-    for record in &latest {
+    for record in latest.values() {
         let lifecycles = store.lifecycles_for_run(&record.run_id).map_err(|error| error.to_string())?;
         let finished = lifecycles
             .iter()
