@@ -111,8 +111,12 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, runs: &or
         Err(orq_features::LedgerError::Missing { .. }) => 0,
         Err(error) => return Err(format!("{error:?}")),
     };
-    let active_runs = orq_orchestrator::list_runs_report(runs, &key)
-        .map_err(|error| error.to_string())?
+    let listed = orq_orchestrator::list_runs_report(runs, &key).map_err(|error| error.to_string())?;
+    // A record that cannot be read has no known owner, so no project's count can be trusted.
+    if listed.unreadable > 0 {
+        return Err(format!("{} run records are unreadable", listed.unreadable));
+    }
+    let active_runs = listed
         .runs
         .iter()
         .filter(|run| matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested | orq_orchestrator::RunPhase::Paused))

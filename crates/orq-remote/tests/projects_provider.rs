@@ -78,3 +78,16 @@ fn each_project_lists_its_id_name_and_counts_and_an_unreadable_one_is_unavailabl
     assert!(broken["features"].is_null(), "{broken}");
     assert_eq!(list.as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn a_run_record_that_cannot_be_read_makes_the_counts_untrustworthy_so_projects_are_unavailable() {
+    let base = web_deps::private_temp_dir("projects-corrupt-run");
+    let scan = base.join("code");
+    git_repo(&scan, "one");
+    let roots = roots(&base);
+    let corrupt = roots.state.join("runs").join("bad-run");
+    std::fs::create_dir_all(&corrupt).unwrap();
+    std::fs::write(corrupt.join("run.json"), "{ not json").unwrap();
+    let list = StoreProjects::new(roots, scan).projects().unwrap();
+    assert_eq!(entry(&list, "one")["available"], false, "{list}");
+}
