@@ -76,3 +76,12 @@ fn before_a_token_is_given_a_sign_in_card_offers_signing_in_with_a_token() {
     assert_eq!(start["cards"], 1, "the sign-in form sits in a card: {out}");
     assert_eq!(start["inputs"].as_array().unwrap().len(), 1, "{out}");
 }
+
+#[test]
+fn the_top_bar_keeps_its_own_height_and_the_content_row_takes_the_rest() {
+    let css = css();
+    let shell = block(&css, ".shell {");
+    assert!(shell.contains("grid-template-rows: auto 1fr"), "rows must not share the height equally: {shell}");
+    let phone = &css[css.find("@media (max-width: 700px)").unwrap()..];
+    assert!(phone.contains("grid-template-rows: auto 1fr"), "the phone layout too");
+}

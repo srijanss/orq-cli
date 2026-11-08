@@ -90,7 +90,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .badge-freshness-fresh { color: var(--freshness-fresh); background: var(--freshness-fresh-bg); border: 1px solid var(--freshness-fresh); }
 .badge-freshness-outdated { color: var(--freshness-outdated); background: var(--freshness-outdated-bg); border: 1px solid var(--freshness-outdated); }
 
-.shell { display: grid; grid-template-columns: 220px 1fr; grid-template-areas: "bar bar" "side main"; min-height: 100vh; }
+.shell { display: grid; grid-template-columns: 220px 1fr; grid-template-areas: "bar bar" "side main"; grid-template-rows: auto 1fr; min-height: 100vh; }
 .shell.collapsed { grid-template-columns: 64px 1fr; }
 .topbar { grid-area: bar; display: flex; gap: 0.5rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); background: var(--sidebar); }
 .sidebar { grid-area: side; padding: 0.5rem; background: var(--sidebar); border-right: 1px solid var(--border); overflow: hidden; }
@@ -101,7 +101,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .shell.collapsed .sidebar .label { display: none; }
 .close-button, .scrim, [data-menu-button] { display: none; }
 @media (max-width: 700px) {
-  .shell, .shell.collapsed { grid-template-columns: 1fr; grid-template-areas: "bar" "main"; }
+  .shell, .shell.collapsed { grid-template-columns: 1fr; grid-template-areas: "bar" "main"; grid-template-rows: auto 1fr; }
   [data-menu-button] { display: inline-block; }
   .rail-button { display: none; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: min(80vw, 280px); z-index: 20; background: var(--sidebar); transform: translateX(-100%); visibility: hidden; }
