@@ -55,6 +55,10 @@ window.URL.revokeObjectURL = (url) => { const entry = blobs[Number(String(url).r
 window.HTMLAnchorElement.prototype.click = function () { downloads.push({ name: this.getAttribute("download"), href: this.getAttribute("href"), entry: blobs[Number(String(this.getAttribute("href")).replace("blob:harness-", ""))] }); };
 const readBlob = (blob) => new Promise((resolve) => { const reader = new window.FileReader(); reader.onload = () => resolve(reader.result); reader.readAsText(blob); });
 
+// Scrolling is recorded by the id of the element scrolled into view; there is no layout to do it.
+const scrolled = [];
+window.HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this.id); };
+
 const requests = [];
 const held = {};
 const responses = [...scenario.responses];
@@ -128,7 +132,7 @@ function snapshot() {
   // A digest of the real session entries, so a test sees any change to a stored value without the value being printed.
   let sessionDigest = "blocked";
   try { sessionDigest = createHash("sha256").update(JSON.stringify(Object.entries(window.sessionStorage).sort())).digest("hex"); } catch (blocked) { /* keep "blocked" */ }
-  return { sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.

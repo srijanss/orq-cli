@@ -101,6 +101,10 @@ fn a_dependency_link_opens_its_feature_even_when_a_filter_hides_it() {
     // The target is opened too, so its own dependency shows as a link.
     assert!(after["settled"]["links"].as_array().unwrap().iter().any(|l| l["text"] == "base-work"), "{after}");
     assert_eq!(after["settled"]["path"], "/projects/alpha/features", "no new address is made up");
+    // The target card is scrolled into view and takes the focus, so the reader is not left at the source.
+    assert_eq!(after["settled"]["scrolled"], json!(["feature-middle-work"]), "{after}");
+    assert_eq!(after["settled"]["focused"], "feature-middle-work", "{after}");
+    assert_eq!(out["frames"][3]["settled"]["scrolled"], json!([]), "nothing scrolls before the link is followed");
 }
 
 #[test]
