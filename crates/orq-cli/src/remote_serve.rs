@@ -43,6 +43,7 @@ pub fn serve(args: &[OsString]) -> ExitCode {
         Ok(project) => project,
         Err(err) => return fail(format!("cannot resolve project: {err:?}")),
     };
+    install_interrupt_handlers();
     let listener = match std::net::TcpListener::bind(&listen) {
         Ok(listener) => listener,
         Err(err) => return fail(format!("cannot listen on {listen}: {:?}", err.kind())),
@@ -70,13 +71,18 @@ extern "C" fn note_interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Blocks until Ctrl-C (or a terminate signal) arrives.
-fn wait_for_interrupt() {
+/// Makes Ctrl-C and a terminate signal set the flag instead of killing the
+/// process; installed before the address is announced so no signal is missed.
+fn install_interrupt_handlers() {
     // SAFETY: the handler only stores to an atomic flag.
     unsafe {
-        libc::signal(libc::SIGINT, note_interrupt as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, note_interrupt as libc::sighandler_t);
+        libc::signal(libc::SIGINT, note_interrupt as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, note_interrupt as *const () as libc::sighandler_t);
     }
+}
+
+/// Blocks until a signal has arrived.
+fn wait_for_interrupt() {
     while !INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }

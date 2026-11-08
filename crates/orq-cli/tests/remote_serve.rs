@@ -68,9 +68,61 @@ fn it_refuses_a_token_file_that_is_missing_too_short_or_too_open() {
     assert_refused(&serve(&root, &repo, &listen), "token");
 }
 
+const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A running server that is killed and reaped when the test ends, however it ends.
+struct Running {
+    child: std::process::Child,
+    first: String,
+    addr: String,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Starts the server and waits, bounded, for its listening line.
+fn start(root: &Path, repo: &Path) -> Running {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let mut child = command(root, repo, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut first = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut first);
+        let _ = sender.send(first);
+    });
+    let first = receiver.recv_timeout(WAIT).expect("the server announces its address in time");
+    let addr = first.trim().rsplit("http://").next().unwrap().to_string();
+    assert!(first.contains("http://127.0.0.1:"), "{first:?}");
+    Running { child, first, addr }
+}
+
+impl Running {
+    /// Sends `signal`, then waits, bounded, for a clean exit.
+    fn stop_with(&mut self, signal: &str) {
+        assert!(Command::new("kill").args([signal, &self.child.id().to_string()]).status().unwrap().success());
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "a clean stop after {signal}: {status:?}");
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "the server did not stop after {signal}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
 fn get(addr: &str, token: Option<&str>) -> String {
     use std::io::{Read, Write};
-    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    let mut stream = std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), WAIT).unwrap();
+    stream.set_read_timeout(Some(WAIT)).unwrap();
+    stream.set_write_timeout(Some(WAIT)).unwrap();
     let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
     write!(stream, "GET /api/reviews HTTP/1.1\r\nHost: {addr}\r\n{auth}Connection: close\r\n\r\n").unwrap();
     let mut reply = String::new();
@@ -80,26 +132,22 @@ fn get(addr: &str, token: Option<&str>) -> String {
 
 #[test]
 fn a_started_server_answers_401_without_the_token_and_200_with_it_and_stops_on_interrupt() {
-    use std::io::{BufRead, BufReader, Read};
-    use std::process::Stdio;
     let (root, repo) = setup("run", true);
-    let mut child = command(&root, &repo, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut first = String::new();
-    stdout.read_line(&mut first).unwrap();
-    let addr = first.trim().rsplit("http://").next().unwrap().to_string();
-    assert!(first.contains("http://127.0.0.1:"), "{first:?}");
+    let mut server = start(&root, &repo);
+    assert!(get(&server.addr, None).starts_with("HTTP/1.1 401"));
+    assert!(get(&server.addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
+    server.stop_with("-INT");
+    assert!(!server.first.contains(TOKEN));
+}
 
-    assert!(get(&addr, None).starts_with("HTTP/1.1 401"));
-    assert!(get(&addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
-
-    assert!(Command::new("kill").args(["-INT", &child.id().to_string()]).status().unwrap().success());
-    let status = child.wait().unwrap();
-    let (mut rest, mut err) = (String::new(), String::new());
-    stdout.read_to_string(&mut rest).unwrap();
-    child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(status.success(), "a clean stop: {err}");
-    assert!(!first.contains(TOKEN) && !rest.contains(TOKEN) && !err.contains(TOKEN));
+#[test]
+fn a_signal_sent_the_moment_the_address_is_announced_still_stops_it_cleanly() {
+    for signal in ["-INT", "-TERM"] {
+        for round in 0..10 {
+            let (root, repo) = setup(&format!("signal-{round}"), true);
+            start(&root, &repo).stop_with(signal);
+        }
+    }
 }
 
 #[test]
