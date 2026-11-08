@@ -89,6 +89,9 @@ fn row_of(record: &orq_orchestrator::RunRecord, log: &LogSummary) -> (Option<u64
 
 /// How many events one timeline answer holds; `next_cursor` continues after the last of them.
 const TIMELINE_PAGE: usize = 200;
+/// Lines in one page of a log, and the most of a log file that is read (and so shown).
+const LOG_PAGE: usize = 500;
+const LOG_READ_CAP: u64 = 8 * 1024 * 1024;
 
 /// How many plain folders may be nested above a repository: `~/code/pitstop/eGiftit/egiftit-backend`
 /// has two, and nothing deeper is looked at.
@@ -239,6 +242,67 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             (None, None) => a.1.cmp(&b.1),
         });
         Ok(Some(serde_json::Value::Array(rows.into_iter().map(|row| row.2).collect())))
+    }
+
+    fn run_logs(&self, id: &str, run: &str, file: Option<&str>, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {
+        use std::io::Read;
+        use orq_orchestrator::StoreError;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let record = match store.load(run) {
+            Ok(record) => record,
+            Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => return Ok(None),
+            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
+        };
+        if record.project_id != key {
+            return Ok(None);
+        }
+        let dir = self.roots.state.join("logs").join(run);
+        // Only plain, non-hidden `.log` files that are not links are logs.
+        let plain = |name: &str| name.ends_with(".log") && !name.starts_with('.') && !name.contains(['/', '\\']);
+        let Some(file) = file else {
+            let mut files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    match entry.path().symlink_metadata() {
+                        Ok(meta) if meta.is_file() && plain(&name) => files.push(serde_json::json!({"name": name, "bytes": meta.len()})),
+                        _ => {}
+                    }
+                }
+            }
+            files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            return Ok(Some(serde_json::json!({"files": files})));
+        };
+        if !plain(file) {
+            return Ok(None);
+        }
+        let skip: usize = match after {
+            None => 0,
+            Some(cursor) => match cursor.parse() {
+                Ok(lines) => lines,
+                Err(_) => return Ok(None),
+            },
+        };
+        let path = dir.join(file);
+        match path.symlink_metadata() {
+            Ok(meta) if meta.is_file() => {}
+            _ => return Ok(None),
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path).and_then(|f| f.take(LOG_READ_CAP + 1).read_to_end(&mut bytes)).map_err(|error| format!("log {file} is unreadable: {error}"))?;
+        let truncated = bytes.len() as u64 > LOG_READ_CAP;
+        bytes.truncate(LOG_READ_CAP as usize);
+        // The whole readable text is redacted at once so a secret that spans lines is found.
+        let text = String::from_utf8_lossy(&orq_core::redact::redact_bytes(&bytes)).into_owned();
+        let all: Vec<&str> = text.lines().collect();
+        if skip > all.len() {
+            return Ok(None);
+        }
+        let page: Vec<&str> = all.iter().skip(skip).take(LOG_PAGE).copied().collect();
+        let next = if skip + page.len() < all.len() { Some((skip + page.len()).to_string()) } else { None };
+        Ok(Some(serde_json::json!({"name": file, "lines": page, "next_cursor": next, "truncated": truncated})))
     }
 
     fn run_timeline(&self, id: &str, run: &str, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {

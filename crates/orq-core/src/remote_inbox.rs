@@ -202,6 +202,13 @@ pub trait ProjectsProvider {
     fn run_timeline(&self, _id: &str, _run: &str, _after: Option<&str>) -> Result<Option<Value>, String> {
         Ok(None)
     }
+
+    /// The log files of a run of project `id` (`file` is `None`), or the redacted lines of one file
+    /// after the line count `after`, one page at most. `None` when the project, the run (of that
+    /// project), the file or the cursor is unknown.
+    fn run_logs(&self, _id: &str, _run: &str, _file: Option<&str>, _after: Option<&str>) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -264,6 +271,19 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             };
         }
         let parts: Vec<&str> = rest.split('/').collect();
+        let logs = match parts.as_slice() {
+            [id, "runs", run, "logs"] => Some((*id, *run, None, None)),
+            [id, "runs", run, "logs", file] => Some((*id, *run, Some(*file), None)),
+            [id, "runs", run, "logs", file, "after", cursor] => Some((*id, *run, Some(*file), Some(*cursor))),
+            _ => None,
+        };
+        if let Some((id, run, file, after)) = logs.filter(|(id, run, file, after)| !id.is_empty() && !run.is_empty() && file.map_or(true, |file| !file.is_empty()) && after.map_or(true, |cursor| !cursor.is_empty())) {
+            return match provider.map(|provider| provider.run_logs(id, run, file, after)) {
+                Some(Ok(Some(logs))) => reply(200, logs),
+                Some(Err(_)) => error(500, "the logs could not be read"),
+                _ => error(404, "not found"),
+            };
+        }
         let timeline = match parts.as_slice() {
             [id, "runs", run] => Some((*id, *run, None)),
             [id, "runs", run, "after", cursor] => Some((*id, *run, Some(*cursor))),
