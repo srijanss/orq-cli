@@ -277,6 +277,21 @@ mod tests {
     }
 
     #[test]
+    fn a_counterless_sign_in_checks_the_store_without_rewriting_it() {
+        let f = fixture("no-write", 0);
+        let path = PasskeyStore::path(&StorageRoots { data: "d".into(), config: "c".into(), state: std::env::temp_dir().join(format!("orq-login-{}-no-write", std::process::id())).join("state"), cache: "x".into() });
+        let before = std::fs::metadata(&path).unwrap();
+        let inode = std::os::unix::fs::MetadataExt::ino(&before);
+        assert!(sign_in(&f, &Assertion::good(0), 120).is_ok());
+        assert_eq!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path).unwrap()), inode, "the file was replaced");
+        // A moving counter does replace it.
+        let mut moving = Assertion::good(3);
+        moving.flags = 0x05;
+        assert!(sign_in(&f, &moving, 121).is_ok());
+        assert_ne!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&path).unwrap()), inode);
+    }
+
+    #[test]
     fn a_second_sign_in_with_a_counter_already_used_is_refused() {
         let f = fixture("reuse", 4);
         assert!(sign_in(&f, &Assertion::good(5), 120).is_ok());

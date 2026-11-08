@@ -238,13 +238,14 @@ impl PasskeyStore {
     /// `seen`, then sets its counter to `new`. Of two sign-ins that read the same counter only one
     /// gets through, and a passkey removed since it was read is refused, counter or no counter.
     pub fn advance_counter(&self, seen: &Passkey, new: u32) -> Result<(), String> {
-        self.change(|keys| {
+        self.change_if(|keys| {
             let key = keys.iter_mut().find(|key| key.credential_id == seen.credential_id).ok_or("the passkey is no longer registered")?;
             if key.public_key != seen.public_key || key.sign_count != seen.sign_count {
                 return Err("the passkey changed".into());
             }
+            let moved = key.sign_count != new;
             key.sign_count = new;
-            Ok(())
+            Ok(moved)
         })
     }
 
@@ -258,11 +259,19 @@ impl PasskeyStore {
 
     /// Reads, changes and writes back under an exclusive lock, so simultaneous changes are all kept.
     fn change(&self, edit: impl FnOnce(&mut Vec<Passkey>) -> Result<(), String>) -> Result<(), String> {
+        self.change_if(|keys| edit(keys).map(|()| true))
+    }
+
+    /// Like `change`, but the edit says whether anything needs writing; a check that changes nothing
+    /// takes the lock and reads, and does no durable write.
+    fn change_if(&self, edit: impl FnOnce(&mut Vec<Passkey>) -> Result<bool, String>) -> Result<(), String> {
         let dir = self.directory(true)?.ok_or("the Orq state directory is missing")?;
         let lock = rustix::fs::openat(&dir, LOCK_NAME, OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o600)).map_err(|e| format!("cannot open the passkey lock: {e}"))?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).map_err(|e| format!("cannot lock the passkey file: {e}"))?;
         let mut keys = self.read(&dir)?;
-        edit(&mut keys)?;
+        if !edit(&mut keys)? {
+            return Ok(());
+        }
         self.write(&dir, &keys)
     }
 
