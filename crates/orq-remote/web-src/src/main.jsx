@@ -198,10 +198,22 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
   return draw(state.data);
 }
 
+function SignedIn({ token, onSignedOut }) {
+  const hash = useSyncExternalStore(subscribeToLocation, currentPath);
+  if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
+    return <p>This page is not available yet.</p>;
+  }
+  const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
+  if (RUN_ID.test(runId)) {
+    const path = API_REVIEWS + "/" + encodeURIComponent(runId);
+    return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} />} onSignedOut={onSignedOut} />;
+  }
+  return <Loaded key={API_REVIEWS} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />;
+}
+
 function App() {
   const [token, setToken] = useState(null);
   const [message, setMessage] = useState("");
-  const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (token === null) {
     return <TokenPrompt message={message} onToken={setToken} />;
   }
@@ -209,20 +221,12 @@ function App() {
     setToken(null);
     setMessage(SIGN_IN_FAILED);
   };
-  if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
-    return <p>This page is not available yet.</p>;
-  }
-  const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
-  if (RUN_ID.test(runId)) {
-    const path = API_REVIEWS + "/" + encodeURIComponent(runId);
-    return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} />} onSignedOut={signedOut} />;
-  }
-  return <Loaded key={API_REVIEWS} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={signedOut} />;
+  return (
+    <Shell>
+      <SignedIn token={token} onSignedOut={signedOut} />
+    </Shell>
+  );
 }
 
 migrateLegacyHash();
-createRoot(document.getElementById("app")).render(
-  <Shell>
-    <App />
-  </Shell>,
-);
+createRoot(document.getElementById("app")).render(<App />);

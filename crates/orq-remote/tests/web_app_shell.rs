@@ -97,7 +97,7 @@ fn the_rail_is_64px_wide_when_collapsed_and_the_drawer_has_a_phone_layout() {
 }
 
 #[test]
-fn the_served_page_is_framed_by_the_shell() {
+fn the_served_page_is_framed_by_the_shell_only_after_signing_in() {
     if !web_deps::ready() {
         return;
     }
@@ -110,9 +110,8 @@ fn the_served_page_is_framed_by_the_shell() {
         .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
-    for frame in out["frames"].as_array().unwrap() {
-        assert_eq!(frame["settled"]["shell"], true, "every state of the page sits inside the shell: {out}");
-    }
+    assert_eq!(out["frames"][0]["settled"]["shell"], false, "no navigation before signing in: {out}");
+    assert_eq!(out["frames"][1]["settled"]["shell"], true, "the signed-in page sits inside the shell: {out}");
 }
 
 #[test]
