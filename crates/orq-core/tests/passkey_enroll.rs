@@ -154,3 +154,24 @@ fn every_refusal_is_the_same_value() {
     ];
     assert!(results.iter().all(|r| *r == Err(Refused)));
 }
+
+#[test]
+fn of_several_token_enrolments_that_race_exactly_one_is_stored() {
+    let (store, roots) = store("race");
+    let auth = EnrolAuthorizer::new();
+    // Every one of them is told it may enrol with the token...
+    for _ in 0..8 {
+        assert_eq!(ask(&auth, &store, TAILNET, bearer(TOKEN).as_deref(), false, 1), Ok(Enrolment::WithToken));
+    }
+    // ...but storing the first passkey is a single locked step that only an empty store accepts.
+    let landed: usize = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8).map(|i| {
+            let roots = roots.clone();
+            scope.spawn(move || PasskeyStore::open(&roots).add_first(key(&format!("cred{i}"), &format!("device{i}"))).is_ok())
+        }).collect();
+        handles.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
+    });
+    assert_eq!(landed, 1);
+    assert_eq!(store.list().unwrap().len(), 1);
+    assert!(store.add_first(key("later", "later")).is_err(), "and later ones are refused too");
+}

@@ -218,6 +218,19 @@ impl PasskeyStore {
         })
     }
 
+    /// Registers a passkey only if none is registered, in the same locked step that stores it: of
+    /// several token-authorized enrolments that race, exactly one lands. Anything else is refused.
+    pub fn add_first(&self, key: Passkey) -> Result<(), String> {
+        validate(&key)?;
+        self.change(|keys| {
+            if !keys.is_empty() {
+                return Err("a passkey is already registered".into());
+            }
+            keys.push(key);
+            Ok(())
+        })
+    }
+
     /// Removes the passkey with this label.
     pub fn remove(&self, label: &str) -> Result<(), String> {
         self.change(|keys| {

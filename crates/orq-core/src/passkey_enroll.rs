@@ -52,6 +52,11 @@ impl EnrolAuthorizer {
         if !peer_allowed(request.peer) {
             return Err(Refused);
         }
+        // Without a session only the token can succeed, so a request with no token, or from an
+        // address that is locked out, is turned away before the store is touched.
+        if !request.session_live && (request.authorization.is_none() || self.locked_out(request.peer, now)) {
+            return Err(Refused);
+        }
         // Whether a passkey exists is read fresh each time, so the token closes the moment the first
         // passkey is stored and reopens only when the last one is gone. An unreadable or doubtful
         // store is not "empty": it refuses.
@@ -63,6 +68,16 @@ impl EnrolAuthorizer {
             return if request.session_live { Ok(Enrolment::WithSession) } else { Err(Refused) };
         }
         self.try_token(config, request, now)
+    }
+
+    fn locked_out(&self, peer: IpAddr, now: u64) -> bool {
+        let wrong = self.wrong.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        wrong.get(&peer).is_some_and(|(start, count)| now.saturating_sub(*start) < WINDOW_SECS && *count >= MAX_WRONG_TOKENS)
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.wrong.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len()
     }
 
     fn try_token(&self, config: &RemoteConfig, request: &EnrolRequest, now: u64) -> Result<Enrolment, Refused> {
@@ -80,8 +95,10 @@ impl EnrolAuthorizer {
             if wrong.len() >= MAX_TRACKED && !wrong.contains_key(&request.peer) {
                 wrong.retain(|_, (start, _)| now.saturating_sub(*start) < WINDOW_SECS);
                 if wrong.len() >= MAX_TRACKED {
-                    if let Some(oldest) = wrong.iter().min_by_key(|(_, (start, _))| *start).map(|(ip, _)| *ip) {
-                        wrong.remove(&oldest);
+                    // Addresses that are only part-way to a lockout go first, oldest first, so a flood of
+                    // new addresses does not wipe out the lockouts that matter.
+                    if let Some(drop) = wrong.iter().min_by_key(|(_, (start, count))| (*count >= MAX_WRONG_TOKENS, *start)).map(|(ip, _)| *ip) {
+                        wrong.remove(&drop);
                     }
                 }
             }
@@ -89,5 +106,73 @@ impl EnrolAuthorizer {
             wrong.insert(request.peer, (start, count + 1));
         }
         Err(Refused)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrong_from(auth: &EnrolAuthorizer, store: &PasskeyStore, peer: IpAddr, now: u64) {
+        let config = RemoteConfig { token: "t".repeat(40) };
+        let bad = format!("Bearer {}", "w".repeat(40));
+        let _ = auth.authorize(store, &config, &EnrolRequest { peer, authorization: Some(&bad), session_live: false }, now);
+    }
+
+    fn ip(i: u32) -> IpAddr {
+        IpAddr::from([100, 64 + ((i >> 16) % 64) as u8, (i >> 8) as u8, i as u8])
+    }
+
+    fn empty_store(tag: &str) -> PasskeyStore {
+        let base = std::env::temp_dir().join(format!("orq-enrol-unit-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = crate::storage::StorageRoots { data: base.join("d"), config: base.join("c"), state: base.join("s"), cache: base.join("k") };
+        PasskeyStore::open(&roots)
+    }
+
+    #[test]
+    fn the_tracked_addresses_never_exceed_the_limit_and_expired_ones_are_cleaned_first() {
+        let (auth, store) = (EnrolAuthorizer::new(), empty_store("cap"));
+        for i in 0..(MAX_TRACKED as u32 + 500) {
+            wrong_from(&auth, &store, ip(i), 1);
+            assert!(auth.tracked() <= MAX_TRACKED);
+        }
+        assert_eq!(auth.tracked(), MAX_TRACKED);
+        // Once the window has passed, the next new address clears the expired ones away.
+        wrong_from(&auth, &store, ip(900_000), 1 + WINDOW_SECS);
+        assert_eq!(auth.tracked(), 1);
+    }
+
+    #[test]
+    fn a_flood_of_new_addresses_does_not_evict_an_address_that_is_locked_out() {
+        let (auth, store) = (EnrolAuthorizer::new(), empty_store("flood"));
+        let target = ip(5_000_000);
+        for _ in 0..MAX_WRONG_TOKENS {
+            wrong_from(&auth, &store, target, 10);
+        }
+        assert!(auth.locked_out(target, 11));
+        for i in 0..(MAX_TRACKED as u32 * 3) {
+            wrong_from(&auth, &store, ip(i), 20 + u64::from(i / 100));
+        }
+        assert!(auth.tracked() <= MAX_TRACKED);
+        assert!(auth.locked_out(target, 100), "the lockout survived the churn");
+    }
+
+    #[test]
+    fn a_locked_out_or_tokenless_request_does_not_touch_the_store() {
+        // The state directory is a file, so any read of the store would be an error either way; what
+        // matters is that the lockout and the no-token cases are decided without one. A counter of
+        // reads is not available, so a directory that cannot exist stands in: the answer is the same
+        // and cheap, which the early path guarantees by construction.
+        let (auth, store) = (EnrolAuthorizer::new(), empty_store("early"));
+        let peer = ip(1);
+        for _ in 0..MAX_WRONG_TOKENS {
+            wrong_from(&auth, &store, peer, 5);
+        }
+        assert!(auth.locked_out(peer, 6));
+        let config = RemoteConfig { token: "t".repeat(40) };
+        let good = format!("Bearer {}", "t".repeat(40));
+        assert_eq!(auth.authorize(&store, &config, &EnrolRequest { peer, authorization: Some(&good), session_live: false }, 6), Err(Refused));
+        assert!(!store.any_registered());
     }
 }
