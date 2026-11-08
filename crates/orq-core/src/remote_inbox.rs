@@ -232,6 +232,7 @@ fn project_path(rest: &str) -> Option<(&str, Option<&str>)> {
 
 /// The newest stored lifecycle of `run_id` for the commit its report is about.
 struct Facts {
+    project: String,
     head: String,
     observed: Option<String>,
     link: Option<String>,
@@ -239,19 +240,31 @@ struct Facts {
 }
 
 fn facts(roots: &StorageRoots, run_id: &str) -> Option<Facts> {
-    let store = Store::open_read_only(&roots.database()).ok()?;
-    let head = store.reviews_for_run(run_id).ok()?.pop()?.head_sha;
+    read_facts(roots, run_id).ok().flatten()
+}
+
+/// One read of the newest report record fixes the project, the commit and the lifecycle facts together.
+/// A missing index or run is `None`; an index that cannot be read is an error, never "not found".
+fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, String> {
+    if !roots.database().exists() {
+        return Ok(None);
+    }
+    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
+    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+    let Some(record) = records.into_iter().last() else { return Ok(None) };
+    let (project, head) = (record.project, record.head_sha);
     // A lifecycle that cannot be read is unknown, never "fresh": it counts as stale and offers no link.
     let Ok(all) = store.lifecycles_for_run(run_id) else {
-        return Some(Facts { head, observed: None, link: None, stale: true });
+        return Ok(Some(Facts { project, head, observed: None, link: None, stale: true }));
     };
     let lifecycle = all.into_iter().rev().find(|l| l.reported_head_sha == head);
-    Some(Facts {
+    Ok(Some(Facts {
         observed: lifecycle.as_ref().and_then(|l| l.observed_head_sha.clone()),
         link: lifecycle.as_ref().and_then(|l| safe_link(&l.url)),
         stale: lifecycle.as_ref().is_some_and(|l| l.stale),
+        project,
         head,
-    })
+    }))
 }
 
 fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool) -> Response {
@@ -273,32 +286,17 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
     reply(200, json!({ "reviews": reviews }))
 }
 
-/// The project the newest stored report of `run_id` belongs to. A missing index or run is `None`;
-/// an index that cannot be read is an error, never "not found".
-fn owner_of(roots: &StorageRoots, run_id: &str) -> Result<Option<String>, String> {
-    if !roots.database().exists() {
-        return Ok(None);
-    }
-    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
-    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
-    Ok(records.into_iter().last().map(|record| record.project))
-}
-
 fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Response {
     if check_run_id(run_id).is_err() {
         return error(400, "invalid run id");
     }
-    if let Some(owner_id) = only_project {
-        // A report of another project is not found here, exactly like a run that does not exist.
-        match owner_of(roots, run_id) {
-            Ok(owner) if owner.as_deref() == Some(owner_id) => {}
-            Ok(_) => return error(404, "no review report for this run"),
-            Err(why) => return error(500, &why),
-        }
-    }
-    // The commit is fixed first and the report is read for that very commit, so
-    // a report saved in between cannot be paired with another commit's facts.
-    let Some(f) = facts(roots, run_id) else { return error(404, "no review report for this run") };
+    // The project and the commit come from the same record, so the check and the report cannot disagree.
+    let f = match read_facts(roots, run_id) {
+        Ok(Some(f)) if only_project.is_none_or(|owner| f.project == owner) => f,
+        Ok(_) => return error(404, "no review report for this run"),
+        Err(why) if only_project.is_some() => return error(500, &why),
+        Err(_) => return error(404, "no review report for this run"),
+    };
     let InboxDetail { summary, risks, files, tests, rounds } = match review_inbox::detail_at(roots, run_id, &f.head) {
         Ok(detail) => detail,
         Err(_) => return error(404, "no review report for this run"),

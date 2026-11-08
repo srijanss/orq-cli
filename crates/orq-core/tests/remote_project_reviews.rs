@@ -124,3 +124,17 @@ fn an_unreadable_review_index_is_a_server_error_while_a_missing_one_is_not_found
     assert_eq!(get(&roots, &p, "/api/projects/other/reviews/run-other").0, 404);
     assert_eq!(get(&roots, &p, "/api/projects/other/reviews").0, 200);
 }
+
+#[test]
+fn a_run_saved_again_under_another_project_is_served_only_with_the_newest_report() {
+    let roots = roots("revisions");
+    let p = Fixed { asked: Cell::new(0) };
+    let newer = "b".repeat(40);
+    let body = serde_json::to_vec(&json!({"status": "current", "summary": {"files_changed": 1, "added": 1, "deleted": 0}, "files": [], "tests": {"status": "passed", "commands": []}, "risks": [], "rounds": [], "gaps": []})).unwrap();
+    // run-ours was first saved for our project; a newer revision now belongs to the other one.
+    Store::open(&roots.database()).unwrap().save_review(&roots.data, "run-ours", OTHER, "feat-other", &newer, &body).unwrap();
+    let (status, report) = get(&roots, &p, "/api/projects/other/reviews/run-ours");
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["reported_head_sha"], newer.as_str());
+    assert_eq!(get(&roots, &p, "/api/reviews/run-ours").1["reported_head_sha"], newer.as_str());
+}
