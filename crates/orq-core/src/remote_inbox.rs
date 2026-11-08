@@ -273,15 +273,27 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
     reply(200, json!({ "reviews": reviews }))
 }
 
+/// The project the newest stored report of `run_id` belongs to. A missing index or run is `None`;
+/// an index that cannot be read is an error, never "not found".
+fn owner_of(roots: &StorageRoots, run_id: &str) -> Result<Option<String>, String> {
+    if !roots.database().exists() {
+        return Ok(None);
+    }
+    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
+    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+    Ok(records.into_iter().last().map(|record| record.project))
+}
+
 fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Response {
     if check_run_id(run_id).is_err() {
         return error(400, "invalid run id");
     }
     if let Some(owner_id) = only_project {
         // A report of another project is not found here, exactly like a run that does not exist.
-        let owner = Store::open_read_only(&roots.database()).ok().and_then(|store| store.reviews_for_run(run_id).ok()).and_then(|mut all| all.pop()).map(|record| record.project);
-        if owner.as_deref() != Some(owner_id) {
-            return error(404, "no review report for this run");
+        match owner_of(roots, run_id) {
+            Ok(owner) if owner.as_deref() == Some(owner_id) => {}
+            Ok(_) => return error(404, "no review report for this run"),
+            Err(why) => return error(500, &why),
         }
     }
     // The commit is fixed first and the report is read for that very commit, so

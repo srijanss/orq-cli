@@ -113,3 +113,14 @@ fn without_a_provider_the_project_paths_do_not_exist_and_the_old_paths_still_wor
     assert_eq!(body["reviews"].as_array().unwrap().len(), 2, "{body}");
     assert_eq!(ask(&roots, None, "GET", "/api/reviews/run-other", Some("Bearer tok"), "127.0.0.1").0, 200);
 }
+
+#[test]
+fn an_unreadable_review_index_is_a_server_error_while_a_missing_one_is_not_found() {
+    let roots = roots("unreadable");
+    let p = Fixed { asked: Cell::new(0) };
+    std::fs::write(roots.database(), b"this is not a sqlite database").unwrap();
+    assert_eq!(get(&roots, &p, "/api/projects/other/reviews/run-other").0, 500);
+    std::fs::remove_file(roots.database()).unwrap();
+    assert_eq!(get(&roots, &p, "/api/projects/other/reviews/run-other").0, 404);
+    assert_eq!(get(&roots, &p, "/api/projects/other/reviews").0, 200);
+}
