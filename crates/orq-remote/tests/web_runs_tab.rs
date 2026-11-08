@@ -101,3 +101,16 @@ fn switching_project_never_shows_the_other_projects_runs_loaded_or_late() {
     let late = shown(&out["frames"][3]);
     assert!(late.iter().any(|t| t == "beta-only") && !late.iter().any(|t| t == "alpha-late"), "{late:?}");
 }
+
+#[test]
+fn while_the_other_projects_runs_are_loading_the_loaded_rows_are_already_gone() {
+    let held = json!({"hold": "fetch", "status": 200, "json": {"runs": [row("run-b", "beta-only", "running", Value::Null)]}});
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs_of("alpha-only"), projects(), held]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 2}])) else { return };
+    assert!(shown(&out["frames"][1]).iter().any(|t| t == "alpha-only"), "{out}");
+    // Beta's request is made and still waiting: alpha's rows must not stand under beta's address.
+    assert_eq!(out["requests"][2]["url"], "/api/projects/beta/runs", "{out}");
+    let waiting = shown(&out["frames"][2]);
+    assert!(!waiting.iter().any(|t| t == "alpha-only") && !waiting.iter().any(|t| t == "beta-only"), "{waiting:?}");
+    let done = shown(&out["frames"][3]);
+    assert!(done.iter().any(|t| t == "beta-only") && !done.iter().any(|t| t == "alpha-only"), "{done:?}");
+}
