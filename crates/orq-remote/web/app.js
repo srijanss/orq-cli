@@ -68,7 +68,13 @@ async function load() {
       return;
     }
     if (!response.ok) {
-      show(element("p", "The inbox could not be read just now."));
+      // The token is still held, so trying again does not ask for it again.
+      const retry = element("button", "Try again");
+      retry.type = "button";
+      retry.addEventListener("click", load);
+      const notice = element("p", "The inbox could not be read just now.");
+      notice.setAttribute("role", "alert");
+      show(notice, retry);
       return;
     }
     const data = await response.json();
