@@ -164,6 +164,10 @@ fn is_application_path(path: &str) -> bool {
         ["projects", project] => plain(project),
         ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
         ["projects", project, "reviews", run] => plain(project) && plain(run),
+        // A run, its next pages of events, and its logs (a file, then the page after a line).
+        ["projects", project, "orchestrations", run] | ["projects", project, "orchestrations", run, "logs"] => plain(project) && plain(run),
+        ["projects", project, "orchestrations", run, "after", cursor] | ["projects", project, "orchestrations", run, "logs", cursor] => plain(project) && plain(run) && plain(cursor),
+        ["projects", project, "orchestrations", run, "logs", file, "after", cursor] => plain(project) && plain(run) && plain(file) && plain(cursor),
         ["reviews", run] => plain(run),
         _ => false,
     }
