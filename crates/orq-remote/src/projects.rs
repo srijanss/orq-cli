@@ -84,6 +84,13 @@ struct Counts {
 }
 
 impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
+    fn review_scope(&self, id: &str) -> Result<Option<orq_core::remote_inbox::ReviewScope>, String> {
+        // Only a project found by the scan counts; the id is matched, never used as a path.
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        Ok(Some(orq_core::remote_inbox::ReviewScope { review_key: orq_git::project_id(&git), name: project.name }))
+    }
+
     fn projects(&self) -> Result<serde_json::Value, String> {
         use serde_json::json;
         let reviews = if self.roots.database().exists() {
