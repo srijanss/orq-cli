@@ -170,11 +170,22 @@ pub struct StoreProjects {
     roots: orq_core::storage::StorageRoots,
     scan_root: std::path::PathBuf,
     run_logs: std::sync::Mutex<LogCache>,
+    log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
+}
+
+/// The redacted text of the log file last paged through, so the next page of an unchanged file is
+/// cut from it instead of reading and redacting the file again.
+struct LogSnapshot {
+    path: std::path::PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    truncated: bool,
+    text: std::sync::Arc<str>,
 }
 
 impl StoreProjects {
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
-        StoreProjects { roots, scan_root, run_logs: Default::default() }
+        StoreProjects { roots, scan_root, run_logs: Default::default(), log_snapshot: Default::default() }
     }
 }
 
@@ -305,18 +316,30 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             Ok(meta) if meta.is_file() => {}
             _ => return Ok(None),
         }
-        let mut bytes = Vec::new();
-        std::fs::File::open(&path).and_then(|f| f.take(LOG_READ_CAP + 1).read_to_end(&mut bytes)).map_err(|error| format!("log {file} is unreadable: {error}"))?;
-        let truncated = bytes.len() as u64 > LOG_READ_CAP;
-        bytes.truncate(LOG_READ_CAP as usize);
-        // The whole readable text is redacted at once so a secret that spans lines is found.
-        let text = String::from_utf8_lossy(&orq_core::redact::redact_bytes(&bytes)).into_owned();
-        let all: Vec<&str> = text.lines().collect();
-        if skip > all.len() {
+        let meta = path.symlink_metadata().map_err(|error| format!("log {file} is unreadable: {error}"))?;
+        let (len, modified) = (meta.len(), meta.modified().ok());
+        let mut slot = self.log_snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = match slot.as_ref().filter(|known| known.path == path && known.len == len && known.modified == modified && modified.is_some()) {
+            Some(known) => (known.text.clone(), known.truncated),
+            None => {
+                let mut bytes = Vec::new();
+                std::fs::File::open(&path).and_then(|f| f.take(LOG_READ_CAP + 1).read_to_end(&mut bytes)).map_err(|error| format!("log {file} is unreadable: {error}"))?;
+                let truncated = bytes.len() as u64 > LOG_READ_CAP;
+                bytes.truncate(LOG_READ_CAP as usize);
+                // The whole readable text is redacted at once so a secret that spans lines is found.
+                let text: std::sync::Arc<str> = String::from_utf8_lossy(&orq_core::redact::redact_bytes(&bytes)).into_owned().into();
+                *slot = Some(LogSnapshot { path: path.clone(), len, modified, truncated, text: text.clone() });
+                (text, truncated)
+            }
+        };
+        drop(slot);
+        let (text, truncated) = snapshot;
+        let total = text.lines().count();
+        if skip > total {
             return Ok(None);
         }
-        let page: Vec<&str> = all.iter().skip(skip).take(LOG_PAGE).copied().collect();
-        let next = if skip + page.len() < all.len() { Some((skip + page.len()).to_string()) } else { None };
+        let page: Vec<&str> = text.lines().skip(skip).take(LOG_PAGE).collect();
+        let next = if skip + page.len() < total { Some((skip + page.len()).to_string()) } else { None };
         Ok(Some(serde_json::json!({"name": file, "lines": page, "next_cursor": next, "truncated": truncated})))
     }
 

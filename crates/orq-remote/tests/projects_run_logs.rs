@@ -225,3 +225,31 @@ fn a_log_over_the_read_cap_shows_its_readable_prefix_marked_truncated_with_secre
     assert!(!seen.contains("SECRETKEYBODY") && !seen.contains("after"), "the cut key block and everything past the cap is gone");
     assert!(seen.contains("[REDACTED]"));
 }
+
+#[test]
+fn a_log_that_has_not_changed_is_not_read_and_redacted_again_for_the_next_page() {
+    let s = setup("logs-snapshot");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha));
+    let text: String = (0..600).map(|n| format!("line {n:04}\n")).collect();
+    log(&s, "r1", "gate.log", &text);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let page = |p: &StoreProjects, path: &str| ask(p, &s, "GET", path, Some("Bearer tok"));
+    let (_, first) = page(&provider, "/api/projects/alpha/runs/r1/logs/gate.log");
+    assert_eq!(first["next_cursor"], "500");
+
+    // Same size and time, different bytes: only a fresh read would show it.
+    let file = s.roots.state.join("logs/r1/gate.log");
+    let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, text.replace("line", "LINE")).unwrap();
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+    let (_, second) = page(&provider, "/api/projects/alpha/runs/r1/logs/gate.log/after/500");
+    assert_eq!(second["lines"][0], "line 0500", "{second}");
+    // A longer file is read afresh, and so is a new provider.
+    std::fs::write(&file, format!("{}more\n", text.replace("line", "LINE"))).unwrap();
+    assert_eq!(page(&provider, "/api/projects/alpha/runs/r1/logs/gate.log/after/500").1["lines"][0], "LINE 0500");
+    std::fs::write(&file, text.replace("line", "LINE")).unwrap();
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+    let fresh = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    assert_eq!(page(&fresh, "/api/projects/alpha/runs/r1/logs/gate.log/after/500").1["lines"][0], "LINE 0500");
+}
