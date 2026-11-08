@@ -84,3 +84,17 @@ fn a_refused_token_on_a_refresh_asks_for_the_token_again_and_a_failed_one_keeps_
     assert!(texts(&out["frames"][2]).contains("first"), "{out}");
     assert_eq!(out["frames"][2]["settled"]["inputs"].as_array().unwrap().len(), 0, "{out}");
 }
+
+#[test]
+fn leaving_during_a_waiting_refresh_cancels_it_and_nothing_asks_again_afterwards() {
+    let held = json!({"hold": "fetch", "status": 200, "json": {"reviews": []}});
+    let steps = json!([{"submit": TOKEN}, {"tick": EVERY}, {"go": "/settings"}, {"release": 1}, {"visibility": "hidden"}, {"visibility": "visible"}, {"tick": EVERY}]);
+    let Some(out) = run("/", json!([list(&["first"]), held, list(&["late"])]), steps) else { return };
+    let requests = out["requests"].as_array().unwrap();
+    assert_eq!(requests.len(), 2, "no request after leaving: {out}");
+    assert_eq!(requests[1]["aborted"], true, "{out}");
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["settled"]["path"], "/settings", "{out}");
+    assert_eq!(last["settled"]["activeIntervals"], json!([]), "{out}");
+    assert!(!texts(last).contains("late") && !texts(last).contains("first"), "{out}");
+}
