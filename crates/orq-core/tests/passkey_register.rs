@@ -249,6 +249,28 @@ fn garbage_answers_are_refused_without_a_panic_and_store_nothing() {
 }
 
 #[test]
+fn client_data_over_the_limit_is_refused_at_the_byte_and_an_oversized_attestation_uses_up_the_challenge() {
+    let f = fixture("limits");
+    for (size, accepted) in [(4096, true), (4097, false), (4098, false)] {
+        let challenge = challenge_of(&begin(&f.host, &f.challenges, &f.store, 100).unwrap());
+        let json = format!("{{\"type\":\"webauthn.create\",\"challenge\":\"{challenge}\",\"origin\":\"https://{HOST}\"}}");
+        let padded = format!("{json}{}", " ".repeat(size - json.len()));
+        let response = RegistrationResponse { client_data_json: encode_b64url(padded.as_bytes()), ..Answer::good().response(&challenge) };
+        let outcome = finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithSession, &response, 110);
+        assert_eq!(outcome.is_ok(), accepted, "{size}: {outcome:?}");
+    }
+    let challenge = challenge_of(&begin(&f.host, &f.challenges, &f.store, 100).unwrap());
+    let mut other = Answer::good();
+    other.credential_id = vec![9; 32];
+    let good = other.response(&challenge);
+    let oversized = RegistrationResponse { attestation_object: "A".repeat(30_000), client_data_json: good.client_data_json.clone(), label: "phone".into() };
+    assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithSession, &oversized, 110).is_err());
+    let retry = RegistrationResponse { label: "phone".into(), ..good };
+    assert!(finish(&f.host, &f.challenges, &f.authorizer, &f.store, Enrolment::WithSession, &retry, 111).is_err(), "the challenge was spent by the oversized answer");
+    assert_eq!(f.store.list().unwrap().len(), 1);
+}
+
+#[test]
 fn a_malformed_attestation_uses_up_the_challenge() {
     let f = fixture("malformed-spent");
     let options = begin(&f.host, &f.challenges, &f.store, 100).unwrap();

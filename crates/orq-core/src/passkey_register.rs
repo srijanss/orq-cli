@@ -87,16 +87,22 @@ pub fn begin(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore, 
 /// for the caller of the web API.
 pub fn finish(host: &PasskeyHost, challenges: &Challenges, authorizer: &EnrolAuthorizer, store: &PasskeyStore, how: Enrolment, response: &RegistrationResponse, now: u64) -> Result<Passkey, String> {
     // Encoded lengths are checked before decoding, so an oversized answer costs nothing to refuse.
-    if response.client_data_json.len() > encoded_len(MAX_CLIENT_DATA) || response.attestation_object.len() > encoded_len(MAX_ATTESTATION) {
+    if response.client_data_json.len() > encoded_len(MAX_CLIENT_DATA) {
         return Err("the answer is too large".into());
     }
     let client_data = decode_b64url(&response.client_data_json).map_err(|_| "client data is not base64url")?;
+    if client_data.len() > MAX_CLIENT_DATA {
+        return Err("the answer is too large".into());
+    }
     let data: Value = serde_json::from_slice(&client_data).map_err(|_| "client data is not JSON")?;
     let text = |name: &str| data.get(name).and_then(Value::as_str);
     // The challenge is spent before anything else is judged, so no answer can be retried.
     let challenge = text("challenge").ok_or("client data has no challenge")?;
     if !challenges.spend(Purpose::Register, challenge, now) {
         return Err("the challenge is unknown, expired or already used".into());
+    }
+    if response.attestation_object.len() > encoded_len(MAX_ATTESTATION) {
+        return Err("the answer is too large".into());
     }
     let attestation = decode_b64url(&response.attestation_object).map_err(|_| "attestation is not base64url")?;
     if attestation.len() > MAX_ATTESTATION {
