@@ -110,3 +110,12 @@ fn a_refused_stream_signs_out_a_missing_one_stops_and_leaving_the_page_closes_it
     let Some(out) = run(RUN, base(stream(vec![], "hold")), json!([{"submit": TOKEN}, {"click": "button[data-back=list]", "index": 0}])) else { return };
     assert_eq!(out["requests"][2]["aborted"], true, "{out}");
 }
+
+#[test]
+fn an_event_repeated_within_one_read_is_shown_once() {
+    let both = format!("{}{}{}", sse("e1", "one"), sse("e1", "one"), sse("e2", "two"));
+    let responses = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), stream(vec![both], "hold")]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1];
+    assert_eq!((count(frame, "zero"), count(frame, "one"), count(frame, "two")), (1, 1, 1), "{:?}", texts(frame));
+}

@@ -515,6 +515,8 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
   const [status, setStatus] = useState("live");
   const [retry, setRetry] = useState(0);
   const last = useRef(from);
+  // Every event id accepted so far, so a repeat is told apart in constant time.
+  const ids = useRef(new Set());
   useEffect(() => {
     let current = true;
     let timer = null;
@@ -552,10 +554,15 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
           buffer += decoder.decode(value, { stream: true });
           const blocks = buffer.split("\n\n");
           buffer = blocks.pop();
-          const fresh = blocks.map(streamedEvent).filter((event) => event !== null);
+          const fresh = [];
+          for (const event of blocks.map(streamedEvent)) {
+            if (event === null || ids.current.has(event.event_id)) continue;
+            ids.current.add(event.event_id);
+            fresh.push(event);
+          }
           if (fresh.length > 0) {
             last.current = fresh[fresh.length - 1].event_id;
-            setMore((known) => [...known, ...fresh.filter((event) => !known.some((have) => have.event_id === event.event_id))]);
+            setMore((known) => [...known, ...fresh]);
           }
         }
         again();
