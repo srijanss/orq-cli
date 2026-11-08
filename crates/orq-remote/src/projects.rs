@@ -272,14 +272,20 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let plain = |name: &str| name.ends_with(".log") && !name.starts_with('.') && !name.contains(['/', '\\']);
         let Some(file) = file else {
             let mut files = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    match entry.path().symlink_metadata() {
-                        Ok(meta) if meta.is_file() && plain(&name) => files.push(serde_json::json!({"name": name, "bytes": meta.len()})),
-                        _ => {}
+            // A run that has written no logs has no directory; any other failure is an error.
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let entry = entry.map_err(|error| format!("logs of {run} are unreadable: {error}"))?;
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let meta = entry.path().symlink_metadata().map_err(|error| format!("log {name} is unreadable: {error}"))?;
+                        if meta.is_file() && plain(&name) {
+                            files.push(serde_json::json!({"name": name, "bytes": meta.len()}));
+                        }
                     }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("logs of {run} are unreadable: {error}")),
             }
             files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
             return Ok(Some(serde_json::json!({"files": files})));

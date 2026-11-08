@@ -166,3 +166,23 @@ fn a_logs_directory_that_is_a_link_serves_nothing_from_where_it_points() {
     assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs").0, 404);
     assert_eq!(get(&s, "/api/projects/alpha/runs/r1/logs/stolen.log").0, 404);
 }
+
+#[test]
+#[cfg(unix)]
+fn a_logs_directory_that_cannot_be_read_is_an_error_not_an_empty_list() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("logs-unreadable");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "r1", &project_id(&alpha));
+    log(&s, "r1", "gate.log", "hello\n");
+    let dir = s.roots.state.join("logs/r1");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (status, body) = get(&s, "/api/projects/alpha/runs/r1/logs");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if std::fs::read_dir(&dir).is_ok() && status == 200 && body == json!({"files": [{"name": "gate.log", "bytes": 6}]}) {
+        // Running with rights that ignore permissions (root): nothing to check.
+        return;
+    }
+    assert_eq!(status, 500, "{body}");
+    assert!(!body.to_string().contains(dir.to_str().unwrap()), "{body}");
+}
