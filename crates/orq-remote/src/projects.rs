@@ -134,6 +134,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(orq_core::remote_inbox::ReviewScope { review_key: orq_git::project_id(&git), name: project.name }))
     }
 
+    fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let list = read_ledger(&orq_features::ledger_path(&git))?
+            .into_iter()
+            .map(|entry| serde_json::json!({"name": entry.feature_name, "description": entry.description, "status": entry.status.as_str(), "depends_on": entry.depends_on, "recorded_at": entry.recorded_at}))
+            .collect();
+        Ok(Some(serde_json::Value::Array(list)))
+    }
+
     fn projects(&self) -> Result<serde_json::Value, String> {
         use serde_json::json;
         let reviews = if self.roots.database().exists() {
@@ -228,11 +238,17 @@ const LEDGER_LIMIT: u64 = 1024 * 1024;
 /// without following a link and without waiting on a pipe, must be a regular file, and is read
 /// only up to a limit, so a ledger planted in a repository cannot reach elsewhere or stall a request.
 fn ledger_entries(path: &Path) -> Result<usize, String> {
+    read_ledger(path).map(|entries| entries.len())
+}
+
+/// The ledger's entries; a missing ledger has none. It is opened without following a link and
+/// read only up to a limit, so a hostile file cannot stall or exhaust the server.
+fn read_ledger(path: &Path) -> Result<Vec<orq_features::FeatureEntry>, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("the ledger cannot be opened: {:?}", error.kind())),
     };
     let meta = file.metadata().map_err(|error| format!("the ledger cannot be inspected: {:?}", error.kind()))?;
@@ -248,5 +264,5 @@ fn ledger_entries(path: &Path) -> Result<usize, String> {
         return Err("the ledger is too large".to_string());
     }
     let text = String::from_utf8(bytes).map_err(|_| "the ledger is not text".to_string())?;
-    orq_features::parse_ledger(&text).map(|entries| entries.len()).map_err(|error| format!("the ledger is malformed: {error}"))
+    orq_features::parse_ledger(&text).map_err(|error| format!("the ledger is malformed: {error}"))
 }

@@ -185,6 +185,11 @@ pub trait ProjectsProvider {
     fn review_scope(&self, _id: &str) -> Result<Option<ReviewScope>, String> {
         Ok(None)
     }
+
+    /// The ledger features of project `id` as a JSON array, `None` when there is no such project.
+    fn features(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -231,6 +236,14 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         };
     }
     if let Some(rest) = path.strip_prefix("/api/projects/") {
+        if let Some(id) = rest.strip_suffix("/features").filter(|id| !id.is_empty() && !id.contains('/')) {
+            return match provider.map(|provider| provider.features(id)) {
+                Some(Ok(Some(features))) => reply(200, json!({ "features": features })),
+                // The reason can name a path on this machine, so the caller is only told it failed.
+                Some(Err(_)) => error(500, "the feature ledger could not be read"),
+                _ => error(404, "not found"),
+            };
+        }
         return match (provider, project_path(rest)) {
             (Some(provider), Some((id, run))) => match provider.review_scope(id) {
                 Ok(Some(scope)) => match run {
