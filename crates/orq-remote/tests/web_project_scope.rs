@@ -30,7 +30,7 @@ fn shown(frame: &Value) -> String {
 
 #[test]
 fn inside_a_project_the_sidebar_lists_the_projects_with_the_current_one_chosen_and_its_sections() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([two()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([two()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["requests"][0]["url"], "/api/projects", "{out}");
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let frame = &out["frames"][1]["settled"];
@@ -40,9 +40,9 @@ fn inside_a_project_the_sidebar_lists_the_projects_with_the_current_one_chosen_a
 
 #[test]
 fn switching_project_moves_the_address_and_the_sections_to_the_other_project_keeping_the_section() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([two()]), json!([{"submit": TOKEN}, {"select": "beta"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([two()]), json!([{"submit": TOKEN}, {"select": "beta"}])) else { return };
     let frame = &out["frames"][2]["settled"];
-    assert_eq!(frame["path"], "/projects/beta/orchestrations", "{out}");
+    assert_eq!(frame["path"], "/projects/beta/timeline", "{out}");
     assert_eq!(frame["switchers"][0]["value"], "beta", "{out}");
     assert!(frame["sidebarLinks"].as_array().unwrap().iter().all(|l| !l.as_str().unwrap().contains("alpha")), "{out}");
     assert_eq!(out["requests"].as_array().unwrap().len(), 1, "the list is not fetched again: {out}");
@@ -50,7 +50,7 @@ fn switching_project_moves_the_address_and_the_sections_to_the_other_project_kee
 
 #[test]
 fn an_unknown_project_and_one_the_caller_may_not_see_look_the_same_as_not_found() {
-    let Some(out) = run("/projects/zzz/orchestrations", json!([two()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = run("/projects/zzz/timeline", json!([two()]), json!([{"submit": TOKEN}])) else { return };
     let text = shown(&out["frames"][1]);
     assert!(text.contains("Not found"), "{text}");
     assert!(!text.contains("not available yet") && !text.contains("zzz"), "{text}");
@@ -58,14 +58,14 @@ fn an_unknown_project_and_one_the_caller_may_not_see_look_the_same_as_not_found(
 
 #[test]
 fn leaving_the_project_cancels_the_list_request_still_in_flight() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([{"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([{"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}])) else { return };
     assert_eq!(out["requests"][0]["aborted"], true, "{out}");
 }
 
 #[test]
 fn a_project_list_that_cannot_be_read_does_not_block_the_page() {
     for reply in [json!({"reject": true}), json!({"status": 503}), json!({"status": 200, "json": {"projects": "x"}})] {
-        let Some(out) = run("/projects/alpha/orchestrations", json!([reply.clone()]), json!([{"submit": TOKEN}])) else { return };
+        let Some(out) = run("/projects/alpha/timeline", json!([reply.clone()]), json!([{"submit": TOKEN}])) else { return };
         let frame = &out["frames"][1];
         assert!(shown(frame).contains("not available yet"), "{reply}: {out}");
         assert_eq!(frame["settled"]["switchers"], json!([]), "{reply}");
@@ -75,13 +75,13 @@ fn a_project_list_that_cannot_be_read_does_not_block_the_page() {
 
 #[test]
 fn a_refused_token_on_the_project_list_asks_for_the_token_again() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([{"status": 401}]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([{"status": 401}]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
 }
 
 #[test]
 fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}, {"go": "/projects/gamma/orchestrations"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}, {"go": "/projects/gamma/timeline"}])) else { return };
     let text = shown(&out["frames"][3]);
     assert!(!text.contains("Not found"), "an old list decided a new visit: {text}");
     assert_eq!(out["frames"][3]["settled"]["switchers"], json!([]), "{out}");
@@ -89,7 +89,7 @@ fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit(
 
 #[test]
 fn choosing_a_project_closes_the_phone_drawer() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([two()]), json!([{"submit": TOKEN}, {"nav": "[data-menu-button]"}, {"select": "beta"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([two()]), json!([{"submit": TOKEN}, {"nav": "[data-menu-button]"}, {"select": "beta"}])) else { return };
     assert_eq!(out["frames"][2]["settled"]["scrim"], true, "the drawer opened: {out}");
     assert_eq!(out["frames"][3]["settled"]["scrim"], false, "{out}");
 }

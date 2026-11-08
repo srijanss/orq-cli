@@ -72,7 +72,7 @@ fn a_report_address_opens_the_report_directly_and_a_malformed_run_is_not_found()
 
 #[test]
 fn the_other_sections_are_still_not_built_and_the_global_inbox_is_unchanged() {
-    let Some(out) = run("/projects/alpha/orchestrations", json!([projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).contains("not available yet"), "{out}");
     let Some(out) = run("/", json!([list()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["requests"][0]["url"], "/api/reviews", "{out}");

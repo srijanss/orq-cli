@@ -87,6 +87,9 @@ fn row_of(record: &orq_orchestrator::RunRecord, log: &LogSummary) -> (Option<u64
     (sort_key, record.run_id.clone(), row)
 }
 
+/// How many events one timeline answer holds; `next_cursor` continues after the last of them.
+const TIMELINE_PAGE: usize = 200;
+
 /// How many plain folders may be nested above a repository: `~/code/pitstop/eGiftit/egiftit-backend`
 /// has two, and nothing deeper is looked at.
 const GROUP_DEPTH: usize = 2;
@@ -236,6 +239,47 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             (None, None) => a.1.cmp(&b.1),
         });
         Ok(Some(serde_json::Value::Array(rows.into_iter().map(|row| row.2).collect())))
+    }
+
+    fn run_timeline(&self, id: &str, run: &str, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {
+        use orq_orchestrator::StoreError;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let record = match store.load(run) {
+            Ok(record) => record,
+            Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => return Ok(None),
+            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
+        };
+        if record.project_id != key {
+            return Ok(None);
+        }
+        let events = match store.events(run) {
+            Ok(events) => events,
+            Err(StoreError::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
+        };
+        let start = match after {
+            None => 0,
+            Some(cursor) => match events.iter().position(|event| event.event_id == cursor) {
+                Some(at) => at + 1,
+                None => return Ok(None),
+            },
+        };
+        let summary = orq_orchestrator::summarize_run(&events);
+        let page: Vec<_> = events.iter().skip(start).take(TIMELINE_PAGE).collect();
+        let more = start + page.len() < events.len();
+        let next_cursor = if more { page.last().map(|event| event.event_id.clone()) } else { None };
+        // The payload is left out: it can hold reasons and paths the page has no need of.
+        let listed: Vec<_> = page
+            .iter()
+            .map(|event| serde_json::json!({"event_id": event.event_id, "kind": event.kind, "stage": event.stage, "attempt": event.attempt, "occurred_at": event.occurred_at}))
+            .collect();
+        Ok(Some(serde_json::json!({
+            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at)},
+            "events": listed,
+            "next_cursor": next_cursor,
+        })))
     }
 
     fn projects(&self) -> Result<serde_json::Value, String> {

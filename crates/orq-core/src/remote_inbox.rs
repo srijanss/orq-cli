@@ -195,6 +195,13 @@ pub trait ProjectsProvider {
     fn runs(&self, _id: &str) -> Result<Option<Value>, String> {
         Ok(None)
     }
+
+    /// One run of project `id` as `{run, events, next_cursor}`: its events after the event `after`
+    /// (from the start when `None`), one page at most. `None` when the project, the run (of that
+    /// project) or the cursor is unknown.
+    fn run_timeline(&self, _id: &str, _run: &str, _after: Option<&str>) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -253,6 +260,19 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             return match provider.map(|provider| provider.runs(id)) {
                 Some(Ok(Some(runs))) => reply(200, json!({ "runs": runs })),
                 Some(Err(_)) => error(500, "the runs could not be read"),
+                _ => error(404, "not found"),
+            };
+        }
+        let parts: Vec<&str> = rest.split('/').collect();
+        let timeline = match parts.as_slice() {
+            [id, "runs", run] => Some((*id, *run, None)),
+            [id, "runs", run, "after", cursor] => Some((*id, *run, Some(*cursor))),
+            _ => None,
+        };
+        if let Some((id, run, after)) = timeline.filter(|(id, run, after)| !id.is_empty() && !run.is_empty() && after.map_or(true, |cursor| !cursor.is_empty())) {
+            return match provider.map(|provider| provider.run_timeline(id, run, after)) {
+                Some(Ok(Some(timeline))) => reply(200, timeline),
+                Some(Err(_)) => error(500, "the run could not be read"),
                 _ => error(404, "not found"),
             };
         }
