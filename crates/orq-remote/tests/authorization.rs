@@ -60,6 +60,31 @@ fn every_kind_of_refusal_looks_the_same_on_the_wire() {
 }
 
 #[test]
+fn head_refusals_match_each_other_and_carry_no_body() {
+    let server = start("head");
+    let addr = server.addr();
+    let wrong = format!("Bearer {}", "x".repeat(TOKEN.len()));
+    let reference = raw(addr, "HEAD", "/api/reviews", None);
+    assert!(reference.0.starts_with("HTTP/1.1 401"), "{}", reference.0);
+    assert!(reference.1.is_empty(), "{}", reference.1);
+    let refused = [
+        raw(addr, "HEAD", "/api/reviews", Some(&wrong)),
+        raw(addr, "HEAD", "/api/reviews", Some("Bearer short")),
+        raw(addr, "HEAD", "/api/reviews", Some("Basic abc")),
+        raw(addr, "HEAD", "/api/reviews", Some(TOKEN)),
+        raw(addr, "HEAD", "/nowhere", None),
+        raw(addr, "HEAD", "/nowhere", Some(&wrong)),
+        raw(addr, "HEAD", "/api/reviews/run-1", None),
+    ];
+    for (i, got) in refused.iter().enumerate() {
+        assert_eq!(got, &reference, "HEAD refusal #{i} is distinguishable");
+    }
+    // A HEAD refusal has the status of the GET refusal.
+    let get = raw(addr, "GET", "/api/reviews", None);
+    assert_eq!(reference.0.lines().next(), get.0.lines().next());
+}
+
+#[test]
 fn the_refusal_log_line_names_the_peer_and_request_but_never_a_credential() {
     let peer = "100.64.0.9".parse().unwrap();
     let line = refusal_line(peer, "GET", "/api/reviews");
