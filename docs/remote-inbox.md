@@ -14,7 +14,7 @@ or set `ORQ_REMOTE_CONTROL=1` in the environment. With it off, the command refus
 
 ## 2. Create the token file
 
-The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads. The new token goes into a fresh file (mode 600, made by the command below) that is then renamed over `remote-token`, so a token file that already exists, with loose permissions or as a symlink, is replaced and never written through. A symlink is removed first (`mv` would otherwise move the file into a linked directory), and the old token is kept untouched if generating a new one fails:
+The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads. The new token goes into a fresh file (mode 600, made by the command below) that is then renamed over `remote-token`, so a token file that already exists, with loose permissions or as a symlink, is replaced and never written through. A symlink is removed first (`mv` would otherwise move the file into a linked directory), each generation step is run on its own so a failure in any of them stops the commands, a directory at that path is refused, and the old token is kept untouched if generating a new one fails:
 
 ```sh
 (
@@ -24,11 +24,14 @@ The page is protected by one shared token, kept in `remote-token` in Orq's confi
   mkdir -p "$config_dir"
   tmp="$(mktemp "$config_dir/remote-token.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
-  token="$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n')"
+  head -c 32 /dev/urandom > "$tmp"
+  encoded="$(base64 < "$tmp")"
+  token="$(printf '%s' "$encoded" | tr -d '/+=\n')"
   [ "${#token}" -ge 32 ] || { echo "could not generate a token" >&2; exit 1; }
   printf '%s' "$token" > "$tmp"
   chmod 600 "$tmp"
   [ ! -L "$config_dir/remote-token" ] || rm -f "$config_dir/remote-token"
+  [ ! -d "$config_dir/remote-token" ] || { echo "$config_dir/remote-token is a directory" >&2; exit 1; }
   mv -f "$tmp" "$config_dir/remote-token"
 )
 ```

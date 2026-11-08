@@ -154,3 +154,35 @@ fn the_documented_token_commands_replace_unsafe_tokens_and_keep_a_good_one_when_
     assert_eq!(std::fs::read_to_string(&token).unwrap(), "a-working-token-0123456789abcdef0123456789");
     assert_eq!(std::fs::read_dir(root.join("config/orq")).unwrap().count(), 1, "no temporary file is left");
 }
+
+#[test]
+fn a_generator_that_prints_then_fails_or_a_directory_at_the_token_path_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = orq_test_support::process_temp_dir().join(format!("orq-docs-token-edge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fresh = |name: &str| {
+        let root = base.join(name);
+        std::fs::create_dir_all(root.join("config/orq")).unwrap();
+        root
+    };
+
+    // head prints plenty and then fails: the working token stays.
+    let root = fresh("noisy-failure");
+    let token = root.join("config/orq/remote-token");
+    std::fs::write(&token, "a-working-token-0123456789abcdef0123456789").unwrap();
+    let fake = root.join("fakebin");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(fake.join("head"), "#!/bin/sh\nprintf '%064d' 0\nexit 1\n").unwrap();
+    std::fs::set_permissions(fake.join("head"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!run_snippet(&root, Some(&fake)).status.success());
+    assert_eq!(std::fs::read_to_string(&token).unwrap(), "a-working-token-0123456789abcdef0123456789");
+    assert_eq!(std::fs::read_dir(root.join("config/orq")).unwrap().count(), 1, "no temporary file is left");
+
+    // A real directory at the token path: refused, nothing moved into it, nothing left behind.
+    let root = fresh("directory");
+    let token = root.join("config/orq/remote-token");
+    std::fs::create_dir_all(&token).unwrap();
+    assert!(!run_snippet(&root, None).status.success());
+    assert_eq!(std::fs::read_dir(&token).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(root.join("config/orq")).unwrap().count(), 1, "no temporary file is left");
+}
