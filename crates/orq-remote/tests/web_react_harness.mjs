@@ -71,7 +71,7 @@ function snapshot() {
     if (node.tagName === "BUTTON" && !node.hasAttribute("data-refresh")) buttons.push(node.textContent);
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
-  return { refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.

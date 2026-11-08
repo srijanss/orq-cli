@@ -193,3 +193,10 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; }
 .theme-toggle { display: inline-flex; align-items: center; justify-content: center; }
 .icon { vertical-align: middle; }
+
+.skeleton { display: flex; flex-direction: column; gap: 0.5rem; }
+.skeleton-bar { display: block; height: 2.5rem; border-radius: 0.75rem; background: var(--surface); border: 1px solid var(--border); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 1rem; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
+.banner p { margin: 0; }
+.not-found { max-width: 24rem; }

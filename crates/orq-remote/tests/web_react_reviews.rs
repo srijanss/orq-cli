@@ -79,8 +79,8 @@ fn text_from_the_api_stays_text() {
 }
 
 #[test]
-fn a_401_or_a_failed_request_asks_for_the_token_again_with_one_message() {
-    for reply in [json!({"status": 401}), json!({"reject": true})] {
+fn a_401_asks_for_the_token_again_with_one_message() {
+    for reply in [json!({"status": 401})] {
         let Some(out) = run(json!([reply]), json!([{"submit": TOKEN}])) else { return };
         let settled = &out["frames"][1]["settled"];
         assert_eq!(settled["inputs"].as_array().unwrap().len(), 1, "{out}");
@@ -117,7 +117,7 @@ fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offer
 
 #[test]
 fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
-    for first in [json!({"status": 404}), json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
+    for first in [json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
         let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
         assert!(out["frames"][2]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
         let requests = out["requests"].as_array().unwrap();

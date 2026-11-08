@@ -102,7 +102,7 @@ fn back_returns_to_the_list() {
 
 #[test]
 fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
-    for first in [json!({"status": 404}), json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
+    for first in [json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
         let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
         let failed = &out["frames"][2]["settled"];
         assert!(failed["inputs"].as_array().unwrap().is_empty(), "{out}");

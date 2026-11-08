@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
+import { Badge } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
@@ -143,17 +144,24 @@ function Detail({ report }) {
   );
 }
 
-// Reads one page of data. A refused token or a failed request asks for the token
-// again; a reply that is not what was expected keeps it and offers a retry. A slow
-// answer for a page that is no longer showing is dropped.
-function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
-  const [state, setState] = useState({ kind: "loading" });
+// Reads one page of data. Only a refused token (401) asks for the token again. A server
+// that cannot be reached shows a Disconnected banner, any other failed or unreadable reply an
+// error banner, both with a retry and both keeping what was already loaded, marked Outdated.
+// 404 and 403 give the same generic Not found screen. A slow answer for a page that is no
+// longer showing is dropped.
+function checkedTime() {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 }) {
+  const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let current = true;
     // Leaving the page (or asking again) cancels the request, so nothing outlives its screen.
     const controller = new AbortController();
-    setState({ kind: "loading" });
+    const fail = (kind) => setState((previous) => ({ kind, data: previous.data, checked: checkedTime() }));
+    setState((previous) => (previous.data === null ? { kind: "loading", data: null } : previous));
     (async () => {
       try {
         const response = await fetch(path, {
@@ -168,8 +176,12 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
           onSignedOut();
           return;
         }
+        if (response.status === 404 || response.status === 403) {
+          setState({ kind: "notfound", data: null });
+          return;
+        }
         if (!response.ok) {
-          setState({ kind: "unreadable" });
+          fail("error");
           return;
         }
         let data = null;
@@ -179,30 +191,49 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut }) {
           data = null;
         }
         if (!current) return;
-        setState(data === null ? { kind: "unreadable" } : { kind: "ready", data });
+        if (data === null) fail("error");
+        else setState({ kind: "ready", data });
       } catch (failure) {
-        if (current) onSignedOut();
+        if (current) fail("disconnected");
       }
     })();
     return () => {
       current = false;
       controller.abort();
     };
-  }, [token, path, attempt]);
-  if (state.kind === "loading") {
-    return <p>{loading}</p>;
-  }
-  if (state.kind === "unreadable") {
+  }, [token, path, attempt, reloads]);
+  if (state.kind === "notfound") {
     return (
-      <>
-        <p role="alert">The inbox could not be read just now.</p>
+      <div className="card not-found">
+        <h2>Not found</h2>
+        <p>This page does not exist or is not available to you.</p>
+      </div>
+    );
+  }
+  if (state.kind === "loading") {
+    return (
+      <div className="skeleton" role="status" aria-busy="true">
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="sr-only">{loading}</span>
+      </div>
+    );
+  }
+  if (state.kind === "ready") {
+    return draw(state.data);
+  }
+  return (
+    <>
+      <div className="banner" role="alert">
+        {state.kind === "disconnected" ? <p>Disconnected. Last checked {state.checked}</p> : <p>The inbox could not be read just now.</p>}
+        {state.data !== null ? <Badge kind="freshness-outdated" /> : null}
         <button type="button" onClick={() => setAttempt(attempt + 1)}>
           Try again
         </button>
-      </>
-    );
-  }
-  return draw(state.data);
+      </div>
+      {state.data !== null ? draw(state.data) : null}
+    </>
+  );
 }
 
 function PageHeader({ title, subtitle, onRefresh }) {
@@ -235,7 +266,7 @@ function SignedIn({ token, onSignedOut }) {
   return (
     <>
       <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={() => setReloads(reloads + 1)} />
-      <Loaded key={API_REVIEWS + "#" + reloads} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />
+      <Loaded reloads={reloads} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />
     </>
   );
 }
