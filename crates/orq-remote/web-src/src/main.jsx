@@ -476,6 +476,7 @@ function RunTimeline({ timeline, listPath, runPath }) {
       <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
       {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
       {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
+      <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
       {events.length === 0 ? <p>No events recorded.</p> : null}
       <ol>
         {events.map((event) => (
@@ -488,6 +489,57 @@ function RunTimeline({ timeline, listPath, runPath }) {
         ))}
       </ol>
       {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
+    </>
+  );
+}
+
+// A log file the server could have listed: a plain, visible `.log` name.
+const LOG_FILE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\.log$/;
+const LINE_CURSOR = /^[0-9]{1,12}$/;
+
+function parseLogFiles(data) {
+  const ok = data && Array.isArray(data.files) && data.files.every((file) => file !== null && typeof file === "object" && typeof file.name === "string" && Number.isInteger(file.bytes));
+  return ok ? data.files : null;
+}
+
+function parseLogPage(data) {
+  const ok = data && typeof data.name === "string" && Array.isArray(data.lines) && data.lines.every((line) => typeof line === "string") && (data.next_cursor === null || (typeof data.next_cursor === "string" && LINE_CURSOR.test(data.next_cursor))) && typeof data.truncated === "boolean";
+  return ok ? data : null;
+}
+
+function LogFiles({ files, runPath }) {
+  return (
+    <>
+      <button type="button" data-back="run" onClick={() => navigate(runPath)}>Back to the run</button>
+      {files.length === 0 ? <p>No logs for this run.</p> : null}
+      <ul>
+        {files.map((file) => (
+          <li key={file.name} className="log-file card">
+            <strong>{file.name}</strong>
+            <span>{file.bytes + " bytes"}</span>
+            {LOG_FILE.test(file.name) ? <button type="button" data-file={file.name} onClick={() => navigate(runPath + "/logs/" + encodeURIComponent(file.name))}>Show</button> : null}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+// One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
+function LogPage({ page, logsPath, filePath }) {
+  const { lines, next_cursor: next, truncated } = page;
+  return (
+    <>
+      <button type="button" data-back="logs" onClick={() => navigate(logsPath)}>Back to the logs</button>
+      <h2>{page.name}</h2>
+      {lines.length === 0 ? <p>This log has no more lines.</p> : null}
+      <pre className="log-lines">
+        {lines.map((line, at) => (
+          <div key={at}>{line}</div>
+        ))}
+      </pre>
+      {next !== null && <button type="button" data-more="lines" onClick={() => navigate(filePath + "/after/" + encodeURIComponent(next))}>Load more lines</button>}
+      {truncated && next === null ? <p>The log was cut short: only its first part is shown.</p> : null}
     </>
   );
 }
@@ -510,6 +562,39 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
       <>
         <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
         <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(runs) => <OrchestrationList runs={runs} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
+  const logs = /^\/projects\/[^/]+\/orchestrations\/([^/]+)\/logs(?:\/([^/]+)(?:\/after\/([^/]+))?)?$/.exec(address);
+  if (logs !== null) {
+    let run = null;
+    let file = null;
+    let cursor = null;
+    try {
+      run = decodeURIComponent(logs[1]);
+      file = logs[2] === undefined ? null : decodeURIComponent(logs[2]);
+      cursor = logs[3] === undefined ? null : decodeURIComponent(logs[3]);
+    } catch (malformed) {
+      return <NotFound />;
+    }
+    if (!RUN_ID.test(run) || (file !== null && !LOG_FILE.test(file)) || (cursor !== null && !LINE_CURSOR.test(cursor))) return <NotFound />;
+    const runPath = "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
+    const logsPath = runPath + "/logs";
+    const apiRun = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) + "/logs";
+    if (file === null) {
+      return (
+        <>
+          <PageHeader title="Logs" subtitle="The run's log files" onRefresh={onRefresh} />
+          <Loaded key={apiRun} reloads={reloads} token={token} path={apiRun} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogFiles files={files} runPath={runPath} />} onSignedOut={onSignedOut} />
+        </>
+      );
+    }
+    const filePath = logsPath + "/" + encodeURIComponent(file);
+    const pagePath = apiRun + "/" + encodeURIComponent(file) + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
+    return (
+      <>
+        <PageHeader title="Log" subtitle={file} onRefresh={onRefresh} />
+        <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} logsPath={logsPath} filePath={filePath} />} onSignedOut={onSignedOut} />
       </>
     );
   }
