@@ -1026,6 +1026,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "orq-core",
+ "orq-features",
+ "orq-git",
+ "orq-orchestrator",
  "serde_json",
  "sha2",
  "tokio",

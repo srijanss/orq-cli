@@ -14,7 +14,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use orq_core::remote_inbox::{self, RemoteConfig};
+use orq_core::remote_inbox::{self, ProjectsProvider, RemoteConfig};
 use orq_core::storage::StorageRoots;
 
 /// How long a stop waits for requests in flight before cutting connections.
@@ -28,6 +28,12 @@ pub struct ServerState {
     pub project_name: String,
 }
 
+/// The request state plus the provider, when the server was started with one.
+struct Shared {
+    state: Arc<ServerState>,
+    projects: Option<Arc<dyn ProjectsProvider + Send + Sync>>,
+}
+
 /// A running server; dropping it stops it.
 pub struct Server {
     addr: SocketAddr,
@@ -38,6 +44,16 @@ pub struct Server {
 impl Server {
     /// Serves on `listener` until the returned value is dropped.
     pub fn start(listener: TcpListener, state: Arc<ServerState>) -> std::io::Result<Server> {
+        Server::serve(listener, Shared { state, projects: None })
+    }
+
+    /// Like `start`, and also answers `/api/projects` from `projects`.
+    pub fn start_with_projects(listener: TcpListener, state: Arc<ServerState>, projects: Arc<dyn ProjectsProvider + Send + Sync>) -> std::io::Result<Server> {
+        Server::serve(listener, Shared { state, projects: Some(projects) })
+    }
+
+    fn serve(listener: TcpListener, state: Shared) -> std::io::Result<Server> {
+        let state = Arc::new(state);
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
@@ -80,7 +96,7 @@ impl Drop for Server {
     }
 }
 
-async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap) -> Response {
+async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap) -> Response {
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_string);
     let path = uri.path().to_string();
     let method = method.as_str().to_string();
@@ -94,7 +110,11 @@ async fn answer(State(state): State<Arc<ServerState>>, ConnectInfo(peer): Connec
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || {
         let request = remote_inbox::Request { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref() };
-        let reply = remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request);
+        let state = &shared.state;
+        let reply = match &shared.projects {
+            Some(projects) => remote_inbox::handle_with(&state.roots, &state.config, &state.project_id, &state.project_name, &request, projects.as_ref()),
+            None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
+        };
         if reply.status == 401 {
             log_refusal(peer.ip(), request.method, request.path);
         }

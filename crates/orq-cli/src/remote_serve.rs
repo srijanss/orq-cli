@@ -48,13 +48,17 @@ pub fn serve(args: &[OsString]) -> ExitCode {
         Ok(listener) => listener,
         Err(err) => return fail(format!("cannot listen on {listen}: {:?}", err.kind())),
     };
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_absolute());
+    let override_root = std::env::var_os("ORQ_REMOTE_PROJECTS_ROOT").map(PathBuf::from).filter(|root| root.is_absolute());
+    let scan_root = orq_remote::projects::default_root(home.as_deref(), override_root.as_deref());
+    let projects = std::sync::Arc::new(orq_remote::projects::StoreProjects::new(roots.clone(), scan_root));
     let state = std::sync::Arc::new(orq_remote::ServerState {
         roots,
         config,
         project_id: crate::pipeline::project_id(&project),
         project_name: project.name.clone(),
     });
-    let server = match orq_remote::Server::start(listener, state) {
+    let server = match orq_remote::Server::start_with_projects(listener, state, projects) {
         Ok(server) => server,
         Err(err) => return fail(format!("cannot start the server: {:?}", err.kind())),
     };

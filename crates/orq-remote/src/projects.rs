@@ -62,3 +62,67 @@ fn project_id(name: &str) -> String {
     let hex: String = name.bytes().map(|byte| format!("{byte:02x}")).collect();
     format!("{readable}_{hex}")
 }
+
+/// The projects provider the server hands to the handler: it rescans the scan root on each
+/// request and reads counts from the same storage the CLI writes. A project it cannot read is
+/// listed as unavailable, never dropped.
+pub struct StoreProjects {
+    roots: orq_core::storage::StorageRoots,
+    scan_root: std::path::PathBuf,
+}
+
+impl StoreProjects {
+    pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
+        StoreProjects { roots, scan_root }
+    }
+}
+
+struct Counts {
+    features: usize,
+    active_runs: usize,
+    reviews_waiting: usize,
+}
+
+impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
+    fn projects(&self) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        let reviews = if self.roots.database().exists() {
+            Some(orq_core::store::Store::open_read_only(&self.roots.database()).map_err(|error| format!("cannot open the review index: {error}"))?)
+        } else {
+            None
+        };
+        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        let list = discover(&self.scan_root)
+            .into_iter()
+            .map(|project| match counts(&project, reviews.as_ref(), &runs) {
+                Ok(counts) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active_runs, "reviews_waiting": counts.reviews_waiting}),
+                Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null}),
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::Value::Array(list))
+    }
+}
+
+fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, runs: &orq_orchestrator::RunStore) -> Result<Counts, String> {
+    let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+    let key = orq_git::project_id(&git);
+    let features = match orq_features::load_ledger(&orq_features::ledger_path(&git)) {
+        Ok(entries) => entries.len(),
+        Err(orq_features::LedgerError::Missing { .. }) => 0,
+        Err(error) => return Err(format!("{error:?}")),
+    };
+    let active_runs = orq_orchestrator::list_runs_report(runs, &key)
+        .map_err(|error| error.to_string())?
+        .runs
+        .iter()
+        .filter(|run| matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested | orq_orchestrator::RunPhase::Paused))
+        .count();
+    let reviews_waiting = match reviews {
+        Some(store) => {
+            let mut seen = std::collections::HashSet::new();
+            store.reviews_for_project(&key).map_err(|error| error.to_string())?.into_iter().filter(|record| seen.insert(record.run_id.clone())).count()
+        }
+        None => 0,
+    };
+    Ok(Counts { features, active_runs, reviews_waiting })
+}
