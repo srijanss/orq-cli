@@ -122,11 +122,35 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, runs: &or
         .filter(|run| matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested | orq_orchestrator::RunPhase::Paused))
         .count();
     let reviews_waiting = match reviews {
-        Some(store) => {
-            let mut seen = std::collections::HashSet::new();
-            store.reviews_for_project(&key).map_err(|error| error.to_string())?.into_iter().filter(|record| seen.insert(record.run_id.clone())).count()
-        }
+        Some(store) => waiting_reviews(store, &key)?,
         None => 0,
     };
     Ok(Counts { features, active_runs, reviews_waiting })
+}
+
+/// The runs of `project` whose latest report is still waiting on a human: no lifecycle recorded for
+/// that report's head yet, or one that is neither merged, closed nor resolved. A lifecycle that
+/// cannot be read is an error, never a guess.
+fn waiting_reviews(store: &orq_core::store::Store, project: &str) -> Result<usize, String> {
+    use orq_core::review_lifecycle::{Gate, ProviderState};
+    let mut latest: Vec<orq_core::store::ReviewRecord> = Vec::new();
+    for record in store.reviews_for_project(project).map_err(|error| error.to_string())? {
+        match latest.iter().position(|seen| seen.run_id == record.run_id) {
+            Some(at) => latest[at] = record,
+            None => latest.push(record),
+        }
+    }
+    let mut waiting = 0;
+    for record in &latest {
+        let lifecycles = store.lifecycles_for_run(&record.run_id).map_err(|error| error.to_string())?;
+        let finished = lifecycles
+            .iter()
+            .rev()
+            .find(|lifecycle| lifecycle.reported_head_sha == record.head_sha)
+            .is_some_and(|lifecycle| matches!(lifecycle.state, ProviderState::Merged | ProviderState::Closed) || lifecycle.gate == Gate::Resolved);
+        if !finished {
+            waiting += 1;
+        }
+    }
+    Ok(waiting)
 }

@@ -91,3 +91,31 @@ fn a_run_record_that_cannot_be_read_makes_the_counts_untrustworthy_so_projects_a
     let list = StoreProjects::new(roots, scan).projects().unwrap();
     assert_eq!(entry(&list, "one")["available"], false, "{list}");
 }
+
+#[test]
+fn only_reviews_still_awaiting_a_human_count_as_waiting() {
+    use orq_core::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
+    let base = web_deps::private_temp_dir("projects-waiting");
+    let scan = base.join("code");
+    let repo = git_repo(&scan, "reviewed");
+    let roots = roots(&base);
+    let id = id_of(&repo);
+    let store = Store::open(&roots.database()).unwrap();
+    let lifecycle = |head: &str, state, gate| ReviewLifecycle { provider: "github".into(), review_id: "1".into(), url: "https://github.com/o/r/pull/1".into(), reported_head_sha: head.into(), observed_head_sha: None, state, gate, stale: false, last_error: None };
+    for (run, head, lifecycle_to_save) in [
+        ("waiting-none", 'a', None),
+        ("waiting-open", 'b', Some(lifecycle(&"b".repeat(40), ProviderState::Open, Gate::AwaitingHumanReview))),
+        ("done-merged", 'c', Some(lifecycle(&"c".repeat(40), ProviderState::Merged, Gate::Resolved))),
+        ("done-closed", 'd', Some(lifecycle(&"d".repeat(40), ProviderState::Closed, Gate::Resolved))),
+        ("done-resolved", 'e', Some(lifecycle(&"e".repeat(40), ProviderState::Open, Gate::Resolved))),
+    ] {
+        store.save_review(&roots.data, run, &id, "f", &head.to_string().repeat(40), b"{}").unwrap();
+        if let Some(l) = lifecycle_to_save {
+            store.save_lifecycle(run, &l).unwrap();
+        }
+    }
+    // A second, newer report for a finished run is the one that counts, not the older one.
+    store.save_review(&roots.data, "done-merged", &id, "f", &"f".repeat(40), b"{}").unwrap();
+    let list = StoreProjects::new(roots, scan).projects().unwrap();
+    assert_eq!(entry(&list, "reviewed")["reviews_waiting"], 3, "{list}");
+}
