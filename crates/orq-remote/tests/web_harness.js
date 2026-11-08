@@ -32,6 +32,10 @@ class Node {
   addEventListener(name, handler) {
     this.listeners[name] = handler;
   }
+  appendChild(node) {
+    this.children.push(node);
+    return node;
+  }
   replaceChildren(...nodes) {
     this.children = nodes;
   }

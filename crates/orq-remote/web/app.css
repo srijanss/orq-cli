@@ -1,1 +1,6 @@
 body { font-family: system-ui, sans-serif; margin: 1rem; }
+ul { list-style: none; margin: 0; padding: 0; }
+.run { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: center; min-height: 44px; padding: 0.5rem 0; border-bottom: 1px solid #ccc; }
+.run.stale { border-left: 4px solid #b45309; padding-left: 0.5rem; font-style: italic; }
+.run.stale em { color: #b45309; font-weight: bold; }
+button { min-height: 44px; min-width: 44px; }

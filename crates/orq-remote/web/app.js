@@ -53,6 +53,34 @@ function askForToken(message) {
   show(label, field, button, notice);
 }
 
+const STALE_MARKER = "stale, may be out of date";
+
+// One row per run, in the order the API gave. Every string is set as text; a
+// stale report gets its own marker and class, so it never looks current.
+function runRow(run) {
+  const row = element("li");
+  row.setAttribute("class", run.stale === true ? "run stale" : "run");
+  row.appendChild(element("strong", String(run.feature)));
+  row.appendChild(element("span", String(run.status)));
+  if (run.risk !== undefined && run.risk !== null) {
+    row.appendChild(element("span", "risk: " + String(run.risk)));
+  }
+  if (run.stale === true) {
+    row.appendChild(element("em", STALE_MARKER));
+  }
+  return row;
+}
+
+function showRuns(runs) {
+  if (runs.length === 0) {
+    show(element("p", "No reviews in the inbox."));
+    return;
+  }
+  const list = element("ul");
+  runs.forEach((run) => list.appendChild(runRow(run)));
+  show(list);
+}
+
 async function load() {
   show(element("p", "Loading the review inbox…"));
   try {
@@ -78,8 +106,7 @@ async function load() {
       return;
     }
     const data = await response.json();
-    const count = Array.isArray(data.reviews) ? data.reviews.length : 0;
-    show(element("p", count + " review(s) in the inbox."));
+    showRuns(Array.isArray(data.reviews) ? data.reviews : []);
   } catch (failure) {
     token = null;
     askForToken(SIGN_IN_FAILED);
