@@ -850,6 +850,9 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
   }
+  if (hash.startsWith("/settings/")) {
+    return <NotFound />;
+  }
   if (hash === "/settings") {
     return (
       <>

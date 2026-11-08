@@ -73,3 +73,13 @@ fn unusable_settings_draw_nothing_and_a_refused_token_asks_again() {
     let Some(out) = run("/settings", json!([{"status": 401}]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
 }
+
+#[test]
+fn an_address_under_settings_is_not_found_and_never_shows_the_inbox() {
+    for odd in ["/settings/", "/settings/extra"] {
+        let Some(out) = run("/settings", json!([settings()]), json!([{"submit": TOKEN}, {"go": odd}])) else { return };
+        assert_eq!(out["requests"].as_array().unwrap().len(), 1, "{odd}: only the settings were asked for: {out}");
+        let t = shown(&out["frames"][2]);
+        assert!(t.iter().any(|x| x == "Not found") && !t.iter().any(|x| x == "Implementer"), "{odd}: {t:?}");
+    }
+}
