@@ -139,6 +139,7 @@ fn a_run_saved_again_under_another_project_is_served_only_with_the_newest_report
     assert_eq!(get(&roots, &p, "/api/reviews/run-ours").1["reported_head_sha"], newer.as_str());
 }
 
+#[cfg(unix)]
 #[test]
 fn an_index_that_cannot_be_reached_is_a_server_error_not_a_missing_one() {
     use std::os::unix::fs::PermissionsExt;
