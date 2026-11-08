@@ -660,11 +660,18 @@ function saveLines(name, lines) {
   URL.revokeObjectURL(url);
 }
 
-// One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
-function LogPage({ page, logsPath, filePath }) {
-  const { lines, next_cursor: next, truncated } = page;
+// Holds a log file's filters above the page that is loaded, so they stay while its next page opens.
+// It is keyed by the file, so another file starts unfiltered.
+function LogView({ token, onSignedOut, reloads, pagePath, logsPath, filePath }) {
   const [text, setText] = useState("");
   const [level, setLevel] = useState("all");
+  const filters = { text, setText, level, setLevel };
+  return <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} logsPath={logsPath} filePath={filePath} filters={filters} />} onSignedOut={onSignedOut} />;
+}
+
+// One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
+function LogPage({ page, logsPath, filePath, filters: { text, setText, level, setLevel } }) {
+  const { lines, next_cursor: next, truncated } = page;
   const shown = filterLines(lines, text, level);
   return (
     <>
@@ -744,7 +751,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Log" subtitle={file} onRefresh={onRefresh} />
-        <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} logsPath={logsPath} filePath={filePath} />} onSignedOut={onSignedOut} />
+        <LogView key={filePath} token={token} onSignedOut={onSignedOut} reloads={reloads} pagePath={pagePath} logsPath={logsPath} filePath={filePath} />
       </>
     );
   }

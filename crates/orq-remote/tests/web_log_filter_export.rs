@@ -88,3 +88,17 @@ fn nothing_shown_means_nothing_to_download_and_nothing_is_sent_to_the_server() {
     assert!(urls.iter().all(|u| !u.contains("zzz") && !u.contains('?')), "{urls:?}");
     assert!(out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().any(|t| t.as_str().is_some_and(|t| t.contains("No lines match"))), "{out}");
 }
+
+#[test]
+fn the_filters_stay_applied_when_the_next_page_of_lines_is_loaded() {
+    let first = json!({"status": 200, "json": {"name": "implement.log", "lines": ["INFO start", "ERROR boom one"], "next_cursor": "2", "truncated": false}});
+    let second = json!({"status": 200, "json": {"name": "implement.log", "lines": ["INFO later", "ERROR boom two", "ERROR other"], "next_cursor": null, "truncated": false}});
+    let steps = json!([{"submit": TOKEN}, type_in("[data-log-level]", "error"), type_in("[data-log-filter]", "boom"), {"click": "button[data-more=lines]"}]);
+    let Some(out) = run(json!([first, projects(), second]), steps) else { return };
+    let texts = |i: usize| -> Vec<String> { out["frames"][i]["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).map(String::from).collect() };
+    assert!(out["frames"][4]["settled"]["path"].as_str().unwrap().ends_with("/after/2"), "{out}");
+    let t = texts(4);
+    assert!(t.iter().any(|x| x == "ERROR boom two") && !t.iter().any(|x| x == "INFO later" || x == "ERROR other"), "{t:?}");
+    let inputs = out["frames"][4]["settled"]["inputs"].as_array().unwrap();
+    assert!(inputs.iter().any(|i| i["value"] == "boom"), "{inputs:?}");
+}
