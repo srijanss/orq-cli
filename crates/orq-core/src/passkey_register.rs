@@ -123,7 +123,7 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, authorizer: &EnrolAut
 }
 
 /// The most base64url characters that `bytes` bytes can take.
-fn encoded_len(bytes: usize) -> usize {
+pub(crate) fn encoded_len(bytes: usize) -> usize {
     bytes.div_ceil(3) * 4
 }
 
@@ -179,6 +179,20 @@ fn credential_from_attestation(host: &PasskeyHost, attestation: &[u8], label: &s
     })
 }
 
+/// The 32-byte x and y coordinates of a stored COSE key, checked the same way as at registration.
+pub(crate) fn es256_coordinates(cose: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mut at = 0;
+    let key = cbor(cose, &mut at, 0)?;
+    if at != cose.len() {
+        return Err("the stored key has trailing bytes".into());
+    }
+    check_es256(&key)?;
+    match (map_get(&key, &Cbor::Int(-2)), map_get(&key, &Cbor::Int(-3))) {
+        (Some(Cbor::Bytes(x)), Some(Cbor::Bytes(y))) => Ok((x.clone(), y.clone())),
+        _ => Err("the stored key has no coordinates".into()),
+    }
+}
+
 /// An EC2 P-256 key for ES256 with exactly the five expected entries and 32-byte coordinates.
 fn check_es256(cose: &Cbor) -> Result<(), String> {
     let Cbor::Map(entries) = cose else { return Err("the public key is not a COSE map".into()) };
@@ -191,106 +205,10 @@ fn check_es256(cose: &Cbor) -> Result<(), String> {
     if entry(1) != Some(&Cbor::Int(2)) || entry(3) != Some(&Cbor::Int(-7)) || entry(-1) != Some(&Cbor::Int(1)) || !coordinate(-2) || !coordinate(-3) {
         return Err("the public key is not ES256 on P-256".into());
     }
-    if !on_curve(x, y) {
+    if !crate::p256::on_curve(x, y) {
         return Err("the public key is not a point on P-256".into());
     }
     Ok(())
-}
-
-type U256 = [u64; 4];
-
-/// P-256's field prime and curve constant b, least significant limb first.
-const P: U256 = [0xffff_ffff_ffff_ffff, 0x0000_0000_ffff_ffff, 0, 0xffff_ffff_0000_0001];
-const B: U256 = [0x3bce_3c3e_27d2_604b, 0x651d_06b0_cc53_b0f6, 0xb3eb_bd55_7698_86bc, 0x5ac6_35d8_aa3a_93e7];
-
-fn from_be(bytes: &[u8]) -> Option<U256> {
-    let bytes: [u8; 32] = bytes.try_into().ok()?;
-    let mut limbs = [0u64; 4];
-    for (i, chunk) in bytes.chunks(8).enumerate() {
-        limbs[3 - i] = u64::from_be_bytes(chunk.try_into().ok()?);
-    }
-    Some(limbs)
-}
-
-fn less(a: &U256, b: &U256) -> bool {
-    (0..4).rev().find(|&i| a[i] != b[i]).is_some_and(|i| a[i] < b[i])
-}
-
-fn sub_wrapping(a: &U256, b: &U256) -> U256 {
-    let mut out = [0u64; 4];
-    let mut borrow = false;
-    for i in 0..4 {
-        let (d, b1) = a[i].overflowing_sub(b[i]);
-        let (d, b2) = d.overflowing_sub(u64::from(borrow));
-        out[i] = d;
-        borrow = b1 || b2;
-    }
-    out
-}
-
-fn add_mod(a: &U256, b: &U256) -> U256 {
-    let mut out = [0u64; 4];
-    let mut carry = false;
-    for i in 0..4 {
-        let (s, c1) = a[i].overflowing_add(b[i]);
-        let (s, c2) = s.overflowing_add(u64::from(carry));
-        out[i] = s;
-        carry = c1 || c2;
-    }
-    if carry || !less(&out, &P) { sub_wrapping(&out, &P) } else { out }
-}
-
-fn sub_mod(a: &U256, b: &U256) -> U256 {
-    if less(a, b) { sub_wrapping(&P, &sub_wrapping(b, a)) } else { sub_wrapping(a, b) }
-}
-
-/// Double-and-add: slow, but there is one multiplication chain per registration.
-fn mul_mod(a: &U256, b: &U256) -> U256 {
-    let mut out = [0u64; 4];
-    for bit in (0..256).rev() {
-        out = add_mod(&out, &out);
-        if b[bit / 64] >> (bit % 64) & 1 == 1 {
-            out = add_mod(&out, a);
-        }
-    }
-    out
-}
-
-/// Whether (x, y) satisfies y^2 = x^3 - 3x + b over the P-256 field, with both coordinates reduced.
-fn on_curve(x: &[u8], y: &[u8]) -> bool {
-    let (Some(x), Some(y)) = (from_be(x), from_be(y)) else { return false };
-    if !less(&x, &P) || !less(&y, &P) {
-        return false;
-    }
-    let cubed = mul_mod(&mul_mod(&x, &x), &x);
-    let three_x = add_mod(&add_mod(&x, &x), &x);
-    mul_mod(&y, &y) == add_mod(&sub_mod(&cubed, &three_x), &B)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::on_curve;
-
-    fn hex(text: &str) -> Vec<u8> {
-        (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
-    }
-
-    #[test]
-    fn known_points_are_on_the_curve_and_nearby_ones_are_not() {
-        let g = ("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5");
-        let two_g = ("7cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc47669978", "07775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1");
-        for (x, y) in [g, two_g] {
-            assert!(on_curve(&hex(x), &hex(y)));
-        }
-        let mut off = hex(g.1);
-        off[31] ^= 1;
-        assert!(!on_curve(&hex(g.0), &off));
-        assert!(!on_curve(&[0; 32], &[0; 32]));
-        assert!(!on_curve(&hex(g.0), &hex(g.0)));
-        // Coordinates not reduced modulo the prime are refused, as is a wrong length.
-        assert!(!on_curve(&[0xff; 32], &hex(g.1)));
-        assert!(!on_curve(&hex(g.0)[1..], &hex(g.1)));
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
