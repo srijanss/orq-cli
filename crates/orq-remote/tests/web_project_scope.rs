@@ -58,7 +58,7 @@ fn an_unknown_project_and_one_the_caller_may_not_see_look_the_same_as_not_found(
 
 #[test]
 fn leaving_the_project_cancels_the_list_request_still_in_flight() {
-    let Some(out) = run("/projects/alpha/timeline", json!([{"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([{"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/projects"}])) else { return };
     assert_eq!(out["requests"][0]["aborted"], true, "{out}");
 }
 
@@ -81,7 +81,7 @@ fn a_refused_token_on_the_project_list_asks_for_the_token_again() {
 
 #[test]
 fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit() {
-    let Some(out) = run("/projects/alpha/timeline", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/settings"}, {"go": "/projects/gamma/timeline"}])) else { return };
+    let Some(out) = run("/projects/alpha/timeline", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/projects"}, {"go": "/projects/gamma/timeline"}])) else { return };
     let text = shown(&out["frames"][3]);
     assert!(!text.contains("Not found"), "an old list decided a new visit: {text}");
     assert_eq!(out["frames"][3]["settled"]["switchers"], json!([]), "{out}");

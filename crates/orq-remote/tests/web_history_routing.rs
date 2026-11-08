@@ -49,10 +49,10 @@ fn a_report_address_opens_that_report_directly() {
 
 #[test]
 fn following_a_sidebar_link_changes_the_path_without_a_reload_and_back_undoes_it() {
-    let Some(out) = run(json!({"responses": [inbox(), inbox()], "steps": [{"submit": "token"}, {"nav": "nav a[href='/settings']"}, {"back": true}]})) else { return };
+    let Some(out) = run(json!({"responses": [inbox(), {"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": []}}}, inbox()], "steps": [{"submit": "token"}, {"nav": "nav a[href='/settings']"}, {"back": true}]})) else { return };
     let settings = &out["frames"][2]["settled"];
     assert_eq!(settings["path"], "/settings", "{out}");
-    assert!(texts(&out["frames"][2]).contains("not available yet"), "{out}");
+    assert!(texts(&out["frames"][2]).contains("Implementer"), "{out}");
     let back = &out["frames"][3]["settled"];
     assert_eq!(back["path"], "/", "{out}");
     assert!(texts(&out["frames"][3]).contains("alpha"), "{out}");

@@ -16,7 +16,8 @@ const SIGN_IN_FAILED = "Could not sign in. Check the token and try again.";
 const STALE_MARKER = "stale, may be out of date";
 const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
-const UNBUILT_DESTINATIONS = ["/settings", "/projects"];
+const UNBUILT_DESTINATIONS = ["/projects"];
+const API_SETTINGS = "/api/settings";
 const API_PROJECTS = "/api/projects";
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
@@ -349,6 +350,50 @@ function PageHeader({ title, subtitle, onRefresh }) {
         </button>
       ) : null}
     </header>
+  );
+}
+
+const SETTING_FIELDS = [["Harness", "harness"], ["Model", "model"], ["Effort", "effort"]];
+
+function isAgent(agent) {
+  return agent === null || (typeof agent === "object" && SETTING_FIELDS.every(([, key]) => agent[key] === null || typeof agent[key] === "string"));
+}
+
+function parseSettings(data) {
+  const settings = data && data.settings;
+  const ok = settings && typeof settings === "object" && isAgent(settings.implementer) && isAgent(settings.reviewer) && Array.isArray(settings.models) && settings.models.every((model) => model !== null && typeof model === "object" && typeof model.name === "string" && isAgent(model));
+  return ok && settings.implementer !== undefined && settings.reviewer !== undefined ? settings : null;
+}
+
+// One agent's fields as labelled text; a value the server did not give is a dash that says so.
+function AgentFields({ agent }) {
+  return (
+    <dl className="settings-fields">
+      {SETTING_FIELDS.map(([label, key]) => (
+        <div key={key}>
+          <dt>{label}</dt>
+          <dd>{agent && agent[key] !== null ? agent[key] : "—"}{agent && agent[key] !== null ? null : <span className="muted"> (not set)</span>}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SettingsView({ settings }) {
+  return (
+    <>
+      <section className="card"><h2>Implementer</h2><AgentFields agent={settings.implementer} /></section>
+      <section className="card"><h2>Reviewer</h2><AgentFields agent={settings.reviewer} /></section>
+      <section className="card">
+        <h2>Models</h2>
+        {settings.models.length === 0 ? <p>No models configured.</p> : settings.models.map((model) => (
+          <div key={model.name}>
+            <h3>{model.name}</h3>
+            <AgentFields agent={model} />
+          </div>
+        ))}
+      </section>
+    </>
   );
 }
 
@@ -804,6 +849,14 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   }
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
+  }
+  if (hash === "/settings") {
+    return (
+      <>
+        <PageHeader title="Settings" subtitle="Run settings, read only" onRefresh={() => setReloads(reloads + 1)} />
+        <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
+      </>
+    );
   }
   if (hash === "/dashboard") {
     return (

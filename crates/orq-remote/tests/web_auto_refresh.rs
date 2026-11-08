@@ -69,7 +69,7 @@ fn a_refresh_never_starts_while_the_last_one_is_still_waiting() {
 
 #[test]
 fn the_page_says_when_it_last_checked_and_stops_asking_when_left() {
-    let Some(out) = run("/", json!([list(&["first"])]), json!([{"submit": TOKEN}, {"go": "/settings"}])) else { return };
+    let Some(out) = run("/", json!([list(&["first"])]), json!([{"submit": TOKEN}, {"go": "/projects"}])) else { return };
     let checked = out["frames"][1]["settled"]["checked"].as_array().unwrap().clone();
     assert_eq!(checked.len(), 1, "{out}");
     assert!(checked[0].as_str().unwrap().starts_with("Last checked "), "{out}");
@@ -88,13 +88,13 @@ fn a_refused_token_on_a_refresh_asks_for_the_token_again_and_a_failed_one_keeps_
 #[test]
 fn leaving_during_a_waiting_refresh_cancels_it_and_nothing_asks_again_afterwards() {
     let held = json!({"hold": "fetch", "status": 200, "json": {"reviews": []}});
-    let steps = json!([{"submit": TOKEN}, {"tick": EVERY}, {"go": "/settings"}, {"release": 1}, {"visibility": "hidden"}, {"visibility": "visible"}, {"tick": EVERY}]);
+    let steps = json!([{"submit": TOKEN}, {"tick": EVERY}, {"go": "/projects"}, {"release": 1}, {"visibility": "hidden"}, {"visibility": "visible"}, {"tick": EVERY}]);
     let Some(out) = run("/", json!([list(&["first"]), held, list(&["late"])]), steps) else { return };
     let requests = out["requests"].as_array().unwrap();
     assert_eq!(requests.len(), 2, "no request after leaving: {out}");
     assert_eq!(requests[1]["aborted"], true, "{out}");
     let last = out["frames"].as_array().unwrap().last().unwrap();
-    assert_eq!(last["settled"]["path"], "/settings", "{out}");
+    assert_eq!(last["settled"]["path"], "/projects", "{out}");
     assert_eq!(last["settled"]["activeIntervals"], json!([]), "{out}");
     assert_eq!(out["frames"][1]["settled"]["visibilityListeners"], 1, "the page listens while it is open: {out}");
     assert_eq!(last["settled"]["visibilityListeners"], 0, "leaving removes the listener: {out}");
