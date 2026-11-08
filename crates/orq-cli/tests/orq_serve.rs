@@ -100,3 +100,47 @@ fn the_command_that_reads_the_token_is_safe_to_paste_whatever_the_path_holds() {
     let quoted = format!("'{}'", path.replace('\'', "'\\''"));
     assert!(server.printed.lines().any(|line| line == format!("read it with: cat -- {quoted}")), "{}", server.printed);
 }
+
+/// Runs a plain serve that must refuse: non-zero exit, no listening line.
+fn refused(root: &Path, repo: &Path) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    command.args(["serve", "--listen", "127.0.0.1:0"]).current_dir(repo);
+    command.envs([("XDG_STATE_HOME", root.join("state")), ("XDG_DATA_HOME", root.join("data")), ("XDG_CONFIG_HOME", root.join("config")), ("HOME", root.join("home"))]);
+    let out = command.output().unwrap();
+    assert!(!out.status.success(), "must refuse: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("listening"), "it must not announce an address");
+    out
+}
+
+#[test]
+fn an_existing_token_that_is_too_open_too_short_empty_or_a_link_is_refused_and_left_alone() {
+    use std::os::unix::fs::symlink;
+    let secret = "0123456789abcdef0123456789abcdef-existing";
+    for case in ["open", "short", "empty", "link"] {
+        let (root, repo) = bare_repo(&format!("bad-{case}"));
+        fs::create_dir_all(root.join("config/orq")).unwrap();
+        let path = token_file(&root);
+        let target = root.join("elsewhere");
+        let (contents, mode) = match case {
+            "open" => (secret, 0o644),
+            "short" => ("short", 0o600),
+            _ => ("", 0o600),
+        };
+        if case == "link" {
+            fs::write(&target, secret).unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            symlink(&target, &path).unwrap();
+        } else {
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let before = fs::read(&path).unwrap();
+        let out = refused(&root, &repo);
+        assert!(String::from_utf8_lossy(&out.stderr).to_lowercase().contains("token"), "{case}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fs::read(&path).unwrap(), before, "{case}: the file is not replaced or rewritten");
+        if case == "link" {
+            assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink(), "the link is kept");
+            assert_eq!(fs::read_to_string(&target).unwrap(), secret);
+        }
+    }
+}
