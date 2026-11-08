@@ -209,6 +209,29 @@ pub trait ProjectsProvider {
     fn run_logs(&self, _id: &str, _run: &str, _file: Option<&str>, _after: Option<&str>) -> Result<Option<Value>, String> {
         Ok(None)
     }
+
+    /// The redacted run settings as JSON, `None` when this provider has none.
+    fn settings(&self) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+}
+
+/// The run settings of the config file at `path`, as `{implementer, reviewer, models}`, for the web.
+/// Only the harness, model and effort of each agent leave, and each through the redactor; every
+/// other key (tokens, environment, credential paths, the remote section) is left behind. A missing
+/// file is empty settings; a file that cannot be parsed is an error that does not name the file.
+pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err("the settings could not be read".to_string()),
+    };
+    let doc: toml_edit::DocumentMut = text.parse().map_err(|_| "the settings could not be read".to_string())?;
+    let field = |table: &toml_edit::Table, key: &str| table.get(key).and_then(|item| item.as_str()).map(|value| Value::String(crate::redact::redact(value))).unwrap_or(Value::Null);
+    let agent = |table: &toml_edit::Table| json!({"harness": field(table, "harness"), "model": field(table, "model"), "effort": field(table, "effort")});
+    let section = |name: &str| doc.get(name).and_then(|item| item.as_table()).map(agent).unwrap_or(Value::Null);
+    let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table()).map(|table| table.iter().filter_map(|(name, item)| item.as_table().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
+    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models}))
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -252,6 +275,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
                 Err(why) => error(500, &why),
             },
             None => error(404, "not found"),
+        };
+    }
+    if path == "/api/settings" {
+        return match provider.map(|provider| provider.settings()) {
+            Some(Ok(Some(settings))) => reply(200, json!({ "settings": settings })),
+            Some(Err(why)) => error(500, &why),
+            _ => error(404, "not found"),
         };
     }
     if let Some(rest) = path.strip_prefix("/api/projects/") {

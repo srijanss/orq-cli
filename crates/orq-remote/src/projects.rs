@@ -213,6 +213,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(orq_core::remote_inbox::ReviewScope { review_key: orq_git::project_id(&git), name: project.name }))
     }
 
+    fn settings(&self) -> Result<Option<serde_json::Value>, String> {
+        orq_core::remote_inbox::public_settings(&self.roots.config_file()).map(Some)
+    }
+
     fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
