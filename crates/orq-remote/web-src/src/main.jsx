@@ -391,6 +391,38 @@ function FeatureList({ features }) {
   );
 }
 
+const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", merged: "Merged" };
+
+function isOrchestration(run) {
+  const text = (value) => value === null || typeof value === "string";
+  return run !== null && typeof run === "object" && typeof run.run_id === "string" && typeof run.feature === "string" && typeof run.state === "string" && text(run.stage) && text(run.started_at) && text(run.updated_at) && text(run.target_branch);
+}
+
+function parseOrchestrations(data) {
+  return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? data.runs : null;
+}
+
+// The runs as the server ordered them. A state the page does not know is "Unknown", never a success.
+function OrchestrationList({ runs }) {
+  if (runs.length === 0) {
+    return <p>No runs in this project yet.</p>;
+  }
+  return (
+    <ul>
+      {runs.map((run) => (
+        <li key={run.run_id} className="run card">
+          <strong>{run.feature}</strong>
+          <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+          {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
+          <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
+          {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
+          {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // What a project's address shows. Only the Reviews tab is built: its list and reports come from
 // the project's own endpoints and stay under the project's address.
 function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, onRefresh }) {
@@ -400,6 +432,15 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
       <>
         <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
         <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(features) => <FeatureList features={features} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
+  if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {
+    const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";
+    return (
+      <>
+        <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
+        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(runs) => <OrchestrationList runs={runs} />} onSignedOut={onSignedOut} />
       </>
     );
   }
