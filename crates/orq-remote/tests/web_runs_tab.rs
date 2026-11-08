@@ -73,3 +73,31 @@ fn a_project_with_no_runs_says_so_and_a_malformed_answer_draws_no_rows() {
     let texts = shown(&out["frames"][1]);
     assert!(!texts.iter().any(|t| t == "No runs in this project yet.") && !texts.iter().any(|t| t == "Unknown"), "{texts:?}");
 }
+
+fn runs_of(feature: &str) -> Value {
+    json!({"status": 200, "json": {"runs": [row("run-x", feature, "running", Value::Null)]}})
+}
+
+#[test]
+fn switching_project_never_shows_the_other_projects_runs_loaded_or_late() {
+    // Loaded: alpha's rows are gone once beta is chosen, and beta's own endpoint is read.
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs_of("alpha-only"), projects(), runs_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}])) else { return };
+    assert!(shown(&out["frames"][1]).iter().any(|t| t == "alpha-only"), "{out}");
+    assert_eq!(out["frames"][2]["settled"]["path"], "/projects/beta/orchestrations", "{out}");
+    assert_eq!(out["requests"][2]["url"], "/api/projects/beta/runs", "{out}");
+    let after = shown(&out["frames"][2]);
+    assert!(after.iter().any(|t| t == "beta-only") && !after.iter().any(|t| t == "alpha-only"), "{after:?}");
+
+    // Late: alpha's request is still waiting when beta is chosen, and its answer changes nothing.
+    let held = json!({"hold": "fetch", "status": 200, "json": {"runs": [row("run-late", "alpha-late", "running", Value::Null)]}});
+    let Some(out) = run("/projects/alpha/orchestrations", json!([held, projects(), runs_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
+    assert_eq!(out["requests"][0]["aborted"], true, "{out}");
+    let late = shown(&out["frames"][3]);
+    assert!(late.iter().any(|t| t == "beta-only") && !late.iter().any(|t| t == "alpha-late"), "{late:?}");
+
+    // Finishing late: the status arrived, the body is held, and it completes after the switch.
+    let held = json!({"hold": "json", "status": 200, "json": {"runs": [row("run-late", "alpha-late", "running", Value::Null)]}});
+    let Some(out) = run("/projects/alpha/orchestrations", json!([held, projects(), runs_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
+    let late = shown(&out["frames"][3]);
+    assert!(late.iter().any(|t| t == "beta-only") && !late.iter().any(|t| t == "alpha-late"), "{late:?}");
+}
