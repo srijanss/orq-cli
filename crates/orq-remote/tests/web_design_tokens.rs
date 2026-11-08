@@ -40,9 +40,9 @@ fn block<'a>(text: &'a str, head: &str) -> &'a str {
 #[test]
 fn every_token_has_a_light_and_a_dark_value() {
     let css = css();
-    let light = block(&css, ":root");
-    let dark_media = block(&css, "@media (prefers-color-scheme: dark)");
-    let dark = block(dark_media, ":root");
+    let dark = block(&css, ":root");
+    let light_media = block(&css, "@media (prefers-color-scheme: light)");
+    let light = block(light_media, ":root");
     for token in TOKENS {
         for suffix in ["", "-bg"] {
             let name = format!("--{token}{suffix}:");

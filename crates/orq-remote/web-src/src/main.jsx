@@ -65,7 +65,9 @@ function TokenPrompt({ message, onToken }) {
     }
   };
   return (
-    <>
+    <div className="signin card">
+      <h1>Sign in</h1>
+      <p>Sign in with token: paste the access token printed by orq serve.</p>
       <label>
         Access token
         <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
@@ -74,14 +76,16 @@ function TokenPrompt({ message, onToken }) {
         Open the inbox
       </button>
       <p role="alert">{message}</p>
-    </>
+      <div className="alternatives" />
+    </div>
   );
 }
 
 function RunRow({ run }) {
   const open = typeof run.run_id === "string" && RUN_ID.test(run.run_id);
   return (
-    <li className={run.stale === true ? "run stale" : "run"}>
+    <li className={run.stale === true ? "run stale card" : "run card"}>
+      {open ? <span className="ticket-id">{run.run_id}</span> : null}
       {open ? (
         <button type="button" onClick={() => navigate(DETAIL_PREFIX + run.run_id)}>
           {String(run.feature)}
