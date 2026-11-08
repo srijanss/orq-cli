@@ -159,19 +159,28 @@ fn every_refusal_is_the_same_value() {
 fn of_several_token_enrolments_that_race_exactly_one_is_stored() {
     let (store, roots) = store("race");
     let auth = EnrolAuthorizer::new();
-    // Every one of them is told it may enrol with the token...
-    for _ in 0..8 {
-        assert_eq!(ask(&auth, &store, TAILNET, bearer(TOKEN).as_deref(), false, 1), Ok(Enrolment::WithToken));
-    }
-    // ...but storing the first passkey is a single locked step that only an empty store accepts.
+    // Eight token enrolments run at once and complete through the one API.
     let landed: usize = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..8).map(|i| {
-            let roots = roots.clone();
-            scope.spawn(move || PasskeyStore::open(&roots).add_first(key(&format!("cred{i}"), &format!("device{i}"))).is_ok())
-        }).collect();
+        let auth = &auth;
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let roots = roots.clone();
+                scope.spawn(move || {
+                    let store = PasskeyStore::open(&roots);
+                    // One that starts after the first has landed is refused up front; the rest are all
+                    // allowed, and only one of those can store.
+                    match ask(auth, &store, TAILNET, bearer(TOKEN).as_deref(), false, 1) {
+                        Ok(how) => auth.complete(&store, how, key(&format!("cred{i}"), &format!("device{i}"))).is_ok(),
+                        Err(Refused) => false,
+                    }
+                })
+            })
+            .collect();
         handles.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
     });
-    assert_eq!(landed, 1);
+    assert_eq!(landed, 1, "exactly one token enrolment lands");
     assert_eq!(store.list().unwrap().len(), 1);
-    assert!(store.add_first(key("later", "later")).is_err(), "and later ones are refused too");
+    assert!(auth.complete(&store, Enrolment::WithToken, key("later", "later")).is_err(), "a late token enrolment is refused");
+    auth.complete(&store, Enrolment::WithSession, key("second", "second")).expect("a session can add more");
+    assert_eq!(store.list().unwrap().len(), 2);
 }

@@ -70,6 +70,16 @@ impl EnrolAuthorizer {
         self.try_token(config, request, now)
     }
 
+    /// Stores the passkey a request was allowed to enrol. A token enrolment goes through the step
+    /// that only an empty store accepts, so of several that race, one lands; a session enrolment
+    /// adds to what is there. This is the only way an authorization turns into a stored passkey.
+    pub fn complete(&self, store: &PasskeyStore, how: Enrolment, key: crate::passkey_store::Passkey) -> Result<(), String> {
+        match how {
+            Enrolment::WithToken => store.add_first(key),
+            Enrolment::WithSession => store.add(key),
+        }
+    }
+
     fn locked_out(&self, peer: IpAddr, now: u64) -> bool {
         let wrong = self.wrong.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         wrong.get(&peer).is_some_and(|(start, count)| now.saturating_sub(*start) < WINDOW_SECS && *count >= MAX_WRONG_TOKENS)
@@ -159,20 +169,25 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_out_or_tokenless_request_does_not_touch_the_store() {
-        // The state directory is a file, so any read of the store would be an error either way; what
-        // matters is that the lockout and the no-token cases are decided without one. A counter of
-        // reads is not available, so a directory that cannot exist stands in: the answer is the same
-        // and cheap, which the early path guarantees by construction.
+    fn locked_out_and_tokenless_requests_do_not_read_the_store_but_others_do() {
+        use crate::passkey_store::LISTS;
         let (auth, store) = (EnrolAuthorizer::new(), empty_store("early"));
-        let peer = ip(1);
-        for _ in 0..MAX_WRONG_TOKENS {
-            wrong_from(&auth, &store, peer, 5);
-        }
-        assert!(auth.locked_out(peer, 6));
         let config = RemoteConfig { token: "t".repeat(40) };
         let good = format!("Bearer {}", "t".repeat(40));
-        assert_eq!(auth.authorize(&store, &config, &EnrolRequest { peer, authorization: Some(&good), session_live: false }, 6), Err(Refused));
-        assert!(!store.any_registered());
+        let reads = |auth: &EnrolAuthorizer, authorization: Option<&str>, peer: IpAddr, now: u64| {
+            let before = LISTS.with(|n| n.get());
+            let _ = auth.authorize(&store, &config, &EnrolRequest { peer, authorization, session_live: false }, now);
+            LISTS.with(|n| n.get()) - before
+        };
+        assert_eq!(reads(&auth, None, ip(1), 5), 0, "no token");
+        assert_eq!(reads(&auth, Some(&good), ip(1), 5), 1, "a token that could succeed reads the store");
+        for _ in 0..MAX_WRONG_TOKENS {
+            wrong_from(&auth, &store, ip(2), 5);
+        }
+        assert_eq!(reads(&auth, Some(&good), ip(2), 6), 0, "locked out");
+        assert_eq!(reads(&auth, Some(&good), ip(2), 5 + WINDOW_SECS), 1, "and after the lockout it reads again");
+        let session = auth.authorize(&store, &config, &EnrolRequest { peer: ip(2), authorization: None, session_live: true }, 6);
+        assert!(session.is_err(), "a session with no passkey behind it");
+        assert!(LISTS.with(|n| n.get()) > 0);
     }
 }

@@ -165,6 +165,8 @@ impl PasskeyStore {
 
     /// Every registered passkey. No file is none; an unreadable or doubtful file is an error.
     pub fn list(&self) -> Result<Vec<Passkey>, String> {
+        #[cfg(test)]
+        LISTS.with(|n| n.set(n.get() + 1));
         match self.directory(false)? {
             None => Ok(Vec::new()),
             Some(dir) => self.read(&dir),
@@ -332,6 +334,11 @@ fn directories_passed(path: &std::path::Path) -> Result<Vec<PathBuf>, String> {
 
 /// Starts the error of a change that was applied but could not be confirmed durable.
 pub const APPLIED_NOT_DURABLE: &str = "the change was applied but could not be confirmed durable (cannot sync the Orq state directory)";
+
+// How many times this thread has listed a store, so a test can tell a request that read it from
+// one that was turned away first.
+#[cfg(test)]
+thread_local!(pub(crate) static LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
 
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
