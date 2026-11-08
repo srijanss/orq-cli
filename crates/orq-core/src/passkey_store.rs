@@ -138,24 +138,29 @@ impl PasskeyStore {
     }
 
     /// Nobody but this user (or root) may be able to rename or replace a directory on the way to the
-    /// state directory. The path is resolved first (so a link on the way is followed to the real
-    /// directories), then each directory from the real parent up to the root must belong to this
-    /// user or root and must not be writable by group or others, unless it is sticky (like /tmp).
-    /// Directories that do not exist yet are created by this user, so the nearest existing one is
-    /// where the check starts.
+    /// state directory. A relative path is made absolute first. Every directory up to the root on the
+    /// path as written, and again on the path after links are resolved, must belong to this user or
+    /// root and must not be writable by group or others, unless it is sticky (like /tmp).
+    /// Directories that do not exist yet are created by this user, so the check starts at the
+    /// nearest existing one.
     fn check_ancestors(&self) -> Result<(), String> {
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        let mut start = self.dir.parent();
-        let resolved = loop {
+        let absolute = if self.dir.is_absolute() {
+            self.dir.clone()
+        } else {
+            std::env::current_dir().map_err(|e| format!("cannot find the current directory: {}", e.kind()))?.join(&self.dir)
+        };
+        let mut start = absolute.parent();
+        let existing = loop {
             let Some(candidate) = start.filter(|c| !c.as_os_str().is_empty()) else { return Ok(()) };
             match std::fs::canonicalize(candidate) {
-                Ok(real) => break real,
+                Ok(real) => break (candidate.to_path_buf(), real),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => start = candidate.parent(),
                 Err(e) => return Err(format!("cannot resolve {}: {}", candidate.display(), e.kind())),
             }
         };
-        for ancestor in resolved.ancestors() {
+        for ancestor in existing.0.ancestors().chain(existing.1.ancestors()) {
             let meta = std::fs::metadata(ancestor).map_err(|e| format!("cannot inspect {}: {}", ancestor.display(), e.kind()))?;
             if meta.uid() != me && meta.uid() != 0 {
                 return Err(format!("{} must belong to the user running the server or to root", ancestor.display()));
@@ -401,5 +406,40 @@ mod tests {
         assert!(store.add(key("a", "one")).is_err() && store.list().is_err() && !store.any_registered());
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
         store.add(key("a", "one")).expect("a link into a private tree is fine");
+    }
+
+    /// The directory holding the link is checked as well as the directories the link leads through.
+    #[test]
+    fn the_directory_holding_a_link_is_checked_too() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-holder", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("private/owned")).unwrap();
+        let holder = base.join("holder");
+        std::fs::DirBuilder::new().mode(0o700).create(&holder).unwrap();
+        std::os::unix::fs::symlink(base.join("private/owned"), holder.join("link")).unwrap();
+        std::fs::set_permissions(&holder, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let store = PasskeyStore { dir: holder.join("link/state") };
+        assert!(store.add(key("a", "one")).is_err() && !store.any_registered());
+        std::fs::set_permissions(&holder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        store.add(key("a", "one")).expect("private holder and target");
+    }
+
+    /// A relative state path is checked from the current directory up. (Changing the directory is
+    /// process-wide, so this is the only test that does it.)
+    #[test]
+    fn a_relative_state_path_is_checked_from_the_current_directory() {
+        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-relative", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let store = PasskeyStore { dir: base.join("state").strip_prefix(&base).unwrap().to_path_buf() };
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&base).unwrap();
+        let loose = store.add(key("a", "one")).is_err();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let tight = store.add(key("a", "one"));
+        std::env::set_current_dir(previous).unwrap();
+        assert!(loose, "a world-writable working directory is refused");
+        tight.expect("a private working directory is fine");
     }
 }
