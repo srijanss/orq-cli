@@ -138,3 +138,30 @@ fn every_project_gets_only_its_own_active_runs_when_several_projects_have_runs()
     let list = StoreProjects::new(roots, scan).projects().unwrap();
     assert_eq!((entry(&list, "one")["active_runs"].as_u64(), entry(&list, "two")["active_runs"].as_u64()), (Some(2), Some(3)), "{list}");
 }
+
+#[test]
+fn a_ledger_that_is_a_link_a_pipe_or_far_too_large_makes_its_project_unavailable_without_being_followed() {
+    let base = web_deps::private_temp_dir("projects-ledger");
+    let scan = base.join("code");
+    let linked = git_repo(&scan, "linked");
+    let piped = git_repo(&scan, "piped");
+    let huge = git_repo(&scan, "huge");
+    let plain = git_repo(&scan, "plain");
+    let secret = base.join("outside.json");
+    std::fs::write(&secret, r#"[{"featureName":"a","status":"pending"}]"#).unwrap();
+    std::os::unix::fs::symlink(&secret, linked.join(".tdd-features.json")).unwrap();
+    assert!(Command::new("mkfifo").arg(piped.join(".tdd-features.json")).status().unwrap().success());
+    std::fs::write(huge.join(".tdd-features.json"), vec![b' '; 8 * 1024 * 1024]).unwrap();
+    std::fs::write(plain.join(".tdd-features.json"), r#"[{"featureName":"a","status":"pending"}]"#).unwrap();
+    // A read that blocks on the pipe must fail the test, not hang it.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let roots = roots(&base);
+    std::thread::spawn(move || {
+        let _ = sender.send(StoreProjects::new(roots, scan).projects());
+    });
+    let list = receiver.recv_timeout(std::time::Duration::from_secs(20)).expect("listing the projects blocked").unwrap();
+    for name in ["linked", "piped", "huge"] {
+        assert_eq!(entry(&list, name)["available"], false, "{name}: {list}");
+    }
+    assert_eq!(entry(&list, "plain")["features"], 1, "{list}");
+}

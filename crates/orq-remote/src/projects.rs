@@ -106,11 +106,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &Result<std::collections::HashMap<String, usize>, String>) -> Result<Counts, String> {
     let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
     let key = orq_git::project_id(&git);
-    let features = match orq_features::load_ledger(&orq_features::ledger_path(&git)) {
-        Ok(entries) => entries.len(),
-        Err(orq_features::LedgerError::Missing { .. }) => 0,
-        Err(error) => return Err(format!("{error:?}")),
-    };
+    let features = ledger_entries(&orq_features::ledger_path(&git))?;
     let active_runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or(0);
     let reviews_waiting = match reviews {
         Some(store) => waiting_reviews(store, &key)?,
@@ -163,4 +159,34 @@ fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::coll
         }
     }
     Ok(counts)
+}
+
+/// The most a feature ledger may weigh before the server refuses to read it.
+const LEDGER_LIMIT: u64 = 1024 * 1024;
+
+/// How many features the ledger at `path` lists; none when it does not exist. The file is opened
+/// without following a link and without waiting on a pipe, must be a regular file, and is read
+/// only up to a limit, so a ledger planted in a repository cannot reach elsewhere or stall a request.
+fn ledger_entries(path: &Path) -> Result<usize, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("the ledger cannot be opened: {:?}", error.kind())),
+    };
+    let meta = file.metadata().map_err(|error| format!("the ledger cannot be inspected: {:?}", error.kind()))?;
+    if !meta.is_file() {
+        return Err("the ledger is not a regular file".to_string());
+    }
+    if meta.len() > LEDGER_LIMIT {
+        return Err("the ledger is too large".to_string());
+    }
+    let mut bytes = Vec::new();
+    file.take(LEDGER_LIMIT + 1).read_to_end(&mut bytes).map_err(|error| format!("the ledger cannot be read: {:?}", error.kind()))?;
+    if bytes.len() as u64 > LEDGER_LIMIT {
+        return Err("the ledger is too large".to_string());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "the ledger is not text".to_string())?;
+    orq_features::parse_ledger(&text).map(|entries| entries.len()).map_err(|error| format!("the ledger is malformed: {error}"))
 }
