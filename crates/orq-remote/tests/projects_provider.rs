@@ -119,3 +119,22 @@ fn only_reviews_still_awaiting_a_human_count_as_waiting() {
     let list = StoreProjects::new(roots, scan).projects().unwrap();
     assert_eq!(entry(&list, "reviewed")["reviews_waiting"], 3, "{list}");
 }
+
+#[test]
+fn every_project_gets_only_its_own_active_runs_when_several_projects_have_runs() {
+    let base = web_deps::private_temp_dir("projects-own-runs");
+    let scan = base.join("code");
+    let (one, two) = (git_repo(&scan, "one"), git_repo(&scan, "two"));
+    let roots = roots(&base);
+    let runs = RunStore::new(&roots.state);
+    let mut n = 0;
+    for (project, count) in [(id_of(&one), 2), (id_of(&two), 3)] {
+        for _ in 0..count {
+            n += 1;
+            let run = format!("run-{n}");
+            runs.create(&RunRecord { run_id: run.clone(), project_id: project.clone(), feature_id: format!("f{n}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(&run), repository: String::new(), profiles: Default::default() }).unwrap();
+        }
+    }
+    let list = StoreProjects::new(roots, scan).projects().unwrap();
+    assert_eq!((entry(&list, "one")["active_runs"].as_u64(), entry(&list, "two")["active_runs"].as_u64()), (Some(2), Some(3)), "{list}");
+}

@@ -91,10 +91,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         } else {
             None
         };
-        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        let active = active_runs_by_project(&orq_orchestrator::RunStore::new(&self.roots.state));
         let list = discover(&self.scan_root)
             .into_iter()
-            .map(|project| match counts(&project, reviews.as_ref(), &runs) {
+            .map(|project| match counts(&project, reviews.as_ref(), &active) {
                 Ok(counts) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active_runs, "reviews_waiting": counts.reviews_waiting}),
                 Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null}),
             })
@@ -103,7 +103,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     }
 }
 
-fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, runs: &orq_orchestrator::RunStore) -> Result<Counts, String> {
+fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &Result<std::collections::HashMap<String, usize>, String>) -> Result<Counts, String> {
     let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
     let key = orq_git::project_id(&git);
     let features = match orq_features::load_ledger(&orq_features::ledger_path(&git)) {
@@ -111,16 +111,7 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, runs: &or
         Err(orq_features::LedgerError::Missing { .. }) => 0,
         Err(error) => return Err(format!("{error:?}")),
     };
-    let listed = orq_orchestrator::list_runs_report(runs, &key).map_err(|error| error.to_string())?;
-    // A record that cannot be read has no known owner, so no project's count can be trusted.
-    if listed.unreadable > 0 {
-        return Err(format!("{} run records are unreadable", listed.unreadable));
-    }
-    let active_runs = listed
-        .runs
-        .iter()
-        .filter(|run| matches!(run.phase, orq_orchestrator::RunPhase::Running | orq_orchestrator::RunPhase::PauseRequested | orq_orchestrator::RunPhase::Paused))
-        .count();
+    let active_runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or(0);
     let reviews_waiting = match reviews {
         Some(store) => waiting_reviews(store, &key)?,
         None => 0,
@@ -153,4 +144,23 @@ fn waiting_reviews(store: &orq_core::store::Store, project: &str) -> Result<usiz
         }
     }
     Ok(waiting)
+}
+
+/// Active runs per project id, read in one pass over the run store. A record or event log that
+/// cannot be read has no known owner, so no project's count can be trusted and this is an error.
+fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::collections::HashMap<String, usize>, String> {
+    use orq_orchestrator::{RunPhase, StoreError};
+    let mut counts = std::collections::HashMap::new();
+    for run_id in runs.run_ids().map_err(|error| format!("{error:?}"))? {
+        let record = match runs.load(&run_id) {
+            Ok(record) => record,
+            Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
+            Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
+        };
+        let events = runs.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
+        if matches!(orq_orchestrator::summarize_run(&events).phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused) {
+            *counts.entry(record.project_id).or_insert(0) += 1;
+        }
+    }
+    Ok(counts)
 }
