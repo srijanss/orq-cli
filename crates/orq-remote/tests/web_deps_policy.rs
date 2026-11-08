@@ -4,7 +4,9 @@
 
 mod web_deps;
 
-use web_deps::{decide, Decision};
+use std::io::ErrorKind;
+
+use web_deps::{classify_node_probe, decide, Decision, NodeProbe};
 
 #[test]
 fn everything_present_means_run() {
@@ -31,4 +33,20 @@ fn node_without_the_dependencies_fails_unless_opted_out() {
 fn ready_runs_when_this_machine_has_everything_or_opts_out() {
     // On a machine that fails the policy this test fails too, which is the point.
     let _ = web_deps::ready();
+}
+
+#[test]
+fn only_a_missing_node_counts_as_no_node() {
+    assert_eq!(classify_node_probe(Ok(true)), NodeProbe::Present);
+    assert_eq!(classify_node_probe(Err(ErrorKind::NotFound)), NodeProbe::Absent);
+}
+
+#[test]
+fn a_node_that_cannot_be_started_or_exits_badly_is_a_broken_environment_not_a_skip() {
+    for probe in [classify_node_probe(Ok(false)), classify_node_probe(Err(ErrorKind::PermissionDenied)), classify_node_probe(Err(ErrorKind::OutOfMemory))] {
+        match probe {
+            NodeProbe::Broken(message) => assert!(message.contains("node"), "{message}"),
+            other => panic!("expected a broken environment, got {other:?}"),
+        }
+    }
 }
