@@ -159,20 +159,21 @@ fn every_refusal_is_the_same_value() {
 fn of_several_token_enrolments_that_race_exactly_one_is_stored() {
     let (store, roots) = store("race");
     let auth = EnrolAuthorizer::new();
-    // Eight token enrolments run at once and complete through the one API.
+    // All eight are authorized while the store is empty, and only then do they complete together.
+    let allowed: Vec<Enrolment> = (0..8).map(|_| ask(&auth, &store, TAILNET, bearer(TOKEN).as_deref(), false, 1).expect("allowed while the store is empty")).collect();
+    assert!(allowed.iter().all(|how| *how == Enrolment::WithToken));
+    let barrier = std::sync::Barrier::new(allowed.len());
     let landed: usize = std::thread::scope(|scope| {
-        let auth = &auth;
-        let handles: Vec<_> = (0..8)
-            .map(|i| {
+        let (auth, barrier) = (&auth, &barrier);
+        let handles: Vec<_> = allowed
+            .into_iter()
+            .enumerate()
+            .map(|(i, how)| {
                 let roots = roots.clone();
                 scope.spawn(move || {
                     let store = PasskeyStore::open(&roots);
-                    // One that starts after the first has landed is refused up front; the rest are all
-                    // allowed, and only one of those can store.
-                    match ask(auth, &store, TAILNET, bearer(TOKEN).as_deref(), false, 1) {
-                        Ok(how) => auth.complete(&store, how, key(&format!("cred{i}"), &format!("device{i}"))).is_ok(),
-                        Err(Refused) => false,
-                    }
+                    barrier.wait();
+                    auth.complete(&store, how, key(&format!("cred{i}"), &format!("device{i}"))).is_ok()
                 })
             })
             .collect();
