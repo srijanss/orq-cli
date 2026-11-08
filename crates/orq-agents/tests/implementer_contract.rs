@@ -230,3 +230,27 @@ fn a_session_with_a_marker_is_told_to_write_down_what_it_could_not_do() {
         assert!(!unmarked.contains("write what went wrong"), "{harness}: {unmarked}");
     });
 }
+
+#[test]
+fn a_session_with_a_marker_is_told_to_start_it_with_ok_or_problem_and_when_each_applies() {
+    for_each_harness(|harness, model| {
+        let features = ["COM-01"];
+        let adapter = adapter_for(harness).unwrap();
+        for attended in [true, false] {
+            let marked = ImplementRequest {
+                attended,
+                exit_marker: Some("/state/logs/run-1/implement.done"),
+                ..request(harness, model, &features)
+            };
+            let prompt = adapter.implement_argv(&marked).unwrap().last().unwrap().clone();
+            assert!(prompt.contains("PROBLEM"), "{harness}: {prompt}");
+            assert!(prompt.contains("first line"), "{harness}: {prompt}");
+            assert!(prompt.contains("OK"), "{harness}: {prompt}");
+            assert!(prompt.contains("review"), "{harness}: {prompt}");
+            assert!(prompt.contains("failing"), "{harness}: {prompt}");
+            assert!(prompt.contains("notes"), "{harness}: {prompt}");
+        }
+        let prompt = adapter.fix_argv(&fix_request(harness, model, Some("/state/logs/run-1/gate-fix.done"), false)).unwrap().last().unwrap().clone();
+        assert!(prompt.contains("PROBLEM") && prompt.contains("OK") && prompt.contains("first line"), "{harness}: {prompt}");
+    });
+}

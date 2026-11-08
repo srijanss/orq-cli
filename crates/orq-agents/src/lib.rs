@@ -332,9 +332,13 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
         prompt.push_str("\n\nFinal step, only after the fix is committed and nothing is left to do or ask: create the empty file ");
         prompt.push_str(&marker_for_prompt(marker)?);
         prompt.push_str(" and then stop.");
+        prompt.push_str(MARKER_FORMAT);
     }
     Ok(prompt)
 }
+
+/// How a session says how it went in its finish marker: the first line decides (see the orchestrator).
+const MARKER_FORMAT: &str = " The first line of that file says how it went: leave it empty, or write OK, when the work is done; any notes go after OK. Write PROBLEM on the first line, and what went wrong after it, only if the work is not done, a required review could not run or did not end done, or tests are failing.";
 
 /// The one prompt argument of an implementer session on `harness`, after checking everything the
 /// request puts into it. `command` is how that harness names the implement-and-review skill. Every
@@ -403,7 +407,8 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         });
         prompt.push_str(&quoted);
         prompt.push_str(" and then stop.");
-        prompt.push_str(" If any part of this could not be done the way it was asked, including a review that could not run, write what went wrong into that file instead of leaving it empty.");
+        prompt.push_str(MARKER_FORMAT);
+        prompt.push_str(" If any part of this could not be done the way it was asked, including a review that could not run, write what went wrong into that file after PROBLEM instead of leaving it empty.");
     }
     Ok(prompt)
 }

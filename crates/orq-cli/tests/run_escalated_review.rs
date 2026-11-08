@@ -43,6 +43,11 @@ fn status_of(repo: &Path, name: &str) -> String {
 /// leaves a review ledger whose one review reached round `round` with a high finding open, and
 /// reports a problem in its finish marker, as a session does when its review loop ends early.
 fn world(tag: &str, agent: &FakeAgent, round: Option<u32>) -> World {
+    world_marking(tag, agent, round, "the review escalated after 3 rounds")
+}
+
+/// `world`, with a session that writes `marker_text` into its finish marker.
+fn world_marking(tag: &str, agent: &FakeAgent, round: Option<u32>, marker_text: &str) -> World {
     let root = orq_test_support::process_temp_dir().join(format!("orq-run-escalated-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config/orq")).unwrap();
@@ -85,12 +90,13 @@ fn world(tag: &str, agent: &FakeAgent, round: Option<u32>) -> World {
                 "for a; do last=$a; done\n",
                 "marker=$(printf '%s' \"$last\" | grep -o '/[^ `]*implement\\.done' | head -n 1)\n",
                 "{ledger}",
-                "printf 'the review escalated after 3 rounds' > \"$marker\"\n",
+                "printf '{marker_text}' > \"$marker\"\n",
             ),
             features = repo.root().join(".tdd-features.json").display(),
             prompts = root.join("prompts.log").display(),
             agent = agent.path().display(),
             ledger = ledger,
+            marker_text = marker_text,
         ),
     )
     .unwrap();
@@ -216,4 +222,18 @@ fn a_run_waiting_for_a_review_decision_whose_ledger_is_gone_is_not_resumed_as_ne
     assert_eq!(sessions(&w), 1, "no session starts after the escalated one\n{stderr}");
     assert_ne!(resumed.status.code(), Some(0), "{}\n{stderr}", text(&resumed.stdout));
     assert!(stderr.contains("no escalated review"), "{stderr}");
+}
+
+#[test]
+fn a_marker_saying_ok_with_notes_does_not_fail_the_run() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world_marking("ok-notes", &agent, None, "OK\\nthe review left one low finding open\\n");
+
+    let output = run(&w);
+
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    // The run goes on past the implement stage; this world has no drafting session, so it ends there.
+    assert!(!stderr.contains("implement session"), "{stdout}\n{stderr}");
+    assert!(!stderr.contains("reported a problem"), "{stdout}\n{stderr}");
+    assert!(stderr.contains("review request"), "the run reached the review request: {stdout}\n{stderr}");
 }
