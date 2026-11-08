@@ -134,3 +134,24 @@ fn growing_past_the_phone_width_closes_an_open_drawer() {
     assert_eq!(after["bodyOverflow"], "", "scroll is released: {out}");
     assert_eq!(after["menuExpanded"], "false", "{out}");
 }
+
+#[test]
+fn destinations_without_a_page_say_so_instead_of_showing_the_inbox() {
+    if !web_deps::ready() {
+        return;
+    }
+    for hash in ["#/dashboard", "#/settings", "#/projects/app/features"] {
+        let scenario = json!({"responses": [{"status": 200, "json": {"reviews": []}}], "steps": [{"submit": "token"}, {"hash": hash}]});
+        let output = Command::new("node")
+            .arg(crate_dir().join("tests/web_react_harness.mjs"))
+            .arg(crate_dir().join("web/app.react.js"))
+            .arg(scenario.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let shown = out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect::<Vec<_>>().join(" | ");
+        assert!(shown.contains("not available yet"), "{hash}: {shown}");
+        assert!(!shown.to_lowercase().contains("no reviews"), "{hash}: the inbox must not show under another destination: {shown}");
+    }
+}

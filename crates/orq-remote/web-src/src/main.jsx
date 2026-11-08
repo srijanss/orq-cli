@@ -10,6 +10,8 @@ const API_REVIEWS = "/api/reviews";
 const SIGN_IN_FAILED = "Could not sign in. Check the token and try again.";
 const STALE_MARKER = "stale, may be out of date";
 const DETAIL_PREFIX = "#/reviews/";
+// Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
+const UNBUILT_DESTINATIONS = ["#/dashboard", "#/settings", "#/projects"];
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -211,6 +213,9 @@ function App() {
     setToken(null);
     setMessage(SIGN_IN_FAILED);
   };
+  if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
+    return <p>This page is not available yet.</p>;
+  }
   const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
   if (RUN_ID.test(runId)) {
     const path = API_REVIEWS + "/" + encodeURIComponent(runId);

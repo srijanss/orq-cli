@@ -96,6 +96,8 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       fieldAfter = field.value;
     } else if (step.release !== undefined) {
       held[step.release]();
+    } else if (step.hash !== undefined) {
+      window.location.hash = step.hash;
     } else if (step.back) {
       window.history.back();
     } else {
