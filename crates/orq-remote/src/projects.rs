@@ -1,7 +1,6 @@
 //! Projects the server can show: the git repositories directly inside the scan root
 //! (`~/code` by default). Symlinks are never followed, so nothing outside the root is read.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,18 +29,7 @@ pub fn discover(root: &Path) -> Vec<Project> {
         .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.path())))
         .collect();
     found.sort();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    for (name, _) in &found {
-        *seen.entry(slug(name)).or_default() += 1;
-    }
-    found
-        .into_iter()
-        .map(|(name, path)| {
-            let base = slug(&name);
-            let id = if seen[&base] > 1 { format!("{base}-{:06x}", fingerprint(&name) & 0xff_ffff) } else { base };
-            Project { id, name, path }
-        })
-        .collect()
+    found.into_iter().map(|(name, path)| Project { id: project_id(&name), name, path }).collect()
 }
 
 /// A `.git` directory, or a `.git` file as linked worktrees have, that is not itself a symlink.
@@ -55,6 +43,15 @@ fn slug(name: &str) -> String {
     if parts.is_empty() { "project".to_string() } else { parts.join("-") }
 }
 
-fn fingerprint(name: &str) -> u64 {
-    name.bytes().fold(0xcbf29ce484222325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3))
+/// The id comes from the folder name alone, so it never changes when other folders come or go.
+/// A name that is already a plain lowercase slug is its own id. Any other name gets its readable
+/// slug plus `_` and the hex of the whole name; a plain slug never contains `_`, so the two
+/// kinds cannot meet and two different names can never share an id.
+fn project_id(name: &str) -> String {
+    let readable = slug(name);
+    if readable == name {
+        return readable;
+    }
+    let hex: String = name.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("{readable}_{hex}")
 }
