@@ -625,7 +625,7 @@ fn runs(args: &[OsString]) -> ExitCode {
     };
     let store = orq_orchestrator::RunStore::new(&root);
     let project_id = pipeline::project_id(&project);
-    let (listings, unreadable) = match list_runs_reconciled(&store, &project_id) {
+    let (listings, unreadable) = match list_runs_reconciled(&store, &project_id, &repo) {
         Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
@@ -2057,7 +2057,7 @@ impl LedgerBackend {
             .or_else(pipeline::state_root)
             .ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        let list = list_runs_reconciled(&store, &pipeline::project_id(&project))?;
+        let list = list_runs_reconciled(&store, &pipeline::project_id(&project), repo)?;
         self.unreadable_runs = list.unreadable;
         Ok(list.runs)
     }
@@ -4423,13 +4423,16 @@ fn run_stop(args: &[OsString]) -> ExitCode {
 
 /// Discard `run_id`, putting the features nothing continues any more back to `pending` in `repo`'s
 /// ledger before their locks are released, and say which were and where a worktree with
-/// uncommitted work was kept.
+/// uncommitted work was kept. A run whose work is on its target branch leaves its features as they are.
 fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<String, String> {
     let mut note = String::new();
     let store = orq_orchestrator::RunStore::new(root);
     let outcome = orq_orchestrator::discard_run_then(&store, run_id, repo, &mut |project_id, features| {
         note = reopen_discarded(&store, run_id, repo, project_id, features);
     })?;
+    if outcome.merged {
+        note.push_str(" Its work is on the target branch; its features stay as the ledger has them.");
+    }
     if let Some(kept) = outcome.kept_worktree {
         note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
     }
@@ -4658,8 +4661,9 @@ fn run_switch(args: &[OsString]) -> ExitCode {
 }
 
 /// This project's runs, after recording as failed every run that still reads as running but whose
-/// process is gone. A run that cannot be recorded is reported on stderr and listed as it reads.
-fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str) -> Result<orq_orchestrator::RunList, String> {
+/// process is gone, with a failed or review-waiting run whose work is on its target branch in
+/// `repo` listed as merged. A run that cannot be recorded is reported on stderr and listed as it reads.
+fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str, repo: &Path) -> Result<orq_orchestrator::RunList, String> {
     let mut list = orq_orchestrator::list_runs_report(store, project_id).map_err(|err| err.to_string())?;
     let mut reconciled = false;
     for run in &list.runs {
@@ -4679,6 +4683,7 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str) ->
             Err(err) => eprintln!("orq: the listing could not be refreshed after recording failed runs: {err}"),
         }
     }
+    orq_orchestrator::mark_merged_runs(store, &mut list, repo);
     Ok(list)
 }
 

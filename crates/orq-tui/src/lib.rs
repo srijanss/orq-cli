@@ -667,6 +667,8 @@ enum RowAction {
     /// Resume a run whose review escalated: its session reviews the commits since again.
     ReviewAgain,
     Discard,
+    /// Discard a run whose work is already on its target branch: its features stay as they are.
+    Clear,
     Accept,
     OpenLink,
     CopyLink,
@@ -682,6 +684,7 @@ impl RowAction {
             RowAction::Resume => "[Resume]",
             RowAction::ReviewAgain => "[Review again]",
             RowAction::Discard => "[Discard]",
+            RowAction::Clear => "[Clear]",
             RowAction::Accept => "[Accept]",
             RowAction::OpenLink => "[Open MR]",
             RowAction::CopyLink => "[Copy link]",
@@ -697,10 +700,11 @@ fn latest_runs(runs: Vec<RunRow>) -> HashMap<String, RunRow> {
 
 /// What a feature in ledger `status` whose latest run is in `run` (`None` without a run) reads as.
 /// The agent marks a feature completed when its implementation is done, before the run's gate, push
-/// and CI, so the ledger's word only stands once that run has finished too.
+/// and CI, so the ledger's word only stands once that run has finished too, or once its work was
+/// merged into the target branch by hand.
 fn shown_status<'a>(status: &'a str, run: Option<&str>) -> &'a str {
     match run {
-        Some(run) if status == "completed" && run != "completed" => "in_progress",
+        Some(run) if status == "completed" && !matches!(run, "completed" | "merged") => "in_progress",
         _ => status,
     }
 }
@@ -725,6 +729,7 @@ fn run_actions(status: &str) -> &'static [RowAction] {
         "failed" => &[RowAction::Resume, RowAction::Accept, RowAction::Discard],
         "blocked" => &[RowAction::Resume, RowAction::Discard],
         "needs_review" => &[RowAction::ReviewAgain, RowAction::Accept, RowAction::Discard],
+        "merged" => &[RowAction::Clear],
         _ => &[],
     }
 }
@@ -3603,6 +3608,12 @@ impl Browser {
                 });
                 self.row_confirm = Some((action, run_id));
             }
+            RowAction::Clear => {
+                self.notice = Some(format!(
+                    "Clear {run_id}? Its work is on the target; its features stay, its record and logs go. y confirms, other keys cancel"
+                ));
+                self.row_confirm = Some((action, run_id));
+            }
             RowAction::Accept => {
                 self.notice = Some(format!(
                     "Accept {run_id}? Its tests run in its worktree and, if they pass, it is marked review ready. y confirms, other keys cancel"
@@ -3621,6 +3632,7 @@ impl Browser {
             RowAction::Stop => "stop",
             RowAction::Resume => "resume",
             RowAction::Accept => "accept",
+            RowAction::Clear => "clear",
             _ => "discard",
         };
         self.notice = Some(format!("Did not {verb} {run_id}"));
@@ -3635,7 +3647,7 @@ impl Browser {
         let done = match action {
             RowAction::Stop => backend.stop_run(run_id),
             RowAction::Resume | RowAction::ReviewAgain => backend.resume_run(run_id),
-            RowAction::Discard => backend.discard_run(run_id),
+            RowAction::Discard | RowAction::Clear => backend.discard_run(run_id),
             RowAction::Accept => backend.accept_run(run_id),
             RowAction::Pause | RowAction::Orchestrate | RowAction::OpenLink | RowAction::CopyLink | RowAction::Details => return,
         };
