@@ -75,7 +75,7 @@ fn slug(name: &str) -> String {
 /// kinds cannot meet and two different names can never share an id.
 fn project_id(name: &str) -> String {
     let readable = slug(name);
-    if readable == name {
+    if readable == name && name.len() <= MAX_ID_LEN {
         return readable;
     }
     let hex: String = name.bytes().map(|byte| format!("{byte:02x}")).collect();

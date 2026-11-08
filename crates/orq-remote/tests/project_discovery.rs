@@ -194,3 +194,18 @@ fn inside_a_group_a_linked_folder_a_linked_git_marker_and_an_unreadable_folder_a
         assert_eq!(names, ["group/good", "sealed/hidden"]);
     }
 }
+
+#[test]
+fn a_direct_repository_with_a_very_long_plain_name_gets_a_bounded_stable_id() {
+    let root = web_deps::private_temp_dir("long-plain");
+    let name = "a".repeat(129);
+    repo(&root, &name);
+    repo(&root, &"a".repeat(130));
+    let found = discover(&root);
+    assert_eq!(found.len(), 2);
+    for project in &found {
+        assert!(project.id.len() <= 100, "{}", project.id.len());
+    }
+    assert_ne!(found[0].id, found[1].id);
+    assert_eq!(found[0].id, discover(&root)[0].id);
+}
