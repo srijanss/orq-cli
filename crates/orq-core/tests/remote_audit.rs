@@ -122,8 +122,9 @@ fn a_secret_cut_by_the_length_limit_is_still_redacted() {
     remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&token_reason)), 1).unwrap();
     remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&url_reason)), 2).unwrap();
     let text = fs::read_to_string(roots.state.join("remote-actions.jsonl")).unwrap();
-    assert!(!text.contains("ghp_"), "{text}");
-    assert!(!text.contains(url_secret) && !text.contains("user:hunter"), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(!lines[1].contains("user:hun") && !lines[1].contains(url_secret), "url credentials leaked: {}", lines[1]);
+    assert!(!lines[0].contains("ghp_"), "token leaked: {}", lines[0]);
 }
 
 #[test]
