@@ -71,3 +71,28 @@ fn motion_is_reduced_on_request_focus_is_visible_and_targets_are_44px() {
     assert!(focus.split('}').next().unwrap().contains("outline"), "focus is drawn");
     assert!(css.contains("min-height: 44px") && css.contains("min-width: 44px"), "44px targets");
 }
+
+fn announced(out: &Value, frame: usize) -> String {
+    out["frames"][frame]["settled"]["a11y"]["live"].as_array().unwrap().iter().filter(|l| l["live"] == "polite").map(|l| l["text"].as_str().unwrap().to_string()).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn moving_to_another_page_changes_the_text_of_the_one_polite_region() {
+    let ledger = json!({"status": 200, "json": {"features": []}});
+    let runs = json!({"status": 200, "json": {"runs": []}});
+    let steps = json!([{"submit": TOKEN}, {"nav": "nav a[href$='/orchestrations']"}]);
+    let Some(out) = run("/projects/alpha/features", json!([ledger, projects(), runs]), steps) else { return };
+    let last = out["frames"].as_array().unwrap().len() - 1;
+    assert!(announced(&out, 1).contains("Features"), "{out}");
+    assert!(announced(&out, last).contains("Orchestrations") && !announced(&out, last).contains("Features"), "the same region now names the new page: {out}");
+}
+
+#[test]
+fn a_run_page_is_announced_by_its_run_and_project() {
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": null, "updated_at": null});
+    let timeline = json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}});
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([timeline, projects(), stream]), json!([{"submit": TOKEN}])) else { return };
+    let text = announced(&out, 1);
+    assert!(text.contains("run-1") && text.contains("alpha"), "{text}: {out}");
+}

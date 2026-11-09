@@ -24,6 +24,27 @@ export function navigationEntries(projectId) {
   return entries;
 }
 
+const SECTIONS = { features: "Features", orchestrations: "Orchestrations", reviews: "Reviews" };
+
+// What assistive technology hears after moving to `path`; "" for a log page.
+function describePage(path, entries) {
+  if (path.includes("/logs")) return "";
+  const parts = path.split("/");
+  const decode = (text) => {
+    try {
+      return decodeURIComponent(text);
+    } catch (bad) {
+      return text;
+    }
+  };
+  if (parts[1] === "projects" && SECTIONS[parts[3]] !== undefined) {
+    const detail = parts[4] ? ": " + decode(parts[4]) : "";
+    return SECTIONS[parts[3]] + detail + ", project " + decode(parts[2]);
+  }
+  const entry = entries.find((candidate) => candidate.href === path);
+  return entry !== undefined ? entry.label + " page" : "";
+}
+
 export function Shell({ projectId = null, projects = null, onSignOut = null, children }) {
   const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -82,9 +103,11 @@ export function Shell({ projectId = null, projects = null, onSignOut = null, chi
     return () => query.removeEventListener("change", onChange);
   }, [drawerOpen]);
 
-  // A page change is announced by its name; log pages stay out so a streaming log never talks.
-  const current = entries.find((entry) => entry.href === path);
-  const announcement = current !== undefined && !path.includes("/logs") ? current.label + " page" : "";
+  // A page change is announced by name, with the project and the run or report when there is one.
+  // The region starts empty and its text is set after each move, so assistive technology reads the
+  // change. Log pages stay out so a streaming log never talks.
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => setAnnouncement(describePage(path, entries)), [path, projectId]);
   const classes = ["shell", collapsed ? "collapsed" : "", drawerOpen ? "drawer-open" : ""].filter(Boolean).join(" ");
 
   return (
