@@ -1213,7 +1213,7 @@ function App() {
   const session = status !== null && status.signed_in === true;
   const active = session && token === null ? SESSION : token;
   if (active === null) {
-    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} known={status !== null} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} />;
+    return <main><TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} known={status !== null} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} /></main>;
   }
   const signedOut = () => {
     setToken(null);

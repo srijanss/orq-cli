@@ -82,6 +82,9 @@ export function Shell({ projectId = null, projects = null, onSignOut = null, chi
     return () => query.removeEventListener("change", onChange);
   }, [drawerOpen]);
 
+  // A page change is announced by its name; log pages stay out so a streaming log never talks.
+  const current = entries.find((entry) => entry.href === path);
+  const announcement = current !== undefined && !path.includes("/logs") ? current.label + " page" : "";
   const classes = ["shell", collapsed ? "collapsed" : "", drawerOpen ? "drawer-open" : ""].filter(Boolean).join(" ");
 
   return (
@@ -119,7 +122,7 @@ export function Shell({ projectId = null, projects = null, onSignOut = null, chi
             ))}
           </select>
         ) : null}
-        <nav>
+        <nav aria-label="Primary">
           {entries.map((entry) => (
             <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
                 if (isPlainLeftClick(event)) {
@@ -144,7 +147,8 @@ export function Shell({ projectId = null, projects = null, onSignOut = null, chi
           ) : null}
         </div>
       </aside>
-      <div className="content">{children}</div>
+      <div className="sr-only" role="status" aria-live="polite" data-announcer>{announcement}</div>
+      <main className="content">{children}</main>
     </div>
   );
 }

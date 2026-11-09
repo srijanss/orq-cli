@@ -53,11 +53,11 @@ fn parse(css: &str, media: Option<&str>) -> Vec<Rule> {
     rules
 }
 
-/// Whether a media condition holds at `width` pixels. Colour-scheme conditions only hold tokens and
+/// Whether a media condition holds at `width` pixels. Colour-scheme and reduced-motion conditions hold no widths and
 /// are skipped; any other condition this does not understand fails the test rather than hiding.
 fn applies(media: &Option<String>, width: f64) -> bool {
     let Some(condition) = media else { return true };
-    if condition.contains("prefers-color-scheme") {
+    if condition.contains("prefers-color-scheme") || condition.contains("prefers-reduced-motion") {
         return false;
     }
     condition.split(" and ").all(|part| {

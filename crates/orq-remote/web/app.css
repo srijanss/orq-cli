@@ -240,3 +240,8 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .dependencies li { margin: 0; }
 .missing-dependency em { color: var(--stale); font-style: normal; font-weight: 600; }
 .feature:focus { outline: 2px solid var(--accent); }
+
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
