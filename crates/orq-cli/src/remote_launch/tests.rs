@@ -27,11 +27,13 @@ fn fake_orq(dir: &Path) -> PathBuf {
     let path = dir.join("orq");
     let log = dir.join("calls.log");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in \"/home/me/repo/plan.json\" (path=/home/me/repo)' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\nif [ -e {orphan} ]; then sleep 20 & echo $! > {pid}; exit 0; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in \"/home/me/repo/plan.json\" (path=/home/me/repo)' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
         log = log.display(),
         refuse = dir.join("refuse").display(),
         hang = dir.join("hang").display(),
         flood = dir.join("flood").display(),
+        orphan = dir.join("orphan").display(),
+        pid = dir.join("orphan.pid").display(),
         detach_fails = dir.join("detach-fails").display(),
         no_id = dir.join("no-id").display()
     );
@@ -111,4 +113,17 @@ fn a_detached_start_that_fails_or_names_no_run_is_a_failure_and_is_not_retried()
         assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), before + 2, "{mode}: one check and one start, no retry");
         std::fs::remove_file(dir.join(mode)).unwrap();
     }
+}
+
+#[test]
+fn the_deadline_is_one_budget_for_the_whole_call_even_when_a_descendant_holds_the_pipes() {
+    let dir = scratch("budget");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    std::fs::write(dir.join("orphan"), "").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config)).with_deadline(std::time::Duration::from_secs(1));
+    let began = std::time::Instant::now();
+    assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))));
+    assert!(began.elapsed() < std::time::Duration::from_millis(1600), "took {:?}", began.elapsed());
 }

@@ -74,8 +74,7 @@ impl CliLauncher {
                 }
             }
         };
-        let left = end.saturating_duration_since(Instant::now());
-        let text = |received: mpsc::Receiver<Vec<u8>>| received.recv_timeout(left).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let text = |received: mpsc::Receiver<Vec<u8>>| received.recv_timeout(end.saturating_duration_since(Instant::now())).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
         match (text(stdout), text(stderr)) {
             (Ok(out), Ok(err)) => Ok((status.success(), out, err)),
             _ => Err(failed("it kept its output open")),
