@@ -87,3 +87,27 @@ fn a_torn_last_line_does_not_swallow_the_next_attempt_and_the_damage_is_shown() 
     assert_eq!(lines[1], serde_json::json!({"damaged": true}), "the torn line is reported, not hidden");
     assert_eq!(lines[2]["action"], "run.start");
 }
+
+#[test]
+fn a_read_looks_only_at_the_end_of_the_log_and_a_record_stays_small() {
+    use std::io::Write;
+    let roots = roots("bounded");
+    let file = roots.state.join("remote-actions.jsonl");
+    // A long stretch of old, unreadable bytes before the two real lines.
+    let junk = fs::File::create(&file).unwrap();
+    junk.set_len(8 * 1024 * 1024).unwrap();
+    drop(junk);
+    fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"\n").unwrap();
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Allowed, None), 1).unwrap();
+    remote_audit::record(&roots, &attempt("phone", "run.pause", Some("r1"), Outcome::Allowed, None), 2).unwrap();
+
+    let lines = remote_audit::read(&roots, 3).unwrap();
+    assert_eq!(lines.iter().map(|l| l["action"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>(), ["run.pause", "run.start"], "the far end of the file is never read");
+    assert!(remote_audit::read(&roots, 0).unwrap().is_empty());
+
+    let long = "x".repeat(100_000);
+    remote_audit::record(&roots, &attempt(&long, "run.start", Some(&long), Outcome::Refused, Some(&long)), 3).unwrap();
+    let text = fs::read(&file).unwrap();
+    let last = text[..text.len() - 1].rsplit(|b| *b == b'\n').next().unwrap();
+    assert!(last.len() < 4096, "one entry is {} bytes", last.len());
+}

@@ -27,6 +27,15 @@ pub struct Attempt<'a> {
     pub reason: Option<&'a str>,
 }
 
+/// Most bytes one entry may take, so a read can bound how much of the end of the log it looks at.
+const MAX_LINE: usize = 16 * 1024;
+/// Longest text kept for any one field.
+const MAX_FIELD: usize = 256;
+
+fn field(text: &str) -> String {
+    redact(&text.chars().take(MAX_FIELD).collect::<String>())
+}
+
 fn path(roots: &StorageRoots) -> std::path::PathBuf {
     roots.state.join("remote-actions.jsonl")
 }
@@ -35,12 +44,12 @@ fn path(roots: &StorageRoots) -> std::path::PathBuf {
 pub fn record(roots: &StorageRoots, attempt: &Attempt, now: u64) -> Result<(), String> {
     let line = json!({
         "time": now,
-        "identity": redact(attempt.identity),
-        "action": redact(attempt.action),
-        "project": redact(attempt.project),
-        "run": attempt.run.map(redact),
+        "identity": field(attempt.identity),
+        "action": field(attempt.action),
+        "project": field(attempt.project),
+        "run": attempt.run.map(field),
         "outcome": match attempt.outcome { Outcome::Allowed => "allowed", Outcome::Refused => "refused" },
-        "reason": attempt.reason.map(redact),
+        "reason": attempt.reason.map(field),
     });
     let mut file = open(roots, true)?;
     // A write that was cut short leaves a line with no end; the next record starts a line of its own.
@@ -79,13 +88,30 @@ fn open(roots: &StorageRoots, write: bool) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// The last `window` bytes of the file, without a first line that the window cut in two.
+fn tail(mut file: std::fs::File, window: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(window as u64);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::with_capacity(len.min(window as u64) as usize);
+    file.take(window as u64).read_to_end(&mut bytes)?;
+    if start > 0 {
+        bytes.drain(..bytes.iter().position(|b| *b == b'\n').map_or(bytes.len(), |i| i + 1));
+    }
+    Ok(bytes)
+}
+
 /// The newest `limit` lines, newest first; no log yet reads as empty.
 pub fn read(roots: &StorageRoots, limit: usize) -> Result<Vec<Value>, String> {
-    let mut text = String::new();
-    match open(roots, false) {
-        Ok(mut file) => std::io::Read::read_to_string(&mut file, &mut text).map_err(|e| format!("cannot read the audit log: {}", e.kind()))?,
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let tail = match open(roots, false) {
+        Ok(file) => tail(file, limit.saturating_mul(MAX_LINE)).map_err(|e| format!("cannot read the audit log: {}", e.kind()))?,
         Err(why) if why == "not found" => return Ok(Vec::new()),
         Err(why) => return Err(why),
     };
+    let text = String::from_utf8_lossy(&tail);
     Ok(text.lines().rev().filter(|line| !line.is_empty()).map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!({ "damaged": true }))).take(limit).collect())
 }
