@@ -214,7 +214,7 @@ fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, a
         None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
     };
     if reply.status == 401 {
-        log_refusal(peer, request.method, request.path);
+        log_refusal(peer, request.method, refusal_path(request.path));
     }
     // Serializing a large report is work too, so it stays off the async workers.
     (reply.status, reply.body_bytes())
@@ -398,6 +398,12 @@ fn asset_response(asset: &Asset, head_only: bool) -> Response {
 /// traffic cannot turn into unlimited logging I/O.
 const LOG_PER_SECOND: u32 = 10;
 
+/// The path of a refused request as it may be logged: the query string can carry values that
+/// must not reach a log, so it is left off.
+fn refusal_path(target: &str) -> &str {
+    target.split_once('?').map_or(target, |(path, _)| path)
+}
+
 /// Logs the peer, method and a bounded, escaped path; never the Authorization
 /// header. Runs on a blocking thread, so a slow stderr cannot stall the workers.
 fn log_refusal(peer: std::net::IpAddr, method: &str, path: &str) {
@@ -432,4 +438,15 @@ pub fn refusal_line(peer: std::net::IpAddr, method: &str, path: &str) -> String 
     let shown: String = path.chars().take(100).flat_map(char::escape_default).collect();
     let method: String = method.chars().take(16).flat_map(char::escape_default).collect();
     format!("orq-remote: refused {peer} {method} {shown}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refusal_path;
+
+    #[test]
+    fn a_refusal_is_logged_without_the_query_string() {
+        assert_eq!(refusal_path("/api/projects/p/runs?cursor=secret&limit=3"), "/api/projects/p/runs");
+        assert_eq!(refusal_path("/api/reviews"), "/api/reviews");
+    }
 }
