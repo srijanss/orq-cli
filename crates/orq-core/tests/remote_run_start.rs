@@ -83,8 +83,11 @@ fn a_run_starts_only_when_actions_are_on_and_every_attempt_is_audited() {
             ("allowed".to_string(), String::new()),
             ("refused".to_string(), "the feature is still a draft".to_string()),
             ("refused".to_string(), "the run could not be started".to_string()),
+            ("refused".to_string(), "no such project or feature".to_string()),
+            ("refused".to_string(), "not a feature name".to_string()),
         ]
     );
-    assert!(log.iter().all(|l| l["action"] == "run.start" && l["project"] == "p-1"), "{log:?}");
+    assert!(log.iter().all(|l| l["action"] == "run.start"), "{log:?}");
+    assert_eq!(log.iter().rev().filter(|l| l["project"] == "p-9").count(), 1, "{log:?}");
     assert_eq!(log.iter().rev().nth(1).unwrap()["run"], "run-7");
 }

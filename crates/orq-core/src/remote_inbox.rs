@@ -301,6 +301,7 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
     }
     let plain = feature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !feature.starts_with('.');
     if !plain {
+        audit(Outcome::Refused, None, Some("not a feature name"));
         return error(404, "not found");
     }
     match provider.map(|provider| provider.start_run(id, feature)) {
@@ -317,7 +318,10 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
             audit(Outcome::Refused, None, Some("the run could not be started"));
             error(500, "the run could not be started")
         }
-        _ => error(404, "not found"),
+        _ => {
+            audit(Outcome::Refused, None, Some("no such project or feature"));
+            error(404, "not found")
+        }
     }
 }
 
