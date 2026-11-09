@@ -83,3 +83,14 @@ fn an_address_under_settings_is_not_found_and_never_shows_the_inbox() {
         assert!(t.iter().any(|x| x == "Not found") && !t.iter().any(|x| x == "Implementer"), "{odd}: {t:?}");
     }
 }
+
+#[test]
+fn the_page_says_whether_remote_actions_are_on_and_offers_no_way_to_change_it() {
+    for (value, word) in [(false, "Off"), (true, "On")] {
+        let body = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": [], "remote_actions": value}}});
+        let Some(out) = run("/settings", json!([body]), json!([{"submit": TOKEN}])) else { return };
+        let lines = shown(&out["frames"][1]);
+        assert!(lines.iter().any(|l| l.contains("Remote actions") && l.contains(word)), "{word}: {lines:?}");
+        assert!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
+    }
+}

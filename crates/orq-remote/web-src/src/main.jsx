@@ -545,6 +545,7 @@ function PasskeysCard() {
 function SettingsView({ settings }) {
   return (
     <>
+      <section className="card"><h2>Remote actions</h2><p>{`Remote actions: ${settings.remote_actions === true ? "On" : "Off"}`}</p></section>
       <section className="card"><h2>Implementer</h2><AgentFields agent={settings.implementer} /></section>
       <section className="card"><h2>Reviewer</h2><AgentFields agent={settings.reviewer} /></section>
       <section className="card">

@@ -57,7 +57,8 @@ fn the_settings_list_the_agents_and_models_and_nothing_else_from_the_config() {
     assert_eq!(body["settings"], json!({
         "implementer": {"harness": "claude", "model": "opus", "effort": "high"},
         "reviewer": {"harness": "pi", "model": "openai/gpt-6.1-sol", "effort": null},
-        "models": [{"name": "opus", "harness": "claude", "model": "opus", "effort": null}]
+        "models": [{"name": "opus", "harness": "claude", "model": "opus", "effort": null}],
+        "remote_actions": false
     }), "{body}");
     let text = body.to_string();
     for leak in ["SECRET", ".ssh", "secret-path", "api_key", "token", "/home/"] {
@@ -77,7 +78,7 @@ fn a_value_that_looks_like_a_secret_is_redacted_even_in_an_allowed_field() {
 fn no_config_file_means_empty_settings_and_a_broken_one_is_an_error_naming_no_path() {
     let s = setup("settings-none", None);
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
-    assert_eq!((status, &body["settings"]), (200, &json!({"implementer": null, "reviewer": null, "models": []})), "{body}");
+    assert_eq!((status, &body["settings"]), (200, &json!({"implementer": null, "reviewer": null, "models": [], "remote_actions": false})), "{body}");
 
     let s = setup("settings-bad", Some("this is [not toml"));
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
@@ -117,4 +118,13 @@ fn a_config_that_cannot_be_read_is_an_error_not_empty_settings() {
     let bytes = setup("settings-bytes", None);
     std::fs::write(bytes.1.config_file(), [0xff, 0xfe, 0x00]).unwrap();
     assert_eq!(ask(&bytes, "GET", Some("Bearer tok")).0, 500);
+}
+
+#[test]
+fn remote_actions_are_off_unless_that_one_setting_is_true_and_remote_control_does_not_turn_them_on() {
+    let on = |text: &str, label: &str| ask(&setup(label, Some(text)), "GET", Some("Bearer tok")).1["settings"]["remote_actions"].clone();
+    assert_eq!(on("remote_actions = true\n", "actions-on"), json!(true));
+    assert_eq!(on("remote_actions = false\n", "actions-off"), json!(false));
+    assert_eq!(on("remote_control = true\n", "actions-control-only"), json!(false));
+    assert_eq!(on("remote_actions = \"yes\"\n", "actions-string"), json!(false), "only a real true counts");
 }

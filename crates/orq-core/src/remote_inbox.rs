@@ -231,7 +231,9 @@ pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
     let agent = |table: &dyn toml_edit::TableLike| json!({"harness": field(table, "harness"), "model": field(table, "model"), "effort": field(table, "effort")});
     let section = |name: &str| doc.get(name).and_then(|item| item.as_table_like()).map(agent).unwrap_or(Value::Null);
     let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table_like()).map(|table| table.iter().filter_map(|(name, item)| item.as_table_like().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
-    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models}))
+    // Off unless this one setting is a real `true`; `remote_control` never turns it on.
+    let remote_actions = doc.get("remote_actions").and_then(|item| item.as_bool()) == Some(true);
+    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models, "remote_actions": remote_actions}))
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
