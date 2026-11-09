@@ -69,6 +69,7 @@ const authRequests = [];
 // A scenario may give `webauthn`: {secure, api, answer}. `secure` is whether the page counts as a
 // secure context, `api` whether the browser has the credential API at all, and `answer` what its
 // get() hands back (ids and responses as arrays of bytes). Without it the browser has none of this.
+// `cancel` makes get() reject, as when the person dismisses the prompt.
 // `auth_replies` maps other /auth paths to the JSON they answer with (anything else is a 404).
 if (scenario.webauthn) {
   const spec = scenario.webauthn;
@@ -79,7 +80,7 @@ if (scenario.webauthn) {
     Object.defineProperty(window.navigator, "credentials", {
       configurable: true,
       value: {
-        get: () => Promise.resolve(spec.answer ? { rawId: buffer(spec.answer.rawId), response: { clientDataJSON: buffer(spec.answer.clientDataJSON), authenticatorData: buffer(spec.answer.authenticatorData), signature: buffer(spec.answer.signature) } } : null),
+        get: () => spec.cancel ? Promise.reject(new window.DOMException("cancelled", "NotAllowedError")) : Promise.resolve(spec.answer ? { rawId: buffer(spec.answer.rawId), response: { clientDataJSON: buffer(spec.answer.clientDataJSON), authenticatorData: buffer(spec.answer.authenticatorData), signature: buffer(spec.answer.signature) } } : null),
         create: () => Promise.resolve(null),
       },
     });
@@ -88,6 +89,10 @@ if (scenario.webauthn) {
 window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/auth/")) {
     authRequests.push({ url, method: options.method || "GET", body: options.body === undefined ? null : JSON.parse(options.body) });
+    // `auth_failures` maps an /auth path to an HTTP status it answers with, or to "reject" for no answer at all.
+    const failure = (scenario.auth_failures || {})[String(url)];
+    if (failure === "reject") return Promise.reject(new Error("offline"));
+    if (failure !== undefined) return Promise.resolve({ status: failure, ok: false, json: () => Promise.resolve({}) });
     const reply = String(url) === "/auth/status" ? scenario.auth : (scenario.auth_replies || {})[String(url)];
     const known = reply !== undefined && reply !== null;
     return Promise.resolve({ status: known ? 200 : 404, ok: known, json: () => Promise.resolve(known ? reply : {}) });

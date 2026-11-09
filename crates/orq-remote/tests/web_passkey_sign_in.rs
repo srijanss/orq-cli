@@ -92,3 +92,60 @@ fn signing_in_with_a_passkey_sends_only_the_answer_to_the_servers_challenge_and_
     assert_eq!(after["sessionKept"], Value::Null, "{out}");
     assert_eq!(after["localKept"], Value::Null, "{out}");
 }
+
+fn login(webauthn: Value, failures: Value) -> Option<Value> {
+    run_with(json!({
+        "url": "/", "token": TOKEN, "auth": {"passkeys": true, "signed_in": false},
+        "webauthn": webauthn, "auth_failures": failures,
+        "auth_replies": {
+            "/auth/login/begin": {"challenge": "AQID", "rpId": "box.example.ts.net", "userVerification": "required", "timeout": 60000, "allowCredentials": [{"type": "public-key", "id": "AQI"}]},
+            "/auth/login/finish": {}
+        },
+        "responses": [], "steps": [{"click": "button"}]
+    }))
+}
+
+fn answer() -> Value {
+    json!({"rawId": [1, 2], "clientDataJSON": [3, 4], "authenticatorData": [5, 6], "signature": [7, 8]})
+}
+
+/// A failed sign-in leaves the page signed out with the passkey button still there to try again.
+fn assert_refused_and_retryable(out: &Value, finish_sent: bool) {
+    let after = &out["frames"][1];
+    assert!(shown(after).contains("Could not sign in with a passkey."), "{out}");
+    assert!(buttons(after).iter().any(|b| b.contains("Sign in with a passkey")), "retry is possible: {out}");
+    assert_eq!(after["settled"]["shell"], false, "still signed out: {out}");
+    assert_eq!(after["settled"]["sessionKept"], Value::Null, "{out}");
+    let urls: Vec<&str> = out["authRequests"].as_array().unwrap().iter().map(|r| r["url"].as_str().unwrap()).collect();
+    assert_eq!(urls.contains(&"/auth/login/finish"), finish_sent, "{urls:?}");
+}
+
+#[test]
+fn a_dismissed_passkey_prompt_signs_nobody_in_sends_no_answer_and_can_be_tried_again() {
+    let Some(out) = login(json!({"secure": true, "api": true, "cancel": true}), json!({})) else { return };
+    assert_refused_and_retryable(&out, false);
+}
+
+#[test]
+fn a_prompt_that_gives_no_credential_sends_no_answer() {
+    let Some(out) = login(json!({"secure": true, "api": true}), json!({})) else { return };
+    assert_refused_and_retryable(&out, false);
+}
+
+#[test]
+fn a_server_that_refuses_to_begin_a_sign_in_signs_nobody_in_and_can_be_tried_again() {
+    let Some(out) = login(json!({"secure": true, "api": true, "answer": answer()}), json!({"/auth/login/begin": 500})) else { return };
+    assert_refused_and_retryable(&out, false);
+}
+
+#[test]
+fn a_server_that_cannot_be_reached_to_begin_a_sign_in_signs_nobody_in_and_can_be_tried_again() {
+    let Some(out) = login(json!({"secure": true, "api": true, "answer": answer()}), json!({"/auth/login/begin": "reject"})) else { return };
+    assert_refused_and_retryable(&out, false);
+}
+
+#[test]
+fn a_server_that_refuses_the_answer_signs_nobody_in_and_can_be_tried_again() {
+    let Some(out) = login(json!({"secure": true, "api": true, "answer": answer()}), json!({"/auth/login/finish": 401})) else { return };
+    assert_refused_and_retryable(&out, true);
+}
