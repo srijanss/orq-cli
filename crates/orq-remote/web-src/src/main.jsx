@@ -2,7 +2,7 @@
 // header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
 // ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
 // Every string from the API is rendered as text.
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
@@ -443,7 +443,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
   if (state.kind === "ready") {
     return (
       <>
-        {draw(state.data)}
+        <Fragment key="data">{draw(state.data)}</Fragment>
         <p className="last-checked" data-last-checked>
           Last checked <Moment at={state.checked} />
         </p>
@@ -459,7 +459,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
           Try again
         </button>
       </div>
-      {state.data !== null ? draw(state.data) : null}
+      {state.data !== null ? <Fragment key="data">{draw(state.data)}</Fragment> : null}
     </>
   );
 }
@@ -645,7 +645,7 @@ function actionRequest(path, token) {
   });
 }
 
-function RunAction({ kind, label, question, path, token, onSignedOut, done }) {
+function RunAction({ kind, label, question, path, token, onSignedOut, onDone, done }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const send = async () => {
@@ -663,8 +663,13 @@ function RunAction({ kind, label, question, path, token, onSignedOut, done }) {
       } catch (unreadable) {
         body = null;
       }
-      if (response.ok) text = done(body !== null && typeof body.run === "string" ? body.run : "");
-      else if (response.status === 403) text = "Not allowed.";
+      if (response.ok) {
+        // Done for good: the control stays closed while the list is read again, so the same action cannot be sent twice.
+        setNote(done(body !== null && typeof body.run === "string" ? body.run : ""));
+        setPhase("done");
+        onDone();
+        return;
+      } else if (response.status === 403) text = "Not allowed.";
       else if (body !== null && typeof body.error === "string") text = body.error;
     } catch (unreachable) {
       text = "The server could not be reached.";
@@ -674,7 +679,7 @@ function RunAction({ kind, label, question, path, token, onSignedOut, done }) {
   };
   return (
     <span className="run-action">
-      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={() => setPhase("asking")}>{label}</button> : null}
+      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={() => { setNote(""); setPhase("asking"); }}>{label}</button> : null}
       {phase === "asking" ? (
         <span role="group" aria-label={question}>
           <span>{question}</span>
@@ -744,7 +749,7 @@ function FeatureList({ features, listPath, control }) {
                 <li key={feature.name} id={"feature-" + feature.name} tabIndex={-1} className="feature card">
                   <strong>{feature.name}</strong>
                   {feature.description ? <p>{feature.description}</p> : null}
-                  {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+                  {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
                   {feature.depends_on.length > 0 ? (
                     <button type="button" aria-expanded={open.has(feature.name)} onClick={() => toggle(feature.name)}>{"Dependencies (" + feature.depends_on.length + ")"}</button>
                   ) : null}
@@ -809,8 +814,8 @@ function OrchestrationList({ runs, control }) {
             <strong>{run.feature}</strong>
             {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate(runAddress(run.run_id))}>Open timeline</button> : null}
             <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
-            {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} done={() => "Pause requested."} /> : null}
-            {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
+            {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null}
+            {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
             {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
             <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
             <Stamp label="Last activity" at={run.updated_at} />
@@ -1205,7 +1210,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
-        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(data) => <FeatureList features={data.rows} control={data.actions ? { token, projectId, onSignedOut } : null} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
+        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(data) => <FeatureList features={data.rows} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -1214,7 +1219,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
-        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId, onSignedOut } : null} />} onSignedOut={onSignedOut} />
+        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
       </>
     );
   }

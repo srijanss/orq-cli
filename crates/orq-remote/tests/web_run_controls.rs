@@ -161,3 +161,25 @@ fn a_passkey_session_posts_with_its_csrf_token_and_never_a_bearer_token() {
     assert_eq!(post["headers"]["X-CSRF-Token"], "c-1", "{post}");
     assert!(post["headers"].get("Authorization").is_none(), "{post}");
 }
+
+#[test]
+fn a_successful_action_refreshes_the_list_and_does_not_offer_itself_again() {
+    let ok = json!({"status": 202, "json": {"run": "run-9"}});
+    let Some(out) = features_page(Some(true), vec![ok, ledger(Some(true))], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(count(last, "[data-start]"), 0, "the same start is not offered again: {last}");
+    assert_eq!(count(last, "[data-confirm]"), 0);
+    assert!(frame_texts(last).iter().any(|t| t.contains("run-9")), "{last}");
+    let gets = out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "GET" && r["url"] == "/api/projects/alpha/features").count();
+    assert_eq!(gets, 2, "the ledger is read again after the start: {out}");
+
+    let Some(out) = runs_page(Some(true), vec![json!({"status": 202, "json": {"run": "r-paused"}}), runs(Some(true))], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(count(last, "[data-resume]"), 0, "{last}");
+    assert_eq!(count(last, "[data-pause]"), 1, "other rows keep their controls");
+
+    // A refusal leaves the control usable.
+    let refused = json!({"status": 409, "json": {"error": "no"}});
+    let Some(out) = features_page(Some(true), vec![refused], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
+    assert_eq!(count(out["frames"].as_array().unwrap().last().unwrap(), "[data-start]"), 1);
+}
