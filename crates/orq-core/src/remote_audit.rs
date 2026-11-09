@@ -32,8 +32,9 @@ const MAX_LINE: usize = 16 * 1024;
 /// Longest text kept for any one field.
 const MAX_FIELD: usize = 256;
 
+/// Redacts the whole text first and only then shortens it, so a secret cut by the limit is already gone.
 fn field(text: &str) -> String {
-    redact(&text.chars().take(MAX_FIELD).collect::<String>())
+    redact(text).chars().take(MAX_FIELD).collect()
 }
 
 fn path(roots: &StorageRoots) -> std::path::PathBuf {

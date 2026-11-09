@@ -111,3 +111,17 @@ fn a_read_looks_only_at_the_end_of_the_log_and_a_record_stays_small() {
     let last = text[..text.len() - 1].rsplit(|b| *b == b'\n').next().unwrap();
     assert!(last.len() < 4096, "one entry is {} bytes", last.len());
 }
+
+#[test]
+fn a_secret_cut_by_the_length_limit_is_still_redacted() {
+    let roots = roots("cut");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let url_secret = "hunter2hunter2";
+    let token_reason = format!("{}{token}", " ".repeat(246));
+    let url_reason = format!("{}https://user:{url_secret}@example.com/x", " ".repeat(240));
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&token_reason)), 1).unwrap();
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&url_reason)), 2).unwrap();
+    let text = fs::read_to_string(roots.state.join("remote-actions.jsonl")).unwrap();
+    assert!(!text.contains("ghp_"), "{text}");
+    assert!(!text.contains(url_secret) && !text.contains("user:hunter"), "{text}");
+}
