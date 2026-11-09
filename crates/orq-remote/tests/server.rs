@@ -164,3 +164,15 @@ fn dropping_the_server_is_not_held_up_by_a_client_that_never_finishes_its_reques
     assert!(finished.recv_timeout(std::time::Duration::from_secs(10)).is_ok(), "dropping the server hung on an unfinished request");
     drop(stuck);
 }
+
+#[test]
+fn a_query_string_on_a_list_reaches_the_handler_over_http() {
+    let server = start("query");
+    let bad = request(server.addr(), "GET", "/api/reviews?limit=0", Some(TOKEN));
+    assert_eq!(bad.status, 400, "{}", bad.body);
+    assert_eq!(request(server.addr(), "GET", "/api/reviews?bogus=1", Some(TOKEN)).status, 400);
+    let page = request(server.addr(), "GET", "/api/reviews?limit=1&sort=oldest", Some(TOKEN));
+    assert_eq!(page.status, 200, "{}", page.body);
+    let value: serde_json::Value = serde_json::from_str(&page.body).unwrap();
+    assert!(value["total"].is_number() && value["next_cursor"].is_null(), "{value}");
+}
