@@ -441,3 +441,46 @@ fn a_state_changing_request_needs_the_session_csrf_token_and_a_same_origin_heade
     // Reading never needs it.
     assert!(send(addr, "GET", "/api/projects", &[("Cookie", &cookie), proxy], b"").0.contains("200"));
 }
+
+#[test]
+fn the_csrf_gate_follows_the_session_it_belongs_to_through_logout_removal_and_a_broken_store() {
+    let (server, roots) = start("csrf-lifecycle");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let origin = format!("https://{RP}");
+    let (mut phone, mut tablet) = (Device::new(81), Device::new(82));
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let sign_in = |device: &mut Device| {
+        let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+        cookie_from(&send(addr, "POST", "/auth/login/finish", &[], &device.login_body(&json(&body))).1)
+    };
+    let phone_cookie = sign_in(&mut phone);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Cookie", &phone_cookie)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Cookie", &phone_cookie)], &tablet.register_body(&json(&body), "tablet")).0.contains("200"));
+    let tablet_cookie = sign_in(&mut tablet);
+    let token_of = |cookie: &str| json(&send(addr, "GET", "/auth/status", &[("Cookie", cookie)], b"").2)["csrf"].as_str().unwrap().to_string();
+    let (phone_token, tablet_token) = (token_of(&phone_cookie), token_of(&tablet_cookie));
+    assert_ne!(phone_token, tablet_token);
+    let post = |cookie: &str, token: &str| send(addr, "POST", "/api/projects", &[("Cookie", cookie), ("Origin", &origin), ("X-CSRF-Token", token)], b"{}").0;
+
+    assert!(post(&phone_cookie, &phone_token).contains("405") && post(&tablet_cookie, &tablet_token).contains("405"));
+    assert!(post(&phone_cookie, &tablet_token).contains("403"), "another session's token");
+    assert!(post(&tablet_cookie, &phone_token).contains("403"));
+
+    // Logout ends the pair; the tablet is untouched.
+    assert!(send(addr, "POST", "/auth/logout", &[("Cookie", &phone_cookie)], b"{}").0.contains("200"));
+    assert!(post(&phone_cookie, &phone_token).contains("403"), "after logout");
+    assert!(post(&tablet_cookie, &tablet_token).contains("405"));
+
+    // Removing the passkey on the machine ends its session's pair at once.
+    PasskeyStore::open(&roots).remove("tablet").unwrap();
+    assert!(post(&tablet_cookie, &tablet_token).contains("403"), "after the passkey was removed");
+
+    // A store that cannot be read refuses the change, even with the right pair.
+    let cookie = sign_in(&mut phone);
+    let token = token_of(&cookie);
+    assert!(post(&cookie, &token).contains("405"));
+    std::fs::write(PasskeyStore::path(&roots), b"{ not json").unwrap();
+    assert!(post(&cookie, &token).contains("403"), "unreadable store");
+}
