@@ -255,3 +255,8 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
   .master-detail.has-report .master-pane { display: block; }
   .master-detail.has-report .back-to-list { display: none; }
 }
+
+/* Run timeline: a stage attempt groups its own events. */
+.attempt .attempt-title { margin: 0; }
+.attempt > ol { margin-top: 0.5rem; }
+.attempt-outcome { color: var(--danger, var(--accent)); }

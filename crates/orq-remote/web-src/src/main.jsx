@@ -770,6 +770,43 @@ function parseTimeline(data) {
   return ok ? data : null;
 }
 
+function EventItem({ event }) {
+  return (
+    <li className="event card">
+      <strong>{event.kind}</strong>
+      {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
+      <span>{"Attempt " + event.attempt}</span>
+      <Moment at={event.occurred_at} />
+    </li>
+  );
+}
+
+// Consecutive events of one stage and attempt become one group, so a retry is its own group and a
+// later success never hides an earlier failure. Each review stage group is a numbered round.
+function groupEvents(events) {
+  const items = [];
+  let rounds = 0;
+  for (const event of events) {
+    const last = items[items.length - 1];
+    if (event.stage && last && last.events !== undefined && last.stage === event.stage && last.attempt === event.attempt) {
+      last.events.push(event);
+      if (event.kind.endsWith(".failed")) last.failed = true;
+    } else if (event.stage) {
+      const round = event.stage === "review" ? ++rounds : 0;
+      items.push({
+        stage: event.stage,
+        attempt: event.attempt,
+        title: round > 0 ? "Review round " + round : event.stage + ", attempt " + event.attempt,
+        failed: event.kind.endsWith(".failed"),
+        events: [event],
+      });
+    } else {
+      items.push({ event });
+    }
+  }
+  return items;
+}
+
 // One run: its header, then a page of its events in the order they happened. The next page is
 // its own address, so every request stays one plain GET.
 function RunTimeline({ timeline, listPath, runPath, follow }) {
@@ -786,14 +823,21 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
       <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
       {events.length === 0 ? <p>No events recorded.</p> : null}
       <ol>
-        {events.map((event) => (
-          <li key={event.event_id} className="event card">
-            <strong>{event.kind}</strong>
-            {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
-            <span>{"Attempt " + event.attempt}</span>
-            <Moment at={event.occurred_at} />
-          </li>
-        ))}
+        {groupEvents(events).map((item) =>
+          item.events === undefined ? (
+            <EventItem key={item.event.event_id} event={item.event} />
+          ) : (
+            <li key={item.events[0].event_id} className="attempt card" data-failed={item.failed ? "true" : undefined}>
+              <h3 className="attempt-title">{item.title}</h3>
+              {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
+              <ol>
+                {item.events.map((event) => (
+                  <EventItem key={event.event_id} event={event} />
+                ))}
+              </ol>
+            </li>
+          )
+        )}
       </ol>
       {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
       {next === null && follow !== null ? <FollowLive key={follow.base} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
