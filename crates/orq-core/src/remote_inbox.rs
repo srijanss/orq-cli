@@ -334,7 +334,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return match (provider, project_path(rest)) {
             (Some(provider), Some((id, run))) => match provider.review_scope(id) {
                 Ok(Some(scope)) => match run {
-                    None => list(roots, &scope.review_key, &scope.name, true),
+                    None => list(roots, &scope.review_key, &scope.name, true, query),
                     Some(run_id) => one(roots, run_id, Some(&scope.review_key)),
                 },
                 Ok(None) => error(404, "not found"),
@@ -344,7 +344,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         };
     }
     if path == "/api/reviews" {
-        return list(roots, project_id, project_name, false);
+        return list(roots, project_id, project_name, false, query);
     }
     match path.strip_prefix("/api/reviews/") {
         Some(run_id) if !run_id.contains('/') => one(roots, run_id, None),
@@ -377,7 +377,7 @@ impl<'a> ListQuery<'a> {
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
             match key {
-                "state" => parsed.state = Some(value),
+                "state" | "status" => parsed.state = Some(value),
                 "cursor" => parsed.cursor = Some(value),
                 "sort" => match value {
                     "newest" => parsed.oldest = false,
@@ -496,7 +496,11 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
     Ok(Some(Facts { observed: lifecycle.observed_head_sha, link, stale: lifecycle.stale, freshness, provider_head, checked_at, project, head }))
 }
 
-fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool) -> Response {
+fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool, query: &str) -> Response {
+    let query = match ListQuery::parse(query) {
+        Ok(query) => query,
+        Err((status, why)) => return error(status, why),
+    };
     let rows = if only_this_project { review_inbox::inbox_of_project(roots, project_id, project_name) } else { review_inbox::inbox(roots, project_id, project_name) };
     let rows = match rows {
         Ok(rows) => rows,
@@ -517,7 +521,10 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
             })
         })
         .collect();
-    reply(200, json!({ "reviews": reviews }))
+    match query.apply(Value::Array(reviews), "run_id", "status") {
+        Ok(page) => reply(200, json!({ "reviews": page.rows, "next_cursor": page.next_cursor, "total": page.total })),
+        Err((status, why)) => error(status, why),
+    }
 }
 
 fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Response {
