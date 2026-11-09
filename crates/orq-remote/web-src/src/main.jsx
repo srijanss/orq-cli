@@ -182,6 +182,7 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
         <Icon name="logo" size={28} />
         Orq
       </span>
+      <div className="signin-divider" role="separator" />
       {usable && !asking && <PasskeyButton onSignedIn={onPasskey} enrolled={passkeys} onAskToken={() => setAsking(true)} />}
       {blocker !== null && <p role="status">{blocker}</p>}
       {(!usable || asking) && (

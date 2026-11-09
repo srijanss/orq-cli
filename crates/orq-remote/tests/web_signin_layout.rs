@@ -62,3 +62,19 @@ fn the_primary_button_is_the_sidebar_pill_colour_in_dark_and_the_dark_colour_in_
     assert_eq!(css.matches("--primary: #0f172a").count(), 2, "light blocks: the dark colour");
     assert_eq!(css.matches("--on-primary: #ffffff").count(), 2, "light blocks: white text");
 }
+
+#[test]
+fn a_divider_line_with_space_around_it_separates_the_brand_from_the_buttons() {
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let scenario = json!({"url": "/dashboard", "responses": [], "steps": [], "selectors": [".signin > .brand + .signin-divider[role=\"separator\"]"]});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["frames"][0]["settled"]["matches"][".signin > .brand + .signin-divider[role=\"separator\"]"], 1, "{out}");
+    let css = css();
+    let line = rule(&css, ".signin-divider {");
+    assert!(line.contains("height: 1px") && line.contains("background: var(--border)") && line.contains("margin: 0.5rem 0"), "{line}");
+}
