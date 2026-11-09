@@ -61,13 +61,18 @@ fn signed_in_with_the_token_where_passkeys_cannot_work_the_page_says_so_instead_
 }
 
 #[test]
-fn with_no_passkey_yet_the_token_signs_in_once_and_the_page_offers_to_add_one() {
-    let scenario = json!({"url": "/", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": true, "api": true}, "responses": [inbox()], "steps": [{"submit": TOKEN}]});
+fn with_no_passkey_yet_the_page_still_offers_only_the_passkey_button_and_asks_for_the_token_when_it_is_clicked() {
+    let scenario = json!({"url": "/", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": true, "api": true}, "responses": [inbox()], "steps": [{"click": "button"}, {"submit": TOKEN}]});
     let Some(out) = run_with(scenario) else { return };
-    assert_eq!(out["frames"][0]["settled"]["inputs"].as_array().unwrap().len(), 1, "the token is asked for: {out}");
+    let labelled: Vec<String> = buttons(&out["frames"][0]).into_iter().filter(|b| !b.is_empty()).collect();
+    assert_eq!(labelled, ["Sign in with a passkey"], "{out}");
+    assert!(out["frames"][0]["settled"]["inputs"].as_array().unwrap().is_empty(), "no token field before the click: {out}");
     assert!(shown(&out["frames"][0]).find("HTTPS").is_none(), "{out}");
-    assert_eq!(out["frames"][1]["settled"]["enrolButtons"], json!(["Add a passkey for this device"]), "{out}");
-    assert_eq!(out["frames"][1]["settled"]["passkeyNotes"], json!([]), "{out}");
+    assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 1, "the click asks for the token: {out}");
+    assert!(!buttons(&out["frames"][1]).iter().any(|b| b.contains("Sign in with a passkey")), "{out}");
+    assert!(shown(&out["frames"][2]).contains("alpha"), "signed in with the token: {out}");
+    assert_eq!(out["frames"][2]["settled"]["enrolButtons"], json!(["Add a passkey for this device"]), "{out}");
+    assert_eq!(out["frames"][2]["settled"]["passkeyNotes"], json!([]), "{out}");
 }
 
 #[test]

@@ -76,9 +76,13 @@ function safeHttpsLink(value) {
   }
 }
 
-function PasskeyButton({ onSignedIn }) {
+function PasskeyButton({ onSignedIn, enrolled = true, onAskToken }) {
   const [failed, setFailed] = useState(false);
   const go = async () => {
+    if (!enrolled) {
+      onAskToken();
+      return;
+    }
     setFailed(false);
     let ok = false;
     try {
@@ -99,8 +103,10 @@ function PasskeyButton({ onSignedIn }) {
   );
 }
 
-function TokenPrompt({ message, onToken, passkeys = false, onPasskey, blocker = null }) {
+function TokenPrompt({ message, onToken, passkeys = false, known = false, onPasskey, blocker = null }) {
   const field = useRef(null);
+  const [asking, setAsking] = useState(false);
+  const usable = known && blocker === null && passkeysAvailable();
   const submit = () => {
     const typed = field.current.value.trim();
     field.current.value = "";
@@ -115,9 +121,9 @@ function TokenPrompt({ message, onToken, passkeys = false, onPasskey, blocker = 
         Orq
       </span>
       <h1>Sign in</h1>
-      {passkeys && passkeysAvailable() && <PasskeyButton onSignedIn={onPasskey} />}
+      {usable && !asking && <PasskeyButton onSignedIn={onPasskey} enrolled={passkeys} onAskToken={() => setAsking(true)} />}
       {blocker !== null && <p role="status">{blocker}</p>}
-      {!(passkeys && blocker === null) && (
+      {(!usable || asking) && (
         <>
           <p>Sign in with token: paste the access token printed by orq serve.</p>
           <label>
@@ -1116,7 +1122,7 @@ function App() {
   const session = status !== null && status.signed_in === true;
   const active = session && token === null ? SESSION : token;
   if (active === null) {
-    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} />;
+    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} known={status !== null} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} />;
   }
   const signedOut = () => {
     setToken(null);
