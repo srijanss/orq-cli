@@ -51,15 +51,21 @@ fn log_lines_are_shown_literally_and_make_no_element() {
 #[test]
 fn a_review_report_is_literal_and_only_plain_https_links_are_offered() {
     let list = json!({"status": 200, "json": {"reviews": [{"run_id": "run-1", "feature": HOSTILE, "project": "p", "current": true, "status": "approved", "risk": "low", "stale": false, "link": null}]}});
-    let detail = |link: &str| json!({"status": 200, "json": {
-        "run_id": "run-1", "reported_head_sha": "abc1234", "observed_head_sha": "abc1234", "stale": false, "freshness": "current", "link_allowed": true, "link": link,
+    let detail_with = |link: &str, allowed: bool| json!({"status": 200, "json": {
+        "run_id": "run-1", "reported_head_sha": "abc1234", "observed_head_sha": "abc1234", "stale": false, "freshness": "current", "link_allowed": allowed, "link": link,
         "reviewed_head_sha": "1111111aaaa", "provider_head_sha": "2222222bbbb", "checked_at": "2026-11-09T10:00:00Z",
         "summary": [HOSTILE], "risks": [], "files": [], "tests": [], "rounds": []
     }});
+    let detail = |link: &str| detail_with(link, true);
     let steps = json!([{"submit": TOKEN}, {"click": "button", "index": 0}]);
     let Some(out) = run("/", json!([list.clone(), detail("https://github.com/o/r/pull/7")]), steps.clone()) else { return };
+    literal_and_inert(&out, 1, "the review inbox");
     literal_and_inert(&out, 2, "a review report");
-    assert_eq!(out["frames"][2]["settled"]["links"].as_array().unwrap().len(), 1, "{out}");
+    let links = out["frames"][2]["settled"]["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "{out}");
+    assert_eq!(links[0]["href"], "https://github.com/o/r/pull/7", "{out}");
+    let Some(out) = run("/", json!([list.clone(), detail_with("https://github.com/o/r/pull/7", false)]), steps.clone()) else { return };
+    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "a link the server does not allow: {out}");
     for bad in ["http://github.com/o/r/pull/7", "https://user:pw@github.com/x", "javascript:alert(1)"] {
         let Some(out) = run("/", json!([list.clone(), detail(bad)]), steps.clone()) else { return };
         assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{bad}: {out}");
