@@ -166,8 +166,9 @@ fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
     let repo = repo(&dir);
     let exe = dir.join("orq");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {refuse} ]; then echo 'orq: cannot resume r-1: the checkpoint no longer matches /home/me/wt' >&2; exit 1; fi\nif [ -e {no_id} ]; then echo resumed; exit 0; fi\necho 'run: run-77'\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {refuse} ]; then echo 'orq: cannot resume r-1: the checkpoint no longer matches /home/me/wt' >&2; exit 1; fi\nif [ -e {broken} ]; then echo 'orq: cannot read the run: Io(\"/home/me/state\")' >&2; exit 1; fi\nif [ -e {no_id} ]; then echo resumed; exit 0; fi\necho 'run: run-77'\n",
         log = dir.join("calls.log").display(),
+        broken = dir.join("broken").display(),
         refuse = dir.join("refuse").display(),
         no_id = dir.join("no-id").display()
     );
@@ -187,6 +188,11 @@ fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
     }
     std::fs::remove_file(dir.join("refuse")).unwrap();
 
+    // Any other failure of the command is the operator's, never a reason for the web.
+    std::fs::write(dir.join("broken"), "").unwrap();
+    assert!(matches!(launcher.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
+    std::fs::remove_file(dir.join("broken")).unwrap();
+
     // A resume that names no run, or a program that is not there, is a failure.
     std::fs::write(dir.join("no-id"), "").unwrap();
     assert!(matches!(launcher.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
@@ -194,5 +200,5 @@ fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
     assert!(matches!(missing.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
     // A run id that could be read as an option never reaches the command.
     assert!(matches!(launcher.resume(&repo, "--yes"), Err(LaunchError::Refused(_))));
-    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 3);
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 4);
 }

@@ -147,7 +147,8 @@ impl RunLauncher for CliLauncher {
         let (ok, out, err) = self.run(&args)?;
         if !ok {
             let reason = crate::launch_outcome(false, "", &err).unwrap_or_else(|reason| reason);
-            return Err(LaunchError::Refused(without_paths(&reason)));
+            // Only the command's own "cannot resume <run>: <why>" is a reason for the web; anything else is the operator's.
+            return Err(if reason.starts_with("cannot resume ") { LaunchError::Refused(without_paths(&reason)) } else { LaunchError::Failed(reason) });
         }
         crate::launch_outcome(true, &out, &err).map_err(LaunchError::Failed)
     }
