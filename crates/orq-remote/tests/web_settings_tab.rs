@@ -63,7 +63,7 @@ fn nothing_on_the_page_can_change_a_setting() {
     let frame = &out["frames"][1]["settled"];
     assert_eq!(frame["inputs"], json!([]), "{out}");
     assert_eq!(frame["buttons"], json!([]), "{out}");
-    assert_eq!(frame["links"], json!([]), "{out}");
+    assert_eq!(frame["links"].as_array().unwrap().iter().map(|l| l["href"].clone()).collect::<Vec<_>>(), [json!("/settings/audit")], "only the read-only audit link: {out}");
 }
 
 #[test]

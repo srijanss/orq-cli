@@ -368,7 +368,7 @@ fn is_application_path(path: &str) -> bool {
     let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
     let segments: Vec<&str> = path.strip_prefix('/').map(|rest| rest.split('/').collect()).unwrap_or_default();
     match segments.as_slice() {
-        ["dashboard"] | ["settings"] | ["projects"] => true,
+        ["dashboard"] | ["settings"] | ["settings", "audit"] | ["projects"] => true,
         ["projects", project] => plain(project),
         ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
         ["projects", project, "reviews", run] => plain(project) && plain(run),

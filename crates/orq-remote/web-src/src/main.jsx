@@ -20,6 +20,7 @@ const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
 const UNBUILT_DESTINATIONS = ["/projects"];
 const API_SETTINGS = "/api/settings";
+const API_AUDIT = "/api/audit";
 const API_PROJECTS = "/api/projects";
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
@@ -579,6 +580,36 @@ function PasskeysCard() {
         ))}
       </ul>
       {passkeysAvailable() && <EnrolPasskey token={null} another onDone={load} />}
+    </section>
+  );
+}
+
+// The audit: every entry is a readable line or a damaged one; anything else is not drawn.
+function parseAudit(data) {
+  const lines = data && data.audit;
+  const ok = Array.isArray(lines) && lines.every((line) => line !== null && typeof line === "object" && (line.damaged === true || (Number.isFinite(line.time) && typeof line.identity === "string" && typeof line.action === "string" && typeof line.project === "string" && typeof line.outcome === "string")));
+  return ok ? lines : null;
+}
+
+function AuditView({ lines }) {
+  if (lines.length === 0) return <section className="card"><p>No actions recorded yet.</p></section>;
+  return (
+    <section className="card">
+      <ul className="audit-lines">
+        {lines.map((line, index) => line.damaged === true ? (
+          <li key={index}>Unreadable entry</li>
+        ) : (
+          <li key={index} data-outcome={line.outcome}>
+            <Moment at={new Date(line.time * 1000).toISOString().replace(".000Z", "Z")} />
+            <span>{line.identity}</span>
+            <strong>{line.action}</strong>
+            <span>{line.project}</span>
+            {typeof line.run === "string" ? <span>{line.run}</span> : null}
+            <span>{line.outcome}</span>
+            {typeof line.reason === "string" ? <span>{line.reason}</span> : null}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -1318,6 +1349,14 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
   }
+  if (hash === "/settings/audit") {
+    return (
+      <>
+        <PageHeader title="Audit" subtitle="Recent remote actions, read only" onRefresh={() => setReloads(reloads + 1)} />
+        <Loaded key={API_AUDIT} reloads={reloads} token={token} path={API_AUDIT} loading="Loading the audit…" parse={parseAudit} draw={(lines) => <AuditView lines={lines} />} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
   if (hash.startsWith("/settings/")) {
     return <NotFound />;
   }
@@ -1326,6 +1365,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
       <>
         <PageHeader title="Settings" subtitle="Run settings, read only" onRefresh={() => setReloads(reloads + 1)} />
         <PasskeysCard />
+        <p><a href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>Audit</a></p>
         <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
       </>
     );
