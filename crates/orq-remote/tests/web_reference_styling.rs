@@ -113,7 +113,7 @@ fn the_sign_in_screen_and_the_signed_in_page_both_offer_a_theme_toggle_that_flip
     }
     let out = harness(json!([{"nav": "[data-theme-toggle]"}, {"nav": "[data-theme-toggle]"}, {"submit": "typed-token-0123456789abcdef0123456789"}, {"nav": "[data-theme-toggle]"}]));
     let themes: Vec<&Value> = out["frames"].as_array().unwrap().iter().map(|f| &f["settled"]["theme"]).collect();
-    assert_eq!(themes, ["", "light", "dark", "dark", "light"], "{out}");
+    assert_eq!(themes, ["", "dark", "light", "light", ""], "{out}");
     assert_eq!(out["frames"][0]["settled"]["toggles"], 1, "{out}");
     assert_eq!(out["frames"][3]["settled"]["toggles"], 1, "one toggle after signing in, not two: {out}");
 }
@@ -158,22 +158,22 @@ fn the_inbox_has_a_page_header_with_title_subtitle_and_a_refresh_that_reloads() 
 }
 
 #[test]
-fn the_theme_choice_is_kept_only_in_the_page_nothing_stored_and_nothing_sent() {
+fn the_theme_choice_is_kept_only_in_local_storage_and_nothing_is_sent() {
     if !web_deps::ready() {
         return;
     }
-    // Before signing in: two flips store nothing and send no request at all.
+    // Before signing in: two flips send no request at all and never touch session storage.
     let out = harness(json!([{"nav": "[data-theme-toggle]"}, {"nav": "[data-theme-toggle]"}]));
     assert_eq!(out["requests"].as_array().unwrap().len(), 0, "{out}");
     for frame in out["frames"].as_array().unwrap() {
-        assert!(frame["settled"]["localKept"].is_null() && frame["settled"]["sessionKept"].is_null(), "{frame}");
+        assert!(frame["settled"]["sessionKept"].is_null(), "{frame}");
     }
-    // Signed in: a flip adds no request and leaves local storage empty.
+    // Signed in: a flip adds no request; the choice lives in local storage only.
     let out = harness(json!([{"submit": "typed-token-0123456789abcdef0123456789"}, {"nav": "[data-theme-toggle]"}]));
     let before = out["frames"][1]["settled"]["theme"].clone();
     assert_ne!(out["frames"][2]["settled"]["theme"], before, "{out}");
     assert_eq!(out["requests"].as_array().unwrap().len(), 1, "only the sign-in read, none for the theme: {out}");
-    assert!(out["frames"][2]["settled"]["localKept"].is_null(), "{out}");
+    assert_eq!(out["frames"][2]["settled"]["localTheme"], "dark", "{out}");
     // Compared by a digest of the real entries: an overwritten value would change it.
     let digest = |i: usize| out["frames"][i]["settled"]["sessionDigest"].clone();
     assert!(digest(1).as_str().is_some_and(|d| d.len() == 64), "{out}");

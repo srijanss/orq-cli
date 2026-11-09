@@ -69,7 +69,7 @@ fn the_theme_switch_is_one_button_holding_a_sun_and_a_moon_with_the_current_one_
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     for frame in [0, 1] {
         let matches = &out["frames"][frame]["settled"]["matches"];
-        assert_eq!(matches["[data-theme-toggle] .theme-option"], 2, "{out}");
+        assert_eq!(matches["[data-theme-toggle] .theme-option"], 3, "{out}");
         assert_eq!(matches["[data-theme-toggle] .theme-option[data-active]"], 1, "{out}");
     }
     assert_eq!(out["frames"][0]["settled"]["toggles"], 1, "{out}");

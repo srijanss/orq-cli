@@ -87,8 +87,15 @@ fn the_stamp_ties_the_committed_bundle_to_the_sources_without_node() {
 #[test]
 fn the_source_never_stores_anything_or_writes_html_from_text() {
     for (path, text) in sources() {
-        for banned in ["localStorage", "indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
+        for banned in ["indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
+        }
+        // Only the theme switch keeps anything on the device: its one choice under "orq.theme".
+        let is_theme = path.file_name().map_or(false, |n| n == "theme.jsx");
+        assert!(is_theme || !text.contains("localStorage"), "{} uses localStorage", path.display());
+        if is_theme {
+            assert_eq!(text.matches("localStorage.").count(), 3, "theme.jsx only reads, writes and clears its one key");
+            assert!(text.contains("const KEY = \"orq.theme\""));
         }
         // The tab's own session storage holds the token across a refresh, and only main.jsx may touch it.
         let is_main = path.file_name().map_or(false, |n| n == "main.jsx");
