@@ -155,7 +155,7 @@ function PasskeyButton({ onSignedIn, enrolled = true, onAskToken }) {
   };
   return (
     <div className="passkey-signin">
-      <button type="button" onClick={go}>
+      <button type="button" className="primary" onClick={go}>
         Sign in with a passkey
       </button>
       {failed && <p role="alert">Could not sign in with a passkey.</p>}
@@ -175,6 +175,7 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
     }
   };
   return (
+    <div className="signin-page">
     <div className="signin card">
       <span className="brand">
         <Icon name="logo" size={28} />
@@ -190,14 +191,15 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
             Access token
             <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
           </label>
-          <button type="button" onClick={submit}>
+          <button type="button" className="primary" onClick={submit}>
             Open the inbox
-          </button>
+              </button>
         </>
       )}
       <p role="alert">{message}</p>
       <div className="alternatives" />
       <ThemeToggle />
+    </div>
     </div>
   );
 }
