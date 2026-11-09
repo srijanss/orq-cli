@@ -103,9 +103,12 @@ fn a_refused_stream_signs_out_a_missing_one_stops_and_leaving_the_page_closes_it
     let Some(out) = run(RUN, base(json!({"status": 401, "json": {}})), json!([{"submit": TOKEN}])) else { return };
     assert!(texts(&out["frames"][1]).iter().any(|t| t == "Open the inbox"), "{:?}", texts(&out["frames"][1]));
 
-    let Some(out) = run(RUN, base(json!({"status": 404, "json": {}})), json!([{"submit": TOKEN}])) else { return };
+    // The run is gone: the resume is refused, so is the reopening from the start, and that is the end.
+    let gone = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), {"status": 404, "json": {}}, {"status": 404, "json": {}}]);
+    let Some(out) = run(RUN, gone, json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["retries"], 0, "{out}");
     assert!(texts(&out["frames"][1]).iter().any(|t| t == "Live updates stopped"), "{:?}", texts(&out["frames"][1]));
+    assert!(!texts(&out["frames"][1]).iter().any(|t| t.contains("may be missing")), "{:?}", texts(&out["frames"][1]));
 
     let Some(out) = run(RUN, base(stream(vec![], "hold")), json!([{"submit": TOKEN}, {"click": "button[data-back=list]", "index": 0}])) else { return };
     assert_eq!(out["requests"][2]["aborted"], true, "{out}");
@@ -167,4 +170,18 @@ fn live_events_join_their_attempt_group_and_a_live_failure_marks_it_failed() {
     assert_eq!(groups.len(), 1, "{out}");
     assert_eq!(groups[0]["events"], json!(["stage.started", "stage.failed"]), "{out}");
     assert_eq!(groups[0]["failed"], true, "{out}");
+}
+
+#[test]
+fn a_resume_point_the_run_no_longer_has_reopens_from_the_start_and_says_events_may_be_missing() {
+    // The page's last event e0 is gone from the run, so the resume is refused; from the start the run
+    // holds e1 and e2, and nothing already shown is shown twice.
+    let responses = json!([timeline(vec![event("e1", "one")], Value::Null), projects(), {"status": 404, "json": {}}, stream(vec![sse("e1", "one"), sse("e2", "two")], "hold")]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
+    assert_eq!(urls(&out)[2], "/api/projects/alpha/runs/run-1/events/after/e1", "{out}");
+    assert_eq!(urls(&out)[3], "/api/projects/alpha/runs/run-1/events", "{out}");
+    let frame = &out["frames"][1];
+    assert!(texts(frame).iter().any(|t| t == "Some events may be missing"), "{:?}", texts(frame));
+    assert_eq!((count(frame, "one"), count(frame, "two")), (1, 1), "{:?}", texts(frame));
+    assert!(texts(frame).iter().any(|t| t == "Following live"), "{:?}", texts(frame));
 }

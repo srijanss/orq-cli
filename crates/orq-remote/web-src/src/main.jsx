@@ -884,7 +884,10 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
   const [more, setMore] = useState([]);
   const [status, setStatus] = useState("live");
   const [retry, setRetry] = useState(0);
+  const [gap, setGap] = useState(false);
   const last = useRef(from);
+  // Set while the run is being read again from its start because the place to resume from is gone.
+  const restarting = useRef(false);
   // Every event id accepted so far, so a repeat is told apart in constant time.
   const ids = useRef(new Set());
   useEffect(() => {
@@ -905,7 +908,15 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
           onSignedOut();
           return;
         }
+        if (response.status === 404 && last.current !== null) {
+          // The event to resume after is no longer in the run: read it from the start, and say so.
+          last.current = null;
+          restarting.current = true;
+          setRetry((count) => count + 1);
+          return;
+        }
         if (response.status === 404 || response.status === 403) {
+          restarting.current = false;
           setStatus("stopped");
           return;
         }
@@ -914,6 +925,10 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
           return;
         }
         setStatus("live");
+        if (restarting.current) {
+          restarting.current = false;
+          setGap(true);
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -957,6 +972,7 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
   return (
     <>
       <EventTimeline events={[...shown, ...more.filter((event) => !have.has(event.event_id))]} rounds={rounds} />
+      {gap && <p className="stream-gap" role="status">Some events may be missing</p>}
       <p className="live-status" data-live>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );
