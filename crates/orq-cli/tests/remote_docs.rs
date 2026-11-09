@@ -186,3 +186,39 @@ fn a_generator_that_prints_then_fails_or_a_directory_at_the_token_path_changes_n
     assert_eq!(std::fs::read_dir(&token).unwrap().count(), 0);
     assert_eq!(std::fs::read_dir(root.join("config/orq")).unwrap().count(), 1, "no temporary file is left");
 }
+
+/// Documented command lines that start with `prefix`, trimmed.
+fn commands_starting<'a>(guide: &'a str, prefix: &str) -> Vec<&'a str> {
+    guide.lines().map(str::trim).filter(|line| line.starts_with(prefix)).collect()
+}
+
+#[test]
+fn the_guide_explains_https_with_tailscale_serve_the_host_name_and_the_first_passkey() {
+    let guide = guide();
+    for topic in ["tailscale serve", "HTTPS", "--passkey-host", "first passkey", "signed in", "orq remote passkey remove"] {
+        assert!(guide.contains(topic), "the guide covers {topic}");
+    }
+    let serve = commands_starting(&guide, "tailscale serve");
+    assert!(!serve.is_empty(), "the guide shows the tailscale serve command");
+    let with_host = commands_starting(&guide, "orq serve");
+    assert!(with_host.iter().any(|line| line.contains("--passkey-host") && line.contains("ts.net")), "a documented orq serve names the passkey host");
+    assert!(with_host.iter().any(|line| line.contains("--no-loopback-token")), "the guide shows switching the token off on this machine");
+}
+
+#[test]
+fn every_documented_serve_flag_and_passkey_command_is_one_the_cli_accepts() {
+    let guide = guide();
+    let usage = usage();
+    let serve_usage = usage.split(" | ").find(|part| part.starts_with("orq serve")).expect("usage lists orq serve");
+    for command in commands_starting(&guide, "orq serve") {
+        for flag in command.split_whitespace().filter(|word| word.starts_with("--")) {
+            assert!(serve_usage.contains(flag), "{flag} is not accepted by `orq serve`: {serve_usage}");
+        }
+    }
+    let passkey = commands_starting(&guide, "orq remote passkey");
+    assert!(passkey.iter().any(|c| c.ends_with("list")) && passkey.iter().any(|c| c.contains("remove ")), "list and remove are both shown");
+    for command in passkey {
+        let listed = if command.contains("remove") { "orq remote passkey remove <label>" } else { "orq remote passkey list" };
+        assert!(usage.contains(listed), "{command} is not a command the CLI lists");
+    }
+}
