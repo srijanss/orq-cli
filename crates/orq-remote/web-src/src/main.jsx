@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
-import { authStatus, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -449,6 +449,29 @@ function AgentFields({ agent }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+// Settings, signed in with a passkey: the passkeys on the server and a way to add another one.
+function PasskeysCard() {
+  const [keys, setKeys] = useState(null);
+  const load = () => listPasskeys().then(setKeys);
+  useEffect(() => {
+    load();
+  }, []);
+  if (keys === null) return null;
+  return (
+    <section className="card passkeys">
+      <h2>Passkeys</h2>
+      <ul>
+        {keys.map((key) => (
+          <li key={key.id}>
+            <strong>{key.label}</strong> <code>{key.id}</code>
+          </li>
+        ))}
+      </ul>
+      {passkeysAvailable() && <EnrolPasskey token={null} another onDone={load} />}
+    </section>
   );
 }
 
@@ -987,6 +1010,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     return (
       <>
         <PageHeader title="Settings" subtitle="Run settings, read only" onRefresh={() => setReloads(reloads + 1)} />
+        <PasskeysCard />
         <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
       </>
     );
@@ -1135,11 +1159,10 @@ function App() {
     if (session) signOutOfSession().then(refresh);
   };
   const first = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
-  const another = session && passkeysAvailable();
   const blocker = status !== null ? passkeyBlocker() : null;
   return (
     <>
-      {(first || another) && <EnrolPasskey token={active} another={another} onDone={refresh} />}
+      {first && <EnrolPasskey token={active} onDone={refresh} />}
       {blocker !== null && <p className="passkey-blocker" role="status">{blocker}</p>}
       <Scoped token={active} onSignedOut={signedOut} onSignOut={signOut} />
     </>

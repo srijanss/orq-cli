@@ -45,6 +45,18 @@ export async function authStatus() {
   }
 }
 
+// The passkeys registered on the server, as [{label, id}]; null unless this page holds a session.
+export async function listPasskeys() {
+  try {
+    const response = await fetch("/auth/passkeys", { cache: "no-store", referrerPolicy: "no-referrer" });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data !== null && Array.isArray(data.passkeys) ? data.passkeys.filter((k) => typeof k.label === "string" && typeof k.id === "string") : null;
+  } catch (unavailable) {
+    return null;
+  }
+}
+
 // Signs in with a stored passkey. Resolves true when the server set the session cookie.
 export async function signInWithPasskey() {
   const began = await post("/auth/login/begin");

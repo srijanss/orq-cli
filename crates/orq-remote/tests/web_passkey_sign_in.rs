@@ -154,3 +154,24 @@ fn a_server_that_refuses_the_answer_signs_nobody_in_and_can_be_tried_again() {
     let Some(out) = login(json!({"secure": true, "api": true, "answer": answer()}), json!({"/auth/login/finish": 401})) else { return };
     assert_refused_and_retryable(&out, true);
 }
+
+fn settings_page(path: &str, responses: Value) -> Option<Value> {
+    run_with(json!({
+        "url": path, "auth": {"passkeys": true, "signed_in": true, "host": "box.ts.net"}, "webauthn": {"secure": true, "api": true},
+        "auth_replies": {"/auth/passkeys": {"passkeys": [{"label": "phone", "id": "AAAAphoneID"}, {"label": "laptop", "id": "BBBBlaptopID"}]}},
+        "responses": responses, "steps": []
+    }))
+}
+
+#[test]
+fn signed_in_with_a_passkey_the_settings_page_lists_each_passkey_and_offers_to_add_another_there_only() {
+    let settings = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": []}}});
+    let Some(out) = settings_page("/settings", json!([settings])) else { return };
+    let frame = &out["frames"][0];
+    let text = shown(frame);
+    assert!(text.contains("Passkeys") && text.contains("phone") && text.contains("AAAAphoneID") && text.contains("laptop") && text.contains("BBBBlaptopID"), "{out}");
+    assert_eq!(frame["settled"]["enrolButtons"], json!(["Add another passkey"]), "{out}");
+    assert!(out["authRequests"].as_array().unwrap().iter().any(|r| r["url"] == "/auth/passkeys"), "{out}");
+    let Some(other) = settings_page("/dashboard", json!([{"status": 200, "json": []}])) else { return };
+    assert_eq!(other["frames"][0]["settled"]["enrolButtons"], json!([]), "not on other pages: {other}");
+}
