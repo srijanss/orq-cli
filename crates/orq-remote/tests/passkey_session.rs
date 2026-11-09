@@ -344,3 +344,26 @@ fn a_session_stops_working_when_the_passkey_store_cannot_be_read_and_the_token_c
     let proxied_token = [("Authorization", auth.as_str()), ("X-Forwarded-For", "100.64.0.9")];
     assert!(send(addr, "POST", "/auth/register/begin", &proxied_token, b"{}").0.contains("401"));
 }
+
+#[test]
+fn a_signed_in_session_lists_the_passkeys_by_label_and_id_and_nobody_else_can() {
+    let (server, _roots) = start("list");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let mut phone = Device::new(77);
+    assert!(send(addr, "GET", "/auth/passkeys", &[("Authorization", &auth)], b"").0.contains("401"), "the token alone lists nothing");
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let cookie = cookie_from(&send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body))).1);
+    assert!(send(addr, "GET", "/auth/passkeys", &[], b"").0.contains("401"));
+    assert!(send(addr, "GET", "/auth/passkeys", &[("Cookie", "__Host-orq-session=forged")], b"").0.contains("401"));
+    let (status, _, body) = send(addr, "GET", "/auth/passkeys", &[("Cookie", cookie.as_str()), ("X-Forwarded-For", "100.64.0.9")], b"");
+    assert!(status.contains("200"), "{status} {body}");
+    let listed = json(&body);
+    let items = listed["passkeys"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["label"], "phone");
+    assert!(items[0]["id"].as_str().is_some_and(|id| !id.is_empty()), "{body}");
+    assert!(!body.contains("public"), "no key material: {body}");
+}

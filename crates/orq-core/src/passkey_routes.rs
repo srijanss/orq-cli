@@ -117,6 +117,11 @@ impl PasskeyAuth {
         let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
         Some(match (request.method, route) {
             ("GET", "status") => reply(200, json!({ "passkeys": store.any_registered(), "signed_in": live, "host": self.host.rp_id() })),
+            ("GET", "passkeys") if live => match store.list() {
+                Ok(keys) => reply(200, json!({ "passkeys": keys.iter().map(|key| json!({ "label": key.label, "id": key.credential_id })).collect::<Vec<_>>() })),
+                Err(_) => refuse(),
+            },
+            ("GET", "passkeys") => refuse(),
             ("POST", "register/begin") if post => match enrol() {
                 Err(_) => refuse(),
                 Ok(_) => match passkey_register::begin(&self.host, &self.challenges, &store, at) {
