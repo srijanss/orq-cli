@@ -26,7 +26,8 @@ fn the_card_sits_centred_in_a_full_height_page() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     let m = &out["frames"][0]["settled"]["matches"];
-    for k in [".signin-page > .signin", ".signin h1", ".signin .primary"] {
+    assert_eq!(out["frames"][0]["settled"]["matches"][".signin h1"], 0, "no heading above the buttons: {out}");
+    for k in [".signin-page > .signin", ".signin .primary"] {
         assert_eq!(m[k], 1, "{k}: {out}");
     }
 }
@@ -41,4 +42,14 @@ fn the_page_centres_a_wide_card_and_the_primary_button_fills_it_in_the_accent_co
     let primary = rule(&css, ".signin .primary {");
     assert!(primary.contains("width: 100%") && primary.contains("background: var(--accent)") && primary.contains("color: var(--bg)"), "{primary}");
     assert!(!css.contains(".signin .theme-toggle { align-self: flex-end; margin-left: 0; order: -1; }"), "the theme switch moves to the bottom");
+}
+
+#[test]
+fn the_passkey_button_carries_a_passkey_icon() {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let main = std::fs::read_to_string(format!("{dir}/web-src/src/main.jsx")).unwrap();
+    let icons = std::fs::read_to_string(format!("{dir}/web-src/src/icons.jsx")).unwrap();
+    assert!(icons.contains("  passkey: \""), "the icon is drawn");
+    let start = main.find("Sign in with a passkey").unwrap();
+    assert!(main[start.saturating_sub(120)..start].contains("<Icon name=\"passkey\""), "the icon sits in the button before its label");
 }

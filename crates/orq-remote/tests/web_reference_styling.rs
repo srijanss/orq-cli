@@ -71,7 +71,7 @@ fn before_a_token_is_given_a_sign_in_card_offers_signing_in_with_a_token() {
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     let start = &out["frames"][0]["settled"];
     let texts: Vec<&str> = start["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
-    assert!(texts.contains(&"Sign in"), "{texts:?}");
+    assert!(!texts.contains(&"Sign in"), "no heading above the form: {texts:?}");
     assert!(texts.iter().any(|t| t.contains("Sign in with token")), "{texts:?}");
     assert_eq!(start["cards"], 1, "the sign-in form sits in a card: {out}");
     assert_eq!(start["inputs"].as_array().unwrap().len(), 1, "{out}");

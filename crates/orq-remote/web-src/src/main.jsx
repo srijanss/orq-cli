@@ -156,6 +156,7 @@ function PasskeyButton({ onSignedIn, enrolled = true, onAskToken }) {
   return (
     <div className="passkey-signin">
       <button type="button" className="primary" onClick={go}>
+        <Icon name="passkey" size={20} />
         Sign in with a passkey
       </button>
       {failed && <p role="alert">Could not sign in with a passkey.</p>}
@@ -181,7 +182,6 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
         <Icon name="logo" size={28} />
         Orq
       </span>
-      <h1>Sign in</h1>
       {usable && !asking && <PasskeyButton onSignedIn={onPasskey} enrolled={passkeys} onAskToken={() => setAsking(true)} />}
       {blocker !== null && <p role="status">{blocker}</p>}
       {(!usable || asking) && (
