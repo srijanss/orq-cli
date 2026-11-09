@@ -27,11 +27,13 @@ fn fake_orq(dir: &Path) -> PathBuf {
     let path = dir.join("orq");
     let log = dir.join("calls.log");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\nif [ -e {orphan} ]; then sleep 20 & echo $! > {pid}; exit 0; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in \"/home/me/repo/plan.json\" (path=/home/me/repo)' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\nif [ -e {orphan} ]; then sleep 20 & echo $! > {pid}; exit 0; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in \"/home/me/repo/plan.json\" (path=/home/me/repo)' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {big} ]; then echo 'run: run-42'; head -c 300000 /dev/zero | tr '\\0' x; head -c 300000 /dev/zero | tr '\\0' x >&2 && touch {done}; exit 0; fi; if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
         log = log.display(),
         refuse = dir.join("refuse").display(),
         hang = dir.join("hang").display(),
         flood = dir.join("flood").display(),
+        big = dir.join("big").display(),
+        done = dir.join("drained").display(),
         orphan = dir.join("orphan").display(),
         pid = dir.join("orphan.pid").display(),
         detach_fails = dir.join("detach-fails").display(),
@@ -144,4 +146,16 @@ fn a_descendant_left_holding_the_pipes_is_stopped_with_the_call() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(!alive(), "the descendant {pid} outlived the call");
+}
+
+#[test]
+fn finite_output_past_the_cap_on_both_streams_is_drained_and_the_run_id_survives() {
+    let dir = scratch("big");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    std::fs::write(dir.join("big"), "").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config)).with_deadline(std::time::Duration::from_secs(3));
+    assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
+    assert!(dir.join("drained").exists(), "the caller stopped reading before the program finished writing");
 }
