@@ -169,6 +169,7 @@ fn fnv1a(text: &str, seed: u64) -> u64 {
 pub struct StoreProjects {
     roots: orq_core::storage::StorageRoots,
     scan_root: std::path::PathBuf,
+    launcher: Option<std::sync::Arc<dyn RunLauncher + Send + Sync>>,
     run_logs: std::sync::Mutex<LogCache>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
 }
@@ -185,8 +186,28 @@ struct LogSnapshot {
 
 impl StoreProjects {
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
-        StoreProjects { roots, scan_root, run_logs: Default::default(), log_snapshot: Default::default() }
+        StoreProjects { roots, scan_root, launcher: None, run_logs: Default::default(), log_snapshot: Default::default() }
     }
+
+    /// Lets this provider start runs through `launcher`; without one it says it cannot.
+    pub fn with_launcher(mut self, launcher: std::sync::Arc<dyn RunLauncher + Send + Sync>) -> Self {
+        self.launcher = Some(launcher);
+        self
+    }
+}
+
+/// Starts a run the way the CLI does. The server never starts one by itself: whoever builds it supplies this.
+pub trait RunLauncher {
+    /// Starts a run of `feature` in the project at `repo` and returns its id.
+    fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError>;
+}
+
+/// Why a launch did not start a run.
+pub enum LaunchError {
+    /// The run's own checks said no; the reason is meant to be read by the person who asked.
+    Refused(String),
+    /// Anything else; the reason is for this machine's operator and is never sent to the web.
+    Failed(String),
 }
 
 /// Failures older than this are not counted as needing attention; the API states it with the count.
@@ -215,6 +236,24 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn settings(&self) -> Result<Option<serde_json::Value>, String> {
         orq_core::remote_inbox::public_settings(&self.roots.config_file()).map(Some)
+    }
+
+    fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {
+        use orq_core::remote_inbox::RunStart;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunStart::Unknown) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let ledger = read_ledger(&orq_features::ledger_path(&git))?;
+        match orq_features::check_run_eligibility(&ledger, feature) {
+            Ok(_) => {}
+            Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
+            Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
+        }
+        let Some(launcher) = &self.launcher else { return Ok(RunStart::Refused("this server cannot start runs".to_string())) };
+        match launcher.start(&project.path, feature) {
+            Ok(run) => Ok(RunStart::Started(run)),
+            Err(LaunchError::Refused(why)) => Ok(RunStart::Refused(orq_core::redact::redact(&why))),
+            Err(LaunchError::Failed(why)) => Err(why),
+        }
     }
 
     fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
