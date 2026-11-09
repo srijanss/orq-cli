@@ -125,3 +125,22 @@ fn a_secret_cut_by_the_length_limit_is_still_redacted() {
     assert!(!text.contains("ghp_"), "{text}");
     assert!(!text.contains(url_secret) && !text.contains("user:hunter"), "{text}");
 }
+
+#[test]
+fn a_pipe_in_place_of_the_log_is_refused_promptly_for_reads_and_writes() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let roots = roots("fifo");
+    let file = roots.state.join("remote-actions.jsonl");
+    let name = CString::new(file.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = roots.clone();
+    std::thread::spawn(move || {
+        let read = remote_audit::read(&worker, 10).is_err();
+        let wrote = remote_audit::record(&worker, &attempt("phone", "run.start", None, Outcome::Allowed, None), 1).is_err();
+        let _ = tx.send((read, wrote));
+    });
+    let answer = rx.recv_timeout(std::time::Duration::from_secs(3)).expect("the pipe must not block the audit log");
+    assert_eq!(answer, (true, true));
+}

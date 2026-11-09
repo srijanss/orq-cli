@@ -69,7 +69,8 @@ fn ends_with_newline(roots: &StorageRoots) -> bool {
 /// left readable by others is tightened to this user alone.
 fn open(roots: &StorageRoots, write: bool) -> Result<std::fs::File, String> {
     let mut options = std::fs::OpenOptions::new();
-    options.custom_flags(libc::O_NOFOLLOW);
+    // O_NONBLOCK keeps a pipe in the log's place from hanging the open; the descriptor is checked before any I/O.
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     if write {
         options.create(true).append(true).mode(0o600);
     } else {
