@@ -66,11 +66,31 @@ const responses = [...scenario.responses];
 // The /auth routes are answered apart from the scripted responses, so they never shift them: a
 // scenario may give `auth` (the status answer), otherwise the server has no passkey support (404).
 const authRequests = [];
+// A scenario may give `webauthn`: {secure, api, answer}. `secure` is whether the page counts as a
+// secure context, `api` whether the browser has the credential API at all, and `answer` what its
+// get() hands back (ids and responses as arrays of bytes). Without it the browser has none of this.
+// `auth_replies` maps other /auth paths to the JSON they answer with (anything else is a 404).
+if (scenario.webauthn) {
+  const spec = scenario.webauthn;
+  Object.defineProperty(window, "isSecureContext", { value: spec.secure === true, configurable: true });
+  if (spec.api) {
+    const buffer = (bytes) => window.Uint8Array.from(bytes).buffer;
+    window.PublicKeyCredential = function PublicKeyCredential() {};
+    Object.defineProperty(window.navigator, "credentials", {
+      configurable: true,
+      value: {
+        get: () => Promise.resolve(spec.answer ? { rawId: buffer(spec.answer.rawId), response: { clientDataJSON: buffer(spec.answer.clientDataJSON), authenticatorData: buffer(spec.answer.authenticatorData), signature: buffer(spec.answer.signature) } } : null),
+        create: () => Promise.resolve(null),
+      },
+    });
+  }
+}
 window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/auth/")) {
-    authRequests.push({ url, method: options.method || "GET" });
-    const known = scenario.auth && String(url) === "/auth/status";
-    return Promise.resolve({ status: known ? 200 : 404, ok: !!known, json: () => Promise.resolve(known ? scenario.auth : {}) });
+    authRequests.push({ url, method: options.method || "GET", body: options.body === undefined ? null : JSON.parse(options.body) });
+    const reply = String(url) === "/auth/status" ? scenario.auth : (scenario.auth_replies || {})[String(url)];
+    const known = reply !== undefined && reply !== null;
+    return Promise.resolve({ status: known ? 200 : 404, ok: known, json: () => Promise.resolve(known ? reply : {}) });
   }
   const signal = options.signal;
   requests.push({ url, method: options.method, headers: options.headers, get aborted() { return signal ? signal.aborted : null; } });
@@ -140,7 +160,7 @@ function snapshot() {
   // A digest of the real session entries, so a test sees any change to a stored value without the value being printed.
   let sessionDigest = "blocked";
   try { sessionDigest = createHash("sha256").update(JSON.stringify(Object.entries(window.sessionStorage).sort())).digest("hex"); } catch (blocked) { /* keep "blocked" */ }
-  return { focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -216,7 +236,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, frames, downloads: saved }));
+  process.stdout.write(JSON.stringify({ requests, authRequests, frames, downloads: saved }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

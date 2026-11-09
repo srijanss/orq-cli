@@ -16,8 +16,15 @@ function toText(buffer) {
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// Why this page cannot use passkeys, in words for the person reading it; null when it can.
+export function passkeyBlocker() {
+  if (typeof window === "undefined" || window.isSecureContext !== true) return "Passkeys need an HTTPS connection to this page.";
+  if (typeof window.PublicKeyCredential !== "function" || !navigator.credentials) return "This browser cannot use passkeys.";
+  return null;
+}
+
 export function passkeysAvailable() {
-  return typeof window !== "undefined" && window.isSecureContext === true && typeof window.PublicKeyCredential === "function" && !!navigator.credentials;
+  return passkeyBlocker() === null;
 }
 
 function post(path, body, token) {

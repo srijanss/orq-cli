@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
-import { authStatus, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -99,7 +99,7 @@ function PasskeyButton({ onSignedIn }) {
   );
 }
 
-function TokenPrompt({ message, onToken, passkeys = false, onPasskey }) {
+function TokenPrompt({ message, onToken, passkeys = false, onPasskey, blocker = null }) {
   const field = useRef(null);
   const submit = () => {
     const typed = field.current.value.trim();
@@ -116,14 +116,19 @@ function TokenPrompt({ message, onToken, passkeys = false, onPasskey }) {
       </span>
       <h1>Sign in</h1>
       {passkeys && passkeysAvailable() && <PasskeyButton onSignedIn={onPasskey} />}
-      <p>Sign in with token: paste the access token printed by orq serve.</p>
-      <label>
-        Access token
-        <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
-      </label>
-      <button type="button" onClick={submit}>
-        Open the inbox
-      </button>
+      {blocker !== null && <p role="status">{blocker}</p>}
+      {!(passkeys && blocker === null) && (
+        <>
+          <p>Sign in with token: paste the access token printed by orq serve.</p>
+          <label>
+            Access token
+            <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
+          </label>
+          <button type="button" onClick={submit}>
+            Open the inbox
+          </button>
+        </>
+      )}
       <p role="alert">{message}</p>
       <div className="alternatives" />
       <ThemeToggle />
@@ -1111,7 +1116,7 @@ function App() {
   const session = status !== null && status.signed_in === true;
   const active = session && token === null ? SESSION : token;
   if (active === null) {
-    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} onPasskey={refresh} />;
+    return <TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} />;
   }
   const signedOut = () => {
     setToken(null);
@@ -1125,9 +1130,11 @@ function App() {
   };
   const first = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
   const another = session && passkeysAvailable();
+  const blocker = status !== null ? passkeyBlocker() : null;
   return (
     <>
       {(first || another) && <EnrolPasskey token={active} another={another} onDone={refresh} />}
+      {blocker !== null && <p className="passkey-blocker" role="status">{blocker}</p>}
       <Scoped token={active} onSignedOut={signedOut} onSignOut={signOut} />
     </>
   );
