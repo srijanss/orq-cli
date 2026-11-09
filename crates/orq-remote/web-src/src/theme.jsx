@@ -23,7 +23,8 @@ export function ThemeToggle() {
         setTheme(next);
       }}
     >
-      <Icon name={theme === "dark" ? "sun" : "moon"} />
+      <span className="theme-option" data-active={theme === "light" ? "" : undefined}><Icon name="sun" size={16} /></span>
+      <span className="theme-option" data-active={theme === "dark" ? "" : undefined}><Icon name="moon" size={16} /></span>
     </button>
   );
 }

@@ -76,7 +76,7 @@ fn text_stays_readable_on_every_surface_it_is_drawn_on_in_both_themes() {
             }
         }
         // The sidebar is dark in both themes and reads its own light-on-dark tokens.
-        for fg in ["sidebar-text", "sidebar-muted", "sidebar-active-text"] {
+        for fg in ["sidebar-text", "sidebar-muted"] {
             pairs.push((theme.into(), format!("--{fg} on --sidebar"), format!("{} {}", get(fg), get("sidebar"))));
         }
         pairs.push((theme.into(), "--sidebar-text on --sidebar-active-bg".into(), format!("{} {}", get("sidebar-active-text"), get("sidebar-active-bg"))));

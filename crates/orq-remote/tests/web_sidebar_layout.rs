@@ -85,12 +85,3 @@ fn the_bottom_items_are_a_theme_row_and_a_sign_out_row_that_fills_the_width() {
     assert!(rule(&css, ".sidebar-foot {").contains("flex-direction: column"));
     assert!(rule(&css, ".sign-out {").contains("width: 100%"));
 }
-
-#[test]
-fn settings_uses_the_cogs_icon() {
-    let dir = env!("CARGO_MANIFEST_DIR");
-    let icons = std::fs::read_to_string(format!("{dir}/web-src/src/icons.jsx")).unwrap();
-    assert!(icons.contains("cogs:"), "the cogs icon exists");
-    let shell = std::fs::read_to_string(format!("{dir}/web-src/src/shell.jsx")).unwrap();
-    assert!(shell.contains("{ label: \"Settings\", icon: \"cogs\""), "Settings shows the cogs");
-}

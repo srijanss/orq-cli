@@ -18,11 +18,10 @@ export function navigationEntries(projectId) {
     { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
     { label: "Reviews", icon: "doc", href: `${base}/reviews` },
   );
-  entries.push({ label: "Settings", icon: "cogs", href: "/settings" });
+  entries.push({ label: "Settings", icon: "gear", href: "/settings" });
   return entries;
 }
 
-const SECTION_HREF = /\/(features|orchestrations|reviews)$/;
 const SECTIONS = { features: "Features", orchestrations: "Orchestrations", reviews: "Reviews" };
 
 // What assistive technology hears after moving to `path`; "" for a log page.
@@ -136,7 +135,7 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
           {entries.map((entry) => (
             <Fragment key={entry.href}>
               {entry.href === "/settings" ? <div className="sidebar-divider" role="separator" /> : null}
-              <a className={SECTION_HREF.test(entry.href) ? "section-link" : undefined} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
+              <a href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
                   if (isPlainLeftClick(event)) {
                     event.preventDefault();
                     navigate(entry.href);
@@ -166,7 +165,7 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
                       </option>
                     ))}
                   </select>
-                  <Icon name="chevronDown" size={16} />
+                  <Icon name="chevronDown" size={18} />
                 </label>
               ) : null}
             </Fragment>
