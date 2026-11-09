@@ -40,8 +40,8 @@ fn an_unreachable_server_shows_a_disconnected_banner_with_the_time_and_keeps_the
     let first = &out["frames"][1];
     let text = shown(first);
     assert!(text.contains("Disconnected"), "{text}");
-    let checked = text.split("Last checked ").nth(1).unwrap_or_else(|| panic!("no last-checked time: {text}"));
-    assert!(checked.chars().next().unwrap().is_ascii_digit(), "{text}");
+    let checked = first["settled"]["times"].as_array().unwrap().iter().find(|m| m["label"].as_str().unwrap().ends_with("Last checked"));
+    assert_eq!(checked.unwrap_or_else(|| panic!("no last-checked time: {text}"))["text"], "just now", "{text}");
     assert!(first["settled"]["inputs"].as_array().unwrap().is_empty(), "the token is kept, not asked for again: {out}");
     assert!(!first["settled"]["texts"].to_string().contains(TOKEN) && !first["settled"]["inputs"].to_string().contains(TOKEN), "the page never shows the token");
     let after = &out["frames"][2];

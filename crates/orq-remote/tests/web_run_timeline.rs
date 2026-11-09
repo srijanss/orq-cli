@@ -49,7 +49,9 @@ fn a_run_page_shows_the_header_and_the_events_in_order_as_text() {
     let at = |needle: &str| t.iter().position(|x| x == needle).unwrap_or_else(|| panic!("{needle} missing: {t:?}"));
     assert!(t.iter().any(|x| x == "<b>login</b>") && t.iter().any(|x| x == "Failed") && t.iter().any(|x| x == "Stage: implement"), "{t:?}");
     assert!(at("run.started") < at("stage.<i>started</i>"), "{t:?}");
-    assert!(at("2026-11-02T10:00:00Z") < at("2026-11-02T10:05:00Z") && t.iter().any(|x| x == "Attempt 2"), "{t:?}");
+    let moments: Vec<&str> = out["frames"][1]["settled"]["times"].as_array().unwrap().iter().filter(|m| m["label"] == "").filter_map(|m| m["datetime"].as_str()).collect();
+    assert_eq!(moments, ["2026-11-02T10:00:00Z", "2026-11-02T10:05:00Z"], "{out}");
+    assert!(t.iter().any(|x| x == "Attempt 2"), "{t:?}");
     assert!(!t.iter().any(|x| x.contains("Load more")), "no cursor, no more: {t:?}");
 }
 

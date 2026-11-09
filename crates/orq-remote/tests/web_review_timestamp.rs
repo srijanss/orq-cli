@@ -28,7 +28,7 @@ fn texts(frame: &Value) -> Vec<String> {
 }
 
 fn generated(frame: &Value) -> usize {
-    texts(frame).iter().filter(|t| t.starts_with("Generated")).count()
+    texts(frame).iter().filter(|t| t.starts_with("Reviewed at")).count()
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn a_row_shows_when_its_report_was_generated_and_a_missing_or_odd_time_shows_not
     let Some(out) = run(json!([list([json!("2026-11-03T10:20:30Z"), Value::Null, json!("<b>soon</b>")])]), json!([{"submit": TOKEN}])) else { return };
     let frame = &out["frames"][1];
     assert_eq!(generated(frame), 1, "{out}");
-    assert!(texts(frame).iter().any(|t| t.contains("2026")), "{out}");
+    assert!(frame["settled"]["times"][0]["title"].as_str().unwrap().contains("2026"), "{out}");
     assert!(!texts(frame).iter().any(|t| t.contains("soon") || t.contains("T10:20")), "{out}");
 }
 
@@ -45,5 +45,5 @@ fn the_report_shows_when_it_was_generated() {
     let detail = json!({"status": 200, "json": {"stale": false, "link": null, "summary": ["x"], "risks": [], "files": [], "tests": [], "rounds": [], "generated_at": "2026-11-03T10:20:30Z"}});
     let Some(out) = run(json!([list([Value::Null, Value::Null, Value::Null]), detail]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
     assert_eq!(generated(&out["frames"][2]), 1, "{out}");
-    assert!(texts(&out["frames"][2]).iter().any(|t| t.contains("2026")), "{out}");
+    assert!(out["frames"][2]["settled"]["times"][0]["title"].as_str().unwrap().contains("2026"), "{out}");
 }

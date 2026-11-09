@@ -53,7 +53,7 @@ fn the_orchestrations_tab_reads_the_projects_own_runs_and_shows_state_stage_and_
     assert!(texts.iter().any(|t| t == "<b>bold</b> feature"), "markup is shown literally: {texts:?}");
     assert!(texts.iter().any(|t| t == "Running") && texts.iter().any(|t| t == "Needs review"), "{texts:?}");
     assert!(texts.iter().any(|t| t == "Stage: implement"), "{texts:?}");
-    assert!(texts.iter().any(|t| t.contains("run-b")) && texts.iter().any(|t| t.contains("2026-11-02T10:30:00Z")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("run-b")) && out["frames"][1]["settled"]["times"].as_array().unwrap().iter().any(|m| m["datetime"] == "2026-11-02T10:30:00Z"), "{texts:?}");
     assert!(!texts.iter().any(|t| t.contains("not available yet")), "{texts:?}");
 }
 

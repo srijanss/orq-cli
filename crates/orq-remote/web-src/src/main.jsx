@@ -34,13 +34,48 @@ const DETAIL_SECTIONS = [
 // The server sends the time as plain UTC text; anything else is not shown.
 const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
-function Generated({ at }) {
+function validTime(at) {
   if (typeof at !== "string" || !UTC_TIME.test(at)) return null;
   const when = new Date(at);
-  if (Number.isNaN(when.getTime())) return null;
+  return Number.isNaN(when.getTime()) ? null : when;
+}
+
+// "5 minutes ago"; a time ahead of this clock counts as just now rather than as the future.
+function relativeTime(when, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor((now - when.getTime()) / 1000));
+  if (seconds < 60) return "just now";
+  const units = [["day", 86400], ["hour", 3600], ["minute", 60]];
+  const [name, size] = units.find(([, size]) => seconds >= size);
+  const count = Math.floor(seconds / size);
+  return count + " " + name + (count === 1 ? "" : "s") + " ago";
+}
+
+// A time is shown relative to now, with the absolute local time in its title.
+function Moment({ at }) {
+  const when = validTime(at);
+  if (when === null) return null;
+  return (
+    <time dateTime={at} title={when.toLocaleString([], { dateStyle: "medium", timeStyle: "medium" })}>
+      {relativeTime(when)}
+    </time>
+  );
+}
+
+// A labelled time; nothing at all when the time is missing or odd.
+function Stamp({ label, at }) {
+  if (validTime(at) === null) return null;
+  return (
+    <p>
+      {label} <Moment at={at} />
+    </p>
+  );
+}
+
+function Generated({ at }) {
+  if (validTime(at) === null) return null;
   return (
     <span className="generated">
-      Generated <time dateTime={at}>{when.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</time>
+      Reviewed at <Moment at={at} />
     </span>
   );
 }
@@ -265,7 +300,7 @@ function NotFound() {
 const REFRESH_MS = 30000;
 
 function checkedTime() {
-  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
 function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 }) {
@@ -346,7 +381,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
       <>
         {draw(state.data)}
         <p className="last-checked" data-last-checked>
-          Last checked {state.checked}
+          Last checked <Moment at={state.checked} />
         </p>
       </>
     );
@@ -354,7 +389,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
   return (
     <>
       <div className="banner" role="alert">
-        {state.kind === "disconnected" ? <p>Disconnected. Last checked {state.checked}</p> : <p>The inbox could not be read just now.</p>}
+        {state.kind === "disconnected" ? <p>Disconnected. Last checked <Moment at={state.checked} /></p> : <p>The inbox could not be read just now.</p>}
         {state.data !== null ? <Badge kind="freshness-outdated" /> : null}
         <button type="button" onClick={() => setAttempt(attempt + 1)}>
           Try again
@@ -651,8 +686,8 @@ function OrchestrationList({ runs }) {
             <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
             {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
             <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
-            {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
-            {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
+            <Stamp label="Last activity" at={run.updated_at} />
+            <Stamp label="Started" at={run.started_at} />
           </li>
         ))}
       </ul>
@@ -681,8 +716,8 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
       <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
       {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
       <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
-      {run.started_at ? <p>{"Started " + run.started_at}</p> : null}
-      {run.updated_at ? <p>{"Last activity " + run.updated_at}</p> : null}
+      <Stamp label="Started" at={run.started_at} />
+      <Stamp label="Last activity" at={run.updated_at} />
       <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
       {events.length === 0 ? <p>No events recorded.</p> : null}
       <ol>
@@ -691,7 +726,7 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
             <strong>{event.kind}</strong>
             {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
             <span>{"Attempt " + event.attempt}</span>
-            {event.occurred_at ? <time>{event.occurred_at}</time> : null}
+            <Moment at={event.occurred_at} />
           </li>
         ))}
       </ol>
@@ -799,7 +834,7 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
             <strong>{event.kind}</strong>
             {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
             <span>{"Attempt " + event.attempt}</span>
-            {event.occurred_at ? <time>{event.occurred_at}</time> : null}
+            <Moment at={event.occurred_at} />
           </li>
         ))}
       </ol>
