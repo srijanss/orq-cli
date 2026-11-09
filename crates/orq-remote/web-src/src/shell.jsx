@@ -41,6 +41,7 @@ function describePage(path, entries) {
     const detail = parts[4] ? ": " + decode(parts[4]) : "";
     return SECTIONS[parts[3]] + detail + ", project " + decode(parts[2]);
   }
+  if (parts[1] === "reviews" && parts[2]) return "Review report: " + decode(parts[2]);
   const entry = entries.find((candidate) => candidate.href === path);
   return entry !== undefined ? entry.label + " page" : "";
 }

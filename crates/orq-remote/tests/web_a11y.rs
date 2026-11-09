@@ -65,11 +65,15 @@ fn a_page_change_is_announced_politely_and_log_lines_are_never_in_a_live_region(
 #[test]
 fn motion_is_reduced_on_request_focus_is_visible_and_targets_are_44px() {
     let css = css();
-    let reduced = css.split("prefers-reduced-motion: reduce").nth(1).expect("a reduced-motion rule");
-    assert!(reduced.contains("animation") && reduced.contains("transition"), "it stops animation and transitions");
+    let reduced = css.split("@media (prefers-reduced-motion: reduce)").nth(1).expect("a reduced-motion rule");
+    let reduced = reduced.split("\n}").next().unwrap();
+    assert!(reduced.contains("animation: none") && reduced.contains("transition: none"), "it stops animation and transitions: {reduced}");
     let focus = css.split(":focus-visible").nth(1).expect("a :focus-visible rule");
-    assert!(focus.split('}').next().unwrap().contains("outline"), "focus is drawn");
-    assert!(css.contains("min-height: 44px") && css.contains("min-width: 44px"), "44px targets");
+    assert!(focus.split('}').next().unwrap().contains("outline: 3px"), "focus is drawn");
+    for control in ["input", "button", "select", "a"] {
+        let sized = css.lines().any(|l| l.starts_with(&format!("{control} {{")) && l.contains("min-height: 44px"));
+        assert!(sized, "{control} has a rule with a 44px minimum height");
+    }
 }
 
 fn announced(out: &Value, frame: usize) -> String {
@@ -95,4 +99,16 @@ fn a_run_page_is_announced_by_its_run_and_project() {
     let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([timeline, projects(), stream]), json!([{"submit": TOKEN}])) else { return };
     let text = announced(&out, 1);
     assert!(text.contains("run-1") && text.contains("alpha"), "{text}: {out}");
+}
+
+#[test]
+fn a_report_opened_at_its_short_address_is_announced_by_its_run() {
+    let detail = json!({"status": 200, "json": {
+        "run_id": "run-1", "reported_head_sha": "abc1234", "observed_head_sha": "abc1234", "stale": false, "freshness": "current", "link_allowed": false, "link": null,
+        "reviewed_head_sha": "1111111aaaa", "provider_head_sha": "2222222bbbb", "checked_at": "2026-11-09T10:00:00Z",
+        "summary": ["ok"], "risks": [], "files": [], "tests": [], "rounds": []
+    }});
+    let Some(out) = run("/reviews/run-1", json!([detail]), json!([{"submit": TOKEN}])) else { return };
+    let text = announced(&out, 1);
+    assert!(text.contains("Review") && text.contains("run-1"), "{text}: {out}");
 }
