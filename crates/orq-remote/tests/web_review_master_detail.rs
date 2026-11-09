@@ -1,7 +1,10 @@
 //! A project's Reviews page: with a report open, the list stays beside it on a wide screen and a
 //! phone shows the report alone with a Back button. One report component draws it either way.
 
+mod web_cascade;
 mod web_deps;
+
+use web_cascade::effective_at;
 
 use serde_json::{json, Value};
 use std::process::Command;
@@ -39,28 +42,7 @@ fn shown(frame: &Value) -> String {
 }
 
 fn css() -> String {
-    std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap()
-}
-
-// The text of the CSS block that starts with `head` (up to its matching brace).
-fn block(css: &str, head: &str) -> String {
-    let start = css.find(head).unwrap_or_else(|| panic!("no `{head}` block"));
-    let mut depth = 0;
-    let mut end = start;
-    for (i, c) in css[start..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = start + i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    css[start..end].to_string()
+    web_cascade::css()
 }
 
 #[test]
@@ -83,16 +65,19 @@ fn the_report_is_marked_so_the_stylesheet_can_show_it_alone_on_a_phone() {
 }
 
 #[test]
-fn the_stylesheet_hides_the_list_on_a_phone_and_shows_two_columns_on_a_wide_screen() {
+fn the_stylesheet_shows_the_list_only_on_wide_screens_while_a_report_is_open() {
     let css = css();
-    let outside = css.replace(&block(&css, "@media (min-width: 900px)"), "");
-    assert!(outside.contains(".master-detail.has-report .master-pane"), "phones hide the list while a report is open");
-    let hide = block(&outside, ".master-detail.has-report .master-pane");
-    assert!(hide.contains("display: none"), "{hide}");
-    let wide = block(&css, "@media (min-width: 900px)");
-    assert!(wide.contains("grid-template-columns"), "{wide}");
-    assert!(wide.contains(".master-detail.has-report .master-pane") && wide.contains("display: block"), "{wide}");
-    assert!(wide.contains("[data-back=\"list\"]") && wide.contains("display: none"), "Back is not needed beside the list: {wide}");
+    for width in [320.0, 360.0, 430.0, 899.0] {
+        assert_eq!(effective_at(&css, ".master-pane", "display", width), "none", "the list is hidden at {width}px");
+        assert_ne!(effective_at(&css, ".detail-pane", "display", width), "none", "the report shows at {width}px");
+    }
+    for width in [900.0, 1280.0] {
+        assert_eq!(effective_at(&css, ".master-pane", "display", width), "block", "the list shows at {width}px");
+        assert_eq!(effective_at(&css, ".master-detail", "display", width), "grid", "two columns at {width}px");
+        assert!(effective_at(&css, ".master-detail", "grid-template-columns", width).contains(" "), "two columns at {width}px");
+    }
+    assert_ne!(effective_at(&css, ".back-to-list", "display", 360.0), "none", "phones keep Back");
+    assert_eq!(effective_at(&css, ".back-to-list", "display", 1280.0), "none", "Back is not needed beside the list");
 }
 
 #[test]

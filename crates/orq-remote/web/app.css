@@ -248,8 +248,10 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 
 /* Reviews: with a report open a phone shows the report alone; a wide screen shows list and report side by side. */
 .master-detail.has-report .master-pane { display: none; }
+.master-detail .detail-pane { display: block; }
+.back-to-list { display: inline-block; }
 @media (min-width: 900px) {
   .master-detail.has-report { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1rem; align-items: start; }
   .master-detail.has-report .master-pane { display: block; }
-  .master-detail.has-report [data-back="list"] { display: none; }
+  .master-detail.has-report .back-to-list { display: none; }
 }

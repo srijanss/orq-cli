@@ -311,7 +311,7 @@ function Detail({ report, listPath = "/" }) {
   const href = freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
   return (
     <>
-      <button type="button" data-back="list" onClick={() => navigate(listPath)}>
+      <button type="button" className="back-to-list" data-back="list" onClick={() => navigate(listPath)}>
         Back to the list
       </button>
       <Generated at={report.generated_at} />
