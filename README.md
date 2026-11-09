@@ -57,3 +57,21 @@ The run stops at the review request, since no forge answers.
 ## Reading reviews from a phone
 
 `orq remote serve` starts a read-only page for the review inbox. See [docs/remote-inbox.md](docs/remote-inbox.md).
+
+### Start the server with `tailscale serve` (HTTPS, passkey sign-in)
+
+```sh
+# build once (debug build, one job at a time to keep memory and disk low)
+cargo build -j 1 -p orq-cli
+
+# 1. find your machine's host name: <machine>.<tailnet>.ts.net
+tailscale status
+
+# 2. start the server on loopback, naming that host for passkeys (leave it running)
+orq serve --repo . --listen 127.0.0.1:7878 --passkey-host box.tail1234.ts.net
+
+# 3. in a second terminal, publish it over HTTPS on your tailnet
+tailscale serve --bg 7878
+```
+
+Open `https://box.tail1234.ts.net` on the phone and sign in with the token once to add a passkey. Replace `box.tail1234.ts.net` with your own host name. Add `--no-loopback-token` to make a passkey the only way in. To stop publishing, run `tailscale serve reset`. Without HTTPS, use `orq remote serve --repo . --listen <tailscale-ip>:7878`. Full details, token setup and recovery are in [docs/remote-inbox.md](docs/remote-inbox.md).
