@@ -175,3 +175,22 @@ fn signed_in_with_a_passkey_the_settings_page_lists_each_passkey_and_offers_to_a
     let Some(other) = settings_page("/dashboard", json!([{"status": 200, "json": []}])) else { return };
     assert_eq!(other["frames"][0]["settled"]["enrolButtons"], json!([]), "not on other pages: {other}");
 }
+
+#[test]
+fn when_the_passkey_list_cannot_be_read_settings_says_so_keeps_adding_another_and_offers_a_retry() {
+    let settings = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": []}}});
+    let scenario = |failure: Value| json!({
+        "url": "/settings", "auth": {"passkeys": true, "signed_in": true, "host": "box.ts.net"}, "webauthn": {"secure": true, "api": true},
+        "auth_replies": {"/auth/passkeys": {"passkeys": [{"label": "phone", "id": "AAAAphoneID"}]}},
+        "auth_failures": failure, "responses": [settings.clone()], "steps": []
+    });
+    let Some(out) = run_with(scenario(json!({"/auth/passkeys": 500}))) else { return };
+    let first = &out["frames"][0]["settled"];
+    assert!(shown(&out["frames"][0]).contains("The passkeys could not be listed."), "{out}");
+    assert_eq!(first["enrolButtons"], json!(["Add another passkey"]), "{out}");
+    assert!(first["buttons"].as_array().unwrap().iter().any(|b| b == "Try again"), "{out}");
+    // Not being signed in with a session (the token alone) is not a failure: nothing is drawn.
+    let Some(token) = run_with(scenario(json!({"/auth/passkeys": 401}))) else { return };
+    assert!(!shown(&token["frames"][0]).contains("Passkeys"), "{token}");
+    assert_eq!(token["frames"][0]["settled"]["enrolButtons"], json!([]), "{token}");
+}

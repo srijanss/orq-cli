@@ -460,11 +460,20 @@ function PasskeysCard() {
     load();
   }, []);
   if (keys === null) return null;
+  const failed = keys === "failed";
   return (
     <section className="card passkeys">
       <h2>Passkeys</h2>
+      {failed && (
+        <>
+          <p role="alert">The passkeys could not be listed.</p>
+          <button type="button" onClick={load}>
+            Try again
+          </button>
+        </>
+      )}
       <ul>
-        {keys.map((key) => (
+        {(failed ? [] : keys).map((key) => (
           <li key={key.id}>
             <strong>{key.label}</strong> <code>{key.id}</code>
           </li>

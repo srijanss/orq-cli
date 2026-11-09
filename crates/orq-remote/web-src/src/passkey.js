@@ -45,15 +45,17 @@ export async function authStatus() {
   }
 }
 
-// The passkeys registered on the server, as [{label, id}]; null unless this page holds a session.
+// The passkeys registered on the server, as [{label, id}]. null when this page holds no session
+// (the server refuses or has no passkeys); "failed" when the list could not be read.
 export async function listPasskeys() {
   try {
     const response = await fetch("/auth/passkeys", { cache: "no-store", referrerPolicy: "no-referrer" });
-    if (!response.ok) return null;
+    if (response.status === 401 || response.status === 404) return null;
+    if (!response.ok) return "failed";
     const data = await response.json();
-    return data !== null && Array.isArray(data.passkeys) ? data.passkeys.filter((k) => typeof k.label === "string" && typeof k.id === "string") : null;
+    return data !== null && Array.isArray(data.passkeys) ? data.passkeys.filter((k) => typeof k.label === "string" && typeof k.id === "string") : "failed";
   } catch (unavailable) {
-    return null;
+    return "failed";
   }
 }
 
