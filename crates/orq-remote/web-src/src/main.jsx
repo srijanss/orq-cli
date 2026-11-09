@@ -591,16 +591,23 @@ function parseAudit(data) {
   return ok ? lines : null;
 }
 
+// The entry's time as the page draws times, or null for a damaged entry or a time outside what a date can hold.
+function auditTime(line) {
+  if (line.damaged === true) return null;
+  const when = new Date(line.time * 1000);
+  return Number.isNaN(when.getTime()) ? null : when.toISOString().replace(".000Z", "Z");
+}
+
 function AuditView({ lines }) {
   if (lines.length === 0) return <section className="card"><p>No actions recorded yet.</p></section>;
   return (
     <section className="card">
       <ul className="audit-lines">
-        {lines.map((line, index) => line.damaged === true ? (
+        {lines.map((line, index) => auditTime(line) === null ? (
           <li key={index}>Unreadable entry</li>
         ) : (
           <li key={index} data-outcome={line.outcome}>
-            <Moment at={new Date(line.time * 1000).toISOString().replace(".000Z", "Z")} />
+            <Moment at={auditTime(line)} />
             <span>{line.identity}</span>
             <strong>{line.action}</strong>
             <span>{line.project}</span>

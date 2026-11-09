@@ -76,3 +76,15 @@ fn the_server_answers_the_audit_address_with_the_page() {
     assert_eq!(orq_remote::page_asset("127.0.0.1".parse().unwrap(), "GET", "/settings/audit").map(|a| a.body), Some(page));
     assert!(orq_remote::page_asset("127.0.0.1".parse().unwrap(), "GET", "/settings/audit/x").is_none());
 }
+
+#[test]
+fn an_entry_with_a_time_the_page_cannot_draw_is_an_unreadable_entry_and_the_rest_still_show() {
+    let odd = json!([
+        {"time": 8640000000001_i64, "identity": "web", "action": "run.start", "project": "app", "run": null, "outcome": "allowed", "reason": null},
+        {"time": 1793700000, "identity": "web", "action": "run.pause", "project": "app", "run": null, "outcome": "allowed", "reason": null}
+    ]);
+    let Some(out) = run("/settings/audit", json!([audit(odd)]), json!([{"submit": TOKEN}])) else { return };
+    let t = shown(&out["frames"][1]);
+    assert!(t.iter().any(|x| x == "Unreadable entry"), "{t:?}");
+    assert!(t.iter().any(|x| x == "run.pause"), "{t:?}");
+}
