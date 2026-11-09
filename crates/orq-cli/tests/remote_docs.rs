@@ -205,21 +205,54 @@ fn the_guide_explains_https_with_tailscale_serve_the_host_name_and_the_first_pas
     assert!(with_host.iter().any(|line| line.contains("--no-loopback-token")), "the guide shows switching the token off on this machine");
 }
 
+/// Whether `usage` lists this documented command: every `--flag` is an exact flag of the usage part
+/// it starts, and a passkey command has exactly the shape `list` or `remove <label>`.
+fn command_is_accepted(command: &str, usage: &str) -> bool {
+    let start = if command.starts_with("orq serve") { "orq serve" } else { "orq remote passkey" };
+    let parts: Vec<&str> = usage.split(" | ").filter(|part| part.starts_with(start)).collect();
+    let listed = |text: &str| parts.iter().any(|part| *part == text);
+    let words: Vec<&str> = command.split_whitespace().collect();
+    if command.starts_with("orq serve") {
+        let accepted: BTreeSet<&str> = parts.iter().flat_map(|part| part.split(|c: char| c.is_whitespace() || "[]".contains(c))).filter(|word| word.starts_with("--")).collect();
+        return words.iter().filter(|word| word.starts_with("--")).all(|flag| accepted.contains(flag));
+    }
+    match words.as_slice() {
+        ["orq", "remote", "passkey", "list"] => listed("orq remote passkey list"),
+        ["orq", "remote", "passkey", "remove", label] => !label.starts_with('-') && listed("orq remote passkey remove <label>"),
+        _ => false,
+    }
+}
+
 #[test]
 fn every_documented_serve_flag_and_passkey_command_is_one_the_cli_accepts() {
     let guide = guide();
     let usage = usage();
-    let serve_usage = usage.split(" | ").find(|part| part.starts_with("orq serve")).expect("usage lists orq serve");
-    for command in commands_starting(&guide, "orq serve") {
-        for flag in command.split_whitespace().filter(|word| word.starts_with("--")) {
-            assert!(serve_usage.contains(flag), "{flag} is not accepted by `orq serve`: {serve_usage}");
-        }
-    }
+    let serve = commands_starting(&guide, "orq serve");
     let passkey = commands_starting(&guide, "orq remote passkey");
     assert!(passkey.iter().any(|c| c.ends_with("list")) && passkey.iter().any(|c| c.contains("remove ")), "list and remove are both shown");
-    for command in passkey {
-        let listed = if command.contains("remove") { "orq remote passkey remove <label>" } else { "orq remote passkey list" };
-        assert!(usage.contains(listed), "{command} is not a command the CLI lists");
+    for command in serve.into_iter().chain(passkey) {
+        assert!(command_is_accepted(command, &usage), "`{command}` is not accepted by the CLI usage: {usage}");
+    }
+}
+
+#[test]
+fn the_command_check_refuses_prefixes_unknown_subcommands_and_wrong_arguments() {
+    let usage = usage();
+    for good in ["orq serve --repo . --passkey-host a.b.ts.net --no-loopback-token", "orq remote passkey list", "orq remote passkey remove phone"] {
+        assert!(command_is_accepted(good, &usage), "{good}");
+    }
+    for bad in [
+        "orq serve --passkey",
+        "orq serve --no-loopback",
+        "orq serve --repo . --nonsense",
+        "orq remote passkey reset",
+        "orq remote passkey",
+        "orq remote passkey remove",
+        "orq remote passkey remove a b",
+        "orq remote passkey list extra",
+        "orq remote passkey remove --all",
+    ] {
+        assert!(!command_is_accepted(bad, &usage), "{bad}");
     }
 }
 
