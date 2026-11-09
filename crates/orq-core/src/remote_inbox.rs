@@ -110,7 +110,7 @@ impl RemoteConfig {
 
 pub struct Request<'a> {
     pub method: &'a str,
-    /// The path without a query string.
+    /// The path, with its query string when it has one (`?state=running&limit=20`).
     pub path: &'a str,
     /// The address the connection came from.
     pub peer: IpAddr,
@@ -269,7 +269,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
     }
-    let path = request.path;
+    let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
     if path == "/api/projects" {
         return match provider {
             Some(provider) => match provider.projects() {
@@ -297,7 +297,10 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         }
         if let Some(id) = rest.strip_suffix("/runs").filter(|id| !id.is_empty() && !id.contains('/')) {
             return match provider.map(|provider| provider.runs(id)) {
-                Some(Ok(Some(runs))) => reply(200, json!({ "runs": runs })),
+                Some(Ok(Some(runs))) => match ListQuery::parse(query).and_then(|q| q.apply(runs, "run_id", "state")) {
+                    Ok(page) => reply(200, json!({ "runs": page.rows, "next_cursor": page.next_cursor, "total": page.total, "running": page.running })),
+                    Err((status, why)) => error(status, why),
+                },
                 Some(Err(_)) => error(500, "the runs could not be read"),
                 _ => error(404, "not found"),
             };
@@ -346,6 +349,73 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     match path.strip_prefix("/api/reviews/") {
         Some(run_id) if !run_id.contains('/') => one(roots, run_id, None),
         _ => error(404, "not found"),
+    }
+}
+
+/// The filter, sort and paging a list endpoint accepts in its query string.
+struct ListQuery<'a> {
+    state: Option<&'a str>,
+    oldest: bool,
+    limit: Option<usize>,
+    cursor: Option<&'a str>,
+}
+
+struct Page {
+    rows: Vec<Value>,
+    next_cursor: Option<String>,
+    /// Rows left after the filter, before paging.
+    total: usize,
+    /// Rows in the `running` state in the whole set, whatever the filter and the page.
+    running: usize,
+}
+
+const MAX_PAGE: usize = 200;
+
+impl<'a> ListQuery<'a> {
+    fn parse(query: &'a str) -> Result<Self, (u16, &'static str)> {
+        let mut parsed = ListQuery { state: None, oldest: false, limit: None, cursor: None };
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            match key {
+                "state" => parsed.state = Some(value),
+                "cursor" => parsed.cursor = Some(value),
+                "sort" => match value {
+                    "newest" => parsed.oldest = false,
+                    "oldest" => parsed.oldest = true,
+                    _ => return Err((400, "sort must be newest or oldest")),
+                },
+                "limit" => match value.parse::<usize>() {
+                    Ok(limit) if (1..=MAX_PAGE).contains(&limit) => parsed.limit = Some(limit),
+                    _ => return Err((400, "limit must be a number from 1 to 200")),
+                },
+                _ => return Err((400, "unknown query parameter")),
+            }
+        }
+        Ok(parsed)
+    }
+
+    /// `rows` come newest first; the page is cut after the row whose `id_key` is the cursor.
+    fn apply(&self, rows: Value, id_key: &str, state_key: &str) -> Result<Page, (u16, &'static str)> {
+        let Value::Array(mut rows) = rows else { return Err((500, "the list could not be read")) };
+        let running = rows.iter().filter(|row| row[state_key] == "running").count();
+        if let Some(state) = self.state {
+            rows.retain(|row| row[state_key] == state);
+        }
+        if self.oldest {
+            rows.reverse();
+        }
+        let total = rows.len();
+        let start = match self.cursor {
+            None => 0,
+            Some(cursor) => rows.iter().position(|row| row[id_key] == cursor).ok_or((404, "not found"))? + 1,
+        };
+        let mut rows = rows.split_off(start);
+        let mut next_cursor = None;
+        if let Some(limit) = self.limit.filter(|limit| *limit < rows.len()) {
+            rows.truncate(limit);
+            next_cursor = rows.last().and_then(|row| row[id_key].as_str()).map(String::from);
+        }
+        Ok(Page { rows, next_cursor, total, running })
     }
 }
 

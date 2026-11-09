@@ -147,7 +147,12 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
 
     // Reading storage is blocking work.
-    let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &path, authorization.as_deref())).await;
+    // The API reads its filter, sort and paging from the query; no other path looks at it.
+    let target = match uri.query() {
+        Some(query) if path.starts_with("/api/") => format!("{path}?{query}"),
+        _ => path,
+    };
+    let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &target, authorization.as_deref())).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     json_reply(reply.0, reply.1)
 }
