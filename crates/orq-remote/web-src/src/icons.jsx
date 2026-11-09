@@ -18,6 +18,8 @@ const PATHS = {
   close: "M6 6l12 12M18 6 6 18",
   folder: "M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z",
   chevronRight: "m9 6 6 6-6 6",
+  chevronDown: "m6 9 6 6 6-6",
+  cogs: "M9 6a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM9 2v2m0 8v2M3 8h2m8 0h-.5M4.800 3.800l1.400 1.400m5.600 5.600.4.4M13.200 3.800l-1.400 1.400M4.800 12.200l1.400-1.400M17 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm0-3v1.500m0 6.500v2m-5-5h1.500m6.500 0h2",
 };
 
 export function Icon({ name, size = 20 }) {

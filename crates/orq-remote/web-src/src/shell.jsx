@@ -2,7 +2,7 @@
 // The place lives in the address path, so Back and Forward move it. On a phone the sidebar is a
 // drawer that behaves like a dialog (Escape, scrim or close button close it, focus is trapped and
 // returned, page scroll is locked); on a desktop the same sidebar collapses to an icon rail.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
@@ -18,10 +18,11 @@ export function navigationEntries(projectId) {
     { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
     { label: "Reviews", icon: "doc", href: `${base}/reviews` },
   );
-  entries.push({ label: "Settings", icon: "gear", href: "/settings" });
+  entries.push({ label: "Settings", icon: "cogs", href: "/settings" });
   return entries;
 }
 
+const SECTION_HREF = /\/(features|orchestrations|reviews)$/;
 const SECTIONS = { features: "Features", orchestrations: "Orchestrations", reviews: "Reviews" };
 
 // What assistive technology hears after moving to `path`; "" for a log page.
@@ -44,7 +45,7 @@ function describePage(path, entries) {
   return entry !== undefined ? entry.label + " page" : "";
 }
 
-export function Shell({ projectId = null, projects = null, onSignOut = null, children }) {
+export function Shell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, children }) {
   const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -131,36 +132,49 @@ export function Shell({ projectId = null, projects = null, onSignOut = null, chi
             <Icon name={collapsed ? "chevronsRight" : "chevronsLeft"} />
           </button>
         </div>
-        {projectId !== null && projects !== null && projects.length > 0 ? (
-          <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId} onChange={(event) => {
-              navigate("/projects/" + encodeURIComponent(event.target.value) + "/" + (path.split("/")[3] || "reviews"));
-              setDrawerOpen(false);
-            }}>
-            {projects.some((project) => project.id === projectId) ? null : <option value={projectId}>{projectId}</option>}
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        ) : null}
         <nav aria-label="Primary">
           {entries.map((entry) => (
-            <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
-                if (isPlainLeftClick(event)) {
-                  event.preventDefault();
-                  navigate(entry.href);
-                }
-                setDrawerOpen(false);
-              }}
-            >
-              <Icon name={entry.icon} />
-              <span className="label">{entry.label}</span>
-            </a>
+            <Fragment key={entry.href}>
+              {entry.href === "/settings" ? <div className="sidebar-divider" role="separator" /> : null}
+              <a className={SECTION_HREF.test(entry.href) ? "section-link" : undefined} href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
+                  if (isPlainLeftClick(event)) {
+                    event.preventDefault();
+                    navigate(entry.href);
+                  }
+                  setDrawerOpen(false);
+                }}
+              >
+                <Icon name={entry.icon} />
+                <span className="label">{entry.label}</span>
+              </a>
+              {entry.href === "/dashboard" ? (
+                <label className="project-switch">
+                  <span className="project-switch-prefix">Project:</span>
+                  <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId ?? ""} onFocus={() => onOpenSwitcher?.()} onMouseDown={() => onOpenSwitcher?.()} onClick={() => onOpenSwitcher?.()} onChange={(event) => {
+                      const chosen = event.target.value;
+                      const parts = path.split("/");
+                      const section = projectId !== null ? parts[3] : parts[1];
+                      if (chosen === "") navigate(SECTIONS[section] !== undefined ? "/" + section : "/dashboard");
+                      else navigate("/projects/" + encodeURIComponent(chosen) + "/" + (projectId !== null ? section || "reviews" : SECTIONS[section] !== undefined ? section : "reviews"));
+                      setDrawerOpen(false);
+                    }}>
+                    <option value="">All projects</option>
+                    {projectId !== null && !(projects ?? []).some((project) => project.id === projectId) ? <option value={projectId}>{projectId}</option> : null}
+                    {(projects ?? []).map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Icon name="chevronDown" size={16} />
+                </label>
+              ) : null}
+            </Fragment>
           ))}
         </nav>
         <div className="sidebar-foot">
           <ThemeToggle />
+          <div className="sidebar-divider" role="separator" />
           {onSignOut ? (
             <button type="button" className="sign-out" data-sign-out aria-label="Sign out" title="Sign out" onClick={onSignOut}>
               <Icon name="logout" />

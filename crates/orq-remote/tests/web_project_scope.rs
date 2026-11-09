@@ -34,7 +34,7 @@ fn inside_a_project_the_sidebar_lists_the_projects_with_the_current_one_chosen_a
     assert_eq!(out["requests"][0]["url"], "/api/projects", "{out}");
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let frame = &out["frames"][1]["settled"];
-    assert_eq!(frame["switchers"], json!([{"value": "alpha", "options": ["alpha", "beta"]}]), "{out}");
+    assert_eq!(frame["switchers"], json!([{"value": "alpha", "options": ["", "alpha", "beta"]}]), "{out}");
     assert_eq!(frame["sidebarLinks"], json!(["/dashboard", "/projects/alpha/features", "/projects/alpha/orchestrations", "/projects/alpha/reviews", "/settings"]), "{out}");
 }
 
@@ -68,7 +68,7 @@ fn a_project_list_that_cannot_be_read_does_not_block_the_page() {
         let Some(out) = run("/projects/alpha/timeline", json!([reply.clone()]), json!([{"submit": TOKEN}])) else { return };
         let frame = &out["frames"][1];
         assert!(shown(frame).contains("not available yet"), "{reply}: {out}");
-        assert_eq!(frame["settled"]["switchers"], json!([]), "{reply}");
+        assert_eq!(frame["settled"]["switchers"], json!([{"value": "alpha", "options": ["", "alpha"]}]), "{reply}");
         assert!(frame["settled"]["inputs"].as_array().unwrap().is_empty(), "{reply}: still signed in");
     }
 }
@@ -84,7 +84,7 @@ fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit(
     let Some(out) = run("/projects/alpha/timeline", json!([two(), {"hold": "fetch", "status": 200, "json": {"projects": []}}]), json!([{"submit": TOKEN}, {"go": "/projects"}, {"go": "/projects/gamma/timeline"}])) else { return };
     let text = shown(&out["frames"][3]);
     assert!(!text.contains("Not found"), "an old list decided a new visit: {text}");
-    assert_eq!(out["frames"][3]["settled"]["switchers"], json!([]), "{out}");
+    assert_eq!(out["frames"][3]["settled"]["switchers"], json!([{"value": "gamma", "options": ["", "gamma"]}]), "{out}");
 }
 
 #[test]

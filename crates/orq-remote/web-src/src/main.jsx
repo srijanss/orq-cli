@@ -1503,12 +1503,32 @@ function Scoped({ token, onSignedOut, onSignOut }) {
       controller.abort();
     };
   }, [token, inProject]);
+  // Outside a project the sidebar dropdown loads the list the first time it is used, so a page
+  // that never opens it asks for nothing extra.
+  const [menuProjects, setMenuProjects] = useState(null);
+  const menuAsked = useRef(false);
+  const openSwitcher = () => {
+    if (inProject || menuAsked.current) return;
+    menuAsked.current = true;
+    (async () => {
+      try {
+        const response = await get(API_PROJECTS, token, undefined);
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        setMenuProjects(response.ok ? parseProjects(await response.json()) : null);
+      } catch (failure) {
+        menuAsked.current = false;
+      }
+    })();
+  };
   const known = projects !== null && projects.some((project) => project.id === named);
   useEffect(() => {
     if (known) lastProject = named;
   }, [known, named]);
   return (
-    <Shell projectId={projects === null || known ? named : null} projects={projects} onSignOut={onSignOut}>
+    <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut}>
       <SignedIn token={token} onSignedOut={onSignedOut} projectId={named} projects={projects} />
     </Shell>
   );

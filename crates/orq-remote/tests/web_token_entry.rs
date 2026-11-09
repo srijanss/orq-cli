@@ -68,7 +68,7 @@ fn a_401_clears_the_token_and_asks_again_with_one_message_that_blames_neither_si
     for blamed in ["wrong", "invalid", "incorrect", "expired", "network", "offline", "unreachable", "timeout"] {
         assert!(!lower.contains(blamed), "the message says {blamed}: {message}");
     }
-    assert_eq!(code.matches("onSignedOut()").count(), 4, "used for a 401 on a page, on the project list, on the live stream and on an action, never for a failed request");
+    assert_eq!(code.matches("onSignedOut()").count(), 5, "used for a 401 on a page, on the project list, on the sidebar dropdown's list, on the live stream and on an action, never for a failed request");
 }
 
 #[test]
