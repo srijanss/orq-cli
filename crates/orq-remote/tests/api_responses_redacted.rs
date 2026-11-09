@@ -40,7 +40,7 @@ fn no_endpoint_returns_a_token_a_header_a_transcript_or_a_credential_path() {
     let logs = roots.state.join("logs/r1");
     std::fs::create_dir_all(&logs).unwrap();
     std::fs::write(logs.join("gate.log"), format!("{BEARER}\nGITHUB_TOKEN={GITHUB}\n")).unwrap();
-    std::fs::write(alpha.join(".tdd-features.json"), json!([{"featureName": "f1", "description": format!("uses {GITHUB}"), "status": "draft"}]).to_string()).unwrap();
+    std::fs::write(alpha.join(".tdd-features.json"), json!([{"featureName": "f1", "description": format!("uses {GITHUB}"), "status": "draft"}, {"featureName": "f2", "dependsOn": [format!("after-{GITHUB}")], "status": format!("odd-{GITHUB}"), "recordedAt": format!("at-{GITHUB}")}]).to_string()).unwrap();
 
     let provider = StoreProjects::new(roots.clone(), scan);
     let config = RemoteConfig { token: "tok".into() };
