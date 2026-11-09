@@ -188,9 +188,19 @@ fn a_resume_point_the_run_no_longer_has_reopens_from_the_start_and_says_events_m
 
 #[test]
 fn a_replay_of_events_already_shown_still_moves_the_resume_point() {
-    // After the restart from the start, only e1 (already shown) is sent before the stream drops: the
-    // next request resumes after e1 rather than reading the whole run again.
-    let responses = json!([timeline(vec![event("e1", "one")], Value::Null), projects(), {"status": 404, "json": {}}, stream(vec![sse("e1", "one")], "error"), stream(vec![], "hold")]);
-    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}, {"fire": 3000}])) else { return };
-    assert_eq!(urls(&out)[4], "/api/projects/alpha/runs/run-1/events/after/e1", "{out}");
+    // e1 arrives over the live stream, which drops; the resume after e1 is refused, so the run is read
+    // again from its start and sends only e1, which is known already. When that drops too, the next
+    // request resumes after e1 rather than reading the whole run again.
+    let responses = json!([
+        timeline(vec![event("e0", "zero")], Value::Null),
+        projects(),
+        stream(vec![sse("e1", "one")], "error"),
+        {"status": 404, "json": {}},
+        stream(vec![sse("e1", "one")], "error"),
+        stream(vec![], "hold")
+    ]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}, {"fire": 3000}, {"fire": 3000}])) else { return };
+    assert_eq!(urls(&out)[3], "/api/projects/alpha/runs/run-1/events/after/e1", "{out}");
+    assert_eq!(urls(&out)[4], "/api/projects/alpha/runs/run-1/events", "{out}");
+    assert_eq!(urls(&out)[5], "/api/projects/alpha/runs/run-1/events/after/e1", "{out}");
 }
