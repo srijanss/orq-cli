@@ -782,29 +782,64 @@ function EventItem({ event }) {
 }
 
 // Consecutive events of one stage and attempt become one group, so a retry is its own group and a
-// later success never hides an earlier failure. Each review stage group is a numbered round.
+// later success never hides an earlier failure. A stage start always opens a new group, and a
+// review group is named by its run-wide round (the server's `review_round`, else counted on).
 function groupEvents(events) {
   const items = [];
-  let rounds = 0;
+  // Events with no stage seen since the last group: they join it if the same attempt carries on
+  // after them, so an attempt is never split in two; otherwise they stand on their own.
+  let between = [];
+  let round = 0;
   for (const event of events) {
+    if (!event.stage) {
+      between.push(event);
+      continue;
+    }
+    const review = event.stage === "review";
+    if (review) round = Number.isInteger(event.review_round) ? event.review_round : event.kind === "stage.started" || round === 0 ? round + 1 : round;
     const last = items[items.length - 1];
-    if (event.stage && last && last.events !== undefined && last.stage === event.stage && last.attempt === event.attempt) {
-      last.events.push(event);
+    const starts = event.kind === "stage.started";
+    if (last && last.events !== undefined && last.stage === event.stage && last.attempt === event.attempt && !(starts && last.started)) {
+      last.events.push(...between, event);
       if (event.kind.endsWith(".failed")) last.failed = true;
-    } else if (event.stage) {
-      const round = event.stage === "review" ? ++rounds : 0;
+    } else {
+      for (const loose of between) items.push({ event: loose });
       items.push({
         stage: event.stage,
         attempt: event.attempt,
-        title: round > 0 ? "Review round " + round : event.stage + ", attempt " + event.attempt,
+        title: review ? "Review round " + round : event.stage + ", attempt " + event.attempt,
         failed: event.kind.endsWith(".failed"),
+        started: starts,
         events: [event],
       });
-    } else {
-      items.push({ event });
     }
+    between = [];
   }
+  for (const loose of between) items.push({ event: loose });
   return items;
+}
+
+// The events as a list, drawn the same way for the fetched page and for events that arrive live.
+function EventTimeline({ events }) {
+  return (
+    <ol>
+      {groupEvents(events).map((item) =>
+        item.events === undefined ? (
+          <EventItem key={item.event.event_id} event={item.event} />
+        ) : (
+          <li key={item.events[0].event_id} className="attempt card" data-failed={item.failed ? "true" : undefined}>
+            <h3 className="attempt-title">{item.title}</h3>
+            {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
+            <ol>
+              {item.events.map((event) => (
+                <EventItem key={event.event_id} event={event} />
+              ))}
+            </ol>
+          </li>
+        )
+      )}
+    </ol>
+  );
 }
 
 // One run: its header, then a page of its events in the order they happened. The next page is
@@ -822,23 +857,7 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
       <Stamp label="Last activity" at={run.updated_at} />
       <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
       {events.length === 0 ? <p>No events recorded.</p> : null}
-      <ol>
-        {groupEvents(events).map((item) =>
-          item.events === undefined ? (
-            <EventItem key={item.event.event_id} event={item.event} />
-          ) : (
-            <li key={item.events[0].event_id} className="attempt card" data-failed={item.failed ? "true" : undefined}>
-              <h3 className="attempt-title">{item.title}</h3>
-              {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
-              <ol>
-                {item.events.map((event) => (
-                  <EventItem key={event.event_id} event={event} />
-                ))}
-              </ol>
-            </li>
-          )
-        )}
-      </ol>
+      {next === null && follow !== null ? null : <EventTimeline events={events} />}
       {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
       {next === null && follow !== null ? <FollowLive key={follow.base} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
     </>
@@ -937,16 +956,7 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
   const have = new Set(shown.map((event) => event.event_id));
   return (
     <>
-      <ol>
-        {more.filter((event) => !have.has(event.event_id)).map((event) => (
-          <li key={event.event_id} className="event card">
-            <strong>{event.kind}</strong>
-            {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
-            <span>{"Attempt " + event.attempt}</span>
-            <Moment at={event.occurred_at} />
-          </li>
-        ))}
-      </ol>
+      <EventTimeline events={[...shown, ...more.filter((event) => !have.has(event.event_id))]} />
       <p className="live-status" data-live>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );

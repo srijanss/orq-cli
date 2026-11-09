@@ -130,3 +130,21 @@ fn an_unreadable_log_gives_a_generic_error_that_names_nothing() {
     assert_eq!(status, 500, "{body}");
     assert!(!body.to_string().contains(s.roots.state.to_str().unwrap()), "{body}");
 }
+
+#[test]
+fn review_events_carry_their_run_wide_round_even_on_a_later_page() {
+    let s = setup("timeline-rounds");
+    let alpha = git_repo(&s.scan, "alpha");
+    let mut events: Vec<(&str, Option<&str>, &str)> = vec![("stage.started", Some("review"), "2026-11-01T10:00:00Z"), ("stage.completed", Some("review"), "2026-11-01T10:01:00Z")];
+    events.extend((0..198).map(|_| ("stage.log", Some("implement"), "2026-11-01T10:02:00Z")));
+    events.extend([("stage.started", Some("review"), "2026-11-01T11:00:00Z"), ("stage.failed", Some("review"), "2026-11-01T11:01:00Z")]);
+    add_run(&s, "r1", &project_id(&alpha), "main", &events);
+    let (_, first) = get(&s, "/api/projects/alpha/runs/r1");
+    let first = first["events"].as_array().unwrap().clone();
+    assert_eq!(first[0]["review_round"], json!(1));
+    assert_eq!(first[1]["review_round"], json!(1));
+    assert!(first[2].get("review_round").is_none(), "only review events carry a round: {}", first[2]);
+    let (_, second) = get(&s, "/api/projects/alpha/runs/r1/after/r1-199");
+    let rounds: Vec<_> = second["events"].as_array().unwrap().iter().map(|e| e["review_round"].clone()).collect();
+    assert_eq!(rounds, [json!(2), json!(2)], "a later page keeps counting from the whole run: {second}");
+}

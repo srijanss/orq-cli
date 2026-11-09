@@ -156,3 +156,15 @@ fn a_cr_then_its_lf_alone_then_a_blank_line_lf_still_ends_the_record() {
     let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
     assert_eq!(count(&out["frames"][1], "one"), 1, "{:?}", texts(&out["frames"][1]));
 }
+
+#[test]
+fn live_events_join_their_attempt_group_and_a_live_failure_marks_it_failed() {
+    let staged = |id: &str, kind: &str| json!({"event_id": id, "kind": kind, "stage": "implement", "attempt": 1, "occurred_at": null});
+    let live = |id: &str, kind: &str| format!("id: {id}\nevent: event\ndata: {}\n\n", staged(id, kind));
+    let responses = json!([timeline(vec![staged("e0", "stage.started")], Value::Null), projects(), stream(vec![live("e1", "stage.failed")], "hold")]);
+    let Some(out) = run(RUN, responses, json!([{"submit": TOKEN}])) else { return };
+    let groups = out["frames"][1]["settled"]["attempts"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "{out}");
+    assert_eq!(groups[0]["events"], json!(["stage.started", "stage.failed"]), "{out}");
+    assert_eq!(groups[0]["failed"], true, "{out}");
+}

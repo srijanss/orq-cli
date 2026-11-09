@@ -90,3 +90,31 @@ fn events_with_no_stage_stay_in_order_outside_any_attempt() {
     let completed = all.find("run.completed").unwrap();
     assert!(launched < started && started < completed, "{all}");
 }
+
+#[test]
+fn an_event_with_no_stage_inside_an_attempt_keeps_it_in_one_group_in_order() {
+    let Some(out) = open(vec![
+        event("e1", "stage.started", "review", 1, "2026-11-02T10:00:00Z"),
+        json!({"event_id": "e2", "kind": "session.note", "stage": null, "attempt": 0, "occurred_at": "2026-11-02T10:01:00Z"}),
+        event("e3", "stage.failed", "review", 1, "2026-11-02T10:02:00Z"),
+        event("e4", "stage.started", "review", 1, "2026-11-02T10:03:00Z"),
+        event("e5", "stage.completed", "review", 1, "2026-11-02T10:04:00Z"),
+    ]) else { return };
+    let groups = attempts(&out);
+    assert_eq!(groups.len(), 2, "a retry with the same attempt number is its own round: {out}");
+    assert_eq!(groups[0]["title"], "Review round 1", "{out}");
+    assert_eq!(groups[0]["failed"], true, "{out}");
+    assert_eq!(groups[0]["events"], json!(["stage.started", "session.note", "stage.failed"]), "{out}");
+    let text = groups[0]["text"].as_str().unwrap();
+    assert!(text.find("stage.started").unwrap() < text.find("session.note").unwrap() && text.find("session.note").unwrap() < text.find("stage.failed").unwrap(), "{text}");
+    assert_eq!(groups[1]["title"], "Review round 2", "{out}");
+    assert_eq!(groups[1]["failed"], false, "{out}");
+}
+
+#[test]
+fn a_later_page_names_its_review_round_from_the_run_not_from_the_page() {
+    let mut late = event("e9", "stage.started", "review", 1, "2026-11-02T12:00:00Z");
+    late["review_round"] = json!(3);
+    let Some(out) = open(vec![late, event("e10", "stage.completed", "review", 1, "2026-11-02T12:05:00Z")]) else { return };
+    assert_eq!(attempts(&out)[0]["title"], "Review round 3", "{out}");
+}
