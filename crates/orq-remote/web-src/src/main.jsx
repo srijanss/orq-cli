@@ -2,7 +2,7 @@
 // header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
 // ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
 // Every string from the API is rendered as text.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
@@ -1030,6 +1030,56 @@ function LogView({ token, onSignedOut, reloads, pagePath, logsPath, filePath }) 
   return <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} logsPath={logsPath} filePath={filePath} filters={filters} />} onSignedOut={onSignedOut} />;
 }
 
+// How near the bottom still counts as at the bottom, in pixels.
+const BOTTOM_SLACK = 24;
+
+// The lines, which follow new ones only while the viewer is at the bottom. Scrolling up pauses
+// that, and the lines that arrived since are counted beside a control that jumps to the latest.
+function LogLines({ shown, total }) {
+  const box = useRef(null);
+  const atBottom = useRef(true);
+  const first = useRef(true);
+  const [seen, setSeen] = useState(total);
+  const onScroll = () => {
+    const el = box.current;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
+    if (atBottom.current) setSeen(total);
+  };
+  const toLatest = () => {
+    const el = box.current;
+    el.scrollTop = el.scrollHeight;
+    atBottom.current = true;
+    setSeen(total);
+  };
+  useLayoutEffect(() => {
+    if (total < seen) setSeen(total);
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (atBottom.current) {
+      box.current.scrollTop = box.current.scrollHeight;
+      setSeen(total);
+    }
+  }, [shown.length, total]);
+  const waiting = Math.max(0, total - seen);
+  return (
+    <>
+      <pre className="log-lines" ref={box} onScroll={onScroll}>
+        {shown.map((line, at) => (
+          <div key={at}>{line}</div>
+        ))}
+      </pre>
+      {waiting > 0 && (
+        <p className="new-lines" role="status">
+          <span>{waiting + (waiting === 1 ? " new line" : " new lines")}</span>
+          <button type="button" data-jump-latest onClick={toLatest}>Jump to latest</button>
+        </p>
+      )}
+    </>
+  );
+}
+
 // One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
 function LogPage({ page, logsPath, filePath, filters: { text, setText, level, setLevel } }) {
   const { lines, next_cursor: next, truncated } = page;
@@ -1051,11 +1101,7 @@ function LogPage({ page, logsPath, filePath, filters: { text, setText, level, se
       </div>
       {lines.length === 0 ? <p>This log has no more lines.</p> : null}
       {lines.length > 0 && shown.length === 0 ? <p>No lines match the filter.</p> : null}
-      <pre className="log-lines">
-        {shown.map((line, at) => (
-          <div key={at}>{line}</div>
-        ))}
-      </pre>
+      <LogLines shown={shown} total={lines.length} />
       {next !== null && <button type="button" data-more="lines" onClick={() => navigate(filePath + "/after/" + encodeURIComponent(next))}>Load more lines</button>}
       {truncated && next === null ? <p>The log was cut short: only its first part is shown.</p> : null}
     </>

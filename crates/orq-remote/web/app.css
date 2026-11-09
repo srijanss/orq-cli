@@ -260,3 +260,7 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .attempt .attempt-title { margin: 0; }
 .attempt > ol { margin-top: 0.5rem; }
 .attempt-outcome { color: var(--danger, var(--accent)); }
+
+/* Log lines scroll in their own box so a live log can follow its end. */
+.log-lines { max-height: 70vh; overflow-y: auto; }
+.new-lines { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
