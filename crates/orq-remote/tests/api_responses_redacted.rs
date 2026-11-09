@@ -37,6 +37,8 @@ fn no_endpoint_returns_a_token_a_header_a_transcript_or_a_credential_path() {
     let payload = json!({"header": BEARER, "note": format!("GITHUB_TOKEN={GITHUB}"), "token": "plainsecretvalue987", "path": roots.config.join("remote-token"), "transcript": "session transcript line"});
     let event = Event { schema_version: 1, event_id: "r1-0".into(), run_id: "r1".into(), project_id: String::new(), feature_id: "f1".into(), kind: "run.started".into(), stage: None, attempt: 1, occurred_at: "2026-11-01T10:00:00Z".into(), payload };
     store.append_event(&event).unwrap();
+    let second = Event { event_id: "r1-1".into(), kind: "gate.passed".into(), payload: json!({"transcript": "session transcript line"}), ..event.clone() };
+    store.append_event(&second).unwrap();
     let logs = roots.state.join("logs/r1");
     std::fs::create_dir_all(&logs).unwrap();
     std::fs::write(logs.join("gate.log"), format!("{BEARER}\nGITHUB_TOKEN={GITHUB}\n")).unwrap();
@@ -44,12 +46,26 @@ fn no_endpoint_returns_a_token_a_header_a_transcript_or_a_credential_path() {
 
     let provider = StoreProjects::new(roots.clone(), scan);
     let config = RemoteConfig { token: "tok".into() };
-    let paths = ["/api/projects", "/api/projects/alpha/features", "/api/projects/alpha/runs", "/api/projects/alpha/runs/r1", "/api/projects/alpha/runs/r1/after/0", "/api/projects/alpha/runs/r1/logs", "/api/projects/alpha/runs/r1/logs/gate.log", "/api/settings", "/api/reviews", "/api/projects/alpha/reviews"];
-    let forbidden = ["abcdefghijklmnop12345", GITHUB, "plainsecretvalue987", "Bearer a", "remote-token", "passkeys", &roots.config.display().to_string()];
-    for path in paths {
+    // Each endpoint with the status it must answer and a value proving it returned real content.
+    let expected: [(&str, &str); 10] = [
+        ("/api/projects", "\"alpha\""),
+        ("/api/projects/alpha/features", "\"f1\""),
+        ("/api/projects/alpha/runs", "\"r1\""),
+        ("/api/projects/alpha/runs/r1", "\"run.started\""),
+        ("/api/projects/alpha/runs/r1/after/r1-0", "\"gate.passed\""),
+        ("/api/projects/alpha/runs/r1/logs", "\"gate.log\""),
+        ("/api/projects/alpha/runs/r1/logs/gate.log", "[REDACTED]"),
+        ("/api/settings", "\"settings\""),
+        ("/api/reviews", "\"reviews\""),
+        ("/api/projects/alpha/reviews", "\"reviews\""),
+    ];
+    let forbidden = ["abcdefghijklmnop12345", GITHUB, "plainsecretvalue987", "session transcript line", "Bearer a", "remote-token", "passkeys", &roots.config.display().to_string()];
+    for (path, content) in expected {
         let request = Request { method: "GET", path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
         let reply = handle_with(&roots, &config, "server-project", "server", &request, &provider);
         let text: String = serde_json::to_string::<Value>(&reply.body).unwrap();
+        assert_eq!(reply.status, 200, "{path} must succeed so the leak check is not vacuous: {text}");
+        assert!(text.contains(content), "{path} returned no {content}: {text}");
         for secret in &forbidden {
             assert!(!text.contains(secret), "{path} leaks {secret}: {text}");
         }
