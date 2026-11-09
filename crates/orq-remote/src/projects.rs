@@ -222,7 +222,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         let list = read_ledger(&orq_features::ledger_path(&git))?
             .into_iter()
-            .map(|entry| serde_json::json!({"name": entry.feature_name, "description": entry.description, "status": entry.status.as_str(), "depends_on": entry.depends_on, "recorded_at": entry.recorded_at}))
+            .map(|entry| serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": entry.status.as_str(), "depends_on": entry.depends_on, "recorded_at": entry.recorded_at}))
             .collect();
         Ok(Some(serde_json::Value::Array(list)))
     }
