@@ -201,13 +201,13 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
   );
 }
 
-function RunRow({ run, detailPrefix }) {
+function RunRow({ run, detailPrefix, selected = false }) {
   const open = typeof run.run_id === "string" && RUN_ID.test(run.run_id);
   return (
-    <li className={run.stale === true ? "run stale card" : "run card"}>
+    <li className={run.stale === true ? "run stale card" : "run card"} data-selected={selected ? run.run_id : undefined}>
       {open ? <span className="ticket-id">{run.run_id}</span> : null}
       {open ? (
-        <button type="button" onClick={() => navigate(detailPrefix + run.run_id)}>
+        <button type="button" data-open-run={run.run_id} aria-current={selected ? "true" : undefined} onClick={() => navigate(detailPrefix + run.run_id)}>
           {String(run.feature)}
         </button>
       ) : (
@@ -240,7 +240,7 @@ const REVIEW_FILTERS = [
 ];
 
 // Newest review first; the filters only hide rows, so a marker never leaves a row that is shown.
-function RunList({ runs, detailPrefix = DETAIL_PREFIX }) {
+function RunList({ runs, detailPrefix = DETAIL_PREFIX, selected = null }) {
   const [chosen, setChosen] = useState({});
   if (runs.length === 0) {
     return <p>No reviews in the inbox.</p>;
@@ -266,7 +266,7 @@ function RunList({ runs, detailPrefix = DETAIL_PREFIX }) {
       {shown.length === 0 ? <p>No reviews match these filters.</p> : (
         <ul>
           {shown.map((run) => (
-            <RunRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} />
+            <RunRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} selected={selected !== null && run.run_id === selected} />
           ))}
         </ul>
       )}
@@ -311,7 +311,7 @@ function Detail({ report, listPath = "/" }) {
   const href = freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
   return (
     <>
-      <button type="button" onClick={() => navigate(listPath)}>
+      <button type="button" data-back="list" onClick={() => navigate(listPath)}>
         Back to the list
       </button>
       <Generated at={report.generated_at} />
@@ -1087,17 +1087,26 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
   if (match === null) return <p>This page is not available yet.</p>;
   const base = "/api/projects/" + encodeURIComponent(projectId) + "/reviews";
   const listPath = "/projects/" + encodeURIComponent(projectId) + "/reviews";
-  if (match[1] === undefined) {
-    return (
-      <>
-        <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />
-        <Loaded key={base} reloads={reloads} token={token} path={base} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} detailPrefix={listPath + "/"} />} onSignedOut={onSignedOut} />
-      </>
-    );
-  }
-  if (!RUN_ID.test(match[1])) return <NotFound />;
-  const path = base + "/" + encodeURIComponent(match[1]);
-  return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} listPath={listPath} />} onSignedOut={onSignedOut} />;
+  if (match[1] !== undefined && !RUN_ID.test(match[1])) return <NotFound />;
+  const open = match[1];
+  const path = open === undefined ? null : base + "/" + encodeURIComponent(open);
+  // One tree for both addresses: the list stays mounted beside the report (the stylesheet hides it
+  // on a phone), so choosing another report never fetches the list again.
+  return (
+    <>
+      {open === undefined && <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />}
+      <div className={open === undefined ? "master-detail" : "master-detail has-report"}>
+        <div className="master-pane">
+          <Loaded key={base} reloads={reloads} token={token} path={base} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} detailPrefix={listPath + "/"} selected={open === undefined ? null : open} />} onSignedOut={onSignedOut} />
+        </div>
+        {path !== null && (
+          <div className="detail-pane">
+            <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} listPath={listPath} />} onSignedOut={onSignedOut} />
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
 
 function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {

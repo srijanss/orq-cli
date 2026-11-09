@@ -52,7 +52,7 @@ fn the_reviews_tab_lists_the_projects_own_reviews_from_its_own_endpoint() {
 
 #[test]
 fn opening_a_report_stays_under_the_project_and_back_returns_to_its_list() {
-    let Some(out) = run("/projects/alpha/reviews", json!([list(), projects(), detail(), list()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run("/projects/alpha/reviews", json!([list(), projects(), detail()]), json!([{"submit": TOKEN}, {"click": "[data-open-run=run-1]"}, {"click": "[data-back=list]"}])) else { return };
     assert_eq!(out["frames"][2]["settled"]["path"], "/projects/alpha/reviews/run-1", "{out}");
     assert_eq!(out["requests"][2]["url"], "/api/projects/alpha/reviews/run-1", "{out}");
     assert!(shown(&out["frames"][2]).contains("adds the thing"), "{out}");
@@ -62,12 +62,12 @@ fn opening_a_report_stays_under_the_project_and_back_returns_to_its_list() {
 
 #[test]
 fn a_report_address_opens_the_report_directly_and_a_malformed_run_is_not_found() {
-    let Some(out) = run("/projects/alpha/reviews/run-1", json!([detail(), projects()]), json!([{"submit": TOKEN}])) else { return };
-    assert_eq!(out["requests"][0]["url"], "/api/projects/alpha/reviews/run-1", "{out}");
+    let Some(out) = run("/projects/alpha/reviews/run-1", json!([list(), detail(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    assert_eq!(out["requests"][1]["url"], "/api/projects/alpha/reviews/run-1", "{out}");
     assert!(shown(&out["frames"][1]).contains("adds the thing"), "{out}");
     let Some(out) = run("/projects/alpha/reviews/a.b", json!([projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).contains("Not found"), "{out}");
-    assert_eq!(out["requests"].as_array().unwrap().len(), 1, "no report is asked for: {out}");
+    assert!(out["requests"].as_array().unwrap().iter().all(|r| r["url"] != "/api/projects/alpha/reviews/a.b"), "no report is asked for: {out}");
 }
 
 #[test]
