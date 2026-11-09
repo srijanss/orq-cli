@@ -214,6 +214,21 @@ pub trait ProjectsProvider {
     fn settings(&self) -> Result<Option<Value>, String> {
         Ok(None)
     }
+
+    /// Starts a run of `feature` in project `id`. A provider that cannot start runs does not know the project.
+    fn start_run(&self, _id: &str, _feature: &str) -> Result<RunStart, String> {
+        Ok(RunStart::Unknown)
+    }
+}
+
+/// How a request to start a run ended.
+pub enum RunStart {
+    /// The run that began, by id.
+    Started(String),
+    /// Why this feature may not start a run now; safe to show.
+    Refused(String),
+    /// There is no such project or feature.
+    Unknown,
 }
 
 /// The run settings of the config file at `path`, as `{implementer, reviewer, models}`, for the web.
@@ -260,16 +275,69 @@ fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project
     response
 }
 
+/// The project and feature of `/api/projects/{id}/features/{name}/runs`, when the path has that shape.
+fn run_start_target(path: &str) -> Option<(&str, &str)> {
+    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "features", feature, "runs"] if !id.is_empty() && !feature.is_empty() => Some((id, feature)),
+        _ => None,
+    }
+}
+
+/// Whether the settings switch remote actions on; anything unreadable counts as off.
+fn remote_actions_on(roots: &StorageRoots) -> bool {
+    public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
+}
+
+/// Starts a run for the web, if actions are on, and leaves an audit line for the attempt.
+fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "run.start", project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    let plain = feature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !feature.starts_with('.');
+    if !plain {
+        return error(404, "not found");
+    }
+    match provider.map(|provider| provider.start_run(id, feature)) {
+        Some(Ok(RunStart::Started(run))) => {
+            audit(Outcome::Allowed, Some(&run), None);
+            reply(202, json!({ "run": run }))
+        }
+        Some(Ok(RunStart::Refused(why))) => {
+            audit(Outcome::Refused, None, Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, None, Some("the run could not be started"));
+            error(500, "the run could not be started")
+        }
+        _ => error(404, "not found"),
+    }
+}
+
 fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
     // A stranger's address and a bad token are refused identically, so a
     // caller learns nothing about which check failed.
     if !peer_allowed(request.peer) || !token_matches(&config.token, request.authorization) {
         return error(401, "a valid bearer token is required");
     }
+    let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
+    if let Some((id, feature)) = run_start_target(path) {
+        match request.method {
+            "POST" => return start_run(roots, provider, id, feature),
+            "GET" | "HEAD" => {}
+            _ => return error(405, "this view is read-only"),
+        }
+    }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
     }
-    let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
     if path == "/api/projects" {
         return match provider {
             Some(provider) => match provider.projects() {
