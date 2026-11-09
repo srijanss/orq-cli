@@ -379,33 +379,26 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         // The payload is left out: it can hold reasons and paths the page has no need of.
         // A review round starts with each review stage start, counted over the whole run so a later page
         // still names its round; only review events carry one.
-        let mut round = 0;
-        let rounds: Vec<Option<u64>> = events
-            .iter()
-            .map(|event| {
-                if event.stage.as_deref() != Some("review") {
-                    return None;
-                }
-                if event.kind == "stage.started" || round == 0 {
-                    round += 1;
-                }
-                Some(round)
-            })
-            .collect();
+        let advance = |round: u64, event: &orq_orchestrator::Event| if event.kind == "stage.started" || round == 0 { round + 1 } else { round };
+        let is_review = |event: &orq_orchestrator::Event| event.stage.as_deref() == Some("review");
+        let mut round = events[..start].iter().filter(|event| is_review(event)).fold(0, advance);
         let listed: Vec<_> = page
             .iter()
-            .enumerate()
-            .map(|(offset, event)| {
+            .map(|event| {
                 let mut listed = serde_json::json!({"event_id": event.event_id, "kind": event.kind, "stage": event.stage, "attempt": event.attempt, "occurred_at": event.occurred_at});
-                if let Some(round) = rounds[start + offset] {
+                if is_review(event) {
+                    round = advance(round, event);
                     listed["review_round"] = serde_json::json!(round);
                 }
                 listed
             })
             .collect();
+        // How many review rounds the whole run has, so live events can carry on counting.
+        let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
         Ok(Some(serde_json::json!({
             "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at)},
             "events": listed,
+            "review_rounds": review_rounds,
             "next_cursor": next_cursor,
         })))
     }

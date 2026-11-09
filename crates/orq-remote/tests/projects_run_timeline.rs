@@ -147,4 +147,5 @@ fn review_events_carry_their_run_wide_round_even_on_a_later_page() {
     let (_, second) = get(&s, "/api/projects/alpha/runs/r1/after/r1-199");
     let rounds: Vec<_> = second["events"].as_array().unwrap().iter().map(|e| e["review_round"].clone()).collect();
     assert_eq!(rounds, [json!(2), json!(2)], "a later page keeps counting from the whole run: {second}");
+    assert_eq!(second["review_rounds"], json!(2), "{second}");
 }

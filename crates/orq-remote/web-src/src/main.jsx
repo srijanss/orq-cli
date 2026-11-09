@@ -784,12 +784,12 @@ function EventItem({ event }) {
 // Consecutive events of one stage and attempt become one group, so a retry is its own group and a
 // later success never hides an earlier failure. A stage start always opens a new group, and a
 // review group is named by its run-wide round (the server's `review_round`, else counted on).
-function groupEvents(events) {
+function groupEvents(events, seed = 0) {
   const items = [];
   // Events with no stage seen since the last group: they join it if the same attempt carries on
   // after them, so an attempt is never split in two; otherwise they stand on their own.
   let between = [];
-  let round = 0;
+  let round = seed;
   for (const event of events) {
     if (!event.stage) {
       between.push(event);
@@ -799,7 +799,7 @@ function groupEvents(events) {
     if (review) round = Number.isInteger(event.review_round) ? event.review_round : event.kind === "stage.started" || round === 0 ? round + 1 : round;
     const last = items[items.length - 1];
     const starts = event.kind === "stage.started";
-    if (last && last.events !== undefined && last.stage === event.stage && last.attempt === event.attempt && !(starts && last.started)) {
+    if (last && last.events !== undefined && last.stage === event.stage && last.attempt === event.attempt && !starts && (!review || last.round === round)) {
       last.events.push(...between, event);
       if (event.kind.endsWith(".failed")) last.failed = true;
     } else {
@@ -809,7 +809,7 @@ function groupEvents(events) {
         attempt: event.attempt,
         title: review ? "Review round " + round : event.stage + ", attempt " + event.attempt,
         failed: event.kind.endsWith(".failed"),
-        started: starts,
+        round: review ? round : 0,
         events: [event],
       });
     }
@@ -820,10 +820,10 @@ function groupEvents(events) {
 }
 
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
-function EventTimeline({ events }) {
+function EventTimeline({ events, rounds = 0 }) {
   return (
     <ol>
-      {groupEvents(events).map((item) =>
+      {groupEvents(events, rounds).map((item) =>
         item.events === undefined ? (
           <EventItem key={item.event.event_id} event={item.event} />
         ) : (
@@ -857,9 +857,9 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
       <Stamp label="Last activity" at={run.updated_at} />
       <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
       {events.length === 0 ? <p>No events recorded.</p> : null}
-      {next === null && follow !== null ? null : <EventTimeline events={events} />}
+      {next === null && follow !== null ? null : <EventTimeline events={events} rounds={timeline.review_rounds} />}
       {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
-      {next === null && follow !== null ? <FollowLive key={follow.base} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
+      {next === null && follow !== null ? <FollowLive key={follow.base} rounds={timeline.review_rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
     </>
   );
 }
@@ -880,7 +880,7 @@ function streamedEvent(block) {
 // The events that came after the page was drawn, read from the run's event stream with the token in
 // the header (the browser's own stream object cannot send one). A stream that ends or breaks is
 // opened again from the last event seen, and an event already shown is never shown twice.
-function FollowLive({ token, base, from, shown, onSignedOut }) {
+function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
   const [more, setMore] = useState([]);
   const [status, setStatus] = useState("live");
   const [retry, setRetry] = useState(0);
@@ -956,7 +956,7 @@ function FollowLive({ token, base, from, shown, onSignedOut }) {
   const have = new Set(shown.map((event) => event.event_id));
   return (
     <>
-      <EventTimeline events={[...shown, ...more.filter((event) => !have.has(event.event_id))]} />
+      <EventTimeline events={[...shown, ...more.filter((event) => !have.has(event.event_id))]} rounds={rounds} />
       <p className="live-status" data-live>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );

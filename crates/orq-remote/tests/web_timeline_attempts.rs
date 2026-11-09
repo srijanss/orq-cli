@@ -118,3 +118,31 @@ fn a_later_page_names_its_review_round_from_the_run_not_from_the_page() {
     let Some(out) = open(vec![late, event("e10", "stage.completed", "review", 1, "2026-11-02T12:05:00Z")]) else { return };
     assert_eq!(attempts(&out)[0]["title"], "Review round 3", "{out}");
 }
+
+#[test]
+fn a_page_that_begins_mid_round_keeps_that_round_apart_from_the_next_one() {
+    let mut cont = event("e5", "stage.completed", "review", 1, "2026-11-02T10:00:00Z");
+    cont["review_round"] = json!(2);
+    let mut start = event("e6", "stage.started", "review", 1, "2026-11-02T10:10:00Z");
+    start["review_round"] = json!(3);
+    let mut fail = event("e7", "stage.failed", "review", 1, "2026-11-02T10:12:00Z");
+    fail["review_round"] = json!(3);
+    let Some(out) = open(vec![cont, start, fail]) else { return };
+    let groups = attempts(&out);
+    assert_eq!(groups.len(), 2, "{out}");
+    assert_eq!(groups[0]["title"], "Review round 2", "{out}");
+    assert_eq!(groups[0]["failed"], false, "{out}");
+    assert_eq!(groups[1]["title"], "Review round 3", "{out}");
+    assert_eq!(groups[1]["failed"], true, "{out}");
+}
+
+#[test]
+fn live_review_numbering_carries_on_from_the_runs_own_count() {
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": "implement", "started_at": null, "updated_at": null});
+    let fetched = json!({"status": 200, "json": {"run": header, "events": [event("e1", "stage.started", "implement", 1, "2026-11-02T10:00:00Z")], "review_rounds": 2, "next_cursor": null}});
+    let live = format!("id: e2\nevent: event\ndata: {}\n\n", event("e2", "stage.started", "review", 1, "2026-11-02T10:05:00Z"));
+    let stream = json!({"status": 200, "stream": [live], "end": "hold"});
+    let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([fetched, projects(), stream]), json!([{"submit": TOKEN}])) else { return };
+    let titles: Vec<&str> = attempts(&out).iter().map(|g| g["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["implement, attempt 1", "Review round 3"], "{out}");
+}
