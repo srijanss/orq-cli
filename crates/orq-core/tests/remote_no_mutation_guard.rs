@@ -104,3 +104,17 @@ fn with_remote_actions_on_only_the_three_actions_accept_a_post_and_no_other_meth
     }
     assert_eq!(provider.changes.load(Ordering::SeqCst), ACTION_PATHS.len());
 }
+
+#[test]
+fn a_read_of_an_action_route_never_starts_pauses_or_resumes_anything_whatever_the_setting() {
+    for actions in [false, true] {
+        let roots = roots(if actions { "read-on" } else { "read-off" }, actions);
+        let provider = Counting::default();
+        for path in ACTION_PATHS {
+            for method in ["GET", "HEAD"] {
+                status(&roots, &provider, method, path);
+            }
+        }
+        assert_eq!(provider.changes.load(Ordering::SeqCst), 0, "actions on: {actions}");
+    }
+}
