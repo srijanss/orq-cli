@@ -8,6 +8,8 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
+  --primary: #dbeafe;
+  --on-primary: #0f172a;
   --sidebar-active-bg: #dbeafe;
   --surface: #1f2937;
   --text: #f3f4f6;
@@ -47,6 +49,8 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
+  --primary: #dbeafe;
+  --on-primary: #0f172a;
   --sidebar-active-bg: #dbeafe;
   --surface: #1f2937;
   --text: #f3f4f6;
@@ -87,6 +91,8 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
+  --primary: #0f172a;
+  --on-primary: #ffffff;
   --sidebar-active-bg: #dbeafe;
   --surface: #f1f5f9;
   --text: #111827;
@@ -127,6 +133,8 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
+  --primary: #0f172a;
+  --on-primary: #ffffff;
   --sidebar-active-bg: #dbeafe;
 --surface: #f1f5f9;
 --text: #111827;
@@ -164,7 +172,7 @@ input { background: var(--surface); color: var(--text); border: 1px solid var(--
 .ticket-id { display: block; font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); }
 .signin-page { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; background: var(--bg); }
 .signin { width: 100%; max-width: 28rem; box-sizing: border-box; padding: 2rem; display: flex; flex-direction: column; gap: 1rem; }
-.signin .primary { display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; min-height: 44px; font: inherit; font-weight: 600; background: var(--accent); color: var(--bg); border: 0; border-radius: 0.5rem; }
+.signin .primary { display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; min-height: 44px; font: inherit; font-weight: 600; background: var(--primary); color: var(--on-primary); border: 0; border-radius: 0.5rem; }
 .signin input { width: 100%; }
 .signin h1 { margin: 0; font-size: 1.5rem; }
 .signin label { display: flex; flex-direction: column; gap: 0.25rem; }

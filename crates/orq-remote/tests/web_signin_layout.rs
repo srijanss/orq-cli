@@ -33,14 +33,14 @@ fn the_card_sits_centred_in_a_full_height_page() {
 }
 
 #[test]
-fn the_page_centres_a_wide_card_and_the_primary_button_fills_it_in_the_accent_colour() {
+fn the_page_centres_a_wide_card_and_the_primary_button_fills_it() {
     let css = css();
     let page = rule(&css, ".signin-page {");
     assert!(page.contains("min-height: 100dvh") && page.contains("display: flex") && page.contains("align-items: center") && page.contains("justify-content: center"), "{page}");
     let card = rule(&css, "\n.signin {");
     assert!(card.contains("max-width: 28rem") && card.contains("width: 100%"), "{card}");
     let primary = rule(&css, ".signin .primary {");
-    assert!(primary.contains("width: 100%") && primary.contains("background: var(--accent)") && primary.contains("color: var(--bg)"), "{primary}");
+    assert!(primary.contains("width: 100%") && primary.contains("background: var(--primary)") && primary.contains("color: var(--on-primary)"), "{primary}");
     assert!(!css.contains(".signin .theme-toggle { align-self: flex-end; margin-left: 0; order: -1; }"), "the theme switch moves to the bottom");
 }
 
@@ -52,4 +52,13 @@ fn the_passkey_button_carries_a_passkey_icon() {
     assert!(icons.contains("  passkey: \""), "the icon is drawn");
     let start = main.find("Sign in with a passkey").unwrap();
     assert!(main[start.saturating_sub(120)..start].contains("<Icon name=\"passkey\""), "the icon sits in the button before its label");
+}
+
+#[test]
+fn the_primary_button_is_the_sidebar_pill_colour_in_dark_and_the_dark_colour_in_light() {
+    let css = css();
+    assert_eq!(css.matches("--primary: #dbeafe").count(), 2, "dark blocks: the sidebar's selected pill");
+    assert_eq!(css.matches("--on-primary: #0f172a").count(), 2, "dark blocks: its dark text");
+    assert_eq!(css.matches("--primary: #0f172a").count(), 2, "light blocks: the dark colour");
+    assert_eq!(css.matches("--on-primary: #ffffff").count(), 2, "light blocks: white text");
 }
