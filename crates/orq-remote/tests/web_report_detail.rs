@@ -170,11 +170,14 @@ fn a_401_on_the_detail_asks_for_the_token_again() {
 }
 
 #[test]
-fn the_page_never_sends_anything_but_a_get() {
+fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
     let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
     let code: String = code.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-    for banned in ["\"POST\"", "\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
+    for banned in ["\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
         assert!(!code.contains(banned), "{banned}");
     }
+    // The one POST is the action helper's, which every Start, Pause and Resume goes through.
+    assert_eq!(code.matches("\"POST\"").count(), 1, "a single POST site");
+    assert!(code.contains("function actionRequest(") && code.find("\"POST\"") > code.find("function actionRequest("), "the POST belongs to actionRequest");
     assert!(code.contains("encodeURIComponent"), "the run id is encoded into the path");
 }

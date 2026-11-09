@@ -29,9 +29,9 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
     for line in code.lines().filter(|line| line.contains("location")) {
         assert!(!line.to_lowercase().contains("token"), "the address is built from the token: {line}");
     }
-    // There is one fetch, and it takes the path it is given.
-    assert_eq!(code.matches("fetch(").count(), 1);
-    assert!(code.contains("fetch(path,") && code.contains("get(path, token"), "the one fetch takes a path");
+    // There are two fetches, a read and the confirmed action, and each takes the path it is given.
+    assert_eq!(code.matches("fetch(").count(), 2);
+    assert!(code.contains("fetch(path, { method: \"GET\"") && code.contains("fetch(path, { method: \"POST\"") && code.contains("get(path, token"), "each fetch takes a path");
     // Every path is a fixed same-origin one, plus an encoded run id, with no query string.
     for call in code.split("<Loaded ").skip(1) {
         let target: String = call.split("path={").nth(1).unwrap().chars().take_while(|c| *c != '}').collect();
@@ -47,9 +47,12 @@ fn every_request_is_a_get_with_the_token_in_an_authorization_header() {
     let code = code();
     assert!(code.contains("Authorization") && code.contains("\"Bearer \" + token"), "the token travels as a bearer header");
     assert!(code.contains("method: \"GET\""), "{code}");
-    for banned in ["POST", "PUT", "DELETE", "PATCH", "credentials: \"include\"", "mode: \"no-cors\""] {
+    for banned in ["PUT", "DELETE", "PATCH", "credentials: \"include\"", "mode: \"no-cors\""] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }
+    // The only other method is the action POST, sent from the one helper that Start, Pause and Resume share.
+    assert_eq!(code.matches("POST").count(), 1);
+    assert!(code.find("POST") > code.find("function actionRequest("));
     assert_eq!(code.matches("method:").count(), code.matches("fetch(").count(), "each fetch states its method");
 }
 
@@ -65,7 +68,7 @@ fn a_401_clears_the_token_and_asks_again_with_one_message_that_blames_neither_si
     for blamed in ["wrong", "invalid", "incorrect", "expired", "network", "offline", "unreachable", "timeout"] {
         assert!(!lower.contains(blamed), "the message says {blamed}: {message}");
     }
-    assert_eq!(code.matches("onSignedOut()").count(), 3, "used for a 401 on a page, on the project list and on the live stream, never for a failed request");
+    assert_eq!(code.matches("onSignedOut()").count(), 4, "used for a 401 on a page, on the project list, on the live stream and on an action, never for a failed request");
 }
 
 #[test]

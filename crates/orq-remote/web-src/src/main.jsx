@@ -609,7 +609,7 @@ function isFeature(feature) {
 }
 
 function parseFeatures(data) {
-  return data && Array.isArray(data.features) && data.features.every(isFeature) ? data.features : null;
+  return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true } : null;
 }
 
 // A feature's dependencies: a link for each one in this ledger, a marker for one that is not.
@@ -629,10 +629,69 @@ function Dependencies({ names, known, onOpen, listPath }) {
   );
 }
 
+// The only three things the page can ask the server to do. Each is a button that asks first, naming
+// what it will touch; nothing is sent until it is confirmed. The answer is the server's reason when it
+// refuses, and a refused sign-in goes back to the token screen.
+function controlPath(control, tail) {
+  return "/api/projects/" + encodeURIComponent(control.projectId) + "/" + tail;
+}
+
+function actionRequest(path, token) {
+  return authStatus().then((status) => {
+    const headers = { "Content-Type": "application/json" };
+    if (token !== SESSION) headers.Authorization = "Bearer " + token;
+    if (status !== null && typeof status.csrf === "string") headers["X-CSRF-Token"] = status.csrf;
+    return fetch(path, { method: "POST", headers, body: "{}", cache: "no-store", referrerPolicy: "no-referrer" });
+  });
+}
+
+function RunAction({ kind, label, question, path, token, onSignedOut, done }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const send = async () => {
+    setPhase("sending");
+    let text = "The action could not be completed.";
+    try {
+      const response = await actionRequest(path, token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      let body = null;
+      try {
+        body = await response.json();
+      } catch (unreadable) {
+        body = null;
+      }
+      if (response.ok) text = done(body !== null && typeof body.run === "string" ? body.run : "");
+      else if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  return (
+    <span className="run-action">
+      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={() => setPhase("asking")}>{label}</button> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={question}>
+          <span>{question}</span>
+          <button type="button" data-confirm onClick={send}>{"Yes, " + label.toLowerCase()}</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className="run-action-note">{note}</span> : null}
+    </span>
+  );
+}
+
 // Features grouped by status in the order work moves through, a status the page does not know last.
 // Dependencies are folded until asked for; a link to one opens that feature, clearing any filter
 // that would hide it.
-function FeatureList({ features, listPath }) {
+function FeatureList({ features, listPath, control }) {
   const [query, setQuery] = useState("");
   const [only, setOnly] = useState("all");
   const [open, setOpen] = useState(() => new Set());
@@ -685,6 +744,7 @@ function FeatureList({ features, listPath }) {
                 <li key={feature.name} id={"feature-" + feature.name} tabIndex={-1} className="feature card">
                   <strong>{feature.name}</strong>
                   {feature.description ? <p>{feature.description}</p> : null}
+                  {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
                   {feature.depends_on.length > 0 ? (
                     <button type="button" aria-expanded={open.has(feature.name)} onClick={() => toggle(feature.name)}>{"Dependencies (" + feature.depends_on.length + ")"}</button>
                   ) : null}
@@ -706,7 +766,7 @@ function isOrchestration(run) {
 }
 
 function parseOrchestrations(data) {
-  return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? data.runs : null;
+  return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? { rows: data.runs, actions: data.remote_actions === true } : null;
 }
 
 // Needs-attention first when sorted by state; a state the page does not know goes last.
@@ -727,7 +787,7 @@ function runAddress(runId) {
   return currentPath().replace(/\/+$/, "") + "/" + encodeURIComponent(runId);
 }
 
-function OrchestrationList({ runs }) {
+function OrchestrationList({ runs, control }) {
   const [sort, setSort] = useState("newest");
   if (runs.length === 0) {
     return <p>No runs in this project yet.</p>;
@@ -749,6 +809,8 @@ function OrchestrationList({ runs }) {
             <strong>{run.feature}</strong>
             {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate(runAddress(run.run_id))}>Open timeline</button> : null}
             <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+            {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} done={() => "Pause requested."} /> : null}
+            {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
             {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
             <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
             <Stamp label="Last activity" at={run.updated_at} />
@@ -1143,7 +1205,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
-        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(features) => <FeatureList features={features} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
+        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(data) => <FeatureList features={data.rows} control={data.actions ? { token, projectId, onSignedOut } : null} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -1152,7 +1214,7 @@ function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, on
     return (
       <>
         <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
-        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(runs) => <OrchestrationList runs={runs} />} onSignedOut={onSignedOut} />
+        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId, onSignedOut } : null} />} onSignedOut={onSignedOut} />
       </>
     );
   }
