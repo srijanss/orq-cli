@@ -12,11 +12,15 @@ use std::process::Command;
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 
 fn run(url: &str, responses: Value, steps: Value) -> Option<Value> {
+    run_with(url, responses, steps, json!([]))
+}
+
+fn run_with(url: &str, responses: Value, steps: Value, selectors: Value) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": url, "responses": responses, "steps": steps});
+    let scenario = json!({"url": url, "responses": responses, "steps": steps, "selectors": selectors});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -57,26 +61,28 @@ fn an_open_report_is_drawn_next_to_the_list_which_stays_and_is_not_asked_for_aga
 }
 
 #[test]
-fn the_report_is_marked_so_the_stylesheet_can_show_it_alone_on_a_phone() {
-    let Some(out) = run("/projects/alpha/reviews/run-1", json!([list(), detail("adds the thing"), projects()]), json!([{"submit": TOKEN}])) else { return };
-    let text = shown(&out["frames"][1]);
-    assert!(text.contains("adds the thing") && text.contains("Back to the list"), "{text}");
-    assert_eq!(out["frames"][1]["settled"]["selected"], json!(["run-1"]), "{out}");
-    // Every class the layout rules name exists on the rendered page, so a rule cannot quietly
-    // target something that is not there.
-    let classes: Vec<&str> = out["frames"][1]["settled"]["classes"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
-    for needed in ["master-detail", "has-report", "master-pane", "detail-pane", "back-to-list"] {
-        assert!(classes.contains(&needed), "{needed} is rendered: {classes:?}");
+fn every_layout_rule_matches_the_rendered_elements_it_is_meant_for() {
+    // The layout selectors, as the stylesheet writes them (comments stripped, media ignored).
+    let layout: Vec<String> = parse(&css(), None)
+        .into_iter()
+        .flat_map(|r| r.selectors)
+        .filter(|s| s.contains("master-") || s.contains("back-to-list") || s.contains("detail-pane"))
+        .collect();
+    assert!(layout.len() >= 4, "the layout rules are found: {layout:?}");
+    let Some(out) = run_with("/projects/alpha/reviews/run-1", json!([list(), detail("adds the thing"), projects()]), json!([{"submit": TOKEN}]), json!(layout)) else { return };
+    let page = &out["frames"][1]["settled"];
+    assert_eq!(page["selected"], json!(["run-1"]), "{out}");
+    for selector in &layout {
+        assert!(page["matches"][selector].as_u64().unwrap() >= 1, "`{selector}` matches nothing on a page with a report open: {}", page["matches"]);
     }
-    let layout: Vec<_> = parse(&css(), None).into_iter().filter(|r| r.selectors.iter().any(|s| s.contains("master-") || s.contains("back-to-list") || s.contains("detail-pane"))).collect();
-    assert!(layout.len() >= 4, "the layout rules are found");
-    for rule in layout {
-        for selector in rule.selectors {
-            for class in selector.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '.')).flat_map(|part| part.split('.').skip(1)) {
-                assert!(classes.contains(&class), "`{selector}` names .{class}, which the page does not render: {classes:?}");
-            }
-        }
+    // The hidden pane holds the list and the shown pane holds the report and its Back button.
+    let both = [".master-detail.has-report > .master-pane [data-open-run]", ".master-detail.has-report > .detail-pane .back-to-list", ".master-detail.has-report > .detail-pane section"];
+    let Some(out) = run_with("/projects/alpha/reviews/run-1", json!([list(), detail("adds the thing"), projects()]), json!([{"submit": TOKEN}]), json!(both)) else { return };
+    for selector in both {
+        assert!(out["frames"][1]["settled"]["matches"][selector].as_u64().unwrap() >= 1, "{selector}: {out}");
     }
+    let page = shown(&out["frames"][1]);
+    assert!(page.contains("adds the thing") && page.contains("Back to the list"), "{page}");
 }
 
 #[test]
