@@ -2,7 +2,7 @@
 // header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
 // ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
 // Every string from the API is rendered as text.
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
 import { Badge } from "./badge.jsx";
@@ -481,7 +481,9 @@ function ProjectCard({ project }) {
   return (
     <li className="project card">
       <button type="button" onClick={() => navigate("/projects/" + project.id)}>
+        <Icon name="folder" />
         {project.name}
+        <Icon name="chevronRight" />
       </button>
       {project.available ? (
         <div className="counts">
@@ -497,16 +499,38 @@ function ProjectCard({ project }) {
   );
 }
 
+function Stat({ value, label }) {
+  return (
+    <div className="stat">
+      <span className="stat-value">{value}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
+// The totals above the project cards; a project that could not be read adds nothing to the sums.
 function Dashboard({ projects }) {
+  const updated = useMemo(checkedTime, [projects]);
   if (projects.length === 0) {
     return <p>No projects found.</p>;
   }
+  const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   return (
-    <ul className="projects">
-      {projects.map((project) => (
-        <ProjectCard key={project.id} project={project} />
-      ))}
-    </ul>
+    <>
+      <p className="connection"><span className="dot" aria-hidden="true" />Connected</p>
+      <div className="stats">
+        <Stat value={projects.length} label="Projects" />
+        <Stat value={sum("active_runs")} label="Active runs" />
+        <Stat value={sum("reviews_waiting")} label="Reviews waiting" />
+        <Stat value={<Moment at={updated} />} label="Last updated" />
+      </div>
+      <h2 className="section-title">Projects</h2>
+      <ul className="projects">
+        {projects.map((project) => (
+          <ProjectCard key={project.id} project={project} />
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -1380,7 +1404,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   if (hash === "/dashboard") {
     return (
       <>
-        <PageHeader title="Dashboard" subtitle="Your projects" onRefresh={() => setReloads(reloads + 1)} />
+        <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />
         <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
       </>
     );

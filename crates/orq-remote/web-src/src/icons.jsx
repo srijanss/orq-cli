@@ -16,6 +16,8 @@ const PATHS = {
   menu: "M4 6h16M4 12h16M4 18h16",
   logout: "M9 21H5V3h4m7 4 5 5-5 5m5-5H9",
   close: "M6 6l12 12M18 6 6 18",
+  folder: "M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z",
+  chevronRight: "m9 6 6 6-6 6",
 };
 
 export function Icon({ name, size = 20 }) {
