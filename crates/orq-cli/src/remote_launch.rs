@@ -1,6 +1,7 @@
 //! Starts runs for the web server: the same `orq run` the command line uses, checked first and then detached.
 
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -40,11 +41,21 @@ fn without_paths(text: &str) -> String {
     text.split_whitespace().map(|word| if word.contains('/') { "<path>" } else { word }).collect::<Vec<_>>().join(" ")
 }
 
+/// Ends the call and everything it started: the call leads a process group of its own.
+fn stop(child: &mut std::process::Child) {
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl CliLauncher {
     pub fn new(exe: PathBuf, user_config: Option<PathBuf>) -> Self {
         CliLauncher { exe, user_config, deadline: DEADLINE }
     }
 
+    #[cfg(test)]
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
         self
@@ -56,6 +67,7 @@ impl CliLauncher {
         let mut child = std::process::Command::new(&self.exe)
             .args(args)
             .stdin(std::process::Stdio::null())
+            .process_group(0)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -68,8 +80,7 @@ impl CliLauncher {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(10)),
                 _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop(&mut child);
                     return Err(failed("it took too long"));
                 }
             }
@@ -77,7 +88,10 @@ impl CliLauncher {
         let text = |received: mpsc::Receiver<Vec<u8>>| received.recv_timeout(end.saturating_duration_since(Instant::now())).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
         match (text(stdout), text(stderr)) {
             (Ok(out), Ok(err)) => Ok((status.success(), out, err)),
-            _ => Err(failed("it kept its output open")),
+            _ => {
+                stop(&mut child);
+                Err(failed("it kept its output open"))
+            }
         }
     }
 }

@@ -127,3 +127,21 @@ fn the_deadline_is_one_budget_for_the_whole_call_even_when_a_descendant_holds_th
     assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))));
     assert!(began.elapsed() < std::time::Duration::from_millis(1600), "took {:?}", began.elapsed());
 }
+
+#[test]
+fn a_descendant_left_holding_the_pipes_is_stopped_with_the_call() {
+    let dir = scratch("orphan");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    std::fs::write(dir.join("orphan"), "").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config)).with_deadline(std::time::Duration::from_millis(500));
+    assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))));
+    let pid = std::fs::read_to_string(dir.join("orphan.pid")).unwrap().trim().to_string();
+    let alive = || std::fs::read_to_string(format!("/proc/{pid}/stat")).map(|stat| !stat.contains(") Z")).unwrap_or(false);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while alive() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!alive(), "the descendant {pid} outlived the call");
+}
