@@ -302,3 +302,21 @@ fn the_launchers_resume_command_refuses_in_its_own_words_and_names_the_run_it_st
     assert_eq!(started.status.code(), Some(0), "{stdout}\n{}", String::from_utf8_lossy(&started.stderr));
     assert!(stdout.lines().any(|l| l.starts_with("run: ") && l.len() > 5), "{stdout}");
 }
+
+/// A run whose events cannot be read is the operator's problem, not a reason the run may not resume:
+/// the launcher takes only a message that starts `cannot resume` for a refusal.
+#[test]
+fn a_run_whose_events_cannot_be_read_does_not_claim_it_cannot_resume() {
+    let agent = agent();
+    let w = world("launcher-unreadable", &agent);
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let (run_id, _store) = start_paused(&w);
+    std::fs::write(w.state.join("orq/runs").join(&run_id).join("events.jsonl"), "{ not json\n").unwrap();
+
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--detach", "--repo", &repo]);
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with("orq: "), "{stderr}");
+    assert!(!stderr.starts_with("orq: cannot resume"), "{stderr}");
+}

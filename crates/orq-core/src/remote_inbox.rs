@@ -307,9 +307,14 @@ fn run_start_target(path: &str) -> Option<(&str, &str)> {
 
 /// The project, run and control of `/api/projects/{id}/runs/{run}/pause` or `.../resume`, when the path has that shape.
 fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
-    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
-        [id, "runs", run, "pause"] if !id.is_empty() && !run.is_empty() => Some((id, run, RunControl::Pause)),
-        [id, "runs", run, "resume"] if !id.is_empty() && !run.is_empty() => Some((id, run, RunControl::Resume)),
+    let mut parts = path.strip_prefix("/api/projects/")?.split('/');
+    let (id, runs, run, action) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if runs != "runs" || id.is_empty() || run.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    match action {
+        "pause" => Some((id, run, RunControl::Pause)),
+        "resume" => Some((id, run, RunControl::Resume)),
         _ => None,
     }
 }
@@ -411,7 +416,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             _ => return error(405, "this view is read-only"),
         }
     }
-    if let (Some((id, run, control)), "POST") = (run_control_target(path), request.method) {
+    if let Some((id, run, control)) = (request.method == "POST").then(|| run_control_target(path)).flatten() {
         return control_run(roots, provider, id, run, control);
     }
     if !matches!(request.method, "GET" | "HEAD") {

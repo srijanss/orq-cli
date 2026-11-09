@@ -4739,7 +4739,11 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     let store = orq_orchestrator::RunStore::new(&root);
     // A run killed mid-flight never recorded an ending: when its process is gone it is a failed run.
     if let Err(err) = orq_orchestrator::reconcile_interrupted(&store, &run_id, &orq_orchestrator::process_is_alive) {
-        return fail(format!("cannot resume {}: {err:?}", printable(&run_id)));
+        // Only a run that does not exist is a reason not to resume; an unreadable store is the operator's problem.
+        return fail(match err {
+            orq_orchestrator::StoreError::NotFound(_) | orq_orchestrator::StoreError::InvalidRunId(_) => format!("cannot resume {}: no such run", printable(&run_id)),
+            other => format!("cannot read run {}: {other:?}", printable(&run_id)),
+        });
     }
     let stopped = store
         .events(&run_id)
@@ -4802,7 +4806,7 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     // paused run's stored profile exactly (the resumed run restores it, whatever the configuration says now).
     let events = match store.events(&run_id) {
         Ok(events) => events,
-        Err(err) => return fail(format!("cannot resume {}: cannot read its events: {err}", printable(&run_id))),
+        Err(err) => return fail(format!("cannot read the events of {}: {err}", printable(&run_id))),
     };
     let (known, _) = match load_model_config(&repo_root) {
         Ok(config) => config,
