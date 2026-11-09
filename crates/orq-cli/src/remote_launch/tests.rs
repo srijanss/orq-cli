@@ -27,7 +27,7 @@ fn fake_orq(dir: &Path) -> PathBuf {
     let path = dir.join("orq");
     let log = dir.join("calls.log");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in /home/me/repo/plan.json' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in \"/home/me/repo/plan.json\" (path=/home/me/repo)' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
         log = log.display(),
         refuse = dir.join("refuse").display(),
         hang = dir.join("hang").display(),
@@ -68,7 +68,7 @@ fn a_run_is_checked_then_started_detached_with_the_default_models() {
     // The run's own refusal is the reason, and nothing starts after it.
     std::fs::write(dir.join("refuse"), "").unwrap();
     match launcher.start(&repo, "ready") {
-        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "feature needs a plan in <path>"),
+        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "feature needs a plan in <path> <path>"),
         other => panic!("{other:?}"),
     }
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 3);

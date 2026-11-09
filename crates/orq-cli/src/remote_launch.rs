@@ -35,9 +35,9 @@ fn read_capped(mut source: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>
     received
 }
 
-/// `text` with every word that is an absolute path replaced, so a machine's layout never reaches the web.
+/// `text` with every word that holds a path replaced, so a machine's layout never reaches the web.
 fn without_paths(text: &str) -> String {
-    text.split_whitespace().map(|word| if word.starts_with('/') { "<path>" } else { word }).collect::<Vec<_>>().join(" ")
+    text.split_whitespace().map(|word| if word.contains('/') { "<path>" } else { word }).collect::<Vec<_>>().join(" ")
 }
 
 impl CliLauncher {
