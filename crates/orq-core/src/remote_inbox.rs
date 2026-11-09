@@ -447,7 +447,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some(rest) = path.strip_prefix("/api/projects/") {
         if let Some(id) = rest.strip_suffix("/features").filter(|id| !id.is_empty() && !id.contains('/')) {
             return match provider.map(|provider| provider.features(id)) {
-                Some(Ok(Some(features))) => reply(200, json!({ "features": features })),
+                Some(Ok(Some(features))) => reply(200, json!({ "features": features, "remote_actions": remote_actions_on(roots) })),
                 // The reason can name a path on this machine, so the caller is only told it failed.
                 Some(Err(_)) => error(500, "the feature ledger could not be read"),
                 _ => error(404, "not found"),
@@ -456,7 +456,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         if let Some(id) = rest.strip_suffix("/runs").filter(|id| !id.is_empty() && !id.contains('/')) {
             return match provider.map(|provider| provider.runs(id)) {
                 Some(Ok(Some(runs))) => match ListQuery::parse(query).and_then(|q| q.apply(runs, "run_id", "state")) {
-                    Ok(page) => reply(200, json!({ "runs": page.rows, "next_cursor": page.next_cursor, "total": page.total, "running": page.running })),
+                    Ok(page) => reply(200, json!({ "runs": page.rows, "next_cursor": page.next_cursor, "total": page.total, "running": page.running, "remote_actions": remote_actions_on(roots) })),
                     Err((status, why)) => error(status, why),
                 },
                 Some(Err(_)) => error(500, "the runs could not be read"),
