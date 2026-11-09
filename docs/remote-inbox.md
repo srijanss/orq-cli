@@ -68,6 +68,11 @@ Run the server on the loopback address and give it that host name with `--passke
 
 ```sh
 orq serve --repo . --listen 127.0.0.1:7878 --passkey-host box.tail1234.ts.net
+```
+
+`orq serve` runs until Ctrl-C, so leave it running and, in a second terminal, publish it over HTTPS:
+
+```sh
 tailscale serve --bg 7878
 ```
 

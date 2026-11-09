@@ -222,3 +222,16 @@ fn every_documented_serve_flag_and_passkey_command_is_one_the_cli_accepts() {
         assert!(usage.contains(listed), "{command} is not a command the CLI lists");
     }
 }
+
+#[test]
+fn the_foreground_server_and_the_tailscale_proxy_are_in_separate_blocks_with_a_second_terminal_named() {
+    let guide = guide();
+    let blocks: Vec<&str> = guide.split("```sh\n").skip(1).map(|rest| rest.split("```").next().unwrap()).collect();
+    let serving: Vec<&&str> = blocks.iter().filter(|block| block.contains("orq serve")).collect();
+    assert!(!serving.is_empty());
+    for block in serving {
+        assert!(!block.contains("tailscale serve"), "`orq serve` runs until interrupted, so a command after it never runs:\n{block}");
+    }
+    assert!(blocks.iter().any(|block| block.contains("tailscale serve")), "the proxy command is shown");
+    assert!(guide.contains("second terminal"), "the guide says the proxy is started from a second terminal");
+}
