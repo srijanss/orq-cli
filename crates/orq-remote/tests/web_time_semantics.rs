@@ -95,3 +95,15 @@ fn an_odd_or_future_time_shows_nothing_relative() {
     assert!(times(&out["frames"][1], "Started").is_empty(), "{out}");
     assert_eq!(only(&out, 1, "Last activity")["text"], "just now", "a time ahead of this clock is not shown as the future: {out}");
 }
+
+#[test]
+fn a_shown_age_keeps_growing_while_nothing_new_arrives() {
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": null, "updated_at": ago(10)});
+    let timeline = json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}});
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let steps = json!([{"submit": TOKEN}, {"clock": 5 * 60 * 1000}, {"tick": 20000}]);
+    let Some(out) = run(RUN, json!([timeline, projects(), stream]), steps) else { return };
+    assert_eq!(only(&out, 1, "Last activity")["text"], "just now", "{out}");
+    assert_eq!(only(&out, 3, "Last activity")["text"], "5 minutes ago", "the age moved with the clock and no new reply: {out}");
+    assert_eq!(out["requests"].as_array().unwrap().len(), 3, "no request was needed to age the time: {out}");
+}

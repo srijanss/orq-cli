@@ -26,6 +26,15 @@ const root = window.document.getElementById("app");
 // Intervals are faked so a test can fire them: {id, delay, active, run}. Only setInterval is faked;
 // React schedules its own work with other timers.
 const intervals = [];
+// The page's age clock runs on this interval; it is reported apart so a test of the refresh timers is not disturbed.
+const CLOCK_MS = 20000;
+// A step {clock: ms} moves "now" forward without a reply or a timer.
+let skew = 0;
+const RealDate = window.Date;
+window.Date = class extends RealDate {
+  constructor(...args) { if (args.length === 0) super(RealDate.now() + skew); else super(...args); }
+  static now() { return RealDate.now() + skew; }
+};
 window.setInterval = (run, delay) => { intervals.push({ delay, active: true, run }); return intervals.length; };
 window.clearInterval = (id) => { if (intervals[id - 1]) intervals[id - 1].active = false; };
 // Listeners for the tab being shown or hidden, so a test can see that leaving a page removes its own.
@@ -169,7 +178,7 @@ function snapshot() {
   const injected = page().querySelectorAll("img,script,iframe,object,embed,b,i,u,style,marquee").length;
   // Every <time>: the label is the text of its parent around it, so a test can tell "Last activity" from "Started".
   const times = [...page().querySelectorAll("time")].map((el) => ({ label: [...el.parentNode.childNodes].filter((c) => c.nodeType === 3).map((c) => c.data).join("").trim(), text: el.textContent, title: el.getAttribute("title"), datetime: el.getAttribute("datetime") }));
-  return { injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -200,6 +209,8 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       field.value = step.submit;
       all("button")[0].click();
       fieldAfter = field.value;
+    } else if (step.clock !== undefined) {
+      skew += step.clock;
     } else if (step.tick !== undefined) {
       // The interval of that length fires once.
       for (const interval of intervals.filter((i) => i.active && i.delay === step.tick)) interval.run();

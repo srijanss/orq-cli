@@ -50,8 +50,31 @@ function relativeTime(when, now = Date.now()) {
   return count + " " + name + (count === 1 ? "" : "s") + " ago";
 }
 
+// One shared clock re-renders every mounted time, so a shown age keeps growing even when no reply
+// arrives. It runs only while a time is on the page.
+const CLOCK_MS = 20000;
+const clockListeners = new Set();
+let clockTimer = null;
+
+function useClock() {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const listener = () => setTick((n) => n + 1);
+    clockListeners.add(listener);
+    if (clockTimer === null) clockTimer = setInterval(() => clockListeners.forEach((run) => run()), CLOCK_MS);
+    return () => {
+      clockListeners.delete(listener);
+      if (clockListeners.size === 0 && clockTimer !== null) {
+        clearInterval(clockTimer);
+        clockTimer = null;
+      }
+    };
+  }, []);
+}
+
 // A time is shown relative to now, with the absolute local time in its title.
 function Moment({ at }) {
+  useClock();
   const when = validTime(at);
   if (when === null) return null;
   return (
