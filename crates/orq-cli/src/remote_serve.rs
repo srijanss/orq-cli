@@ -88,7 +88,15 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     let home = std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_absolute());
     let override_root = std::env::var_os("ORQ_REMOTE_PROJECTS_ROOT").map(PathBuf::from).filter(|root| root.is_absolute());
     let scan_root = orq_remote::projects::default_root(home.as_deref(), override_root.as_deref());
-    let projects = std::sync::Arc::new(orq_remote::projects::StoreProjects::new(roots.clone(), scan_root));
+    let launcher = std::env::current_exe().ok().map(|exe| {
+        let user_config = orq_features::settings_path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref());
+        std::sync::Arc::new(crate::remote_launch::CliLauncher::new(exe, user_config))
+    });
+    let mut projects = orq_remote::projects::StoreProjects::new(roots.clone(), scan_root);
+    if let Some(launcher) = launcher {
+        projects = projects.with_launcher(launcher);
+    }
+    let projects = std::sync::Arc::new(projects);
     let state_roots = roots.clone();
     let state = std::sync::Arc::new(orq_remote::ServerState {
         roots,

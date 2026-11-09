@@ -5,6 +5,7 @@ use std::process::ExitCode;
 mod desktop;
 mod pipeline;
 mod progress;
+mod remote_launch;
 mod remote_passkey;
 mod remote_serve;
 mod review;

@@ -203,6 +203,7 @@ pub trait RunLauncher {
 }
 
 /// Why a launch did not start a run.
+#[derive(Debug)]
 pub enum LaunchError {
     /// The run's own checks said no; the reason is meant to be read by the person who asked.
     Refused(String),
