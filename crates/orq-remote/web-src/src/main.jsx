@@ -15,6 +15,7 @@ const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
 const SIGN_IN_FAILED = "Could not sign in. Check the token and try again.";
 const STALE_MARKER = "stale, may be out of date";
+const UNVERIFIED_MARKER = "unverified, could not be checked";
 const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
 const UNBUILT_DESTINATIONS = ["/projects"];
@@ -215,21 +216,61 @@ function RunRow({ run, detailPrefix }) {
       <span>{String(run.status)}</span>
       {run.risk !== undefined && run.risk !== null && <span>{"risk: " + String(run.risk)}</span>}
       <Generated at={run.generated_at} />
-      {run.stale === true && <em>{STALE_MARKER}</em>}
+      {rowFreshness(run) === "stale" && <em>{STALE_MARKER}</em>}
+      {rowFreshness(run) === "unverified" && <em>{UNVERIFIED_MARKER}</em>}
     </li>
   );
 }
 
+// A row's freshness: the server's word when it gives one, else stale or current from its flag.
+function rowFreshness(run) {
+  if (run.freshness === "current" || run.freshness === "stale" || run.freshness === "unverified") return run.freshness;
+  return run.stale === true ? "stale" : "current";
+}
+
+function reviewTime(run) {
+  const when = typeof run.generated_at === "string" && UTC_TIME.test(run.generated_at) ? Date.parse(run.generated_at) : NaN;
+  return Number.isNaN(when) ? -Infinity : when;
+}
+
+const REVIEW_FILTERS = [
+  ["status", "Status", (run) => String(run.status)],
+  ["risk", "Risk", (run) => (run.risk === undefined || run.risk === null ? "" : String(run.risk))],
+  ["freshness", "Freshness", rowFreshness],
+];
+
+// Newest review first; the filters only hide rows, so a marker never leaves a row that is shown.
 function RunList({ runs, detailPrefix = DETAIL_PREFIX }) {
+  const [chosen, setChosen] = useState({});
   if (runs.length === 0) {
     return <p>No reviews in the inbox.</p>;
   }
+  const shown = runs
+    .filter((run) => REVIEW_FILTERS.every(([key, , read]) => !chosen[key] || read(run) === chosen[key]))
+    .sort((a, b) => reviewTime(b) - reviewTime(a));
   return (
-    <ul>
-      {runs.map((run, index) => (
-        <RunRow key={index} run={run} detailPrefix={detailPrefix} />
-      ))}
-    </ul>
+    <>
+      <div className="filters" role="group" aria-label="Filter reviews">
+        {REVIEW_FILTERS.map(([key, label, read]) => (
+          <label key={key}>
+            {label}
+            <select data-filter={key} value={chosen[key] || ""} onChange={(event) => setChosen({ ...chosen, [key]: event.target.value })}>
+              <option value="">All</option>
+              {[...new Set(runs.map(read).filter((value) => value !== ""))].sort().map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+      {shown.length === 0 ? <p>No reviews match these filters.</p> : (
+        <ul>
+          {shown.map((run) => (
+            <RunRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} />
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
