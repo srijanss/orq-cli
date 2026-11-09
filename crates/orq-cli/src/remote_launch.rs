@@ -1,25 +1,80 @@
 //! Starts runs for the web server: the same `orq run` the command line uses, checked first and then detached.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use orq_remote::projects::{LaunchError, RunLauncher};
+
+/// How long one `orq run` call may take before it is stopped.
+const DEADLINE: Duration = Duration::from_secs(60);
+/// How much of a call's output is kept; the rest is read and dropped.
+const OUTPUT_CAP: usize = 64 * 1024;
 
 pub struct CliLauncher {
     exe: PathBuf,
     user_config: Option<PathBuf>,
+    deadline: Duration,
+}
+
+/// Reads `source` to its end, keeping only the first `OUTPUT_CAP` bytes.
+fn read_capped(mut source: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut kept, mut chunk) = (Vec::new(), [0u8; 8192]);
+        while let Ok(n) = source.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let room = OUTPUT_CAP.saturating_sub(kept.len()).min(n);
+            kept.extend_from_slice(&chunk[..room]);
+        }
+        let _ = sender.send(kept);
+    });
+    received
 }
 
 impl CliLauncher {
     pub fn new(exe: PathBuf, user_config: Option<PathBuf>) -> Self {
-        CliLauncher { exe, user_config }
+        CliLauncher { exe, user_config, deadline: DEADLINE }
     }
 
-    fn run(&self, args: &[std::ffi::OsString]) -> Result<std::process::Output, LaunchError> {
-        std::process::Command::new(&self.exe)
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    /// Runs the program for at most the deadline; one that is still going then is killed.
+    fn run(&self, args: &[std::ffi::OsString]) -> Result<(bool, String, String), LaunchError> {
+        let failed = |what: &str| LaunchError::Failed(format!("cannot start orq run: {what}"));
+        let mut child = std::process::Command::new(&self.exe)
             .args(args)
             .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|err| LaunchError::Failed(format!("cannot start orq run: {err}")))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|err| failed(&err.to_string()))?;
+        let stdout = read_capped(child.stdout.take().ok_or_else(|| failed("no output"))?);
+        let stderr = read_capped(child.stderr.take().ok_or_else(|| failed("no output"))?);
+        let end = Instant::now() + self.deadline;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(10)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(failed("it took too long"));
+                }
+            }
+        };
+        let left = end.saturating_duration_since(Instant::now());
+        let text = |received: mpsc::Receiver<Vec<u8>>| received.recv_timeout(left).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        match (text(stdout), text(stderr)) {
+            (Ok(out), Ok(err)) => Ok((status.success(), out, err)),
+            _ => Err(failed("it kept its output open")),
+        }
     }
 }
 
@@ -54,15 +109,15 @@ impl RunLauncher for CliLauncher {
         let args = crate::without_detach_flag(&request.args());
         let mut check = args.clone();
         check.push("--check".into());
-        let checked = self.run(&check)?;
-        if !checked.status.success() {
-            let reason = crate::launch_outcome(false, "", &String::from_utf8_lossy(&checked.stderr)).unwrap_or_else(|reason| reason);
+        let (checked, _, check_err) = self.run(&check)?;
+        if !checked {
+            let reason = crate::launch_outcome(false, "", &check_err).unwrap_or_else(|reason| reason);
             return Err(refused(reason));
         }
         let mut detached = args;
         detached.push("--detach".into());
-        let started = self.run(&detached)?;
-        crate::launch_outcome(started.status.success(), &String::from_utf8_lossy(&started.stdout), &String::from_utf8_lossy(&started.stderr)).map_err(LaunchError::Failed)
+        let (ok, out, err) = self.run(&detached)?;
+        crate::launch_outcome(ok, &out, &err).map_err(LaunchError::Failed)
     }
 }
 

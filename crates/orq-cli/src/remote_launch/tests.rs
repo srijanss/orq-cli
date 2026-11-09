@@ -27,9 +27,11 @@ fn fake_orq(dir: &Path) -> PathBuf {
     let path = dir.join("orq");
     let log = dir.join("calls.log");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan' >&2; exit 1; fi; exit 0;;\n*--detach*) echo 'run: run-42';;\nesac\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan' >&2; exit 1; fi; exit 0;;\n*--detach*) echo 'run: run-42';;\nesac\n",
         log = log.display(),
-        refuse = dir.join("refuse").display()
+        refuse = dir.join("refuse").display(),
+        hang = dir.join("hang").display(),
+        flood = dir.join("flood").display()
     );
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -72,4 +74,20 @@ fn a_run_is_checked_then_started_detached_with_the_default_models() {
     // A program that is not there is a failure, not a refusal.
     let missing = CliLauncher::new(dir.join("no-such-orq"), Some(config));
     assert!(matches!(missing.start(&repo, "ready"), Err(LaunchError::Failed(_))));
+}
+
+#[test]
+fn a_stalled_or_endless_orq_is_stopped_at_the_deadline_and_reported_as_a_failure() {
+    let dir = scratch("deadline");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config)).with_deadline(std::time::Duration::from_millis(500));
+    for mode in ["hang", "flood"] {
+        std::fs::write(dir.join(mode), "").unwrap();
+        let began = std::time::Instant::now();
+        assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))), "{mode}");
+        assert!(began.elapsed() < std::time::Duration::from_secs(10), "{mode} took {:?}", began.elapsed());
+        std::fs::remove_file(dir.join(mode)).unwrap();
+    }
 }
