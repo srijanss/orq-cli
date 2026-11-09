@@ -27,9 +27,9 @@ fn current(frame: &Value) -> Vec<String> {
 }
 
 #[test]
-fn without_a_project_the_sidebar_offers_the_dashboard_and_settings_only() {
+fn without_a_project_the_sidebar_offers_every_section_with_all_project_addresses() {
     let Some(out) = run(json!({"path": "/dashboard"})) else { return };
-    assert_eq!(names(&out["frames"][0]), ["Dashboard", "Settings"], "{out}");
+    assert_eq!(names(&out["frames"][0]), ["Dashboard", "Features", "Orchestrations", "Reviews", "Settings"], "{out}");
 }
 
 #[test]

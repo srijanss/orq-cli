@@ -12,14 +12,12 @@ const PHONE_QUERY = "(max-width: 700px)";
 
 export function navigationEntries(projectId) {
   const entries = [{ label: "Dashboard", icon: "home", href: "/dashboard" }];
-  if (typeof projectId === "string" && projectId !== "") {
-    const base = `/projects/${encodeURIComponent(projectId)}`;
-    entries.push(
-      { label: "Features", icon: "flag", href: `${base}/features` },
-      { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
-      { label: "Reviews", icon: "doc", href: `${base}/reviews` },
-    );
-  }
+  const base = typeof projectId === "string" && projectId !== "" ? `/projects/${encodeURIComponent(projectId)}` : "";
+  entries.push(
+    { label: "Features", icon: "flag", href: `${base}/features` },
+    { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
+    { label: "Reviews", icon: "doc", href: `${base}/reviews` },
+  );
   entries.push({ label: "Settings", icon: "gear", href: "/settings" });
   return entries;
 }

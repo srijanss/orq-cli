@@ -1385,6 +1385,34 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
       </>
     );
   }
+  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Every project's orchestration runs", "runs", "Loading the runs…", parseOrchestrations], "/reviews": ["Reviews", "Code reviews and agent reports", "reviews", "Loading the review inbox…", parseRuns] }[hash];
+  if (everywhere !== undefined) {
+    const [title, subtitle, part, loading, parse] = everywhere;
+    const onRefresh = () => setReloads(reloads + 1);
+    return (
+      <>
+        <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />
+        <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+          <>
+            {projects.map((project) => {
+              const id = encodeURIComponent(project.id);
+              const base = "/api/projects/" + id + "/" + part;
+              return (
+                <section key={project.id} className="project-section">
+                  <h2>{project.name}</h2>
+                  <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
+                    if (part === "features") return <FeatureList features={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} listPath={"/projects/" + id + "/features"} />;
+                    if (part === "runs") return <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
+                    return <RunList runs={data} detailPrefix={"/projects/" + id + "/reviews/"} selected={null} />;
+                  }} />
+                </section>
+              );
+            })}
+          </>
+        )} onSignedOut={onSignedOut} />
+      </>
+    );
+  }
   const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
   if (RUN_ID.test(runId)) {
     const path = API_REVIEWS + "/" + encodeURIComponent(runId);
