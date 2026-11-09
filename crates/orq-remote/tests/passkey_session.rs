@@ -35,12 +35,16 @@ impl ProjectsProvider for NoProjects {
 }
 
 fn start(tag: &str) -> (Server, StorageRoots) {
+    start_with(tag, true)
+}
+
+fn start_with(tag: &str, loopback_token: bool) -> (Server, StorageRoots) {
     let base = std::env::temp_dir().join(format!("orq-remote-session-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
     let state = Arc::new(ServerState { roots: roots.clone(), config: RemoteConfig { token: TOKEN.to_string() }, project_id: "p-0a1b2c3d".into(), project_name: "orq-cli".into() });
-    let auth = Arc::new(PasskeyAuth::new(PasskeyHost::from_setting(RP).unwrap()));
+    let auth = Arc::new(PasskeyAuth::new(PasskeyHost::from_setting(RP).unwrap()).with_loopback_token(loopback_token));
     let server = Server::start_with_auth(TcpListener::bind("127.0.0.1:0").unwrap(), state, Arc::new(NoProjects), auth).unwrap();
     (server, roots)
 }
@@ -242,4 +246,39 @@ fn a_stream_already_open_stops_when_its_session_is_ended_and_never_sees_the_next
     let (ended, rest) = drain(&mut stream, std::time::Duration::from_secs(6));
     assert!(ended, "the stream stayed open: {rest}");
     assert!(!rest.contains("e2"), "{rest}");
+}
+
+#[test]
+fn with_the_token_switched_off_a_session_is_the_only_way_in_and_logout_and_forgery_close_it() {
+    let (server, _roots) = start_with("passkey-only", false);
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let mut phone = Device::new(44);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let (_, head, _) = send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body)));
+    let cookie = cookie_from(&head);
+    let session = [("Cookie", cookie.as_str())];
+    let forged = [("Cookie", "__Host-orq-session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")];
+    let stream_status = |headers: &[(&str, &str)]| {
+        let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+        write!(stream, "GET /api/projects/p1/runs/r1/events HTTP/1.1\r\nHost: x\r\n{extra}\r\n").unwrap();
+        drain(&mut stream, std::time::Duration::from_millis(1000)).1
+    };
+
+    // Direct local connection: the token is refused, the session is not.
+    assert!(send(addr, "GET", "/api/projects", &[("Authorization", &auth)], b"").0.contains("401"));
+    assert!(send(addr, "GET", "/api/projects", &session, b"").0.contains("200"));
+    assert!(stream_status(&session).contains("200"));
+    assert!(send(addr, "GET", "/api/projects", &forged, b"").0.contains("401"));
+    assert!(stream_status(&forged).contains("401"));
+    assert!(stream_status(&[("Authorization", &auth)]).contains("401"));
+
+    // Once signed out the same cookie opens nothing.
+    assert!(send(addr, "POST", "/auth/logout", &session, b"{}").0.contains("200"));
+    assert!(send(addr, "GET", "/api/projects", &session, b"").0.contains("401"));
+    assert!(stream_status(&session).contains("401"));
 }
