@@ -4,7 +4,7 @@
 //! on the way in. Nothing here rewrites or removes a line; the web reads the log and cannot change it.
 
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use serde_json::{json, Value};
 
@@ -42,16 +42,41 @@ pub fn record(roots: &StorageRoots, attempt: &Attempt, now: u64) -> Result<(), S
         "outcome": match attempt.outcome { Outcome::Allowed => "allowed", Outcome::Refused => "refused" },
         "reason": attempt.reason.map(redact),
     });
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path(roots)).map_err(|e| format!("cannot write the audit log: {}", e.kind()))?;
+    let mut file = open(roots, true)?;
     file.write_all(format!("{line}\n").as_bytes()).map_err(|e| format!("cannot write the audit log: {}", e.kind()))
+}
+
+/// Opens the log without following a link, and only if it is a regular file this user owns; a file
+/// left readable by others is tightened to this user alone.
+fn open(roots: &StorageRoots, write: bool) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.custom_flags(libc::O_NOFOLLOW);
+    if write {
+        options.create(true).append(true).mode(0o600);
+    } else {
+        options.read(true);
+    }
+    let file = options.open(path(roots)).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "not found".to_string(),
+        kind => format!("cannot open the audit log: {kind}"),
+    })?;
+    let meta = file.metadata().map_err(|e| format!("cannot open the audit log: {}", e.kind()))?;
+    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err("the audit log is not a plain file of this user".to_string());
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("cannot open the audit log: {}", e.kind()))?;
+    }
+    Ok(file)
 }
 
 /// The newest `limit` lines, newest first; no log yet reads as empty.
 pub fn read(roots: &StorageRoots, limit: usize) -> Result<Vec<Value>, String> {
-    let text = match std::fs::read_to_string(path(roots)) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("cannot read the audit log: {}", e.kind())),
+    let mut text = String::new();
+    match open(roots, false) {
+        Ok(mut file) => std::io::Read::read_to_string(&mut file, &mut text).map_err(|e| format!("cannot read the audit log: {}", e.kind()))?,
+        Err(why) if why == "not found" => return Ok(Vec::new()),
+        Err(why) => return Err(why),
     };
     Ok(text.lines().rev().filter_map(|line| serde_json::from_str(line).ok()).take(limit).collect())
 }

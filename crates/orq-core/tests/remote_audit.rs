@@ -51,3 +51,22 @@ fn a_token_never_reaches_the_log_and_the_file_is_private_and_only_ever_grows() {
     assert_eq!(fs::read_to_string(&file).unwrap().lines().next().unwrap(), first, "earlier lines are never rewritten");
     assert_eq!(remote_audit::read(&roots, 10).unwrap().len(), 3);
 }
+
+#[test]
+fn the_log_is_never_reached_through_a_symlink_and_a_loose_file_is_tightened() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let roots = roots("unsafe");
+    let file = roots.state.join("remote-actions.jsonl");
+    let elsewhere = roots.state.join("elsewhere.jsonl");
+    fs::write(&elsewhere, "{\"action\":\"stolen\"}\n").unwrap();
+    symlink(&elsewhere, &file).unwrap();
+    assert!(remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Allowed, None), 1).is_err());
+    assert!(remote_audit::read(&roots, 10).is_err(), "a link is not read through either");
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "{\"action\":\"stolen\"}\n", "nothing was written through the link");
+
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, "").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Allowed, None), 2).unwrap();
+    assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+}
