@@ -282,3 +282,23 @@ fn a_detached_resume_returns_at_once_and_the_resumed_run_still_finishes() {
     assert_eq!(std::fs::read_to_string(w.base.join("gate-runs")).unwrap().lines().count(), 1);
     assert_eq!(store.run_ids().unwrap().len(), 2);
 }
+
+/// The web launcher runs exactly `orq run resume <run> --yes --detach --repo <repo>` and reads its output:
+/// a refusal must start `orq: cannot resume <run>:` and a started resume must print `run: <id>`.
+#[test]
+fn the_launchers_resume_command_refuses_in_its_own_words_and_names_the_run_it_started() {
+    let agent = agent();
+    let w = world("launcher-contract", &agent);
+    let repo = w.repo.root().to_str().unwrap().to_string();
+
+    let unknown = orq(&w, &["run", "resume", "no-such-run", "--yes", "--detach", "--repo", &repo]);
+    let stderr = String::from_utf8_lossy(&unknown.stderr).into_owned();
+    assert_eq!(unknown.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with("orq: cannot resume no-such-run"), "{stderr}");
+
+    let (run_id, _store) = start_paused(&w);
+    let started = orq(&w, &["run", "resume", &run_id, "--yes", "--detach", "--repo", &repo]);
+    let stdout = String::from_utf8_lossy(&started.stdout).into_owned();
+    assert_eq!(started.status.code(), Some(0), "{stdout}\n{}", String::from_utf8_lossy(&started.stderr));
+    assert!(stdout.lines().any(|l| l.starts_with("run: ") && l.len() > 5), "{stdout}");
+}
