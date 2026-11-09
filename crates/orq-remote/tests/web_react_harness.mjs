@@ -167,7 +167,7 @@ function snapshot() {
     if (node.tagName === "BUTTON" && !node.hasAttribute("data-refresh")) buttons.push(node.textContent);
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
-  const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.value, options: [...el.options].map((o) => o.value) }));
+  const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.getAttribute("data-value"), options: [...root.querySelectorAll("[data-project-option]")].map((o) => o.getAttribute("data-project-option")) }));
   const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
   const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
   const checked = [...root.querySelectorAll("[data-last-checked]")].map((el) => el.textContent);
@@ -263,9 +263,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       Object.getOwnPropertyDescriptor(proto, "value").set.call(el, step.value);
       el.dispatchEvent(new window.Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
     } else if (step.select !== undefined) {
-      const el = root.querySelector("[data-project-switcher]");
-      el.value = step.select;
-      el.dispatchEvent(new window.Event("change", { bubbles: true }));
+      root.querySelector(`[data-project-option="${step.select}"]`).click();
     } else if (step.back) {
       window.history.back();
     } else {

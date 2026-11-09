@@ -55,6 +55,39 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
 
   const entries = navigationEntries(projectId);
 
+  const [listOpen, setListOpen] = useState(false);
+  const switchBox = useRef(null);
+  const choices = [{ value: "", label: "All projects" }];
+  if (projectId !== null && !(projects ?? []).some((project) => project.id === projectId)) choices.push({ value: projectId, label: projectId });
+  for (const project of projects ?? []) choices.push({ value: project.id, label: project.name });
+  const currentName = choices.find((choice) => choice.value === (projectId ?? ""))?.label ?? "All projects";
+
+  const choose = (chosen) => {
+    const parts = path.split("/");
+    const section = projectId !== null ? parts[3] : parts[1];
+    if (chosen === "") navigate(SECTIONS[section] !== undefined ? "/" + section : "/dashboard");
+    else navigate("/projects/" + encodeURIComponent(chosen) + "/" + (projectId !== null ? section || "reviews" : SECTIONS[section] !== undefined ? section : "reviews"));
+    setListOpen(false);
+    setDrawerOpen(false);
+  };
+
+  // Escape or a press outside the chooser closes the open list.
+  useEffect(() => {
+    if (!listOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setListOpen(false);
+    };
+    const onPress = (event) => {
+      if (switchBox.current && !switchBox.current.contains(event.target)) setListOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPress);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPress);
+    };
+  }, [listOpen]);
+
   useEffect(() => {
     if (!drawerOpen) {
       if (wasOpen.current) menuButton.current?.focus();
@@ -71,7 +104,7 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
         return;
       }
       if (event.key !== "Tab" || !panel.current) return;
-      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button]), select")];
+      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button]):not([data-project-option])")];
       if (items.length === 0) return;
       const first = items[0];
       const last = items[items.length - 1];
@@ -147,26 +180,25 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
                 <span className="label">{entry.label}</span>
               </a>
               {entry.href === "/dashboard" ? (
-                <label className="project-switch">
+                <div className="project-switch" ref={switchBox}>
                   <span className="project-switch-prefix">Project:</span>
-                  <select className="project-switcher" data-project-switcher aria-label="Project" value={projectId ?? ""} onFocus={() => onOpenSwitcher?.()} onMouseDown={() => onOpenSwitcher?.()} onClick={() => onOpenSwitcher?.()} onChange={(event) => {
-                      const chosen = event.target.value;
-                      const parts = path.split("/");
-                      const section = projectId !== null ? parts[3] : parts[1];
-                      if (chosen === "") navigate(SECTIONS[section] !== undefined ? "/" + section : "/dashboard");
-                      else navigate("/projects/" + encodeURIComponent(chosen) + "/" + (projectId !== null ? section || "reviews" : SECTIONS[section] !== undefined ? section : "reviews"));
-                      setDrawerOpen(false);
+                  <button type="button" className="project-switcher" data-project-switcher data-value={projectId ?? ""} aria-label="Project" aria-haspopup="listbox" aria-expanded={listOpen ? "true" : "false"} onClick={() => {
+                      if (!listOpen) onOpenSwitcher?.();
+                      setListOpen(!listOpen);
                     }}>
-                    <option value="">All projects</option>
-                    {projectId !== null && !(projects ?? []).some((project) => project.id === projectId) ? <option value={projectId}>{projectId}</option> : null}
-                    {(projects ?? []).map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name}
-                      </option>
+                    <span className="project-switcher-text">{currentName}</span>
+                    <Icon name="chevronDown" size={18} />
+                  </button>
+                  <ul className="project-list" data-project-list role="listbox" aria-label="Project" hidden={!listOpen}>
+                    {choices.map((choice) => (
+                      <li key={choice.value} role="presentation">
+                        <button type="button" role="option" tabIndex={-1} data-project-option={choice.value} aria-selected={choice.value === (projectId ?? "") ? "true" : "false"} onClick={() => choose(choice.value)}>
+                          {choice.label}
+                        </button>
+                      </li>
                     ))}
-                  </select>
-                  <Icon name="chevronDown" size={18} />
-                </label>
+                  </ul>
+                </div>
               ) : null}
             </Fragment>
           ))}
