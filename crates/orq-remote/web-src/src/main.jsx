@@ -477,20 +477,33 @@ function parseProjects(data) {
   return data && Array.isArray(data.projects) && data.projects.every(isProject) ? data.projects : null;
 }
 
-function ProjectCard({ project }) {
+// The project last opened in this tab, so the Dashboard can mark it.
+let lastProject = null;
+
+function CardStat({ value, label }) {
   return (
-    <li className="project card">
+    <div className="card-stat">
+      <span className="card-stat-value">{value}</span>
+      <span className="card-stat-label">{label}</span>
+    </div>
+  );
+}
+
+function ProjectCard({ project, selected = false }) {
+  const hours = Number.isInteger(project.failed_window_hours) ? project.failed_window_hours : 24;
+  return (
+    <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
       <button type="button" onClick={() => navigate("/projects/" + project.id)}>
         <Icon name="folder" />
         {project.name}
         <Icon name="chevronRight" />
       </button>
       {project.available ? (
-        <div className="counts">
-          <p>{"Features: " + project.features}</p>
-          <p>{"Active runs: " + project.active_runs}</p>
-          <p>{"Reviews waiting: " + project.reviews_waiting}</p>
-          <p>{"Failed runs (last " + (Number.isInteger(project.failed_window_hours) ? project.failed_window_hours : 24) + "h): " + project.failed_runs}</p>
+        <div className="card-stats">
+          <CardStat value={project.features} label="Features" />
+          <CardStat value={project.active_runs} label="Active runs" />
+          <CardStat value={project.reviews_waiting} label="Waiting" />
+          <CardStat value={project.failed_runs} label={"Failed (" + hours + "h)"} />
         </div>
       ) : (
         <em>Unavailable</em>
@@ -527,7 +540,7 @@ function Dashboard({ projects }) {
       <h2 className="section-title">Projects</h2>
       <ul className="projects">
         {projects.map((project) => (
-          <ProjectCard key={project.id} project={project} />
+          <ProjectCard key={project.id} project={project} selected={project.id === lastProject} />
         ))}
       </ul>
     </>
@@ -1491,6 +1504,9 @@ function Scoped({ token, onSignedOut, onSignOut }) {
     };
   }, [token, inProject]);
   const known = projects !== null && projects.some((project) => project.id === named);
+  useEffect(() => {
+    if (known) lastProject = named;
+  }, [known, named]);
   return (
     <Shell projectId={projects === null || known ? named : null} projects={projects} onSignOut={onSignOut}>
       <SignedIn token={token} onSignedOut={onSignedOut} projectId={named} projects={projects} />

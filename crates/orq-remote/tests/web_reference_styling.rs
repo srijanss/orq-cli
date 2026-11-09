@@ -25,7 +25,7 @@ fn dark_is_the_default_and_the_light_look_is_an_override() {
         assert!(root.contains(token), "default tokens carry {token}: {root}");
     }
     let light = &css[css.find("@media (prefers-color-scheme: light)").expect("a light override exists")..];
-    for token in ["--bg: #ffffff", "--sidebar: #f8fafc", "--surface: #f1f5f9", "--text: #111827", "--accent: #2563eb"] {
+    for token in ["--bg: #ffffff", "--sidebar: #0f172a", "--surface: #f1f5f9", "--text: #111827", "--accent: #2563eb"] {
         assert!(light.contains(token), "light override carries {token}");
     }
 }

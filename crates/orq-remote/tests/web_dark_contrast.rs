@@ -71,10 +71,15 @@ fn text_stays_readable_on_every_surface_it_is_drawn_on_in_both_themes() {
     for (theme, t) in themes() {
         let get = |k: &str| t.get(k).unwrap_or_else(|| panic!("{theme}: --{k} missing")).clone();
         for fg in ["text", "text-muted", "accent"] {
-            for bg in ["bg", "sidebar", "surface"] {
+            for bg in ["bg", "surface"] {
                 pairs.push((theme.into(), format!("--{fg} on --{bg}"), format!("{} {}", get(fg), get(bg))));
             }
         }
+        // The sidebar is dark in both themes and reads its own light-on-dark tokens.
+        for fg in ["sidebar-text", "sidebar-muted", "sidebar-active-text"] {
+            pairs.push((theme.into(), format!("--{fg} on --sidebar"), format!("{} {}", get(fg), get("sidebar"))));
+        }
+        pairs.push((theme.into(), "--sidebar-text on --sidebar-active-bg".into(), format!("{} {}", get("sidebar-active-text"), get("sidebar-active-bg"))));
         for token in ["status-running", "status-completed", "status-failed", "status-waiting", "status-queued", "risk-low", "risk-medium", "risk-high", "freshness-fresh", "freshness-outdated"] {
             pairs.push((theme.into(), format!("badge {token}"), format!("{} {}", get(token), get(&format!("{token}-bg")))));
         }
