@@ -144,7 +144,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             return follow(shared, peer, credentials, base, cursor, method == "HEAD").await;
         }
     }
-    let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
+    let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie);
 
     // Reading storage is blocking work.
     let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &path, authorization.as_deref())).await;
@@ -159,22 +159,20 @@ struct Credentials {
     cookie: Option<String>,
 }
 
-/// The authorization the handler should see. A live session stands in for the token. Otherwise, once
-/// a passkey exists, the token is honoured only on a direct loopback connection (`tailscale serve`
-/// also connects from loopback, but adds forwarding headers). Whatever cannot be established, such as
-/// an unreadable passkey store, refuses the token rather than allowing it.
-async fn effective_authorization(shared: &Arc<Shared>, peer: std::net::IpAddr, forwarded: bool, authorization: Option<String>, cookie: Option<String>) -> Option<String> {
+/// The authorization the handler should see. A live session stands in for the token. Without one the
+/// token is honoured only on a direct loopback connection (`tailscale serve` also connects from
+/// loopback, but adds forwarding headers), and only while that is not switched off; anywhere else the
+/// token can only enrol the first passkey through the `/auth` routes, so the request is refused and
+/// the page sends the person to sign in.
+fn effective_authorization(shared: &Arc<Shared>, peer: std::net::IpAddr, forwarded: bool, authorization: Option<String>, cookie: Option<String>) -> Option<String> {
     let Some(auth) = shared.auth.as_ref() else { return authorization };
     if auth.session_live(cookie.as_deref()) {
         return Some(format!("Bearer {}", shared.state.config.token));
     }
-    // Only the right token could be accepted, so nothing else costs a look at the store.
-    if !orq_core::remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) || (peer.is_loopback() && !forwarded) {
+    if !orq_core::remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) || (peer.is_loopback() && !forwarded && auth.loopback_token()) {
         return authorization;
     }
-    let roots = shared.state.roots.clone();
-    let empty = tokio::task::spawn_blocking(move || orq_core::passkey_store::PasskeyStore::open(&roots).list().is_ok_and(|keys| keys.is_empty())).await.unwrap_or(false);
-    if empty { authorization } else { None }
+    None
 }
 
 /// Whether a proxy put its marks on the request: `tailscale serve` adds `Tailscale-*` and forwarding headers.
@@ -270,7 +268,7 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
         let shared = state.shared.clone();
         let peer = state.peer.ip();
         // Judged on every look, so a logout, an expired session or a newly enrolled passkey ends the stream.
-        let authorization = effective_authorization(&shared, peer, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
+        let authorization = effective_authorization(&shared, peer, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone());
         let Ok((200, body)) = tokio::task::spawn_blocking(move || reply_to(&shared, peer, "GET", &path, authorization.as_deref())).await else { return false };
         let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) else { return false };
         if absorb(state, &page) {
@@ -289,7 +287,7 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
     // The first look decides the answer: a refused or unknown request is the handler's plain reply.
     let first = {
         let (shared, ip, path) = (state.shared.clone(), peer.ip(), page_path(&state));
-        let authorization = effective_authorization(&shared, ip, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
+        let authorization = effective_authorization(&shared, ip, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone());
         tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref())).await
     };
     let Ok((code, body)) = first else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };

@@ -84,9 +84,9 @@ fn the_token_enrols_the_first_passkey_but_not_without_it() {
 fn once_a_passkey_exists_the_token_no_longer_enrols_or_opens_the_api_through_a_proxy() {
     let (server, roots) = start("policy");
     let auth = bearer();
-    // Before any passkey the token works as it always did.
+    // Even before any passkey, a proxied token opens nothing but the first enrolment.
     let (status, _, _) = send(server.addr(), "GET", "/api/projects", &[("Authorization", &auth), ("X-Forwarded-For", "100.64.0.9")], b"");
-    assert!(status.contains("200"), "{status}");
+    assert!(status.contains("401"), "{status}");
     register_a_key(&roots);
     // A proxied request (tailscale serve connects from loopback) no longer gets in with the token.
     for forwarded in [("X-Forwarded-For", "100.64.0.9"), ("Tailscale-User-Login", "someone@example.com")] {

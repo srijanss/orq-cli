@@ -9,7 +9,7 @@ use crate::{fail, usage_error};
 /// Where a plain `orq serve` listens unless told otherwise: this machine only.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 
-/// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name>]`: the same server with nothing to set up. The
+/// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]]`: the same server with nothing to set up. The
 /// command itself is the opt-in, so the run settings need not enable remote control, a missing
 /// token is created, and the repository defaults to the current directory.
 pub fn serve_plain(args: &[OsString]) -> ExitCode {
@@ -24,6 +24,7 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     let mut repo = None;
     let mut listen = String::from(DEFAULT_LISTEN);
     let mut passkey_host = None;
+    let mut loopback_token = true;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match word.to_str() {
@@ -39,11 +40,15 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
                 Some(host) if passkey_host.is_none() => passkey_host = Some(host.to_string()),
                 _ => return usage_error(),
             },
+            Some("--no-loopback-token") if loopback_token => loopback_token = false,
             _ => return usage_error(),
         }
     }
+    if !loopback_token && passkey_host.is_none() {
+        return fail("--no-loopback-token only applies together with --passkey-host");
+    }
     let auth = match passkey_host.as_deref().map(orq_core::passkey_register::PasskeyHost::from_setting) {
-        Some(Ok(host)) => Some(std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host))),
+        Some(Ok(host)) => Some(std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(loopback_token))),
         Some(Err(reason)) => return fail(reason),
         None => None,
     };

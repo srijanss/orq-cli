@@ -48,6 +48,7 @@ pub struct PasskeyAuth {
     challenges: Challenges,
     authorizer: EnrolAuthorizer,
     sessions: Sessions,
+    loopback_token: bool,
 }
 
 fn now() -> u64 {
@@ -56,7 +57,18 @@ fn now() -> u64 {
 
 impl PasskeyAuth {
     pub fn new(host: PasskeyHost) -> PasskeyAuth {
-        PasskeyAuth { host, challenges: Challenges::new(), authorizer: EnrolAuthorizer::new(), sessions: Sessions::new(SESSION_SECS) }
+        PasskeyAuth { host, challenges: Challenges::new(), authorizer: EnrolAuthorizer::new(), sessions: Sessions::new(SESSION_SECS), loopback_token: true }
+    }
+
+    /// Whether the access token opens the API on a direct local connection (it does unless switched off).
+    /// Through a proxy the token never opens the API; it only enrols the first passkey.
+    pub fn with_loopback_token(mut self, allowed: bool) -> PasskeyAuth {
+        self.loopback_token = allowed;
+        self
+    }
+
+    pub fn loopback_token(&self) -> bool {
+        self.loopback_token
     }
 
     pub fn host(&self) -> &PasskeyHost {
