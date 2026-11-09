@@ -1,5 +1,7 @@
 //! A log page that gains lines follows them only while the viewer is at the bottom. Scrolling up
-//! pauses it and shows how many new lines are waiting, with a Jump to latest control.
+//! pauses it and shows how many new lines are waiting, with a Jump to latest control. The test
+//! scroller is ten pixels a line in a box 30 high, with the scroll offset kept in range as a
+//! browser does: ten lines can scroll to 70, thirteen to 100.
 
 mod web_deps;
 
@@ -9,13 +11,14 @@ use std::process::Command;
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const LOG: &str = "/projects/alpha/orchestrations/run-1/logs/stage.log";
 const EVERY: u64 = 30000;
+const BOX: &str = ".log-lines";
 
 fn run(responses: Value, steps: Value) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": LOG, "responses": responses, "steps": steps});
+    let scenario = json!({"url": LOG, "responses": responses, "steps": steps, "scroller": {"client": 30}});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -42,56 +45,72 @@ fn top(frame: &Value) -> i64 {
     frame["settled"]["logTop"].as_i64().unwrap()
 }
 
-// Ten pixels a line in a box 30 high: ten lines have their bottom at a top of 70.
-const BOX: &str = ".log-lines";
+fn says(frame: &Value, text: &str) -> bool {
+    texts(frame).iter().any(|t| t == text)
+}
+
+fn waiting(frame: &Value) -> bool {
+    texts(frame).iter().any(|t| t.contains("new line"))
+}
 
 #[test]
 fn a_viewer_at_the_bottom_follows_new_lines() {
-    let Some(out) = run(json!([page(10), projects(), page(13)]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"tick": EVERY}])) else { return };
+    let Some(out) = run(json!([page(10), projects(), page(13)]), json!([{"submit": TOKEN}, {"scrollto": BOX, "top": 70}, {"tick": EVERY}])) else { return };
     let frame = &out["frames"][3];
-    assert_eq!(top(frame), 130, "the new bottom: {out}");
-    assert!(!texts(frame).iter().any(|t| t.contains("new line")), "{:?}", texts(frame));
+    assert_eq!(top(frame), 100, "the new bottom: {out}");
+    assert!(!waiting(frame), "{:?}", texts(frame));
     assert!(!buttons(frame).iter().any(|b| b == "Jump to latest"), "{:?}", buttons(frame));
 }
 
 #[test]
 fn scrolling_up_pauses_following_and_counts_the_new_lines() {
-    let Some(out) = run(json!([page(10), projects(), page(13), page(14)]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"scrollto": BOX, "top": 0}, {"tick": EVERY}, {"tick": EVERY}])) else { return };
+    let Some(out) = run(json!([page(10), projects(), page(13), page(14)]), json!([{"submit": TOKEN}, {"scrollto": BOX, "top": 70}, {"scrollto": BOX, "top": 0}, {"tick": EVERY}, {"tick": EVERY}])) else { return };
     let frame = &out["frames"][4];
     assert_eq!(top(frame), 0, "the viewer's place is kept: {out}");
-    assert!(texts(frame).iter().any(|t| t == "3 new lines"), "{:?}", texts(frame));
-    assert!(buttons(&out["frames"][4]).iter().any(|b| b == "Jump to latest"), "{:?}", buttons(&out["frames"][4]));
+    assert!(says(frame, "3 new lines"), "{:?}", texts(frame));
+    assert!(buttons(frame).iter().any(|b| b == "Jump to latest"), "{:?}", buttons(frame));
     let last = &out["frames"][5];
-    assert!(texts(last).iter().any(|t| t == "4 new lines"), "{:?}", texts(last));
+    assert!(says(last, "4 new lines"), "{:?}", texts(last));
     assert_eq!(top(last), 0, "{out}");
 }
 
 #[test]
+fn a_log_opened_at_the_top_is_not_following_until_the_viewer_reaches_the_bottom() {
+    let Some(out) = run(json!([page(10), projects(), page(12)]), json!([{"submit": TOKEN}, {"tick": EVERY}])) else { return };
+    let frame = &out["frames"][2];
+    assert_eq!(top(frame), 0, "it was never scrolled, so it is not moved: {out}");
+    assert!(says(frame, "2 new lines"), "{:?}", texts(frame));
+}
+
+#[test]
 fn one_new_line_is_singular() {
-    let Some(out) = run(json!([page(10), projects(), page(11)]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"scrollto": BOX, "top": 0}, {"tick": EVERY}])) else { return };
-    assert!(texts(&out["frames"][4]).iter().any(|t| t == "1 new line"), "{:?}", texts(&out["frames"][4]));
+    let Some(out) = run(json!([page(10), projects(), page(11)]), json!([{"submit": TOKEN}, {"tick": EVERY}])) else { return };
+    assert!(says(&out["frames"][2], "1 new line"), "{:?}", texts(&out["frames"][2]));
 }
 
 #[test]
 fn jump_to_latest_scrolls_to_the_bottom_clears_the_count_and_follows_again() {
-    let Some(out) = run(json!([page(10), projects(), page(13), page(15)]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"scrollto": BOX, "top": 0}, {"tick": EVERY}, {"click": "[data-jump-latest]"}, {"tick": EVERY}])) else { return };
-    let jumped = &out["frames"][5];
-    assert_eq!(top(jumped), 130, "{out}");
-    assert!(!texts(jumped).iter().any(|t| t.contains("new line")), "{:?}", texts(jumped));
-    assert_eq!(top(&out["frames"][6]), 150, "following again: {out}");
+    let Some(out) = run(json!([page(10), projects(), page(13), page(15)]), json!([{"submit": TOKEN}, {"tick": EVERY}, {"click": "[data-jump-latest]"}, {"tick": EVERY}])) else { return };
+    let jumped = &out["frames"][3];
+    assert_eq!(top(jumped), 100, "{out}");
+    assert!(!waiting(jumped), "{:?}", texts(jumped));
+    assert_eq!(top(&out["frames"][4]), 120, "following again: {out}");
 }
 
 #[test]
 fn scrolling_back_to_the_bottom_by_hand_clears_the_count_and_resumes_following() {
-    let Some(out) = run(json!([page(10), projects(), page(13), page(15)]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"scrollto": BOX, "top": 0}, {"tick": EVERY}, {"scrollto": BOX, "top": 100}, {"tick": EVERY}])) else { return };
-    assert!(!texts(&out["frames"][5]).iter().any(|t| t.contains("new line")), "{:?}", texts(&out["frames"][5]));
-    assert_eq!(top(&out["frames"][6]), 150, "{out}");
+    let Some(out) = run(json!([page(10), projects(), page(13), page(15)]), json!([{"submit": TOKEN}, {"tick": EVERY}, {"scrollto": BOX, "top": 100}, {"tick": EVERY}])) else { return };
+    assert!(!waiting(&out["frames"][3]), "{:?}", texts(&out["frames"][3]));
+    assert_eq!(top(&out["frames"][4]), 120, "{out}");
 }
 
 #[test]
-fn filtering_lines_is_not_counted_as_new_lines() {
-    let Some(out) = run(json!([page(10), projects()]), json!([{"submit": TOKEN}, {"geometry": BOX, "client": 30, "top": 70}, {"scrollto": BOX, "top": 0}, {"set": "[data-log-filter]", "value": "line 1"}, {"set": "[data-log-filter]", "value": ""}])) else { return };
-    for frame in &out["frames"].as_array().unwrap()[3..] {
-        assert!(!texts(frame).iter().any(|t| t.contains("new line")), "{:?}", texts(frame));
+fn filtering_a_paused_log_down_to_a_few_lines_and_back_keeps_it_paused() {
+    let Some(out) = run(json!([page(10), projects(), page(12)]), json!([{"submit": TOKEN}, {"scrollto": BOX, "top": 0}, {"set": "[data-log-filter]", "value": "line 1"}, {"set": "[data-log-filter]", "value": ""}, {"tick": EVERY}])) else { return };
+    for frame in &out["frames"].as_array().unwrap()[2..5] {
+        assert!(!waiting(frame), "filtering is not new lines: {:?}", texts(frame));
     }
+    let last = &out["frames"][5];
+    assert_eq!(top(last), 0, "{out}");
+    assert!(says(last, "2 new lines"), "{:?}", texts(last));
 }

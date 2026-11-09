@@ -201,6 +201,17 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   } else {
     for (const [key, value] of Object.entries(scenario.session || {})) window.sessionStorage.setItem(key, value);
   }
+  // There is no layout: a scroller is a <pre> ten pixels a child line high and `client` pixels tall,
+  // and its scrollTop is kept between 0 and the largest offset, as a browser does.
+  if (scenario.scroller) {
+    const tops = new WeakMap();
+    const most = (el) => Math.max(0, el.children.length * 10 - scenario.scroller.client);
+    Object.defineProperties(window.HTMLPreElement.prototype, {
+      scrollHeight: { get() { return this.children.length * 10; }, configurable: true },
+      clientHeight: { get() { return scenario.scroller.client; }, configurable: true },
+      scrollTop: { get() { return Math.min(tops.get(this) || 0, most(this)); }, set(value) { tops.set(this, Math.max(0, Math.min(value, most(this)))); }, configurable: true },
+    });
+  }
   window.eval(readFileSync(bundlePath, "utf8"));
   await settle();
   const frames = [{ step: "start", settled: snapshot() }];
@@ -216,16 +227,6 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     } else if (step.tick !== undefined) {
       // The interval of that length fires once.
       for (const interval of intervals.filter((i) => i.active && i.delay === step.tick)) interval.run();
-    } else if (step.geometry !== undefined) {
-      // There is no layout: a scroller is given a fixed height and ten pixels per child line.
-      const el = root.querySelector(step.geometry);
-      let top = step.top || 0;
-      Object.defineProperties(el, {
-        scrollHeight: { get: () => el.children.length * 10, configurable: true },
-        clientHeight: { get: () => step.client, configurable: true },
-        scrollTop: { get: () => top, set: (value) => { top = value; }, configurable: true },
-      });
-      el.dispatchEvent(new window.Event("scroll"));
     } else if (step.scrollto !== undefined) {
       const el = root.querySelector(step.scrollto);
       el.scrollTop = step.top;

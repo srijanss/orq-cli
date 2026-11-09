@@ -1042,6 +1042,8 @@ function LogLines({ shown, total }) {
   const [seen, setSeen] = useState(total);
   const onScroll = () => {
     const el = box.current;
+    // Content that fits has no position to keep: a clamp after filtering must not unpause a viewer.
+    if (el.scrollHeight <= el.clientHeight) return;
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
     if (atBottom.current) setSeen(total);
   };
@@ -1054,7 +1056,10 @@ function LogLines({ shown, total }) {
   useLayoutEffect(() => {
     if (total < seen) setSeen(total);
     if (first.current) {
+      // A log opened taller than its box starts at the top, so it is not following.
       first.current = false;
+      const el = box.current;
+      if (el.scrollHeight > el.clientHeight) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
       return;
     }
     if (atBottom.current) {
