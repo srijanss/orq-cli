@@ -44,6 +44,7 @@ pub struct Sessions {
 }
 
 struct Entry {
+    credential: String,
     created: u64,
     expires: u64,
 }
@@ -53,8 +54,8 @@ impl Sessions {
         Sessions { lifetime: lifetime_secs.max(1), live: Mutex::new(HashMap::new()) }
     }
 
-    /// Starts a session at `now` (seconds since the epoch) for a signed-in passkey.
-    pub fn issue(&self, _proof: PasskeySignIn, now: u64) -> Result<Issued, String> {
+    /// Starts a session at `now` (seconds since the epoch) for the signed-in passkey with this credential id.
+    pub fn issue(&self, _proof: PasskeySignIn, credential: &str, now: u64) -> Result<Issued, String> {
         let id = new_id()?;
         let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         live.retain(|_, entry| entry.expires > now);
@@ -62,7 +63,7 @@ impl Sessions {
             let Some(oldest) = live.iter().min_by_key(|(_, entry)| entry.created).map(|(id, _)| id.clone()) else { break };
             live.remove(&oldest);
         }
-        live.insert(id.clone(), Entry { created: now, expires: now.saturating_add(self.lifetime) });
+        live.insert(id.clone(), Entry { credential: credential.to_string(), created: now, expires: now.saturating_add(self.lifetime) });
         Ok(Issued { cookie: set_cookie(&id, self.lifetime), id })
     }
 
@@ -77,6 +78,12 @@ impl Sessions {
             }
             None => false,
         }
+    }
+
+    /// The credential id of the passkey that opened this session, if it is live at `now`.
+    pub fn credential(&self, id: &str, now: u64) -> Option<String> {
+        let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.get(id).filter(|entry| entry.expires > now).map(|entry| entry.credential.clone())
     }
 
     /// Logout: ends the session, if it exists, and gives the header that clears the cookie.
@@ -145,7 +152,7 @@ mod tests {
     }
 
     fn start(s: &Sessions, now: u64) -> Issued {
-        s.issue(PasskeySignIn::verified(), now).unwrap()
+        s.issue(PasskeySignIn::verified(), "credential", now).unwrap()
     }
 
     #[test]

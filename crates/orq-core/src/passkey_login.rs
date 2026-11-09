@@ -95,7 +95,7 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
     // Always under the lock, even when the counter stays at zero: it also confirms the passkey was
     // not removed while the signature was being checked.
     store.advance_counter(&key, counter).map_err(|_| Refused)?;
-    sessions.issue(PasskeySignIn::verified(), now).map_err(|_| Refused)
+    sessions.issue(PasskeySignIn::verified(), &key.credential_id, now).map_err(|_| Refused)
 }
 
 #[cfg(test)]

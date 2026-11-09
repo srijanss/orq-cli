@@ -75,9 +75,31 @@ impl PasskeyAuth {
         &self.host
     }
 
-    /// Whether the `Cookie` header names a live session.
-    pub fn session_live(&self, cookie: Option<&str>) -> bool {
-        cookie.and_then(session::id_from_cookie_header).is_some_and(|id| self.sessions.is_live(id, now()))
+    /// Whether the `Cookie` header names a session that is live in memory; the passkey behind it may
+    /// since have been removed, which only `session_live` looks at.
+    pub fn has_session(&self, cookie: Option<&str>) -> bool {
+        self.session_credential(cookie).is_some()
+    }
+
+    fn session_credential(&self, cookie: Option<&str>) -> Option<String> {
+        cookie.and_then(session::id_from_cookie_header).and_then(|id| self.sessions.credential(id, now()))
+    }
+
+    /// Whether the `Cookie` header names a live session whose passkey is still registered. A session
+    /// whose passkey was removed (on the machine, by another process) ends here; a store that cannot
+    /// be read counts as not signed in.
+    pub fn session_live(&self, roots: &StorageRoots, cookie: Option<&str>) -> bool {
+        let Some(credential) = self.session_credential(cookie) else { return false };
+        match PasskeyStore::open(roots).find(&credential) {
+            Ok(Some(_)) => true,
+            Ok(None) => {
+                if let Some(id) = cookie.and_then(session::id_from_cookie_header) {
+                    self.sessions.end(id);
+                }
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     /// The answer for an `/auth/...` request; `None` for any other path.
@@ -88,7 +110,7 @@ impl PasskeyAuth {
         }
         let store = PasskeyStore::open(roots);
         let at = now();
-        let live = self.session_live(request.cookie);
+        let live = self.session_live(roots, request.cookie);
         let post = request.method == "POST";
         let enrol = || self.authorizer.authorize(&store, config, &EnrolRequest { peer: request.peer, authorization: request.authorization, session_live: live }, at);
         let fields = || serde_json::from_slice::<Value>(request.body).ok().filter(Value::is_object);

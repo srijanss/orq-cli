@@ -282,3 +282,43 @@ fn with_the_token_switched_off_a_session_is_the_only_way_in_and_logout_and_forge
     assert!(send(addr, "GET", "/api/projects", &session, b"").0.contains("401"));
     assert!(stream_status(&session).contains("401"));
 }
+
+#[test]
+fn removing_a_passkey_on_the_machine_ends_its_sessions_at_once_and_removing_the_last_reopens_token_enrolment() {
+    let (server, roots) = start("removed");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let (mut phone, mut tablet) = (Device::new(55), Device::new(66));
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let sign_in = |device: &mut Device| {
+        let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+        cookie_from(&send(addr, "POST", "/auth/login/finish", &[], &device.login_body(&json(&body))).1)
+    };
+    let phone_cookie = sign_in(&mut phone);
+    let proxied = |cookie: &str| vec![("Cookie", cookie.to_string()), ("X-Forwarded-For", "100.64.0.9".to_string())];
+    let api = |cookie: &str| {
+        let headers = proxied(cookie);
+        let borrowed: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        send(addr, "GET", "/api/projects", &borrowed, b"").0
+    };
+    // The phone adds the tablet from its own session.
+    let headers = proxied(&phone_cookie);
+    let borrowed: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &borrowed, b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &borrowed, &tablet.register_body(&json(&body), "tablet")).0.contains("200"));
+    let tablet_cookie = sign_in(&mut tablet);
+    assert!(api(&phone_cookie).contains("200") && api(&tablet_cookie).contains("200"));
+
+    // The phone is lost: removed on the machine, its session stops working, the tablet's does not.
+    PasskeyStore::open(&roots).remove("phone").unwrap();
+    assert!(api(&phone_cookie).contains("401"));
+    assert!(api(&tablet_cookie).contains("200"));
+    assert!(send(addr, "GET", "/auth/status", &borrowed, b"").2.contains("\"signed_in\":false"));
+    assert!(send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth), ("X-Forwarded-For", "100.64.0.9")], b"{}").0.contains("401"), "the token cannot enrol while a passkey remains");
+
+    // The last one removed: nobody is signed in and the token enrols again.
+    PasskeyStore::open(&roots).remove("tablet").unwrap();
+    assert!(api(&tablet_cookie).contains("401"));
+    assert!(send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth), ("X-Forwarded-For", "100.64.0.9")], b"{}").0.contains("200"));
+}
