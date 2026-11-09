@@ -948,14 +948,14 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
           buffer = blocks.pop();
           const fresh = [];
           for (const event of blocks.map(streamedEvent)) {
-            if (event === null || ids.current.has(event.event_id)) continue;
+            if (event === null) continue;
+            // The place to resume from moves with every event read, shown already or not.
+            last.current = event.event_id;
+            if (ids.current.has(event.event_id)) continue;
             ids.current.add(event.event_id);
             fresh.push(event);
           }
-          if (fresh.length > 0) {
-            last.current = fresh[fresh.length - 1].event_id;
-            setMore((known) => [...known, ...fresh]);
-          }
+          if (fresh.length > 0) setMore((known) => [...known, ...fresh]);
         }
         again();
       } catch (failure) {
