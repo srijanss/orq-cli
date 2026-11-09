@@ -82,3 +82,18 @@ fn a_filter_that_matches_nothing_says_so() {
     let last = out["frames"].as_array().unwrap().last().unwrap();
     assert!(texts(last).contains("No reviews match these filters."), "{out}");
 }
+
+#[test]
+fn clearing_a_filter_brings_back_its_rows_while_another_filter_stays() {
+    if !web_deps::ready() {
+        return;
+    }
+    let set = |filter: &str, value: &str| json!({"set": format!("select[data-filter={filter}]"), "value": value});
+    let steps = json!([{"submit": TOKEN}, set("status", "approved"), set("risk", "high"), set("status", ""), set("risk", "")]);
+    let out = run(json!([list()]), steps).unwrap();
+    let frames = out["frames"].as_array().unwrap();
+    let n = frames.len();
+    assert_eq!(rows(&frames[n - 3]), ["f-middle"], "both filters: {out}");
+    assert_eq!(rows(&frames[n - 2]), ["f-newest", "f-middle"], "status cleared, risk stays: {out}");
+    assert_eq!(rows(&frames[n - 1]), ["f-newest", "f-middle", "f-old", "f-undated"], "all back, newest first: {out}");
+}
