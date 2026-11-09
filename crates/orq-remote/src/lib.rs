@@ -137,7 +137,18 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         }
     }
 
-    if method == "GET" || method == "HEAD" {
+    let reads = method == "GET" || method == "HEAD";
+    if !reads && path.starts_with("/api/") {
+        if let Some(auth) = shared.auth.clone() {
+            let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+            let (origin, presented, cookie, roots) = (text("origin"), text("x-csrf-token"), cookie.clone(), shared.state.roots.clone());
+            let allowed = tokio::task::spawn_blocking(move || auth.change_allowed(&roots, cookie.as_deref(), origin.as_deref(), presented.as_deref())).await.unwrap_or(false);
+            if !allowed {
+                return json_reply(403, b"{\"error\":\"not allowed\"}".to_vec());
+            }
+        }
+    }
+    if reads {
         let last_event_id = headers.get("last-event-id").and_then(|value| value.to_str().ok()).map(str::to_string);
         if let Some((base, cursor)) = event_stream_target(&path, last_event_id.as_deref()) {
             let credentials = Credentials { forwarded: is_forwarded(&headers), authorization, cookie };

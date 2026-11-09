@@ -405,3 +405,39 @@ fn the_passkey_list_is_refused_to_the_token_to_a_removed_passkeys_session_and_wh
     let (status, _, body) = send(addr, "GET", "/auth/passkeys", &tablet_session, b"");
     assert!(status.contains("401") && !body.contains("tablet"), "{status} {body}");
 }
+
+#[test]
+fn a_state_changing_request_needs_the_session_csrf_token_and_a_same_origin_header() {
+    let (server, _roots) = start("csrf");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let mut phone = Device::new(77);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let (_, head, _) = send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body)));
+    let cookie = cookie_from(&head);
+    let proxy = ("X-Forwarded-For", "100.64.0.9");
+
+    // Only a signed-in page is told its token.
+    assert!(json(&send(addr, "GET", "/auth/status", &[proxy], b"").2)["csrf"].is_null());
+    let status = json(&send(addr, "GET", "/auth/status", &[("Cookie", &cookie), proxy], b"").2);
+    let token = status["csrf"].as_str().expect("a signed-in page gets a token").to_string();
+    assert!(token.len() >= 32 && !cookie.contains(&token), "the token is its own random value");
+
+    let origin = format!("https://{RP}");
+    let post = |headers: &[(&str, &str)]| send(addr, "POST", "/api/projects", headers, b"{}").0;
+    let ok = [("Cookie", cookie.as_str()), proxy, ("Origin", origin.as_str()), ("X-CSRF-Token", token.as_str())];
+    // With both, the request reaches the handler, which has no action routes yet (read-only: 405).
+    assert!(post(&ok).contains("405"), "{}", post(&ok));
+    // Without the token, with a wrong one, without or with a foreign Origin: refused before the handler.
+    assert!(post(&[ok[0], ok[1], ok[2]]).contains("403"));
+    assert!(post(&[ok[0], ok[1], ok[2], ("X-CSRF-Token", "wrong")]).contains("403"));
+    assert!(post(&[ok[0], ok[1], ok[3]]).contains("403"), "no Origin");
+    assert!(post(&[ok[0], ok[1], ("Origin", "https://evil.example"), ok[3]]).contains("403"));
+    assert!(post(&[ok[0], ok[1], ("Origin", "null"), ok[3]]).contains("403"));
+    // Another session's token is no use here, and the bearer token cannot stand in for the session's.
+    assert!(post(&[("Authorization", &auth), ("Origin", &origin), ("X-CSRF-Token", &token)]).contains("403"));
+    // Reading never needs it.
+    assert!(send(addr, "GET", "/api/projects", &[("Cookie", &cookie), proxy], b"").0.contains("200"));
+}

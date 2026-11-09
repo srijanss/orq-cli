@@ -45,6 +45,7 @@ pub struct Sessions {
 
 struct Entry {
     credential: String,
+    csrf: String,
     created: u64,
     expires: u64,
 }
@@ -57,13 +58,14 @@ impl Sessions {
     /// Starts a session at `now` (seconds since the epoch) for the signed-in passkey with this credential id.
     pub fn issue(&self, _proof: PasskeySignIn, credential: &str, now: u64) -> Result<Issued, String> {
         let id = new_id()?;
+        let csrf = new_id()?;
         let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         live.retain(|_, entry| entry.expires > now);
         while live.len() >= MAX_SESSIONS {
             let Some(oldest) = live.iter().min_by_key(|(_, entry)| entry.created).map(|(id, _)| id.clone()) else { break };
             live.remove(&oldest);
         }
-        live.insert(id.clone(), Entry { credential: credential.to_string(), created: now, expires: now.saturating_add(self.lifetime) });
+        live.insert(id.clone(), Entry { credential: credential.to_string(), csrf, created: now, expires: now.saturating_add(self.lifetime) });
         Ok(Issued { cookie: set_cookie(&id, self.lifetime), id })
     }
 
@@ -84,6 +86,19 @@ impl Sessions {
     pub fn credential(&self, id: &str, now: u64) -> Option<String> {
         let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         live.get(id).filter(|entry| entry.expires > now).map(|entry| entry.credential.clone())
+    }
+
+    /// The CSRF token of this session, if it is live at `now`: a random value of its own, handed to the
+    /// signed-in page and asked back on every state-changing request.
+    pub fn csrf(&self, id: &str, now: u64) -> Option<String> {
+        let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.get(id).filter(|entry| entry.expires > now).map(|entry| entry.csrf.clone())
+    }
+
+    /// Whether `presented` is this live session's CSRF token (compared without stopping at the first difference).
+    pub fn csrf_matches(&self, id: &str, presented: &str, now: u64) -> bool {
+        let Some(token) = self.csrf(id, now) else { return false };
+        token.len() == presented.len() && token.bytes().zip(presented.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
     }
 
     /// Logout: ends the session, if it exists, and gives the header that clears the cookie.
@@ -166,6 +181,22 @@ mod tests {
         let attrs: Vec<&str> = a.cookie.split("; ").collect();
         assert_eq!(attrs, [format!("{COOKIE_NAME}={}", a.id).as_str(), "HttpOnly", "Secure", "SameSite=Lax", "Path=/", "Max-Age=100"]);
         assert!(!a.cookie.contains("Domain"));
+    }
+
+    #[test]
+    fn a_session_has_its_own_csrf_token() {
+        let s = sessions();
+        let (a, b) = (start(&s, 1000), start(&s, 1000));
+        let (ta, tb) = (s.csrf(&a.id, 1000).unwrap(), s.csrf(&b.id, 1000).unwrap());
+        assert_ne!(ta, tb);
+        assert_ne!(ta, a.id, "the token is not the session id");
+        assert!(ta.len() >= 32);
+        assert!(s.csrf_matches(&a.id, &ta, 1000));
+        assert!(!s.csrf_matches(&a.id, &tb, 1000), "another session's token");
+        assert!(!s.csrf_matches(&a.id, "", 1000) && !s.csrf_matches(&a.id, &ta[1..], 1000));
+        assert!(!s.csrf_matches("unknown", &ta, 1000));
+        assert_eq!(s.csrf(&a.id, 1100), None, "gone with the session");
+        assert!(!s.csrf_matches(&a.id, &ta, 1100));
     }
 
     #[test]

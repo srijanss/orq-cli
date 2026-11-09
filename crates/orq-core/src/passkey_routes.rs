@@ -102,6 +102,18 @@ impl PasskeyAuth {
         }
     }
 
+    /// The CSRF token of the live session in the `Cookie` header, for the signed-in page to send back.
+    fn csrf_token(&self, cookie: Option<&str>) -> Option<String> {
+        cookie.and_then(session::id_from_cookie_header).and_then(|id| self.sessions.csrf(id, now()))
+    }
+
+    /// Whether a state-changing request may go on: it comes from a live session, names this server's own
+    /// origin, and carries that session's CSRF token. The access token alone never passes.
+    pub fn change_allowed(&self, roots: &StorageRoots, cookie: Option<&str>, origin: Option<&str>, presented: Option<&str>) -> bool {
+        let (Some(origin), Some(presented), Some(id)) = (origin, presented, cookie.and_then(session::id_from_cookie_header)) else { return false };
+        origin == self.host.origin() && self.session_live(roots, cookie) && self.sessions.csrf_matches(id, presented, now())
+    }
+
     /// The answer for an `/auth/...` request; `None` for any other path.
     pub fn handle(&self, roots: &StorageRoots, config: &RemoteConfig, request: &AuthRequest) -> Option<AuthReply> {
         let route = request.path.strip_prefix("/auth/")?;
@@ -116,7 +128,13 @@ impl PasskeyAuth {
         let fields = || serde_json::from_slice::<Value>(request.body).ok().filter(Value::is_object);
         let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
         Some(match (request.method, route) {
-            ("GET", "status") => reply(200, json!({ "passkeys": store.any_registered(), "signed_in": live, "host": self.host.rp_id() })),
+            ("GET", "status") => {
+                let mut status = json!({ "passkeys": store.any_registered(), "signed_in": live, "host": self.host.rp_id() });
+                if let Some(token) = self.csrf_token(request.cookie).filter(|_| live) {
+                    status["csrf"] = json!(token);
+                }
+                reply(200, status)
+            }
             ("GET", "passkeys") if live => match store.list() {
                 Ok(keys) => reply(200, json!({ "passkeys": keys.iter().map(|key| json!({ "label": key.label, "id": key.credential_id })).collect::<Vec<_>>() })),
                 Err(_) => refuse(),
