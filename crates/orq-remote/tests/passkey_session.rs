@@ -322,3 +322,25 @@ fn removing_a_passkey_on_the_machine_ends_its_sessions_at_once_and_removing_the_
     assert!(api(&tablet_cookie).contains("401"));
     assert!(send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth), ("X-Forwarded-For", "100.64.0.9")], b"{}").0.contains("200"));
 }
+
+#[test]
+fn a_session_stops_working_when_the_passkey_store_cannot_be_read_and_the_token_cannot_enrol_then() {
+    let (server, roots) = start("store-failure");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let mut phone = Device::new(77);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let cookie = cookie_from(&send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body))).1);
+    let session = [("Cookie", cookie.as_str()), ("X-Forwarded-For", "100.64.0.9")];
+    assert!(send(addr, "GET", "/api/projects", &session, b"").0.contains("200"));
+
+    // The file becomes unreadable as passkeys: the session is refused rather than trusted.
+    std::fs::write(PasskeyStore::path(&roots), b"{ not json").unwrap();
+    assert!(send(addr, "GET", "/api/projects", &session, b"").0.contains("401"));
+    assert!(send(addr, "GET", "/auth/status", &session, b"").2.contains("\"signed_in\":false"));
+    // And a broken store does not look like an empty one: the token cannot enrol a passkey.
+    let proxied_token = [("Authorization", auth.as_str()), ("X-Forwarded-For", "100.64.0.9")];
+    assert!(send(addr, "POST", "/auth/register/begin", &proxied_token, b"{}").0.contains("401"));
+}
