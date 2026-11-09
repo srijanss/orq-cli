@@ -367,3 +367,41 @@ fn a_signed_in_session_lists_the_passkeys_by_label_and_id_and_nobody_else_can() 
     assert!(items[0]["id"].as_str().is_some_and(|id| !id.is_empty()), "{body}");
     assert!(!body.contains("public"), "no key material: {body}");
 }
+
+#[test]
+fn the_passkey_list_is_refused_to_the_token_to_a_removed_passkeys_session_and_when_the_store_is_unreadable() {
+    let (server, roots) = start("list-revoked");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    let (mut phone, mut tablet) = (Device::new(88), Device::new(99));
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let sign_in = |device: &mut Device| {
+        let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+        cookie_from(&send(addr, "POST", "/auth/login/finish", &[], &device.login_body(&json(&body))).1)
+    };
+    let phone_cookie = sign_in(&mut phone);
+    let phone_session = [("Cookie", phone_cookie.as_str()), ("X-Forwarded-For", "100.64.0.9")];
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &phone_session, b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &phone_session, &tablet.register_body(&json(&body), "tablet")).0.contains("200"));
+    let tablet_cookie = sign_in(&mut tablet);
+    let tablet_session = [("Cookie", tablet_cookie.as_str()), ("X-Forwarded-For", "100.64.0.9")];
+
+    // The token cannot list a store that has passkeys in it, directly or through a proxy.
+    for headers in [vec![("Authorization", auth.as_str())], vec![("Authorization", auth.as_str()), ("X-Forwarded-For", "100.64.0.9")]] {
+        let (status, _, body) = send(addr, "GET", "/auth/passkeys", &headers, b"");
+        assert!(status.contains("401") && !body.contains("phone"), "{status} {body}");
+    }
+    assert!(send(addr, "GET", "/auth/passkeys", &tablet_session, b"").0.contains("200"));
+
+    // The phone is removed: its session lists nothing, the tablet's still does.
+    PasskeyStore::open(&roots).remove("phone").unwrap();
+    let (status, _, body) = send(addr, "GET", "/auth/passkeys", &phone_session, b"");
+    assert!(status.contains("401") && !body.contains("tablet"), "{status} {body}");
+    assert!(send(addr, "GET", "/auth/passkeys", &tablet_session, b"").0.contains("200"));
+
+    // An unreadable store refuses even a session that was live.
+    std::fs::write(PasskeyStore::path(&roots), b"{ not json").unwrap();
+    let (status, _, body) = send(addr, "GET", "/auth/passkeys", &tablet_session, b"");
+    assert!(status.contains("401") && !body.contains("tablet"), "{status} {body}");
+}
