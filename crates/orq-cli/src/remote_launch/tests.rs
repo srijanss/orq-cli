@@ -27,11 +27,13 @@ fn fake_orq(dir: &Path) -> PathBuf {
     let path = dir.join("orq");
     let log = dir.join("calls.log");
     let script = format!(
-        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in /home/me/repo/plan.json' >&2; exit 1; fi; exit 0;;\n*--detach*) echo 'run: run-42';;\nesac\n",
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {hang} ]; then exec sleep 30; fi\nif [ -e {flood} ]; then exec yes; fi\ncase \"$*\" in\n*--check*) if [ -e {refuse} ]; then echo 'orq: feature needs a plan in /home/me/repo/plan.json' >&2; exit 1; fi; exit 0;;\n*--detach*) if [ -e {detach_fails} ]; then echo 'orq: cannot start /x' >&2; exit 1; fi; if [ -e {no_id} ]; then echo started; exit 0; fi; echo 'run: run-42';;\nesac\n",
         log = log.display(),
         refuse = dir.join("refuse").display(),
         hang = dir.join("hang").display(),
-        flood = dir.join("flood").display()
+        flood = dir.join("flood").display(),
+        detach_fails = dir.join("detach-fails").display(),
+        no_id = dir.join("no-id").display()
     );
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -88,6 +90,25 @@ fn a_stalled_or_endless_orq_is_stopped_at_the_deadline_and_reported_as_a_failure
         let began = std::time::Instant::now();
         assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))), "{mode}");
         assert!(began.elapsed() < std::time::Duration::from_secs(10), "{mode} took {:?}", began.elapsed());
+        std::fs::remove_file(dir.join(mode)).unwrap();
+    }
+}
+
+#[test]
+fn a_detached_start_that_fails_or_names_no_run_is_a_failure_and_is_not_retried() {
+    let dir = scratch("detach");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config));
+    for (mode, reason) in [("detach-fails", "cannot start /x"), ("no-id", "the run started but reported no run id")] {
+        std::fs::write(dir.join(mode), "").unwrap();
+        let before = std::fs::read_to_string(dir.join("calls.log")).map(|log| log.lines().count()).unwrap_or(0);
+        match launcher.start(&repo, "ready") {
+            Err(LaunchError::Failed(found)) => assert_eq!(found, reason, "{mode}"),
+            other => panic!("{mode}: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), before + 2, "{mode}: one check and one start, no retry");
         std::fs::remove_file(dir.join(mode)).unwrap();
     }
 }
