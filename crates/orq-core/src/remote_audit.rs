@@ -32,8 +32,14 @@ const MAX_LINE: usize = 16 * 1024;
 /// Longest text kept for any one field.
 const MAX_FIELD: usize = 256;
 
+/// Longest value looked at at all; anything longer is replaced whole, so the work stays bounded.
+const MAX_INPUT: usize = 4096;
+
 /// Redacts the whole text first and only then shortens it, so a secret cut by the limit is already gone.
 fn field(text: &str) -> String {
+    if text.len() > MAX_INPUT {
+        return "[too long to record]".to_string();
+    }
     redact(text).chars().take(MAX_FIELD).collect()
 }
 

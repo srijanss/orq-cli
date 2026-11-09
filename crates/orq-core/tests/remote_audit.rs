@@ -145,3 +145,15 @@ fn a_pipe_in_place_of_the_log_is_refused_promptly_for_reads_and_writes() {
     let answer = rx.recv_timeout(std::time::Duration::from_secs(3)).expect("the pipe must not block the audit log");
     assert_eq!(answer, (true, true));
 }
+
+#[test]
+fn an_oversized_field_is_replaced_whole_and_never_scanned_or_kept() {
+    let roots = roots("oversized");
+    let big = format!("{}ghp_abcdefghijklmnopqrstuvwxyz0123456789", "y".repeat(5000));
+    let edge = "e".repeat(4096);
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&big)), 1).unwrap();
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Refused, Some(&edge)), 2).unwrap();
+    let lines = remote_audit::read(&roots, 10).unwrap();
+    assert_eq!(lines[1]["reason"], "[too long to record]", "a value past the input limit is replaced, not cut");
+    assert_eq!(lines[0]["reason"].as_str().unwrap().len(), 256, "a value at the limit is still kept, shortened");
+}
