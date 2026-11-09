@@ -112,3 +112,15 @@ fn a_cursor_naming_no_run_is_not_found() {
     let s = seeded("runs-cursor");
     assert_eq!(get(&s, "/api/projects/alpha/runs?cursor=nope").0, 404);
 }
+
+#[test]
+fn percent_encoded_keys_values_and_cursors_mean_what_they_decode_to() {
+    let s = seeded("runs-encoded");
+    let (status, body) = get(&s, "/api/projects/alpha/runs?%73tate=%72unning");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(ids(&body), ["r4", "r2"], "{body}");
+    let (_, page) = get(&s, "/api/projects/alpha/runs?cursor=r%34");
+    assert_eq!(ids(&page), ["r3", "r2", "r1"], "{page}");
+    assert_eq!(get(&s, "/api/projects/alpha/runs?limit=%31").0, 200);
+    assert_eq!(get(&s, "/api/projects/alpha/runs?cursor=%ZZ").0, 400);
+}

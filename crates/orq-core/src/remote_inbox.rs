@@ -353,11 +353,36 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
 }
 
 /// The filter, sort and paging a list endpoint accepts in its query string.
-struct ListQuery<'a> {
-    state: Option<&'a str>,
+struct ListQuery {
+    state: Option<String>,
     oldest: bool,
     limit: Option<usize>,
-    cursor: Option<&'a str>,
+    cursor: Option<String>,
+}
+
+/// One query component with `%XX` escapes and `+` decoded; `None` when an escape is broken or the bytes are not text.
+fn query_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'%' => {
+                let hex = raw.get(at + 1..at + 3)?;
+                out.push(u8::from_str_radix(hex, 16).ok().filter(|_| hex.bytes().all(|b| b.is_ascii_hexdigit()))?);
+                at += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                at += 1;
+            }
+            byte => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 struct Page {
@@ -371,15 +396,16 @@ struct Page {
 
 const MAX_PAGE: usize = 200;
 
-impl<'a> ListQuery<'a> {
-    fn parse(query: &'a str) -> Result<Self, (u16, &'static str)> {
+impl ListQuery {
+    fn parse(query: &str) -> Result<Self, (u16, &'static str)> {
         let mut parsed = ListQuery { state: None, oldest: false, limit: None, cursor: None };
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            match key {
+            let (Some(key), Some(value)) = (query_decode(key), query_decode(value)) else { return Err((400, "the query is not valid")) };
+            match key.as_str() {
                 "state" | "status" => parsed.state = Some(value),
                 "cursor" => parsed.cursor = Some(value),
-                "sort" => match value {
+                "sort" => match value.as_str() {
                     "newest" => parsed.oldest = false,
                     "oldest" => parsed.oldest = true,
                     _ => return Err((400, "sort must be newest or oldest")),
@@ -398,16 +424,16 @@ impl<'a> ListQuery<'a> {
     fn apply(&self, rows: Value, id_key: &str, state_key: &str) -> Result<Page, (u16, &'static str)> {
         let Value::Array(mut rows) = rows else { return Err((500, "the list could not be read")) };
         let running = rows.iter().filter(|row| row[state_key] == "running").count();
-        if let Some(state) = self.state {
-            rows.retain(|row| row[state_key] == state);
+        if let Some(state) = &self.state {
+            rows.retain(|row| row[state_key] == state.as_str());
         }
         if self.oldest {
             rows.reverse();
         }
         let total = rows.len();
-        let start = match self.cursor {
+        let start = match &self.cursor {
             None => 0,
-            Some(cursor) => rows.iter().position(|row| row[id_key] == cursor).ok_or((404, "not found"))? + 1,
+            Some(cursor) => rows.iter().position(|row| row[id_key] == cursor.as_str()).ok_or((404, "not found"))? + 1,
         };
         let mut rows = rows.split_off(start);
         let mut next_cursor = None;
