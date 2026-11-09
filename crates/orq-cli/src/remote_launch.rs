@@ -137,6 +137,20 @@ impl RunLauncher for CliLauncher {
         let (ok, out, err) = self.run(&detached)?;
         crate::launch_outcome(ok, &out, &err).map_err(LaunchError::Failed)
     }
+
+    fn resume(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
+        // The command validates the run itself; a run id is never allowed to read as an option.
+        if run.is_empty() || run.starts_with('-') {
+            return Err(LaunchError::Refused("not a run id".to_string()));
+        }
+        let args: Vec<std::ffi::OsString> = vec!["run".into(), "resume".into(), run.into(), "--yes".into(), "--detach".into(), "--repo".into(), repo.into()];
+        let (ok, out, err) = self.run(&args)?;
+        if !ok {
+            let reason = crate::launch_outcome(false, "", &err).unwrap_or_else(|reason| reason);
+            return Err(LaunchError::Refused(without_paths(&reason)));
+        }
+        crate::launch_outcome(true, &out, &err).map_err(LaunchError::Failed)
+    }
 }
 
 #[cfg(test)]

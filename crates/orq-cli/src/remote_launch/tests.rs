@@ -159,3 +159,40 @@ fn finite_output_past_the_cap_on_both_streams_is_drained_and_the_run_id_survives
     assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
     assert!(dir.join("drained").exists(), "the caller stopped reading before the program finished writing");
 }
+
+#[test]
+fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
+    let dir = scratch("resume");
+    let repo = repo(&dir);
+    let exe = dir.join("orq");
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {refuse} ]; then echo 'orq: cannot resume r-1: the checkpoint no longer matches /home/me/wt' >&2; exit 1; fi\nif [ -e {no_id} ]; then echo resumed; exit 0; fi\necho 'run: run-77'\n",
+        log = dir.join("calls.log").display(),
+        refuse = dir.join("refuse").display(),
+        no_id = dir.join("no-id").display()
+    );
+    std::fs::write(&exe, script).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = CliLauncher::new(exe, None);
+
+    assert_eq!(launcher.resume(&repo, "r-1").unwrap(), "run-77");
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    assert_eq!(calls.trim_end(), format!("run resume r-1 --yes --detach --repo {}", repo.display()));
+
+    // The command's own refusal is the reason, without the machine's paths.
+    std::fs::write(dir.join("refuse"), "").unwrap();
+    match launcher.resume(&repo, "r-1") {
+        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "cannot resume r-1: the checkpoint no longer matches <path>"),
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_file(dir.join("refuse")).unwrap();
+
+    // A resume that names no run, or a program that is not there, is a failure.
+    std::fs::write(dir.join("no-id"), "").unwrap();
+    assert!(matches!(launcher.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
+    let missing = CliLauncher::new(dir.join("no-such-orq"), None);
+    assert!(matches!(missing.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
+    // A run id that could be read as an option never reaches the command.
+    assert!(matches!(launcher.resume(&repo, "--yes"), Err(LaunchError::Refused(_))));
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 3);
+}
