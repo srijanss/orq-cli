@@ -131,3 +131,16 @@ fn a_failed_dashboard_refresh_keeps_the_counts_marked_outdated_and_a_retry_repla
         assert!(after.contains("beta") && after.contains("Features: 9") && !after.contains("alpha") && !after.contains("Outdated"), "{failure}: {after}");
     }
 }
+
+#[test]
+fn each_project_card_shows_its_name_and_counts_and_the_page_says_when_it_last_updated() {
+    let Some(out) = run(json!([projects()]), json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1];
+    let text = shown(frame);
+    assert!(text.contains("alpha") && text.contains("Active runs: 2") && text.contains("Reviews waiting: 1"), "{text}");
+    let checked = frame["settled"]["checked"].as_array().unwrap();
+    assert_eq!(checked.len(), 1, "one Last checked line on the Dashboard: {out}");
+    assert!(checked[0].as_str().unwrap().starts_with("Last checked"), "{out}");
+    let times = frame["settled"]["times"].as_array().unwrap();
+    assert!(times.iter().any(|t| t["label"] == "Last checked" && t["datetime"].as_str().is_some_and(|d| d.ends_with('Z'))), "an absolute time backs it: {out}");
+}
