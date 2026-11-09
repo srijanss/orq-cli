@@ -636,13 +636,16 @@ function controlPath(control, tail) {
   return "/api/projects/" + encodeURIComponent(control.projectId) + "/" + tail;
 }
 
-function actionRequest(path, token) {
-  return authStatus().then((status) => {
-    const headers = { "Content-Type": "application/json" };
-    if (token !== SESSION) headers.Authorization = "Bearer " + token;
+async function actionRequest(path, token) {
+  const headers = { "Content-Type": "application/json" };
+  if (token === SESSION) {
+    // Only a passkey session carries a CSRF token; a bearer token goes straight out.
+    const status = await authStatus();
     if (status !== null && typeof status.csrf === "string") headers["X-CSRF-Token"] = status.csrf;
-    return fetch(path, { method: "POST", headers, body: "{}", cache: "no-store", referrerPolicy: "no-referrer" });
-  });
+  } else {
+    headers.Authorization = "Bearer " + token;
+  }
+  return fetch(path, { method: "POST", headers, body: "{}", cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
 function RunAction({ kind, label, question, path, token, onSignedOut, onDone, done }) {

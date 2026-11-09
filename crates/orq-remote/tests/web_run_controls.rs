@@ -183,3 +183,12 @@ fn a_successful_action_refreshes_the_list_and_does_not_offer_itself_again() {
     let Some(out) = features_page(Some(true), vec![refused], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
     assert_eq!(count(out["frames"].as_array().unwrap().last().unwrap(), "[data-start]"), 1);
 }
+
+#[test]
+fn a_bearer_action_goes_straight_out_without_asking_for_the_session_status() {
+    let ok = json!({"status": 202, "json": {"run": "run-9"}});
+    let asked = |steps: Vec<Value>| features_page(Some(true), vec![ok.clone(), ledger(Some(true))], steps).map(|out| out["authRequests"].as_array().unwrap().len());
+    let Some(before) = asked(vec![json!({"click": "[data-start]"})]) else { return };
+    let after = asked(vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]).unwrap();
+    assert_eq!(after, before, "a confirmed bearer action adds no /auth request");
+}
