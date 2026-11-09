@@ -43,7 +43,16 @@ pub fn record(roots: &StorageRoots, attempt: &Attempt, now: u64) -> Result<(), S
         "reason": attempt.reason.map(redact),
     });
     let mut file = open(roots, true)?;
-    file.write_all(format!("{line}\n").as_bytes()).map_err(|e| format!("cannot write the audit log: {}", e.kind()))
+    // A write that was cut short leaves a line with no end; the next record starts a line of its own.
+    let torn = file.metadata().map(|meta| meta.len() > 0).unwrap_or(false) && !ends_with_newline(roots);
+    file.write_all(format!("{}{line}\n", if torn { "\n" } else { "" }).as_bytes()).map_err(|e| format!("cannot write the audit log: {}", e.kind()))
+}
+
+fn ends_with_newline(roots: &StorageRoots) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = open(roots, false) else { return false };
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::End(-1)).and_then(|_| file.read_exact(&mut last)).is_ok() && last[0] == b'\n'
 }
 
 /// Opens the log without following a link, and only if it is a regular file this user owns; a file
@@ -78,5 +87,5 @@ pub fn read(roots: &StorageRoots, limit: usize) -> Result<Vec<Value>, String> {
         Err(why) if why == "not found" => return Ok(Vec::new()),
         Err(why) => return Err(why),
     };
-    Ok(text.lines().rev().filter_map(|line| serde_json::from_str(line).ok()).take(limit).collect())
+    Ok(text.lines().rev().filter(|line| !line.is_empty()).map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!({ "damaged": true }))).take(limit).collect())
 }

@@ -70,3 +70,20 @@ fn the_log_is_never_reached_through_a_symlink_and_a_loose_file_is_tightened() {
     remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Allowed, None), 2).unwrap();
     assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
 }
+
+#[test]
+fn a_torn_last_line_does_not_swallow_the_next_attempt_and_the_damage_is_shown() {
+    let roots = roots("torn");
+    remote_audit::record(&roots, &attempt("phone", "run.start", None, Outcome::Allowed, None), 1).unwrap();
+    let file = roots.state.join("remote-actions.jsonl");
+    let mut text = fs::read_to_string(&file).unwrap();
+    text.push_str("{\"time\":2,\"identity\":\"pho"); // a write cut short, with no line end
+    fs::write(&file, text).unwrap();
+
+    remote_audit::record(&roots, &attempt("phone", "run.pause", Some("r1"), Outcome::Allowed, None), 3).unwrap();
+    let lines = remote_audit::read(&roots, 10).unwrap();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0]["action"], "run.pause", "the new attempt is whole and visible");
+    assert_eq!(lines[1], serde_json::json!({"damaged": true}), "the torn line is reported, not hidden");
+    assert_eq!(lines[2]["action"], "run.start");
+}
