@@ -11,6 +11,7 @@ pub mod passkey_routes;
 pub mod provider_observation;
 pub mod prune;
 pub mod redact;
+pub mod remote_audit;
 pub mod remote_inbox;
 pub mod retention;
 pub mod review_inbox;

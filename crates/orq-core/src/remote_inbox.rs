@@ -279,6 +279,12 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             None => error(404, "not found"),
         };
     }
+    if path == "/api/audit" {
+        return match crate::remote_audit::read(roots, AUDIT_LIMIT) {
+            Ok(lines) => reply(200, json!({ "audit": lines })),
+            Err(why) => error(500, &why),
+        };
+    }
     if path == "/api/settings" {
         return match provider.map(|provider| provider.settings()) {
             Some(Ok(Some(settings))) => reply(200, json!({ "settings": settings })),
@@ -394,6 +400,8 @@ struct Page {
     running: usize,
 }
 
+/// Most audit lines one look returns, newest first.
+const AUDIT_LIMIT: usize = 200;
 const MAX_PAGE: usize = 200;
 
 impl ListQuery {
