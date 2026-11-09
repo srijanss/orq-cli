@@ -114,3 +114,13 @@ fn filtering_a_paused_log_down_to_a_few_lines_and_back_keeps_it_paused() {
     assert_eq!(top(last), 0, "{out}");
     assert!(says(last, "2 new lines"), "{:?}", texts(last));
 }
+
+#[test]
+fn filtering_a_paused_log_to_a_shorter_but_still_scrollable_result_keeps_it_paused() {
+    // Paused at 50 of 15 lines; "line 1" keeps six lines, whose largest offset is 30, so the browser
+    // moves the offset there and says so with a scroll event while the result still overflows.
+    let Some(out) = run(json!([page(15), projects(), page(17)]), json!([{"submit": TOKEN}, {"scrollto": BOX, "top": 50}, {"set": "[data-log-filter]", "value": "line 1"}, {"set": "[data-log-filter]", "value": ""}, {"tick": EVERY}])) else { return };
+    let last = &out["frames"][5];
+    assert!(says(last, "2 new lines"), "still paused, not following: {:?}", texts(last));
+    assert!(top(last) < 140, "it did not jump to the new bottom: {out}");
+}

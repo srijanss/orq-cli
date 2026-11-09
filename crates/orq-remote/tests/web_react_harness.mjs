@@ -211,6 +211,15 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       clientHeight: { get() { return scenario.scroller.client; }, configurable: true },
       scrollTop: { get() { return Math.min(tops.get(this) || 0, most(this)); }, set(value) { tops.set(this, Math.max(0, Math.min(value, most(this)))); }, configurable: true },
     });
+    // Content that shrank under a stored offset: the browser moves the offset and fires a scroll event.
+    new window.MutationObserver(() => {
+      for (const el of window.document.querySelectorAll("pre")) {
+        if ((tops.get(el) || 0) > most(el)) {
+          tops.set(el, most(el));
+          el.dispatchEvent(new window.Event("scroll"));
+        }
+      }
+    }).observe(window.document, { childList: true, subtree: true });
   }
   window.eval(readFileSync(bundlePath, "utf8"));
   await settle();

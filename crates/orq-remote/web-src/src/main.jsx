@@ -1039,11 +1039,14 @@ function LogLines({ shown, total }) {
   const box = useRef(null);
   const atBottom = useRef(true);
   const first = useRef(true);
+  const pinned = useRef(null);
   const [seen, setSeen] = useState(total);
   const onScroll = () => {
     const el = box.current;
-    // Content that fits has no position to keep: a clamp after filtering must not unpause a viewer.
-    if (el.scrollHeight <= el.clientHeight) return;
+    // The browser moves a scroller whose content shrank and says so with a scroll event; that is the
+    // content moving, not the viewer, so it must not change whether they are following.
+    if (pinned.current === el.scrollTop) return;
+    pinned.current = null;
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
     if (atBottom.current) setSeen(total);
   };
@@ -1065,6 +1068,9 @@ function LogLines({ shown, total }) {
     if (atBottom.current) {
       box.current.scrollTop = box.current.scrollHeight;
       setSeen(total);
+    } else {
+      // Reading the offset settles any clamp now, so the scroll event that follows can be told apart.
+      pinned.current = box.current.scrollTop;
     }
   }, [shown.length, total]);
   const waiting = Math.max(0, total - seen);
