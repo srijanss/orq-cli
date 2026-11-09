@@ -219,6 +219,28 @@ pub trait ProjectsProvider {
     fn start_run(&self, _id: &str, _feature: &str) -> Result<RunStart, String> {
         Ok(RunStart::Unknown)
     }
+
+    /// Pauses or resumes run `run` of project `id`. A provider that cannot do either does not know the run.
+    fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
+}
+
+/// What the web may ask of a run that already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunControl {
+    Pause,
+    Resume,
+}
+
+/// How a request to pause or resume a run ended.
+pub enum RunControlOutcome {
+    /// The run now concerned: the paused run, or the run that carries on after a resume.
+    Done(String),
+    /// Why this run may not be paused or resumed now; safe to show.
+    Refused(String),
+    /// There is no such project or run.
+    Unknown,
 }
 
 /// How a request to start a run ended.
@@ -283,6 +305,15 @@ fn run_start_target(path: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// The project, run and control of `/api/projects/{id}/runs/{run}/pause` or `.../resume`, when the path has that shape.
+fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
+    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "runs", run, "pause"] if !id.is_empty() && !run.is_empty() => Some((id, run, RunControl::Pause)),
+        [id, "runs", run, "resume"] if !id.is_empty() && !run.is_empty() => Some((id, run, RunControl::Resume)),
+        _ => None,
+    }
+}
+
 /// Whether the settings switch remote actions on; anything unreadable counts as off.
 fn remote_actions_on(roots: &StorageRoots) -> bool {
     public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
@@ -325,6 +356,47 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
     }
 }
 
+/// Pauses or resumes a run for the web, if actions are on, and leaves an audit line for the attempt.
+fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let (action, failed) = match control {
+        RunControl::Pause => ("run.pause", "the run could not be paused"),
+        RunControl::Resume => ("run.resume", "the run could not be resumed"),
+    };
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action, project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    let plain = run.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !run.starts_with('.');
+    if !plain {
+        audit(Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    match provider.map(|provider| provider.control_run(id, run, control)) {
+        Some(Ok(RunControlOutcome::Done(now_run))) => {
+            audit(Outcome::Allowed, Some(run), None);
+            reply(202, json!({ "run": now_run }))
+        }
+        Some(Ok(RunControlOutcome::Refused(why))) => {
+            audit(Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, None, Some("no such project or run"));
+            error(404, "not found")
+        }
+    }
+}
+
 fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
     // A stranger's address and a bad token are refused identically, so a
     // caller learns nothing about which check failed.
@@ -338,6 +410,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             "GET" | "HEAD" => {}
             _ => return error(405, "this view is read-only"),
         }
+    }
+    if let (Some((id, run, control)), "POST") = (run_control_target(path), request.method) {
+        return control_run(roots, provider, id, run, control);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
