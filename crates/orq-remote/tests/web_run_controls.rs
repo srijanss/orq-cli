@@ -192,3 +192,47 @@ fn a_bearer_action_goes_straight_out_without_asking_for_the_session_status() {
     let after = asked(vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]).unwrap();
     assert_eq!(after, before, "a confirmed bearer action adds no /auth request");
 }
+
+fn start_with(reply: Value) -> Option<Value> {
+    features_page(Some(true), vec![reply], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})])
+}
+
+fn last_frame(out: &Value) -> &Value {
+    out["frames"].as_array().unwrap().last().unwrap()
+}
+
+fn posts(out: &Value) -> usize {
+    out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "POST").count()
+}
+
+#[test]
+fn an_action_the_server_refuses_to_authenticate_goes_back_to_sign_in_and_is_not_retried() {
+    let Some(out) = start_with(json!({"status": 401})) else { return };
+    let last = last_frame(&out);
+    assert_eq!(last["settled"]["inputs"].as_array().unwrap().len(), 1, "the token prompt is back: {last}");
+    assert_eq!(count(last, "[data-start]"), 0);
+    assert_eq!(posts(&out), 1, "no retry");
+}
+
+#[test]
+fn a_forbidden_action_says_so_and_stays_usable_without_a_retry() {
+    let Some(out) = start_with(json!({"status": 403, "json": {"error": "not allowed"}})) else { return };
+    let last = last_frame(&out);
+    assert!(frame_texts(last).iter().any(|t| t == "Not allowed."), "{last}");
+    assert_eq!(count(last, "[data-start]"), 1, "still usable");
+    assert_eq!(posts(&out), 1);
+}
+
+#[test]
+fn a_network_failure_or_an_unreadable_reply_is_a_plain_message_and_the_control_stays_usable() {
+    let Some(out) = start_with(json!({"reject": true})) else { return };
+    let last = last_frame(&out);
+    assert!(frame_texts(last).iter().any(|t| t.contains("could not be reached")), "{last}");
+    assert_eq!(count(last, "[data-start]"), 1);
+    assert_eq!(posts(&out), 1, "no retry");
+
+    let Some(out) = start_with(json!({"status": 500, "badjson": true})) else { return };
+    let last = last_frame(&out);
+    assert!(frame_texts(last).iter().any(|t| t.contains("could not be completed")), "{last}");
+    assert_eq!(count(last, "[data-start]"), 1);
+}
