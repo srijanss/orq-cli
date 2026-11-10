@@ -363,12 +363,15 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .feature-state.state-pending { color: var(--status-pending); background: var(--status-pending-bg); }
 .feature-state.state-abandoned { color: var(--status-failed); background: var(--status-failed-bg); }
 .feature-state.state-in_progress { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.feature-tabs { display: flex; gap: 0.25rem; margin: 1rem 0 0.75rem; border-bottom: 1px solid var(--border); }
-.feature-tabs button { flex: 1; min-height: 44px; padding: 0 0.75rem; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); font: inherit; font-weight: 600; cursor: pointer; }
-.feature-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
-.feature-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-.feature-detail-head h2 { margin: 0; overflow-wrap: anywhere; }
-.back-link { display: inline-block; margin-bottom: 0.75rem; }
+.feature-tabs { display: flex; gap: 1.5rem; margin: 1rem 0 0.75rem; border-bottom: 1px solid var(--border); }
+.feature-tabs button { min-height: 44px; padding: 0 0.25rem; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); font: inherit; font-weight: 600; cursor: pointer; }
+.feature-tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.feature-detail-head { display: flex; align-items: flex-start; gap: 0.75rem; }
+.back-arrow { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; }
+.feature-detail-title { min-width: 0; flex: 1; }
+.feature-detail-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+.feature-detail-line h2 { margin: 0; overflow-wrap: anywhere; }
+.feature-detail-sub { margin: 0.25rem 0 0; color: var(--text-muted); }
 .muted { color: var(--text-muted); }
 .dependencies li { margin: 0; }
 .missing-dependency em { color: var(--stale); font-style: normal; font-weight: 600; }

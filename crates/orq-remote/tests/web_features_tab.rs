@@ -291,3 +291,10 @@ fn a_feature_without_a_test_file_says_so() {
     let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"test\"]"}])) else { return };
     assert!(shown(&out["frames"][2]).iter().any(|t| t == "No test file recorded."), "{out}");
 }
+
+#[test]
+fn the_arrow_on_a_feature_returns_to_the_projects_features_and_there_is_no_all_features_link() {
+    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects(), ledger()]), json!([{"submit": TOKEN}, {"nav": "[data-back=\"features\"]"}])) else { return };
+    assert!(!shown(&out["frames"][1]).iter().any(|t| t == "All features"), "{out}");
+    assert_eq!(out["frames"][2]["settled"]["path"], "/projects/alpha/features", "{out}");
+}

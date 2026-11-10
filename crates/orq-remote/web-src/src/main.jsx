@@ -979,15 +979,17 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
   const listPath = "/projects/" + encodeURIComponent(projectId) + "/features";
   return (
     <>
-      <a className="back-link" href={listPath} data-back="features" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(listPath); } }}>All features</a>
       <section className="card feature-detail">
         <div className="feature-detail-head">
-          <h2>{feature.name}</h2>
-          <FeatureState status={feature.status} />
+          <button type="button" className="back-arrow" data-back="features" aria-label="Back to features" onClick={() => navigate(listPath)}><Icon name="arrowLeft" size={22} /></button>
+          <div className="feature-detail-title">
+            <div className="feature-detail-line">
+              <h2>{feature.name}</h2>
+              <FeatureState status={feature.status} />
+            </div>
+            <p className="feature-detail-sub">{["Stage: " + (facts.stage === null ? "—" : facts.stage), ...(validTime(facts.updated) === null ? [] : [<Fragment key="u">{"Updated "}<Moment at={facts.updated} /></Fragment>]), ...(validTime(feature.recorded_at ?? null) === null ? [] : [<Fragment key="r">{"Recorded "}<Moment at={feature.recorded_at} /></Fragment>])].flatMap((part, index) => (index === 0 ? [part] : [" · ", part]))}</p>
+          </div>
         </div>
-        <p>{"Stage: " + (facts.stage === null ? "—" : facts.stage)}</p>
-        <Stamp label="Updated" at={facts.updated} />
-        <Stamp label="Recorded" at={feature.recorded_at ?? null} />
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
