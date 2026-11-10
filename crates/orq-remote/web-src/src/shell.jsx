@@ -214,6 +214,20 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
           ) : null}
         </div>
       </aside>
+      <nav className="tabbar" aria-label="Sections">
+        {entries.map((entry) => (
+          <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                navigate(entry.href);
+              }
+            }}
+          >
+            <Icon name={entry.icon} />
+            <span className="tab-label">{entry.label}</span>
+          </a>
+        ))}
+      </nav>
       <div className="sr-only" role="status" aria-live="polite" data-announcer>{announcement}</div>
       <main className="content">{children}</main>
     </div>

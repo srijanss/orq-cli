@@ -139,7 +139,7 @@ fn the_top_bar_is_only_for_phones() {
     let css = css();
     assert!(block(&css, ".topbar {").contains("display: none"), "no empty bar above the desktop layout");
     let phone = &css[css.find("@media (max-width: 700px)").unwrap()..];
-    assert!(phone.contains(".topbar { display: flex"), "the phone keeps the bar for its menu button");
+    assert!(phone.contains(".topbar { display: grid"), "the phone keeps the bar for its menu button");
 }
 
 #[test]

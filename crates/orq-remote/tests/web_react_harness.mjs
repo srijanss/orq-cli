@@ -168,7 +168,7 @@ function snapshot() {
     if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
   }
   const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.getAttribute("data-value"), options: [...root.querySelectorAll("[data-project-option]")].map((o) => o.getAttribute("data-project-option")) }));
-  const sidebarLinks = [...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"));
+  const sidebarLinks = [...root.querySelectorAll(".sidebar nav a")].map((a) => a.getAttribute("href"));
   const kept = (name) => { try { return Object.keys(window[name]).length === 0 ? null : Object.fromEntries(Object.entries(window[name]).map(([k, v]) => [k, v === scenario.token ? "<the token>" : "<something else>"])); } catch (blocked) { return "blocked"; } };
   const checked = [...root.querySelectorAll("[data-last-checked]")].map((el) => el.textContent);
   // A digest of the real session entries, so a test sees any change to a stored value without the value being printed.

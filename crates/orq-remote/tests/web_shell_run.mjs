@@ -45,7 +45,7 @@ try {
     const doc = window.document;
     const active = doc.activeElement;
     return {
-      links: [...doc.querySelectorAll("nav a")].map((a) => ({ text: a.querySelector(".label").textContent.trim(), href: a.getAttribute("href"), current: a.getAttribute("aria-current") })),
+      links: [...doc.querySelectorAll(".sidebar nav a")].map((a) => ({ text: a.querySelector(".label").textContent.trim(), href: a.getAttribute("href"), current: a.getAttribute("aria-current") })),
       menuExpanded: doc.querySelector("[data-menu-button]")?.getAttribute("aria-expanded") ?? null,
       railCollapsed: doc.querySelector("[data-shell]")?.classList.contains("collapsed") ?? null,
       drawerOpen: doc.querySelector("[data-shell]")?.classList.contains("drawer-open") ?? null,

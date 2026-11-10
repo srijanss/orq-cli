@@ -209,16 +209,22 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .sidebar nav a[aria-current="page"] { font-weight: 500; background: var(--status-running-bg); }
 .shell.collapsed .sidebar .label { display: none; }
 .close-button, .scrim, [data-menu-button] { display: none; }
+.tabbar { display: none; }
 @media (max-width: 700px) {
   .shell, .shell.collapsed { grid-template-columns: 1fr; grid-template-areas: "bar" "main"; grid-template-rows: auto 1fr; }
-  .topbar { display: flex; }
+  .topbar { display: grid; grid-template-columns: 2.75rem 1fr 2.75rem; align-items: center; position: sticky; top: 0; z-index: 5; }
+  .topbar .brand { justify-self: center; }
+  .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; padding-bottom: env(safe-area-inset-bottom); background: var(--sidebar); border-top: 1px solid var(--border); }
+  .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.125rem; min-height: 56px; font-size: 0.6875rem; text-decoration: none; color: var(--text-muted); }
+  .tabbar a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+  .sidebar nav > .sidebar-divider, .sidebar nav > a { display: none; }
   [data-menu-button] { display: inline-block; }
   .rail-button { display: none; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: min(80vw, 280px); z-index: 20; background: var(--sidebar); transform: translateX(-100%); visibility: hidden; }
   .shell.drawer-open .sidebar { transform: none; visibility: visible; }
   .shell.collapsed .sidebar .label { display: inline; }
   .shell.drawer-open .close-button { display: inline-block; }
-  .content { padding: 0.75rem; }
+  .content { padding: 0.75rem; padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
   .sidebar nav a, .sign-out, .project-switcher, .sidebar .project-list button { min-height: 44px; }
   .sidebar .theme-toggle { min-height: 44px; min-width: 44px; }
   .scrim { display: block; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5); }
