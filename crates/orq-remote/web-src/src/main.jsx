@@ -1352,14 +1352,18 @@ function StepIcon({ failed, done }) {
 }
 
 // How long a step took, from its first event to its last, when both times are readable.
-function StepTime({ events }) {
+function stepDuration(events) {
   const first = validTime(events[0].occurred_at);
   const last = validTime(events[events.length - 1].occurred_at);
   if (first === null || last === null) return null;
   const seconds = Math.round((last - first) / 1000);
   if (seconds < 1) return null;
-  const text = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m " + (seconds % 60) + "s" : Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
-  return <span className="attempt-time">{text}</span>;
+  return seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m " + (seconds % 60) + "s" : Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+}
+
+function StepTime({ events }) {
+  const text = stepDuration(events);
+  return text === null ? null : <span className="attempt-time">{text}</span>;
 }
 
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
@@ -1389,10 +1393,57 @@ function EventTimeline({ events, rounds = 0 }) {
   );
 }
 
-// One run: its header, then a page of its events in the order they happened. The next page is
-// its own address, so every request stays one plain GET.
-function RunTimeline({ timeline, listPath, runPath, follow }) {
+const STEP_STATES = { done: "Done", failed: "Failed", current: "In progress", open: "Not finished" };
+
+// The run's stages as one line of steps: each finished, failed, or still going, with how long it took.
+// A stage passed is done even without its own completion event, since the run moved on from it.
+function RunSteps({ events, rounds, running }) {
+  const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
+  return (
+    <ol className="run-steps">
+      {steps.map((step, at) => {
+        const last = at === steps.length - 1;
+        const kind = step.failed ? "failed" : !last || step.events.some((event) => event.kind.endsWith(".completed")) ? "done" : running ? "current" : "open";
+        const took = stepDuration(step.events);
+        const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
+        return (
+          <li key={step.events[0].event_id} className="run-step" data-step={kind}>
+            <span className="run-step-mark" aria-hidden="true">{kind === "done" ? <Icon name="check" size={14} /> : kind === "failed" ? <Icon name="close" size={14} /> : null}</span>
+            <span className="run-step-name">{name}</span>
+            <span className="sr-only">{STEP_STATES[kind]}</span>
+            <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events"]];
+
+// One run: its header, then three tabs that switch in place: its steps, its logs, and every event.
+// The events are fetched a page at a time; the next page is its own address, so every request stays
+// one plain GET. The logs are fetched the first time their tab opens, and kept while it is hidden.
+function RunTimeline({ timeline, listPath, runPath, follow, logs, startTab = "timeline" }) {
   const { run, events, next_cursor: next } = timeline;
+  const [tab, setTab] = useState(startTab);
+  const [logsOpened, setLogsOpened] = useState(startTab === "logs");
+  const rounds = timeline.review_rounds;
+  const live = next === null && follow !== null;
+  const choose = (id) => {
+    setTab(id);
+    if (id === "logs") setLogsOpened(true);
+  };
+  const panels = (all) => (
+    <>
+      <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} />}
+      </div>
+      <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
+        {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} />}
+      </div>
+    </>
+  );
   return (
     <section className="card feature-detail run-detail">
       <div className="feature-detail-head">
@@ -1410,26 +1461,19 @@ function RunTimeline({ timeline, listPath, runPath, follow }) {
           </p>
         </div>
       </div>
-      <RunTabs tab="timeline" runPath={runPath} />
-      <div className="feature-panel" id="run-panel" role="tabpanel" aria-labelledby="run-tab-timeline">
-        {events.length === 0 ? <p>No events recorded.</p> : null}
-        {next === null && follow !== null ? null : <EventTimeline events={events} rounds={timeline.review_rounds} />}
-        {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
-        {next === null && follow !== null ? <FollowLive key={follow.base} rounds={timeline.review_rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
+      <div className="feature-tabs" role="tablist" aria-label="Run details">
+        {RUN_TABS.map(([id, label]) => (
+          <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls={"run-panel-" + id} data-run-tab={id} onClick={() => choose(id)}>{label}</button>
+        ))}
       </div>
+      {live ? <FollowLive key={follow.base} rounds={rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} draw={panels} quiet={tab === "logs"} /> : panels(events)}
+      {next !== null && tab !== "logs" && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
+      {logsOpened && (
+        <div className="feature-panel" id="run-panel-logs" role="tabpanel" aria-labelledby="run-tab-logs" hidden={tab !== "logs"}>
+          <RunLogs {...logs} runId={run.run_id} />
+        </div>
+      )}
     </section>
-  );
-}
-
-// A run's two views, each its own address: the timeline and the log files.
-function RunTabs({ tab, runPath }) {
-  const tabs = [["timeline", "Timeline", runPath], ["logs", "Logs", runPath + "/logs"]];
-  return (
-    <div className="feature-tabs" role="tablist" aria-label="Run details">
-      {tabs.map(([id, label, href]) => (
-        <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="run-panel" data-run-tab={id} data-open={id === "logs" ? "logs" : undefined} onClick={() => { if (tab !== id) navigate(href); }}>{label}</button>
-      ))}
-    </div>
   );
 }
 
@@ -1449,7 +1493,7 @@ function streamedEvent(block) {
 // The events that came after the page was drawn, read from the run's event stream with the token in
 // the header (the browser's own stream object cannot send one). A stream that ends or breaks is
 // opened again from the last event seen, and an event already shown is never shown twice.
-function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
+function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet = false }) {
   const [more, setMore] = useState([]);
   const [status, setStatus] = useState("live");
   const [retry, setRetry] = useState(0);
@@ -1540,9 +1584,9 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut }) {
   const have = new Set(shown.map((event) => event.event_id));
   return (
     <>
-      <EventTimeline events={[...shown, ...more.filter((event) => !have.has(event.event_id))]} rounds={rounds} />
-      {gap && <p className="stream-gap" role="status">Some events may be missing</p>}
-      <p className="live-status" data-live>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
+      {draw([...shown, ...more.filter((event) => !have.has(event.event_id))])}
+      {gap && <p className="stream-gap" role="status" hidden={quiet}>Some events may be missing</p>}
+      <p className="live-status" data-live hidden={quiet}>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );
 }
@@ -1562,30 +1606,49 @@ function parseLogPage(data) {
   return ok ? data : null;
 }
 
-function LogFiles({ files, runPath, runId }) {
+// The run's logs inside its Logs tab: the file list is read once, then one file's page at a time.
+function RunLogs({ token, onSignedOut, reloads, base, file, cursor, runId }) {
+  return <Loaded key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
+}
+
+// One file's lines with its filters, follow switch and pager. The filters stay while another page of
+// the same file opens; choosing another file starts it unfiltered on its first page. Paging keeps the
+// cursors already passed, so Prev goes back without asking the server where it was.
+function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, runId }) {
+  const openable = files.filter((file) => LOG_FILE.test(file.name));
+  const [name, setName] = useState(wanted !== null ? wanted : openable.length > 0 ? openable[0].name : null);
+  const [pages, setPages] = useState([wanted !== null ? cursor : null]);
+  const [text, setText] = useState("");
+  const [level, setLevel] = useState("all");
+  const [follow, setFollow] = useState(true);
+  const filters = { text, setText, level, setLevel };
+  const pick = (next) => {
+    setName(next);
+    setPages([null]);
+    setText("");
+    setLevel("all");
+  };
+  const at = pages[pages.length - 1];
+  const pagePath = name === null ? null : base + "/" + encodeURIComponent(name) + (at === null ? "" : "/after/" + encodeURIComponent(at));
+  const pager = { number: pages.length, onPrev: pages.length > 1 ? () => setPages(pages.slice(0, -1)) : null, onNext: (next) => setPages([...pages, next]) };
   return (
-    <section className="card feature-detail run-detail">
-      <div className="feature-detail-head">
-        <button type="button" className="back-arrow" data-back="run" aria-label="Back to the run" onClick={() => navigate(runPath)}><Icon name="arrowLeft" size={22} /></button>
-        <div className="feature-detail-title">
-          <div className="feature-detail-line"><h2>Logs</h2></div>
-          <p className="feature-detail-sub">{"Run " + runId}</p>
-        </div>
+    <div className="run-logs">
+      <div className="run-logs-head">
+        <h3>{"Run " + runId + " · Logs"}</h3>
+        <button type="button" role="switch" className="follow-switch" data-log-follow aria-checked={follow ? "true" : "false"} onClick={() => setFollow(!follow)}>
+          <span>Follow</span>
+          <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+        </button>
       </div>
-      <RunTabs tab="logs" runPath={runPath} />
-      <div className="feature-panel" id="run-panel" role="tabpanel" aria-labelledby="run-tab-logs">
-      {files.length === 0 ? <p>No logs for this run.</p> : null}
-      <ul>
-        {files.map((file) => (
-          <li key={file.name} className="log-file card">
-            <strong>{file.name}</strong>
-            <span>{file.bytes + " bytes"}</span>
-            {LOG_FILE.test(file.name) ? <button type="button" data-file={file.name} onClick={() => navigate(runPath + "/logs/" + encodeURIComponent(file.name))}>Show</button> : null}
-          </li>
-        ))}
-      </ul>
-      </div>
-    </section>
+      {openable.length > 1 ? (
+        <select className="log-file-select" data-log-file aria-label="Log file" value={name} onChange={(event) => pick(event.target.value)}>
+          {openable.map((file) => (
+            <option key={file.name} value={file.name}>{file.name + " · " + file.bytes + " bytes"}</option>
+          ))}
+        </select>
+      ) : name !== null ? <p className="log-file-name">{name}</p> : null}
+      {name === null ? <p>No logs for this run.</p> : <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
+    </div>
   );
 }
 
@@ -1615,24 +1678,27 @@ function saveLines(name, lines) {
   URL.revokeObjectURL(url);
 }
 
-// Holds a log file's filters above the page that is loaded, so they stay while its next page opens.
-// It is keyed by the file, so another file starts unfiltered.
-function LogView({ token, onSignedOut, reloads, pagePath, logsPath, filePath }) {
-  const [text, setText] = useState("");
-  const [level, setLevel] = useState("all");
-  const filters = { text, setText, level, setLevel };
-  return <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} logsPath={logsPath} filePath={filePath} filters={filters} />} onSignedOut={onSignedOut} />;
-}
-
 // How near the bottom still counts as at the bottom, in pixels.
 const BOTTOM_SLACK = 24;
+// A time a line starts with, drawn apart from the rest of the line.
+const LOG_TIME = /^(\[?(?:\d{4}-\d\d-\d\d[T ])?\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?\]?)(?=\s)/;
 
-// The lines, which follow new ones only while the viewer is at the bottom. Scrolling up pauses
-// that, and the lines that arrived since are counted beside a control that jumps to the latest.
-function LogLines({ shown, total }) {
+function LogLine({ line }) {
+  const time = LOG_TIME.exec(line);
+  return (
+    <div className="log-line" data-level={lineLevel(line)}>
+      {time === null ? line : <><span className="log-time">{time[1]}</span>{line.slice(time[1].length)}</>}
+    </div>
+  );
+}
+
+// The lines, which follow new ones while Follow is on. Scrolling up turns it off, and the lines that
+// arrived since are counted beside a control that jumps to the latest; reaching the bottom turns it on.
+function LogLines({ shown, total, follow = true, onFollow = () => {} }) {
   const box = useRef(null);
   const atBottom = useRef(true);
   const first = useRef(true);
+  const mounted = useRef(false);
   const pinned = useRef(null);
   const [seen, setSeen] = useState(total);
   const onScroll = () => {
@@ -1642,12 +1708,14 @@ function LogLines({ shown, total }) {
     if (pinned.current === el.scrollTop) return;
     pinned.current = null;
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
+    onFollow(atBottom.current);
     if (atBottom.current) setSeen(total);
   };
   const toLatest = () => {
     const el = box.current;
     el.scrollTop = el.scrollHeight;
     atBottom.current = true;
+    onFollow(true);
     setSeen(total);
   };
   useLayoutEffect(() => {
@@ -1656,7 +1724,9 @@ function LogLines({ shown, total }) {
       // A log opened taller than its box starts at the top, so it is not following.
       first.current = false;
       const el = box.current;
-      if (el.scrollHeight > el.clientHeight) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
+      if (!follow) atBottom.current = false;
+      else if (el.scrollHeight > el.clientHeight) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
+      onFollow(atBottom.current);
       return;
     }
     if (atBottom.current) {
@@ -1667,12 +1737,21 @@ function LogLines({ shown, total }) {
       pinned.current = box.current.scrollTop;
     }
   }, [shown.length, total]);
+  // The Follow switch: on jumps to the latest line, off stops following where the viewer is.
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
+    if (follow && !atBottom.current) toLatest();
+    if (!follow) atBottom.current = false;
+  }, [follow]);
   const waiting = Math.max(0, total - seen);
   return (
     <>
       <pre className="log-lines" ref={box} onScroll={onScroll}>
         {shown.map((line, at) => (
-          <div key={at}>{line}</div>
+          <LogLine key={at} line={line} />
         ))}
       </pre>
       {waiting > 0 && (
@@ -1685,29 +1764,34 @@ function LogLines({ shown, total }) {
   );
 }
 
-// One page of a log's already-redacted lines, drawn as plain text. The next page is its own address.
-function LogPage({ page, logsPath, filePath, filters: { text, setText, level, setLevel } }) {
+// One page of a log's already-redacted lines, drawn as plain text, with its filters above and its pager below.
+function LogPage({ page, filters: { text, setText, level, setLevel }, follow, onFollow, pager: { number, onPrev, onNext } }) {
   const { lines, next_cursor: next, truncated } = page;
   const shown = filterLines(lines, text, level);
   return (
     <>
-      <button type="button" data-back="logs" onClick={() => navigate(logsPath)}>Back to the logs</button>
-      <h2>{page.name}</h2>
       <div className="log-tools">
-        <input type="search" data-log-filter aria-label="Filter lines" placeholder="Filter lines" autoComplete="off" spellCheck={false} value={text} onChange={(event) => setText(event.target.value)} />
+        <label className="search-box">
+          <Icon name="search" size={16} />
+          <input type="search" data-log-filter aria-label="Filter lines" placeholder="Filter logs (text)" autoComplete="off" spellCheck={false} value={text} onChange={(event) => setText(event.target.value)} />
+        </label>
         <select data-log-level aria-label="Level" value={level} onChange={(event) => setLevel(event.target.value)}>
           <option value="all">All levels</option>
           {LOG_LEVELS.map((name) => (
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
-        <button type="button" data-log-download disabled={shown.length === 0} onClick={() => saveLines(LOG_FILE.test(page.name) ? page.name : "log.log", shown)}>Download</button>
-        <span>{shown.length + " of " + lines.length + " lines"}</span>
       </div>
       {lines.length === 0 ? <p>This log has no more lines.</p> : null}
       {lines.length > 0 && shown.length === 0 ? <p>No lines match the filter.</p> : null}
-      <LogLines shown={shown} total={lines.length} />
-      {next !== null && <button type="button" data-more="lines" onClick={() => navigate(filePath + "/after/" + encodeURIComponent(next))}>Load more lines</button>}
+      <LogLines shown={shown} total={lines.length} follow={follow} onFollow={onFollow} />
+      <div className="log-pager">
+        <button type="button" data-log-prev disabled={onPrev === null} onClick={onPrev ?? undefined}><Icon name="chevronLeft" size={16} />Prev</button>
+        <span className="log-page">{"Page " + number}</span>
+        <button type="button" data-more="lines" disabled={next === null} onClick={() => onNext(next)}>Next<Icon name="chevronRight" size={16} /></button>
+        <span className="log-count">{shown.length + " of " + lines.length + " lines"}</span>
+        <button type="button" className="log-download" data-log-download disabled={shown.length === 0} onClick={() => saveLines(LOG_FILE.test(page.name) ? page.name : "log.log", shown)}><Icon name="download" size={16} />Download</button>
+      </div>
       {truncated && next === null ? <p>The log was cut short: only its first part is shown.</p> : null}
     </>
   );
@@ -1739,53 +1823,33 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       </>
     );
   }
+  // A run's page. Its tabs switch in place; a logs address (kept so older links still work) opens the
+  // same page on its Logs tab, at that file and line if it names them.
   const logs = /^\/projects\/[^/]+\/orchestrations\/([^/]+)\/logs(?:\/([^/]+)(?:\/after\/([^/]+))?)?$/.exec(address);
-  if (logs !== null) {
+  const timeline = logs !== null ? null : /^\/projects\/[^/]+\/orchestrations\/([^/]+)(?:\/after\/([^/]+))?$/.exec(address);
+  if (logs !== null || timeline !== null) {
     let run = null;
+    let cursor = null;
     let file = null;
-    let cursor = null;
+    let line = null;
     try {
-      run = decodeURIComponent(logs[1]);
-      file = logs[2] === undefined ? null : decodeURIComponent(logs[2]);
-      cursor = logs[3] === undefined ? null : decodeURIComponent(logs[3]);
+      if (logs !== null) {
+        run = decodeURIComponent(logs[1]);
+        file = logs[2] === undefined ? null : decodeURIComponent(logs[2]);
+        line = logs[3] === undefined ? null : decodeURIComponent(logs[3]);
+      } else {
+        run = decodeURIComponent(timeline[1]);
+        cursor = timeline[2] === undefined ? null : decodeURIComponent(timeline[2]);
+      }
     } catch (malformed) {
       return <NotFound />;
     }
-    if (!RUN_ID.test(run) || (file !== null && !LOG_FILE.test(file)) || (cursor !== null && !LINE_CURSOR.test(cursor))) return <NotFound />;
-    const runPath = "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
-    const logsPath = runPath + "/logs";
-    const apiRun = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) + "/logs";
-    if (file === null) {
-      return (
-        <>
-          <PageHeader title="Logs" subtitle="The run's log files" onRefresh={onRefresh} />
-          <Loaded key={apiRun} reloads={reloads} token={token} path={apiRun} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogFiles files={files} runPath={runPath} runId={run} />} onSignedOut={onSignedOut} />
-        </>
-      );
-    }
-    const filePath = logsPath + "/" + encodeURIComponent(file);
-    const pagePath = apiRun + "/" + encodeURIComponent(file) + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
-    return (
-      <>
-        <PageHeader title="Log" subtitle={file} onRefresh={onRefresh} />
-        <LogView key={filePath} token={token} onSignedOut={onSignedOut} reloads={reloads} pagePath={pagePath} logsPath={logsPath} filePath={filePath} />
-      </>
-    );
-  }
-  const timeline = /^\/projects\/[^/]+\/orchestrations\/([^/]+)(?:\/after\/([^/]+))?$/.exec(address);
-  if (timeline !== null) {
-    let run = null;
-    let cursor = null;
-    try {
-      run = decodeURIComponent(timeline[1]);
-      cursor = timeline[2] === undefined ? null : decodeURIComponent(timeline[2]);
-    } catch (malformed) {
-      return <NotFound />;
-    }
-    if (!RUN_ID.test(run) || (cursor !== null && !RUN_ID.test(cursor))) return <NotFound />;
+    if (!RUN_ID.test(run) || (cursor !== null && !RUN_ID.test(cursor)) || (file !== null && !LOG_FILE.test(file)) || (line !== null && !LINE_CURSOR.test(line))) return <NotFound />;
     const listPath = "/projects/" + encodeURIComponent(projectId) + "/orchestrations";
     const runPath = listPath + "/" + encodeURIComponent(run);
-    const timelinePath = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
+    const apiRun = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run);
+    const timelinePath = apiRun + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
+    const logsAt = { token, onSignedOut, reloads, base: apiRun + "/logs", file, cursor: line };
     return (
       <>
         <Loaded key={timelinePath} reloads={reloads} footer={false} header={(state) => (
@@ -1793,7 +1857,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
             <PageHeader title="Run" subtitle={run} status={dashboardStatus(state)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
-        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} follow={{ token, onSignedOut, cursor, base: "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) }} />} onSignedOut={onSignedOut} />
+        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} />} onSignedOut={onSignedOut} />
       </>
     );
   }

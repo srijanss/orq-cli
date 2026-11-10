@@ -40,6 +40,14 @@
   --freshness-outdated-bg: #78350f;
   --stale: #fbbf24;
   --stale-bg: #78350f;
+  --log-bg: #0b1220;
+  --log-text: #e5e7eb;
+  --log-time: #8b949e;
+  --log-warn: #fcd34d;
+  --log-error: #fca5a5;
+  --log-debug: #a3b1c2;
+  --switch-off: #6b7280;
+  --switch-thumb: #ffffff;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -83,6 +91,14 @@
   --freshness-outdated-bg: #78350f;
   --stale: #fbbf24;
   --stale-bg: #78350f;
+  --log-bg: #0b1220;
+  --log-text: #e5e7eb;
+  --log-time: #8b949e;
+  --log-warn: #fcd34d;
+  --log-error: #fca5a5;
+  --log-debug: #a3b1c2;
+  --switch-off: #6b7280;
+  --switch-thumb: #ffffff;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
@@ -127,6 +143,14 @@
   --freshness-outdated-bg: #fef3c7;
   --stale: #92400e;
   --stale-bg: #fef3c7;
+  --log-bg: #0b1220;
+  --log-text: #e5e7eb;
+  --log-time: #8b949e;
+  --log-warn: #fcd34d;
+  --log-error: #fca5a5;
+  --log-debug: #a3b1c2;
+  --switch-off: #6b7280;
+  --switch-thumb: #ffffff;
   }
 }
 :root[data-theme="light"] {
@@ -171,6 +195,14 @@
 --freshness-outdated-bg: #fef3c7;
 --stale: #92400e;
 --stale-bg: #fef3c7;
+  --log-bg: #0b1220;
+  --log-text: #e5e7eb;
+  --log-time: #8b949e;
+  --log-warn: #fcd34d;
+  --log-error: #fca5a5;
+  --log-debug: #a3b1c2;
+  --switch-off: #6b7280;
+  --switch-thumb: #ffffff;
 }
 body { font-family: system-ui, Inter, sans-serif; margin: 0; overflow-x: hidden; background: var(--bg); color: var(--text); }
 a { color: var(--accent); }
@@ -423,3 +455,38 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .step-icon.step-done { color: var(--status-completed); background: var(--status-completed-bg); }
 .step-icon.step-failed { color: var(--status-failed); background: var(--status-failed-bg); }
 .step-icon.step-open { color: var(--status-running); background: var(--status-running-bg); }
+
+/* Run timeline tab: the stages as a line of steps joined by a rule. */
+.run-steps { list-style: none; margin: 0; padding: 0; }
+.run-step { position: relative; display: flex; align-items: center; gap: 0.75rem; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.5rem; }
+.run-step + .run-step::before { content: ""; position: absolute; left: calc(0.625rem + 0.6875rem - 1px); top: -0.75rem; height: 1.5rem; width: 2px; background: var(--border); z-index: 0; }
+.run-step-mark { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.375rem; height: 1.375rem; border-radius: 50%; border: 2px solid var(--text-muted); background: var(--surface); color: var(--surface); box-sizing: border-box; }
+.run-step[data-step="done"] .run-step-mark { border-color: var(--status-completed-bg); background: var(--status-completed-bg); color: var(--status-completed); }
+.run-step[data-step="failed"] .run-step-mark { border-color: var(--status-failed-bg); background: var(--status-failed-bg); color: var(--status-failed); }
+.run-step[data-step="current"] { background: var(--status-running-bg); }
+.run-step[data-step="current"] .run-step-mark { border-color: var(--accent); }
+.run-step-name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.run-step-time { color: var(--text-muted); font-size: 0.875rem; white-space: nowrap; }
+.run-step[data-step="current"] .run-step-time { color: var(--status-running); }
+/* Run logs tab: a dark box of lines like a terminal, with the follow switch and a pager. */
+.run-logs-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.run-logs-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 1.125rem; overflow-wrap: anywhere; }
+.follow-switch { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 44px; padding: 0 0.25rem; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.switch-track { position: relative; width: 2.5rem; height: 1.375rem; border-radius: 999px; background: var(--switch-off); transition: background 0.15s; }
+.switch-thumb { position: absolute; top: 0.1875rem; left: 0.1875rem; width: 1rem; height: 1rem; border-radius: 50%; background: var(--switch-thumb); transition: transform 0.15s; }
+.follow-switch[aria-checked="true"] .switch-track { background: var(--accent); }
+.follow-switch[aria-checked="true"] .switch-thumb { transform: translateX(1.125rem); }
+.log-file-select { margin-bottom: 0.5rem; max-width: 100%; }
+.log-file-name { margin: 0 0 0.5rem; color: var(--text-muted); font-size: 0.875rem; overflow-wrap: anywhere; }
+.run-logs .log-tools select { flex: 0 1 12rem; }
+.run-logs .log-lines { background: var(--log-bg); color: var(--log-text); border-radius: 0.5rem; padding: 0.75rem 0.875rem; line-height: 1.55; min-height: 8rem; max-height: 60vh; }
+.log-line[data-level="info"] { color: var(--log-text); }
+.log-line[data-level="warn"] { color: var(--log-warn); }
+.log-line[data-level="error"] { color: var(--log-error); }
+.log-line[data-level="debug"] { color: var(--log-debug); }
+.log-time { color: var(--log-time); margin-right: 0.5rem; }
+.log-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+.log-pager button { display: inline-flex; align-items: center; gap: 0.25rem; }
+.log-page { color: var(--text-muted); font-size: 0.875rem; padding: 0 0.25rem; }
+.log-count { flex: 1; color: var(--text-muted); font-size: 0.875rem; text-align: right; }
+.feature-panel[hidden], .live-status[hidden], .stream-gap[hidden] { display: none; }

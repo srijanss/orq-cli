@@ -54,7 +54,9 @@ fn a_page_change_is_announced_politely_and_log_lines_are_never_in_a_live_region(
 
     let list = json!({"status": 200, "json": {"files": [{"name": "implement.log", "bytes": 9}]}});
     let page = json!({"status": 200, "json": {"name": "implement.log", "lines": ["secret-log-line-xyz"], "next_cursor": null, "truncated": false}});
-    let Some(out) = run("/projects/alpha/orchestrations/run-1/logs/implement.log", json!([page, projects(), list]), json!([{"submit": TOKEN}])) else { return };
+    let run_page = json!({"status": 200, "json": {"run": {"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "failed", "stage": null, "started_at": null, "updated_at": null}, "events": [], "next_cursor": null}});
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = run("/projects/alpha/orchestrations/run-1/logs/implement.log", json!([run_page, projects(), stream, list, page]), json!([{"submit": TOKEN}])) else { return };
     let settled = &out["frames"][1]["settled"];
     assert!(settled["texts"].as_array().unwrap().iter().any(|t| t.as_str().is_some_and(|t| t.contains("secret-log-line-xyz"))), "{out}");
     for region in settled["a11y"]["live"].as_array().unwrap() {

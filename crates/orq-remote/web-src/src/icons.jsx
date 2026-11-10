@@ -26,6 +26,8 @@ const PATHS = {
   search: "m21 21-4.300-4.300M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z",
   arrowLeft: "M19 12H5m6-6-6 6 6 6",
   check: "m5 12 5 5L20 7",
+  chevronLeft: "m15 6-6 6 6 6",
+  download: "M12 4v11m-5-5 5 5 5-5M5 20h14",
 };
 
 export function Icon({ name, size = 20 }) {

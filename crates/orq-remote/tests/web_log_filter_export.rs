@@ -30,8 +30,25 @@ fn page() -> Value {
     json!({"status": 200, "json": {"name": "implement.log", "lines": lines, "next_cursor": null, "truncated": false}})
 }
 
+fn run_page() -> Value {
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": null, "updated_at": null});
+    json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}})
+}
+
+// A log address opens the run's page on its Logs tab: the run, the projects, its event stream and
+// its file list come first, then the page. Every refresh after that asks for the page, the list and
+// the run again, in that order.
+fn opened(name: &str, pages: &[Value]) -> Value {
+    let files = json!({"status": 200, "json": {"files": [{"name": name, "bytes": 9}]}});
+    let mut all = vec![run_page(), projects(), json!({"status": 200, "stream": [], "end": "hold"}), files.clone(), pages[0].clone()];
+    for page in &pages[1..] {
+        all.extend([page.clone(), files.clone(), run_page()]);
+    }
+    Value::Array(all)
+}
+
 fn open(steps: Value) -> Option<Value> {
-    run(json!([page(), projects()]), steps)
+    run(opened("implement.log", &[page()]), steps)
 }
 
 fn type_in(selector: &str, value: &str) -> Value {
@@ -84,7 +101,7 @@ fn nothing_shown_means_nothing_to_download_and_nothing_is_sent_to_the_server() {
     assert!(shown(&out["frames"][2]).is_empty(), "{out}");
     assert_eq!(out["downloads"].as_array().unwrap().len(), 0, "{out}");
     let urls: Vec<_> = out["requests"].as_array().unwrap().iter().map(|r| r["url"].as_str().unwrap_or("").to_string()).collect();
-    assert_eq!(urls.len(), 2, "{urls:?}");
+    assert_eq!(urls.len(), 5, "{urls:?}");
     assert!(urls.iter().all(|u| !u.contains("zzz") && !u.contains('?')), "{urls:?}");
     assert!(out["frames"][2]["settled"]["texts"].as_array().unwrap().iter().any(|t| t.as_str().is_some_and(|t| t.contains("No lines match"))), "{out}");
 }
@@ -94,9 +111,12 @@ fn the_filters_stay_applied_when_the_next_page_of_lines_is_loaded() {
     let first = json!({"status": 200, "json": {"name": "implement.log", "lines": ["INFO start", "ERROR boom one"], "next_cursor": "2", "truncated": false}});
     let second = json!({"status": 200, "json": {"name": "implement.log", "lines": ["INFO later", "ERROR boom two", "ERROR other"], "next_cursor": null, "truncated": false}});
     let steps = json!([{"submit": TOKEN}, type_in("[data-log-level]", "error"), type_in("[data-log-filter]", "boom"), {"click": "button[data-more=lines]"}]);
-    let Some(out) = run(json!([first, projects(), second]), steps) else { return };
+    let files = json!({"status": 200, "json": {"files": [{"name": "implement.log", "bytes": 9}]}});
+    let Some(out) = run(json!([run_page(), projects(), {"status": 200, "stream": [], "end": "hold"}, files, first, second]), steps) else { return };
     let texts = |i: usize| -> Vec<String> { out["frames"][i]["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).map(String::from).collect() };
-    assert!(out["frames"][4]["settled"]["path"].as_str().unwrap().ends_with("/after/2"), "{out}");
+    // The next page comes from the cursor without leaving the run's page.
+    assert!(out["requests"].as_array().unwrap().iter().any(|r| r["url"].as_str().unwrap_or("").ends_with("/logs/implement.log/after/2")), "{out}");
+    assert!(out["frames"][4]["settled"]["path"].as_str().unwrap().ends_with("/logs/implement.log"), "{out}");
     let t = texts(4);
     assert!(t.iter().any(|x| x == "ERROR boom two") && !t.iter().any(|x| x == "INFO later" || x == "ERROR other"), "{t:?}");
     let inputs = out["frames"][4]["settled"]["inputs"].as_array().unwrap();

@@ -44,7 +44,9 @@ fn feature_text_is_shown_literally_and_makes_no_element() {
 fn log_lines_are_shown_literally_and_make_no_element() {
     let list = json!({"status": 200, "json": {"files": [{"name": "implement.log", "bytes": 9}]}});
     let page = json!({"status": 200, "json": {"name": "implement.log", "lines": [HOSTILE], "next_cursor": null, "truncated": false}});
-    let Some(out) = run("/projects/alpha/orchestrations/run-1/logs/implement.log", json!([page, projects(), list]), json!([{"submit": TOKEN}])) else { return };
+    let run_page = json!({"status": 200, "json": {"run": {"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "failed", "stage": null, "started_at": null, "updated_at": null}, "events": [], "next_cursor": null}});
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = run("/projects/alpha/orchestrations/run-1/logs/implement.log", json!([run_page, projects(), stream, list, page]), json!([{"submit": TOKEN}])) else { return };
     literal_and_inert(&out, 1, "a log page");
 }
 
