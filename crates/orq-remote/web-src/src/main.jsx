@@ -893,6 +893,12 @@ function FeatureList({ features, runs, projectId }) {
     .sort((a, b) => (sort === "name" ? a.feature.name.localeCompare(b.feature.name) : whenOf(b.facts.updated) - whenOf(a.facts.updated)));
   return (
     <>
+      <div className="feature-tiles" role="group" aria-label="Feature counts">
+        {[["Pending", "pending"], ["In progress", "in_progress"], ["Completed", "completed"], ["Draft", "draft"]].map(([label, key]) => (
+          <div key={key} className="tile"><strong>{features.filter((feature) => feature.status === key).length}</strong><span>{label}</span></div>
+        ))}
+        <div className="tile"><strong>{features.length}</strong><span>Total</span></div>
+      </div>
       <div className="feature-filters">
         <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
         <select data-feature-status aria-label="State" value={state} onChange={(event) => setState(event.target.value)}>
@@ -914,23 +920,28 @@ function FeatureList({ features, runs, projectId }) {
         </select>
       </div>
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
-      <ul className="feature-list">
-        {shown.map(({ feature, facts }) => (
-          <li key={feature.name} className="feature card">
-            <a className="feature-link" href={featureHref(projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, feature.name)); } }}>
-              <span className="feature-main">
-                <strong>{feature.name}</strong>
-                {feature.description ? <span className="feature-description">{feature.description}</span> : null}
-                <span className="feature-meta">
-                  <span>{"Stage: " + (facts.stage === null ? "—" : facts.stage)}</span>
-                  {facts.updated !== null ? <span>Updated <Moment at={facts.updated} /></span> : null}
-                </span>
-              </span>
-              <FeatureState status={feature.status} />
-            </a>
-          </li>
-        ))}
-      </ul>
+      {shown.length > 0 ? (
+        <div className="feature-table-wrap">
+          <table className="feature-table">
+            <thead>
+              <tr><th scope="col">Feature</th><th scope="col">State</th><th scope="col">Stage</th><th scope="col">Updated</th></tr>
+            </thead>
+            <tbody>
+              {shown.map(({ feature, facts }) => (
+                <tr key={feature.name} className="feature">
+                  <td className="feature-name">
+                    <a className="feature-link" href={featureHref(projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, feature.name)); } }}>{feature.name}</a>
+                    {feature.description ? <span className="feature-description">{feature.description}</span> : null}
+                  </td>
+                  <td><FeatureState status={feature.status} /></td>
+                  <td>{facts.stage === null ? "—" : facts.stage}</td>
+                  <td>{facts.updated !== null ? <Moment at={facts.updated} /> : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </>
   );
 }
