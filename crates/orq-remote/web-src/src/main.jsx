@@ -903,15 +903,21 @@ function FeatureState({ status, count = null }) {
 
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
 // the newest activity comes first.
+const FEATURES_PER_PAGE = 10;
+
 function FeatureList({ features, showProject = false }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
+  const [page, setPage] = useState(0);
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
   const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
   const needle = query.trim().toLowerCase();
   const shown = features.filter((feature) => (state === "all" || feature.status === state) && feature.name.toLowerCase().includes(needle));
+  const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
+  const at = Math.min(page, pages - 1);
+  const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
   const counted = (status) => features.filter((feature) => feature.status === status).length;
   return (
     <>
@@ -922,9 +928,9 @@ function FeatureList({ features, showProject = false }) {
       <div className="feature-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
-          <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+          <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
         </label>
-        <select data-feature-status aria-label="State" value={state} onChange={(event) => setState(event.target.value)}>
+        <select data-feature-status aria-label="State" value={state} onChange={(event) => { setState(event.target.value); setPage(0); }}>
           <option value="all">State: All</option>
           {states.map((name) => (
             <option key={name} value={name}>{name}</option>
@@ -936,21 +942,27 @@ function FeatureList({ features, showProject = false }) {
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature</th>{showProject ? <th scope="col">Project</th> : null}<th scope="col">State</th></tr>
+              <tr><th scope="col">Feature</th><th scope="col">State</th></tr>
             </thead>
             <tbody>
-              {shown.map((feature) => (
+              {visible.map((feature) => (
                 <tr key={feature.projectId + "/" + feature.name} className="feature">
                   <td>
-                    <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
+                    <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                   </td>
-                  {showProject ? <td data-feature-project>{feature.projectName}</td> : null}
                   <td><FeatureState status={feature.status} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      ) : null}
+      {pages > 1 ? (
+        <nav className="pager" aria-label="Pagination">
+          <button type="button" data-page-prev disabled={at === 0} onClick={() => setPage(at - 1)}>Previous</button>
+          <span className="pager-status">{"Page " + (at + 1) + " of " + pages}</span>
+          <button type="button" data-page-next disabled={at === pages - 1} onClick={() => setPage(at + 1)}>Next</button>
+        </nav>
       ) : null}
     </>
   );

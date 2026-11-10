@@ -62,7 +62,7 @@ fn the_all_projects_features_page_lists_every_projects_ledger_in_one_table() {
     let texts = shown(&out["frames"][1]);
     let at = |needle: &str| texts.iter().rposition(|t| t == needle).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
     assert!(at("alpha-feature") < at("beta-feature"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Project"), "a Project column tells them apart: {texts:?}");
+    assert!(!texts.iter().any(|t| t == "Project"), "same columns as a single project: {texts:?}");
     assert_eq!(out["frames"][1]["settled"]["path"], "/features");
 }
 

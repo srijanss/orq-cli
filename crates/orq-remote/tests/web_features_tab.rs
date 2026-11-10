@@ -166,7 +166,7 @@ fn the_default_features_page_lists_every_projects_features_in_one_table_with_a_p
     assert_eq!(count(frame, "[data-feature-open]"), 2, "{out}");
     assert_eq!(names_in(frame), ["alpha-work", "beta-work"], "{out}");
     let texts = shown(frame);
-    assert!(texts.iter().any(|t| t == "Project") && texts.iter().filter(|t| *t == "alpha").count() >= 1, "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Project"), "no Project column, same table as a project: {texts:?}");
     let links = frame["settled"]["links"].as_array().unwrap();
     assert!(links.iter().any(|l| l["href"] == "/projects/beta/features/beta-work"), "{links:?}");
     assert!(texts.iter().any(|t| t == "All projects"), "all projects is chosen first: {texts:?}");
@@ -244,4 +244,28 @@ fn an_answer_that_finishes_after_switching_project_is_ignored() {
     assert!(late.iter().any(|t| t == "beta-only"), "{late:?}");
     assert!(!late.iter().any(|t| t == "alpha-late"), "a late answer from the other project was drawn: {late:?}");
     assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
+}
+
+#[test]
+fn a_long_list_is_paged_ten_at_a_time_and_a_filter_returns_to_the_first_page() {
+    let many = json!({"status": 200, "json": {"features": (1..=23).map(|n| feature(&format!("f{n:02}-work"), "pending", Value::Null, json!([]))).collect::<Vec<_>>()}});
+    let steps = json!([{"submit": TOKEN}, {"nav": "[data-page-next]"}, {"nav": "[data-page-next]"}, {"nav": "[data-page-prev]"}, {"nav": "[data-page-next]"}, {"set": "[data-feature-search]", "value": "f1"}]);
+    let Some(out) = page("/projects/alpha/features", json!([many, projects()]), steps) else { return };
+    let names = |i: usize| names_in(&out["frames"][i]);
+    assert_eq!((names(1).len(), names(1)[0].as_str(), names(1)[9].as_str()), (10, "f01-work", "f10-work"), "{out}");
+    assert!(shown(&out["frames"][1]).iter().any(|t| t == "Page 1 of 3"), "{out}");
+    assert_eq!((names(2).len(), names(2)[0].as_str()), (10, "f11-work"), "{out}");
+    assert_eq!((names(3).len(), names(3)[0].as_str()), (3, "f21-work"), "the last page is the remainder: {out}");
+    assert_eq!(names(4)[0], "f11-work", "{out}");
+    assert_eq!(names(5)[0], "f21-work", "{out}");
+    let filtered = names(6);
+    assert_eq!((filtered.len(), filtered[0].as_str()), (10, "f10-work"), "a new search starts on page 1: {out}");
+    let few = shown(&out["frames"][6]);
+    assert!(few.iter().any(|t| t == "Page 1 of 1") || !few.iter().any(|t| t.starts_with("Page ")), "{few:?}");
+}
+
+#[test]
+fn a_short_list_has_no_pager() {
+    let Some(out) = page("/projects/alpha/features", json!([chain(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    assert!(!shown(&out["frames"][1]).iter().any(|t| t.starts_with("Page ")), "{out}");
 }
