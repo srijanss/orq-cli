@@ -327,3 +327,17 @@ fn the_last_updated_time_sits_in_the_header_row_like_the_dashboard_and_not_under
         assert!(shown(frame).iter().any(|t| t.starts_with("Last updated:")), "{url}: {out}");
     }
 }
+
+#[test]
+fn the_detail_tabs_stay_on_one_line_from_the_left_edge_and_scroll_rather_than_wrap() {
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    let rule = |selector: &str| { let at = css.find(selector).unwrap_or_else(|| panic!("no {selector}")); css[at..at + css[at..].find('}').unwrap()].to_string() };
+    let row = rule(".feature-tabs {");
+    for part in ["flex-wrap: nowrap", "justify-content: flex-start", "overflow-x: auto"] {
+        assert!(row.contains(part), "{part}: {row}");
+    }
+    let tab = rule(".feature-tabs button {");
+    for part in ["flex: none", "white-space: nowrap", "padding: 0 0.125rem"] {
+        assert!(tab.contains(part), "{part}: {tab}");
+    }
+}
