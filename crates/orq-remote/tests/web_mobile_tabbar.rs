@@ -88,6 +88,9 @@ fn the_bars_use_the_sidebar_colours_and_the_current_tab_is_the_light_pill() {
     assert!(tab.contains("color: var(--sidebar-muted)"), "{tab}");
     let current = rule(phone(&css), ".tabbar a[aria-current=\"page\"] {");
     assert!(current.contains("background: var(--sidebar-active-bg)") && current.contains("color: var(--sidebar-active-text)"), "{current}");
+    assert!(current.contains("border-radius: 0 0 1.75rem 1.75rem") && current.contains("margin-top: -0.375rem"), "the current tab hangs from the top edge like a drop: {current}");
+    let phone = phone(&css);
+    assert!(phone.contains(".tabbar a[aria-current=\"page\"]::before") && phone.contains(".tabbar a[aria-current=\"page\"]::after"), "curved flares join the drop to the bar edge");
 }
 
 #[test]
