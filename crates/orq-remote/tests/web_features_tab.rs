@@ -77,7 +77,7 @@ fn the_list_reads_the_projects_own_ledger_and_shows_each_feature_as_a_link_row_w
     let links = frame["settled"]["links"].as_array().unwrap();
     assert!(links.iter().any(|l| l["href"] == "/projects/alpha/features/next-one"), "{links:?}");
     let texts = shown(frame);
-    assert!(texts.iter().any(|t| t == "finished work") && texts.iter().any(|t| t == "<b>bold</b> idea"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "finished work" || t == "<b>bold</b> idea"), "descriptions belong to the detail page: {texts:?}");
     for selector in ["[data-project-select]", "[data-feature-status]"] {
         assert_eq!(count(frame, selector), 1, "{selector}: {out}");
     }
@@ -223,9 +223,10 @@ fn clicking_a_feature_in_the_list_navigates_to_its_detail() {
 }
 
 #[test]
-fn feature_text_is_drawn_as_text_and_the_list_has_no_controls_to_change_anything() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
+fn the_list_has_no_controls_to_change_anything_and_a_description_is_drawn_as_text_on_the_detail_page() {
+    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "<b>bold</b> idea"), "{out}");
+    let Some(out) = page("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     let frame = &out["frames"][1]["settled"];
     assert!(frame["buttons"].as_array().unwrap().iter().all(|b| !b.as_str().unwrap().contains("Start")), "{frame}");
     assert_eq!(frame["inputs"].as_array().unwrap().len(), 1, "only the search is a text input: {frame}");

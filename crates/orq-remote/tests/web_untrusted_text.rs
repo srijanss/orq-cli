@@ -36,8 +36,8 @@ fn literal_and_inert(out: &Value, frame: usize, surface: &str) {
 #[test]
 fn feature_text_is_shown_literally_and_makes_no_element() {
     let ledger = json!({"status": 200, "json": {"features": [{"name": "f1", "description": HOSTILE, "status": "pending", "depends_on": [], "recorded_at": null}]}});
-    let Some(out) = run("/projects/alpha/features", json!([ledger, projects()]), json!([{"submit": TOKEN}])) else { return };
-    literal_and_inert(&out, 1, "the features tab");
+    let Some(out) = run("/projects/alpha/features/f1", json!([ledger, {"status": 200, "json": {"runs": []}}, projects()]), json!([{"submit": TOKEN}])) else { return };
+    literal_and_inert(&out, 1, "the feature page");
 }
 
 #[test]

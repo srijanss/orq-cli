@@ -943,7 +943,6 @@ function FeatureList({ features, showProject = false }) {
                 <tr key={feature.projectId + "/" + feature.name} className="feature">
                   <td>
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
-                    {feature.description ? <span className="feature-description">{feature.description}</span> : null}
                   </td>
                   {showProject ? <td data-feature-project>{feature.projectName}</td> : null}
                   <td><FeatureState status={feature.status} /></td>
