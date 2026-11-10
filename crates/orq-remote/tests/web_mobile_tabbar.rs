@@ -76,7 +76,7 @@ fn the_tab_bar_is_fixed_to_the_bottom_on_a_phone_and_absent_elsewhere() {
     assert!(bar.contains("env(safe-area-inset-bottom)"), "clears the home indicator: {bar}");
     assert!(bar.contains("gap: 0.25rem") && bar.contains("padding: 0.375rem 0.5rem"), "the tabs are spaced like the sidebar items: {bar}");
     let tab = rule(phone, ".tabbar a {");
-    assert!(tab.contains("flex: 1") && tab.contains("flex-direction: column") && tab.contains("min-height: 60px") && tab.contains("border-radius: 0.75rem"), "{tab}");
+    assert!(tab.contains("flex: 1") && tab.contains("flex-direction: column") && tab.contains("min-height: 52px") && tab.contains("border-radius: 0.75rem"), "{tab}");
 }
 
 #[test]
