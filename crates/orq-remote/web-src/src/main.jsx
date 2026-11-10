@@ -713,8 +713,6 @@ function SettingsView({ settings }) {
   );
 }
 
-// The stages an orchestration passes through, so the filter offers them all before any has run.
-const ORCHESTRATION_STAGES = ["implement_and_review", "gate_fix", "verify", "rebase", "push", "ci", "ci_fix", "review", "review_draft", "cleanup"];
 const FEATURE_GROUPS = ["draft", "pending", "in_progress", "completed", "abandoned"];
 
 function isFeature(feature) {
@@ -829,13 +827,12 @@ function featureFacts(feature, runs) {
   return { stage: latest === null || !latest.stage ? null : latest.stage, updated, runs: mine };
 }
 
-const NO_RUN = "(no run)";
-
-// The project's runs give each feature a stage. Reading them is a courtesy: when they cannot be
+// The project's runs give one feature its stage and run history (read only on its own page). Reading them is a courtesy: when they cannot be
 // read the features still show, just without a stage.
-function useFeatureRuns(token, projectId, reloads) {
+function useFeatureRuns(token, projectId, reloads, enabled) {
   const [runs, setRuns] = useState([]);
   useEffect(() => {
+    if (!enabled) return undefined;
     let current = true;
     const controller = new AbortController();
     (async () => {
@@ -852,7 +849,7 @@ function useFeatureRuns(token, projectId, reloads) {
       current = false;
       controller.abort();
     };
-  }, [token, projectId, reloads]);
+  }, [token, projectId, reloads, enabled]);
   return runs;
 }
 
@@ -876,7 +873,8 @@ function ProjectSelect({ projects, projectId }) {
     };
   }, [open]);
   if (projects === null || projects.length === 0) return null;
-  const choices = projects.some((project) => project.id === projectId) ? projects : [{ id: projectId, name: projectId }, ...projects];
+  const known = projectId === null || projects.some((project) => project.id === projectId);
+  const choices = [{ id: null, name: "All projects" }, ...(known ? [] : [{ id: projectId, name: projectId }]), ...projects];
   const current = choices.find((project) => project.id === projectId);
   return (
     <div className="project-picker" ref={box}>
@@ -887,8 +885,8 @@ function ProjectSelect({ projects, projectId }) {
       </button>
       <ul className="project-list" role="listbox" aria-label="Project" hidden={!open}>
         {choices.map((project) => (
-          <li key={project.id} role="presentation">
-            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate("/projects/" + encodeURIComponent(project.id) + "/features"); }}>{project.name}</button>
+          <li key={project.id ?? ""} role="presentation">
+            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id ?? ""} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate(project.id === null ? "/features" : "/projects/" + encodeURIComponent(project.id) + "/features"); }}>{project.name}</button>
           </li>
         ))}
       </ul>
@@ -896,32 +894,31 @@ function ProjectSelect({ projects, projectId }) {
   );
 }
 
-function FeatureState({ status }) {
+const STATE_LABELS = { in_progress: "In progress", draft: "Draft" };
+
+function FeatureState({ status, count = null }) {
   const icon = { draft: "doc", pending: "clock", in_progress: "play", completed: "check", abandoned: "close" }[status] ?? "flag";
-  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{status}</span>;
+  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{count === null ? status : <><strong>{count}</strong> {STATE_LABELS[status] ?? status}</>}</span>;
 }
 
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
 // the newest activity comes first.
-function FeatureList({ features, runs, projectId }) {
+function FeatureList({ features, showProject = false }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
-  const [stage, setStage] = useState("all");
-  const [newestFirst, setNewestFirst] = useState(true);
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
-  const rows = features.map((feature) => ({ feature, facts: featureFacts(feature, runs) }));
   const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
-  const stages = [...ORCHESTRATION_STAGES, ...[...new Set(rows.map((row) => row.facts.stage).filter((name) => name !== null))].filter((name) => !ORCHESTRATION_STAGES.includes(name))];
-  const running = runs.filter((run) => run.state === "running").length;
   const needle = query.trim().toLowerCase();
-  const shown = rows
-    .filter(({ feature, facts }) => (state === "all" || feature.status === state) && (stage === "all" || (stage === NO_RUN ? facts.stage === null : facts.stage === stage)) && feature.name.toLowerCase().includes(needle))
-    .sort((a, b) => (newestFirst ? 1 : -1) * (whenOf(b.facts.updated) - whenOf(a.facts.updated)));
+  const shown = features.filter((feature) => (state === "all" || feature.status === state) && feature.name.toLowerCase().includes(needle));
+  const counted = (status) => features.filter((feature) => feature.status === status).length;
   return (
     <>
-      <p className="running-count"><Icon name="play" size={18} /><strong>{running}</strong> Running</p>
+      <p className="state-counts">
+        <FeatureState status="in_progress" count={counted("in_progress")} />
+        <FeatureState status="draft" count={counted("draft")} />
+      </p>
       <div className="feature-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
@@ -933,33 +930,23 @@ function FeatureList({ features, runs, projectId }) {
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
-        <select data-feature-stage aria-label="Stage" value={stage} onChange={(event) => setStage(event.target.value)}>
-          <option value="all">Stage: All</option>
-          {stages.map((name) => (
-            <option key={name} value={name}>{name}</option>
-          ))}
-          <option value={NO_RUN}>No run yet</option>
-        </select>
       </div>
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
       {shown.length > 0 ? (
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature</th><th scope="col">State</th><th scope="col">Stage</th><th scope="col" aria-sort={newestFirst ? "descending" : "ascending"}>
-                <button type="button" className="sort-button" data-sort-updated aria-label={"Updated, " + (newestFirst ? "newest first" : "oldest first") + ". Reverse the order"} onClick={() => setNewestFirst(!newestFirst)}>Updated<Icon name={newestFirst ? "sortDown" : "sortUp"} size={16} /></button>
-              </th></tr>
+              <tr><th scope="col">Feature</th>{showProject ? <th scope="col">Project</th> : null}<th scope="col">State</th></tr>
             </thead>
             <tbody>
-              {shown.map(({ feature, facts }) => (
-                <tr key={feature.name} className="feature">
+              {shown.map((feature) => (
+                <tr key={feature.projectId + "/" + feature.name} className="feature">
                   <td>
-                    <a className="feature-link" href={featureHref(projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, feature.name)); } }}>{feature.name}</a>
+                    <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                     {feature.description ? <span className="feature-description">{feature.description}</span> : null}
                   </td>
+                  {showProject ? <td data-feature-project>{feature.projectName}</td> : null}
                   <td><FeatureState status={feature.status} /></td>
-                  <td>{facts.stage === null ? "—" : facts.stage}</td>
-                  <td>{facts.updated !== null ? <Moment at={facts.updated} /> : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -1013,9 +1000,63 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
   );
 }
 
+// Features carry the project they belong to, so one table can hold several projects' ledgers.
+function tagged(rows, projectId, projectName) {
+  return rows.map((feature) => ({ ...feature, projectId, projectName }));
+}
+
+// Every readable project's ledger, read side by side and merged into one list.
+function AllFeatures({ token, projects, reloads, onSignedOut }) {
+  const [state, setState] = useState({ loading: true, rows: [], unread: 0 });
+  const readable = projects.filter((project) => project.available !== false);
+  const key = readable.map((project) => project.id).join("\n");
+  useEffect(() => {
+    let current = true;
+    const controller = new AbortController();
+    (async () => {
+      const results = await Promise.all(readable.map(async (project) => {
+        try {
+          const response = await get("/api/projects/" + encodeURIComponent(project.id) + "/features", token, controller.signal);
+          if (response.status === 401) return "signed-out";
+          if (!response.ok) return null;
+          const parsed = parseFeatures(await response.json());
+          return parsed === null ? null : tagged(parsed.rows, project.id, project.name);
+        } catch (unreadable) {
+          return null;
+        }
+      }));
+      if (!current) return;
+      if (results.includes("signed-out")) {
+        onSignedOut();
+        return;
+      }
+      setState({ loading: false, rows: results.filter((rows) => rows !== null).flat(), unread: results.filter((rows) => rows === null).length });
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [token, key, reloads]);
+  if (state.loading) {
+    return (
+      <div className="skeleton" role="status" aria-busy="true">
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="sr-only">Loading the features…</span>
+      </div>
+    );
+  }
+  return (
+    <>
+      {state.unread > 0 ? <p className="banner" role="alert">{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
+      <FeatureList features={state.rows} showProject />
+    </>
+  );
+}
+
 // The Features pages of one project: the list, or one feature's details when its name is given.
 function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
-  const runs = useFeatureRuns(token, projectId, reloads);
+  const runs = useFeatureRuns(token, projectId, reloads, name !== null);
   const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
   const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null);
   return (
@@ -1023,7 +1064,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
       <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} onRefresh={onRefresh} />
       <ProjectSelect projects={projects} projectId={projectId} />
       <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
-        if (name === null) return <FeatureList features={data.rows} runs={runs} projectId={projectId} />;
+        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} />;
         const feature = data.rows.find((entry) => entry.name === name);
         return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
       }} />
@@ -1619,7 +1660,12 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     return (
       <>
         <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />
-        <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+        <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+          <>
+            <ProjectSelect projects={projects} projectId={null} />
+            <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
+          </>
+        ) : (
           <>
             {projects.map((project) => {
               const id = encodeURIComponent(project.id);
@@ -1628,7 +1674,6 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
                 <section key={project.id} className="project-section">
                   <h2>{project.name}</h2>
                   <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
-                    if (part === "features") return <FeatureList features={data.rows} runs={[]} projectId={project.id} />;
                     if (part === "runs") return <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
                     return <RunList runs={data} detailPrefix={"/projects/" + id + "/reviews/"} selected={null} />;
                   }} />

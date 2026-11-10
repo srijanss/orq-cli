@@ -54,14 +54,15 @@ fn without_a_project_the_sidebar_still_offers_features_orchestrations_and_review
 }
 
 #[test]
-fn the_all_projects_features_page_lists_every_projects_ledger_under_its_name() {
+fn the_all_projects_features_page_lists_every_projects_ledger_in_one_table() {
     let ledger = |name: &str| json!({"status": 200, "json": {"features": [{"name": name, "description": null, "status": "pending", "depends_on": [], "recorded_at": null}]}});
     let Some(out) = run("/features", json!([projects(), ledger("alpha-feature"), ledger("beta-feature")]), json!([{"submit": TOKEN}])) else { return };
     let urls = urls(&out);
     assert_eq!(urls[..3], ["/api/projects", "/api/projects/alpha/features", "/api/projects/beta/features"], "{out}");
     let texts = shown(&out["frames"][1]);
-    let at = |needle: &str| texts.iter().position(|t| t == needle).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
-    assert!(at("alpha") < at("alpha-feature") && at("alpha-feature") < at("beta") && at("beta") < at("beta-feature"), "{texts:?}");
+    let at = |needle: &str| texts.iter().rposition(|t| t == needle).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
+    assert!(at("alpha-feature") < at("beta-feature"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Project"), "a Project column tells them apart: {texts:?}");
     assert_eq!(out["frames"][1]["settled"]["path"], "/features");
 }
 

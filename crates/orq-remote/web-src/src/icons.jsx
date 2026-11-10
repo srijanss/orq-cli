@@ -25,8 +25,6 @@ const PATHS = {
   chevronDown: "m6 9 6 6 6-6",
   search: "m21 21-4.300-4.300M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z",
   check: "m5 12 5 5L20 7",
-  sortDown: "M12 5v14m-6-6 6 6 6-6",
-  sortUp: "M12 19V5m-6 6 6-6 6 6",
 };
 
 export function Icon({ name, size = 20 }) {

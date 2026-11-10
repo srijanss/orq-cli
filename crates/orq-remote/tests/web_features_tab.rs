@@ -53,7 +53,7 @@ fn count(frame: &Value, selector: &str) -> u64 {
     frame["settled"]["matches"][selector].as_u64().unwrap()
 }
 
-const SELECTORS: [&str; 7] = ["[data-feature-open]", "[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-sort-updated]", "[data-back=\"features\"]", "[data-dependency]"];
+const SELECTORS: [&str; 5] = ["[data-feature-open]", "[data-project-select]", "[data-feature-status]", "[data-back=\"features\"]", "[data-dependency]"];
 
 fn page(url: &str, responses: Value, steps: Value) -> Option<Value> {
     if !web_deps::ready() {
@@ -67,45 +67,63 @@ fn page(url: &str, responses: Value, steps: Value) -> Option<Value> {
 }
 
 #[test]
-fn the_list_reads_the_projects_own_ledger_and_shows_each_feature_as_a_link_card() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+fn the_list_reads_the_projects_own_ledger_and_shows_each_feature_as_a_link_row_with_its_state() {
+    let Some(out) = page("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["requests"][0]["url"], "/api/projects/alpha/features", "{out}");
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
-    assert_eq!(out["requests"][1]["url"], "/api/projects/alpha/runs", "{out}");
+    assert!(!out["requests"].as_array().unwrap().iter().any(|r| r["url"].as_str().unwrap().ends_with("/runs")), "the list needs no runs: {out}");
     let frame = &out["frames"][1];
     assert_eq!(count(frame, "[data-feature-open]"), 4, "{out}");
     let links = frame["settled"]["links"].as_array().unwrap();
     assert!(links.iter().any(|l| l["href"] == "/projects/alpha/features/next-one"), "{links:?}");
     let texts = shown(frame);
-    for wanted in ["finished work", "<b>bold</b> idea", "No description."] {
-        let _ = wanted;
-    }
     assert!(texts.iter().any(|t| t == "finished work") && texts.iter().any(|t| t == "<b>bold</b> idea"), "{texts:?}");
-    for selector in ["[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-sort-updated]"] {
+    for selector in ["[data-project-select]", "[data-feature-status]"] {
         assert_eq!(count(frame, selector), 1, "{selector}: {out}");
+    }
+    for gone in ["Stage", "Updated", "Running"] {
+        assert!(!texts.iter().any(|t| t == gone), "{gone} is not shown: {texts:?}");
     }
 }
 
 #[test]
+fn in_progress_and_draft_counts_lead_the_list_with_their_state_colours() {
+    let ledger = json!({"status": 200, "json": {"features": [
+        feature("a-work", "in_progress", Value::Null, json!([])),
+        feature("b-work", "in_progress", Value::Null, json!([])),
+        feature("c-work", "draft", Value::Null, json!([])),
+        feature("d-work", "pending", Value::Null, json!([]))
+    ]}});
+    let Some(out) = page("/projects/alpha/features", json!([ledger, projects()]), json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1]["settled"];
+    let texts = shown(&out["frames"][1]);
+    let at = |needle: &str| texts.iter().position(|t| t.trim() == needle).unwrap_or_else(|| panic!("{needle}: {texts:?}"));
+    assert!(at("In progress") < at("Draft") && at("Draft") < at("Feature"), "the counts lead the list: {texts:?}");
+    assert!(texts.iter().any(|t| t.trim() == "2") && texts.iter().any(|t| t.trim() == "1"), "{texts:?}");
+    let classes = frame["classes"].as_array().unwrap();
+    assert!(classes.iter().any(|c| c == "state-in_progress") && classes.iter().any(|c| c == "state-draft"), "{classes:?}");
+}
+
+#[test]
 fn the_bare_project_address_shows_the_features() {
-    let Some(out) = page("/projects/alpha", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(count(&out["frames"][1], "[data-feature-open]"), 4, "{out}");
 }
 
 #[test]
 fn an_empty_ledger_says_so_and_a_failed_read_offers_a_retry_keeping_the_session() {
-    let Some(out) = page("/projects/alpha/features", json!([{"status": 200, "json": {"features": []}}, no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([{"status": 200, "json": {"features": []}}, projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "No features in this project's ledger."), "{out}");
-    let Some(out) = page("/projects/alpha/features", json!([{"status": 500}, no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([{"status": 500}, projects()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 0, "{out}");
     assert!(out["frames"][1]["settled"]["buttons"].as_array().unwrap().iter().any(|b| b == "Try again"), "{out}");
-    let Some(out) = page("/projects/alpha/features", json!([{"status": 200, "json": {"features": [{"name": 5}]}}, no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([{"status": 200, "json": {"features": [{"name": 5}]}}, projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(out["frames"][1]["settled"]["buttons"].as_array().unwrap().iter().any(|b| b == "Try again"), "a malformed ledger is an error: {out}");
 }
 
 #[test]
 fn a_refused_token_asks_again_and_the_project_id_is_encoded_in_the_request() {
-    let Some(out) = page("/projects/alpha/features", json!([{"status": 401}, no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([{"status": 401}, projects()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
     assert!(source.contains("\"/api/projects/\" + encodeURIComponent(projectId) + \"/features\""), "the project id is encoded");
@@ -124,50 +142,49 @@ fn chain() -> Value {
 }
 
 #[test]
-fn features_are_searched_by_name_and_filtered_by_state_and_stage() {
-    let runs = runs_for("middle-work");
-    let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "MIDDLE"}, {"set": "[data-feature-search]", "value": ""}, {"set": "[data-feature-status]", "value": "draft"}, {"set": "[data-feature-status]", "value": "all"}, {"set": "[data-feature-stage]", "value": "review"}, {"set": "[data-feature-stage]", "value": "(no run)"}, {"set": "[data-feature-search]", "value": "zzz"}]);
-    let Some(out) = page("/projects/alpha/features", json!([chain(), runs, projects()]), steps) else { return };
-    let mut all = names_in(&out["frames"][1]);
-    all.sort();
-    assert_eq!(all, ["base-work", "middle-work", "top-work"], "{out}");
+fn features_are_searched_by_name_and_filtered_by_state_which_offers_every_state() {
+    let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "MIDDLE"}, {"set": "[data-feature-search]", "value": ""}, {"set": "[data-feature-status]", "value": "draft"}, {"set": "[data-feature-status]", "value": "all"}, {"set": "[data-feature-search]", "value": "zzz"}]);
+    let Some(out) = page("/projects/alpha/features", json!([chain(), projects()]), steps) else { return };
+    assert_eq!(names_in(&out["frames"][1]), ["base-work", "middle-work", "top-work"], "{out}");
     assert_eq!(names_in(&out["frames"][2]), ["middle-work"], "search ignores case");
     assert_eq!(names_in(&out["frames"][4]), ["top-work"], "state filter");
-    assert_eq!(names_in(&out["frames"][6]), ["middle-work"], "stage filter: the stage comes from the latest run");
-    let mut none = names_in(&out["frames"][7]);
-    none.sort();
-    assert_eq!(none, ["base-work", "top-work"], "features that never ran");
-    assert!(shown(&out["frames"][8]).iter().any(|t| t == "No features match the filters."), "{out}");
-}
-
-#[test]
-fn the_updated_header_toggles_the_order_newest_or_oldest_first() {
-    let ledger = json!({"status": 200, "json": {"features": [
-        {"name": "b-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-01T00:00:00Z"},
-        {"name": "a-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-05T00:00:00Z"},
-        {"name": "c-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-03T00:00:00Z"}
-    ]}});
-    let steps = json!([{"submit": TOKEN}, {"nav": "[data-sort-updated]"}, {"nav": "[data-sort-updated]"}]);
-    let Some(out) = page("/projects/alpha/features", json!([ledger, no_runs(), projects()]), steps) else { return };
-    assert_eq!(names_in(&out["frames"][1]), ["a-work", "c-work", "b-work"], "newest first by default: {out}");
-    assert_eq!(names_in(&out["frames"][2]), ["b-work", "c-work", "a-work"], "{out}");
-    assert_eq!(names_in(&out["frames"][3]), ["a-work", "c-work", "b-work"], "{out}");
-}
-
-#[test]
-fn the_filters_offer_every_state_and_every_orchestration_stage_and_the_running_count_leads() {
-    let Some(out) = page("/projects/alpha/features", json!([chain(), runs_for("middle-work"), projects()]), json!([{"submit": TOKEN}])) else { return };
+    assert_eq!(names_in(&out["frames"][5]).len(), 3, "{out}");
+    assert!(shown(&out["frames"][6]).iter().any(|t| t == "No features match the filters."), "{out}");
     let texts = shown(&out["frames"][1]);
-    for option in ["draft", "pending", "in_progress", "completed", "abandoned", "implement_and_review", "gate_fix", "verify", "rebase", "push", "ci", "ci_fix", "review", "review_draft", "cleanup", "No run yet"] {
+    for option in ["draft", "pending", "in_progress", "completed", "abandoned"] {
         assert!(texts.iter().any(|t| t == option), "{option} missing: {texts:?}");
     }
-    assert!(texts.iter().any(|t| t == "1"), "one run is running: {texts:?}");
-    assert!(texts.iter().any(|t| t.trim() == "Running"), "{texts:?}");
+}
+
+#[test]
+fn the_default_features_page_lists_every_projects_features_in_one_table_with_a_project_column() {
+    let alpha = json!({"status": 200, "json": {"features": [feature("alpha-work", "pending", Value::Null, json!([]))]}});
+    let beta = json!({"status": 200, "json": {"features": [feature("beta-work", "draft", Value::Null, json!([]))]}});
+    let Some(out) = page("/features", json!([projects(), alpha, beta]), json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1];
+    assert_eq!(count(frame, "[data-project-select]"), 1, "{out}");
+    assert_eq!(count(frame, "[data-feature-open]"), 2, "{out}");
+    assert_eq!(names_in(frame), ["alpha-work", "beta-work"], "{out}");
+    let texts = shown(frame);
+    assert!(texts.iter().any(|t| t == "Project") && texts.iter().filter(|t| *t == "alpha").count() >= 1, "{texts:?}");
+    let links = frame["settled"]["links"].as_array().unwrap();
+    assert!(links.iter().any(|l| l["href"] == "/projects/beta/features/beta-work"), "{links:?}");
+    assert!(texts.iter().any(|t| t == "All projects"), "all projects is chosen first: {texts:?}");
+}
+
+#[test]
+fn choosing_a_project_from_the_default_page_filters_to_it_and_all_projects_returns() {
+    let alpha = json!({"status": 200, "json": {"features": [feature("alpha-work", "pending", Value::Null, json!([]))]}});
+    let beta = json!({"status": 200, "json": {"features": [feature("beta-work", "draft", Value::Null, json!([]))]}});
+    let steps = json!([{"submit": TOKEN}, {"nav": "[data-project-select]"}, {"nav": "[data-project-choice=\"beta\"]"}]);
+    let Some(out) = page("/features", json!([projects(), alpha, beta, ledger_of("beta-work")]), steps) else { return };
+    assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
+    assert_eq!(names_in(&out["frames"][3]), ["beta-work"], "{out}");
 }
 
 #[test]
 fn the_project_dropdown_opens_another_projects_features() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger_of("alpha-only"), no_runs(), projects(), ledger_of("beta-only"), no_runs()]), json!([{"submit": TOKEN}, {"nav": "[data-project-select]"}, {"nav": "[data-project-choice=\"beta\"]"}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([ledger_of("alpha-only"), projects(), ledger_of("beta-only")]), json!([{"submit": TOKEN}, {"nav": "[data-project-select]"}, {"nav": "[data-project-choice=\"beta\"]"}])) else { return };
     assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
     let after = shown(&out["frames"][3]);
     assert!(after.iter().any(|t| t == "beta-only") && !after.iter().any(|t| t == "alpha-only"), "{after:?}");
@@ -201,13 +218,13 @@ fn a_feature_without_dependencies_or_runs_says_so_and_an_unknown_one_is_not_foun
 
 #[test]
 fn clicking_a_feature_in_the_list_navigates_to_its_detail() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger(), no_runs(), projects(), ledger(), no_runs()]), json!([{"submit": TOKEN}, {"nav": "a[data-feature-open=\"next-one\"]"}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([ledger(), projects(), ledger()]), json!([{"submit": TOKEN}, {"nav": "a[data-feature-open=\"next-one\"]"}])) else { return };
     assert_eq!(out["frames"][2]["settled"]["path"], "/projects/alpha/features/next-one", "{out}");
 }
 
 #[test]
 fn feature_text_is_drawn_as_text_and_the_list_has_no_controls_to_change_anything() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([ledger(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "<b>bold</b> idea"), "{out}");
     let frame = &out["frames"][1]["settled"];
     assert!(frame["buttons"].as_array().unwrap().iter().all(|b| !b.as_str().unwrap().contains("Start")), "{frame}");
@@ -221,7 +238,7 @@ fn ledger_of(name: &str) -> Value {
 #[test]
 fn an_answer_that_finishes_after_switching_project_is_ignored() {
     let held = json!({"hold": "json", "status": 200, "json": {"features": [feature("alpha-late", "pending", Value::Null, json!([]))]}});
-    let Some(out) = page("/projects/alpha/features", json!([held, no_runs(), projects(), ledger_of("beta-only"), no_runs()]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
+    let Some(out) = page("/projects/alpha/features", json!([held, projects(), ledger_of("beta-only")]), json!([{"submit": TOKEN}, {"select": "beta"}, {"release": 0}])) else { return };
     let late = shown(&out["frames"][3]);
     assert!(late.iter().any(|t| t == "beta-only"), "{late:?}");
     assert!(!late.iter().any(|t| t == "alpha-late"), "a late answer from the other project was drawn: {late:?}");
