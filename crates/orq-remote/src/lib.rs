@@ -368,10 +368,10 @@ fn is_application_path(path: &str) -> bool {
     let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
     let segments: Vec<&str> = path.strip_prefix('/').map(|rest| rest.split('/').collect()).unwrap_or_default();
     match segments.as_slice() {
-        ["dashboard"] | ["settings"] | ["settings", "audit"] | ["projects"] => true,
+        ["dashboard"] | ["settings"] | ["settings", "audit"] | ["projects"] | ["features"] | ["orchestrations"] => true,
         ["projects", project] => plain(project),
         ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
-        ["projects", project, "reviews", run] => plain(project) && plain(run),
+        ["projects", project, "reviews", run] | ["projects", project, "features", run] => plain(project) && plain(run),
         // A run, its next pages of events, and its logs (a file, then the page after a line).
         ["projects", project, "orchestrations", run] | ["projects", project, "orchestrations", run, "logs"] => plain(project) && plain(run),
         ["projects", project, "orchestrations", run, "after", cursor] | ["projects", project, "orchestrations", run, "logs", cursor] => plain(project) && plain(run) && plain(cursor),
