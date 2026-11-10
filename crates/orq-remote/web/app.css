@@ -259,8 +259,9 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .not-found { max-width: 24rem; }
 
 .projects { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr)); gap: 0.75rem; }
-.project { display: flex; flex-direction: column; gap: 0.5rem; }
-.project > button { display: flex; align-items: center; gap: 0.5rem; width: 100%; text-align: left; font-weight: 600; }
+.project { display: flex; flex-direction: column; gap: 1rem; padding: 1rem 1.25rem; border-radius: 0.875rem; }
+.project > button { display: flex; align-items: center; gap: 0.625rem; width: 100%; text-align: left; font-size: 1.0625rem; font-weight: 700; background: transparent; border: 0; padding: 0; }
+.project > button .icon:first-child { color: var(--accent); }
 .project > button .icon:last-child { margin-left: auto; color: var(--text-muted); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
 .stat { display: flex; flex-direction: row; align-items: center; gap: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.25rem; }
@@ -283,7 +284,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .card-stat-label { grid-column: 1 / -1; }
 .card-stat-value { font-weight: 600; font-size: 1.125rem; }
 .card-stat-label { color: var(--text-muted); font-size: 0.8125rem; }
-.project.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.project.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .counts { margin: 0; display: grid; gap: 0.25rem; }
 .counts p { margin: 0; color: var(--text-muted); }
 

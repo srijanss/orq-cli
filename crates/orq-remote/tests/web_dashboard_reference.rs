@@ -32,7 +32,7 @@ fn every_total_has_an_icon_chip_and_every_project_figure_a_small_icon() {
     let m = &out["frames"][1]["settled"]["matches"];
     assert_eq!(m[".stats .stat > .stat-icon svg"], 4, "{out}");
     assert_eq!(m[".stats .stat > .stat-text > .stat-value"], 4, "{out}");
-    assert_eq!(m[".project .card-stat > svg"], 4, "{out}");
+    assert_eq!(m[".project .card-stat > svg"], 3, "{out}");
     assert_eq!(m[".connection"], 1, "{out}");
 }
 

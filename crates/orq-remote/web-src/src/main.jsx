@@ -496,8 +496,7 @@ function CardStat({ icon, value, label }) {
   );
 }
 
-function ProjectCard({ project, selected = false }) {
-  const hours = Number.isInteger(project.failed_window_hours) ? project.failed_window_hours : 24;
+function ProjectCard({ project, updated, selected = false }) {
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
       <button type="button" onClick={() => navigate("/projects/" + project.id)}>
@@ -509,8 +508,7 @@ function ProjectCard({ project, selected = false }) {
         <div className="card-stats">
           <CardStat icon="flag" value={project.features} label="Features" />
           <CardStat icon="play" value={project.active_runs} label="Active runs" />
-          <CardStat icon="doc" value={project.reviews_waiting} label="Waiting" />
-          <CardStat icon="close" value={project.failed_runs} label={"Failed (" + hours + "h)"} />
+          <CardStat icon="clock" value={<Moment at={updated} />} label="Last updated" />
         </div>
       ) : (
         <em>Unavailable</em>
@@ -549,7 +547,7 @@ function Dashboard({ projects }) {
       <h2 className="section-title">Projects</h2>
       <ul className="projects">
         {projects.map((project) => (
-          <ProjectCard key={project.id} project={project} selected={project.id === lastProject} />
+          <ProjectCard key={project.id} project={project} updated={updated} selected={project.id === lastProject} />
         ))}
       </ul>
     </>

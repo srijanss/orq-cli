@@ -32,7 +32,8 @@ fn a_card_shows_each_count_as_a_value_above_its_short_label() {
     let Some(out) = run("/dashboard", json!([projects()]), json!([{"submit": TOKEN}])) else { return };
     let texts = texts(&out["frames"][1]);
     let start = texts.iter().position(|t| t == "alpha").unwrap();
-    assert_eq!(texts[start + 1..start + 9], ["3", "Features", "2", "Active runs", "1", "Waiting", "4", "Failed (24h)"], "{texts:?}");
+    assert_eq!(texts[start + 1..start + 5], ["3", "Features", "2", "Active runs"], "{texts:?}");
+    assert_eq!(texts[start + 6], "Last updated", "the time sits above its label: {texts:?}");
 }
 
 #[test]

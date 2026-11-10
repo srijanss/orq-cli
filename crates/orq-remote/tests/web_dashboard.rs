@@ -42,9 +42,10 @@ fn the_dashboard_asks_for_the_projects_with_the_held_token_and_shows_one_card_ea
     assert_eq!(frame["settled"]["path"], "/dashboard");
     assert_eq!(frame["settled"]["cards"], 2, "{out}");
     let text = shown(frame);
-    for expected in ["Features", "Active runs", "Waiting", "Failed (24h)"] {
+    for expected in ["Features", "Active runs", "Last updated"] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
+    assert!(!text.contains("Waiting |") && !text.contains("Failed (24h)"), "a card shows only three figures: {text}");
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn a_failed_dashboard_refresh_keeps_the_counts_marked_outdated_and_a_retry_repla
     for failure in [json!({"status": 503}), json!({"reject": true})] {
         let Some(out) = run(json!([projects(), failure.clone(), fresh.clone()]), json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}, {"click": "button", "index": 0}])) else { return };
         let kept = shown(&out["frames"][2]);
-        assert!(kept.contains("Failed (24h)") && kept.contains("alpha") && kept.contains("Outdated"), "{failure}: {kept}");
+        assert!(kept.contains("Features") && kept.contains("alpha") && kept.contains("Outdated"), "{failure}: {kept}");
         let after = shown(&out["frames"][3]);
         assert!(after.contains("beta") && after.contains("9 | Features") && !after.contains("alpha") && !after.contains("Outdated"), "{failure}: {after}");
     }
@@ -137,7 +138,7 @@ fn each_project_card_shows_its_name_and_counts_and_the_page_says_when_it_last_up
     let Some(out) = run(json!([projects()]), json!([{"submit": TOKEN}])) else { return };
     let frame = &out["frames"][1];
     let text = shown(frame);
-    assert!(text.contains("alpha") && text.contains("2 | Active runs") && text.contains("1 | Waiting"), "{text}");
+    assert!(text.contains("alpha") && text.contains("2 | Active runs"), "{text}");
     let checked = frame["settled"]["checked"].as_array().unwrap();
     assert_eq!(checked.len(), 1, "one Last checked line on the Dashboard: {out}");
     assert!(checked[0].as_str().unwrap().starts_with("Last checked"), "{out}");
