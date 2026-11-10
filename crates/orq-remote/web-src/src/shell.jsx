@@ -98,7 +98,7 @@ function PhoneShell({ projectId = null, onSignOut = null, children }) {
       <nav className="tabbar" aria-label="Sections">
         {entries.map((entry) => (
           <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
-            <Icon name={entry.icon} />
+            <Icon name={entry.icon} size={28} />
             <span className="tab-label">{entry.label}</span>
           </a>
         ))}
