@@ -26,6 +26,8 @@
   --status-waiting-bg: #78350f;
   --status-queued: #d1d5db;
   --status-queued-bg: #374151;
+  --status-pending: #fdba74;
+  --status-pending-bg: #7c2d12;
   --risk-low: #86efac;
   --risk-low-bg: #14532d;
   --risk-medium: #fcd34d;
@@ -67,6 +69,8 @@
   --status-waiting-bg: #78350f;
   --status-queued: #d1d5db;
   --status-queued-bg: #374151;
+  --status-pending: #fdba74;
+  --status-pending-bg: #7c2d12;
   --risk-low: #86efac;
   --risk-low-bg: #14532d;
   --risk-medium: #fcd34d;
@@ -109,6 +113,8 @@
   --status-waiting-bg: #fef3c7;
   --status-queued: #374151;
   --status-queued-bg: #e5e7eb;
+  --status-pending: #c2410c;
+  --status-pending-bg: #ffedd5;
   --risk-low: #166534;
   --risk-low-bg: #dcfce7;
   --risk-medium: #92400e;
@@ -151,6 +157,8 @@
 --status-waiting-bg: #fef3c7;
 --status-queued: #374151;
 --status-queued-bg: #e5e7eb;
+--status-pending: #c2410c;
+--status-pending-bg: #ffedd5;
 --risk-low: #166534;
 --risk-low-bg: #dcfce7;
 --risk-medium: #92400e;
@@ -352,7 +360,9 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .feature-link:hover { text-decoration: underline; }
 .feature-state { display: inline-flex; align-items: center; gap: 0.25rem; flex: none; padding: 0.125rem 0.75rem; border-radius: 999px; font-size: 0.875rem; font-weight: 600; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 18%, transparent); }
 .feature-state.state-completed { color: var(--status-completed); background: var(--status-completed-bg); }
-.feature-state.state-pending, .feature-state.state-in_progress { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.feature-state.state-pending { color: var(--status-pending); background: var(--status-pending-bg); }
+.feature-state.state-abandoned { color: var(--status-failed); background: var(--status-failed-bg); }
+.feature-state.state-in_progress { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .feature-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
 .feature-detail-head h2 { margin: 0; overflow-wrap: anywhere; }
 .back-link { display: inline-block; margin-bottom: 0.75rem; }
