@@ -53,7 +53,7 @@ fn count(frame: &Value, selector: &str) -> u64 {
     frame["settled"]["matches"][selector].as_u64().unwrap()
 }
 
-const SELECTORS: [&str; 7] = ["[data-feature-open]", "[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-feature-sort]", "[data-back=\"features\"]", "[data-dependency]"];
+const SELECTORS: [&str; 7] = ["[data-feature-open]", "[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-sort-updated]", "[data-back=\"features\"]", "[data-dependency]"];
 
 fn page(url: &str, responses: Value, steps: Value) -> Option<Value> {
     if !web_deps::ready() {
@@ -81,7 +81,7 @@ fn the_list_reads_the_projects_own_ledger_and_shows_each_feature_as_a_link_card(
         let _ = wanted;
     }
     assert!(texts.iter().any(|t| t == "finished work") && texts.iter().any(|t| t == "<b>bold</b> idea"), "{texts:?}");
-    for selector in ["[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-feature-sort]"] {
+    for selector in ["[data-project-select]", "[data-feature-status]", "[data-feature-stage]", "[data-sort-updated]"] {
         assert_eq!(count(frame, selector), 1, "{selector}: {out}");
     }
 }
@@ -141,22 +141,35 @@ fn features_are_searched_by_name_and_filtered_by_state_and_stage() {
 }
 
 #[test]
-fn the_list_sorts_by_updated_newest_first_or_by_name() {
+fn the_updated_header_toggles_the_order_newest_or_oldest_first() {
     let ledger = json!({"status": 200, "json": {"features": [
         {"name": "b-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-01T00:00:00Z"},
         {"name": "a-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-05T00:00:00Z"},
         {"name": "c-work", "description": null, "status": "pending", "depends_on": [], "recorded_at": "2026-01-03T00:00:00Z"}
     ]}});
-    let Some(out) = page("/projects/alpha/features", json!([ledger, no_runs(), projects()]), json!([{"submit": TOKEN}, {"set": "[data-feature-sort]", "value": "name"}])) else { return };
-    assert_eq!(names_in(&out["frames"][1]), ["a-work", "c-work", "b-work"], "Updated is the default: {out}");
-    assert_eq!(names_in(&out["frames"][2]), ["a-work", "b-work", "c-work"], "{out}");
+    let steps = json!([{"submit": TOKEN}, {"nav": "[data-sort-updated]"}, {"nav": "[data-sort-updated]"}]);
+    let Some(out) = page("/projects/alpha/features", json!([ledger, no_runs(), projects()]), steps) else { return };
+    assert_eq!(names_in(&out["frames"][1]), ["a-work", "c-work", "b-work"], "newest first by default: {out}");
+    assert_eq!(names_in(&out["frames"][2]), ["b-work", "c-work", "a-work"], "{out}");
+    assert_eq!(names_in(&out["frames"][3]), ["a-work", "c-work", "b-work"], "{out}");
 }
 
 #[test]
-fn the_project_select_opens_another_projects_features() {
-    let Some(out) = page("/projects/alpha/features", json!([ledger_of("alpha-only"), no_runs(), projects(), ledger_of("beta-only"), no_runs()]), json!([{"submit": TOKEN}, {"set": "[data-project-select]", "value": "beta"}])) else { return };
-    assert_eq!(out["frames"][2]["settled"]["path"], "/projects/beta/features", "{out}");
-    let after = shown(&out["frames"][2]);
+fn the_filters_offer_every_state_and_every_orchestration_stage_and_the_running_count_leads() {
+    let Some(out) = page("/projects/alpha/features", json!([chain(), runs_for("middle-work"), projects()]), json!([{"submit": TOKEN}])) else { return };
+    let texts = shown(&out["frames"][1]);
+    for option in ["draft", "pending", "in_progress", "completed", "abandoned", "implement_and_review", "gate_fix", "verify", "rebase", "push", "ci", "ci_fix", "review", "review_draft", "cleanup", "No run yet"] {
+        assert!(texts.iter().any(|t| t == option), "{option} missing: {texts:?}");
+    }
+    assert!(texts.iter().any(|t| t == "1"), "one run is running: {texts:?}");
+    assert!(texts.iter().any(|t| t.trim() == "Running"), "{texts:?}");
+}
+
+#[test]
+fn the_project_dropdown_opens_another_projects_features() {
+    let Some(out) = page("/projects/alpha/features", json!([ledger_of("alpha-only"), no_runs(), projects(), ledger_of("beta-only"), no_runs()]), json!([{"submit": TOKEN}, {"nav": "[data-project-select]"}, {"nav": "[data-project-choice=\"beta\"]"}])) else { return };
+    assert_eq!(out["frames"][3]["settled"]["path"], "/projects/beta/features", "{out}");
+    let after = shown(&out["frames"][3]);
     assert!(after.iter().any(|t| t == "beta-only") && !after.iter().any(|t| t == "alpha-only"), "{after:?}");
 }
 

@@ -713,6 +713,8 @@ function SettingsView({ settings }) {
   );
 }
 
+// The stages an orchestration passes through, so the filter offers them all before any has run.
+const ORCHESTRATION_STAGES = ["implement_and_review", "gate_fix", "verify", "rebase", "push", "ci", "ci_fix", "review", "review_draft", "cleanup"];
 const FEATURE_GROUPS = ["draft", "pending", "in_progress", "completed", "abandoned"];
 
 function isFeature(feature) {
@@ -856,22 +858,47 @@ function useFeatureRuns(token, projectId, reloads) {
 
 // The project chooser at the top of the page; choosing one opens that project's features.
 function ProjectSelect({ projects, projectId }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const onPress = (event) => {
+      if (box.current && !box.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPress);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPress);
+    };
+  }, [open]);
   if (projects === null || projects.length === 0) return null;
+  const choices = projects.some((project) => project.id === projectId) ? projects : [{ id: projectId, name: projectId }, ...projects];
+  const current = choices.find((project) => project.id === projectId);
   return (
-    <label className="project-select">
-      <span>Project</span>
-      <select data-project-select aria-label="Project" value={projectId} onChange={(event) => navigate("/projects/" + encodeURIComponent(event.target.value) + "/features")}>
-        {projects.some((project) => project.id === projectId) ? null : <option value={projectId}>{projectId}</option>}
-        {projects.map((project) => (
-          <option key={project.id} value={project.id}>{project.name}</option>
+    <div className="project-picker" ref={box}>
+      <span className="project-switch-prefix">Project:</span>
+      <button type="button" className="project-switcher" data-project-select aria-label="Project" aria-haspopup="listbox" aria-expanded={open ? "true" : "false"} onClick={() => setOpen(!open)}>
+        <span className="project-switcher-text">{current.name}</span>
+        <Icon name="chevronDown" size={18} />
+      </button>
+      <ul className="project-list" role="listbox" aria-label="Project" hidden={!open}>
+        {choices.map((project) => (
+          <li key={project.id} role="presentation">
+            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate("/projects/" + encodeURIComponent(project.id) + "/features"); }}>{project.name}</button>
+          </li>
         ))}
-      </select>
-    </label>
+      </ul>
+    </div>
   );
 }
 
 function FeatureState({ status }) {
-  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}>{status}</span>;
+  const icon = { draft: "doc", pending: "clock", in_progress: "play", completed: "check", abandoned: "close" }[status] ?? "flag";
+  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{status}</span>;
 }
 
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
@@ -880,27 +907,26 @@ function FeatureList({ features, runs, projectId }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [stage, setStage] = useState("all");
-  const [sort, setSort] = useState("updated");
+  const [newestFirst, setNewestFirst] = useState(true);
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
   const rows = features.map((feature) => ({ feature, facts: featureFacts(feature, runs) }));
-  const states = [...FEATURE_GROUPS.filter((status) => features.some((feature) => feature.status === status)), ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
-  const stages = [...new Set(rows.map((row) => row.facts.stage).filter((name) => name !== null))];
+  const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
+  const stages = [...ORCHESTRATION_STAGES, ...[...new Set(rows.map((row) => row.facts.stage).filter((name) => name !== null))].filter((name) => !ORCHESTRATION_STAGES.includes(name))];
+  const running = runs.filter((run) => run.state === "running").length;
   const needle = query.trim().toLowerCase();
   const shown = rows
     .filter(({ feature, facts }) => (state === "all" || feature.status === state) && (stage === "all" || (stage === NO_RUN ? facts.stage === null : facts.stage === stage)) && feature.name.toLowerCase().includes(needle))
-    .sort((a, b) => (sort === "name" ? a.feature.name.localeCompare(b.feature.name) : whenOf(b.facts.updated) - whenOf(a.facts.updated)));
+    .sort((a, b) => (newestFirst ? 1 : -1) * (whenOf(b.facts.updated) - whenOf(a.facts.updated)));
   return (
     <>
-      <div className="feature-tiles" role="group" aria-label="Feature counts">
-        {[["Pending", "pending"], ["In progress", "in_progress"], ["Completed", "completed"], ["Draft", "draft"]].map(([label, key]) => (
-          <div key={key} className="tile"><strong>{features.filter((feature) => feature.status === key).length}</strong><span>{label}</span></div>
-        ))}
-        <div className="tile"><strong>{features.length}</strong><span>Total</span></div>
-      </div>
+      <p className="running-count"><Icon name="play" size={18} /><strong>{running}</strong> Running</p>
       <div className="feature-filters">
-        <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+        <label className="search-box">
+          <Icon name="search" size={18} />
+          <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>
         <select data-feature-status aria-label="State" value={state} onChange={(event) => setState(event.target.value)}>
           <option value="all">State: All</option>
           {states.map((name) => (
@@ -914,22 +940,20 @@ function FeatureList({ features, runs, projectId }) {
           ))}
           <option value={NO_RUN}>No run yet</option>
         </select>
-        <select data-feature-sort aria-label="Sort" value={sort} onChange={(event) => setSort(event.target.value)}>
-          <option value="updated">Sort: Updated</option>
-          <option value="name">Sort: Name</option>
-        </select>
       </div>
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
       {shown.length > 0 ? (
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature</th><th scope="col">State</th><th scope="col">Stage</th><th scope="col">Updated</th></tr>
+              <tr><th scope="col">Feature</th><th scope="col">State</th><th scope="col">Stage</th><th scope="col" aria-sort={newestFirst ? "descending" : "ascending"}>
+                <button type="button" className="sort-button" data-sort-updated aria-label={"Updated, " + (newestFirst ? "newest first" : "oldest first") + ". Reverse the order"} onClick={() => setNewestFirst(!newestFirst)}>Updated<Icon name={newestFirst ? "sortDown" : "sortUp"} size={16} /></button>
+              </th></tr>
             </thead>
             <tbody>
               {shown.map(({ feature, facts }) => (
                 <tr key={feature.name} className="feature">
-                  <td className="feature-name">
+                  <td>
                     <a className="feature-link" href={featureHref(projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, feature.name)); } }}>{feature.name}</a>
                     {feature.description ? <span className="feature-description">{feature.description}</span> : null}
                   </td>

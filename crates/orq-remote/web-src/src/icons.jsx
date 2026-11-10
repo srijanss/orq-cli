@@ -23,6 +23,10 @@ const PATHS = {
   chevronRight: "m9 6 6 6-6 6",
   passkey: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4ZM16.5 7.500h.010",
   chevronDown: "m6 9 6 6 6-6",
+  search: "m21 21-4.300-4.300M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z",
+  check: "m5 12 5 5L20 7",
+  sortDown: "M12 5v14m-6-6 6 6 6-6",
+  sortUp: "M12 19V5m-6 6 6-6 6 6",
 };
 
 export function Icon({ name, size = 20 }) {
