@@ -583,11 +583,11 @@ function dashboardStatus(state) {
   );
 }
 
-function PageHeader({ title, subtitle, onRefresh, status = null }) {
+function PageHeader({ title, subtitle, onRefresh, status = null, badge = null }) {
   return (
     <header className="page-header">
       <div>
-        <h1>{title}</h1>
+        {badge === null ? <h1>{title}</h1> : <div className="page-title"><h1>{title}</h1>{badge}</div>}
         <p className="subtitle">{subtitle}</p>
       </div>
       {status !== null ? (
@@ -856,8 +856,8 @@ function useFeatureRuns(token, projectId, reloads, enabled) {
   return runs;
 }
 
-// The project chooser at the top of the page; choosing one opens that project's features.
-function ProjectSelect({ projects, projectId }) {
+// The project chooser at the top of the page; choosing one opens that project's same section.
+function ProjectSelect({ projects, projectId, section = "features" }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
   useEffect(() => {
@@ -889,7 +889,7 @@ function ProjectSelect({ projects, projectId }) {
       <ul className="project-list" role="listbox" aria-label="Project" hidden={!open}>
         {choices.map((project) => (
           <li key={project.id ?? ""} role="presentation">
-            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id ?? ""} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate(project.id === null ? "/features" : "/projects/" + encodeURIComponent(project.id) + "/features"); }}>{project.name}</button>
+            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id ?? ""} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate(project.id === null ? "/" + section : "/projects/" + encodeURIComponent(project.id) + "/" + section); }}>{project.name}</button>
           </li>
         ))}
       </ul>
@@ -906,6 +906,18 @@ function FeatureState({ status }) {
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
 // the newest activity comes first.
 const FEATURES_PER_PAGE = 10;
+
+// Previous and Next under a list longer than one page.
+function Pager({ at, pages, onPage }) {
+  if (pages <= 1) return null;
+  return (
+    <nav className="pager" aria-label="Pagination">
+      <button type="button" data-page-prev disabled={at === 0} onClick={() => onPage(at - 1)}>Previous</button>
+      <span className="pager-status">{"Page " + (at + 1) + " of " + pages}</span>
+      <button type="button" data-page-next disabled={at === pages - 1} onClick={() => onPage(at + 1)}>Next</button>
+    </nav>
+  );
+}
 
 function FeatureList({ features, showProject = false }) {
   const [query, setQuery] = useState("");
@@ -954,13 +966,7 @@ function FeatureList({ features, showProject = false }) {
           </table>
         </div>
       ) : null}
-      {pages > 1 ? (
-        <nav className="pager" aria-label="Pagination">
-          <button type="button" data-page-prev disabled={at === 0} onClick={() => setPage(at - 1)}>Previous</button>
-          <span className="pager-status">{"Page " + (at + 1) + " of " + pages}</span>
-          <button type="button" data-page-next disabled={at === pages - 1} onClick={() => setPage(at + 1)}>Next</button>
-        </nav>
-      ) : null}
+      <Pager at={at} pages={pages} onPage={setPage} />
     </>
   );
 }
@@ -1002,7 +1008,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
               {facts.runs.map((run) => (
                 <li key={run.run_id} className="run">
                   <span className="run-id">{run.run_id}</span>
-                  <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+                  <RunState state={run.state} />
                   {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
                   {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
                 </li>
@@ -1115,43 +1121,109 @@ function byState(runs) {
   return [...runs].sort((a, b) => rank(a) - rank(b));
 }
 
-// The runs as the server ordered them (newest first), or grouped by state when asked. A state the
-// page does not know is "Unknown", never a success.
-function runAddress(runId) {
-  return currentPath().replace(/\/+$/, "") + "/" + encodeURIComponent(runId);
+// A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
+const RUN_ICONS = { running: "play", completed: "check", merged: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock" };
+
+function RunState({ state }) {
+  const known = Object.hasOwn(RUN_STATES, state);
+  return <span className={"run-state feature-state run-" + (known ? state : "unknown")}><Icon name={known ? RUN_ICONS[state] : "flag"} size={14} />{known ? RUN_STATES[state] : "Unknown"}</span>;
 }
 
-function OrchestrationList({ runs, control }) {
+// The pill beside the Orchestrations title: how many of the listed runs are running now.
+function runningBadge(state) {
+  const rows = state.data?.rows;
+  if (!Array.isArray(rows)) return null;
+  const running = rows.filter((run) => run.state === "running").length;
+  return running === 0 ? null : <span className="feature-state run-running" data-running-count>{running + " running"}</span>;
+}
+
+function runHref(projectId, runId) {
+  return "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(runId);
+}
+
+// The runs as a table, the server's order (newest first) or grouped by state when asked. Search,
+// state and stage narrow it; the count beside the Run header follows them.
+const RUNS_PER_PAGE = 10;
+
+function OrchestrationList({ runs, control, projectId }) {
+  const [query, setQuery] = useState("");
+  const [state, setState] = useState("all");
+  const [stage, setStage] = useState("all");
   const [sort, setSort] = useState("newest");
+  const [page, setPage] = useState(0);
   if (runs.length === 0) {
     return <p>No runs in this project yet.</p>;
   }
-  const running = runs.filter((run) => run.state === "running").length;
-  const shown = sort === "state" ? byState(runs) : runs;
-  const choices = [["newest", "Newest first"], ["state", "By state"]];
+  const known = (run) => Object.hasOwn(RUN_STATES, run.state);
+  const states = STATE_ORDER.filter((name) => runs.some((run) => run.state === name));
+  const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
+  const needle = query.trim().toLowerCase();
+  const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : run.state === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
+  const shown = sort === "state" ? byState(matches) : matches;
+  const pages = Math.max(1, Math.ceil(shown.length / RUNS_PER_PAGE));
+  const at = Math.min(page, pages - 1);
+  const visible = shown.slice(at * RUNS_PER_PAGE, (at + 1) * RUNS_PER_PAGE);
+  const choose = (set) => (event) => {
+    set(event.target.value);
+    setPage(0);
+  };
+  const actions = control !== null && runs.some((run) => run.state === "running" || run.state === "paused");
   return (
     <>
-      <p>{runs.length + (runs.length === 1 ? " run" : " runs") + " · " + running + " running"}</p>
-      <div role="group" aria-label="Sort runs">
-        {choices.map(([key, label]) => (
-          <button key={key} type="button" data-sort={key} aria-pressed={sort === key} onClick={() => setSort(key)}>{label}</button>
-        ))}
+      <div className="feature-filters">
+        <label className="search-box">
+          <Icon name="search" size={18} />
+          <input type="search" data-run-search aria-label="Search runs" placeholder="Search runs" autoComplete="off" spellCheck={false} value={query} onChange={choose(setQuery)} />
+        </label>
+        <select data-run-state aria-label="State" value={state} onChange={choose(setState)}>
+          <option value="all">State: All</option>
+          {states.map((name) => <option key={name} value={name}>{RUN_STATES[name]}</option>)}
+          {runs.some((run) => !known(run)) ? <option value="unknown">Unknown</option> : null}
+        </select>
+        <select data-run-stage aria-label="Stage" value={stage} onChange={choose(setStage)}>
+          <option value="all">Stage: All</option>
+          {stages.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <select data-run-sort aria-label="Sort" value={sort} onChange={choose(setSort)}>
+          <option value="newest">Sort: Updated</option>
+          <option value="state">Sort: State</option>
+        </select>
       </div>
-      <ul>
-        {shown.map((run) => (
-          <li key={run.run_id} className="run card">
-            <strong>{run.feature}</strong>
-            {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate(runAddress(run.run_id))}>Open timeline</button> : null}
-            <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
-            {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null}
-            {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
-            {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
-            <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
-            <Stamp label="Last activity" at={run.updated_at} />
-            <Stamp label="Started" at={run.started_at} />
-          </li>
-        ))}
-      </ul>
+      {shown.length === 0 ? <p>No runs match the filters.</p> : (
+        <div className="feature-table-wrap">
+          <table className="feature-table run-table">
+            <thead>
+              <tr>
+                <th scope="col">Run <span className="feature-count" data-run-count>{shown.length}</span></th>
+                <th scope="col">State</th>
+                <th scope="col">Stage</th>
+                <th scope="col">Updated</th>
+                {actions ? <th scope="col"><span className="sr-only">Actions</span></th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((run) => (
+                <tr key={run.run_id} className="run-row">
+                  <td>
+                    {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectId, run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
+                    <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</span>
+                  </td>
+                  <td><RunState state={run.state} /></td>
+                  <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
+                  <td><Moment at={run.updated_at} /></td>
+                  {actions ? (
+                    <td>
+                      {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null}
+                      {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <Pager at={at} pages={pages} onPage={setPage} />
     </>
   );
 }
@@ -1215,6 +1287,23 @@ function groupEvents(events, seed = 0) {
   return items;
 }
 
+// A step's mark: failed, finished, or still open.
+function StepIcon({ failed, done }) {
+  const kind = failed ? "failed" : done ? "done" : "open";
+  return <span className={"step-icon step-" + kind} aria-hidden="true"><Icon name={{ failed: "close", done: "check", open: "clock" }[kind]} size={16} /></span>;
+}
+
+// How long a step took, from its first event to its last, when both times are readable.
+function StepTime({ events }) {
+  const first = validTime(events[0].occurred_at);
+  const last = validTime(events[events.length - 1].occurred_at);
+  if (first === null || last === null) return null;
+  const seconds = Math.round((last - first) / 1000);
+  if (seconds < 1) return null;
+  const text = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m " + (seconds % 60) + "s" : Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+  return <span className="attempt-time">{text}</span>;
+}
+
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
 function EventTimeline({ events, rounds = 0 }) {
   return (
@@ -1224,7 +1313,11 @@ function EventTimeline({ events, rounds = 0 }) {
           <EventItem key={item.event.event_id} event={item.event} />
         ) : (
           <li key={item.events[0].event_id} className="attempt card" data-failed={item.failed ? "true" : undefined}>
-            <h3 className="attempt-title">{item.title}</h3>
+            <div className="attempt-head">
+              <StepIcon failed={item.failed} done={item.events.some((event) => event.kind.endsWith(".completed"))} />
+              <h3 className="attempt-title">{item.title}</h3>
+              <StepTime events={item.events} />
+            </div>
             {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
             <ol>
               {item.events.map((event) => (
@@ -1243,20 +1336,42 @@ function EventTimeline({ events, rounds = 0 }) {
 function RunTimeline({ timeline, listPath, runPath, follow }) {
   const { run, events, next_cursor: next } = timeline;
   return (
-    <>
-      <button type="button" data-back="list" onClick={() => navigate(listPath)}>Back to the runs</button>
-      <h2>{run.feature}</h2>
-      <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
-      {run.stage ? <p>{"Stage: " + run.stage}</p> : null}
-      <p className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</p>
-      <Stamp label="Started" at={run.started_at} />
-      <Stamp label="Last activity" at={run.updated_at} />
-      <button type="button" data-open="logs" onClick={() => navigate(runPath + "/logs")}>View logs</button>
-      {events.length === 0 ? <p>No events recorded.</p> : null}
-      {next === null && follow !== null ? null : <EventTimeline events={events} rounds={timeline.review_rounds} />}
-      {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
-      {next === null && follow !== null ? <FollowLive key={follow.base} rounds={timeline.review_rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
-    </>
+    <section className="card feature-detail run-detail">
+      <div className="feature-detail-head">
+        <button type="button" className="back-arrow" data-back="list" aria-label="Back to the runs" onClick={() => navigate(listPath)}><Icon name="arrowLeft" size={22} /></button>
+        <div className="feature-detail-title">
+          <div className="feature-detail-line">
+            <h2>{run.feature}</h2>
+            <RunState state={run.state} />
+          </div>
+          <p className="feature-detail-sub run-detail-sub">
+            <span className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</span>
+            {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
+            {validTime(run.started_at) === null ? null : <span>Started <Moment at={run.started_at} /></span>}
+            {validTime(run.updated_at) === null ? null : <span>Last activity <Moment at={run.updated_at} /></span>}
+          </p>
+        </div>
+      </div>
+      <RunTabs tab="timeline" runPath={runPath} />
+      <div className="feature-panel" id="run-panel" role="tabpanel" aria-labelledby="run-tab-timeline">
+        {events.length === 0 ? <p>No events recorded.</p> : null}
+        {next === null && follow !== null ? null : <EventTimeline events={events} rounds={timeline.review_rounds} />}
+        {next !== null && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
+        {next === null && follow !== null ? <FollowLive key={follow.base} rounds={timeline.review_rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} /> : null}
+      </div>
+    </section>
+  );
+}
+
+// A run's two views, each its own address: the timeline and the log files.
+function RunTabs({ tab, runPath }) {
+  const tabs = [["timeline", "Timeline", runPath], ["logs", "Logs", runPath + "/logs"]];
+  return (
+    <div className="feature-tabs" role="tablist" aria-label="Run details">
+      {tabs.map(([id, label, href]) => (
+        <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="run-panel" data-run-tab={id} data-open={id === "logs" ? "logs" : undefined} onClick={() => { if (tab !== id) navigate(href); }}>{label}</button>
+      ))}
+    </div>
   );
 }
 
@@ -1389,10 +1504,18 @@ function parseLogPage(data) {
   return ok ? data : null;
 }
 
-function LogFiles({ files, runPath }) {
+function LogFiles({ files, runPath, runId }) {
   return (
-    <>
-      <button type="button" data-back="run" onClick={() => navigate(runPath)}>Back to the run</button>
+    <section className="card feature-detail run-detail">
+      <div className="feature-detail-head">
+        <button type="button" className="back-arrow" data-back="run" aria-label="Back to the run" onClick={() => navigate(runPath)}><Icon name="arrowLeft" size={22} /></button>
+        <div className="feature-detail-title">
+          <div className="feature-detail-line"><h2>Logs</h2></div>
+          <p className="feature-detail-sub">{"Run " + runId}</p>
+        </div>
+      </div>
+      <RunTabs tab="logs" runPath={runPath} />
+      <div className="feature-panel" id="run-panel" role="tabpanel" aria-labelledby="run-tab-logs">
       {files.length === 0 ? <p>No logs for this run.</p> : null}
       <ul>
         {files.map((file) => (
@@ -1403,7 +1526,8 @@ function LogFiles({ files, runPath }) {
           </li>
         ))}
       </ul>
-    </>
+      </div>
+    </section>
   );
 }
 
@@ -1548,8 +1672,12 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
     const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";
     return (
       <>
-        <PageHeader title="Orchestrations" subtitle="The project's orchestration runs" onRefresh={onRefresh} />
-        <Loaded key={runsPath} reloads={reloads} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
+        <Loaded key={runsPath} reloads={reloads} footer={false} header={(state) => (
+          <>
+            <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state)} status={dashboardStatus(state)} onRefresh={onRefresh} />
+            <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
+          </>
+        )} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -1573,7 +1701,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       return (
         <>
           <PageHeader title="Logs" subtitle="The run's log files" onRefresh={onRefresh} />
-          <Loaded key={apiRun} reloads={reloads} token={token} path={apiRun} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogFiles files={files} runPath={runPath} />} onSignedOut={onSignedOut} />
+          <Loaded key={apiRun} reloads={reloads} token={token} path={apiRun} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogFiles files={files} runPath={runPath} runId={run} />} onSignedOut={onSignedOut} />
         </>
       );
     }
@@ -1602,8 +1730,12 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
     const timelinePath = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
     return (
       <>
-        <PageHeader title="Run" subtitle="The run's timeline" onRefresh={onRefresh} />
-        <Loaded key={timelinePath} reloads={reloads} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} follow={{ token, onSignedOut, cursor, base: "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) }} />} onSignedOut={onSignedOut} />
+        <Loaded key={timelinePath} reloads={reloads} footer={false} header={(state) => (
+          <>
+            <PageHeader title="Run" subtitle={run} status={dashboardStatus(state)} onRefresh={onRefresh} />
+            <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
+          </>
+        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline timeline={data} listPath={listPath} runPath={runPath} follow={{ token, onSignedOut, cursor, base: "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run) }} />} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -1673,14 +1805,14 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
       </>
     );
   }
-  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Every project's orchestration runs", "runs", "Loading the runs…", parseOrchestrations], "/reviews": ["Reviews", "Code reviews and agent reports", "reviews", "Loading the review inbox…", parseRuns] }[hash];
+  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Runs and pipeline executions across every project", "runs", "Loading the runs…", parseOrchestrations], "/reviews": ["Reviews", "Code reviews and agent reports", "reviews", "Loading the review inbox…", parseRuns] }[hash];
   if (everywhere !== undefined) {
     const [title, subtitle, part, loading, parse] = everywhere;
     const onRefresh = () => setReloads(reloads + 1);
     return (
       <>
-        {part === "features" ? null : <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />}
-        <Loaded key={API_PROJECTS} reloads={reloads} footer={part !== "features"} header={part === "features" ? (state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} /> : null} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+        {part === "reviews" ? <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} /> : null}
+        <Loaded key={API_PROJECTS} reloads={reloads} footer={part === "reviews"} header={part === "reviews" ? null : (state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
             <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
@@ -1693,8 +1825,8 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
               return (
                 <section key={project.id} className="project-section">
                   <h2>{project.name}</h2>
-                  <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
-                    if (part === "runs") return <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
+                  <Loaded key={base} footer={part === "reviews"} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
+                    if (part === "runs") return <OrchestrationList runs={data.rows} projectId={project.id} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
                     return <RunList runs={data} detailPrefix={"/projects/" + id + "/reviews/"} selected={null} />;
                   }} />
                 </section>

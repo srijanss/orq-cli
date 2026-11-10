@@ -80,3 +80,15 @@ fn unusable_data_draws_no_events_and_an_odd_address_is_not_found() {
     let Some(out) = run("/projects/alpha/orchestrations/a%20b", json!([projects()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["requests"].as_array().unwrap().iter().filter(|r| r["url"].as_str().unwrap_or("").contains("/runs")).count(), 0, "{out}");
 }
+
+#[test]
+fn the_run_card_has_a_back_arrow_timeline_and_logs_tabs_and_each_step_shows_how_long_it_took() {
+    let started = json!({"event_id": "e0", "kind": "stage.started", "stage": "implement", "attempt": 1, "occurred_at": "2026-11-02T10:00:00Z"});
+    let done = json!({"event_id": "e1", "kind": "stage.completed", "stage": "implement", "attempt": 1, "occurred_at": "2026-11-02T10:02:30Z"});
+    let stream = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([page(json!([started, done]), json!("e1")), projects(), stream]), json!([{"submit": TOKEN}])) else { return };
+    let t = texts(&out["frames"][1]);
+    assert!(t.iter().any(|x| x == "Timeline") && t.iter().any(|x| x == "Logs"), "{t:?}");
+    assert!(t.iter().any(|x| x == "2m 30s"), "the step's duration: {t:?}");
+    assert!(t.iter().any(|x| x == "Connected (Tailscale)") && t.iter().any(|x| x == "Project:"), "{t:?}");
+}

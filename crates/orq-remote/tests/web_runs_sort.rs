@@ -43,17 +43,20 @@ fn order(frame: &Value) -> Vec<String> {
 
 #[test]
 fn the_tab_says_how_many_runs_there_are_and_how_many_are_running() {
+    // The count sits beside the Run header and the running pill beside the page title.
     let Some(out) = run(json!([runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
-    assert!(texts(&out["frames"][1]).iter().any(|t| t == "5 runs · 2 running"), "{:?}", texts(&out["frames"][1]));
+    let t = texts(&out["frames"][1]);
+    assert!(t.iter().any(|t| t == "5") && t.iter().any(|t| t == "2 running"), "{t:?}");
     let Some(out) = run(json!([{"status": 200, "json": {"runs": [row("a", "running")]}}, projects()]), json!([{"submit": TOKEN}])) else { return };
-    assert!(texts(&out["frames"][1]).iter().any(|t| t == "1 run · 1 running"), "{:?}", texts(&out["frames"][1]));
+    let t = texts(&out["frames"][1]);
+    assert!(t.iter().any(|t| t == "1") && t.iter().any(|t| t == "1 running"), "{t:?}");
     let Some(out) = run(json!([{"status": 200, "json": {"runs": []}}, projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(!texts(&out["frames"][1]).iter().any(|t| t.contains("running")), "an empty list has no count line");
 }
 
 #[test]
 fn the_default_order_is_the_servers_and_sorting_by_state_puts_running_first_then_back() {
-    let Some(out) = run(json!([runs(), projects()]), json!([{"submit": TOKEN}, {"click": "button[data-sort]", "index": 1}, {"click": "button[data-sort]", "index": 0}])) else { return };
+    let Some(out) = run(json!([runs(), projects()]), json!([{"submit": TOKEN}, {"set": "select[data-run-sort]", "value": "state"}, {"set": "select[data-run-sort]", "value": "newest"}])) else { return };
     assert_eq!(order(&out["frames"][1]), ["feat-a", "feat-b", "feat-c", "feat-d", "feat-e"]);
     // By state: running (b, d in the server's order), then failed, completed, and an unknown state last.
     assert_eq!(order(&out["frames"][2]), ["feat-b", "feat-d", "feat-c", "feat-a", "feat-e"]);

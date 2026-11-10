@@ -251,6 +251,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .shell.collapsed .sidebar-head { flex-direction: column; align-items: center; gap: 0.5rem; }
 .page-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .page-header h1 { margin: 0; font-size: 1.5rem; }
+.page-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
 .page-header .subtitle { margin: 0.25rem 0 0; color: var(--text-muted); }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; }
 .theme-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 2px; padding: 3px; min-height: 0; min-width: 0; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); }
@@ -401,3 +402,21 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .new-lines { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 
 .sidebar .project-switcher, .sidebar-foot button { color: var(--text); }
+
+/* Orchestrations: run state pills, the runs table and the run card's steps. */
+.feature-state.run-running { color: var(--status-running); background: var(--status-running-bg); }
+.feature-state.run-completed, .feature-state.run-merged { color: var(--status-completed); background: var(--status-completed-bg); }
+.feature-state.run-failed, .feature-state.run-blocked { color: var(--status-failed); background: var(--status-failed-bg); }
+.feature-state.run-needs_review, .feature-state.run-pause_requested, .feature-state.run-paused { color: var(--status-waiting); background: var(--status-waiting-bg); }
+.run-table td:first-child { display: flex; flex-direction: column; gap: 0.125rem; }
+.run-table .run-open { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.run-table .run-id { color: var(--text-muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
+.run-table td { vertical-align: middle; }
+.run-detail-sub span + span::before { content: "·"; margin: 0 0.375rem; }
+.attempt-head { display: flex; align-items: center; gap: 0.5rem; }
+.attempt-head .attempt-title { flex: 1; min-width: 0; }
+.attempt-time { color: var(--text-muted); font-size: 0.875rem; white-space: nowrap; }
+.step-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.75rem; height: 1.75rem; border-radius: 999px; color: var(--status-queued); background: var(--status-queued-bg); }
+.step-icon.step-done { color: var(--status-completed); background: var(--status-completed-bg); }
+.step-icon.step-failed { color: var(--status-failed); background: var(--status-failed-bg); }
+.step-icon.step-open { color: var(--status-running); background: var(--status-running-bg); }

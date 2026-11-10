@@ -52,7 +52,7 @@ fn the_orchestrations_tab_reads_the_projects_own_runs_and_shows_state_stage_and_
     assert!(at("bold") < at("older-feature") && at("older-feature") < at("odd-feature"), "{texts:?}");
     assert!(texts.iter().any(|t| t == "<b>bold</b> feature"), "markup is shown literally: {texts:?}");
     assert!(texts.iter().any(|t| t == "Running") && texts.iter().any(|t| t == "Needs review"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Stage: implement"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "implement"), "{texts:?}");
     assert!(texts.iter().any(|t| t.contains("run-b")) && out["frames"][1]["settled"]["times"].as_array().unwrap().iter().any(|m| m["datetime"] == "2026-11-02T10:30:00Z"), "{texts:?}");
     assert!(!texts.iter().any(|t| t.contains("not available yet")), "{texts:?}");
 }
@@ -113,4 +113,20 @@ fn while_the_other_projects_runs_are_loading_the_loaded_rows_are_already_gone() 
     assert!(!waiting.iter().any(|t| t == "alpha-only") && !waiting.iter().any(|t| t == "beta-only"), "{waiting:?}");
     let done = shown(&out["frames"][3]);
     assert!(done.iter().any(|t| t == "beta-only") && !done.iter().any(|t| t == "alpha-only"), "{done:?}");
+}
+
+#[test]
+fn the_list_is_a_table_under_the_header_status_and_project_picker_narrowed_by_search_state_and_stage() {
+    let steps = json!([{"submit": TOKEN}, {"set": "select[data-run-state]", "value": "running"}, {"set": "select[data-run-state]", "value": "all"}, {"set": "select[data-run-stage]", "value": "implement"}, {"set": "select[data-run-stage]", "value": "all"}, {"set": "input[data-run-search]", "value": "older"}]);
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs(), projects()]), steps) else { return };
+    let first = shown(&out["frames"][1]);
+    assert!(first.iter().any(|t| t == "Connected (Tailscale)") && first.iter().any(|t| t.starts_with("Last updated")), "the status sits in the header row: {first:?}");
+    assert!(first.iter().any(|t| t == "Project:") && first.iter().any(|t| t == "1 running"), "{first:?}");
+    assert!(!first.iter().any(|t| t.starts_with("Last checked")), "no footer under the table: {first:?}");
+    let rows = |frame: usize| -> Vec<String> { shown(&out["frames"][frame]).into_iter().filter(|t| t.ends_with("feature")).collect() };
+    assert_eq!(rows(1), ["<b>bold</b> feature", "older-feature", "odd-feature"]);
+    assert_eq!(rows(2), ["<b>bold</b> feature"], "state: running");
+    assert_eq!(rows(4), ["<b>bold</b> feature"], "stage: implement");
+    assert_eq!(rows(6), ["older-feature"], "search");
+    assert!(shown(&out["frames"][6]).iter().any(|t| t == "1"), "the count follows the filters: {:?}", shown(&out["frames"][6]));
 }
