@@ -36,3 +36,8 @@ export function migrateLegacyHash() {
   const match = /^#(\/(?:dashboard|settings|projects(?:\/[^/]+){0,2}|reviews\/[^/]+))$/.exec(window.location.hash);
   if (match && window.location.pathname === "/") window.history.replaceState(null, "", match[1] + window.location.search);
 }
+
+// The bare address opens the dashboard; the rewrite adds no history entry.
+export function openRootAtDashboard() {
+  if (window.location.pathname === "/") window.history.replaceState(null, "", "/dashboard" + window.location.search);
+}

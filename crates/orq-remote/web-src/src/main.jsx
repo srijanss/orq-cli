@@ -5,11 +5,11 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
-import { Badge } from "./badge.jsx";
+import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { authStatus, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
-import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, subscribeToLocation } from "./router.js";
+import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
 // One message for every failed sign-in, so it never says which part failed.
@@ -25,13 +25,7 @@ const API_PROJECTS = "/api/projects";
 // The same plain identifiers the server accepts, checked before one is put in a
 // path or an address.
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const DETAIL_SECTIONS = [
-  ["Summary", "summary"],
-  ["Risks", "risks"],
-  ["Files", "files"],
-  ["Tests", "tests"],
-  ["Review rounds", "rounds"],
-];
+const DETAIL_SECTIONS = ["summary", "risks", "files", "tests", "rounds"];
 
 // The server sends the time as plain UTC text; anything else is not shown.
 const UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -118,7 +112,7 @@ function isTextList(value) {
 }
 
 function parseDetail(data) {
-  const ok = data !== null && typeof data === "object" && typeof data.stale === "boolean" && DETAIL_SECTIONS.every(([, key]) => isTextList(data[key]));
+  const ok = data !== null && typeof data === "object" && typeof data.stale === "boolean" && DETAIL_SECTIONS.every((key) => isTextList(data[key]));
   return ok ? data : null;
 }
 
@@ -205,23 +199,52 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
   );
 }
 
-function RunRow({ run, detailPrefix, selected = false }) {
-  const open = typeof run.run_id === "string" && RUN_ID.test(run.run_id);
+// A risk the reference knows gets its coloured badge; any other word is shown as it came.
+function RiskBadge({ risk }) {
+  if (risk === undefined || risk === null) return null;
+  const word = String(risk);
+  const kind = "risk-" + word.toLowerCase();
+  return Object.hasOwn(BADGES, kind) ? <Badge kind={kind} /> : <span className="badge">{"risk: " + word}</span>;
+}
+
+// The short pill reads "Stale" or "Unverified"; a screen reader hears the full marker instead.
+function FreshnessPill({ freshness }) {
+  if (freshness !== "stale" && freshness !== "unverified") return null;
   return (
-    <li className={run.stale === true ? "run stale card" : "run card"} data-selected={selected ? run.run_id : undefined}>
-      {open ? <span className="ticket-id">{run.run_id}</span> : null}
+    <span className={"pill pill-" + freshness}>
+      <span aria-hidden="true">{freshness === "stale" ? "Stale" : "Unverified"}</span>
+      <span className="sr-only">{freshness === "stale" ? STALE_MARKER : UNVERIFIED_MARKER}</span>
+    </span>
+  );
+}
+
+function ReviewRow({ run, detailPrefix, selected = false, showProject = false }) {
+  const open = typeof run.run_id === "string" && RUN_ID.test(run.run_id);
+  const freshness = rowFreshness(run);
+  const body = (
+    <>
+      <span className="review-row-title">{String(run.feature)}</span>
+      <span className="review-row-meta">
+        {open ? <code>{run.run_id}</code> : null}
+        {showProject && typeof run.project === "string" ? <span>{run.project}</span> : null}
+        <Generated at={run.generated_at} />
+      </span>
+      <span className="review-tags">
+        <span className="review-status">{String(run.status)}</span>
+        <RiskBadge risk={run.risk} />
+        <FreshnessPill freshness={freshness} />
+      </span>
+    </>
+  );
+  return (
+    <li className={freshness === "stale" ? "review-row stale" : "review-row"} data-selected={selected ? run.run_id : undefined}>
       {open ? (
-        <button type="button" data-open-run={run.run_id} aria-current={selected ? "true" : undefined} onClick={() => navigate(detailPrefix + run.run_id)}>
-          {String(run.feature)}
+        <button type="button" className="review-row-open" data-open-run={run.run_id} aria-current={selected ? "true" : undefined} onClick={() => navigate(detailPrefix + run.run_id)}>
+          {body}
         </button>
       ) : (
-        <strong>{String(run.feature)}</strong>
+        <div className="review-row-open">{body}</div>
       )}
-      <span>{String(run.status)}</span>
-      {run.risk !== undefined && run.risk !== null && <span>{"risk: " + String(run.risk)}</span>}
-      <Generated at={run.generated_at} />
-      {rowFreshness(run) === "stale" && <em>{STALE_MARKER}</em>}
-      {rowFreshness(run) === "unverified" && <em>{UNVERIFIED_MARKER}</em>}
     </li>
   );
 }
@@ -237,29 +260,57 @@ function reviewTime(run) {
   return Number.isNaN(when) ? -Infinity : when;
 }
 
+function reviewedToday(run, now) {
+  const when = validTime(run.generated_at);
+  return when !== null && when.getFullYear() === now.getFullYear() && when.getMonth() === now.getMonth() && when.getDate() === now.getDate();
+}
+
 const REVIEW_FILTERS = [
   ["status", "Status", (run) => String(run.status)],
   ["risk", "Risk", (run) => (run.risk === undefined || run.risk === null ? "" : String(run.risk))],
   ["freshness", "Freshness", rowFreshness],
 ];
 
-// Newest review first; the filters only hide rows, so a marker never leaves a row that is shown.
-function RunList({ runs, detailPrefix = DETAIL_PREFIX, selected = null }) {
+// Today's reviews or all of them, newest (or oldest) first; the filters only hide rows, so a
+// marker never leaves a row that is shown.
+function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRows = null, showProject = false }) {
   const [chosen, setChosen] = useState({});
+  const [range, setRange] = useState("all");
+  const [order, setOrder] = useState("desc");
+  useEffect(() => {
+    if (onRows !== null) onRows(runs);
+  }, [runs]);
   if (runs.length === 0) {
     return <p>No reviews in the inbox.</p>;
   }
-  const shown = runs
+  const now = new Date();
+  const today = runs.filter((run) => reviewedToday(run, now));
+  const pool = range === "today" ? today : runs;
+  const shown = pool
     .filter((run) => REVIEW_FILTERS.every(([key, , read]) => !chosen[key] || read(run) === chosen[key]))
-    .sort((a, b) => reviewTime(b) - reviewTime(a));
+    .sort((a, b) => (order === "desc" ? reviewTime(b) - reviewTime(a) : reviewTime(a) - reviewTime(b)));
+  const flip = order === "desc" ? "asc" : "desc";
   return (
-    <>
-      <div className="filters" role="group" aria-label="Filter reviews">
+    <div className="review-list card">
+      <div className="review-list-head">
+        <div className="review-range" role="group" aria-label="Which reviews">
+          {[["today", "Today (" + today.length + ")"], ["all", "All"]].map(([id, label]) => (
+            <button key={id} type="button" aria-pressed={range === id ? "true" : "false"} data-review-range={id} onClick={() => setRange(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="sort-toggle" data-review-sort={order} aria-label={order === "desc" ? "Sort by review time: newest first" : "Sort by review time: oldest first"} title={flip === "asc" ? "Show the oldest first" : "Show the newest first"} onClick={() => setOrder(flip)}>
+          <Icon name={order === "desc" ? "sortDesc" : "sortAsc"} size={18} />
+          {order === "desc" ? "Sort: Newest" : "Sort: Oldest"}
+        </button>
+      </div>
+      <div className="filters review-filters" role="group" aria-label="Filter reviews">
         {REVIEW_FILTERS.map(([key, label, read]) => (
           <label key={key}>
-            {label}
+            <span className="sr-only">{label}</span>
             <select data-filter={key} value={chosen[key] || ""} onChange={(event) => setChosen({ ...chosen, [key]: event.target.value })}>
-              <option value="">All</option>
+              <option value="">{label + ": All"}</option>
               {[...new Set(runs.map(read).filter((value) => value !== ""))].sort().map((value) => (
                 <option key={value} value={value}>{value}</option>
               ))}
@@ -267,21 +318,18 @@ function RunList({ runs, detailPrefix = DETAIL_PREFIX, selected = null }) {
           </label>
         ))}
       </div>
-      {shown.length === 0 ? <p>No reviews match these filters.</p> : (
-        <ul>
+      {shown.length === 0 ? (
+        <p className="review-empty">{range === "today" && today.length === 0 ? "No reviews today." : "No reviews match these filters."}</p>
+      ) : (
+        <ul className="review-rows">
           {shown.map((run) => (
-            <RunRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} selected={selected !== null && run.run_id === selected} />
+            <ReviewRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} selected={selected !== null && run.run_id === selected} showProject={showProject} />
           ))}
         </ul>
       )}
-    </>
+    </div>
   );
 }
-
-const FRESHNESS_BANNERS = {
-  stale: { icon: "⚠", label: "STALE", text: "The provider's head differs from the reviewed commit; this report may be out of date." },
-  unverified: { icon: "?", label: "UNVERIFIED", text: "The provider's head could not be checked against the reviewed commit." },
-};
 
 // The server decides; anything it does not clearly call current or stale is unverified.
 function freshnessOf(report) {
@@ -292,49 +340,115 @@ function shortHash(value) {
   return typeof value === "string" && /^[0-9a-f]{4,64}$/i.test(value) ? value : "none";
 }
 
+// Stale names both commits; unverified names only the reviewed one, since the head is not known.
 function FreshnessBanner({ report, freshness }) {
-  const banner = FRESHNESS_BANNERS[freshness];
-  if (banner === undefined) {
+  if (freshness !== "stale" && freshness !== "unverified") {
     return null;
   }
+  const reviewed = shortHash(report.reviewed_head_sha);
+  const text = freshness === "stale"
+    ? "The provider head has moved since this review (head: " + shortHash(report.provider_head_sha) + ", reviewed: " + reviewed + ")."
+    : "The provider head could not be checked against the reviewed commit (reviewed: " + reviewed + ").";
   return (
-    <div className={"banner freshness-banner " + freshness} role="status" data-freshness={freshness}>
-      <strong>
-        <span aria-hidden="true">{banner.icon} </span>
-        {banner.label}
-      </strong>
-      <p>{banner.text}</p>
-      <p>{"Reviewed commit: " + shortHash(report.reviewed_head_sha)}</p>
-      <p>{"Provider head: " + shortHash(report.provider_head_sha)}</p>
+    <div className={"freshness-banner " + freshness} role="status" data-freshness={freshness}>
+      <Icon name="alert" size={20} />
+      <div>
+        <strong>{freshness === "stale" ? "STALE: this review may be out of date" : "UNVERIFIED: this review could not be checked"}</strong>
+        <p>{text}</p>
+      </div>
     </div>
   );
 }
 
-function Detail({ report, listPath = "/" }) {
+const REPORT_SECTIONS = [
+  ["Risks", "risks"],
+  ["Files changed", "files"],
+  ["Tests", "tests"],
+  ["Review rounds", "rounds"],
+];
+
+function providerName(href) {
+  const host = new URL(href).hostname;
+  return host === "github.com" ? "GitHub" : host === "gitlab.com" ? "GitLab" : host;
+}
+
+// The report beside (or, on a phone, instead of) the list. The row it was opened from, when the
+// list has it, gives the feature, status and risk the report itself does not carry.
+function Detail({ report, row = null, listPath = "/reviews" }) {
   const freshness = freshnessOf(report);
   const href = freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
+  const commit = shortHash(report.reviewed_head_sha);
   return (
-    <>
+    <article className="review-report card">
       <button type="button" className="back-to-list" data-back="list" onClick={() => navigate(listPath)}>
+        <Icon name="arrowLeft" size={18} />
         Back to the list
       </button>
-      <Generated at={report.generated_at} />
+      <div className="review-report-head">
+        <h2>{row !== null ? String(row.feature) : "Review report"}</h2>
+        <span className="review-tags">
+          <FreshnessPill freshness={freshness} />
+          {row !== null ? <RiskBadge risk={row.risk} /> : null}
+          {row !== null ? <span className="review-status">{String(row.status)}</span> : null}
+        </span>
+      </div>
+      <p className="review-report-sub">
+        {commit === "none" ? null : <code title={commit}>{commit.slice(0, 7)}</code>}
+        <Generated at={report.generated_at} />
+      </p>
       <FreshnessBanner report={report} freshness={freshness} />
-      {href !== null && (
-        <a href={href} rel="noopener noreferrer" referrerPolicy="no-referrer">
-          Open at the provider
-        </a>
-      )}
-      {DETAIL_SECTIONS.map(([title, key]) => (
-        <section key={key}>
-          <h2>{title}</h2>
+      <section className="review-summary">
+        <h3>Summary</h3>
+        {(report.summary.length === 0 ? ["none recorded"] : report.summary).map((line, index) => (
+          <p key={index}>{line}</p>
+        ))}
+      </section>
+      {REPORT_SECTIONS.map(([title, key]) => (
+        <details key={key} className="review-section" open={key === "risks" ? true : undefined}>
+          <summary>
+            <Icon name="chevronRight" size={16} />
+            <span>{title}</span>
+            <span className="review-count">{"(" + report[key].length + ")"}</span>
+          </summary>
           <ul>
             {(report[key].length === 0 ? ["none recorded"] : report[key]).map((line, index) => (
               <li key={index}>{line}</li>
             ))}
           </ul>
-        </section>
+        </details>
       ))}
+      {href !== null && (
+        <p className="review-provider">
+          <span className="muted">Provider:</span>
+          <a href={href} rel="noopener noreferrer" referrerPolicy="no-referrer">
+            {providerName(href)}
+            <Icon name="external" size={16} />
+          </a>
+        </p>
+      )}
+    </article>
+  );
+}
+
+// One page for the global inbox and a project's: the list stays mounted beside the report (the
+// stylesheet hides it on a phone), so choosing another report never fetches the list again.
+function ReviewsPage({ token, onSignedOut, reloads, onRefresh, api, listPath, open, showProject = false }) {
+  const [rows, setRows] = useState(null);
+  const path = open === undefined ? null : api + "/" + encodeURIComponent(open);
+  const row = rows === null || open === undefined ? null : rows.find((candidate) => candidate.run_id === open) ?? null;
+  return (
+    <>
+      <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />
+      <div className={open === undefined ? "master-detail" : "master-detail has-report"}>
+        <div className="master-pane">
+          <Loaded key={api} reloads={reloads} token={token} path={api} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <ReviewList runs={runs} detailPrefix={listPath + "/"} selected={open === undefined ? null : open} onRows={setRows} showProject={showProject} />} onSignedOut={onSignedOut} />
+        </div>
+        {path !== null && (
+          <div className="detail-pane">
+            <Loaded key={path} back={listPath} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} row={row} listPath={listPath} />} onSignedOut={onSignedOut} />
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -353,13 +467,13 @@ function get(path, token, signal) {
   return fetch(path, { method: "GET", headers, cache: "no-store", referrerPolicy: "no-referrer", signal });
 }
 
-function NotFound() {
+function NotFound({ back = "/dashboard" }) {
   return (
     <div className="card not-found">
       <h2>Not found</h2>
       <p>This page does not exist or is not available to you.</p>
-      <button type="button" onClick={() => navigate("/")}>
-        Back to the list
+      <button type="button" onClick={() => navigate(back)}>
+        {back === "/dashboard" ? "Back to the dashboard" : "Back to the list"}
       </button>
     </div>
   );
@@ -371,7 +485,7 @@ function checkedTime() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, footer = true }) {
+function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, footer = true, back = "/dashboard" }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
   // True while a request of this page is waiting, so a refresh never starts on top of it.
@@ -434,7 +548,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
   }, [token, path, attempt, reloads]);
   const body = (() => {
   if (state.kind === "notfound") {
-    return <NotFound />;
+    return <NotFound back={back} />;
   }
   if (state.kind === "loading") {
     return (
@@ -1863,28 +1977,8 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
   }
   const match = /^\/projects\/[^/]+\/reviews(?:\/([^/]*))?$/.exec(address);
   if (match === null) return <p>This page is not available yet.</p>;
-  const base = "/api/projects/" + encodeURIComponent(projectId) + "/reviews";
-  const listPath = "/projects/" + encodeURIComponent(projectId) + "/reviews";
   if (match[1] !== undefined && !RUN_ID.test(match[1])) return <NotFound />;
-  const open = match[1];
-  const path = open === undefined ? null : base + "/" + encodeURIComponent(open);
-  // One tree for both addresses: the list stays mounted beside the report (the stylesheet hides it
-  // on a phone), so choosing another report never fetches the list again.
-  return (
-    <>
-      {open === undefined && <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />}
-      <div className={open === undefined ? "master-detail" : "master-detail has-report"}>
-        <div className="master-pane">
-          <Loaded key={base} reloads={reloads} token={token} path={base} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} detailPrefix={listPath + "/"} selected={open === undefined ? null : open} />} onSignedOut={onSignedOut} />
-        </div>
-        {path !== null && (
-          <div className="detail-pane">
-            <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} listPath={listPath} />} onSignedOut={onSignedOut} />
-          </div>
-        )}
-      </div>
-    </>
-  );
+  return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={onRefresh} api={"/api/projects/" + encodeURIComponent(projectId) + "/reviews"} listPath={"/projects/" + encodeURIComponent(projectId) + "/reviews"} open={match[1]} />;
 }
 
 function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
@@ -1920,14 +2014,14 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
       </>
     );
   }
-  if (hash === "/dashboard") {
+  if (hash === "/dashboard" || hash === "/") {
     return (
       <>
         <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" status={dashboardStatus(state)} onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
       </>
     );
   }
-  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Runs and pipeline executions across every project", "runs", "Loading the runs…", parseOrchestrations], "/reviews": ["Reviews", "Code reviews and agent reports", "reviews", "Loading the review inbox…", parseRuns] }[hash];
+  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Runs and pipeline executions across every project", "runs", "Loading the runs…", parseOrchestrations] }[hash];
   if (hash === "/orchestrations") {
     return <AllOrchestrationsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
   }
@@ -1936,8 +2030,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     const onRefresh = () => setReloads(reloads + 1);
     return (
       <>
-        {part === "reviews" ? <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} /> : null}
-        <Loaded key={API_PROJECTS} reloads={reloads} footer={part === "reviews"} header={part === "reviews" ? null : (state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+        <Loaded key={API_PROJECTS} reloads={reloads} footer={false} header={(state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
             <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
@@ -1950,9 +2043,8 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
               return (
                 <section key={project.id} className="project-section">
                   <h2>{project.name}</h2>
-                  <Loaded key={base} footer={part === "reviews"} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
-                    if (part === "runs") return <OrchestrationList runs={data.rows} projectId={project.id} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
-                    return <RunList runs={data} detailPrefix={"/projects/" + id + "/reviews/"} selected={null} />;
+                  <Loaded key={base} footer={false} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
+                    return <OrchestrationList runs={data.rows} projectId={project.id} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
                   }} />
                 </section>
               );
@@ -1962,17 +2054,11 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
       </>
     );
   }
-  const runId = hash.startsWith(DETAIL_PREFIX) ? hash.slice(DETAIL_PREFIX.length) : "";
-  if (RUN_ID.test(runId)) {
-    const path = API_REVIEWS + "/" + encodeURIComponent(runId);
-    return <Loaded key={path} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} />} onSignedOut={onSignedOut} />;
+  const review = /^\/reviews(?:\/([^/]*))?$/.exec(hash);
+  if (review !== null && (review[1] === undefined || RUN_ID.test(review[1]))) {
+    return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} api={API_REVIEWS} listPath="/reviews" open={review[1]} showProject />;
   }
-  return (
-    <>
-      <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={() => setReloads(reloads + 1)} />
-      <Loaded key={API_REVIEWS} reloads={reloads} token={token} path={API_REVIEWS} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <RunList runs={runs} />} onSignedOut={onSignedOut} />
-    </>
-  );
+  return <NotFound />;
 }
 
 // Which project the address names, and the list of projects the sidebar switches between. The list
@@ -2132,4 +2218,5 @@ function App() {
 }
 
 migrateLegacyHash();
+openRootAtDashboard();
 createRoot(document.getElementById("app")).render(<App />);

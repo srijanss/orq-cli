@@ -14,7 +14,7 @@ fn run(responses: Value, steps: Value) -> Option<Value> {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": "/", "responses": responses, "steps": steps});
+    let scenario = json!({"url": "/reviews", "responses": responses, "steps": steps});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -31,7 +31,7 @@ fn list() -> Value {
 
 /// The feature names on the rows, in the order shown.
 fn rows(frame: &Value) -> Vec<String> {
-    frame["settled"]["buttons"].as_array().unwrap().iter().filter_map(|b| b.as_str()).filter(|b| b.starts_with("f-")).map(String::from).collect()
+    frame["settled"]["texts"].as_array().unwrap().iter().filter_map(|b| b.as_str()).filter(|b| b.starts_with("f-")).map(String::from).collect()
 }
 
 fn texts(frame: &Value) -> String {

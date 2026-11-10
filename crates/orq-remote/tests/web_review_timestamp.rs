@@ -12,7 +12,7 @@ fn run(responses: Value, steps: Value) -> Option<Value> {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": "/", "responses": responses, "steps": steps});
+    let scenario = json!({"url": "/reviews", "responses": responses, "steps": steps});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -43,7 +43,7 @@ fn a_row_shows_when_its_report_was_generated_and_a_missing_or_odd_time_shows_not
 #[test]
 fn the_report_shows_when_it_was_generated() {
     let detail = json!({"status": 200, "json": {"stale": false, "link": null, "summary": ["x"], "risks": [], "files": [], "tests": [], "rounds": [], "generated_at": "2026-11-03T10:20:30Z"}});
-    let Some(out) = run(json!([list([Value::Null, Value::Null, Value::Null]), detail]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run(json!([list([Value::Null, Value::Null, Value::Null]), detail]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
     assert_eq!(generated(&out["frames"][2]), 1, "{out}");
     assert!(out["frames"][2]["settled"]["times"][0]["title"].as_str().unwrap().contains("2026"), "{out}");
 }

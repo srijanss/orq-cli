@@ -23,7 +23,7 @@ fn list() -> Value {
 #[test]
 fn leaving_a_page_cancels_its_pending_request_and_keeps_the_token() {
     let held = json!({"hold": "fetch", "status": 200, "json": {"stale": false, "summary": [], "risks": [], "files": [], "tests": [], "rounds": []}});
-    let Some(out) = run(json!([list(), held, list()]), json!([{"submit": "token"}, {"click": "button", "index": 0}, {"back": true}])) else { return };
+    let Some(out) = run(json!([list(), held, list()]), json!([{"submit": "token"}, {"click": "button[data-open-run]", "index": 0}, {"back": true}])) else { return };
     assert_eq!(out["requests"][1]["aborted"], true, "the request for the page that was left is cancelled: {out}");
     let last = &out["frames"][3]["settled"];
     assert!(last["inputs"].as_array().unwrap().is_empty(), "a cancelled request must not sign the user out: {out}");

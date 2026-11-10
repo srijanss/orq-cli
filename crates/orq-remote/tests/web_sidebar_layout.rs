@@ -44,7 +44,7 @@ fn outside_a_project_the_dropdown_offers_all_projects_and_loads_the_list_when_it
 fn choosing_a_project_opens_the_section_being_viewed_for_that_project() {
     let reviews = json!({"status": 200, "json": {"reviews": []}});
     let steps = json!([{"submit": TOKEN}, {"nav": "[data-project-switcher]"}, {"select": "beta"}]);
-    let Some(out) = run("/reviews", json!([projects(), reviews.clone(), reviews.clone(), projects(), reviews, projects()]), steps) else { return };
+    let Some(out) = run("/reviews", json!([reviews.clone(), projects(), reviews, projects()]), steps) else { return };
     let last = out["frames"].as_array().unwrap().last().unwrap();
     assert_eq!(last["settled"]["path"], "/projects/beta/reviews", "{out}");
 }

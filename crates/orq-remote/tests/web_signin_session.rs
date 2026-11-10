@@ -23,7 +23,7 @@ fn run_with(scenario: Value) -> Option<Value> {
 
 #[test]
 fn the_sign_in_page_shows_the_logo_and_the_product_name() {
-    let Some(out) = run("/", json!([]), json!([])) else { return };
+    let Some(out) = run("/reviews", json!([]), json!([])) else { return };
     let start = &out["frames"][0]["settled"];
     assert_eq!(start["brandLogos"], 1, "{out}");
     let texts: Vec<&str> = start["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
@@ -40,7 +40,7 @@ fn shown(frame: &Value) -> String {
 
 #[test]
 fn signing_in_keeps_the_token_for_this_tab_only() {
-    let Some(out) = run("/", json!([list()]), json!([{"submit": TOKEN}])) else { return };
+    let Some(out) = run("/reviews", json!([list()]), json!([{"submit": TOKEN}])) else { return };
     let after = &out["frames"][1]["settled"];
     assert_eq!(after["sessionKept"], json!({"orq.token": "<the token>"}), "{out}");
     assert_eq!(after["localKept"], Value::Null, "nothing outlives the tab: {out}");
@@ -49,7 +49,7 @@ fn signing_in_keeps_the_token_for_this_tab_only() {
 
 #[test]
 fn a_refresh_with_a_kept_token_goes_straight_to_the_page_without_asking() {
-    let Some(out) = run_with(json!({"url": "/", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [list()], "steps": []})) else { return };
+    let Some(out) = run_with(json!({"url": "/reviews", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [list()], "steps": []})) else { return };
     let start = &out["frames"][0]["settled"];
     assert!(start["inputs"].as_array().unwrap().is_empty(), "{out}");
     assert!(shown(&out["frames"][0]).contains("alpha"), "{out}");
@@ -58,7 +58,7 @@ fn a_refresh_with_a_kept_token_goes_straight_to_the_page_without_asking() {
 
 #[test]
 fn a_refused_kept_token_is_forgotten_and_asked_for_again() {
-    let Some(out) = run_with(json!({"url": "/", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [{"status": 401}], "steps": []})) else { return };
+    let Some(out) = run_with(json!({"url": "/reviews", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [{"status": 401}], "steps": []})) else { return };
     let start = &out["frames"][0]["settled"];
     assert_eq!(start["inputs"].as_array().unwrap().len(), 1, "{out}");
     assert_eq!(start["sessionKept"], Value::Null, "the refused token is gone: {out}");
@@ -67,13 +67,13 @@ fn a_refused_kept_token_is_forgotten_and_asked_for_again() {
 
 #[test]
 fn an_unreachable_server_does_not_forget_the_kept_token() {
-    let Some(out) = run_with(json!({"url": "/", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [{"reject": true}], "steps": []})) else { return };
+    let Some(out) = run_with(json!({"url": "/reviews", "token": TOKEN, "session": {"orq.token": TOKEN}, "responses": [{"reject": true}], "steps": []})) else { return };
     assert_eq!(out["frames"][0]["settled"]["sessionKept"], json!({"orq.token": "<the token>"}), "{out}");
 }
 
 #[test]
 fn storage_that_cannot_be_used_still_lets_you_sign_in_for_this_page_view() {
-    let Some(out) = run_with(json!({"url": "/", "storage_blocked": true, "responses": [list()], "steps": [{"submit": TOKEN}]})) else { return };
+    let Some(out) = run_with(json!({"url": "/reviews", "storage_blocked": true, "responses": [list()], "steps": [{"submit": TOKEN}]})) else { return };
     assert!(shown(&out["frames"][1]).contains("alpha"), "{out}");
 }
 

@@ -52,7 +52,7 @@ fn detail_with(freshness: &str, link_allowed: bool, link: Value) -> Value {
 }
 
 fn open_first(detail: Value) -> Option<Value> {
-    run(json!([list(), detail]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}]))
+    run(json!([list(), detail]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}]))
 }
 
 fn page(out: &Value, frame: usize) -> String {
@@ -140,7 +140,7 @@ fn a_current_report_has_no_banner_and_the_link_needs_the_server_to_allow_it() {
 
 #[test]
 fn back_returns_to_the_list() {
-    let Some(out) = run(json!([list(), detail(false, Value::Null), list()]), json!([{"submit": TOKEN}, {"click": "button", "index": 1}, {"back": true}])) else { return };
+    let Some(out) = run(json!([list(), detail(false, Value::Null), list()]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 1}, {"back": true}])) else { return };
     assert_eq!(out["requests"][1]["url"], "/api/reviews/run-2");
     let shown = page(&out, 3);
     assert!(shown.contains("first-feature") && shown.contains("second-feature"), "{shown}");
@@ -150,7 +150,7 @@ fn back_returns_to_the_list() {
 #[test]
 fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
     for first in [json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
-        let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
+        let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"click": ".detail-pane [role=alert] button", "index": 0}])) else { return };
         let failed = &out["frames"][2]["settled"];
         assert!(failed["inputs"].as_array().unwrap().is_empty(), "{out}");
         let requests = out["requests"].as_array().unwrap();
@@ -163,7 +163,7 @@ fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
 
 #[test]
 fn a_401_on_the_detail_asks_for_the_token_again() {
-    let Some(out) = run(json!([list(), {"status": 401}]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run(json!([list(), {"status": 401}]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
     let settled = &out["frames"][2]["settled"];
     assert_eq!(settled["inputs"].as_array().unwrap().len(), 1, "{out}");
     assert!(!settled.to_string().contains(TOKEN));

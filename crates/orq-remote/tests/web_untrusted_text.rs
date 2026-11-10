@@ -59,17 +59,17 @@ fn a_review_report_is_literal_and_only_plain_https_links_are_offered() {
         "summary": [HOSTILE], "risks": [], "files": [], "tests": [], "rounds": []
     }});
     let detail = |link: &str| detail_with(link, true);
-    let steps = json!([{"submit": TOKEN}, {"click": "button", "index": 0}]);
-    let Some(out) = run("/", json!([list.clone(), detail("https://github.com/o/r/pull/7")]), steps.clone()) else { return };
+    let steps = json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}]);
+    let Some(out) = run("/reviews", json!([list.clone(), detail("https://github.com/o/r/pull/7")]), steps.clone()) else { return };
     literal_and_inert(&out, 1, "the review inbox");
     literal_and_inert(&out, 2, "a review report");
     let links = out["frames"][2]["settled"]["links"].as_array().unwrap();
     assert_eq!(links.len(), 1, "{out}");
     assert_eq!(links[0]["href"], "https://github.com/o/r/pull/7", "{out}");
-    let Some(out) = run("/", json!([list.clone(), detail_with("https://github.com/o/r/pull/7", false)]), steps.clone()) else { return };
+    let Some(out) = run("/reviews", json!([list.clone(), detail_with("https://github.com/o/r/pull/7", false)]), steps.clone()) else { return };
     assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "a link the server does not allow: {out}");
     for bad in ["http://github.com/o/r/pull/7", "https://user:pw@github.com/x", "javascript:alert(1)"] {
-        let Some(out) = run("/", json!([list.clone(), detail(bad)]), steps.clone()) else { return };
+        let Some(out) = run("/reviews", json!([list.clone(), detail(bad)]), steps.clone()) else { return };
         assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{bad}: {out}");
     }
 }

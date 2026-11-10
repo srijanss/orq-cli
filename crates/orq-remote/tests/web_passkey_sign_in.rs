@@ -19,7 +19,7 @@ fn run_with(scenario: Value) -> Option<Value> {
 }
 
 fn page(auth: Value, webauthn: Value, steps: Value) -> Option<Value> {
-    run_with(json!({"url": "/", "token": TOKEN, "auth": auth, "webauthn": webauthn, "responses": [], "steps": steps}))
+    run_with(json!({"url": "/reviews", "token": TOKEN, "auth": auth, "webauthn": webauthn, "responses": [], "steps": steps}))
 }
 
 fn shown(frame: &Value) -> String {
@@ -53,7 +53,7 @@ fn inbox() -> Value {
 
 #[test]
 fn signed_in_with_the_token_where_passkeys_cannot_work_the_page_says_so_instead_of_offering_to_add_one() {
-    let scenario = json!({"url": "/", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": false, "api": true}, "responses": [inbox()], "steps": [{"submit": TOKEN}]});
+    let scenario = json!({"url": "/reviews", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": false, "api": true}, "responses": [inbox()], "steps": [{"submit": TOKEN}]});
     let Some(out) = run_with(scenario) else { return };
     assert!(shown(&out["frames"][1]).contains("alpha"), "signed in: {out}");
     assert_eq!(out["frames"][1]["settled"]["passkeyNotes"], json!(["Passkeys need an HTTPS connection to this page."]), "{out}");
@@ -62,7 +62,7 @@ fn signed_in_with_the_token_where_passkeys_cannot_work_the_page_says_so_instead_
 
 #[test]
 fn with_no_passkey_yet_the_page_still_offers_only_the_passkey_button_and_asks_for_the_token_when_it_is_clicked() {
-    let scenario = json!({"url": "/", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": true, "api": true}, "responses": [inbox()], "steps": [{"click": "button"}, {"submit": TOKEN}]});
+    let scenario = json!({"url": "/reviews", "token": TOKEN, "auth": {"passkeys": false, "signed_in": false}, "webauthn": {"secure": true, "api": true}, "responses": [inbox()], "steps": [{"click": "button"}, {"submit": TOKEN}]});
     let Some(out) = run_with(scenario) else { return };
     let labelled: Vec<String> = buttons(&out["frames"][0]).into_iter().filter(|b| !b.is_empty()).collect();
     assert_eq!(labelled, ["Sign in with a passkey"], "{out}");
@@ -78,7 +78,7 @@ fn with_no_passkey_yet_the_page_still_offers_only_the_passkey_button_and_asks_fo
 #[test]
 fn signing_in_with_a_passkey_sends_only_the_answer_to_the_servers_challenge_and_keeps_nothing() {
     let scenario = json!({
-        "url": "/", "token": TOKEN, "auth": {"passkeys": true, "signed_in": false},
+        "url": "/reviews", "token": TOKEN, "auth": {"passkeys": true, "signed_in": false},
         "webauthn": {"secure": true, "api": true, "answer": {"rawId": [1, 2], "clientDataJSON": [3, 4], "authenticatorData": [5, 6], "signature": [7, 8]}},
         "auth_replies": {
             "/auth/login/begin": {"challenge": "AQID", "rpId": "box.example.ts.net", "userVerification": "required", "timeout": 60000, "allowCredentials": [{"type": "public-key", "id": "AQI"}]},
@@ -100,7 +100,7 @@ fn signing_in_with_a_passkey_sends_only_the_answer_to_the_servers_challenge_and_
 
 fn login(webauthn: Value, failures: Value) -> Option<Value> {
     run_with(json!({
-        "url": "/", "token": TOKEN, "auth": {"passkeys": true, "signed_in": false},
+        "url": "/reviews", "token": TOKEN, "auth": {"passkeys": true, "signed_in": false},
         "webauthn": webauthn, "auth_failures": failures,
         "auth_replies": {
             "/auth/login/begin": {"challenge": "AQID", "rpId": "box.example.ts.net", "userVerification": "required", "timeout": 60000, "allowCredentials": [{"type": "public-key", "id": "AQI"}]},

@@ -74,12 +74,13 @@ fn an_unknown_and_an_unauthorised_page_look_the_same_and_keep_the_token() {
 }
 
 #[test]
-fn the_not_found_screen_offers_a_way_back_to_the_inbox() {
+fn a_missing_report_offers_a_way_back_to_the_inbox() {
     for status in [404, 403] {
-        let Some(out) = run(json!([list(), {"status": status}, list()]), json!([{"submit": TOKEN}, {"go": "/reviews/run-1"}, {"click": "button", "index": 0}])) else { return };
-        assert_eq!(out["frames"][2]["settled"]["buttons"], json!(["Back to the list"]), "{status}: {out}");
+        let Some(out) = run(json!([list(), {"status": status}, list()]), json!([{"submit": TOKEN}, {"go": "/reviews/run-1"}, {"click": ".not-found button", "index": 0}])) else { return };
+        let buttons = out["frames"][2]["settled"]["buttons"].as_array().unwrap();
+        assert_eq!(buttons.iter().filter(|b| *b == "Back to the list").count(), 1, "{status}: {out}");
         let back = &out["frames"][3]["settled"];
-        assert_eq!(back["path"], "/", "{status}: {out}");
+        assert_eq!(back["path"], "/reviews", "{status}: {out}");
         assert!(shown(&out["frames"][3]).contains("alpha"), "{status}: {out}");
     }
 }
@@ -117,4 +118,11 @@ fn a_successful_retry_after_a_failed_refresh_replaces_the_old_data_and_clears_th
         assert!(!out["frames"][3]["settled"]["buttons"].as_array().unwrap().iter().any(|b| b == "Try again"), "{failure}: {out}");
         assert_eq!(out["requests"][2]["headers"]["Authorization"], format!("Bearer {TOKEN}"), "{failure}: the retry reuses the held token");
     }
+}
+
+#[test]
+fn an_unknown_address_is_not_found_and_leads_back_to_the_dashboard() {
+    let Some(out) = run(json!([]), json!([{"submit": TOKEN}, {"go": "/nowhere"}])) else { return };
+    let buttons = out["frames"][2]["settled"]["buttons"].as_array().unwrap();
+    assert!(buttons.iter().any(|b| b == "Back to the dashboard"), "{out}");
 }

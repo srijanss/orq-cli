@@ -32,19 +32,20 @@ fn report() -> Value {
 
 #[test]
 fn opening_a_report_changes_the_path_and_back_returns_to_the_inbox() {
-    let Some(out) = run(json!({"responses": [inbox(), report(), inbox()], "steps": [{"submit": "token"}, {"click": "button", "index": 0}, {"back": true}]})) else { return };
-    assert_eq!(out["frames"][1]["settled"]["path"], "/", "{out}");
+    let Some(out) = run(json!({"responses": [inbox(), report(), inbox()], "steps": [{"submit": "token"}, {"click": "button[data-open-run]", "index": 0}, {"back": true}]})) else { return };
+    assert_eq!(out["frames"][1]["settled"]["path"], "/reviews", "{out}");
     assert_eq!(out["frames"][2]["settled"]["path"], "/reviews/run-1", "{out}");
     assert!(texts(&out["frames"][2]).contains("the summary line"), "{out}");
-    assert_eq!(out["frames"][3]["settled"]["path"], "/", "{out}");
+    assert_eq!(out["frames"][3]["settled"]["path"], "/reviews", "{out}");
     assert!(texts(&out["frames"][3]).contains("alpha"), "{out}");
 }
 
 #[test]
 fn a_report_address_opens_that_report_directly() {
-    let Some(out) = run(json!({"url": "/reviews/run-1", "responses": [report()], "steps": [{"submit": "token"}]})) else { return };
+    let Some(out) = run(json!({"url": "/reviews/run-1", "responses": [inbox(), report()], "steps": [{"submit": "token"}]})) else { return };
     assert!(texts(&out["frames"][1]).contains("the summary line"), "{out}");
-    assert_eq!(out["requests"][0]["url"], "/api/reviews/run-1", "{out}");
+    assert_eq!(out["requests"][0]["url"], "/api/reviews", "the list sits beside the report: {out}");
+    assert_eq!(out["requests"][1]["url"], "/api/reviews/run-1", "{out}");
 }
 
 #[test]
@@ -54,22 +55,32 @@ fn following_a_sidebar_link_changes_the_path_without_a_reload_and_back_undoes_it
     assert_eq!(settings["path"], "/settings", "{out}");
     assert!(texts(&out["frames"][2]).contains("Implementer"), "{out}");
     let back = &out["frames"][3]["settled"];
-    assert_eq!(back["path"], "/", "{out}");
+    assert_eq!(back["path"], "/reviews", "{out}");
     assert!(texts(&out["frames"][3]).contains("alpha"), "{out}");
 }
 
 #[test]
 fn a_modified_click_on_a_sidebar_link_is_left_to_the_browser() {
     let Some(out) = run(json!({"responses": [inbox()], "steps": [{"submit": "token"}, {"nav_modified": "nav a[href='/settings']"}]})) else { return };
-    assert_eq!(out["frames"][2]["settled"]["path"], "/", "a ctrl-click must not navigate this tab: {out}");
+    assert_eq!(out["frames"][2]["settled"]["path"], "/reviews", "a ctrl-click must not navigate this tab: {out}");
 }
 
 #[test]
 fn an_old_hash_report_address_still_opens_that_report_and_becomes_a_path() {
-    let Some(out) = run(json!({"url": "/#/reviews/run-1", "responses": [report()], "steps": [{"submit": "token"}]})) else { return };
+    let Some(out) = run(json!({"url": "/#/reviews/run-1", "responses": [inbox(), report()], "steps": [{"submit": "token"}]})) else { return };
     assert!(texts(&out["frames"][1]).contains("the summary line"), "{out}");
-    assert_eq!(out["requests"][0]["url"], "/api/reviews/run-1", "{out}");
+    assert_eq!(out["requests"][0]["url"], "/api/reviews", "the list sits beside the report: {out}");
+    assert_eq!(out["requests"][1]["url"], "/api/reviews/run-1", "{out}");
     let settled = &out["frames"][1]["settled"];
     assert_eq!(settled["path"], "/reviews/run-1", "{out}");
     assert_eq!(settled["hash"], "", "the old hash is gone from the address: {out}");
+}
+
+#[test]
+fn the_bare_address_opens_the_dashboard_and_becomes_its_path() {
+    let projects = json!({"status": 200, "json": {"projects": []}});
+    let Some(out) = run(json!({"url": "/", "responses": [projects], "steps": [{"submit": "token"}]})) else { return };
+    assert_eq!(out["requests"][0]["url"], "/api/projects", "{out}");
+    assert_eq!(out["frames"][1]["settled"]["path"], "/dashboard", "{out}");
+    assert!(texts(&out["frames"][1]).contains("Dashboard"), "{out}");
 }

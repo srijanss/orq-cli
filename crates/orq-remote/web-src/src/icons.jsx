@@ -30,6 +30,8 @@ const PATHS = {
   download: "M12 4v11m-5-5 5 5 5-5M5 20h14",
   sortDesc: "M3 6h11M3 12h7M3 18h3m12-12v12m-3-3 3 3 3-3",
   sortAsc: "M3 6h3m-3 6h7m-7 6h11m4 0V6m-3 3 3-3 3 3",
+  alert: "M12 3 2 20h20L12 3Zm0 6v5m0 3h.010",
+  external: "M14 4h6v6m0-6-9 9M18 14v6H4V6h6",
 };
 
 export function Icon({ name, size = 20 }) {

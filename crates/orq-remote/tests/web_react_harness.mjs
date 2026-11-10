@@ -17,7 +17,7 @@ const [, , bundlePath, scenarioText] = process.argv;
 const scenario = JSON.parse(scenarioText);
 
 const dom = new JSDOM('<!doctype html><html><body><div id="app"><p>Loading the review inbox…</p></div></body></html>', {
-  url: "http://localhost" + (scenario.url || "/"),
+  url: "http://localhost" + (scenario.url || "/reviews"),
   runScripts: "outside-only",
 });
 const { window } = dom;

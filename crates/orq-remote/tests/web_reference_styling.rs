@@ -42,7 +42,7 @@ fn the_page_uses_the_tokens_and_cards_and_pills_are_rounded() {
 }
 
 #[test]
-fn each_inbox_row_is_a_card_with_its_ticket_id_above_the_title() {
+fn the_inbox_is_one_card_whose_rows_show_the_title_above_the_run_id() {
     if !web_deps::ready() {
         return;
     }
@@ -55,7 +55,7 @@ fn each_inbox_row_is_a_card_with_its_ticket_id_above_the_title() {
     let texts: Vec<&str> = out["frames"][1]["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
     let id = texts.iter().position(|t| *t == "r1").expect("the ticket id is shown");
     let title = texts.iter().position(|t| *t == "add-log-export").unwrap();
-    assert!(id < title, "{texts:?}");
+    assert!(title < id, "{texts:?}");
     assert_eq!(out["frames"][1]["settled"]["cards"], 1, "{out}");
 }
 

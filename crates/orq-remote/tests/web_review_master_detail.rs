@@ -105,5 +105,6 @@ fn the_stylesheet_shows_the_list_only_on_wide_screens_while_a_report_is_open() {
 fn one_report_component_serves_every_report_page() {
     let src = std::fs::read_to_string(format!("{}/web-src/src/main.jsx", env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert_eq!(src.matches("function Detail(").count(), 1);
-    assert_eq!(src.matches("<Detail ").count(), 2, "the project page and the global inbox draw the same component");
+    assert_eq!(src.matches("<Detail ").count(), 1, "one page draws the report");
+    assert_eq!(src.matches("<ReviewsPage ").count(), 2, "the project page and the global inbox share that page");
 }

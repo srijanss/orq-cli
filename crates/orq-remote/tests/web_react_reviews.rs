@@ -92,7 +92,7 @@ fn a_401_asks_for_the_token_again_with_one_message() {
 
 #[test]
 fn a_report_opens_with_its_sections_and_a_safe_link_and_back_returns_to_the_list() {
-    let Some(out) = run(json!([list(), detail(false, json!("https://github.com/o/r/pull/7")), list()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"back": true}])) else { return };
+    let Some(out) = run(json!([list(), detail(false, json!("https://github.com/o/r/pull/7")), list()]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"back": true}])) else { return };
     assert_eq!(out["requests"][1]["url"], "/api/reviews/run-1");
     let shown = page(&out, 2);
     assert!(shown.contains("adds the thing") && shown.contains("none recorded") && shown.contains("Review rounds"), "{shown}");
@@ -107,11 +107,11 @@ fn a_report_opens_with_its_sections_and_a_safe_link_and_back_returns_to_the_list
 
 #[test]
 fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offered() {
-    let Some(out) = run(json!([list(), detail(true, json!("https://github.com/o/r/pull/7"))]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run(json!([list(), detail(true, json!("https://github.com/o/r/pull/7"))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
     assert!(page(&out, 2).contains("STALE"), "{out}");
     assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
     for link in ["http://x.test/a", "javascript:alert(1)", "https://user:pw@x.test/a"] {
-        let Some(out) = run(json!([list(), detail(false, json!(link))]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+        let Some(out) = run(json!([list(), detail(false, json!(link))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
         assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{link}: {out}");
     }
 }
@@ -119,7 +119,7 @@ fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offer
 #[test]
 fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
     for first in [json!({"status": 503}), json!({"status": 200, "json": {"summary": "nope"}})] {
-        let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"click": "button", "index": 0}])) else { return };
+        let Some(out) = run(json!([list(), first, detail(false, Value::Null)]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"click": ".detail-pane [role=alert] button", "index": 0}])) else { return };
         assert!(out["frames"][2]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
         let requests = out["requests"].as_array().unwrap();
         assert_eq!(requests.len(), 3, "{out}");
@@ -132,7 +132,7 @@ fn a_failed_detail_keeps_the_token_and_offers_a_retry_that_asks_again() {
 #[test]
 fn a_slow_answer_for_an_earlier_page_never_draws_over_the_current_one() {
     let slow = json!({"status": 200, "hold": "json", "json": detail(false, Value::Null)["json"].clone()});
-    let Some(out) = run(json!([list(), slow, list()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"back": true}, {"release": 1}])) else { return };
+    let Some(out) = run(json!([list(), slow, list()]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"back": true}, {"release": 1}])) else { return };
     let shown = page(&out, 4);
     assert!(shown.contains("first-feature") && !shown.contains("adds the thing"), "{shown}");
 }

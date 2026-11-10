@@ -85,13 +85,13 @@ fn assert_ownership(frame: &Value, held: &Value, text: &str) {
 #[test]
 fn moving_between_the_inbox_and_the_dashboard_never_shows_one_kind_of_data_as_the_other() {
     for held in [json!({"hold": "fetch", "status": 200, "json": {"projects": []}}), json!({"reject": true}), json!({"status": 503})] {
-        let Some(out) = run_at("/", json!([inbox(), held.clone()]), json!([{"submit": TOKEN}, {"nav": "a[href=\"/dashboard\"]"}])) else { return };
+        let Some(out) = run_at("/reviews", json!([inbox(), held.clone()]), json!([{"submit": TOKEN}, {"nav": "a[href=\"/dashboard\"]"}])) else { return };
         let text = shown(&out["frames"][2]);
         assert!(!text.contains("first-feature") && !text.contains("approved"), "{held}: reviews on the dashboard: {text}");
         assert_ownership(&out["frames"][2], &held, &text);
     }
     for held in [json!({"hold": "fetch", "status": 200, "json": {"reviews": []}}), json!({"reject": true}), json!({"status": 503})] {
-        let Some(out) = run(json!([projects(), held.clone()]), json!([{"submit": TOKEN}, {"go": "/"}])) else { return };
+        let Some(out) = run(json!([projects(), held.clone()]), json!([{"submit": TOKEN}, {"go": "/reviews"}])) else { return };
         let text = shown(&out["frames"][2]);
         assert!(!text.contains("Failed (24h)") && !text.contains("Unavailable"), "{held}: projects in the inbox: {text}");
         assert_ownership(&out["frames"][2], &held, &text);

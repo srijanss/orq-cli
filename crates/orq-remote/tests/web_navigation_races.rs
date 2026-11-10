@@ -45,7 +45,7 @@ fn texts(out: &Value, frame: usize) -> String {
 fn leave_then_late_answer(late: Value) -> Option<Value> {
     run(
         json!([list(), late, list(), list()]),
-        json!([{"submit": TOKEN}, {"click": "button", "index": 0}, {"back": true}, {"release": 1}, {"click": "button", "index": 0}]),
+        json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"back": true}, {"release": 1}, {"click": "button[data-open-run]", "index": 0}]),
     )
 }
 

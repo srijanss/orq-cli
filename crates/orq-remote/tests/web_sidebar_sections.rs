@@ -80,13 +80,14 @@ fn the_all_projects_orchestrations_page_merges_every_projects_runs_under_the_pro
 }
 
 #[test]
-fn the_all_projects_reviews_page_lists_every_projects_reviews_under_its_name() {
-    let reviews = |feature: &str| json!({"status": 200, "json": {"reviews": [{"run_id": "r-1", "feature": feature, "status": "waiting"}]}});
-    let Some(out) = run("/reviews", json!([projects(), reviews("alpha-review"), reviews("beta-review")]), json!([{"submit": TOKEN}])) else { return };
-    assert_eq!(urls(&out)[..3], ["/api/projects", "/api/projects/alpha/reviews", "/api/projects/beta/reviews"], "{out}");
+fn the_all_projects_reviews_page_reads_the_whole_inbox_once_and_names_each_rows_project() {
+    let row = |project: &str, feature: &str, id: &str| json!({"run_id": id, "project": project, "feature": feature, "status": "waiting"});
+    let inbox = json!({"status": 200, "json": {"reviews": [row("alpha", "alpha-review", "r-1"), row("beta", "beta-review", "r-2")]}});
+    let Some(out) = run("/reviews", json!([inbox]), json!([{"submit": TOKEN}])) else { return };
+    assert_eq!(urls(&out), ["/api/reviews"], "{out}");
     let texts = shown(&out["frames"][1]);
-    let at = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
-    assert!(at("alpha") < at("alpha-review") && at("alpha-review") < at("beta") && at("beta") < at("beta-review"), "{texts:?}");
+    let at = |needle: &str| texts.iter().position(|t| t == needle).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
+    assert!(at("alpha-review") < at("alpha") && at("alpha") < at("beta-review") && at("beta-review") < at("beta"), "{texts:?}");
 }
 
 #[test]
