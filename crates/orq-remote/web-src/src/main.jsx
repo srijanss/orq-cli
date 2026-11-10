@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
-import { ThemeToggle } from "./theme.jsx";
+import { ThemeChoice, ThemeToggle } from "./theme.jsx";
 import { authStatus, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
@@ -763,7 +763,7 @@ function AgentFields({ agent }) {
   return (
     <dl className="settings-fields">
       {SETTING_FIELDS.map(([label, key]) => (
-        <div key={key}>
+        <div key={key} className="settings-row">
           <dt>{label}</dt>
           <dd>{agent && agent[key] !== null ? agent[key] : "—"}{agent && agent[key] !== null ? null : <span className="muted"> (not set)</span>}</dd>
         </div>
@@ -782,8 +782,8 @@ function PasskeysCard() {
   if (keys === null) return null;
   const failed = keys === "failed";
   return (
-    <section className="card passkeys">
-      <h2>Passkeys</h2>
+    <section className="card settings-card passkeys">
+      <SettingsHead icon="passkey">Passkeys</SettingsHead>
       {failed && (
         <>
           <p role="alert">The passkeys could not be listed.</p>
@@ -792,9 +792,9 @@ function PasskeysCard() {
           </button>
         </>
       )}
-      <ul>
+      <ul className="settings-fields">
         {(failed ? [] : keys).map((key) => (
-          <li key={key.id}>
+          <li key={key.id} className="settings-row">
             <strong>{key.label}</strong> <code>{key.id}</code>
           </li>
         ))}
@@ -841,16 +841,35 @@ function AuditView({ lines }) {
   );
 }
 
+// A settings card's title row: a line icon beside a bold title.
+function SettingsHead({ icon, children }) {
+  return (
+    <h2 className="settings-card-head">
+      <Icon name={icon} size={18} />
+      {children}
+    </h2>
+  );
+}
+
 function SettingsView({ settings }) {
+  const on = settings.remote_actions === true;
   return (
     <>
-      <section className="card"><h2>Remote actions</h2><p>{`Remote actions: ${settings.remote_actions === true ? "On" : "Off"}`}</p></section>
-      <section className="card"><h2>Implementer</h2><AgentFields agent={settings.implementer} /></section>
-      <section className="card"><h2>Reviewer</h2><AgentFields agent={settings.reviewer} /></section>
-      <section className="card">
-        <h2>Models</h2>
-        {settings.models.length === 0 ? <p>No models configured.</p> : settings.models.map((model) => (
-          <div key={model.name}>
+      <section className="card settings-card">
+        <SettingsHead icon="sliders">Run settings</SettingsHead>
+        <dl className="settings-fields">
+          <div className="settings-row" data-remote-actions={on ? "on" : "off"}>
+            <dt>Remote actions</dt>
+            <dd><span className={"pill " + (on ? "pill-on" : "pill-off")}>{on ? "On" : "Off"}</span></dd>
+          </div>
+        </dl>
+      </section>
+      <section className="card settings-card"><SettingsHead icon="cpu">Implementer</SettingsHead><AgentFields agent={settings.implementer} /></section>
+      <section className="card settings-card"><SettingsHead icon="cpu">Reviewer</SettingsHead><AgentFields agent={settings.reviewer} /></section>
+      <section className="card settings-card">
+        <SettingsHead icon="layers">Models</SettingsHead>
+        {settings.models.length === 0 ? <p className="muted">No models configured.</p> : settings.models.map((model) => (
+          <div key={model.name} className="settings-model">
             <h3>{model.name}</h3>
             <AgentFields agent={model} />
           </div>
@@ -2011,7 +2030,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
   return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={onRefresh} api={"/api/projects/" + encodeURIComponent(projectId) + "/reviews"} listPath={"/projects/" + encodeURIComponent(projectId) + "/reviews"} open={match[1]} projectId={projectId} projects={projects} />;
 }
 
-function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
+function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, projects = null }) {
   const [reloads, setReloads] = useState(0);
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (projectId !== null && projects !== null && !projects.some((project) => project.id === projectId)) {
@@ -2037,10 +2056,39 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   if (hash === "/settings") {
     return (
       <>
-        <PageHeader title="Settings" subtitle="Run settings, read only" onRefresh={() => setReloads(reloads + 1)} />
-        <PasskeysCard />
-        <p><a href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>Audit</a></p>
-        <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
+        <PageHeader title="Settings" subtitle="Global run settings (read-only)" onRefresh={() => setReloads(reloads + 1)} />
+        <div className="settings-page">
+          {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
+          <PasskeysCard />
+          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
+          <section className="card settings-card settings-audit">
+            <SettingsHead icon="doc">Activity</SettingsHead>
+            <a className="settings-link" href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>
+              Audit
+              <span className="muted">Recent remote actions</span>
+              <Icon name="chevronRight" size={18} />
+            </a>
+          </section>
+          <section className="card settings-card settings-appearance">
+            <SettingsHead icon="sun">Appearance</SettingsHead>
+            <div className="settings-row">
+              <span>Theme</span>
+              <ThemeChoice />
+            </div>
+          </section>
+          {onSignOut && (
+            <section className="card settings-card settings-account">
+              <SettingsHead icon="logout">Account</SettingsHead>
+              <div className="settings-row">
+                <span>Sign out of this browser</span>
+                <button type="button" className="danger-button" data-sign-out onClick={onSignOut}>
+                  <Icon name="logout" size={16} />
+                  Sign out
+                </button>
+              </div>
+            </section>
+          )}
+        </div>
       </>
     );
   }
@@ -2157,7 +2205,7 @@ function Scoped({ token, onSignedOut, onSignOut }) {
   }, [known, named]);
   return (
     <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut}>
-      <SignedIn token={token} onSignedOut={onSignedOut} projectId={named} projects={projects} />
+      <SignedIn token={token} onSignedOut={onSignedOut} onSignOut={onSignOut} projectId={named} projects={projects} />
     </Shell>
   );
 }

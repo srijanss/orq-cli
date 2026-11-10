@@ -9,11 +9,14 @@ use std::process::Command;
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 
 fn run(url: &str, responses: Value, steps: Value) -> Option<Value> {
+    run_scenario(json!({"url": url, "responses": responses, "steps": steps}))
+}
+
+fn run_scenario(scenario: Value) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": url, "responses": responses, "steps": steps});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -62,7 +65,7 @@ fn nothing_on_the_page_can_change_a_setting() {
     let Some(out) = run("/settings", json!([settings()]), json!([{"submit": TOKEN}])) else { return };
     let frame = &out["frames"][1]["settled"];
     assert_eq!(frame["inputs"], json!([]), "{out}");
-    assert_eq!(frame["buttons"], json!([]), "{out}");
+    assert_eq!(frame["buttons"], json!(["Light", "System", "Dark", "Sign out"]), "only this browser's theme and signing out: {out}");
     assert_eq!(frame["links"].as_array().unwrap().iter().map(|l| l["href"].clone()).collect::<Vec<_>>(), [json!("/settings/audit")], "only the read-only audit link: {out}");
 }
 
@@ -88,9 +91,37 @@ fn an_address_under_settings_is_not_found_and_never_shows_the_inbox() {
 fn the_page_says_whether_remote_actions_are_on_and_offers_no_way_to_change_it() {
     for (value, word) in [(false, "Off"), (true, "On")] {
         let body = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": [], "remote_actions": value}}});
-        let Some(out) = run("/settings", json!([body]), json!([{"submit": TOKEN}])) else { return };
+        let scenario = json!({"url": "/settings", "responses": [body], "steps": [{"submit": TOKEN}], "selectors": [format!("[data-remote-actions={}]", word.to_lowercase())]});
+        let Some(out) = run_scenario(scenario) else { return };
         let lines = shown(&out["frames"][1]);
-        assert!(lines.iter().any(|l| l.contains("Remote actions") && l.contains(word)), "{word}: {lines:?}");
+        assert!(lines.iter().any(|l| l == "Remote actions") && lines.iter().any(|l| l == word), "{word}: {lines:?}");
+        assert_eq!(out["frames"][1]["settled"]["matches"][format!("[data-remote-actions={}]", word.to_lowercase())], 1, "the word sits in the Remote actions row: {out}");
         assert!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
     }
+}
+
+#[test]
+fn the_theme_can_be_chosen_on_the_page_and_the_sidebar_pill_follows() {
+    let sel = json!(["[data-theme-choice=dark][aria-pressed=true]", "[data-theme-toggle] .theme-option[data-active][data-mode=dark]"]);
+    let steps = json!([{"submit": TOKEN}, {"click": "[data-theme-choice=dark]", "index": 0}, {"click": "[data-theme-choice=system]", "index": 0}]);
+    let Some(out) = run_scenario(json!({"url": "/settings", "responses": [settings()], "steps": steps, "selectors": sel})) else { return };
+    let dark = &out["frames"][2]["settled"];
+    assert_eq!(dark["theme"], "dark", "{out}");
+    assert_eq!(dark["localTheme"], "dark", "{out}");
+    assert_eq!(dark["matches"]["[data-theme-choice=dark][aria-pressed=true]"], 1, "{out}");
+    assert_eq!(dark["matches"]["[data-theme-toggle] .theme-option[data-active][data-mode=dark]"], 1, "the sidebar pill shows the same choice: {out}");
+    assert_eq!(dark["toggles"], 1, "still one sidebar pill: {out}");
+    let system = &out["frames"][3]["settled"];
+    assert_eq!(system["theme"], "", "{out}");
+    assert!(system["localTheme"].is_null(), "{out}");
+    assert_eq!(out["requests"].as_array().unwrap().len(), 1, "choosing a theme sends nothing: {out}");
+}
+
+#[test]
+fn signing_out_from_the_page_returns_to_the_sign_in() {
+    let steps = json!([{"submit": TOKEN}, {"click": "[data-sign-out]", "index": 0}]);
+    let Some(out) = run("/settings", json!([settings()]), steps) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(!last["settled"]["shell"].as_bool().unwrap(), "{out}");
+    assert_eq!(last["settled"]["inputs"].as_array().unwrap().len(), 1, "the token box is back: {out}");
 }

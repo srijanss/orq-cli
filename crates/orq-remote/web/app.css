@@ -540,3 +540,35 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .log-page { color: var(--text-muted); font-size: 0.875rem; padding: 0 0.25rem; }
 .log-count { flex: 1; color: var(--text-muted); font-size: 0.875rem; text-align: right; }
 .feature-panel[hidden], .live-status[hidden], .stream-gap[hidden] { display: none; }
+
+/* Settings: cards with an icon and title, then label-left / value-right rows split by thin lines. */
+.settings-page { display: flex; flex-direction: column; gap: 1rem; max-width: 48rem; }
+.settings-page > * { margin: 0; }
+.settings-page .passkeys { order: 1; }
+.settings-page .settings-audit { order: 2; }
+.settings-page .settings-appearance { order: 3; }
+.settings-page .settings-account { order: 4; }
+.settings-card { padding: 0; overflow: hidden; }
+.settings-card-head { display: flex; align-items: center; gap: 0.5rem; margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.9375rem; font-weight: 700; }
+.settings-card-head .icon { color: var(--text-muted); flex: none; }
+.settings-card > p, .settings-card > [role=alert], .settings-card > button { margin: 0.75rem 1rem; }
+.settings-fields { list-style: none; margin: 0; padding: 0; }
+.settings-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.25rem 1rem; min-height: 44px; padding: 0.5rem 1rem; box-sizing: border-box; }
+.settings-row + .settings-row, .settings-fields + .settings-row { border-top: 1px solid var(--border); }
+.settings-row dt, .settings-row > span:first-child { color: var(--text-muted); font-size: 0.875rem; }
+.settings-row dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.settings-row code { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; min-width: 0; }
+.settings-model + .settings-model { border-top: 1px solid var(--border); }
+.settings-model h3 { margin: 0; padding: 0.625rem 1rem 0; font-size: 0.875rem; font-weight: 700; }
+.pill-on { color: var(--status-completed); background: var(--status-completed-bg); border: 1px solid var(--status-completed); }
+.pill-off { color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
+.settings-link { display: flex; align-items: center; gap: 0.75rem; min-height: 44px; padding: 0.5rem 1rem; color: var(--text); font-weight: 600; text-decoration: none; }
+.settings-link .muted { flex: 1 1 auto; font-weight: 400; font-size: 0.875rem; }
+.settings-link .icon { color: var(--text-muted); flex: none; }
+.settings-link:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.segmented { display: inline-flex; padding: 0.1875rem; gap: 0.1875rem; border: 1px solid var(--border); border-radius: 0.625rem; }
+.segmented button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.75rem; border: 0; border-radius: 0.5rem; background: transparent; color: var(--text-muted); font: inherit; font-size: 0.875rem; cursor: pointer; }
+.segmented button[aria-pressed=true] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font-weight: 600; }
+.danger-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--status-failed); border-radius: 0.5rem; background: transparent; color: var(--status-failed); font: inherit; font-weight: 600; cursor: pointer; }
+.danger-button:hover { background: var(--status-failed-bg); }
+@media (max-width: 480px) { .segmented button { padding: 0 0.5rem; } }

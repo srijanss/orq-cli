@@ -31,6 +31,8 @@ const PATHS = {
   sortDesc: "M3 6h11M3 12h7M3 18h3m12-12v12m-3-3 3 3 3-3",
   sortAsc: "M3 6h3m-3 6h7m-7 6h11m4 0V6m-3 3 3-3 3 3",
   alert: "M12 3 2 20h20L12 3Zm0 6v5m0 3h.010",
+  cpu: "M7 7h10v10H7ZM9 3v4m6-4v4M9 17v4m6-4v4M3 9h4m-4 6h4m10-6h4m-4 6h4",
+  sliders: "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4m8 2v4",
   external: "M14 4h6v6m0-6-9 9M18 14v6H4V6h6",
 };
 
