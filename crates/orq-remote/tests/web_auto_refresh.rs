@@ -69,11 +69,9 @@ fn a_refresh_never_starts_while_the_last_one_is_still_waiting() {
 }
 
 #[test]
-fn the_page_says_when_it_last_checked_and_stops_asking_when_left() {
+fn the_page_has_no_last_checked_footer_and_stops_asking_when_left() {
     let Some(out) = run("/reviews", json!([list(&["first"])]), json!([{"submit": TOKEN}, {"go": "/projects"}])) else { return };
-    let checked = out["frames"][1]["settled"]["checked"].as_array().unwrap().clone();
-    assert_eq!(checked.len(), 1, "{out}");
-    assert!(checked[0].as_str().unwrap().starts_with("Last checked "), "{out}");
+    assert_eq!(out["frames"][1]["settled"]["checked"], json!([]), "{out}");
     assert_eq!(out["frames"][2]["settled"]["activeIntervals"], json!([]), "{out}");
 }
 

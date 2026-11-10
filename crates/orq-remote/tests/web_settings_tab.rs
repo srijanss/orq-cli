@@ -35,7 +35,7 @@ fn shown(frame: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_settings_page_reads_the_global_endpoint_once_and_lists_each_agent_and_model() {
+fn the_settings_page_reads_the_global_endpoint_once_and_lists_the_implementer_and_reviewer_only() {
     let Some(out) = run("/settings", json!([settings()]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(out["requests"].as_array().unwrap().len(), 1, "{out}");
     assert_eq!(out["requests"][0]["url"], "/api/settings", "{out}");
@@ -43,7 +43,7 @@ fn the_settings_page_reads_the_global_endpoint_once_and_lists_each_agent_and_mod
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let t = shown(&out["frames"][1]);
     let at = |needle: &str| t.iter().position(|x| x == needle).unwrap_or_else(|| panic!("{needle} missing: {t:?}"));
-    assert!(at("Settings") < at("Implementer") && at("Implementer") < at("Reviewer") && at("Reviewer") < at("Models"), "{t:?}");
+    assert!(at("Settings") < at("Implementer") && at("Implementer") < at("Reviewer") && !t.iter().any(|x| x == "Models"), "{t:?}");
     for text in ["claude", "opus", "high", "pi", "<b>gpt</b>"] {
         assert!(t.iter().any(|x| x == text), "{text} missing: {t:?}");
     }
@@ -57,7 +57,7 @@ fn a_setting_with_no_value_shows_a_dash_and_says_it_is_not_set() {
     assert!(t.iter().any(|x| x == "—"), "{t:?}");
     assert!(t.iter().any(|x| x.contains("not set")), "{t:?}");
     let Some(out) = run("/settings", json!([{"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": []}}}]), json!([{"submit": TOKEN}])) else { return };
-    assert!(shown(&out["frames"][1]).iter().any(|x| x.contains("No models configured")), "{out}");
+    assert_eq!(shown(&out["frames"][1]).iter().filter(|x| x.contains("not set")).count(), 6, "every field of both agents says so: {out}");
 }
 
 #[test]

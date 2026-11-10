@@ -515,7 +515,7 @@ function checkedTime() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, footer = true, back = "/dashboard" }) {
+function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, back = "/dashboard" }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
   // True while a request of this page is waiting, so a refresh never starts on top of it.
@@ -593,11 +593,6 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
     return (
       <>
         <Fragment key="data">{draw(state.data)}</Fragment>
-        {footer ? (
-          <p className="last-checked" data-last-checked>
-            Last checked <Moment at={state.checked} />
-          </p>
-        ) : null}
       </>
     );
   }
@@ -866,15 +861,6 @@ function SettingsView({ settings }) {
       </section>
       <section className="card settings-card"><SettingsHead icon="cpu">Implementer</SettingsHead><AgentFields agent={settings.implementer} /></section>
       <section className="card settings-card"><SettingsHead icon="cpu">Reviewer</SettingsHead><AgentFields agent={settings.reviewer} /></section>
-      <section className="card settings-card">
-        <SettingsHead icon="layers">Models</SettingsHead>
-        {settings.models.length === 0 ? <p className="muted">No models configured.</p> : settings.models.map((model) => (
-          <div key={model.name} className="settings-model">
-            <h3>{model.name}</h3>
-            <AgentFields agent={model} />
-          </div>
-        ))}
-      </section>
     </>
   );
 }
@@ -1254,7 +1240,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null);
   return (
     <>
-      <Loaded key={featuresPath} reloads={reloads} footer={false} header={(state) => (
+      <Loaded key={featuresPath} reloads={reloads} header={(state) => (
         <>
           <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} status={dashboardStatus(state)} onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} />
@@ -1441,7 +1427,7 @@ function AllOrchestrations({ token, projects, reloads, onSignedOut, onRefresh, o
 function AllOrchestrationsPage({ token, reloads, onRefresh, onSignedOut }) {
   const [rows, setRows] = useState(null);
   return (
-    <Loaded key={API_PROJECTS} reloads={reloads} footer={false} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+    <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
       <>
         <ProjectSelect projects={projects} projectId={null} section="orchestrations" />
         <AllOrchestrations token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
@@ -1771,7 +1757,7 @@ function parseLogPage(data) {
 
 // The run's logs inside its Logs tab: the file list is read once, then one file's page at a time.
 function RunLogs({ token, onSignedOut, reloads, base, file, cursor, runId }) {
-  return <Loaded footer={false} key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
+  return <Loaded key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
 }
 
 // One file's lines with its filters, follow switch and pager. The filters stay while another page of
@@ -1810,7 +1796,7 @@ function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, r
           ))}
         </select>
       ) : name !== null ? <p className="log-file-name">{name}</p> : null}
-      {name === null ? <p>No logs for this run.</p> : <Loaded footer={false} key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
+      {name === null ? <p>No logs for this run.</p> : <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
     </div>
   );
 }
@@ -1977,7 +1963,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
     const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";
     return (
       <>
-        <Loaded key={runsPath} reloads={reloads} footer={false} header={(state) => (
+        <Loaded key={runsPath} reloads={reloads} header={(state) => (
           <>
             <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state.data?.rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
@@ -2015,7 +2001,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
     const logsAt = { token, onSignedOut, reloads, base: apiRun + "/logs", file, cursor: line };
     return (
       <>
-        <Loaded key={timelinePath} reloads={reloads} footer={false} header={(state) => (
+        <Loaded key={timelinePath} reloads={reloads} header={(state) => (
           <>
             <PageHeader title="Run" subtitle={run} status={dashboardStatus(state)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
@@ -2108,7 +2094,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
     const onRefresh = () => setReloads(reloads + 1);
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} footer={false} header={(state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
             <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
@@ -2121,7 +2107,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
               return (
                 <section key={project.id} className="project-section">
                   <h2>{project.name}</h2>
-                  <Loaded key={base} footer={false} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
+                  <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
                     return <OrchestrationList runs={data.rows} projectId={project.id} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
                   }} />
                 </section>

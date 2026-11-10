@@ -73,16 +73,14 @@ fn a_run_shows_only_its_start_as_a_relative_time_with_the_absolute_time_in_a_tit
 }
 
 #[test]
-fn a_report_says_reviewed_at_not_generated_and_last_checked_is_a_separate_label() {
+fn a_report_says_reviewed_at_not_generated_and_has_no_last_checked_footer() {
     let list = json!({"status": 200, "json": {"reviews": [{"run_id": "run-1", "feature": "f", "project": "p", "current": true, "status": "approved", "risk": "low", "stale": false, "link": null, "generated_at": ago(2 * 3600)}]}});
     let Some(out) = run("/reviews", json!([list]), json!([{"submit": TOKEN}])) else { return };
     let reviewed = only(&out, 1, "Reviewed at");
     assert_eq!(reviewed["text"], "2 hours ago", "{out}");
     assert!(reviewed["title"].as_str().unwrap().contains("20"), "{reviewed}");
     assert!(times(&out["frames"][1], "Generated").is_empty(), "{out}");
-    let checked = only(&out, 1, "Last checked");
-    assert_eq!(checked["text"], "just now", "{out}");
-    assert!(checked["title"].as_str().unwrap().contains("20"), "{checked}");
+    assert!(times(&out["frames"][1], "Last checked").is_empty(), "{out}");
 }
 
 #[test]
