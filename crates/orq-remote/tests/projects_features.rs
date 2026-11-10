@@ -48,7 +48,7 @@ fn a_project_lists_its_own_ledger_features_in_order_with_status_and_dependencies
     let beta = git_repo(&s.scan, "beta");
     std::fs::write(alpha.join(".tdd-features.json"), json!([
         {"featureName": "first", "description": "does one", "dependsOn": [], "status": "completed", "recordedAt": "2026-11-01T00:00:00Z"},
-        {"featureName": "second", "description": "does two", "dependsOn": ["first"], "status": "pending"},
+        {"featureName": "second", "description": "does two", "dependsOn": ["first"], "status": "pending", "testFile": "-p x --test second"},
         {"featureName": "odd", "dependsOn": [], "status": "waiting"}
     ]).to_string()).unwrap();
     std::fs::write(beta.join(".tdd-features.json"), json!([{"featureName": "only-beta", "status": "draft"}]).to_string()).unwrap();
@@ -56,9 +56,9 @@ fn a_project_lists_its_own_ledger_features_in_order_with_status_and_dependencies
     let (status, body) = get(&s, "/api/projects/alpha/features");
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["features"], json!([
-        {"name": "first", "description": "does one", "status": "completed", "depends_on": [], "recorded_at": "2026-11-01T00:00:00Z"},
-        {"name": "second", "description": "does two", "status": "pending", "depends_on": ["first"], "recorded_at": null},
-        {"name": "odd", "description": null, "status": "waiting", "depends_on": [], "recorded_at": null}
+        {"name": "first", "description": "does one", "status": "completed", "depends_on": [], "test_file": null, "recorded_at": "2026-11-01T00:00:00Z"},
+        {"name": "second", "description": "does two", "status": "pending", "depends_on": ["first"], "test_file": "-p x --test second", "recorded_at": null},
+        {"name": "odd", "description": null, "status": "waiting", "depends_on": [], "test_file": null, "recorded_at": null}
     ]), "{body}");
     let (_, beta_body) = get(&s, "/api/projects/beta/features");
     assert_eq!(beta_body["features"].as_array().unwrap().len(), 1, "{beta_body}");

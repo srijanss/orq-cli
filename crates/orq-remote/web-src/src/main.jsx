@@ -970,7 +970,10 @@ function FeatureList({ features, showProject = false }) {
 
 // One feature: its status, description, dependencies (each a link to that feature), the runs made
 // for it, and the action to start one when it is pending.
+const FEATURE_TABS = [["description", "Description"], ["test", "Test file"], ["dependencies", "Dependencies"]];
+
 function FeatureDetail({ feature, features, runs, projectId, control }) {
+  const [tab, setTab] = useState("description");
   const known = new Set(features.map((entry) => entry.name));
   const facts = featureFacts(feature, runs);
   const listPath = "/projects/" + encodeURIComponent(projectId) + "/features";
@@ -982,15 +985,20 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           <h2>{feature.name}</h2>
           <FeatureState status={feature.status} />
         </div>
-        {feature.description ? <p>{feature.description}</p> : <p className="muted">No description.</p>}
         <p>{"Stage: " + (facts.stage === null ? "—" : facts.stage)}</p>
         <Stamp label="Updated" at={facts.updated} />
         <Stamp label="Recorded" at={feature.recorded_at ?? null} />
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
-      </section>
-      <section className="card">
-        <h3>Dependencies</h3>
-        {feature.depends_on.length === 0 ? <p>No dependencies.</p> : <Dependencies names={feature.depends_on} known={known} hrefFor={(name) => featureHref(projectId, name)} />}
+        <div className="feature-tabs" role="tablist" aria-label="Feature details">
+          {FEATURE_TABS.map(([id, label]) => (
+            <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
+          ))}
+        </div>
+        <div className="feature-panel" id="feature-panel" role="tabpanel" aria-labelledby={"feature-tab-" + tab}>
+          {tab === "description" ? (feature.description ? <p>{feature.description}</p> : <p className="muted">No description.</p>) : null}
+          {tab === "test" ? (feature.test_file ? <p><code data-test-file>{feature.test_file}</code></p> : <p className="muted">No test file recorded.</p>) : null}
+          {tab === "dependencies" ? (feature.depends_on.length === 0 ? <p>No dependencies.</p> : <Dependencies names={feature.depends_on} known={known} hrefFor={(name) => featureHref(projectId, name)} />) : null}
+        </div>
       </section>
       <section className="card">
         <h3>Runs</h3>

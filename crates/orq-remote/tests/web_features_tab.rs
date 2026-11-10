@@ -192,10 +192,10 @@ fn the_project_dropdown_opens_another_projects_features() {
 
 #[test]
 fn a_feature_opens_its_detail_with_dependency_links_a_missing_marker_and_a_way_back() {
-    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects()]), json!([{"submit": TOKEN}])) else { return };
-    let frame = &out["frames"][1];
+    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}])) else { return };
+    let frame = &out["frames"][2];
     let texts = shown(frame);
-    for wanted in ["next-one", "<b>bold</b> idea", "Dependencies", "Runs"] {
+    for wanted in ["next-one", "Dependencies", "Runs"] {
         assert!(texts.iter().any(|t| t == wanted), "{wanted}: {texts:?}");
     }
     assert_eq!(count(frame, "[data-back=\"features\"]"), 1, "{out}");
@@ -208,8 +208,8 @@ fn a_feature_opens_its_detail_with_dependency_links_a_missing_marker_and_a_way_b
 
 #[test]
 fn a_feature_without_dependencies_or_runs_says_so_and_an_unknown_one_is_not_found() {
-    let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
-    let texts = shown(&out["frames"][1]);
+    let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}])) else { return };
+    let texts = shown(&out["frames"][2]);
     assert!(texts.iter().any(|t| t == "No dependencies.") && texts.iter().any(|t| t == "No runs for this feature yet."), "{texts:?}");
     let Some(out) = page("/projects/alpha/features/nothing-here", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "Not found"), "{out}");
@@ -268,4 +268,26 @@ fn a_long_list_is_paged_ten_at_a_time_and_a_filter_returns_to_the_first_page() {
 fn a_short_list_has_no_pager() {
     let Some(out) = page("/projects/alpha/features", json!([chain(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(!shown(&out["frames"][1]).iter().any(|t| t.starts_with("Page ")), "{out}");
+}
+
+#[test]
+fn a_feature_detail_has_description_test_file_and_dependencies_tabs_starting_on_the_description() {
+    let mut with_test = feature("next-one", "pending", json!("an idea"), json!(["done-one"]));
+    with_test["test_file"] = json!("-p orq-remote --test next");
+    let ledger = json!({"status": 200, "json": {"features": [feature("done-one", "completed", Value::Null, json!([])), with_test]}});
+    let steps = json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"test\"]"}, {"nav": "[data-feature-tab=\"dependencies\"]"}, {"nav": "[data-feature-tab=\"description\"]"}]);
+    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger, runs_for("next-one"), projects()]), steps) else { return };
+    let has = |i: usize, t: &str| shown(&out["frames"][i]).iter().any(|x| x == t);
+    assert!(["Description", "Test file", "Dependencies"].iter().all(|t| has(1, t)), "{out}");
+    assert!(has(1, "an idea") && !has(1, "-p orq-remote --test next") && !has(1, "done-one"), "{out}");
+    assert!(has(2, "-p orq-remote --test next") && !has(2, "an idea"), "{out}");
+    assert!(has(3, "done-one") && !has(3, "an idea"), "{out}");
+    assert!(has(4, "an idea") && !has(4, "done-one"), "{out}");
+    assert!(shown(&out["frames"][1]).iter().all(|t| t != "No test file recorded."), "{out}");
+}
+
+#[test]
+fn a_feature_without_a_test_file_says_so() {
+    let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"test\"]"}])) else { return };
+    assert!(shown(&out["frames"][2]).iter().any(|t| t == "No test file recorded."), "{out}");
 }
