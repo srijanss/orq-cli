@@ -56,17 +56,16 @@ fn only<'a>(out: &'a Value, frame: usize, label: &str) -> &'a Value {
 }
 
 #[test]
-fn a_run_shows_last_activity_and_start_as_relative_times_with_the_absolute_time_in_a_title() {
+fn a_run_shows_only_its_start_as_a_relative_time_with_the_absolute_time_in_a_title() {
     let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": ago(2 * 3600), "updated_at": ago(5 * 60)});
     let timeline = json!({"status": 200, "json": {"run": header, "events": [{"event_id": "e1", "kind": "run.started", "stage": null, "attempt": 1, "occurred_at": ago(3 * 86400)}], "next_cursor": null}});
     let stream = json!({"status": 200, "stream": [], "end": "hold"});
     let Some(out) = run(RUN, json!([timeline, projects(), stream]), json!([{"submit": TOKEN}])) else { return };
-    let activity = only(&out, 1, "Last activity");
-    assert_eq!(activity["text"], "5 minutes ago", "{out}");
+    assert!(times(&out["frames"][1], "Last activity").is_empty(), "only the start is shown above the tabs: {out}");
     assert_eq!(only(&out, 1, "Started")["text"], "2 hours ago", "{out}");
     let event = times(&out["frames"][1], "").into_iter().find(|t| t["text"] == "3 days ago");
     assert!(event.is_some(), "the event time is relative too: {out}");
-    for shown in [activity, only(&out, 1, "Started"), event.unwrap()] {
+    for shown in [only(&out, 1, "Started"), event.unwrap()] {
         let title = shown["title"].as_str().unwrap();
         assert!(title.contains("20") && title != shown["text"].as_str().unwrap(), "the title holds the absolute local time: {shown}");
         assert!(shown["datetime"].as_str().unwrap().ends_with('Z'), "{shown}");
@@ -88,22 +87,25 @@ fn a_report_says_reviewed_at_not_generated_and_last_checked_is_a_separate_label(
 
 #[test]
 fn an_odd_or_future_time_shows_nothing_relative() {
-    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": "<b>x</b>", "updated_at": "2999-01-01T00:00:00Z"});
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": "2999-01-01T00:00:00Z", "updated_at": null});
     let timeline = json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}});
     let stream = json!({"status": 200, "stream": [], "end": "hold"});
     let Some(out) = run(RUN, json!([timeline, projects(), stream]), json!([{"submit": TOKEN}])) else { return };
-    assert!(times(&out["frames"][1], "Started").is_empty(), "{out}");
-    assert_eq!(only(&out, 1, "Last activity")["text"], "just now", "a time ahead of this clock is not shown as the future: {out}");
+    assert_eq!(only(&out, 1, "Started")["text"], "just now", "a time ahead of this clock is not shown as the future: {out}");
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": "<b>x</b>", "updated_at": null});
+    let timeline = json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}});
+    let Some(out) = run(RUN, json!([timeline, projects(), {"status": 200, "stream": [], "end": "hold"}]), json!([{"submit": TOKEN}])) else { return };
+    assert!(times(&out["frames"][1], "Started").is_empty(), "an odd time is not shown: {out}");
 }
 
 #[test]
 fn a_shown_age_keeps_growing_while_nothing_new_arrives() {
-    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": null, "updated_at": ago(10)});
+    let header = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": null, "started_at": ago(10), "updated_at": null});
     let timeline = json!({"status": 200, "json": {"run": header, "events": [], "next_cursor": null}});
     let stream = json!({"status": 200, "stream": [], "end": "hold"});
     let steps = json!([{"submit": TOKEN}, {"clock": 5 * 60 * 1000}, {"tick": 20000}]);
     let Some(out) = run(RUN, json!([timeline, projects(), stream]), steps) else { return };
-    assert_eq!(only(&out, 1, "Last activity")["text"], "just now", "{out}");
-    assert_eq!(only(&out, 3, "Last activity")["text"], "5 minutes ago", "the age moved with the clock and no new reply: {out}");
+    assert_eq!(only(&out, 1, "Started")["text"], "just now", "{out}");
+    assert_eq!(only(&out, 3, "Started")["text"], "5 minutes ago", "the age moved with the clock and no new reply: {out}");
     assert_eq!(out["requests"].as_array().unwrap().len(), 3, "no request was needed to age the time: {out}");
 }

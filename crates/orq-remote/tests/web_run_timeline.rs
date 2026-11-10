@@ -47,7 +47,8 @@ fn a_run_page_shows_the_header_and_the_events_in_order_as_text() {
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let t = texts(&out["frames"][1]);
     let at = |needle: &str| t.iter().position(|x| x == needle).unwrap_or_else(|| panic!("{needle} missing: {t:?}"));
-    assert!(t.iter().any(|x| x == "<b>login</b>") && t.iter().any(|x| x == "Failed") && t.iter().any(|x| x == "Stage: implement"), "{t:?}");
+    assert!(t.iter().any(|x| x == "<b>login</b>") && t.iter().any(|x| x == "Failed"), "{t:?}");
+    assert!(!t.iter().any(|x| x.starts_with("Run run-1")), "no run number line above the tabs: {t:?}");
     assert!(at("run.started") < at("stage.<i>started</i>"), "{t:?}");
     let moments: Vec<&str> = out["frames"][1]["settled"]["times"].as_array().unwrap().iter().filter(|m| m["label"] == "").filter_map(|m| m["datetime"].as_str()).collect();
     assert_eq!(moments, ["2026-11-02T10:00:00Z", "2026-11-02T10:05:00Z"], "{out}");

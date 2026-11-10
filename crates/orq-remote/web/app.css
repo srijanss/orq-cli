@@ -428,10 +428,18 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
   .master-detail.has-report .back-to-list { display: none; }
 }
 
-/* Run timeline: a stage attempt groups its own events. */
-.attempt .attempt-title { margin: 0; }
-.attempt > ol { margin-top: 0.5rem; }
-.attempt-outcome { color: var(--danger, var(--accent)); }
+/* Run events tab: each stage attempt is a bordered group of its events, one row per event. */
+.run-events, .attempt-events { list-style: none; margin: 0; padding: 0; }
+.run-events > li + li { margin-top: 0.75rem; }
+.attempt, .run-events > .event { border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); overflow: hidden; }
+.attempt-head { padding: 0.625rem 0.75rem; }
+.attempt .attempt-title { margin: 0; font-size: 0.9375rem; }
+.attempt-outcome { display: block; padding: 0 0.75rem 0.5rem; color: var(--status-failed); font-size: 0.875rem; }
+.run-events .event { margin: 0; padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+.attempt-events .event { border-top: 1px solid var(--border); }
+.event-kind { font-family: ui-monospace, 'JetBrains Mono', monospace; font-weight: 600; overflow-wrap: anywhere; }
+.event-meta { color: var(--text-muted); }
+.run-events .event time { margin-left: auto; color: var(--text-muted); white-space: nowrap; }
 
 /* Log lines scroll in their own box so a live log can follow its end. */
 .log-lines { max-height: 70vh; overflow-y: auto; }

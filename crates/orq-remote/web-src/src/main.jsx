@@ -1299,10 +1299,10 @@ function parseTimeline(data) {
 
 function EventItem({ event }) {
   return (
-    <li className="event card">
-      <strong>{event.kind}</strong>
-      {event.stage ? <span>{"Stage: " + event.stage}</span> : null}
-      <span>{"Attempt " + event.attempt}</span>
+    <li className="event">
+      <strong className="event-kind">{event.kind}</strong>
+      {event.stage ? <span className="event-meta">{"Stage: " + event.stage}</span> : null}
+      <span className="event-meta">{"Attempt " + event.attempt}</span>
       <Moment at={event.occurred_at} />
     </li>
   );
@@ -1370,19 +1370,19 @@ function StepTime({ events }) {
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
 function EventTimeline({ events, rounds = 0 }) {
   return (
-    <ol>
+    <ol className="run-events">
       {groupEvents(events, rounds).map((item) =>
         item.events === undefined ? (
           <EventItem key={item.event.event_id} event={item.event} />
         ) : (
-          <li key={item.events[0].event_id} className="attempt card" data-failed={item.failed ? "true" : undefined}>
+          <li key={item.events[0].event_id} className="attempt" data-failed={item.failed ? "true" : undefined}>
             <div className="attempt-head">
               <StepIcon failed={item.failed} done={item.events.some((event) => event.kind.endsWith(".completed"))} />
               <h3 className="attempt-title">{item.title}</h3>
               <StepTime events={item.events} />
             </div>
             {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
-            <ol>
+            <ol className="attempt-events">
               {item.events.map((event) => (
                 <EventItem key={event.event_id} event={event} />
               ))}
@@ -1454,12 +1454,11 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, startTab = "ti
             <h2>{run.feature}</h2>
             <RunState state={run.state} />
           </div>
-          <p className="feature-detail-sub run-detail-sub">
-            <span className="run-id">{"Run " + run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</span>
-            {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
-            {validTime(run.started_at) === null ? null : <span>Started <Moment at={run.started_at} /></span>}
-            {validTime(run.updated_at) === null ? null : <span>Last activity <Moment at={run.updated_at} /></span>}
-          </p>
+          {validTime(run.started_at) === null ? null : (
+            <p className="feature-detail-sub run-detail-sub">
+              <span>Started <Moment at={run.started_at} /></span>
+            </p>
+          )}
         </div>
       </div>
       <div className="feature-tabs" role="tablist" aria-label="Run details">
@@ -1587,7 +1586,7 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet
     <>
       {draw([...shown, ...more.filter((event) => !have.has(event.event_id))])}
       {gap && <p className="stream-gap" role="status" hidden={quiet}>Some events may be missing</p>}
-      <p className="live-status" data-live hidden={quiet}>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
+      <p className={status === "live" ? "live-status sr-only" : "live-status"} data-live hidden={quiet}>{status === "live" ? "Following live" : status === "stopped" ? "Live updates stopped" : "Reconnecting…"}</p>
     </>
   );
 }
@@ -1609,7 +1608,7 @@ function parseLogPage(data) {
 
 // The run's logs inside its Logs tab: the file list is read once, then one file's page at a time.
 function RunLogs({ token, onSignedOut, reloads, base, file, cursor, runId }) {
-  return <Loaded key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
+  return <Loaded footer={false} key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
 }
 
 // One file's lines with its filters, follow switch and pager. The filters stay while another page of
@@ -1648,7 +1647,7 @@ function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, r
           ))}
         </select>
       ) : name !== null ? <p className="log-file-name">{name}</p> : null}
-      {name === null ? <p>No logs for this run.</p> : <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
+      {name === null ? <p>No logs for this run.</p> : <Loaded footer={false} key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
     </div>
   );
 }
