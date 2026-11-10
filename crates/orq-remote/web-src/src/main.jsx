@@ -371,7 +371,7 @@ function checkedTime() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 }) {
+function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
   // True while a request of this page is waiting, so a refresh never starts on top of it.
@@ -432,6 +432,7 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
       controller.abort();
     };
   }, [token, path, attempt, reloads]);
+  const body = (() => {
   if (state.kind === "notfound") {
     return <NotFound />;
   }
@@ -466,6 +467,8 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0 })
       {state.data !== null ? <Fragment key="data">{draw(state.data)}</Fragment> : null}
     </>
   );
+  })();
+  return header !== null ? <>{header(state)}{body}</> : body;
 }
 
 function isCount(value) {
@@ -537,7 +540,6 @@ function Dashboard({ projects }) {
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   return (
     <>
-      <p className="connection"><span className="dot" aria-hidden="true" />Connected</p>
       <div className="stats">
         <Stat icon="layers" tone="tone-accent" value={projects.length} label="Projects" />
         <Stat icon="play" tone="tone-accent" value={sum("active_runs")} label="Active runs" />
@@ -554,18 +556,47 @@ function Dashboard({ projects }) {
   );
 }
 
-function PageHeader({ title, subtitle, onRefresh }) {
+function refreshButton(onRefresh) {
+  return onRefresh ? (
+    <button type="button" className="icon-button" data-refresh aria-label="Refresh" title="Refresh" onClick={onRefresh}>
+      <Icon name="refresh" />
+    </button>
+  ) : null;
+}
+
+// The Dashboard's right side of the first row: whether the inbox is reachable, and when it was read.
+function dashboardStatus(state) {
+  if (state.kind === "loading" || state.checked === undefined) return null;
+  const connected = state.kind === "ready";
+  const when = new Date(state.checked);
+  return (
+    <>
+      <p className={connected ? "connection" : "connection offline"}>
+        <span className="dot" aria-hidden="true" />
+        {connected ? "Connected (Tailscale)" : "Disconnected"}
+      </p>
+      <span className="last-updated">
+        Last updated: <time dateTime={state.checked}>{when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+      </span>
+    </>
+  );
+}
+
+function PageHeader({ title, subtitle, onRefresh, status = null }) {
   return (
     <header className="page-header">
       <div>
         <h1>{title}</h1>
         <p className="subtitle">{subtitle}</p>
       </div>
-      {onRefresh ? (
-        <button type="button" className="icon-button" data-refresh aria-label="Refresh" title="Refresh" onClick={onRefresh}>
-          <Icon name="refresh" />
-        </button>
-      ) : null}
+      {status !== null ? (
+        <div className="header-status">
+          {status}
+          {refreshButton(onRefresh)}
+        </div>
+      ) : (
+        refreshButton(onRefresh)
+      )}
     </header>
   );
 }
@@ -1424,8 +1455,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
   if (hash === "/dashboard") {
     return (
       <>
-        <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />
-        <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" status={dashboardStatus(state)} onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
       </>
     );
   }

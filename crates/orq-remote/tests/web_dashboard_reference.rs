@@ -43,7 +43,7 @@ fn the_total_is_a_row_with_a_tinted_round_cornered_chip_and_the_clock_icon_exist
     assert!(stat.contains("flex-direction: row") && stat.contains("align-items: center"), "{stat}");
     let chip = rule(&css, ".stat-icon {");
     assert!(chip.contains("width: 3rem") && chip.contains("border-radius: 0.75rem") && chip.contains("color-mix("), "{chip}");
-    assert!(css.contains(".connection { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 1rem; justify-content: flex-end;"), "status sits at the right");
+    assert!(css.contains(".header-status {"), "the status sits at the right of the header row");
     let icons = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/icons.jsx")).unwrap();
     assert!(icons.contains("  clock: \""), "the clock icon is drawn");
 }
