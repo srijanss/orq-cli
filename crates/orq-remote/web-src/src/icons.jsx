@@ -28,6 +28,8 @@ const PATHS = {
   check: "m5 12 5 5L20 7",
   chevronLeft: "m15 6-6 6 6 6",
   download: "M12 4v11m-5-5 5 5 5-5M5 20h14",
+  sortDesc: "M3 6h11M3 12h7M3 18h3m12-12v12m-3-3 3 3 3-3",
+  sortAsc: "M3 6h3m-3 6h7m-7 6h11m4 0V6m-3 3 3-3 3 3",
 };
 
 export function Icon({ name, size = 20 }) {

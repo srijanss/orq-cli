@@ -1,5 +1,5 @@
-//! The Orchestrations tab counts a project's runs and lets them be ordered by state or kept in
-//! the server's newest-first order.
+//! The Orchestrations tab counts a project's runs and orders them by when they were last updated,
+//! newest or oldest first.
 
 mod web_deps;
 
@@ -55,12 +55,18 @@ fn the_tab_says_how_many_runs_there_are_and_how_many_are_running() {
 }
 
 #[test]
-fn the_default_order_is_the_servers_and_sorting_by_state_puts_running_first_then_back() {
-    let Some(out) = run(json!([runs(), projects()]), json!([{"submit": TOKEN}, {"set": "select[data-run-sort]", "value": "state"}, {"set": "select[data-run-sort]", "value": "newest"}])) else { return };
-    assert_eq!(order(&out["frames"][1]), ["feat-a", "feat-b", "feat-c", "feat-d", "feat-e"]);
-    // By state: running (b, d in the server's order), then failed, completed, and an unknown state last.
-    assert_eq!(order(&out["frames"][2]), ["feat-b", "feat-d", "feat-c", "feat-a", "feat-e"]);
-    assert_eq!(order(&out["frames"][3]), ["feat-a", "feat-b", "feat-c", "feat-d", "feat-e"]);
+fn the_updated_button_sorts_newest_first_and_each_click_flips_the_order() {
+    let at = |id: &str, when: &str| json!({"run_id": id, "feature": format!("feat-{id}"), "target_branch": "main", "state": "running", "stage": null, "started_at": "2026-11-02T09:00:00Z", "updated_at": when});
+    // The server's order is not the update order, and one run has no update time, so its start counts.
+    let mut never = at("d", "x");
+    never["updated_at"] = Value::Null;
+    let rows = json!({"status": 200, "json": {"runs": [at("a", "2026-11-02T10:00:00Z"), at("b", "2026-11-02T12:00:00Z"), at("c", "2026-11-02T11:00:00Z"), never]}});
+    let click = json!({"click": "button[data-run-sort]"});
+    let Some(out) = run(json!([rows, projects()]), json!([{"submit": TOKEN}, click, click])) else { return };
+    assert_eq!(order(&out["frames"][1]), ["feat-b", "feat-c", "feat-a", "feat-d"]);
+    assert_eq!(order(&out["frames"][2]), ["feat-d", "feat-a", "feat-c", "feat-b"]);
+    assert_eq!(order(&out["frames"][3]), ["feat-b", "feat-c", "feat-a", "feat-d"]);
+    assert!(texts(&out["frames"][1]).iter().any(|t| t == "Updated"), "the button names what it sorts by");
 }
 
 #[test]

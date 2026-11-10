@@ -1116,16 +1116,14 @@ function parseOrchestrations(data) {
   return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? { rows: data.runs, actions: data.remote_actions === true } : null;
 }
 
-// Needs-attention first when sorted by state; a state the page does not know goes last.
+// The states a run can be in, needs-attention first, as the state filter offers them.
 const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "merged"];
 
-function byState(runs) {
-  const rank = (run) => {
-    const at = STATE_ORDER.indexOf(run.state);
-    return at === -1 ? STATE_ORDER.length : at;
-  };
-  // Array.prototype.sort is stable, so runs of one state keep the server's newest-first order.
-  return [...runs].sort((a, b) => rank(a) - rank(b));
+// By when each run last moved (its update, else its start), newest first or oldest first. The sort
+// is stable, so runs with the same time keep the server's order.
+function byUpdated(runs, order) {
+  const when = (run) => whenOf(run.updated_at ?? run.started_at ?? null);
+  return [...runs].sort((a, b) => (order === "asc" ? when(a) - when(b) : when(b) - when(a)));
 }
 
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
@@ -1155,7 +1153,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [stage, setStage] = useState("all");
-  const [sort, setSort] = useState("newest");
+  const [sort, setSort] = useState("desc");
   const [page, setPage] = useState(0);
   if (runs.length === 0) {
     return <p>{showProject ? "No runs in any project yet." : "No runs in this project yet."}</p>;
@@ -1167,7 +1165,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
   const needle = query.trim().toLowerCase();
   const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : run.state === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
-  const shown = sort === "state" ? byState(matches) : matches;
+  const shown = byUpdated(matches, sort);
   const pages = Math.max(1, Math.ceil(shown.length / RUNS_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * RUNS_PER_PAGE, (at + 1) * RUNS_PER_PAGE);
@@ -1192,10 +1190,13 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
           <option value="all">Stage: All</option>
           {stages.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
-        <select data-run-sort aria-label="Sort" value={sort} onChange={choose(setSort)}>
-          <option value="newest">Sort: Updated</option>
-          <option value="state">Sort: State</option>
-        </select>
+        <button type="button" className="sort-toggle" data-run-sort={sort} aria-label={sort === "desc" ? "Sort by updated: newest first" : "Sort by updated: oldest first"} title={sort === "desc" ? "Newest first" : "Oldest first"} onClick={() => {
+          setSort(sort === "desc" ? "asc" : "desc");
+          setPage(0);
+        }}>
+          <Icon name={sort === "desc" ? "sortDesc" : "sortAsc"} size={18} />
+          <span aria-hidden="true">Updated</span>
+        </button>
       </div>
       {shown.length === 0 ? <p>No runs match the filters.</p> : (
         <div className="feature-table-wrap">
@@ -1205,7 +1206,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                 <th scope="col">Run <span className="feature-count" data-run-count>{shown.length}</span></th>
                 <th scope="col">State</th>
                 <th scope="col">Stage</th>
-                <th scope="col">Updated</th>
+                <th scope="col" aria-sort={sort === "desc" ? "descending" : "ascending"}>Updated</th>
                 {actions ? <th scope="col"><span className="sr-only">Actions</span></th> : null}
               </tr>
             </thead>
