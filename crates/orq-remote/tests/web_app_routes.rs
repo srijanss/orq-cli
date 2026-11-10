@@ -11,7 +11,7 @@ fn served(peer: &str, method: &str, path: &str) -> Option<&'static str> {
 
 #[test]
 fn application_paths_are_answered_with_the_page() {
-    for path in ["/dashboard", "/settings", "/projects", "/projects/app", "/projects/app/reviews", "/projects/my%20app/features", "/reviews/run-1", "/projects/app/reviews/run-1", "/features", "/orchestrations", "/projects/app/features/next-one"] {
+    for path in ["/dashboard", "/reviews", "/settings", "/projects", "/projects/app", "/projects/app/reviews", "/projects/my%20app/features", "/reviews/run-1", "/projects/app/reviews/run-1", "/features", "/orchestrations", "/projects/app/features/next-one"] {
         for method in ["GET", "HEAD"] {
             assert_eq!(served("127.0.0.1", method, path), Some(page()), "{method} {path}");
         }

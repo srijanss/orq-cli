@@ -364,6 +364,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 
 .freshness-banner { display: flex; align-items: flex-start; gap: 0.625rem; border: 1px solid var(--stale); border-left-width: 4px; border-radius: 0.5rem; padding: 0.625rem 0.75rem; margin: 0.75rem 0; }
 .freshness-banner .icon { flex: none; margin-top: 0.125rem; }
+.freshness-banner > div { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .freshness-banner.stale { border-color: var(--status-failed); background: var(--status-failed-bg); color: var(--status-failed); }
 .freshness-banner.unverified { border-color: var(--stale); background: var(--stale-bg); color: var(--stale); }
 .freshness-banner p { margin: 0.25rem 0 0; }
@@ -422,7 +423,7 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 /* Reviews: with a report open a phone shows the report alone; a wide screen shows list and report side by side. */
 .master-detail.has-report .master-pane { display: none; }
 .master-detail .detail-pane { display: block; }
-.back-to-list { display: inline-block; }
+.back-to-list { display: inline-flex; }
 @media (min-width: 900px) {
   .master-detail.has-report { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1rem; align-items: start; }
   .master-detail.has-report .master-pane { display: block; }
@@ -452,9 +453,9 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .pill-stale { color: var(--status-failed); background: var(--status-failed-bg); border: 1px solid var(--status-failed); }
 .pill-unverified { color: var(--stale); background: var(--stale-bg); border: 1px solid var(--stale); }
 .review-report { display: flex; flex-direction: column; gap: 0.5rem; }
-.review-report .back-to-list { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; }
-.review-report-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.review-report-head h2 { margin: 0; overflow-wrap: anywhere; }
+.review-report .back-to-list { flex: none; margin-left: -0.625rem; }
+.review-report-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.review-report-head h2 { flex: 1 1 10rem; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .review-report-sub { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; margin: 0; color: var(--text-muted); font-size: 0.875rem; }
 .review-summary h3 { margin: 0.25rem 0; font-size: 1rem; }
 .review-summary p { margin: 0 0 0.375rem; }

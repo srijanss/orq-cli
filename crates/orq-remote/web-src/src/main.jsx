@@ -380,11 +380,11 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
   const commit = shortHash(report.reviewed_head_sha);
   return (
     <article className="review-report card">
-      <button type="button" className="back-to-list" data-back="list" onClick={() => navigate(listPath)}>
-        <Icon name="arrowLeft" size={18} />
-        Back to the list
-      </button>
       <div className="review-report-head">
+        <button type="button" className="back-arrow back-to-list" data-back="list" onClick={() => navigate(listPath)}>
+          <Icon name="arrowLeft" size={22} />
+          <span className="sr-only">Back to the list</span>
+        </button>
         <h2>{row !== null ? String(row.feature) : "Review report"}</h2>
         <span className="review-tags">
           <FreshnessPill freshness={freshness} />
@@ -432,13 +432,43 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
 
 // One page for the global inbox and a project's: the list stays mounted beside the report (the
 // stylesheet hides it on a phone), so choosing another report never fetches the list again.
-function ReviewsPage({ token, onSignedOut, reloads, onRefresh, api, listPath, open, showProject = false }) {
+// The project list for the reviews picker on the all-projects page. It is read only when the picker
+// is first opened, so the inbox loads alone; a list that cannot be read leaves just "All projects".
+function useLateProjects(token, wanted) {
+  const [projects, setProjects] = useState(null);
+  useEffect(() => {
+    if (!wanted) return undefined;
+    let current = true;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get(API_PROJECTS, token, controller.signal);
+        const list = response.ok ? parseProjects(await response.json()) : null;
+        if (current) setProjects(list);
+      } catch (failure) {
+        if (current) setProjects(null);
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [token, wanted]);
+  return projects;
+}
+
+function ReviewsPage({ token, onSignedOut, reloads, onRefresh, api, listPath, open, showProject = false, projectId = null, projects = undefined }) {
   const [rows, setRows] = useState(null);
+  const [wanted, setWanted] = useState(false);
+  const late = useLateProjects(token, projects === undefined && wanted);
   const path = open === undefined ? null : api + "/" + encodeURIComponent(open);
   const row = rows === null || open === undefined ? null : rows.find((candidate) => candidate.run_id === open) ?? null;
   return (
     <>
       <PageHeader title="Reviews" subtitle="Code reviews and agent reports" onRefresh={onRefresh} />
+      {projects === undefined
+        ? <ProjectSelect projects={late ?? []} projectId={null} section="reviews" onOpen={() => setWanted(true)} />
+        : <ProjectSelect projects={projects} projectId={projectId} section="reviews" />}
       <div className={open === undefined ? "master-detail" : "master-detail has-report"}>
         <div className="master-pane">
           <Loaded key={api} reloads={reloads} token={token} path={api} loading="Loading the review inbox…" parse={parseRuns} draw={(runs) => <ReviewList runs={runs} detailPrefix={listPath + "/"} selected={open === undefined ? null : open} onRows={setRows} showProject={showProject} />} onSignedOut={onSignedOut} />
@@ -971,7 +1001,7 @@ function useFeatureRuns(token, projectId, reloads, enabled) {
 }
 
 // The project chooser at the top of the page; choosing one opens that project's same section.
-function ProjectSelect({ projects, projectId, section = "features" }) {
+function ProjectSelect({ projects, projectId, section = "features", onOpen = null }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
   useEffect(() => {
@@ -989,14 +1019,14 @@ function ProjectSelect({ projects, projectId, section = "features" }) {
       document.removeEventListener("pointerdown", onPress);
     };
   }, [open]);
-  if (projects === null || projects.length === 0) return null;
+  if ((projects === null || projects.length === 0) && onOpen === null) return null;
   const known = projectId === null || projects.some((project) => project.id === projectId);
   const choices = [{ id: null, name: "All projects" }, ...(known ? [] : [{ id: projectId, name: projectId }]), ...projects];
   const current = choices.find((project) => project.id === projectId);
   return (
     <div className="project-picker" ref={box}>
       <span className="project-switch-prefix">Project:</span>
-      <button type="button" className="project-switcher" data-project-select aria-label="Project" aria-haspopup="listbox" aria-expanded={open ? "true" : "false"} onClick={() => setOpen(!open)}>
+      <button type="button" className="project-switcher" data-project-select aria-label="Project" aria-haspopup="listbox" aria-expanded={open ? "true" : "false"} onClick={() => { if (!open && onOpen !== null) onOpen(); setOpen(!open); }}>
         <span className="project-switcher-text">{current.name}</span>
         <Icon name="chevronDown" size={18} />
       </button>
@@ -1978,7 +2008,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
   const match = /^\/projects\/[^/]+\/reviews(?:\/([^/]*))?$/.exec(address);
   if (match === null) return <p>This page is not available yet.</p>;
   if (match[1] !== undefined && !RUN_ID.test(match[1])) return <NotFound />;
-  return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={onRefresh} api={"/api/projects/" + encodeURIComponent(projectId) + "/reviews"} listPath={"/projects/" + encodeURIComponent(projectId) + "/reviews"} open={match[1]} />;
+  return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={onRefresh} api={"/api/projects/" + encodeURIComponent(projectId) + "/reviews"} listPath={"/projects/" + encodeURIComponent(projectId) + "/reviews"} open={match[1]} projectId={projectId} projects={projects} />;
 }
 
 function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {

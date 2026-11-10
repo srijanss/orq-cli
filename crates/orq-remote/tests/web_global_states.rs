@@ -36,7 +36,7 @@ fn a_pending_page_shows_a_skeleton_that_still_says_what_is_loading() {
 
 #[test]
 fn an_unreachable_server_shows_a_disconnected_banner_with_the_time_and_keeps_the_token_for_a_retry() {
-    let Some(out) = run(json!([{"reject": true}, list()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run(json!([{"reject": true}, list()]), json!([{"submit": TOKEN}, {"click": "[role=alert] button", "index": 0}])) else { return };
     let first = &out["frames"][1];
     let text = shown(first);
     assert!(text.contains("Disconnected"), "{text}");
@@ -89,7 +89,7 @@ fn a_missing_report_offers_a_way_back_to_the_inbox() {
 fn retrying_after_a_failed_refresh_replaces_the_old_data_and_clears_the_markers() {
     let fresh = json!({"status": 200, "json": {"reviews": [{"run_id": "run-2", "feature": "beta", "status": "approved", "stale": false}]}});
     for failure in [json!({"status": 503}), json!({"reject": true}), json!({"status": 200, "json": {"nope": 1}})] {
-        let Some(out) = run(json!([list(), failure.clone(), fresh.clone()]), json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}, {"click": "button", "index": 0}])) else { return };
+        let Some(out) = run(json!([list(), failure.clone(), fresh.clone()]), json!([{"submit": TOKEN}, {"nav": "[data-refresh]"}, {"click": "[role=alert] button", "index": 0}])) else { return };
         assert!(shown(&out["frames"][2]).contains("Outdated"), "{failure}: {out}");
         let text = shown(&out["frames"][3]);
         assert!(text.contains("beta") && !text.contains("alpha"), "{failure}: {text}");

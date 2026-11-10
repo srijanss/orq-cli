@@ -50,6 +50,18 @@ fn choosing_a_project_opens_the_section_being_viewed_for_that_project() {
 }
 
 #[test]
+fn the_reviews_page_picker_reads_the_projects_only_when_opened_and_opens_that_projects_reviews() {
+    let reviews = json!({"status": 200, "json": {"reviews": []}});
+    let steps = json!([{"submit": TOKEN}, {"click": "main [data-project-select]", "index": 0}, {"click": "main [data-project-choice=beta]", "index": 0}]);
+    let Some(out) = run("/reviews", json!([reviews.clone(), projects(), projects(), reviews]), steps) else { return };
+    assert_eq!(out["frames"][1]["settled"]["path"], "/reviews", "{out}");
+    assert_eq!(out["requests"][0]["url"], "/api/reviews", "the inbox loads alone first: {out}");
+    assert_eq!(out["requests"][1]["url"], "/api/projects", "the list is read when the picker opens: {out}");
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["settled"]["path"], "/projects/beta/reviews", "{out}");
+}
+
+#[test]
 fn choosing_all_projects_inside_a_project_returns_to_the_all_projects_page_of_that_section() {
     let reviews = json!({"status": 200, "json": {"reviews": []}});
     let steps = json!([{"submit": TOKEN}, {"select": ""}]);

@@ -97,10 +97,10 @@ fn after_a_failed_sign_in_only_the_newly_typed_token_is_sent() {
 #[test]
 fn a_server_error_leaves_a_way_to_try_again_without_retyping_the_token() {
     for status in [429, 500, 503] {
-        let scenario = json!({"responses": [{"status": status}, {"status": 200, "json": {"reviews": [{"feature": "gamma", "status": "ok"}]}}], "steps": [{"submit": TOKEN}, {"click": "button"}]});
+        let scenario = json!({"responses": [{"status": status}, {"status": 200, "json": {"reviews": [{"feature": "gamma", "status": "ok"}]}}], "steps": [{"submit": TOKEN}, {"click": "[role=alert] button"}]});
         let Some(out) = run(scenario) else { return };
         let failed = &out["frames"][1]["settled"];
-        assert_eq!(failed["buttons"].as_array().unwrap().len(), 1, "{status}: a retry button is offered: {out}");
+        assert_eq!(failed["buttons"].as_array().unwrap().iter().filter(|b| *b != "All projects").count(), 1, "{status}: a retry button is offered: {out}");
         assert!(!failed.to_string().contains(TOKEN), "{status}");
         // Retrying asks again with the token already held, and recovers.
         let requests = out["requests"].as_array().unwrap();

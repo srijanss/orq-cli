@@ -84,7 +84,7 @@ fn a_malformed_inbox_keeps_the_token_and_offers_a_retry_instead_of_asking_to_sig
         let Some(out) = run(json!([good.clone(), bad.clone()])) else { return };
         let settled = &out["frames"][1]["settled"];
         assert!(settled["inputs"].as_array().unwrap().is_empty(), "{bad}: the token field must not come back: {out}");
-        assert_eq!(settled["buttons"].as_array().unwrap().len(), 1, "{bad}: a retry button is offered: {out}");
+        assert_eq!(settled["buttons"].as_array().unwrap().iter().filter(|b| *b != "All projects").count(), 1, "{bad}: a retry button is offered: {out}");
         let shown = texts(&out).join(" | ");
         assert!(!shown.contains("undefined") && !shown.contains("Could not sign in"), "{bad}: {shown}");
     }
@@ -101,5 +101,5 @@ fn a_reply_that_is_not_json_keeps_the_token_too() {
     assert!(output.status.success());
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(out["frames"][1]["settled"]["inputs"].as_array().unwrap().is_empty(), "{out}");
-    assert_eq!(out["frames"][1]["settled"]["buttons"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(out["frames"][1]["settled"]["buttons"].as_array().unwrap().iter().filter(|b| *b != "All projects").count(), 1, "{out}");
 }
