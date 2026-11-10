@@ -970,7 +970,7 @@ function FeatureList({ features, showProject = false }) {
 
 // One feature: its status, description, dependencies (each a link to that feature), the runs made
 // for it, and the action to start one when it is pending.
-const FEATURE_TABS = [["description", "Description"], ["test", "Test file"], ["dependencies", "Dependencies"]];
+const FEATURE_TABS = [["description", "Description"], ["test", "Test file"], ["dependencies", "Dependencies"], ["runs", "Runs"]];
 
 function FeatureDetail({ feature, features, runs, projectId, control }) {
   const [tab, setTab] = useState("description");
@@ -987,7 +987,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
               <h2>{feature.name}</h2>
               <FeatureState status={feature.status} />
             </div>
-            <p className="feature-detail-sub">{["Stage: " + (facts.stage === null ? "—" : facts.stage), ...(validTime(facts.updated) === null ? [] : [<Fragment key="u">{"Updated "}<Moment at={facts.updated} /></Fragment>]), ...(validTime(feature.recorded_at ?? null) === null ? [] : [<Fragment key="r">{"Recorded "}<Moment at={feature.recorded_at} /></Fragment>])].flatMap((part, index) => (index === 0 ? [part] : [" · ", part]))}</p>
+            <p className="feature-detail-sub">{[...(validTime(facts.updated) === null ? [] : [<Fragment key="u">{"Updated "}<Moment at={facts.updated} /></Fragment>]), ...(validTime(feature.recorded_at ?? null) === null ? [] : [<Fragment key="r">{"Recorded "}<Moment at={feature.recorded_at} /></Fragment>])].flatMap((part, index) => (index === 0 ? [part] : [" · ", part]))}</p>
           </div>
         </div>
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
@@ -999,23 +999,22 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
         <div className="feature-panel" id="feature-panel" role="tabpanel" aria-labelledby={"feature-tab-" + tab}>
           {tab === "description" ? (feature.description ? <p>{feature.description}</p> : <p className="muted">No description.</p>) : null}
           {tab === "test" ? (feature.test_file ? <p><code data-test-file>{feature.test_file}</code></p> : <p className="muted">No test file recorded.</p>) : null}
+          {tab === "runs" ? (
+          facts.runs.length === 0 ? <p>No runs for this feature yet.</p> : (
+            <ul>
+              {facts.runs.map((run) => (
+                <li key={run.run_id} className="run">
+                  <span className="run-id">{run.run_id}</span>
+                  <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+                  {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
+                  {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
+                </li>
+              ))}
+            </ul>
+          )
+          ) : null}
           {tab === "dependencies" ? (feature.depends_on.length === 0 ? <p>No dependencies.</p> : <Dependencies names={feature.depends_on} known={known} hrefFor={(name) => featureHref(projectId, name)} />) : null}
         </div>
-      </section>
-      <section className="card">
-        <h3>Runs</h3>
-        {facts.runs.length === 0 ? <p>No runs for this feature yet.</p> : (
-          <ul>
-            {facts.runs.map((run) => (
-              <li key={run.run_id} className="run">
-                <span className="run-id">{run.run_id}</span>
-                <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
-                {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
-                {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </>
   );

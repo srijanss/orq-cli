@@ -192,7 +192,7 @@ fn the_project_dropdown_opens_another_projects_features() {
 
 #[test]
 fn a_feature_opens_its_detail_with_dependency_links_a_missing_marker_and_a_way_back() {
-    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}])) else { return };
+    let Some(out) = page("/projects/alpha/features/next-one", json!([ledger(), runs_for("next-one"), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}, {"nav": "[data-feature-tab=\"runs\"]"}])) else { return };
     let frame = &out["frames"][2];
     let texts = shown(frame);
     for wanted in ["next-one", "Dependencies", "Runs"] {
@@ -203,14 +203,16 @@ fn a_feature_opens_its_detail_with_dependency_links_a_missing_marker_and_a_way_b
     assert!(links.iter().any(|l| l["text"] == "done-one" && l["href"] == "/projects/alpha/features/done-one"), "{links:?}");
     assert!(!links.iter().any(|l| l["text"].as_str().unwrap().contains("ghost")), "a missing dependency is not a link");
     assert!(texts.iter().any(|t| t.contains("ghost")) && texts.iter().any(|t| t.contains("Missing dependency")), "{texts:?}");
-    assert!(frame["settled"]["buttons"].as_array().unwrap().iter().any(|b| b == "Open timeline"), "its run is listed: {frame}");
+    let runs = &out["frames"][3]["settled"];
+    assert!(runs["buttons"].as_array().unwrap().iter().any(|b| b == "Open timeline"), "its run is listed on the Runs tab: {runs}");
+    assert!(!shown(frame).iter().any(|t| t.starts_with("Stage")), "no stage section: {out}");
 }
 
 #[test]
 fn a_feature_without_dependencies_or_runs_says_so_and_an_unknown_one_is_not_found() {
-    let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}])) else { return };
-    let texts = shown(&out["frames"][2]);
-    assert!(texts.iter().any(|t| t == "No dependencies.") && texts.iter().any(|t| t == "No runs for this feature yet."), "{texts:?}");
+    let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}, {"nav": "[data-feature-tab=\"runs\"]"}])) else { return };
+    assert!(shown(&out["frames"][2]).iter().any(|t| t == "No dependencies."), "{out}");
+    assert!(shown(&out["frames"][3]).iter().any(|t| t == "No runs for this feature yet."), "{out}");
     let Some(out) = page("/projects/alpha/features/nothing-here", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "Not found"), "{out}");
     assert!(!shown(&out["frames"][1]).iter().any(|t| t == "<b>bold</b> idea"), "{out}");
