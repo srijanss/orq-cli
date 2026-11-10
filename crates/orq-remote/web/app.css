@@ -357,7 +357,7 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 .feature-table th:not(:first-child), .feature-table td:not(:first-child) { width: 1%; white-space: nowrap; }
 .feature-link { color: inherit; font-weight: 600; text-decoration: none; }
 .feature-link:hover { text-decoration: underline; }
-.feature-state { display: inline-flex; align-items: center; gap: 0.25rem; flex: none; padding: 0.125rem 0.75rem; border-radius: 999px; font-size: 0.875rem; font-weight: 600; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 18%, transparent); }
+.feature-state { display: inline-flex; align-items: center; gap: 0.25rem; flex: none; padding: 0.125rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 18%, transparent); }
 .feature-state.state-completed { color: var(--status-completed); background: var(--status-completed-bg); }
 .feature-state.state-pending { color: var(--status-pending); background: var(--status-pending-bg); }
 .feature-state.state-abandoned { color: var(--status-failed); background: var(--status-failed-bg); }
