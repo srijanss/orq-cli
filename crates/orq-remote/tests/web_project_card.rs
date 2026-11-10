@@ -42,7 +42,7 @@ fn a_card_shows_only_features_active_runs_and_last_updated() {
     let settled = &out["frames"][1]["settled"];
     assert_eq!(settled["matches"][".project .card-stat"], 3, "{out}");
     let texts: Vec<&str> = settled["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
-    for kept in ["Features", "Active runs", "Last updated"] {
+    for kept in ["Features", "Active runs", "Reviews waiting"] {
         assert!(texts.contains(&kept), "{kept}: {texts:?}");
     }
     assert!(!texts.iter().any(|t| *t == "Waiting" || t.starts_with("Failed")), "{texts:?}");

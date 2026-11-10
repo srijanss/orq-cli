@@ -199,12 +199,15 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
   );
 }
 
-// A risk the reference knows gets its coloured badge; any other word is shown as it came.
+// A risk the reference knows gets its coloured badge. A placeholder such as "-" means the review gave
+// no rating, which a muted pill says plainly; any other word is shown as it came, in the same shape.
 function RiskBadge({ risk }) {
   if (risk === undefined || risk === null) return null;
-  const word = String(risk);
+  const word = String(risk).trim();
   const kind = "risk-" + word.toLowerCase();
-  return Object.hasOwn(BADGES, kind) ? <Badge kind={kind} /> : <span className="badge">{"risk: " + word}</span>;
+  if (Object.hasOwn(BADGES, kind)) return <Badge kind={kind} />;
+  const unrated = word === "" || /^(-+|none|n\/a|unknown)$/i.test(word);
+  return <span className="badge badge-risk-other">{unrated ? "No risk rating" : word + " risk"}</span>;
 }
 
 // The short pill reads "Stale" or "Unverified"; a screen reader hears the full marker instead.
@@ -515,6 +518,21 @@ function checkedTime() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
+// Whether the server answered the last request any page made, and when. Every page header shows it,
+// so moving between pages keeps the last known state instead of each page knowing its own.
+let connection = null;
+const connectionListeners = new Set();
+
+function reportConnection(next) {
+  connection = next;
+  connectionListeners.forEach((listener) => listener());
+}
+
+function subscribeToConnection(listener) {
+  connectionListeners.add(listener);
+  return () => connectionListeners.delete(listener);
+}
+
 function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, back = "/dashboard" }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
@@ -538,7 +556,11 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
     busy.current = true;
     // Leaving the page (or asking again) cancels the request, so nothing outlives its screen.
     const controller = new AbortController();
-    const fail = (kind) => setState((previous) => ({ kind, data: previous.data, checked: checkedTime() }));
+    const fail = (kind) => {
+      const checked = checkedTime();
+      if (kind === "disconnected") reportConnection({ online: false, checked });
+      setState((previous) => ({ kind, data: previous.data, checked }));
+    };
     setState((previous) => (previous.data === null ? { kind: "loading", data: null } : previous));
     (async () => {
       try {
@@ -564,7 +586,11 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
         }
         if (!current) return;
         if (data === null) fail("error");
-        else setState({ kind: "ready", data, checked: checkedTime() });
+        else {
+          const checked = checkedTime();
+          reportConnection({ online: true, checked });
+          setState({ kind: "ready", data, checked });
+        }
       } catch (failure) {
         if (current) fail("disconnected");
       } finally {
@@ -598,8 +624,9 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
   }
   return (
     <>
-      <div className="banner" role="alert">
-        {state.kind === "disconnected" ? <p>Disconnected. Last checked <Moment at={state.checked} /></p> : <p>The inbox could not be read just now.</p>}
+      <div className="banner error-banner" role="alert">
+        <Icon name="alert" size={18} />
+        {state.kind === "disconnected" ? <p>Disconnected. Last checked <Moment at={state.checked} /></p> : <p>This page could not be read just now.</p>}
         {state.data !== null ? <Badge kind="freshness-outdated" /> : null}
         <button type="button" onClick={() => setAttempt(attempt + 1)}>
           Try again
@@ -637,7 +664,7 @@ function CardStat({ icon, value, label }) {
   );
 }
 
-function ProjectCard({ project, updated, selected = false }) {
+function ProjectCard({ project, selected = false }) {
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
       <button type="button" onClick={() => navigate("/projects/" + encodeURIComponent(project.id) + "/features")}>
@@ -649,7 +676,7 @@ function ProjectCard({ project, updated, selected = false }) {
         <div className="card-stats">
           <CardStat icon="flag" value={project.features} label="Features" />
           <CardStat icon="play" value={project.active_runs} label="Active runs" />
-          <CardStat icon="clock" value={<Moment at={updated} />} label="Last updated" />
+          <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" />
         </div>
       ) : (
         <em>Unavailable</em>
@@ -688,7 +715,7 @@ function Dashboard({ projects }) {
       <h2 className="section-title">Projects</h2>
       <ul className="projects">
         {projects.map((project) => (
-          <ProjectCard key={project.id} project={project} updated={updated} selected={project.id === lastProject} />
+          <ProjectCard key={project.id} project={project} selected={project.id === lastProject} />
         ))}
       </ul>
     </>
@@ -703,40 +730,42 @@ function refreshButton(onRefresh) {
   ) : null;
 }
 
-// The right side of a page's first row (the Dashboard's and the Features pages'): whether the data
-// is reachable, and when it was read.
-function dashboardStatus(state) {
-  if (state.kind === "loading" || state.checked === undefined) return null;
-  const connected = state.kind === "ready";
-  const when = new Date(state.checked);
+// The right side of every page's first row: whether the server answered the last request, and when
+// it last did. Nothing is shown until the first answer (or failure) after signing in.
+function ConnectionStatus() {
+  const known = useSyncExternalStore(subscribeToConnection, () => connection);
+  if (known === null) return null;
+  const when = new Date(known.checked);
   return (
     <>
-      <p className={connected ? "connection" : "connection offline"}>
+      <p className={known.online ? "connection" : "connection offline"}>
         <span className="dot" aria-hidden="true" />
-        {connected ? "Connected (Tailscale)" : "Disconnected"}
+        {known.online ? "Connected" : "Disconnected"}
       </p>
-      <span className="last-updated">
-        Last updated: <time dateTime={state.checked}>{when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+      <span className="last-updated" title={when.toLocaleString()}>
+        Last updated: <time dateTime={known.checked}>{when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
       </span>
     </>
   );
 }
 
-function PageHeader({ title, subtitle, onRefresh, status = null, badge = null }) {
+function PageHeader({ title, subtitle, onRefresh, badge = null, back = null }) {
   return (
     <header className="page-header">
-      <div>
+      <div className={back === null ? undefined : "has-back"}>
+        {back !== null ? (
+          <button type="button" className="back-arrow" data-back="page" onClick={() => navigate(back.path)}>
+            <Icon name="arrowLeft" size={22} />
+            <span className="sr-only">{back.label}</span>
+          </button>
+        ) : null}
         {badge === null ? <h1>{title}</h1> : <div className="page-title"><h1>{title}</h1>{badge}</div>}
         <p className="subtitle">{subtitle}</p>
       </div>
-      {status !== null ? (
-        <div className="header-status">
-          {status}
-          {refreshButton(onRefresh)}
-        </div>
-      ) : (
-        refreshButton(onRefresh)
-      )}
+      <div className="header-status">
+        <ConnectionStatus />
+        {refreshButton(onRefresh)}
+      </div>
     </header>
   );
 }
@@ -955,7 +984,7 @@ function RunAction({ kind, label, question, path, token, onSignedOut, onDone, do
         </span>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
-      {note !== "" ? <span role="status" className="run-action-note">{note}</span> : null}
+      {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
     </span>
   );
 }
@@ -1227,7 +1256,7 @@ function AllFeatures({ token, projects, reloads, onSignedOut }) {
   }
   return (
     <>
-      {state.unread > 0 ? <p className="banner" role="alert">{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
+      {state.unread > 0 ? <p className="banner error-banner" role="alert"><Icon name="alert" size={18} />{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
       <FeatureList features={state.rows} showProject />
     </>
   );
@@ -1242,7 +1271,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
     <>
       <Loaded key={featuresPath} reloads={reloads} header={(state) => (
         <>
-          <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} status={dashboardStatus(state)} onRefresh={onRefresh} />
+          <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
@@ -1417,7 +1446,7 @@ function AllOrchestrations({ token, projects, reloads, onSignedOut, onRefresh, o
   }
   return (
     <>
-      {state.unread > 0 ? <p className="banner" role="alert">{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
+      {state.unread > 0 ? <p className="banner error-banner" role="alert"><Icon name="alert" size={18} />{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
       <OrchestrationList runs={rows} showProject />
     </>
   );
@@ -1427,7 +1456,7 @@ function AllOrchestrations({ token, projects, reloads, onSignedOut, onRefresh, o
 function AllOrchestrationsPage({ token, reloads, onRefresh, onSignedOut }) {
   const [rows, setRows] = useState(null);
   return (
-    <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+    <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
       <>
         <ProjectSelect projects={projects} projectId={null} section="orchestrations" />
         <AllOrchestrations token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
@@ -1547,7 +1576,7 @@ const STEP_STATES = { done: "Done", failed: "Failed", current: "In progress", op
 
 // The run's stages as one line of steps: each finished, failed, or still going, with how long it took.
 // A stage passed is done even without its own completion event, since the run moved on from it.
-function RunSteps({ events, rounds, running }) {
+function RunSteps({ events, rounds, running, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   return (
     <ol className="run-steps">
@@ -1562,6 +1591,13 @@ function RunSteps({ events, rounds, running }) {
             <span className="run-step-name">{name}</span>
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
+            {kind === "failed" ? (
+              <p className="run-step-failure">
+                <Icon name="alert" size={14} />
+                <span>{"Failed: " + step.events[step.events.length - 1].kind + " "}<Moment at={step.events[step.events.length - 1].occurred_at} /></span>
+                {onLogs ? <button type="button" className="link-button" data-step-logs onClick={onLogs}>See the logs</button> : null}
+              </p>
+            ) : null}
           </li>
         );
       })}
@@ -1587,7 +1623,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, startTab = "ti
   const panels = (all) => (
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
-        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} />}
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} onLogs={() => choose("logs")} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
         {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} />}
@@ -1783,7 +1819,7 @@ function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, r
   return (
     <div className="run-logs">
       <div className="run-logs-head">
-        <h3>{"Run " + runId + " · Logs"}</h3>
+        <h3>Logs</h3>
         <button type="button" role="switch" className="follow-switch" data-log-follow aria-checked={follow ? "true" : "false"} onClick={() => setFollow(!follow)}>
           <span>Follow</span>
           <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
@@ -1965,7 +2001,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       <>
         <Loaded key={runsPath} reloads={reloads} header={(state) => (
           <>
-            <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state.data?.rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />
+            <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state.data?.rows)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
         )} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
@@ -2003,7 +2039,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       <>
         <Loaded key={timelinePath} reloads={reloads} header={(state) => (
           <>
-            <PageHeader title="Run" subtitle={run} status={dashboardStatus(state)} onRefresh={onRefresh} />
+            <PageHeader title="Run" subtitle={run} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
         )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} />} onSignedOut={onSignedOut} />
@@ -2031,7 +2067,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/settings/audit") {
     return (
       <>
-        <PageHeader title="Audit" subtitle="Recent remote actions, read only" onRefresh={() => setReloads(reloads + 1)} />
+        <PageHeader title="Audit" subtitle="Recent remote actions, read only" back={{ path: "/settings", label: "Back to settings" }} onRefresh={() => setReloads(reloads + 1)} />
         <Loaded key={API_AUDIT} reloads={reloads} token={token} path={API_AUDIT} loading="Loading the audit…" parse={parseAudit} draw={(lines) => <AuditView lines={lines} />} onSignedOut={onSignedOut} />
       </>
     );
@@ -2081,7 +2117,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/dashboard" || hash === "/") {
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" status={dashboardStatus(state)} onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -2094,7 +2130,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
     const onRefresh = () => setReloads(reloads + 1);
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
             <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
@@ -2261,11 +2297,13 @@ function App() {
     return <main><TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} known={status !== null} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} /></main>;
   }
   const signedOut = () => {
+    reportConnection(null);
     setToken(null);
     setMessage(SIGN_IN_FAILED);
     refresh();
   };
   const signOut = () => {
+    reportConnection(null);
     setMessage("");
     setToken(null);
     if (session) signOutOfSession().then(refresh);

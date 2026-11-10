@@ -120,7 +120,7 @@ fn the_list_is_a_table_under_the_header_status_and_project_picker_narrowed_by_se
     let steps = json!([{"submit": TOKEN}, {"set": "select[data-run-state]", "value": "running"}, {"set": "select[data-run-state]", "value": "all"}, {"set": "select[data-run-stage]", "value": "implement"}, {"set": "select[data-run-stage]", "value": "all"}, {"set": "input[data-run-search]", "value": "older"}]);
     let Some(out) = run("/projects/alpha/orchestrations", json!([runs(), projects()]), steps) else { return };
     let first = shown(&out["frames"][1]);
-    assert!(first.iter().any(|t| t == "Connected (Tailscale)") && first.iter().any(|t| t.starts_with("Last updated")), "the status sits in the header row: {first:?}");
+    assert!(first.iter().any(|t| t == "Connected") && first.iter().any(|t| t.starts_with("Last updated")), "the status sits in the header row: {first:?}");
     assert!(first.iter().any(|t| t == "Project:") && first.iter().any(|t| t == "1 running"), "{first:?}");
     assert!(!first.iter().any(|t| t.starts_with("Last checked")), "no footer under the table: {first:?}");
     let rows = |frame: usize| -> Vec<String> { shown(&out["frames"][frame]).into_iter().filter(|t| t.ends_with("feature")).collect() };

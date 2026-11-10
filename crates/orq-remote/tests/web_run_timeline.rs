@@ -91,5 +91,5 @@ fn the_run_card_has_a_back_arrow_timeline_and_logs_tabs_and_each_step_shows_how_
     let t = texts(&out["frames"][1]);
     assert!(t.iter().any(|x| x == "Timeline") && t.iter().any(|x| x == "Logs"), "{t:?}");
     assert!(t.iter().any(|x| x == "2m 30s"), "the step's duration: {t:?}");
-    assert!(t.iter().any(|x| x == "Connected (Tailscale)") && t.iter().any(|x| x == "Project:"), "{t:?}");
+    assert!(t.iter().any(|x| x == "Connected") && t.iter().any(|x| x == "Project:"), "{t:?}");
 }

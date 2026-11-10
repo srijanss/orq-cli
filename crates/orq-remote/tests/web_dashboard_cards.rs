@@ -33,7 +33,7 @@ fn a_card_shows_each_count_as_a_value_above_its_short_label() {
     let texts = texts(&out["frames"][1]);
     let start = texts.iter().position(|t| t == "alpha").unwrap();
     assert_eq!(texts[start + 1..start + 5], ["3", "Features", "2", "Active runs"], "{texts:?}");
-    assert_eq!(texts[start + 6], "Last updated", "the time sits above its label: {texts:?}");
+    assert_eq!(texts[start + 6], "Reviews waiting", "the reviews waiting sit above their label: {texts:?}");
 }
 
 #[test]

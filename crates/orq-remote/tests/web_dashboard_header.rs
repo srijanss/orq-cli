@@ -30,7 +30,7 @@ fn title_subtext_connection_last_updated_and_refresh_share_one_header_row() {
         assert_eq!(m[k], 1, "{k}: {out}");
     }
     let texts: Vec<&str> = settled["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
-    assert!(texts.contains(&"Connected (Tailscale)"), "{texts:?}");
+    assert!(texts.contains(&"Connected"), "{texts:?}");
     assert!(texts.iter().any(|t| t.starts_with("Last updated:")), "{texts:?}");
 }
 

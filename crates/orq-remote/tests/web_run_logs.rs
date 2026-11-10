@@ -61,7 +61,7 @@ fn the_logs_tab_lists_the_files_with_their_sizes_and_opens_the_first_without_lea
     assert_eq!(out["requests"][3]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     assert_eq!(out["requests"][4]["url"], "/api/projects/alpha/runs/run-1/logs/implement.log", "{out}");
     let t = texts(&out["frames"][2]);
-    for want in ["implement.log · 2048 bytes", "<b>x<b>.log · 5 bytes", "Run run-1 · Logs", "Follow", "10:00:01", "Download"] {
+    for want in ["implement.log · 2048 bytes", "<b>x<b>.log · 5 bytes", "Logs", "Follow", "10:00:01", "Download"] {
         assert!(t.iter().any(|x| x == want), "{want} missing: {t:?}");
     }
 
@@ -112,7 +112,7 @@ fn an_old_log_address_opens_the_run_page_on_its_logs_tab() {
     let Some(out) = run(&format!("{RUN}/logs/implement.log/after/2"), json!([timeline(), projects(), stream(), list, page]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(urls(&out)[4], "/api/projects/alpha/runs/run-1/logs/implement.log/after/2", "{out}");
     let t = texts(&out["frames"][1]);
-    assert!(t.iter().any(|x| x == "picked") && t.iter().any(|x| x == "Run run-1 · Logs"), "{t:?}");
+    assert!(t.iter().any(|x| x == "picked") && t.iter().any(|x| x == "Logs"), "{t:?}");
 }
 
 #[test]

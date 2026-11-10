@@ -42,7 +42,7 @@ fn the_dashboard_asks_for_the_projects_with_the_held_token_and_shows_one_card_ea
     assert_eq!(frame["settled"]["path"], "/dashboard");
     assert_eq!(frame["settled"]["cards"], 2, "{out}");
     let text = shown(frame);
-    for expected in ["Features", "Active runs", "Last updated"] {
+    for expected in ["Features", "Active runs", "Reviews waiting"] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
     assert!(!text.contains("Waiting |") && !text.contains("Failed (24h)"), "a card shows only three figures: {text}");

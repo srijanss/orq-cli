@@ -23,5 +23,7 @@ fn the_refresh_icon_stays_top_right_and_the_status_lines_share_one_row_on_a_phon
     let connection = rule(phone, ".page-header .connection {");
     assert!(connection.contains("grid-column: 1") && connection.contains("grid-row: 2"), "{connection}");
     let updated = rule(phone, ".page-header .last-updated {");
-    assert!(updated.contains("grid-column: 2") && updated.contains("grid-row: 2"), "{updated}");
+    // It spans the row and sits at its right end, so its width never widens the refresh column
+    // and a long title cannot push the page wider than the phone.
+    assert!(updated.contains("grid-column: 1 / -1") && updated.contains("grid-row: 2") && updated.contains("justify-self: end"), "{updated}");
 }

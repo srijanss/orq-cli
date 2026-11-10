@@ -48,9 +48,9 @@ fn the_audit_page_asks_for_the_audit_once_and_lists_when_who_what_and_the_outcom
     for text in ["Audit", "web", "run.start", "app", "run-9", "allowed", "refused", "r-1 is failed", "<b>app</b>", "Unreadable entry"] {
         assert!(t.iter().any(|x| x.contains(text)), "{text} missing: {t:?}");
     }
-    let times: Vec<&str> = out["frames"][1]["settled"]["times"].as_array().unwrap().iter().filter_map(|x| x["datetime"].as_str()).collect();
+    let times: Vec<&str> = out["frames"][1]["settled"]["times"].as_array().unwrap().iter().filter(|x| x["label"] != "Last updated:").filter_map(|x| x["datetime"].as_str()).collect();
     assert_eq!(times[..2], ["2026-11-03T10:00:00Z", "2026-11-02T06:13:20Z"]);
-    assert_eq!(out["frames"][1]["settled"]["buttons"], json!([]), "{out}");
+    assert_eq!(out["frames"][1]["settled"]["buttons"], json!(["Back to settings"]), "only the way back, no actions: {out}");
     assert_eq!(out["frames"][1]["settled"]["inputs"], json!([]), "{out}");
 }
 

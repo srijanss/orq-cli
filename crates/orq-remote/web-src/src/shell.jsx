@@ -22,6 +22,11 @@ export function navigationEntries(projectId) {
   return entries;
 }
 
+// A section stays marked on the pages under it, like a run under Orchestrations or the audit under Settings.
+function within(path, href) {
+  return path === href || path.startsWith(href + "/");
+}
+
 const SECTIONS = { features: "Features", orchestrations: "Orchestrations", reviews: "Reviews" };
 
 // What assistive technology hears after moving to `path`; "" for a log page.
@@ -97,7 +102,7 @@ function PhoneShell({ projectId = null, onSignOut = null, children }) {
       <main className="content">{children}</main>
       <nav className="tabbar" aria-label="Sections">
         {entries.map((entry) => (
-          <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
+          <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
             <Icon name={entry.icon} size={28} />
             <span className="tab-label">{entry.label}</span>
           </a>
@@ -160,7 +165,7 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
           {entries.map((entry) => (
             <Fragment key={entry.href}>
               {entry.href === "/settings" ? <div className="sidebar-divider" role="separator" /> : null}
-              <a href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => goTo(entry, event)}>
+              <a href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} title={entry.label} onClick={(event) => goTo(entry, event)}>
                 <Icon name={entry.icon} />
                 <span className="label">{entry.label}</span>
               </a>
