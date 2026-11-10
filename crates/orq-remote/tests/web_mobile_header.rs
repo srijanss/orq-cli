@@ -13,7 +13,7 @@ fn rule<'a>(block: &'a str, selector: &str) -> &'a str {
 #[test]
 fn the_refresh_icon_stays_top_right_and_the_status_lines_share_one_row_on_a_phone() {
     let css = css();
-    let start = css.find("@media (max-width: 700px) {").unwrap();
+    let start = css.rfind("@media (max-width: 700px) {").unwrap();
     let phone = &css[start..start + css[start..].find("\n}\n").unwrap()];
     let header = rule(phone, ".page-header {");
     assert!(header.contains("display: grid") && header.contains("grid-template-columns: 1fr auto"), "{header}");
