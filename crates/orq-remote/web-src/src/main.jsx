@@ -371,7 +371,7 @@ function checkedTime() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null }) {
+function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, header = null, footer = true }) {
   const [state, setState] = useState({ kind: "loading", data: null });
   const [attempt, setAttempt] = useState(0);
   // True while a request of this page is waiting, so a refresh never starts on top of it.
@@ -449,9 +449,11 @@ function Loaded({ token, path, loading, parse, draw, onSignedOut, reloads = 0, h
     return (
       <>
         <Fragment key="data">{draw(state.data)}</Fragment>
-        <p className="last-checked" data-last-checked>
-          Last checked <Moment at={state.checked} />
-        </p>
+        {footer ? (
+          <p className="last-checked" data-last-checked>
+            Last checked <Moment at={state.checked} />
+          </p>
+        ) : null}
       </>
     );
   }
@@ -562,7 +564,8 @@ function refreshButton(onRefresh) {
   ) : null;
 }
 
-// The Dashboard's right side of the first row: whether the inbox is reachable, and when it was read.
+// The right side of a page's first row (the Dashboard's and the Features pages'): whether the data
+// is reachable, and when it was read.
 function dashboardStatus(state) {
   if (state.kind === "loading" || state.checked === undefined) return null;
   const connected = state.kind === "ready";
@@ -1075,9 +1078,12 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null);
   return (
     <>
-      <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} onRefresh={onRefresh} />
-      <ProjectSelect projects={projects} projectId={projectId} />
-      <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
+      <Loaded key={featuresPath} reloads={reloads} footer={false} header={(state) => (
+        <>
+          <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} status={dashboardStatus(state)} onRefresh={onRefresh} />
+          <ProjectSelect projects={projects} projectId={projectId} />
+        </>
+      )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
         if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} />;
         const feature = data.rows.find((entry) => entry.name === name);
         return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
@@ -1673,8 +1679,8 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     const onRefresh = () => setReloads(reloads + 1);
     return (
       <>
-        <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />
-        <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
+        {part === "features" ? null : <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />}
+        <Loaded key={API_PROJECTS} reloads={reloads} footer={part !== "features"} header={part === "features" ? (state) => <PageHeader title={title} subtitle={subtitle} status={dashboardStatus(state)} onRefresh={onRefresh} /> : null} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
             <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />

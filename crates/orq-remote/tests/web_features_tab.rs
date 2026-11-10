@@ -300,3 +300,30 @@ fn the_arrow_on_a_feature_returns_to_the_projects_features_and_there_is_no_all_f
     assert!(!shown(&out["frames"][1]).iter().any(|t| t == "All features"), "{out}");
     assert_eq!(out["frames"][2]["settled"]["path"], "/projects/alpha/features", "{out}");
 }
+
+#[test]
+fn the_last_updated_time_sits_in_the_header_row_like_the_dashboard_and_not_under_the_list() {
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let sel = [".page-header > .header-status > .connection", ".page-header > .header-status > .last-updated time", ".page-header > .header-status > [data-refresh]", "[data-last-checked]", "[data-project-select]"];
+    for url in ["/projects/alpha/features", "/projects/alpha/features/next-one", "/features"] {
+        let responses = match url {
+            "/features" => json!([projects(), ledger_of("a"), ledger_of("b")]),
+            "/projects/alpha/features" => json!([ledger(), projects()]),
+            _ => json!([ledger(), no_runs(), projects()]),
+        };
+        let scenario = json!({"url": url, "responses": responses, "steps": [{"submit": TOKEN}], "selectors": sel});
+        let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let frame = &out["frames"][1];
+        for k in &sel[..3] {
+            assert_eq!(count(frame, k), 1, "{url} {k}: {out}");
+        }
+        assert_eq!(count(frame, "[data-last-checked]"), 0, "{url}: the time moved up, not copied: {out}");
+        assert_eq!(count(frame, "[data-project-select]"), 1, "{url}: the project picker stays: {out}");
+        assert!(shown(frame).iter().any(|t| t.starts_with("Last updated:")), "{url}: {out}");
+    }
+}
