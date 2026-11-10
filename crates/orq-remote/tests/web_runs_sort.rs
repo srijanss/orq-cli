@@ -62,3 +62,12 @@ fn the_default_order_is_the_servers_and_sorting_by_state_puts_running_first_then
     assert_eq!(order(&out["frames"][2]), ["feat-b", "feat-d", "feat-c", "feat-a", "feat-e"]);
     assert_eq!(order(&out["frames"][3]), ["feat-a", "feat-b", "feat-c", "feat-d", "feat-e"]);
 }
+
+#[test]
+fn the_state_filter_offers_every_run_state_even_when_no_run_is_in_it() {
+    let Some(out) = run(json!([{"status": 200, "json": {"runs": [row("a", "running")]}}, projects()]), json!([{"submit": TOKEN}])) else { return };
+    let t = texts(&out["frames"][1]);
+    for label in ["State: All", "Running", "Pause requested", "Paused", "Needs review", "Blocked", "Failed", "Completed", "Merged"] {
+        assert!(t.iter().any(|t| t == label), "{label} missing: {t:?}");
+    }
+}

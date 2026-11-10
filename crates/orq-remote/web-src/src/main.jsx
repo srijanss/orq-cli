@@ -1163,7 +1163,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   const projectOf = (run) => run.projectId ?? projectId;
   const controlOf = (run) => (run.control === undefined ? control : run.control);
   const known = (run) => Object.hasOwn(RUN_STATES, run.state);
-  const states = STATE_ORDER.filter((name) => runs.some((run) => run.state === name));
+  const states = STATE_ORDER;
   const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
   const needle = query.trim().toLowerCase();
   const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : run.state === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
