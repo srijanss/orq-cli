@@ -333,9 +333,22 @@ select { background: var(--surface); color: var(--text); border: 1px solid var(-
 
 .feature-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
 .feature-filters input { flex: 1 1 12rem; }
+.project-select { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-weight: 600; }
+.project-select select { flex: 1; }
+.feature-list { list-style: none; margin: 0; padding: 0; }
+.feature-link { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; color: inherit; text-decoration: none; }
+.feature-main { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.feature-description, .feature-meta { color: var(--text-muted); font-size: 0.875rem; }
+.feature-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+.feature-state { flex: none; padding: 0.125rem 0.75rem; border-radius: 999px; font-size: 0.875rem; font-weight: 600; color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 18%, transparent); }
+.feature-state.state-completed { color: var(--status-completed); background: var(--status-completed-bg); }
+.feature-state.state-pending, .feature-state.state-in_progress { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.feature-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.feature-detail-head h2 { margin: 0; overflow-wrap: anywhere; }
+.back-link { display: inline-block; margin-bottom: 0.75rem; }
+.muted { color: var(--text-muted); }
 .dependencies li { margin: 0; }
 .missing-dependency em { color: var(--stale); font-style: normal; font-weight: 600; }
-.feature:focus { outline: 2px solid var(--accent); }
 
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {

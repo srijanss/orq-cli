@@ -499,7 +499,7 @@ function CardStat({ icon, value, label }) {
 function ProjectCard({ project, updated, selected = false }) {
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
-      <button type="button" onClick={() => navigate("/projects/" + project.id)}>
+      <button type="button" onClick={() => navigate("/projects/" + encodeURIComponent(project.id) + "/features")}>
         <Icon name="folder" />
         {project.name}
         <Icon name="chevronRight" />
@@ -723,14 +723,15 @@ function parseFeatures(data) {
   return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true } : null;
 }
 
-// A feature's dependencies: a link for each one in this ledger, a marker for one that is not.
-function Dependencies({ names, known, onOpen, listPath }) {
+// A feature's dependencies: a link to the feature's own page for each one in this ledger, a marker
+// for one that is not.
+function Dependencies({ names, known, hrefFor }) {
   return (
     <ul className="dependencies">
       {names.map((name) => (
         <li key={name}>
           {known.has(name) ? (
-            <a href={listPath} data-dependency={name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); onOpen(name); } }}>{name}</a>
+            <a href={hrefFor(name)} data-dependency={name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(hrefFor(name)); } }}>{name}</a>
           ) : (
             <span className="missing-dependency">{name}<em>{" — Missing dependency"}</em></span>
           )}
@@ -807,72 +808,190 @@ function RunAction({ kind, label, question, path, token, onSignedOut, onDone, do
   );
 }
 
-// Features grouped by status in the order work moves through, a status the page does not know last.
-// Dependencies are folded until asked for; a link to one opens that feature, clearing any filter
-// that would hide it.
-function FeatureList({ features, listPath, control }) {
-  const [query, setQuery] = useState("");
-  const [only, setOnly] = useState("all");
-  const [open, setOpen] = useState(() => new Set());
-  const [reveal, setReveal] = useState(null);
+function featureHref(projectId, name) {
+  return "/projects/" + encodeURIComponent(projectId) + "/features/" + encodeURIComponent(name);
+}
+
+function whenOf(text) {
+  const at = typeof text === "string" ? Date.parse(text) : NaN;
+  return Number.isNaN(at) ? 0 : at;
+}
+
+// What the project's runs say about a feature: the stage of its latest run, and when it last moved
+// (the latest run activity or the ledger entry, whichever is newer).
+function featureFacts(feature, runs) {
+  const mine = runs.filter((run) => run.feature === feature.name).sort((a, b) => whenOf(b.updated_at ?? b.started_at) - whenOf(a.updated_at ?? a.started_at));
+  const latest = mine.length > 0 ? mine[0] : null;
+  const times = [feature.recorded_at ?? null, latest === null ? null : latest.updated_at ?? latest.started_at].filter((time) => whenOf(time) > 0);
+  const updated = times.length === 0 ? null : times.reduce((best, time) => (whenOf(time) > whenOf(best) ? time : best));
+  return { stage: latest === null || !latest.stage ? null : latest.stage, updated, runs: mine };
+}
+
+const NO_RUN = "(no run)";
+
+// The project's runs give each feature a stage. Reading them is a courtesy: when they cannot be
+// read the features still show, just without a stage.
+function useFeatureRuns(token, projectId, reloads) {
+  const [runs, setRuns] = useState([]);
   useEffect(() => {
-    if (reveal === null) {
-      return;
-    }
-    const target = document.getElementById("feature-" + reveal);
-    if (target !== null) {
-      if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "nearest" });
-      target.focus();
-    }
-    setReveal(null);
-  }, [reveal]);
+    let current = true;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get("/api/projects/" + encodeURIComponent(projectId) + "/runs", token, controller.signal);
+        if (!current || !response.ok) return;
+        const parsed = parseOrchestrations(await response.json());
+        if (current) setRuns(parsed === null ? [] : parsed.rows);
+      } catch (unreadable) {
+        // no stages, nothing more
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [token, projectId, reloads]);
+  return runs;
+}
+
+// The project chooser at the top of the page; choosing one opens that project's features.
+function ProjectSelect({ projects, projectId }) {
+  if (projects === null || projects.length === 0) return null;
+  return (
+    <label className="project-select">
+      <span>Project</span>
+      <select data-project-select aria-label="Project" value={projectId} onChange={(event) => navigate("/projects/" + encodeURIComponent(event.target.value) + "/features")}>
+        {projects.some((project) => project.id === projectId) ? null : <option value={projectId}>{projectId}</option>}
+        {projects.map((project) => (
+          <option key={project.id} value={project.id}>{project.name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function FeatureState({ status }) {
+  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}>{status}</span>;
+}
+
+// Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
+// the newest activity comes first.
+function FeatureList({ features, runs, projectId }) {
+  const [query, setQuery] = useState("");
+  const [state, setState] = useState("all");
+  const [stage, setStage] = useState("all");
+  const [sort, setSort] = useState("updated");
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
-  const known = new Set(features.map((feature) => feature.name));
-  const statuses = [...FEATURE_GROUPS.filter((status) => features.some((feature) => feature.status === status)), ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
+  const rows = features.map((feature) => ({ feature, facts: featureFacts(feature, runs) }));
+  const states = [...FEATURE_GROUPS.filter((status) => features.some((feature) => feature.status === status)), ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
+  const stages = [...new Set(rows.map((row) => row.facts.stage).filter((name) => name !== null))];
   const needle = query.trim().toLowerCase();
-  const shown = features.filter((feature) => (only === "all" || feature.status === only) && feature.name.toLowerCase().includes(needle));
-  const toggle = (name) => setOpen((was) => { const next = new Set(was); if (next.has(name)) next.delete(name); else next.add(name); return next; });
-  const openDependency = (name) => {
-    const target = features.find((feature) => feature.name === name);
-    if (target !== undefined && !target.name.toLowerCase().includes(needle)) setQuery("");
-    if (target !== undefined && only !== "all" && target.status !== only) setOnly("all");
-    setOpen((was) => new Set(was).add(name));
-    setReveal(name);
-  };
+  const shown = rows
+    .filter(({ feature, facts }) => (state === "all" || feature.status === state) && (stage === "all" || (stage === NO_RUN ? facts.stage === null : facts.stage === stage)) && feature.name.toLowerCase().includes(needle))
+    .sort((a, b) => (sort === "name" ? a.feature.name.localeCompare(b.feature.name) : whenOf(b.facts.updated) - whenOf(a.facts.updated)));
   return (
     <>
       <div className="feature-filters">
         <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
-        <select data-feature-status aria-label="Status" value={only} onChange={(event) => setOnly(event.target.value)}>
-          <option value="all">All statuses</option>
-          {statuses.map((status) => (
-            <option key={status} value={status}>{status}</option>
+        <select data-feature-status aria-label="State" value={state} onChange={(event) => setState(event.target.value)}>
+          <option value="all">State: All</option>
+          {states.map((name) => (
+            <option key={name} value={name}>{name}</option>
           ))}
+        </select>
+        <select data-feature-stage aria-label="Stage" value={stage} onChange={(event) => setStage(event.target.value)}>
+          <option value="all">Stage: All</option>
+          {stages.map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+          <option value={NO_RUN}>No run yet</option>
+        </select>
+        <select data-feature-sort aria-label="Sort" value={sort} onChange={(event) => setSort(event.target.value)}>
+          <option value="updated">Sort: Updated</option>
+          <option value="name">Sort: Name</option>
         </select>
       </div>
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
-      {statuses.filter((status) => shown.some((feature) => feature.status === status)).map((status) => (
-        <section key={status} className="feature-group">
-          <h2 className="feature-status">{status}</h2>
+      <ul className="feature-list">
+        {shown.map(({ feature, facts }) => (
+          <li key={feature.name} className="feature card">
+            <a className="feature-link" href={featureHref(projectId, feature.name)} data-feature-open={feature.name} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, feature.name)); } }}>
+              <span className="feature-main">
+                <strong>{feature.name}</strong>
+                {feature.description ? <span className="feature-description">{feature.description}</span> : null}
+                <span className="feature-meta">
+                  <span>{"Stage: " + (facts.stage === null ? "—" : facts.stage)}</span>
+                  {facts.updated !== null ? <span>Updated <Moment at={facts.updated} /></span> : null}
+                </span>
+              </span>
+              <FeatureState status={feature.status} />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+// One feature: its status, description, dependencies (each a link to that feature), the runs made
+// for it, and the action to start one when it is pending.
+function FeatureDetail({ feature, features, runs, projectId, control }) {
+  const known = new Set(features.map((entry) => entry.name));
+  const facts = featureFacts(feature, runs);
+  const listPath = "/projects/" + encodeURIComponent(projectId) + "/features";
+  return (
+    <>
+      <a className="back-link" href={listPath} data-back="features" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(listPath); } }}>All features</a>
+      <section className="card feature-detail">
+        <div className="feature-detail-head">
+          <h2>{feature.name}</h2>
+          <FeatureState status={feature.status} />
+        </div>
+        {feature.description ? <p>{feature.description}</p> : <p className="muted">No description.</p>}
+        <p>{"Stage: " + (facts.stage === null ? "—" : facts.stage)}</p>
+        <Stamp label="Updated" at={facts.updated} />
+        <Stamp label="Recorded" at={feature.recorded_at ?? null} />
+        {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+      </section>
+      <section className="card">
+        <h3>Dependencies</h3>
+        {feature.depends_on.length === 0 ? <p>No dependencies.</p> : <Dependencies names={feature.depends_on} known={known} hrefFor={(name) => featureHref(projectId, name)} />}
+      </section>
+      <section className="card">
+        <h3>Runs</h3>
+        {facts.runs.length === 0 ? <p>No runs for this feature yet.</p> : (
           <ul>
-            {shown
-              .filter((feature) => feature.status === status)
-              .map((feature) => (
-                <li key={feature.name} id={"feature-" + feature.name} tabIndex={-1} className="feature card">
-                  <strong>{feature.name}</strong>
-                  {feature.description ? <p>{feature.description}</p> : null}
-                  {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
-                  {feature.depends_on.length > 0 ? (
-                    <button type="button" aria-expanded={open.has(feature.name)} onClick={() => toggle(feature.name)}>{"Dependencies (" + feature.depends_on.length + ")"}</button>
-                  ) : null}
-                  {feature.depends_on.length > 0 && open.has(feature.name) ? <Dependencies names={feature.depends_on} known={known} onOpen={openDependency} listPath={listPath} /> : null}
-                </li>
-              ))}
+            {facts.runs.map((run) => (
+              <li key={run.run_id} className="run">
+                <span className="run-id">{run.run_id}</span>
+                <span className="run-state">{Object.hasOwn(RUN_STATES, run.state) ? RUN_STATES[run.state] : "Unknown"}</span>
+                {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
+                {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
+              </li>
+            ))}
           </ul>
-        </section>
-      ))}
+        )}
+      </section>
+    </>
+  );
+}
+
+// The Features pages of one project: the list, or one feature's details when its name is given.
+function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
+  const runs = useFeatureRuns(token, projectId, reloads);
+  const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
+  const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null);
+  return (
+    <>
+      <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} onRefresh={onRefresh} />
+      <ProjectSelect projects={projects} projectId={projectId} />
+      <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
+        if (name === null) return <FeatureList features={data.rows} runs={runs} projectId={projectId} />;
+        const feature = data.rows.find((entry) => entry.name === name);
+        return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
+      }} />
     </>
   );
 }
@@ -1318,15 +1437,16 @@ function LogPage({ page, logsPath, filePath, filters: { text, setText, level, se
 
 // What a project's address shows. Only the Reviews tab is built: its list and reports come from
 // the project's own endpoints and stay under the project's address.
-function ProjectPage({ token, onSignedOut, projectId, path: address, reloads, onRefresh }) {
-  if (/^\/projects\/[^/]+\/features$/.test(address)) {
-    const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
-    return (
-      <>
-        <PageHeader title="Features" subtitle="The project's feature ledger" onRefresh={onRefresh} />
-        <Loaded key={featuresPath} reloads={reloads} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} draw={(data) => <FeatureList features={data.rows} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} listPath={"/projects/" + encodeURIComponent(projectId) + "/features"} />} onSignedOut={onSignedOut} />
-      </>
-    );
+function ProjectPage({ token, onSignedOut, projectId, projects, path: address, reloads, onRefresh }) {
+  const features = /^\/projects\/[^/]+(?:\/features(?:\/([^/]+))?)?$/.exec(address);
+  if (features !== null) {
+    let name = null;
+    try {
+      name = features[1] === undefined ? null : decodeURIComponent(features[1]);
+    } catch (malformed) {
+      return <NotFound />;
+    }
+    return <FeaturesPage token={token} onSignedOut={onSignedOut} projectId={projectId} projects={projects} name={name} reloads={reloads} onRefresh={onRefresh} />;
   }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {
     const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";
@@ -1424,7 +1544,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     return <NotFound />;
   }
   if (projectId !== null) {
-    return <ProjectPage token={token} onSignedOut={onSignedOut} projectId={projectId} path={hash} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} />;
+    return <ProjectPage token={token} onSignedOut={onSignedOut} projectId={projectId} projects={projects} path={hash} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} />;
   }
   if (UNBUILT_DESTINATIONS.some((prefix) => hash === prefix || hash.startsWith(prefix + "/"))) {
     return <p>This page is not available yet.</p>;
@@ -1473,7 +1593,7 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
                 <section key={project.id} className="project-section">
                   <h2>{project.name}</h2>
                   <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
-                    if (part === "features") return <FeatureList features={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} listPath={"/projects/" + id + "/features"} />;
+                    if (part === "features") return <FeatureList features={data.rows} runs={[]} projectId={project.id} />;
                     if (part === "runs") return <OrchestrationList runs={data.rows} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
                     return <RunList runs={data} detailPrefix={"/projects/" + id + "/reviews/"} selected={null} />;
                   }} />

@@ -48,12 +48,13 @@ fn frame_texts(frame: &Value) -> Vec<String> {
 
 const SELECTORS: [&str; 5] = ["[data-start]", "[data-pause]", "[data-resume]", "[data-confirm]", "[data-cancel]"];
 
+// Start lives on the feature's own page; the ledger, the runs (for the stage) and the projects are read in that order.
 fn features_page(actions: Option<bool>, extra_responses: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
-    let mut responses = vec![ledger(actions), projects()];
+    let mut responses = vec![ledger(actions), runs(None), projects()];
     responses.extend(extra_responses);
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    run(json!({"url": "/projects/alpha/features", "responses": responses, "steps": all, "selectors": SELECTORS}))
+    run(json!({"url": "/projects/alpha/features/next-one", "responses": responses, "steps": all, "selectors": SELECTORS}))
 }
 
 fn runs_page(actions: Option<bool>, extra_responses: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
@@ -86,6 +87,8 @@ fn nothing_can_be_started_paused_or_resumed_unless_the_server_says_actions_are_o
 fn with_actions_on_only_a_pending_feature_can_be_started_and_only_running_or_paused_runs_get_a_control() {
     let Some(out) = features_page(Some(true), vec![], vec![]) else { return };
     assert_eq!(count(&out["frames"][1], "[data-start]"), 1, "{out}");
+    let Some(out) = run(json!({"url": "/projects/alpha/features/sketch", "responses": [ledger(Some(true)), runs(None), projects()], "steps": [{"submit": TOKEN}], "selectors": SELECTORS})) else { return };
+    assert_eq!(count(&out["frames"][1], "[data-start]"), 0, "a draft feature cannot be started: {out}");
     let Some(out) = runs_page(Some(true), vec![], vec![]) else { return };
     assert_eq!(count(&out["frames"][1], "[data-pause]"), 1, "{out}");
     assert_eq!(count(&out["frames"][1], "[data-resume]"), 1, "{out}");
@@ -155,7 +158,7 @@ fn a_passkey_session_posts_with_its_csrf_token_and_never_a_bearer_token() {
         return;
     }
     let reply = json!({"status": 202, "json": {"run": "run-9"}});
-    let scenario = json!({"url": "/projects/alpha/features", "responses": [ledger(Some(true)), projects(), reply], "auth": {"passkeys": true, "signed_in": true, "csrf": "c-1"}, "steps": [{"click": "[data-start]"}, {"click": "[data-confirm]"}]});
+    let scenario = json!({"url": "/projects/alpha/features/next-one", "responses": [ledger(Some(true)), runs(None), projects(), reply], "auth": {"passkeys": true, "signed_in": true, "csrf": "c-1"}, "steps": [{"click": "[data-start]"}, {"click": "[data-confirm]"}]});
     let Some(out) = run(scenario) else { return };
     let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap_or_else(|| panic!("{out}"));
     assert_eq!(post["headers"]["X-CSRF-Token"], "c-1", "{post}");
@@ -165,7 +168,7 @@ fn a_passkey_session_posts_with_its_csrf_token_and_never_a_bearer_token() {
 #[test]
 fn a_successful_action_refreshes_the_list_and_does_not_offer_itself_again() {
     let ok = json!({"status": 202, "json": {"run": "run-9"}});
-    let Some(out) = features_page(Some(true), vec![ok, ledger(Some(true))], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let Some(out) = features_page(Some(true), vec![ok, ledger(Some(true)), runs(None)], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
     let last = out["frames"].as_array().unwrap().last().unwrap();
     assert_eq!(count(last, "[data-start]"), 0, "the same start is not offered again: {last}");
     assert_eq!(count(last, "[data-confirm]"), 0);
@@ -187,7 +190,7 @@ fn a_successful_action_refreshes_the_list_and_does_not_offer_itself_again() {
 #[test]
 fn a_bearer_action_goes_straight_out_without_asking_for_the_session_status() {
     let ok = json!({"status": 202, "json": {"run": "run-9"}});
-    let asked = |steps: Vec<Value>| features_page(Some(true), vec![ok.clone(), ledger(Some(true))], steps).map(|out| out["authRequests"].as_array().unwrap().len());
+    let asked = |steps: Vec<Value>| features_page(Some(true), vec![ok.clone(), ledger(Some(true)), runs(None)], steps).map(|out| out["authRequests"].as_array().unwrap().len());
     let Some(before) = asked(vec![json!({"click": "[data-start]"})]) else { return };
     let after = asked(vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]).unwrap();
     assert_eq!(after, before, "a confirmed bearer action adds no /auth request");
