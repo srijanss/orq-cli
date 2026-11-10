@@ -1,13 +1,13 @@
-// The page frame: a sidebar with the Dashboard, the chosen project's sections and Settings.
-// The place lives in the address path, so Back and Forward move it. On a phone the sidebar is a
-// drawer that behaves like a dialog (Escape, scrim or close button close it, focus is trapped and
-// returned, page scroll is locked); on a desktop the same sidebar collapses to an icon rail.
+// The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
+// Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
+// brand, sign out) and a fixed bottom tab bar hold the same destinations. The place lives in the
+// address path, so Back and Forward move it.
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
 
-// The same breakpoint the stylesheet uses for the drawer.
+// The same breakpoint the stylesheet uses for the phone layout.
 const PHONE_QUERY = "(max-width: 700px)";
 
 export function navigationEntries(projectId) {
@@ -44,16 +44,73 @@ function describePage(path, entries) {
   return entry !== undefined ? entry.label + " page" : "";
 }
 
-export function Shell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, children }) {
-  const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-  const menuButton = useRef(null);
-  const panel = useRef(null);
-  const closeButton = useRef(null);
-  const wasOpen = useRef(false);
+function subscribeToPhone(notify) {
+  if (typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(PHONE_QUERY);
+  query.addEventListener("change", notify);
+  return () => query.removeEventListener("change", notify);
+}
 
+function isPhone() {
+  return typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches;
+}
+
+// The place, its destinations and the sentence assistive technology hears after a move. The region
+// starts empty and its text is set after each move, so the change is read.
+function usePlace(projectId) {
+  const path = useSyncExternalStore(subscribeToLocation, currentPath, () => "");
   const entries = navigationEntries(projectId);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => setAnnouncement(describePage(path, entries)), [path, projectId]);
+  return { path, entries, announcement };
+}
+
+function goTo(entry, event) {
+  if (isPlainLeftClick(event)) {
+    event.preventDefault();
+    navigate(entry.href);
+  }
+}
+
+function Announcer({ text }) {
+  return <div className="sr-only" role="status" aria-live="polite" data-announcer>{text}</div>;
+}
+
+export function Shell(props) {
+  const phone = useSyncExternalStore(subscribeToPhone, isPhone, () => false);
+  return phone ? <PhoneShell {...props} /> : <DesktopShell {...props} />;
+}
+
+function PhoneShell({ projectId = null, onSignOut = null, children }) {
+  const { path, entries, announcement } = usePlace(projectId);
+  return (
+    <div className="shell phone" data-shell>
+      <header className="topbar">
+        <ThemeToggle />
+        <span className="brand"><Icon name="logo" size={24} />Orq</span>
+        {onSignOut ? (
+          <button type="button" className="sign-out" data-sign-out aria-label="Sign out" title="Sign out" onClick={onSignOut}>
+            <Icon name="logout" />
+          </button>
+        ) : <span />}
+      </header>
+      <main className="content">{children}</main>
+      <nav className="tabbar" aria-label="Sections">
+        {entries.map((entry) => (
+          <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
+            <Icon name={entry.icon} />
+            <span className="tab-label">{entry.label}</span>
+          </a>
+        ))}
+      </nav>
+      <Announcer text={announcement} />
+    </div>
+  );
+}
+
+function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, children }) {
+  const { path, entries, announcement } = usePlace(projectId);
+  const [collapsed, setCollapsed] = useState(false);
 
   const [listOpen, setListOpen] = useState(false);
   const switchBox = useRef(null);
@@ -68,7 +125,6 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
     if (chosen === "") navigate(SECTIONS[section] !== undefined ? "/" + section : "/dashboard");
     else navigate("/projects/" + encodeURIComponent(chosen) + "/" + (projectId !== null ? section || "reviews" : SECTIONS[section] !== undefined ? section : "reviews"));
     setListOpen(false);
-    setDrawerOpen(false);
   };
 
   // Escape or a press outside the chooser closes the open list.
@@ -88,73 +144,9 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
     };
   }, [listOpen]);
 
-  useEffect(() => {
-    if (!drawerOpen) {
-      if (wasOpen.current) menuButton.current?.focus();
-      wasOpen.current = false;
-      return undefined;
-    }
-    wasOpen.current = true;
-    const before = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    closeButton.current?.focus();
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        setDrawerOpen(false);
-        return;
-      }
-      if (event.key !== "Tab" || !panel.current) return;
-      const items = [...panel.current.querySelectorAll("a[href], button:not([data-rail-button]):not([data-project-option])")];
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const here = document.activeElement;
-      if (event.shiftKey && (here === first || !panel.current.contains(here))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (here === last || !panel.current.contains(here))) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = before;
-    };
-  }, [drawerOpen]);
-
-  // Leaving the phone width turns the drawer back into the plain sidebar, so it must not stay modal.
-  useEffect(() => {
-    if (!drawerOpen || typeof window.matchMedia !== "function") return undefined;
-    const query = window.matchMedia(PHONE_QUERY);
-    const onChange = (event) => {
-      if (!event.matches) setDrawerOpen(false);
-    };
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, [drawerOpen]);
-
-  // A page change is announced by name, with the project and the run or report when there is one.
-  // The region starts empty and its text is set after each move, so assistive technology reads the
-  // change. Log pages stay out so a streaming log never talks.
-  const [announcement, setAnnouncement] = useState("");
-  useEffect(() => setAnnouncement(describePage(path, entries)), [path, projectId]);
-  const classes = ["shell", collapsed ? "collapsed" : "", drawerOpen ? "drawer-open" : ""].filter(Boolean).join(" ");
-
   return (
-    <div className={classes} data-shell>
-      <header className="topbar">
-        <button type="button" ref={menuButton} data-menu-button aria-expanded={drawerOpen ? "true" : "false"} aria-controls="sidebar" aria-label="Menu" onClick={() => setDrawerOpen(true)}>
-          <Icon name="menu" />
-        </button>
-        <span className="brand"><Icon name="logo" size={24} />Orq</span>
-      </header>
-      {drawerOpen ? <div className="scrim" data-scrim onClick={() => setDrawerOpen(false)} /> : null}
-      <aside id="sidebar" className="sidebar" ref={panel} role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen ? "true" : undefined} aria-label="Navigation">
-        <button type="button" ref={closeButton} className="close-button" data-close-button aria-label="Close menu" onClick={() => setDrawerOpen(false)}>
-          <Icon name="close" />
-        </button>
+    <div className={collapsed ? "shell collapsed" : "shell"} data-shell>
+      <aside id="sidebar" className="sidebar" aria-label="Navigation">
         <div className="sidebar-head">
           <span className="brand" data-brand>
             <Icon name="logo" size={24} />
@@ -168,14 +160,7 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
           {entries.map((entry) => (
             <Fragment key={entry.href}>
               {entry.href === "/settings" ? <div className="sidebar-divider" role="separator" /> : null}
-              <a href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => {
-                  if (isPlainLeftClick(event)) {
-                    event.preventDefault();
-                    navigate(entry.href);
-                  }
-                  setDrawerOpen(false);
-                }}
-              >
+              <a href={entry.href} aria-current={path === entry.href ? "page" : undefined} title={entry.label} onClick={(event) => goTo(entry, event)}>
                 <Icon name={entry.icon} />
                 <span className="label">{entry.label}</span>
               </a>
@@ -214,21 +199,7 @@ export function Shell({ projectId = null, projects = null, onOpenSwitcher = null
           ) : null}
         </div>
       </aside>
-      <nav className="tabbar" aria-label="Sections">
-        {entries.map((entry) => (
-          <a key={entry.href} href={entry.href} aria-current={path === entry.href ? "page" : undefined} onClick={(event) => {
-              if (isPlainLeftClick(event)) {
-                event.preventDefault();
-                navigate(entry.href);
-              }
-            }}
-          >
-            <Icon name={entry.icon} />
-            <span className="tab-label">{entry.label}</span>
-          </a>
-        ))}
-      </nav>
-      <div className="sr-only" role="status" aria-live="polite" data-announcer>{announcement}</div>
+      <Announcer text={announcement} />
       <main className="content">{children}</main>
     </div>
   );

@@ -87,9 +87,3 @@ fn coming_back_into_a_project_does_not_judge_it_by_the_list_from_the_last_visit(
     assert_eq!(out["frames"][3]["settled"]["switchers"], json!([{"value": "gamma", "options": ["", "gamma"]}]), "{out}");
 }
 
-#[test]
-fn choosing_a_project_closes_the_phone_drawer() {
-    let Some(out) = run("/projects/alpha/timeline", json!([two()]), json!([{"submit": TOKEN}, {"nav": "[data-menu-button]"}, {"select": "beta"}])) else { return };
-    assert_eq!(out["frames"][2]["settled"]["scrim"], true, "the drawer opened: {out}");
-    assert_eq!(out["frames"][3]["settled"]["scrim"], false, "{out}");
-}

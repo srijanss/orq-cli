@@ -20,7 +20,7 @@ for (const name of ["window", "document", "navigator", "HTMLElement", "Node", "E
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = false;
 // A phone-width query that a step can flip, since jsdom has no layout.
-let phone = true;
+let phone = scenario.phone === true;
 const phoneListeners = new Set();
 window.matchMedia = (query) => ({
   media: query,
@@ -36,7 +36,7 @@ try {
     import { createElement } from "react";
     import { createRoot } from "react-dom/client";
     import { Shell } from "./src/shell.jsx";
-    export const mount = (el, projectId) => createRoot(el).render(createElement(Shell, { projectId }, createElement("p", { id: "content" }, "page body")));
+    export const mount = (el, projectId) => createRoot(el).render(createElement(Shell, { projectId, onSignOut: () => {} }, createElement("p", { id: "content" }, "page body")));
   `;
   await build({ stdin: { contents: entry, resolveDir: join(here, "../web-src"), loader: "jsx" }, outfile, bundle: true, format: "cjs", platform: "node", jsx: "automatic", logLevel: "silent" });
   const { mount } = require(outfile);
@@ -45,6 +45,8 @@ try {
     const doc = window.document;
     const active = doc.activeElement;
     return {
+      matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, doc.querySelectorAll(sel).length])),
+      topbarText: doc.querySelector(".topbar")?.textContent ?? null,
       links: [...doc.querySelectorAll(".sidebar nav a")].map((a) => ({ text: a.querySelector(".label").textContent.trim(), href: a.getAttribute("href"), current: a.getAttribute("aria-current") })),
       menuExpanded: doc.querySelector("[data-menu-button]")?.getAttribute("aria-expanded") ?? null,
       railCollapsed: doc.querySelector("[data-shell]")?.classList.contains("collapsed") ?? null,

@@ -1,4 +1,4 @@
-//! The app shell: sidebar entries, place in the address, and a phone drawer that behaves like a dialog.
+//! The app shell: sidebar entries, place in the address, and a phone layout without a sidebar.
 
 mod web_deps;
 
@@ -51,37 +51,6 @@ fn a_change_of_address_moves_the_highlight() {
 }
 
 #[test]
-fn the_phone_drawer_opens_locks_scroll_and_traps_focus() {
-    let Some(out) = run(json!({"path": "/dashboard", "steps": [
-        {"click": "[data-menu-button]"},
-        {"press": "Tab", "shift": true},
-        {"press": "Tab"}
-    ]})) else { return };
-    let open = &out["frames"][1];
-    assert_eq!(open["menuExpanded"], "true");
-    assert_eq!(open["drawerOpen"], true);
-    assert_eq!(open["scrimPresent"], true);
-    assert_eq!(open["bodyOverflow"], "hidden", "page scroll is locked: {out}");
-    assert_eq!(open["focus"], "close", "focus moves into the drawer: {out}");
-    // Shift+Tab from the first control wraps to the last, and Tab from the last wraps back.
-    assert_eq!(out["frames"][2]["focus"], "button", "the theme switch is the last control: {out}");
-    assert_eq!(out["frames"][3]["focus"], "close", "{out}");
-}
-
-#[test]
-fn escape_scrim_and_close_button_each_close_the_drawer_and_give_focus_back() {
-    for closer in [json!({"press": "Escape"}), json!({"click": "[data-scrim]"}), json!({"click": "[data-close-button]"})] {
-        let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, closer.clone()]})) else { return };
-        let closed = &out["frames"][2];
-        assert_eq!(closed["drawerOpen"], false, "{closer}: {out}");
-        assert_eq!(closed["menuExpanded"], "false", "{closer}: {out}");
-        assert_eq!(closed["bodyOverflow"], "", "scroll is released: {closer}: {out}");
-        assert_eq!(closed["scrimPresent"], false, "{closer}: {out}");
-        assert_eq!(closed["focus"], "menu", "focus returns to the trigger: {closer}: {out}");
-    }
-}
-
-#[test]
 fn the_desktop_rail_collapses_and_expands() {
     let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-rail-button]"}, {"click": "[data-rail-button]"}]})) else { return };
     assert_eq!(out["frames"][0]["railCollapsed"], false);
@@ -90,7 +59,7 @@ fn the_desktop_rail_collapses_and_expands() {
 }
 
 #[test]
-fn the_rail_is_64px_wide_when_collapsed_and_the_drawer_has_a_phone_layout() {
+fn the_rail_is_64px_wide_when_collapsed_and_a_phone_layout_exists() {
     let css = std::fs::read_to_string(crate_dir().join("web/app.css")).unwrap();
     assert!(css.contains(".shell.collapsed") && css.contains("64px"), "{css}");
     assert!(css.contains("@media (max-width: 700px)"), "a phone layout exists");
@@ -112,26 +81,6 @@ fn the_served_page_is_framed_by_the_shell_only_after_signing_in() {
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(out["frames"][0]["settled"]["shell"], false, "no navigation before signing in: {out}");
     assert_eq!(out["frames"][1]["settled"]["shell"], true, "the signed-in page sits inside the shell: {out}");
-}
-
-#[test]
-fn choosing_a_destination_closes_the_drawer_and_releases_scroll() {
-    for link in ["nav a:nth-of-type(1)", "nav a:nth-of-type(2)"] {
-        let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, {"click": link}]})) else { return };
-        let after = &out["frames"][2];
-        assert_eq!(after["drawerOpen"], false, "{link}: {out}");
-        assert_eq!(after["bodyOverflow"], "", "{link}: {out}");
-        assert_eq!(after["scrimPresent"], false, "{link}: {out}");
-    }
-}
-
-#[test]
-fn growing_past_the_phone_width_closes_an_open_drawer() {
-    let Some(out) = run(json!({"path": "/dashboard", "steps": [{"click": "[data-menu-button]"}, {"viewport": "desktop"}]})) else { return };
-    let after = &out["frames"][2];
-    assert_eq!(after["drawerOpen"], false, "{out}");
-    assert_eq!(after["bodyOverflow"], "", "scroll is released: {out}");
-    assert_eq!(after["menuExpanded"], "false", "{out}");
 }
 
 #[test]
