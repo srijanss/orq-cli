@@ -67,13 +67,16 @@ fn the_all_projects_features_page_lists_every_projects_ledger_in_one_table() {
 }
 
 #[test]
-fn the_all_projects_orchestrations_page_lists_every_projects_runs_under_its_name() {
-    let runs = |run: &str| json!({"status": 200, "json": {"runs": [{"run_id": run, "feature": "f", "state": "running", "stage": null, "started_at": null, "updated_at": null, "target_branch": null}]}});
-    let Some(out) = run("/orchestrations", json!([projects(), runs("run-a"), runs("run-b")]), json!([{"submit": TOKEN}])) else { return };
+fn the_all_projects_orchestrations_page_merges_every_projects_runs_under_the_project_picker_and_counts_the_running_ones() {
+    let runs = |run: &str, state: &str| json!({"status": 200, "json": {"runs": [{"run_id": run, "feature": "f", "state": state, "stage": null, "started_at": null, "updated_at": null, "target_branch": null}]}});
+    let Some(out) = run("/orchestrations", json!([projects(), runs("run-a", "running"), runs("run-b", "running")]), json!([{"submit": TOKEN}])) else { return };
     assert_eq!(urls(&out)[..3], ["/api/projects", "/api/projects/alpha/runs", "/api/projects/beta/runs"], "{out}");
     let texts = shown(&out["frames"][1]);
-    let at = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
-    assert!(at("alpha") < at("run-a") && at("run-a") < at("beta") && at("beta") < at("run-b"), "{texts:?}");
+    let has = |needle: &str| texts.iter().any(|t| t == needle);
+    assert!(has("All projects"), "the project picker reads All projects: {texts:?}");
+    assert!(has("2 running"), "the header counts the running runs of every project: {texts:?}");
+    assert!(texts.iter().any(|t| t == "run-a · alpha") && texts.iter().any(|t| t == "run-b · beta"), "one table names each run's project: {texts:?}");
+    assert_eq!(texts.iter().filter(|t| *t == "State: All").count(), 1, "one table, not one per project: {texts:?}");
 }
 
 #[test]

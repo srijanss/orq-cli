@@ -51,7 +51,7 @@ fn the_tab_says_how_many_runs_there_are_and_how_many_are_running() {
     let t = texts(&out["frames"][1]);
     assert!(t.iter().any(|t| t == "1") && t.iter().any(|t| t == "1 running"), "{t:?}");
     let Some(out) = run(json!([{"status": 200, "json": {"runs": []}}, projects()]), json!([{"submit": TOKEN}])) else { return };
-    assert!(!texts(&out["frames"][1]).iter().any(|t| t.contains("running")), "an empty list has no count line");
+    assert!(texts(&out["frames"][1]).iter().any(|t| t == "0 running"), "an empty list still says none is running");
 }
 
 #[test]

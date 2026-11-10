@@ -1029,7 +1029,9 @@ function tagged(rows, projectId, projectName) {
 }
 
 // Every readable project's ledger, read side by side and merged into one list.
-function AllFeatures({ token, projects, reloads, onSignedOut }) {
+// Reads one list from every readable project side by side; toRows turns a project's parsed reply
+// into rows, and a project that cannot be read is counted rather than shown.
+function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, toRows }) {
   const [state, setState] = useState({ loading: true, rows: [], unread: 0 });
   const readable = projects.filter((project) => project.available !== false);
   const key = readable.map((project) => project.id).join("\n");
@@ -1039,11 +1041,11 @@ function AllFeatures({ token, projects, reloads, onSignedOut }) {
     (async () => {
       const results = await Promise.all(readable.map(async (project) => {
         try {
-          const response = await get("/api/projects/" + encodeURIComponent(project.id) + "/features", token, controller.signal);
+          const response = await get("/api/projects/" + encodeURIComponent(project.id) + "/" + part, token, controller.signal);
           if (response.status === 401) return "signed-out";
           if (!response.ok) return null;
-          const parsed = parseFeatures(await response.json());
-          return parsed === null ? null : tagged(parsed.rows, project.id, project.name);
+          const parsed = parse(await response.json());
+          return parsed === null ? null : toRows(parsed, project);
         } catch (unreadable) {
           return null;
         }
@@ -1060,6 +1062,11 @@ function AllFeatures({ token, projects, reloads, onSignedOut }) {
       controller.abort();
     };
   }, [token, key, reloads]);
+  return state;
+}
+
+function AllFeatures({ token, projects, reloads, onSignedOut }) {
+  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows: (parsed, project) => tagged(parsed.rows, project.id, project.name) });
   if (state.loading) {
     return (
       <div className="skeleton" role="status" aria-busy="true">
@@ -1130,11 +1137,10 @@ function RunState({ state }) {
 }
 
 // The pill beside the Orchestrations title: how many of the listed runs are running now.
-function runningBadge(state) {
-  const rows = state.data?.rows;
+function runningBadge(rows) {
   if (!Array.isArray(rows)) return null;
   const running = rows.filter((run) => run.state === "running").length;
-  return running === 0 ? null : <span className="feature-state run-running" data-running-count>{running + " running"}</span>;
+  return <span className="feature-state run-running running-badge" data-running-count><span className="dot" aria-hidden="true" />{running + " running"}</span>;
 }
 
 function runHref(projectId, runId) {
@@ -1145,15 +1151,17 @@ function runHref(projectId, runId) {
 // state and stage narrow it; the count beside the Run header follows them.
 const RUNS_PER_PAGE = 10;
 
-function OrchestrationList({ runs, control, projectId }) {
+function OrchestrationList({ runs, control = null, projectId = null, showProject = false }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [stage, setStage] = useState("all");
   const [sort, setSort] = useState("newest");
   const [page, setPage] = useState(0);
   if (runs.length === 0) {
-    return <p>No runs in this project yet.</p>;
+    return <p>{showProject ? "No runs in any project yet." : "No runs in this project yet."}</p>;
   }
+  const projectOf = (run) => run.projectId ?? projectId;
+  const controlOf = (run) => (run.control === undefined ? control : run.control);
   const known = (run) => Object.hasOwn(RUN_STATES, run.state);
   const states = STATE_ORDER.filter((name) => runs.some((run) => run.state === name));
   const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
@@ -1167,10 +1175,10 @@ function OrchestrationList({ runs, control, projectId }) {
     set(event.target.value);
     setPage(0);
   };
-  const actions = control !== null && runs.some((run) => run.state === "running" || run.state === "paused");
+  const actions = runs.some((run) => controlOf(run) !== null && (run.state === "running" || run.state === "paused"));
   return (
     <>
-      <div className="feature-filters">
+      <div className="feature-filters run-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
           <input type="search" data-run-search aria-label="Search runs" placeholder="Search runs" autoComplete="off" spellCheck={false} value={query} onChange={choose(setQuery)} />
@@ -1203,18 +1211,17 @@ function OrchestrationList({ runs, control, projectId }) {
             </thead>
             <tbody>
               {visible.map((run) => (
-                <tr key={run.run_id} className="run-row">
+                <tr key={projectOf(run) + "/" + run.run_id} className="run-row">
                   <td>
-                    {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectId, run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
-                    <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "")}</span>
+                    {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
+                    <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
                   </td>
                   <td><RunState state={run.state} /></td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
                   <td><Moment at={run.updated_at} /></td>
                   {actions ? (
                     <td>
-                      {control !== null && RUN_ID.test(run.run_id) && run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null}
-                      {control !== null && RUN_ID.test(run.run_id) && run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Resumed." : "Resumed as run " + run + ".")} /> : null}
+                      <RowActions run={run} control={controlOf(run)} />
                     </td>
                   ) : null}
                 </tr>
@@ -1225,6 +1232,57 @@ function OrchestrationList({ runs, control, projectId }) {
       )}
       <Pager at={at} pages={pages} onPage={setPage} />
     </>
+  );
+}
+
+// Pause on a running row, Resume on a paused one, when the server allows actions.
+function RowActions({ run, control }) {
+  if (control === null || !RUN_ID.test(run.run_id)) return null;
+  if (run.state === "running") return <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} />;
+  if (run.state === "paused") return <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} />;
+  return null;
+}
+
+// Every readable project's runs, read side by side and merged into one list, newest first. The
+// rows are handed up so the header can count the running ones.
+function AllOrchestrations({ token, projects, reloads, onSignedOut, onRefresh, onRows }) {
+  const toRows = (parsed, project) => {
+    const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null;
+    return parsed.rows.map((run) => ({ ...run, projectId: project.id, projectName: project.name, control }));
+  };
+  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "runs", parse: parseOrchestrations, toRows });
+  const when = (run) => whenOf(run.updated_at ?? null);
+  const rows = useMemo(() => [...state.rows].sort((a, b) => when(b) - when(a)), [state.rows]);
+  useEffect(() => {
+    if (!state.loading) onRows(rows);
+  }, [state.loading, rows]);
+  if (state.loading) {
+    return (
+      <div className="skeleton" role="status" aria-busy="true">
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="sr-only">Loading the runs…</span>
+      </div>
+    );
+  }
+  return (
+    <>
+      {state.unread > 0 ? <p className="banner" role="alert">{state.unread === 1 ? "One project could not be read." : state.unread + " projects could not be read."}</p> : null}
+      <OrchestrationList runs={rows} showProject />
+    </>
+  );
+}
+
+// The Orchestrations page across every project: the header, the project picker, and the merged runs.
+function AllOrchestrationsPage({ token, reloads, onRefresh, onSignedOut }) {
+  const [rows, setRows] = useState(null);
+  return (
+    <Loaded key={API_PROJECTS} reloads={reloads} footer={false} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+      <>
+        <ProjectSelect projects={projects} projectId={null} section="orchestrations" />
+        <AllOrchestrations token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
+      </>
+    )} onSignedOut={onSignedOut} />
   );
 }
 
@@ -1674,7 +1732,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       <>
         <Loaded key={runsPath} reloads={reloads} footer={false} header={(state) => (
           <>
-            <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state)} status={dashboardStatus(state)} onRefresh={onRefresh} />
+            <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state.data?.rows)} status={dashboardStatus(state)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
         )} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
@@ -1806,6 +1864,9 @@ function SignedIn({ token, onSignedOut, projectId = null, projects = null }) {
     );
   }
   const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Runs and pipeline executions across every project", "runs", "Loading the runs…", parseOrchestrations], "/reviews": ["Reviews", "Code reviews and agent reports", "reviews", "Loading the review inbox…", parseRuns] }[hash];
+  if (hash === "/orchestrations") {
+    return <AllOrchestrationsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
+  }
   if (everywhere !== undefined) {
     const [title, subtitle, part, loading, parse] = everywhere;
     const onRefresh = () => setReloads(reloads + 1);
