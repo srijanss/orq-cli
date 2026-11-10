@@ -894,11 +894,10 @@ function ProjectSelect({ projects, projectId }) {
   );
 }
 
-const STATE_LABELS = { in_progress: "In progress", draft: "Draft" };
 
-function FeatureState({ status, count = null }) {
+function FeatureState({ status }) {
   const icon = { draft: "doc", pending: "clock", in_progress: "play", completed: "check", abandoned: "close" }[status] ?? "flag";
-  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{count === null ? status : <><strong>{count}</strong> {STATE_LABELS[status] ?? status}</>}</span>;
+  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{status}</span>;
 }
 
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
@@ -918,13 +917,8 @@ function FeatureList({ features, showProject = false }) {
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
-  const counted = (status) => features.filter((feature) => feature.status === status).length;
   return (
     <>
-      <p className="state-counts">
-        <FeatureState status="in_progress" count={counted("in_progress")} />
-        <FeatureState status="draft" count={counted("draft")} />
-      </p>
       <div className="feature-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
@@ -942,7 +936,7 @@ function FeatureList({ features, showProject = false }) {
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature</th><th scope="col">State</th></tr>
+              <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th></tr>
             </thead>
             <tbody>
               {visible.map((feature) => (

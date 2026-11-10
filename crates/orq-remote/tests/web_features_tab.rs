@@ -87,21 +87,21 @@ fn the_list_reads_the_projects_own_ledger_and_shows_each_feature_as_a_link_row_w
 }
 
 #[test]
-fn in_progress_and_draft_counts_lead_the_list_with_their_state_colours() {
+fn the_feature_count_sits_in_the_column_header_and_follows_search_and_filter() {
     let ledger = json!({"status": 200, "json": {"features": [
         feature("a-work", "in_progress", Value::Null, json!([])),
         feature("b-work", "in_progress", Value::Null, json!([])),
         feature("c-work", "draft", Value::Null, json!([])),
         feature("d-work", "pending", Value::Null, json!([]))
     ]}});
-    let Some(out) = page("/projects/alpha/features", json!([ledger, projects()]), json!([{"submit": TOKEN}])) else { return };
-    let frame = &out["frames"][1]["settled"];
+    let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-status]", "value": "in_progress"}, {"set": "[data-feature-search]", "value": "b-"}]);
+    let Some(out) = page("/projects/alpha/features", json!([ledger, projects()]), steps) else { return };
+    let count_at = |i: usize| shown(&out["frames"][i]).iter().position(|t| t == "Feature ").map(|p| shown(&out["frames"][i])[p + 1].clone());
     let texts = shown(&out["frames"][1]);
-    let at = |needle: &str| texts.iter().position(|t| t.trim() == needle).unwrap_or_else(|| panic!("{needle}: {texts:?}"));
-    assert!(at("In progress") < at("Draft") && at("Draft") < at("Feature"), "the counts lead the list: {texts:?}");
-    assert!(texts.iter().any(|t| t.trim() == "2") && texts.iter().any(|t| t.trim() == "1"), "{texts:?}");
-    let classes = frame["classes"].as_array().unwrap();
-    assert!(classes.iter().any(|c| c == "state-in_progress") && classes.iter().any(|c| c == "state-draft"), "{classes:?}");
+    assert!(!texts.iter().any(|t| t.trim() == "In progress" || t.trim() == "Draft"), "no count pills above the search: {texts:?}");
+    assert_eq!(count_at(1).as_deref(), Some("4"), "{texts:?}");
+    assert_eq!(count_at(2).as_deref(), Some("2"), "{out}");
+    assert_eq!(count_at(3).as_deref(), Some("1"), "{out}");
 }
 
 #[test]
