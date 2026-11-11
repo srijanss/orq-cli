@@ -59,6 +59,8 @@ fn a_change_is_written_only_while_the_version_it_was_read_at_is_still_current() 
 
 #[test]
 fn a_writer_waits_for_the_lock_and_then_refuses_a_change_made_while_it_waited() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     let roots = roots("lock");
     std::fs::write(roots.config_file(), "remote_actions = false\n").unwrap();
     let read = version(&roots);
@@ -66,17 +68,51 @@ fn a_writer_waits_for_the_lock_and_then_refuses_a_change_made_while_it_waited() 
     // Another Orq writer holds the lock and changes the file while this write waits for it.
     let held = std::fs::File::open(&roots.config).unwrap();
     held.lock().unwrap();
+    let edited = Arc::new(AtomicBool::new(false));
+    let (started, began) = std::sync::mpsc::channel();
     let writer = {
-        let roots = roots.clone();
-        std::thread::spawn(move || write_if_version(&roots, &read, |doc| doc["remote_actions"] = toml_edit::value(true)))
+        let (roots, edited) = (roots.clone(), edited.clone());
+        std::thread::spawn(move || {
+            started.send(()).unwrap();
+            write_if_version(&roots, &read, |doc| {
+                edited.store(true, Ordering::SeqCst);
+                doc["remote_actions"] = toml_edit::value(true);
+            })
+        })
     };
+    began.recv().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!writer.is_finished(), "the writer must wait while the lock is held");
+    assert!(!edited.load(Ordering::SeqCst), "nothing is edited while the lock is held");
     std::fs::write(roots.config_file(), "# theirs\nremote_actions = false\n").unwrap();
     held.unlock().unwrap();
 
     let refused = writer.join().unwrap().expect_err("the file changed while it waited");
     assert_eq!(refused.status(), 409);
+    assert!(!edited.load(Ordering::SeqCst), "a refused change is never edited");
     assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), "# theirs\nremote_actions = false\n");
+}
+
+#[test]
+fn of_writers_racing_from_one_version_exactly_one_wins() {
+    let roots = roots("race");
+    std::fs::write(roots.config_file(), "remote_actions = false\n").unwrap();
+    let read = version(&roots);
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let writers: Vec<_> = (0..8)
+        .map(|n| {
+            let (roots, read, gate) = (roots.clone(), read.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                write_if_version(&roots, &read, |doc| doc["writer"] = toml_edit::value(n as i64)).map(|()| n)
+            })
+        })
+        .collect();
+    let results: Vec<_> = writers.into_iter().map(|w| w.join().unwrap()).collect();
+    let winners: Vec<i64> = results.iter().filter_map(|r| r.as_ref().ok().copied()).collect();
+    assert_eq!(winners.len(), 1, "{results:?}");
+    assert!(results.iter().filter_map(|r| r.as_ref().err()).all(|e| e.status() == 409), "{results:?}");
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), format!("remote_actions = false\nwriter = {}\n", winners[0]));
 }
 
 #[test]
