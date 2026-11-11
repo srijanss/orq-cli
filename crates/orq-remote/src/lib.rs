@@ -19,6 +19,8 @@ use orq_core::remote_inbox::{self, ProjectsProvider, RemoteConfig};
 use orq_core::storage::StorageRoots;
 
 /// How long a stop waits for requests in flight before cutting connections.
+/// How long an action's small body may take to arrive before the request is refused.
+const ACTION_BODY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Everything a request needs besides the request itself.
@@ -159,12 +161,14 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
     // An action's body is read up to the cap. One over it is handed on as too long rather than refused
     // here, so the handler still checks the token and answers 404 while actions are off.
-    let body = if reads || !path.starts_with("/api/") {
+    // Only a POST is an action, so no other request waits on a body.
+    let body = if method != "POST" || !path.starts_with("/api/") {
         Vec::new()
     } else {
-        match axum::body::to_bytes(body, remote_inbox::MAX_ACTION_BODY).await {
-            Ok(bytes) => bytes.to_vec(),
-            Err(_) => vec![b' '; remote_inbox::MAX_ACTION_BODY + 1],
+        match tokio::time::timeout(ACTION_BODY_DEADLINE, read_action_body(body)).await {
+            Ok(Some(bytes)) => bytes,
+            // A body that broke off, or is still arriving at the deadline, is not one any action takes.
+            Ok(None) | Err(_) => b"\0".to_vec(),
         }
     };
 
@@ -177,6 +181,22 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &target, authorization.as_deref(), &body)).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     json_reply(reply.0, reply.1)
+}
+
+/// Reads an action's body up to one byte past the cap, so a body over it reaches the handler as too
+/// long; `None` when the body broke off before it ended.
+async fn read_action_body(body: axum::body::Body) -> Option<Vec<u8>> {
+    use futures_util::StreamExt;
+    let mut stream = body.into_data_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk.ok()?);
+        if bytes.len() > remote_inbox::MAX_ACTION_BODY {
+            bytes.truncate(remote_inbox::MAX_ACTION_BODY + 1);
+            break;
+        }
+    }
+    Some(bytes)
 }
 
 /// What a request presented, kept for as long as a stream stays open so each look can be judged afresh.
