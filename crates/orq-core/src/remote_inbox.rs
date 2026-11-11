@@ -449,6 +449,10 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
     }
     let options = match provider.map(|provider| provider.setting_options()) {
         Some(Ok(Some(options))) => options,
+        Some(Err(_)) => {
+            audit(Outcome::Refused, Some("the options could not be read"));
+            return error(500, "the options could not be read");
+        }
         _ => {
             audit(Outcome::Refused, Some("no options to choose from"));
             return error(404, "not found");
@@ -458,7 +462,14 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
         audit(Outcome::Refused, Some("not an offered harness or model"));
         return error(422, "That harness or model is not one this machine offers");
     }
+    // A role kept as something other than a table is left for a person to fix, and then nothing is
+    // written, so a save never lands for one role and not the other.
+    let mut not_a_table = false;
     let written = write_if_version(roots, version, |doc| {
+        not_a_table = chosen.iter().any(|(role, _, _)| doc.get(role).is_some_and(|item| item.as_table_like().is_none()));
+        if not_a_table {
+            return;
+        }
         for (role, harness, model) in &chosen {
             let table = doc.entry(role).or_insert_with(toml_edit::table);
             if let Some(table) = table.as_table_like_mut() {
@@ -469,6 +480,10 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
         }
     });
     match written {
+        Ok(()) if not_a_table => {
+            audit(Outcome::Refused, Some("a role in the settings is not a table"));
+            error(500, "the settings could not be written")
+        }
         Ok(()) => {
             audit(Outcome::Allowed, None);
             match public_settings(&roots.config_file()) {

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 struct Fake {
     config: std::path::PathBuf,
-    options: Option<Value>,
+    options: Result<Option<Value>, String>,
 }
 
 impl ProjectsProvider for Fake {
@@ -23,7 +23,7 @@ impl ProjectsProvider for Fake {
     }
 
     fn setting_options(&self) -> Result<Option<Value>, String> {
-        Ok(self.options.clone())
+        self.options.clone()
     }
 }
 
@@ -37,7 +37,7 @@ fn setup(tag: &str, config: &str) -> (StorageRoots, Fake) {
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
     std::fs::write(roots.config_file(), config).unwrap();
-    let fake = Fake { config: roots.config_file(), options: Some(options()) };
+    let fake = Fake { config: roots.config_file(), options: Ok(Some(options())) };
     (roots, fake)
 }
 
@@ -73,7 +73,7 @@ fn the_options_are_the_providers_list_for_a_signed_in_read_only() {
     assert_eq!(send(&roots, &fake, "GET", OPTIONS, None, b"").0, 401);
     assert_eq!(send(&roots, &fake, "POST", OPTIONS, Some("tok"), b"").0, 405);
 
-    let none = Fake { config: roots.config_file(), options: None };
+    let none = Fake { config: roots.config_file(), options: Ok(None) };
     assert_eq!(send(&roots, &none, "GET", OPTIONS, Some("tok"), b"").0, 404, "a provider without options has none to give");
 }
 
@@ -133,7 +133,7 @@ fn a_harness_or_model_outside_the_options_is_refused_with_422_and_nothing_is_wri
     }
     assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), ON, "nothing refused was written");
 
-    let none = Fake { config: roots.config_file(), options: None };
+    let none = Fake { config: roots.config_file(), options: Ok(None) };
     let (status, _) = save(&roots, &none, json!({"implementer": {"harness": "claude", "model": "opus"}, "version": current}));
     assert_eq!(status, 404, "without options nothing can be checked, so nothing is saved");
     assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), ON);
@@ -196,4 +196,48 @@ fn only_a_signed_in_post_with_the_right_body_reaches_the_save() {
     assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), ON, "nothing refused was written");
     let lines = agent_lines(&roots);
     assert_eq!(lines.len(), bad.len(), "every refusal after the token check is audited: {lines:?}");
+}
+
+#[test]
+fn a_role_that_is_not_a_table_in_the_settings_is_refused_and_nothing_is_written() {
+    let config = "remote_actions = true\nreviewer = \"pi\"\n";
+    let (roots, fake) = setup("not-a-table", config);
+    let current = orq_core::remote_settings::version_of(config);
+
+    let body = json!({"implementer": {"harness": "claude", "model": "opus"}, "reviewer": {"harness": "claude", "model": "sonnet"}, "version": current});
+    let (status, reply) = save(&roots, &fake, body);
+    assert_eq!((status, reply), (500, json!({"error": "the settings could not be written"})));
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), config, "neither role is written, so the save is never partial");
+    let lines = agent_lines(&roots);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("a role in the settings is not a table")));
+}
+
+#[test]
+fn options_that_cannot_be_read_refuse_the_save_with_500_and_nothing_is_written() {
+    let (roots, _) = setup("options-error", ON);
+    let failing = Fake { config: roots.config_file(), options: Err("pi did not answer".into()) };
+    let current = version(&roots, &failing);
+
+    let (status, reply) = save(&roots, &failing, json!({"implementer": {"harness": "claude", "model": "opus"}, "version": current}));
+    assert_eq!((status, &reply), (500, &json!({"error": "the options could not be read"})));
+    assert!(!reply.to_string().contains("pi did not answer"), "the provider's reason stays on the machine: {reply}");
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), ON);
+    let lines = agent_lines(&roots);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("the options could not be read")));
+}
+
+#[test]
+fn a_settings_file_that_cannot_be_read_counts_as_actions_off_and_is_left_alone() {
+    let broken = "remote_actions = true\nthis is [not toml";
+    let (roots, fake) = setup("broken", broken);
+    let current = orq_core::remote_settings::version_of(broken);
+
+    let (status, reply) = save(&roots, &fake, json!({"implementer": {"harness": "claude", "model": "opus"}, "version": current}));
+    assert_eq!((status, reply), (404, json!({"error": "not found"})));
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), broken);
+    let lines = agent_lines(&roots);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("remote actions are off")));
 }

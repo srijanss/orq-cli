@@ -263,8 +263,17 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn setting_options(&self) -> Result<Option<serde_json::Value>, String> {
         let Some(options) = &self.agent_options else { return Ok(None) };
-        let found = options.found.get_or_init(|| (options.source)().into_iter().map(|(harness, models)| serde_json::json!({"harness": harness, "models": models})).collect());
-        Ok(Some(found.clone()))
+        if let Some(found) = options.found.get() {
+            return Ok(Some(found.clone()));
+        }
+        let listed = (options.source)();
+        // A harness with no models may only have failed to answer this time, so such a list is not kept.
+        let complete = listed.iter().all(|(_, models)| !models.is_empty());
+        let found: serde_json::Value = listed.into_iter().map(|(harness, models)| serde_json::json!({"harness": harness, "models": models})).collect();
+        if complete {
+            let _ = options.found.set(found.clone());
+        }
+        Ok(Some(found))
     }
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {

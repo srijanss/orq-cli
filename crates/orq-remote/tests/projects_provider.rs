@@ -213,11 +213,29 @@ fn the_agent_options_come_from_the_source_given_found_once_and_none_without_one(
     let counter = asked.clone();
     let source = move || {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]), ("pi".to_string(), vec![])]
+        vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]), ("pi".to_string(), vec!["gpt-5".to_string()])]
     };
     let with = StoreProjects::new(roots(&base), base.join("code")).with_agent_options(std::sync::Arc::new(source));
-    let expected = serde_json::json!([{"harness": "claude", "models": ["opus", "sonnet"]}, {"harness": "pi", "models": []}]);
+    let expected = serde_json::json!([{"harness": "claude", "models": ["opus", "sonnet"]}, {"harness": "pi", "models": ["gpt-5"]}]);
     assert_eq!(with.setting_options().unwrap(), Some(expected.clone()));
     assert_eq!(with.setting_options().unwrap(), Some(expected));
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "discovery can start a process, so it runs once");
+}
+
+#[test]
+fn a_harness_found_with_no_models_is_asked_again_next_time_until_its_models_are_found() {
+    let base = web_deps::private_temp_dir("projects-agent-options-retry");
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    // The first time pi does not answer, so its list is empty; after that it lists its models.
+    let source = move || {
+        let models = if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 { vec![] } else { vec!["gpt-5".to_string()] };
+        vec![("claude".to_string(), vec!["opus".to_string()]), ("pi".to_string(), models)]
+    };
+    let with = StoreProjects::new(roots(&base), base.join("code")).with_agent_options(std::sync::Arc::new(source));
+    assert_eq!(with.setting_options().unwrap(), Some(serde_json::json!([{"harness": "claude", "models": ["opus"]}, {"harness": "pi", "models": []}])));
+    let found = serde_json::json!([{"harness": "claude", "models": ["opus"]}, {"harness": "pi", "models": ["gpt-5"]}]);
+    assert_eq!(with.setting_options().unwrap(), Some(found.clone()), "an empty list is not kept");
+    assert_eq!(with.setting_options().unwrap(), Some(found), "a full list is kept");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
