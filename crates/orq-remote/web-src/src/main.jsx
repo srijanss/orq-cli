@@ -961,6 +961,111 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
   );
 }
 
+// The options as the server lists them: a harness and the models it allows, nothing else drawn.
+function parseOptions(data) {
+  const options = data && data.options;
+  return Array.isArray(options) && options.every((option) => option !== null && typeof option === "object" && typeof option.harness === "string" && isTextList(option.models)) ? options.filter((option) => option.models.length > 0) : null;
+}
+
+// What an editor starts on: the role's own harness and model when they are offered, else the first.
+function startingChoice(options, agent) {
+  const own = options.find((option) => agent && option.harness === agent.harness) || options[0];
+  return { harness: own.harness, model: agent && own.models.includes(agent.model) ? agent.model : own.models[0] };
+}
+
+// Edit under an Implementer or Reviewer card: reads the options, offers a harness and a model from
+// them, and Save asks before it sends the choice with the version the settings were read at.
+function AgentEditor({ role, agent, version, token, onSignedOut, onChanged }) {
+  const [phase, setPhase] = useState("idle");
+  const [options, setOptions] = useState([]);
+  const [choice, setChoice] = useState(null);
+  const [note, setNote] = useState("");
+  const [conflict, setConflict] = useState(false);
+  if (typeof version !== "string") return null;
+  const edit = async () => {
+    setPhase("loading");
+    setNote("");
+    setConflict(false);
+    try {
+      const response = await get(API_SETTINGS + "/options", token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const listed = response.ok ? parseOptions(await response.json()) : null;
+      if (listed === null || listed.length === 0) {
+        setNote("There are no harnesses to choose from.");
+        setPhase("idle");
+        return;
+      }
+      setOptions(listed);
+      setChoice(startingChoice(listed, agent));
+      setPhase("editing");
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+      setPhase("idle");
+    }
+  };
+  const pickHarness = (harness) => {
+    const option = options.find((each) => each.harness === harness);
+    if (option) setChoice({ harness, model: option.models[0] });
+  };
+  const send = async () => {
+    setPhase("sending");
+    let text = "The change could not be made.";
+    try {
+      const response = await actionRequest(API_SETTINGS + "/agents", token, { [role]: choice, version });
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        onChanged();
+        return;
+      }
+      let reply = null;
+      try {
+        reply = await response.json();
+      } catch (unreadable) {
+        reply = null;
+      }
+      if (reply !== null && typeof reply.error === "string") text = reply.error;
+      setConflict(response.status === 409);
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const question = choice === null ? "" : "Save " + role + ": " + choice.harness + " " + choice.model + "?";
+  const current = options.find((option) => choice !== null && option.harness === choice.harness);
+  return (
+    <div className="settings-row settings-switch">
+      {phase === "idle" ? <button type="button" data-agent-edit={role} onClick={edit}>Edit</button> : null}
+      {phase === "loading" ? <span role="status">Loading the options…</span> : null}
+      {phase === "editing" ? (
+        <span role="group" aria-label={"Change the " + role}>
+          <label>Harness <select data-agent-harness value={choice.harness} onChange={(event) => pickHarness(event.target.value)}>{options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}</select></label>
+          <label>Model <select data-agent-model value={choice.model} onChange={(event) => setChoice({ harness: choice.harness, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+          <button type="button" data-agent-save onClick={() => setPhase("asking")}>Save</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={question}>
+          <span>{question}</span>
+          <span className="muted">Runs already going keep their model.</span>
+          <button type="button" data-confirm onClick={send}>Yes, save</button>
+          <button type="button" data-cancel onClick={() => setPhase("editing")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+      {conflict ? <button type="button" data-settings-reload onClick={() => { setNote(""); setConflict(false); onChanged(); }}>Reload</button> : null}
+    </div>
+  );
+}
+
 function SettingsView({ settings, token, onSignedOut, onChanged }) {
   const on = settings.remote_actions === true;
   return (
@@ -975,8 +1080,13 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
         </dl>
         <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
-      <section className="card settings-card"><SettingsHead icon="cpu">Implementer</SettingsHead><AgentFields agent={settings.implementer} /></section>
-      <section className="card settings-card"><SettingsHead icon="cpu">Reviewer</SettingsHead><AgentFields agent={settings.reviewer} /></section>
+      {[["Implementer", "implementer"], ["Reviewer", "reviewer"]].map(([title, role]) => (
+        <section key={role} className="card settings-card">
+          <SettingsHead icon="cpu">{title}</SettingsHead>
+          <AgentFields agent={settings[role]} />
+          {on ? <AgentEditor key={settings.version} role={role} agent={settings[role]} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
+        </section>
+      ))}
     </>
   );
 }
