@@ -1,5 +1,5 @@
-//! The global Settings page: the run settings from `/api/settings`, read-only and drawn as text.
-//! Nothing on it can change a setting.
+//! The global Settings page: the run settings from `/api/settings`, drawn as text.
+//! Signed in with the token and with no settings version, nothing on it can change a setting.
 
 mod web_deps;
 
@@ -61,7 +61,7 @@ fn a_setting_with_no_value_shows_a_dash_and_says_it_is_not_set() {
 }
 
 #[test]
-fn nothing_on_the_page_can_change_a_setting() {
+fn without_a_settings_version_nothing_on_the_page_can_change_a_setting() {
     let Some(out) = run("/settings", json!([settings()]), json!([{"submit": TOKEN}])) else { return };
     let frame = &out["frames"][1]["settled"];
     assert_eq!(frame["inputs"], json!([]), "{out}");
@@ -88,7 +88,7 @@ fn an_address_under_settings_is_not_found_and_never_shows_the_inbox() {
 }
 
 #[test]
-fn the_page_says_whether_remote_actions_are_on_and_offers_no_way_to_change_it() {
+fn the_page_says_whether_remote_actions_are_on_and_has_no_text_field() {
     for (value, word) in [(false, "Off"), (true, "On")] {
         let body = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": [], "remote_actions": value}}});
         let scenario = json!({"url": "/settings", "responses": [body], "steps": [{"submit": TOKEN}], "selectors": [format!("[data-remote-actions={}]", word.to_lowercase())]});

@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
-import { authStatus, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -875,7 +875,84 @@ function SettingsHead({ icon, children }) {
   );
 }
 
-function SettingsView({ settings }) {
+const ACTIONS_OFF_QUESTION = "Turn remote actions off? Start, Pause, Resume and the other actions disappear until they are turned on again.";
+const ACTIONS_ON_QUESTION = "Turn remote actions on? Your passkey confirms it.";
+
+// The switch under the Remote actions row. Off asks first and sends; on asks first, then asks the
+// passkey for a fresh check and sends its answer. Only a passkey session can turn them on; signed in
+// with the token the row says so instead. Every change carries the version the settings were read at.
+function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const [conflict, setConflict] = useState(false);
+  if (typeof version !== "string") return null;
+  const session = token === SESSION;
+  const send = async () => {
+    setPhase("sending");
+    setNote("");
+    setConflict(false);
+    let text = "The change could not be made.";
+    try {
+      const body = { on: !on, version };
+      if (!on) {
+        const assertion = await confirmWithPasskey("remote_actions.on");
+        if (assertion === null) {
+          setNote("The passkey check was cancelled.");
+          setPhase("idle");
+          return;
+        }
+        body.assertion = assertion;
+      }
+      const response = await actionRequest(API_SETTINGS + "/remote-actions", token, body);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        // The settings are read again; the switch stays closed until they arrive.
+        onChanged();
+        return;
+      }
+      let reply = null;
+      try {
+        reply = await response.json();
+      } catch (unreadable) {
+        reply = null;
+      }
+      if (reply !== null && typeof reply.error === "string") text = reply.error;
+      setConflict(response.status === 409);
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const reload = () => {
+    setNote("");
+    setConflict(false);
+    onChanged();
+  };
+  return (
+    <div className="settings-row settings-switch">
+      {on || session ? null : <span>Turning remote actions on needs a passkey sign-in.</span>}
+      {!on && session ? <span>Turning on asks for your passkey.</span> : null}
+      {phase === "idle" && on ? <button type="button" data-actions-off onClick={() => { setNote(""); setPhase("asking"); }}>Turn off</button> : null}
+      {phase === "idle" && !on && session ? <button type="button" data-actions-on onClick={() => { setNote(""); setPhase("asking"); }}>Turn on</button> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={on ? ACTIONS_OFF_QUESTION : ACTIONS_ON_QUESTION}>
+          <span>{on ? ACTIONS_OFF_QUESTION : ACTIONS_ON_QUESTION}</span>
+          <button type="button" data-confirm onClick={send}>{on ? "Yes, turn off" : "Yes, turn on"}</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+      {conflict ? <button type="button" data-settings-reload onClick={reload}>Reload</button> : null}
+    </div>
+  );
+}
+
+function SettingsView({ settings, token, onSignedOut, onChanged }) {
   const on = settings.remote_actions === true;
   return (
     <>
@@ -887,6 +964,7 @@ function SettingsView({ settings }) {
             <dd><span className={"pill " + (on ? "pill-on" : "pill-off")}>{on ? "On" : "Off"}</span></dd>
           </div>
         </dl>
+        <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
       <section className="card settings-card"><SettingsHead icon="cpu">Implementer</SettingsHead><AgentFields agent={settings.implementer} /></section>
       <section className="card settings-card"><SettingsHead icon="cpu">Reviewer</SettingsHead><AgentFields agent={settings.reviewer} /></section>
@@ -2078,11 +2156,11 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/settings") {
     return (
       <>
-        <PageHeader title="Settings" subtitle="Global run settings (read-only)" onRefresh={() => setReloads(reloads + 1)} />
+        <PageHeader title="Settings" subtitle="Global run settings" onRefresh={() => setReloads(reloads + 1)} />
         <div className="settings-page">
           {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
           <PasskeysCard />
-          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} />} onSignedOut={onSignedOut} />
+          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
           <section className="card settings-card settings-audit">
             <SettingsHead icon="doc">Activity</SettingsHead>
             <a className="settings-link" href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>

@@ -118,3 +118,34 @@ export async function signOutOfSession() {
     // the cookie expires on its own
   }
 }
+
+// Confirms one change with the passkey again: a fresh challenge for `purpose`, answered by the
+// browser with user verification. Resolves to the answer as the server takes it, or null when no
+// challenge was given or the person dismissed the prompt.
+export async function confirmWithPasskey(purpose) {
+  const began = await post("/auth/confirm/begin", { purpose });
+  if (!began.ok) return null;
+  const options = await began.json();
+  let credential = null;
+  try {
+    credential = await navigator.credentials.get({
+      publicKey: {
+        challenge: toBytes(options.challenge),
+        rpId: options.rpId,
+        userVerification: options.userVerification,
+        timeout: options.timeout,
+        allowCredentials: options.allowCredentials.map((entry) => ({ type: entry.type, id: toBytes(entry.id) })),
+      },
+    });
+  } catch (dismissed) {
+    return null;
+  }
+  if (!credential) return null;
+  const answer = credential.response;
+  return {
+    id: toText(credential.rawId),
+    clientDataJSON: toText(answer.clientDataJSON),
+    authenticatorData: toText(answer.authenticatorData),
+    signature: toText(answer.signature),
+  };
+}
