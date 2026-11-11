@@ -1771,19 +1771,22 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
 const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review", "merged"];
 const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
 const DISCARDABLE = [...RESUMABLE, "merged"];
+const ACCEPTABLE = ["failed", "needs_review"];
 
 // Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
-// branch would lose. The run's row and its detail header show the same ones.
+// branch would lose. Accept on a failed or needs_review run asks first; its tests then run on the server, so the
+// result shows as the run's state once they finish. The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
-  if (pause === null && resume === null && stop === null && discard === null) return null;
-  return <span className="run-actions">{pause}{resume}{stop}{discard}</span>;
+  const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
+  if (pause === null && resume === null && stop === null && discard === null && accept === null) return null;
+  return <span className="run-actions">{pause}{resume}{stop}{accept}{discard}</span>;
 }
 
 // The popup's question before Discard, with what the branch would lose when the server says, or before Clear.
