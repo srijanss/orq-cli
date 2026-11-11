@@ -1549,10 +1549,57 @@ function Pager({ at, pages, onPage }) {
   );
 }
 
-function FeatureList({ features, showProject = false }) {
+// Promote marked: it asks once, then sends one promote request per marked draft in ledger order, so the
+// server audits each on its own; there is no bulk route. A refused sign-in stops the rest.
+function PromoteMarked({ names, control, onFinished }) {
+  const [phase, setPhase] = useState("idle");
+  const label = "Promote " + names.length;
+  const send = async () => {
+    setPhase("sending");
+    const results = [];
+    for (const name of names) {
+      let text = name + ": it could not be promoted.";
+      let ok = false;
+      try {
+        const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/promote"), control.token);
+        if (response.status === 401) {
+          control.onSignedOut();
+          return;
+        }
+        const body = await jsonOrNull(response);
+        ok = response.ok;
+        if (ok) text = "Promoted " + name + "; it is pending.";
+        else if (response.status === 403) text = name + ": Not allowed.";
+        else if (body !== null && typeof body.error === "string") text = name + ": " + body.error;
+      } catch (unreachable) {
+        text = name + ": The server could not be reached.";
+      }
+      results.push({ name, ok, text });
+    }
+    setPhase("idle");
+    onFinished(results);
+  };
+  return (
+    <span className="run-action">
+      {phase === "idle" ? <button type="button" data-promote-marked onClick={() => setPhase("asking")}>{label}</button> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={label}>
+          <span>{"Promote " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + "?"}</span>
+          <button type="button" data-confirm onClick={send}>Yes, promote</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+    </span>
+  );
+}
+
+function FeatureList({ features, showProject = false, control = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [page, setPage] = useState(0);
+  const [marked, setMarked] = useState([]);
+  const [results, setResults] = useState([]);
   if (features.length === 0) {
     return <p>No features in this project's ledger.</p>;
   }
@@ -1562,6 +1609,15 @@ function FeatureList({ features, showProject = false }) {
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
+  // Only a draft can be marked; the marks go out in ledger order, whatever order they were made in.
+  const markable = (feature) => control !== null && feature.status === "draft";
+  const markedNames = features.filter((feature) => markable(feature) && marked.includes(feature.name)).map((feature) => feature.name);
+  const toggle = (name) => setMarked((now) => (now.includes(name) ? now.filter((entry) => entry !== name) : [...now, name]));
+  const finished = (done) => {
+    setMarked([]);
+    setResults(done);
+    if (done.some((result) => result.ok)) control.onDone();
+  };
   return (
     <>
       <div className="feature-filters">
@@ -1576,6 +1632,14 @@ function FeatureList({ features, showProject = false }) {
           ))}
         </select>
       </div>
+      {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
+      {results.length > 0 ? (
+        <ul className="marked-results" role="status">
+          {results.map((result) => (
+            <li key={result.name} data-marked-result className={result.ok ? "run-action-note" : "run-action-note error-text"}>{result.text}</li>
+          ))}
+        </ul>
+      ) : null}
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
       {shown.length > 0 ? (
         <div className="feature-table-wrap">
@@ -1587,6 +1651,7 @@ function FeatureList({ features, showProject = false }) {
               {visible.map((feature) => (
                 <tr key={feature.projectId + "/" + feature.name} className="feature">
                   <td>
+                    {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(feature.name)} onChange={() => toggle(feature.name)} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                   </td>
                   <td><FeatureState status={feature.status} /></td>
@@ -1728,7 +1793,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
-        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} />;
+        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} />;
         const feature = data.rows.find((entry) => entry.name === name);
         return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
       }} />

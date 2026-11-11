@@ -601,3 +601,6 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .danger-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--status-failed); border-radius: 0.5rem; background: transparent; color: var(--status-failed); font: inherit; font-weight: 600; cursor: pointer; }
 .danger-button:hover { background: var(--status-failed-bg); }
 @media (max-width: 480px) { .segmented button { padding: 0 0.5rem; } }
+.feature-mark { width: 20px; height: 20px; margin: 0 10px 0 0; flex: none; vertical-align: middle; }
+.feature-table td:has(> .feature-mark) .feature-link { display: inline-flex; }
+.marked-results { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 4px; }

@@ -1,4 +1,4 @@
-//! The page offers exactly eight controls — start, promote, pause, resume, stop, discard, accept and switch model — each behind a confirmation,
+//! The page offers exactly nine controls — start, promote, promote marked, pause, resume, stop, discard, accept and switch model — each behind a confirmation,
 //! and no merge, approve, restart or edit control or request.
 
 fn code() -> String {
@@ -31,7 +31,12 @@ fn the_page_has_only_the_start_promote_pause_resume_stop_discard_accept_and_mode
     assert_eq!(paths.len(), 2, "{paths:?}");
     assert!(paths[0].starts_with("\"runs/\"") && paths[0].ends_with("+ \"/model\")"), "{}", paths[0]);
     assert!(paths[1].starts_with("\"launch-profiles\")"), "{}", paths[1]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 12, "the definition, the seven actions, the two checks and the model switch's two paths are the only users");
+    // Promote marked posts to each marked feature's promote route; nothing else.
+    let marked = code.split("function PromoteMarked(").nth(1).expect("the promote marked control").split("\nfunction ").next().unwrap();
+    let paths: Vec<&str> = marked.split("controlPath(control, ").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
+    assert_eq!(paths.len(), 1, "{paths:?}");
+    assert!(paths[0].starts_with("\"features/\"") && paths[0].contains("+ \"/promote\")"), "{}", paths[0]);
+    assert_eq!(code.matches("controlPath(control, ").count(), 13, "the definition, the seven actions, the two checks, the model switch's two paths and promote marked are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
