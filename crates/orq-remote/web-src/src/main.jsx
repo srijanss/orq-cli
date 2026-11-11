@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
-import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -796,14 +796,17 @@ function AgentFields({ agent }) {
   );
 }
 
-// One passkey on Settings, with Rename: a name field that starts with the current name. Save sends it;
-// a refusal shows the server's reason and keeps the field open.
-function PasskeyRow({ passkey, onChanged }) {
+// One passkey on Settings. Rename opens a name field that starts with the current name; Save sends it, and
+// a refusal shows the server's reason and keeps the field open. Remove asks first; removing the passkey
+// this session signed in with signs the page out.
+function PasskeyRow({ passkey, onChanged, onSignOut }) {
   const [label, setLabel] = useState(null);
+  const [removing, setRemoving] = useState(false);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
   const close = () => {
     setLabel(null);
+    setRemoving(false);
     setNote("");
   };
   const save = async () => {
@@ -817,13 +820,46 @@ function PasskeyRow({ passkey, onChanged }) {
       setNote(refused);
     }
   };
+  const remove = async () => {
+    setSending(true);
+    const { refused, signedOut } = await removePasskey(passkey.id);
+    setSending(false);
+    if (refused !== null) {
+      setRemoving(false);
+      setNote(refused);
+    } else if (signedOut && onSignOut) {
+      onSignOut();
+    } else {
+      close();
+      onChanged();
+    }
+  };
   if (label === null) {
+    const question = "Remove " + passkey.label + "? Devices signed in with it are signed out.";
     return (
       <li className="settings-row">
-        <strong>{passkey.label}</strong> <code>{passkey.id}</code>{" "}
-        <button type="button" data-passkey-rename={passkey.id} onClick={() => setLabel(passkey.label)}>
-          Rename
-        </button>
+        <strong>{passkey.label}</strong> {passkey.this_device === true && <span className="badge">This device</span>} <code>{passkey.id}</code>{" "}
+        {removing ? (
+          <span role="group" aria-label={question}>
+            <span>{question}</span>
+            <button type="button" className="danger-button" data-confirm disabled={sending} onClick={remove}>
+              Yes, remove
+            </button>
+            <button type="button" data-cancel disabled={sending} onClick={close}>
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <>
+            <button type="button" data-passkey-rename={passkey.id} onClick={() => { setNote(""); setLabel(passkey.label); }}>
+              Rename
+            </button>
+            <button type="button" className="danger-button" data-passkey-remove={passkey.id} onClick={() => { setNote(""); setRemoving(true); }}>
+              Remove
+            </button>
+          </>
+        )}
+        {note !== "" && <p role="alert">{note}</p>}
       </li>
     );
   }
@@ -844,7 +880,7 @@ function PasskeyRow({ passkey, onChanged }) {
 }
 
 // Settings, signed in with a passkey: the passkeys on the server and a way to add another one.
-function PasskeysCard() {
+function PasskeysCard({ onSignOut = null }) {
   const [keys, setKeys] = useState(null);
   const load = () => listPasskeys().then(setKeys);
   useEffect(() => {
@@ -865,7 +901,7 @@ function PasskeysCard() {
       )}
       <ul className="settings-fields">
         {(failed ? [] : keys).map((key) => (
-          <PasskeyRow key={key.id} passkey={key} onChanged={load} />
+          <PasskeyRow key={key.id} passkey={key} onChanged={load} onSignOut={onSignOut} />
         ))}
       </ul>
       {passkeysAvailable() && <EnrolPasskey token={null} another onDone={load} />}
@@ -2323,7 +2359,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
         <PageHeader title="Settings" subtitle="Global run settings" onRefresh={() => setReloads(reloads + 1)} />
         <div className="settings-page">
           {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
-          <PasskeysCard />
+          <PasskeysCard onSignOut={onSignOut} />
           <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
           <section className="card settings-card settings-audit">
             <SettingsHead icon="doc">Activity</SettingsHead>

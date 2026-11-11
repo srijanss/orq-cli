@@ -59,25 +59,32 @@ export async function listPasskeys() {
   }
 }
 
-// A change to the passkeys, sent with this session's CSRF token. Resolves null when the server took it,
-// otherwise the reason to show: the server's own when it gave one.
+// A change to the passkeys, sent with this session's CSRF token. Resolves { refused: null, data } when the
+// server took it, otherwise { refused } with the reason to show: the server's own when it gave one.
 async function changePasskeys(path, body, fallback) {
   try {
     const status = await authStatus();
     const headers = { "Content-Type": "application/json" };
     if (status !== null && typeof status.csrf === "string") headers["X-CSRF-Token"] = status.csrf;
     const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body ?? {}), cache: "no-store", referrerPolicy: "no-referrer" });
-    if (response.ok) return null;
     const data = await response.json().catch(() => null);
-    return data !== null && typeof data === "object" && typeof data.error === "string" && data.error !== "" ? data.error : fallback;
+    if (response.ok) return { refused: null, data };
+    return { refused: data !== null && typeof data === "object" && typeof data.error === "string" && data.error !== "" ? data.error : fallback };
   } catch (unavailable) {
-    return fallback;
+    return { refused: fallback };
   }
 }
 
 // Renames the passkey with credential id `id`. Resolves null when renamed, otherwise the reason.
-export function renamePasskey(id, label) {
-  return changePasskeys("/auth/passkeys/" + encodeURIComponent(id) + "/label", { label }, "The passkey could not be renamed.");
+export async function renamePasskey(id, label) {
+  return (await changePasskeys("/auth/passkeys/" + encodeURIComponent(id) + "/label", { label }, "The passkey could not be renamed.")).refused;
+}
+
+// Removes the passkey with credential id `id`. Resolves { refused: null, signedOut } when removed, where
+// signedOut says this session was opened with it and has ended; otherwise { refused } with the reason.
+export async function removePasskey(id) {
+  const { refused, data } = await changePasskeys("/auth/passkeys/" + encodeURIComponent(id) + "/remove", {}, "The passkey could not be removed.");
+  return refused === null ? { refused, signedOut: data !== null && typeof data === "object" && data.signed_out === true } : { refused };
 }
 
 // Signs in with a stored passkey. Resolves true when the server set the session cookie.
