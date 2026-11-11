@@ -1344,6 +1344,30 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
 
 const MODEL_ROLES = ["implementer", "reviewer"];
 
+// Reads the profiles the launch picker offers: {reply} with at least one profile, {signedOut} on a refused
+// sign-in, or the reason to show: none defined, not allowed, the server's error, or unreachable.
+async function readLaunchProfiles(control) {
+  let text = "The model profiles could not be read.";
+  try {
+    const response = await get(controlPath(control, "launch-profiles"), control.token);
+    if (response.status === 401) return { signedOut: true, reply: null, text: "" };
+    const body = await jsonOrNull(response);
+    const names = response.ok && body !== null && Array.isArray(body.profiles) ? body.profiles.filter((name) => typeof name === "string") : null;
+    if (names !== null && names.length > 0) return { signedOut: false, reply: { ...body, profiles: names }, text: "" };
+    if (names !== null) text = "No model profiles are defined.";
+    else if (response.status === 403) text = "Not allowed.";
+    else if (body !== null && typeof body.error === "string") text = body.error;
+  } catch (unreachable) {
+    text = "The server could not be reached.";
+  }
+  return { signedOut: false, reply: null, text };
+}
+
+// The role's default when the server names one it offers, else the first profile.
+function preselect(reply, role) {
+  return typeof reply[role] === "string" && reply.profiles.includes(reply[role]) ? reply[role] : reply.profiles[0];
+}
+
 // The popup's Switch model on a paused run: it reads the profiles the launch picker offers, preselects the
 // role's default, and asks with the picked role and profile before posting them. A refused read or switch
 // shows the server's reason; the switch takes effect when the run resumes.
@@ -1354,32 +1378,20 @@ function ModelAction({ run, control }) {
   const [role, setRole] = useState("implementer");
   const [profile, setProfile] = useState("");
   const runPath = controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/model");
-  const preselect = (reply, chosen) => (typeof reply[chosen] === "string" && reply.profiles.includes(reply[chosen]) ? reply[chosen] : reply.profiles[0]);
   const ask = async () => {
     setNote("");
     setPhase("checking");
-    let text = "The model profiles could not be read.";
-    try {
-      const response = await get(controlPath(control, "launch-profiles"), control.token);
-      if (response.status === 401) {
-        control.onSignedOut();
-        return;
-      }
-      const body = await jsonOrNull(response);
-      const names = response.ok && body !== null && Array.isArray(body.profiles) ? body.profiles.filter((name) => typeof name === "string") : null;
-      if (names !== null && names.length > 0) {
-        const reply = { ...body, profiles: names };
-        setOffer(reply);
-        setRole("implementer");
-        setProfile(preselect(reply, "implementer"));
-        setPhase("asking");
-        return;
-      }
-      if (names !== null) text = "No model profiles are defined.";
-      else if (response.status === 403) text = "Not allowed.";
-      else if (body !== null && typeof body.error === "string") text = body.error;
-    } catch (unreachable) {
-      text = "The server could not be reached.";
+    const { signedOut, reply, text } = await readLaunchProfiles(control);
+    if (signedOut) {
+      control.onSignedOut();
+      return;
+    }
+    if (reply !== null) {
+      setOffer(reply);
+      setRole("implementer");
+      setProfile(preselect(reply, "implementer"));
+      setPhase("asking");
+      return;
     }
     setNote(text);
     setPhase("idle");
@@ -1432,6 +1444,88 @@ function ModelAction({ run, control }) {
           </label>
           <span>{asked}</span>
           <button type="button" data-confirm onClick={send}>Yes, switch model</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+    </span>
+  );
+}
+
+// The popup's launch picker, "Start with…" on a pending feature: it reads the launch profiles, preselects the
+// implementer and reviewer defaults, and asks with the picked pair before posting them to the start route.
+// A refused read or start shows the server's reason.
+function LaunchAction({ feature, control }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const [offer, setOffer] = useState(null);
+  const [implementer, setImplementer] = useState("");
+  const [reviewer, setReviewer] = useState("");
+  const startPath = controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs");
+  const ask = async () => {
+    setNote("");
+    setPhase("checking");
+    const { signedOut, reply, text } = await readLaunchProfiles(control);
+    if (signedOut) {
+      control.onSignedOut();
+      return;
+    }
+    if (reply !== null) {
+      setOffer(reply);
+      setImplementer(preselect(reply, "implementer"));
+      setReviewer(preselect(reply, "reviewer"));
+      setPhase("asking");
+      return;
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const send = async () => {
+    setPhase("sending");
+    let text = "The run could not be started.";
+    try {
+      const response = await actionRequest(startPath, control.token, { implementer, reviewer });
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok) {
+        const run = body !== null && typeof body.run === "string" ? body.run : "";
+        setNote(run === "" ? "Started." : "Started run " + run + ".");
+        setPhase("done");
+        control.onDone();
+        return;
+      } else if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const asked = "Start " + feature.name + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
+  return (
+    <span className="run-action">
+      {phase === "idle" ? <button type="button" data-start-with="" onClick={ask}>Start with…</button> : null}
+      {phase === "checking" ? <span role="status">Checking…</span> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={asked} className="model-picker">
+          <label>
+            Implementer{" "}
+            <select data-launch-implementer="" value={implementer} onChange={(event) => setImplementer(event.target.value)}>
+              {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <label>
+            Reviewer{" "}
+            <select data-launch-reviewer="" value={reviewer} onChange={(event) => setReviewer(event.target.value)}>
+              {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <span>{asked}</span>
+          <button type="button" data-confirm onClick={send}>Yes, start</button>
           <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
         </span>
       ) : null}
@@ -1689,6 +1783,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         </div>
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+        {control !== null && feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
         {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
