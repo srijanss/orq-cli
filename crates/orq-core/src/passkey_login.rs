@@ -5,7 +5,7 @@
 use crate::es256;
 use crate::passkey_challenge::{decode_b64url, Challenges, Purpose};
 use crate::passkey_register::{encoded_len, es256_coordinates, PasskeyHost};
-use crate::passkey_store::PasskeyStore;
+use crate::passkey_store::{Passkey, PasskeyStore};
 use crate::session::{Issued, PasskeySignIn, Sessions};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -47,6 +47,14 @@ pub fn begin(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore, 
 /// Checks the assertion and, only if every check holds, issues a session. The challenge is spent
 /// whatever the outcome, and the signature counter moves forward before the session is issued.
 pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore, sessions: &Sessions, response: &AssertionResponse, now: u64) -> Result<Issued, Refused> {
+    let key = verify_assertion(host, store, response, |challenge| challenges.spend(Purpose::Login, challenge, now))?;
+    sessions.issue(PasskeySignIn::verified(), &key.credential_id, now).map_err(|_| Refused)
+}
+
+/// Checks an assertion from a registered passkey with user verification, and moves its signature
+/// counter forward. `spend` is handed the challenge the browser signed before anything else is
+/// looked at, and says whether it was one issued for this use; it is spent whatever the outcome.
+pub(crate) fn verify_assertion(host: &PasskeyHost, store: &PasskeyStore, response: &AssertionResponse, spend: impl FnOnce(&str) -> bool) -> Result<Passkey, Refused> {
     if response.client_data_json.len() > encoded_len(MAX_CLIENT_DATA) {
         return Err(Refused);
     }
@@ -57,7 +65,7 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
     let data: Value = serde_json::from_slice(&client_data).map_err(|_| Refused)?;
     let text = |name: &str| data.get(name).and_then(Value::as_str);
     // Spent first, so a refused answer cannot be tried again.
-    if !challenges.spend(Purpose::Login, text("challenge").ok_or(Refused)?, now) {
+    if !spend(text("challenge").ok_or(Refused)?) {
         return Err(Refused);
     }
     if text("type") != Some("webauthn.get") || text("origin") != Some(host.origin()) || data.get("crossOrigin").is_some_and(|v| v != &Value::Bool(false)) {
@@ -95,7 +103,7 @@ pub fn finish(host: &PasskeyHost, challenges: &Challenges, store: &PasskeyStore,
     // Always under the lock, even when the counter stays at zero: it also confirms the passkey was
     // not removed while the signature was being checked.
     store.advance_counter(&key, counter).map_err(|_| Refused)?;
-    sessions.issue(PasskeySignIn::verified(), &key.credential_id, now).map_err(|_| Refused)
+    Ok(key)
 }
 
 #[cfg(test)]
