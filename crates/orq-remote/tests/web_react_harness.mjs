@@ -97,10 +97,12 @@ if (scenario.webauthn) {
 }
 window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/auth/")) {
-    authRequests.push({ url, method: options.method || "GET", body: options.body === undefined ? null : JSON.parse(options.body) });
-    // `auth_failures` maps an /auth path to an HTTP status it answers with, or to "reject" for no answer at all.
+    authRequests.push({ url, method: options.method || "GET", headers: options.headers || {}, body: options.body === undefined ? null : JSON.parse(options.body) });
+    // `auth_failures` maps an /auth path to an HTTP status it answers with, to {status, json} for a
+    // refusal with a body, or to "reject" for no answer at all.
     const failure = (scenario.auth_failures || {})[String(url)];
     if (failure === "reject") return Promise.reject(new Error("offline"));
+    if (failure !== undefined && typeof failure === "object") return Promise.resolve({ status: failure.status, ok: false, json: () => Promise.resolve(failure.json || {}) });
     if (failure !== undefined) return Promise.resolve({ status: failure, ok: false, json: () => Promise.resolve({}) });
     const reply = String(url) === "/auth/status" ? scenario.auth : (scenario.auth_replies || {})[String(url)];
     const known = reply !== undefined && reply !== null;

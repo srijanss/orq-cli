@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
-import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -796,6 +796,53 @@ function AgentFields({ agent }) {
   );
 }
 
+// One passkey on Settings, with Rename: a name field that starts with the current name. Save sends it;
+// a refusal shows the server's reason and keeps the field open.
+function PasskeyRow({ passkey, onChanged }) {
+  const [label, setLabel] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const close = () => {
+    setLabel(null);
+    setNote("");
+  };
+  const save = async () => {
+    setSending(true);
+    const refused = await renamePasskey(passkey.id, label);
+    setSending(false);
+    if (refused === null) {
+      close();
+      onChanged();
+    } else {
+      setNote(refused);
+    }
+  };
+  if (label === null) {
+    return (
+      <li className="settings-row">
+        <strong>{passkey.label}</strong> <code>{passkey.id}</code>{" "}
+        <button type="button" data-passkey-rename={passkey.id} onClick={() => setLabel(passkey.label)}>
+          Rename
+        </button>
+      </li>
+    );
+  }
+  return (
+    <li className="settings-row passkey-rename">
+      <label>
+        Name <input type="text" data-passkey-label maxLength={40} value={label} disabled={sending} onChange={(event) => setLabel(event.target.value)} />
+      </label>
+      <button type="button" data-passkey-save disabled={sending || label.trim() === ""} onClick={save}>
+        Save
+      </button>
+      <button type="button" data-cancel disabled={sending} onClick={close}>
+        Cancel
+      </button>
+      {note !== "" && <p role="alert">{note}</p>}
+    </li>
+  );
+}
+
 // Settings, signed in with a passkey: the passkeys on the server and a way to add another one.
 function PasskeysCard() {
   const [keys, setKeys] = useState(null);
@@ -818,9 +865,7 @@ function PasskeysCard() {
       )}
       <ul className="settings-fields">
         {(failed ? [] : keys).map((key) => (
-          <li key={key.id} className="settings-row">
-            <strong>{key.label}</strong> <code>{key.id}</code>
-          </li>
+          <PasskeyRow key={key.id} passkey={key} onChanged={load} />
         ))}
       </ul>
       {passkeysAvailable() && <EnrolPasskey token={null} another onDone={load} />}
