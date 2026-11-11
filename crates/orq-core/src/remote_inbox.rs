@@ -276,12 +276,12 @@ pub struct ReviewScope {
 }
 
 pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
-    answer(roots, config, project_id, project_name, request, b"", None)
+    answer(roots, config, project_id, project_name, request, b"", None, None)
 }
 
 /// Like [`handle`], and `/api/projects` is answered by `provider`.
 pub fn handle_with(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: &dyn ProjectsProvider) -> Response {
-    answer(roots, config, project_id, project_name, request, b"", Some(provider))
+    answer(roots, config, project_id, project_name, request, b"", Some(provider), None)
 }
 
 /// The most an action's request body may hold; the transport reads no more than this.
@@ -289,7 +289,17 @@ pub const MAX_ACTION_BODY: usize = 4096;
 
 /// Like [`handle_with`], with the request's body, which only the action routes look at.
 pub fn handle_with_body(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: &dyn ProjectsProvider) -> Response {
-    answer(roots, config, project_id, project_name, request, body, Some(provider))
+    answer(roots, config, project_id, project_name, request, body, Some(provider), None)
+}
+
+/// A check that an assertion from the page confirms turning remote actions on, given only for a
+/// request from a passkey session; it spends the challenge the assertion answers.
+pub type StepUp<'a> = &'a dyn Fn(&Value) -> bool;
+
+/// Like [`handle_with_body`], from a passkey session whose step-up assertions `confirm` checks.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_with_confirm(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: &dyn ProjectsProvider, confirm: Option<StepUp>) -> Response {
+    answer(roots, config, project_id, project_name, request, body, Some(provider), confirm)
 }
 
 /// Why an action's body is refused, if it is: it must be empty or a JSON object with only `allowed` fields.
@@ -306,8 +316,9 @@ fn body_refusal(body: &[u8], allowed: &[&str]) -> Option<Response> {
     }
 }
 
-fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>) -> Response {
-    let mut response = route(roots, config, project_id, project_name, request, body, provider);
+#[allow(clippy::too_many_arguments)]
+fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>, confirm: Option<StepUp>) -> Response {
+    let mut response = route(roots, config, project_id, project_name, request, body, provider, confirm);
     if request.method == "HEAD" {
         // Same status as GET, never a body.
         response.body = Value::Null;
@@ -342,16 +353,17 @@ fn remote_actions_on(roots: &StorageRoots) -> bool {
     public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
 }
 
-/// Turns remote actions off for the web, while the settings version presented is still current, and
-/// leaves an audit line for the attempt. Turning them on is refused here: it needs a passkey check.
-fn set_remote_actions(roots: &StorageRoots, body: &[u8]) -> Response {
+/// Turns remote actions off or on for the web, while the settings version presented is still current,
+/// and leaves an audit line for the attempt. Turning them on needs a passkey session (`confirm`) and an
+/// assertion in the body that it accepts.
+fn set_remote_actions(roots: &StorageRoots, body: &[u8], confirm: Option<StepUp>) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     use crate::remote_settings::{write_if_version, SettingsWriteError};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
     let audit = |outcome, reason: Option<&str>| {
         let _ = record(roots, &Attempt { identity: "web", action: "settings.remote_actions", project: "settings", run: None, outcome, reason }, now);
     };
-    if let Some(refusal) = body_refusal(body, &["on", "version"]) {
+    if let Some(refusal) = body_refusal(body, &["on", "version", "assertion"]) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
     }
@@ -361,13 +373,19 @@ fn set_remote_actions(roots: &StorageRoots, body: &[u8]) -> Response {
         return error(400, "the request body is not one this action takes");
     };
     if on {
-        audit(Outcome::Refused, Some("needs a passkey sign-in"));
-        return error(403, "Turning remote actions on needs a passkey sign-in");
+        let Some(confirm) = confirm else {
+            audit(Outcome::Refused, Some("needs a passkey sign-in"));
+            return error(403, "Turning remote actions on needs a passkey sign-in");
+        };
+        if !confirm(&fields["assertion"]) {
+            audit(Outcome::Refused, Some("passkey check failed"));
+            return error(403, "The passkey check did not pass");
+        }
     }
-    match write_if_version(roots, version, |doc| doc["remote_actions"] = toml_edit::value(false)) {
+    match write_if_version(roots, version, |doc| doc["remote_actions"] = toml_edit::value(on)) {
         Ok(()) => {
             audit(Outcome::Allowed, None);
-            reply(200, json!({ "remote_actions": false }))
+            reply(200, json!({ "remote_actions": on }))
         }
         Err(conflict @ SettingsWriteError::Conflict) => {
             audit(Outcome::Refused, Some("settings changed"));
@@ -466,7 +484,8 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     }
 }
 
-fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>) -> Response {
+#[allow(clippy::too_many_arguments)]
+fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>, confirm: Option<StepUp>) -> Response {
     // A stranger's address and a bad token are refused identically, so a
     // caller learns nothing about which check failed.
     if !peer_allowed(request.peer) || !token_matches(&config.token, request.authorization) {
@@ -485,7 +504,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {
-        return set_remote_actions(roots, body);
+        return set_remote_actions(roots, body, confirm);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");

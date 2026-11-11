@@ -1,9 +1,12 @@
 //! POST /api/settings/remote-actions turns remote actions off from any signed-in request, outside the
 //! remote_actions gate, only while the settings version it presents is current; every action route then
-//! answers 404, and each attempt is audited as settings.remote_actions.
+//! answers 404, and each attempt is audited as settings.remote_actions. Turning them on again needs a
+//! passkey session and a fresh passkey check (step-up) for that purpose.
+
+mod passkey_support;
 
 use orq_core::remote_audit;
-use orq_core::remote_inbox::{handle_with_body, public_settings, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, MAX_ACTION_BODY};
+use orq_core::remote_inbox::{handle_with_body, handle_with_confirm, public_settings, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, MAX_ACTION_BODY};
 use orq_core::storage::StorageRoots;
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -153,4 +156,126 @@ fn a_settings_file_that_cannot_be_read_is_left_alone_and_the_attempt_is_refused(
     let lines = switch_lines(&roots);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("the settings could not be read")));
+}
+
+/// A signed-in passkey session over `config`, as the transport would see it: the handler gets the
+/// token, and a check that answers whether an assertion confirms turning actions on for this session.
+struct Signed {
+    rig: passkey_support::Rig,
+    device: passkey_support::Device,
+    cookie: String,
+    fake: Fake,
+    count: u32,
+}
+
+impl Signed {
+    fn new(tag: &str, config: &str) -> Signed {
+        let rig = passkey_support::Rig::new(&format!("actions-on-{tag}"));
+        std::fs::write(rig.roots.config_file(), config).unwrap();
+        let device = passkey_support::Device::new(5);
+        rig.enrol(&device);
+        let cookie = rig.sign_in(&device, 1);
+        let fake = Fake { config: rig.roots.config_file(), asked: Mutex::new(0) };
+        Signed { rig, device, cookie, fake, count: 1 }
+    }
+
+    /// A fresh assertion for turning actions on, as the page gets it from the passkey prompt.
+    fn assertion(&mut self) -> Value {
+        let cookie = self.cookie.clone();
+        self.assertion_for(&cookie)
+    }
+
+    /// The same, asked for by the session `cookie`.
+    fn assertion_for(&mut self, cookie: &str) -> Value {
+        let body = json!({"purpose": "remote_actions.on"}).to_string();
+        let options = self.rig.call("POST", "/auth/confirm/begin", None, Some(cookie), body.as_bytes()).body;
+        self.count += 1;
+        self.device.assertion(options["challenge"].as_str().unwrap(), &passkey_support::Answer::good(self.count))
+    }
+
+    fn post(&self, path: &str, body: &Value, session: Option<&str>) -> (u16, Value) {
+        let authorization = format!("Bearer {}", passkey_support::TOKEN);
+        let request = Request { method: "POST", path, peer: "127.0.0.1".parse().unwrap(), authorization: Some(&authorization) };
+        let confirm = |assertion: &Value| self.rig.auth.confirm(&self.rig.roots, session, "remote_actions.on", assertion);
+        let check: Option<&dyn Fn(&Value) -> bool> = session.map(|_| &confirm as &dyn Fn(&Value) -> bool);
+        let reply = handle_with_confirm(&self.rig.roots, &self.rig.config, "p", "p", &request, body.to_string().as_bytes(), &self.fake, check);
+        (reply.status, reply.body)
+    }
+
+    fn version(&self) -> String {
+        let authorization = format!("Bearer {}", passkey_support::TOKEN);
+        let request = Request { method: "GET", path: "/api/settings", peer: "127.0.0.1".parse().unwrap(), authorization: Some(&authorization) };
+        let reply = handle_with_body(&self.rig.roots, &self.rig.config, "p", "p", &request, b"", &self.fake);
+        reply.body["settings"]["version"].as_str().unwrap().to_string()
+    }
+
+    fn file(&self) -> String {
+        std::fs::read_to_string(self.rig.roots.config_file()).unwrap()
+    }
+}
+
+#[test]
+fn a_passkey_session_with_a_fresh_passkey_check_turns_actions_on_and_they_answer_again() {
+    let mut signed = Signed::new("on", "# mine\nremote_actions = false\n");
+    let cookie = signed.cookie.clone();
+    assert_eq!(signed.post(PAUSE, &json!({}), Some(&cookie)).0, 404);
+
+    let body = json!({"on": true, "version": signed.version(), "assertion": signed.assertion()});
+    let (status, reply) = signed.post(SWITCH, &body, Some(&cookie));
+    assert_eq!((status, &reply), (200, &json!({"remote_actions": true})), "{reply}");
+    assert_eq!(signed.file(), "# mine\nremote_actions = true\n");
+    assert_eq!(signed.post(PAUSE, &json!({}), Some(&cookie)).0, 202);
+
+    let lines = switch_lines(&signed.rig.roots);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["outcome"], "allowed");
+}
+
+#[test]
+fn turning_on_is_refused_without_a_session_or_without_a_good_unused_passkey_check_for_it() {
+    let mut signed = Signed::new("on-refused", "remote_actions = false\n");
+    let cookie = signed.cookie.clone();
+    let version = signed.version();
+    let needs_session = json!({"error": "Turning remote actions on needs a passkey sign-in"});
+    let failed = json!({"error": "The passkey check did not pass"});
+
+    // The token alone, even with an assertion that would have passed.
+    let body = json!({"on": true, "version": version, "assertion": signed.assertion()});
+    assert_eq!(signed.post(SWITCH, &body, None), (403, needs_session.clone()));
+
+    // A session with no assertion, or one that is not an assertion.
+    assert_eq!(signed.post(SWITCH, &json!({"on": true, "version": version}), Some(&cookie)), (403, failed.clone()));
+    assert_eq!(signed.post(SWITCH, &json!({"on": true, "version": version, "assertion": "yes"}), Some(&cookie)), (403, failed.clone()));
+
+    // Used once already: the second time it is refused.
+    let once = signed.assertion();
+    let body = json!({"on": true, "version": version, "assertion": once});
+    assert_eq!(signed.post(SWITCH, &body, Some(&cookie)).0, 200);
+    let version = signed.version();
+    let body = json!({"on": true, "version": version, "assertion": once});
+    assert_eq!(signed.post(SWITCH, &body, Some(&cookie)), (403, failed.clone()), "reused");
+
+    // Asked for by another session.
+    let other = signed.rig.sign_in(&signed.device, 50);
+    signed.count = 50;
+    let body = json!({"on": true, "version": version, "assertion": signed.assertion_for(&other)});
+    assert_eq!(signed.post(SWITCH, &body, Some(&other)).0, 200, "the other session's own check works");
+    let body = json!({"on": true, "version": signed.version(), "assertion": signed.assertion_for(&other)});
+    assert_eq!(signed.post(SWITCH, &body, Some(&cookie)), (403, failed), "a check asked for by the other session");
+
+    // The audit reads newest first.
+    let refused: Vec<_> = switch_lines(&signed.rig.roots).into_iter().rev().filter(|line| line["outcome"] == "refused").map(|line| line["reason"].clone()).collect();
+    assert_eq!(refused, vec![json!("needs a passkey sign-in"), json!("passkey check failed"), json!("passkey check failed"), json!("passkey check failed"), json!("passkey check failed")]);
+}
+
+#[test]
+fn a_good_passkey_check_with_a_stale_version_writes_nothing() {
+    let mut signed = Signed::new("on-stale", "remote_actions = false\n");
+    let cookie = signed.cookie.clone();
+    let stale = signed.version();
+    std::fs::write(signed.rig.roots.config_file(), "remote_actions = false\n# edited by hand\n").unwrap();
+
+    let body = json!({"on": true, "version": stale, "assertion": signed.assertion()});
+    assert_eq!(signed.post(SWITCH, &body, Some(&cookie)), (409, json!({"error": "Settings changed since you opened them"})));
+    assert_eq!(signed.file(), "remote_actions = false\n# edited by hand\n");
 }

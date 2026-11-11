@@ -158,6 +158,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             return follow(shared, peer, credentials, base, cursor, method == "HEAD").await;
         }
     }
+    let session = cookie.clone();
     let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
     // An action's body is read up to the cap. One over it is handed on as too long rather than refused
     // here, so the handler still checks the token and answers 404 while actions are off.
@@ -178,7 +179,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         Some(query) if path.starts_with("/api/") => format!("{path}?{query}"),
         _ => path,
     };
-    let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &target, authorization.as_deref(), &body)).await;
+    let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &target, authorization.as_deref(), session.as_deref(), &body)).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     json_reply(reply.0, reply.1)
 }
@@ -248,11 +249,15 @@ fn json_reply(code: u16, body: Vec<u8>) -> Response {
 }
 
 /// What the handler answers for one request: its status and body.
-fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+/// `cookie` is the request's own, before a session stands in for the token: only a passkey session can
+/// confirm a change with a step-up passkey check.
+fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>, cookie: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
     let request = remote_inbox::Request { method, path, peer, authorization };
     let state = &shared.state;
+    let confirm = |assertion: &serde_json::Value| shared.auth.as_ref().is_some_and(|auth| auth.confirm(&state.roots, cookie, "remote_actions.on", assertion));
+    let step_up: Option<remote_inbox::StepUp> = shared.auth.as_ref().filter(|auth| auth.has_session(cookie)).map(|_| &confirm as remote_inbox::StepUp);
     let reply = match &shared.projects {
-        Some(projects) => remote_inbox::handle_with_body(&state.roots, &state.config, &state.project_id, &state.project_name, &request, body, projects.as_ref()),
+        Some(projects) => remote_inbox::handle_with_confirm(&state.roots, &state.config, &state.project_id, &state.project_name, &request, body, projects.as_ref(), step_up),
         None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
     };
     if reply.status == 401 {
@@ -322,7 +327,7 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
         let peer = state.peer.ip();
         // Judged on every look, so a logout, an expired session or a newly enrolled passkey ends the stream.
         let authorization = effective_authorization(&shared, peer, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
-        let Ok((200, body)) = tokio::task::spawn_blocking(move || reply_to(&shared, peer, "GET", &path, authorization.as_deref(), b"")).await else { return false };
+        let Ok((200, body)) = tokio::task::spawn_blocking(move || reply_to(&shared, peer, "GET", &path, authorization.as_deref(), None, b"")).await else { return false };
         let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) else { return false };
         if absorb(state, &page) {
             state.quiet = std::time::Duration::ZERO;
@@ -341,7 +346,7 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
     let first = {
         let (shared, ip, path) = (state.shared.clone(), peer.ip(), page_path(&state));
         let authorization = effective_authorization(&shared, ip, state.credentials.forwarded, state.credentials.authorization.clone(), state.credentials.cookie.clone()).await;
-        tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref(), b"")).await
+        tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref(), None, b"")).await
     };
     let Ok((code, body)) = first else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     if code != 200 {

@@ -484,3 +484,41 @@ fn the_csrf_gate_follows_the_session_it_belongs_to_through_logout_removal_and_a_
     std::fs::write(PasskeyStore::path(&roots), b"{ not json").unwrap();
     assert!(post(&cookie, &token).contains("403"), "unreadable store");
 }
+
+#[test]
+fn a_signed_in_page_turns_remote_actions_on_with_a_passkey_check_and_the_token_cannot() {
+    let (server, roots) = start("actions-on");
+    let addr = server.addr();
+    let auth = format!("Bearer {TOKEN}");
+    std::fs::write(roots.config_file(), "remote_actions = false\n").unwrap();
+    let mut phone = Device::new(88);
+    let (_, _, body) = send(addr, "POST", "/auth/register/begin", &[("Authorization", &auth)], b"{}");
+    assert!(send(addr, "POST", "/auth/register/finish", &[("Authorization", &auth)], &phone.register_body(&json(&body), "phone")).0.contains("200"));
+    let (_, _, body) = send(addr, "POST", "/auth/login/begin", &[], b"{}");
+    let (_, head, _) = send(addr, "POST", "/auth/login/finish", &[], &phone.login_body(&json(&body)));
+    let cookie = cookie_from(&head);
+    let proxy = ("X-Forwarded-For", "100.64.0.9");
+    let csrf = json(&send(addr, "GET", "/auth/status", &[("Cookie", &cookie), proxy], b"").2)["csrf"].as_str().unwrap().to_string();
+    let origin = format!("https://{RP}");
+    let page = [("Cookie", cookie.as_str()), proxy, ("Origin", origin.as_str()), ("X-CSRF-Token", csrf.as_str())];
+    let version = orq_core::remote_settings::version_of("remote_actions = false\n");
+
+    // The token, straight from loopback, never reaches the switch: changes need the page's session.
+    let body = serde_json::json!({"on": true, "version": version}).to_string();
+    assert!(send(addr, "POST", "/api/settings/remote-actions", &[("Authorization", &auth)], body.as_bytes()).0.contains("403"));
+
+    // The page, with no passkey check, is refused.
+    let (status, _, reply) = send(addr, "POST", "/api/settings/remote-actions", &page, body.as_bytes());
+    assert!(status.contains("403"), "{status} {reply}");
+    assert_eq!(json(&reply)["error"], "The passkey check did not pass");
+
+    // With a fresh check it is turned on.
+    let (status, _, options) = send(addr, "POST", "/auth/confirm/begin", &page, br#"{"purpose":"remote_actions.on"}"#);
+    assert!(status.contains("200"), "{status} {options}");
+    let assertion: serde_json::Value = serde_json::from_slice(&phone.login_body(&json(&options))).unwrap();
+    let body = serde_json::json!({"on": true, "version": version, "assertion": assertion}).to_string();
+    let (status, _, reply) = send(addr, "POST", "/api/settings/remote-actions", &page, body.as_bytes());
+    assert!(status.contains("200"), "{status} {reply}");
+    assert_eq!(json(&reply), serde_json::json!({"remote_actions": true}));
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), "remote_actions = true\n");
+}
