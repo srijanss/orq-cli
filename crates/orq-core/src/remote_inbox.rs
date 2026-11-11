@@ -342,6 +342,44 @@ fn remote_actions_on(roots: &StorageRoots) -> bool {
     public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
 }
 
+/// Turns remote actions off for the web, while the settings version presented is still current, and
+/// leaves an audit line for the attempt. Turning them on is refused here: it needs a passkey check.
+fn set_remote_actions(roots: &StorageRoots, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    use crate::remote_settings::{write_if_version, SettingsWriteError};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "settings.remote_actions", project: "settings", run: None, outcome, reason }, now);
+    };
+    if let Some(refusal) = body_refusal(body, &["on", "version"]) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let (Some(on), Some(version)) = (fields["on"].as_bool(), fields["version"].as_str()) else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    if on {
+        audit(Outcome::Refused, Some("needs a passkey sign-in"));
+        return error(403, "Turning remote actions on needs a passkey sign-in");
+    }
+    match write_if_version(roots, version, |doc| doc["remote_actions"] = toml_edit::value(false)) {
+        Ok(()) => {
+            audit(Outcome::Allowed, None);
+            reply(200, json!({ "remote_actions": false }))
+        }
+        Err(conflict @ SettingsWriteError::Conflict) => {
+            audit(Outcome::Refused, Some("settings changed"));
+            error(conflict.status(), &conflict.to_string())
+        }
+        Err(failed) => {
+            audit(Outcome::Refused, Some(&failed.to_string()));
+            error(failed.status(), &failed.to_string())
+        }
+    }
+}
+
 /// Starts a run for the web, if actions are on, and leaves an audit line for the attempt.
 fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
@@ -444,6 +482,10 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run, control)) = (request.method == "POST").then(|| run_control_target(path)).flatten() {
         return control_run(roots, provider, id, run, control, body);
+    }
+    // Not behind the remote_actions gate: turning actions off must always be possible.
+    if path == "/api/settings/remote-actions" && request.method == "POST" {
+        return set_remote_actions(roots, body);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
