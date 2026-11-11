@@ -137,3 +137,20 @@ fn only_a_signed_in_post_with_the_right_body_reaches_the_switch() {
     assert_eq!(lines.len(), bad.len() + 2, "every refusal after the token check is audited: {lines:?}");
     assert!(lines.iter().all(|line| line["outcome"] == "refused"), "{lines:?}");
 }
+
+#[test]
+fn a_settings_file_that_cannot_be_read_is_left_alone_and_the_attempt_is_refused() {
+    let broken = "this is [not toml";
+    let (roots, fake) = setup("broken", broken);
+    let current = orq_core::remote_settings::version_of(broken);
+
+    let body = json!({"on": false, "version": current}).to_string();
+    let (status, reply) = send(&roots, &fake, "POST", SWITCH, Some("tok"), body.as_bytes());
+    assert_eq!((status, &reply), (500, &json!({"error": "the settings could not be read"})));
+    assert!(!reply.to_string().contains(roots.config.to_str().unwrap()), "{reply}");
+    assert_eq!(std::fs::read_to_string(roots.config_file()).unwrap(), broken);
+
+    let lines = switch_lines(&roots);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("the settings could not be read")));
+}
