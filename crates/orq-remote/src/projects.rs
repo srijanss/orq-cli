@@ -404,6 +404,26 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
     }
 
+    /// The popup's launch picker: the profiles of this machine's config and the project's `.orq.toml`, and the
+    /// implementer and reviewer it preselects. A role whose default cannot be worked out has none.
+    fn launch_profiles(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let root = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?.root;
+        let user_config = self.roots.config_file();
+        let profiles = orq_features::load_model_profiles(&user_config, &root.join(".orq.toml")).map_err(|error| error.to_string())?;
+        let reviewers = orq_features::load_reviewer_config(&root.join(".tdd-config.json")).unwrap_or_default();
+        let settings = orq_features::Settings::load(&user_config).ok();
+        let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
+        let (implementer, reviewer) = orq_features::default_role_profiles(
+            &profiles,
+            &reviewers,
+            agent(orq_features::AgentRole::Implementer).as_ref(),
+            agent(orq_features::AgentRole::Reviewer).as_ref(),
+        );
+        let names: Vec<&str> = profiles.profiles().iter().map(|profile| profile.name.as_str()).collect();
+        Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
+    }
+
     fn discard_warning(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::RunControlOutcome;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };

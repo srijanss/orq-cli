@@ -244,6 +244,12 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// The model profiles a run of project `id` can be started or switched with, and the ones the popup's
+    /// launch picker preselects, as `{profiles, implementer, reviewer}`; `None` when there is no such project.
+    fn launch_profiles(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// Discards run `run` of project `id` the way the popup's Discard and Clear do. A provider that
     /// cannot does not know the run.
     fn discard_run(&self, _id: &str, _run: &str) -> Result<RunDiscard, String> {
@@ -693,6 +699,26 @@ fn discard_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     }
 }
 
+/// The project of `/api/projects/{id}/{leaf}`, when the path has that shape.
+fn project_target<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
+    let id = path.strip_prefix("/api/projects/")?.strip_suffix(leaf)?.strip_suffix('/')?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// The profiles a run can be started or switched with, for the web's pickers. It changes nothing, so it
+/// is not audited, but it is there only while actions are on.
+fn launch_profiles(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str) -> Response {
+    if !remote_actions_on(roots) {
+        return error(404, "not found");
+    }
+    match provider.map(|provider| provider.launch_profiles(id)) {
+        Some(Ok(Some(profiles))) => reply(200, profiles),
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => error(500, "the launch profiles could not be read"),
+        _ => error(404, "not found"),
+    }
+}
+
 /// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
 /// the web asked for, so it is not audited, but it is there only while actions are on.
 fn resume_check(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
@@ -744,6 +770,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = run_target(path, "discard-warning") {
         return discard_warning(roots, provider, id, run);
+    }
+    if let Some(id) = project_target(path, "launch-profiles") {
+        return launch_profiles(roots, provider, id);
     }
     if path == "/api/projects" {
         return match provider {
