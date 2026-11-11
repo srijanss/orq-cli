@@ -34,9 +34,33 @@ impl std::fmt::Display for SettingsWriteError {
 
 impl std::error::Error for SettingsWriteError {}
 
-/// The version of config.toml's text: a hex sha256, where an absent file is the empty text.
+/// The version of config.toml's text, where an absent file is the empty text: a hex sha256 keyed with a
+/// secret this process drew at random, so a reader can tell the file changed but cannot test guesses
+/// about the fields the settings page hides. A restart draws a new key, so a page opened before it is
+/// asked to reload, which only costs that one change.
 pub fn version_of(text: &str) -> String {
-    Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut hash = Sha256::new();
+    hash.update(version_key());
+    hash.update(text.as_bytes());
+    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn version_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        use std::io::Read;
+        let mut key = [0u8; 32];
+        if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut key)).is_err() {
+            // The standard library's hasher seeds are random per process too.
+            use std::hash::{BuildHasher, Hasher};
+            for (i, chunk) in key.chunks_mut(8).enumerate() {
+                let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+                hasher.write_usize(i);
+                chunk.copy_from_slice(&hasher.finish().to_le_bytes());
+            }
+        }
+        key
+    })
 }
 
 /// The text of config.toml, where an absent file is empty.
