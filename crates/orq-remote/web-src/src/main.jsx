@@ -1602,7 +1602,7 @@ function FeatureList({ features, showProject = false }) {
 }
 
 // One feature: its status, description, dependencies (each a link to that feature), the runs made
-// for it, and the action to start one when it is pending.
+// for it, and the action to start one when it is pending or to promote it when it is a draft.
 const FEATURE_TABS = [["description", "Description"], ["test", "Test file"], ["dependencies", "Dependencies"], ["runs", "Runs"]];
 
 function FeatureDetail({ feature, features, runs, projectId, control }) {
@@ -1624,6 +1624,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         </div>
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+        {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
             <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
