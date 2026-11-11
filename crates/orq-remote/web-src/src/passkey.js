@@ -87,6 +87,11 @@ export async function removePasskey(id) {
   return refused === null ? { refused, signedOut: data !== null && typeof data === "object" && data.signed_out === true } : { refused };
 }
 
+// Ends every passkey session, this one included. Resolves null when they ended, otherwise the reason.
+export async function endAllSessions() {
+  return (await changePasskeys("/auth/sessions/end-all", {}, "The sessions could not be ended.")).refused;
+}
+
 // Signs in with a stored passkey. Resolves true when the server set the session cookie.
 export async function signInWithPasskey() {
   const began = await post("/auth/login/begin");

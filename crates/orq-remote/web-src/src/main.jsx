@@ -8,7 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
-import { authStatus, confirmWithPasskey, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -880,6 +880,43 @@ function PasskeyRow({ passkey, onChanged, onSignOut }) {
 }
 
 // Settings, signed in with a passkey: the passkeys on the server and a way to add another one.
+// Signed in with a passkey, ends every session on every device after asking; the page then signs out.
+function SignOutEverywhere({ onSignOut }) {
+  const [asking, setAsking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const question = "Sign out every device? You will need your passkey or the token to sign in again.";
+  const endAll = async () => {
+    setSending(true);
+    const refused = await endAllSessions();
+    setSending(false);
+    setAsking(false);
+    if (refused === null) onSignOut();
+    else setNote(refused);
+  };
+  return (
+    <div className="settings-row">
+      <span>Sign out every device</span>
+      {asking ? (
+        <span role="group" aria-label={question}>
+          <span>{question}</span>
+          <button type="button" className="danger-button" data-confirm disabled={sending} onClick={endAll}>
+            Yes, sign out everywhere
+          </button>
+          <button type="button" data-cancel disabled={sending} onClick={() => setAsking(false)}>
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <button type="button" className="danger-button" data-sign-out-everywhere onClick={() => { setNote(""); setAsking(true); }}>
+          Sign out everywhere
+        </button>
+      )}
+      {note !== "" && <p role="alert">{note}</p>}
+    </div>
+  );
+}
+
 function PasskeysCard({ onSignOut = null }) {
   const [keys, setKeys] = useState(null);
   const load = () => listPasskeys().then(setKeys);
@@ -2386,6 +2423,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
                   Sign out
                 </button>
               </div>
+              {token === SESSION && <SignOutEverywhere onSignOut={onSignOut} />}
             </section>
           )}
         </div>
