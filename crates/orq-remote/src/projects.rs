@@ -260,6 +260,11 @@ impl StoreProjects {
         Ok(RunControlOutcome::Done(run.to_string()))
     }
 
+    /// The model profiles of this machine's config and the `.orq.toml` of the project at `root`.
+    fn model_profiles(&self, root: &Path) -> Result<orq_features::ModelProfiles, String> {
+        orq_features::load_model_profiles(&self.roots.config_file(), &root.join(".orq.toml")).map_err(|error| error.to_string())
+    }
+
     /// Project `id` and the run store, when `run` is a run of that project; only such a run can be
     /// acted on through it. `None` when either is unknown.
     fn own_run(&self, id: &str, run: &str) -> Result<Option<(Project, orq_orchestrator::RunStore)>, String> {
@@ -410,7 +415,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let root = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?.root;
         let user_config = self.roots.config_file();
-        let profiles = orq_features::load_model_profiles(&user_config, &root.join(".orq.toml")).map_err(|error| error.to_string())?;
+        let profiles = self.model_profiles(&root)?;
         let reviewers = orq_features::load_reviewer_config(&root.join(".tdd-config.json")).unwrap_or_default();
         let settings = orq_features::Settings::load(&user_config).ok();
         let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
@@ -422,6 +427,21 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         );
         let names: Vec<&str> = profiles.profiles().iter().map(|profile| profile.name.as_str()).collect();
         Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
+    }
+
+    fn switch_model(&self, id: &str, run: &str, role: &str, profile: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        let root = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?.root;
+        // Only a profile the launch picker offers, as the popup's Switch model allows.
+        if self.model_profiles(&root)?.get(profile).is_none() {
+            return Ok(RunControlOutcome::Refused(orq_core::redact::redact(&format!("the profile {profile} is not defined in the model profiles"))));
+        }
+        match orq_orchestrator::request_model_switch(&store, run, role, profile) {
+            Ok(()) => Ok(RunControlOutcome::Done(run.to_string())),
+            Err(why) if why.starts_with(&format!("{run} is ")) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
+            Err(why) => Err(why),
+        }
     }
 
     fn discard_warning(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {

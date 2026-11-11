@@ -244,6 +244,12 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// Records that the paused run `run` of project `id` continues `role` ("implementer" or "reviewer") on the
+    /// model profile `profile` when it resumes (`Done(run)`), or why not. A provider that cannot does not know the run.
+    fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
+
     /// The model profiles a run of project `id` can be started or switched with, and the ones the popup's
     /// launch picker preselects, as `{profiles, implementer, reviewer}`; `None` when there is no such project.
     fn launch_profiles(&self, _id: &str) -> Result<Option<Value>, String> {
@@ -699,6 +705,60 @@ fn discard_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     }
 }
 
+/// The role and profile of a model switch body, `{"role": "implementer"|"reviewer", "profile": "<name>"}` and
+/// nothing else; `None` for any other body.
+fn model_switch(body: &[u8]) -> Option<(String, String)> {
+    if body.len() > MAX_ACTION_BODY {
+        return None;
+    }
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else { return None };
+    let role = fields.get("role")?.as_str().filter(|role| matches!(*role, "implementer" | "reviewer"))?;
+    let profile = fields.get("profile")?.as_str().filter(|profile| !profile.trim().is_empty())?;
+    (fields.len() == 2).then(|| (role.to_string(), profile.to_string()))
+}
+
+/// Switches the model of a paused run for the web, if actions are on, and leaves an audit line for the
+/// attempt as run.model; an allowed one says which role went to which profile.
+fn switch_model(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the model could not be switched";
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "run.model", project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    if !plain_run_id(run) {
+        audit(Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    let Some((role, profile)) = model_switch(body) else {
+        audit(Outcome::Refused, Some(run), Some("bad request body"));
+        return if body.len() > MAX_ACTION_BODY { error(413, "the request body is too large") } else { error(400, "the request body is not one this action takes") };
+    };
+    match provider.map(|provider| provider.switch_model(id, run, &role, &profile)) {
+        Some(Ok(RunControlOutcome::Done(_))) => {
+            audit(Outcome::Allowed, Some(run), Some(&format!("{role} on {profile}")));
+            reply(202, json!({ "run": run, "role": role, "profile": profile }))
+        }
+        Some(Ok(RunControlOutcome::Refused(why))) => {
+            audit(Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, None, Some("no such project or run"));
+            error(404, "not found")
+        }
+    }
+}
+
 /// The project of `/api/projects/{id}/{leaf}`, when the path has that shape.
 fn project_target<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
     let id = path.strip_prefix("/api/projects/")?.strip_suffix(leaf)?.strip_suffix('/')?;
@@ -754,6 +814,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "discard")).flatten() {
         return discard_run(roots, provider, id, run, body);
+    }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "model")).flatten() {
+        return switch_model(roots, provider, id, run, body);
     }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {

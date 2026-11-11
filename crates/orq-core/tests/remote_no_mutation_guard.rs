@@ -1,7 +1,7 @@
 //! Whatever the settings, the web can only read, except for the listed actions when they are switched on:
-//! starting a run, pausing, resuming and stopping it. Nothing else answers to a write.
+//! starting a run, pausing, resuming, stopping, accepting it and switching its model. Nothing else answers to a write.
 
-use orq_core::remote_inbox::{handle_with, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
+use orq_core::remote_inbox::{handle_with_body, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
 use orq_core::storage::StorageRoots;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,6 +22,11 @@ impl ProjectsProvider for Counting {
     }
 
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        Ok(RunControlOutcome::Unknown)
+    }
+
+    fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
         self.changes.fetch_add(1, Ordering::SeqCst);
         Ok(RunControlOutcome::Unknown)
     }
@@ -50,7 +55,7 @@ const READ_PATHS: &[&str] = &[
     "/api/audit/clear",
 ];
 
-const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept"];
+const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
     let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));
@@ -66,7 +71,9 @@ fn roots(tag: &str, actions: bool) -> StorageRoots {
 fn status(roots: &StorageRoots, provider: &Counting, method: &str, path: &str) -> u16 {
     let config = RemoteConfig { token: "tok".into() };
     let request = Request { method, path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
-    handle_with(roots, &config, "p", "p", &request, provider).status
+    // A model switch names the role and profile; any other action takes no body.
+    let body: &[u8] = if path.ends_with("/model") { br#"{"role":"implementer","profile":"opus"}"# } else { b"" };
+    handle_with_body(roots, &config, "p", "p", &request, body, provider).status
 }
 
 #[test]
