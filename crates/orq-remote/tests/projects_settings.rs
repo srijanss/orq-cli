@@ -54,7 +54,7 @@ fn the_settings_list_the_agents_and_models_and_nothing_else_from_the_config() {
     let s = setup("settings-list", Some(CONFIG));
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["settings"], json!({
+    assert_eq!(without_version(&body["settings"]), json!({
         "implementer": {"harness": "claude", "model": "opus", "effort": "high"},
         "reviewer": {"harness": "pi", "model": "openai/gpt-6.1-sol", "effort": null},
         "models": [{"name": "opus", "harness": "claude", "model": "opus", "effort": null}],
@@ -78,7 +78,9 @@ fn a_value_that_looks_like_a_secret_is_redacted_even_in_an_allowed_field() {
 fn no_config_file_means_empty_settings_and_a_broken_one_is_an_error_naming_no_path() {
     let s = setup("settings-none", None);
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
-    assert_eq!((status, &body["settings"]), (200, &json!({"implementer": null, "reviewer": null, "models": [], "remote_actions": false})), "{body}");
+    assert_eq!((status, without_version(&body["settings"])), (200, json!({"implementer": null, "reviewer": null, "models": [], "remote_actions": false})), "{body}");
+    // An absent file is the empty text.
+    assert_eq!(body["settings"]["version"], "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
     let s = setup("settings-bad", Some("this is [not toml"));
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
@@ -103,7 +105,8 @@ fn inline_tables_give_the_same_settings_as_standard_tables() {
     let standard = setup("settings-std", Some("[implementer]\nharness = \"claude\"\nmodel = \"opus\"\n[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n"));
     let inline = setup("settings-inline", Some("implementer = { harness = \"claude\", model = \"opus\", token = \"SECRET\" }\n[models]\nopus = { harness = \"claude\", model = \"opus\" }\n"));
     let (a, b) = (ask(&standard, "GET", Some("Bearer tok")), ask(&inline, "GET", Some("Bearer tok")));
-    assert_eq!(a, b);
+    // Different text, so different versions; the settings themselves match.
+    assert_eq!((a.0, without_version(&a.1["settings"])), (b.0, without_version(&b.1["settings"])));
     assert_eq!(b.1["settings"]["implementer"]["model"], "opus", "{b:?}");
     assert_eq!(b.1["settings"]["models"].as_array().unwrap().len(), 1, "{b:?}");
 }
@@ -127,4 +130,11 @@ fn remote_actions_are_off_unless_that_one_setting_is_true_and_remote_control_doe
     assert_eq!(on("remote_actions = false\n", "actions-off"), json!(false));
     assert_eq!(on("remote_control = true\n", "actions-control-only"), json!(false));
     assert_eq!(on("remote_actions = \"yes\"\n", "actions-string"), json!(false), "only a real true counts");
+}
+
+/// The settings without their `version`, which changes with any edit to the file's text.
+fn without_version(settings: &Value) -> Value {
+    let mut settings = settings.clone();
+    settings.as_object_mut().map(|fields| fields.remove("version"));
+    settings
 }

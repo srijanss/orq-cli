@@ -258,11 +258,7 @@ pub enum RunStart {
 /// other key (tokens, environment, credential paths, the remote section) is left behind. A missing
 /// file is empty settings; a file that cannot be parsed is an error that does not name the file.
 pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => return Err("the settings could not be read".to_string()),
-    };
+    let text = crate::remote_settings::read_config(path).map_err(|_| "the settings could not be read".to_string())?;
     let doc: toml_edit::DocumentMut = text.parse().map_err(|_| "the settings could not be read".to_string())?;
     let field = |table: &dyn toml_edit::TableLike, key: &str| table.get(key).and_then(|item| item.as_str()).map(|value| Value::String(crate::redact::redact(value))).unwrap_or(Value::Null);
     let agent = |table: &dyn toml_edit::TableLike| json!({"harness": field(table, "harness"), "model": field(table, "model"), "effort": field(table, "effort")});
@@ -270,7 +266,7 @@ pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
     let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table_like()).map(|table| table.iter().filter_map(|(name, item)| item.as_table_like().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
     // Off unless this one setting is a real `true`; `remote_control` never turns it on.
     let remote_actions = doc.get("remote_actions").and_then(|item| item.as_bool()) == Some(true);
-    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models, "remote_actions": remote_actions}))
+    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models, "remote_actions": remote_actions, "version": crate::remote_settings::version_of(&text)}))
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.

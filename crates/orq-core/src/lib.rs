@@ -13,6 +13,7 @@ pub mod prune;
 pub mod redact;
 pub mod remote_audit;
 pub mod remote_inbox;
+pub mod remote_settings;
 pub mod retention;
 pub mod review_inbox;
 pub mod review_intelligence;
