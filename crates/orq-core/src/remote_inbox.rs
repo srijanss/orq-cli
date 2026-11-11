@@ -230,6 +230,12 @@ pub trait ProjectsProvider {
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
         Ok(RunControlOutcome::Unknown)
     }
+
+    /// Where run `run` of project `id` would continue if resumed now (`Done(next)`), or why it
+    /// cannot be; nothing is resumed. A provider that cannot tell does not know the run.
+    fn resume_check(&self, _id: &str, _run: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
 }
 
 /// What the web may ask of a run that already exists.
@@ -561,7 +567,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         audit(Outcome::Refused, None, Some("remote actions are off"));
         return error(404, "not found");
     }
-    let plain = run.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !run.starts_with('.');
+    let plain = plain_run_id(run);
     if !plain {
         audit(Outcome::Refused, None, Some("not a run id"));
         return error(404, "not found");
@@ -588,6 +594,33 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
             audit(Outcome::Refused, None, Some("no such project or run"));
             error(404, "not found")
         }
+    }
+}
+
+/// Whether `run` can only be a run id, never a path.
+fn plain_run_id(run: &str) -> bool {
+    run.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !run.starts_with('.')
+}
+
+/// The project and run of `/api/projects/{id}/runs/{run}/resume-check`, when the path has that shape.
+fn resume_check_target(path: &str) -> Option<(&str, &str)> {
+    let mut parts = path.strip_prefix("/api/projects/")?.split('/');
+    let (id, runs, run, check) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    (runs == "runs" && check == "resume-check" && !id.is_empty() && !run.is_empty() && parts.next().is_none()).then_some((id, run))
+}
+
+/// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
+/// the web asked for, so it is not audited, but it is there only while actions are on.
+fn resume_check(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
+    if !remote_actions_on(roots) || !plain_run_id(run) {
+        return error(404, "not found");
+    }
+    match provider.map(|provider| provider.resume_check(id, run)) {
+        Some(Ok(RunControlOutcome::Done(next))) => reply(200, json!({ "run": run, "next": next })),
+        Some(Ok(RunControlOutcome::Refused(why))) => reply(409, json!({ "error": why })),
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => error(500, "the run could not be checked"),
+        _ => error(404, "not found"),
     }
 }
 
@@ -618,6 +651,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
+    }
+    if let Some((id, run)) = resume_check_target(path) {
+        return resume_check(roots, provider, id, run);
     }
     if path == "/api/projects" {
         return match provider {

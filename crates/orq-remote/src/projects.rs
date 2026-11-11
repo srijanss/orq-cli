@@ -202,6 +202,20 @@ impl StoreProjects {
         self.agent_options = Some(AgentOptions { source, found: Default::default() });
         self
     }
+
+    /// Project `id` and the run store, when `run` is a run of that project; only such a run can be
+    /// acted on through it. `None` when either is unknown.
+    fn own_run(&self, id: &str, run: &str) -> Result<Option<(Project, orq_orchestrator::RunStore)>, String> {
+        use orq_orchestrator::StoreError;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        match store.load(run) {
+            Ok(record) if record.project_id == key => Ok(Some((project, store))),
+            Ok(_) | Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => Ok(None),
+            Err(error) => Err(format!("run {run} is unreadable: {error:?}")),
+        }
+    }
 }
 
 /// Finds the harnesses on this machine and the models each allows.
@@ -296,16 +310,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn control_run(&self, id: &str, run: &str, control: orq_core::remote_inbox::RunControl) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::{RunControl, RunControlOutcome};
-        use orq_orchestrator::StoreError;
-        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunControlOutcome::Unknown) };
-        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
-        let store = orq_orchestrator::RunStore::new(&self.roots.state);
-        // Only a run of this project can be touched through it.
-        match store.load(run) {
-            Ok(record) if record.project_id == key => {}
-            Ok(_) | Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => return Ok(RunControlOutcome::Unknown),
-            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
-        }
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
         match control {
             // The orchestrator words its own refusals "<run> is ..."; any other failure is for this machine's operator.
             RunControl::Pause => match orq_orchestrator::request_pause(&store, run) {
@@ -327,6 +332,17 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                     Err(LaunchError::Failed(why)) => Err(why),
                 }
             }
+        }
+    }
+
+    fn resume_check(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        // The orchestrator's "cannot ..." is a failure on this machine; any other answer is why the run cannot resume.
+        match orq_orchestrator::resume_check(&store, &project.path, run) {
+            Ok(next) => Ok(RunControlOutcome::Done(orq_core::redact::redact(&next))),
+            Err(why) if why.starts_with("cannot ") => Err(why),
+            Err(why) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
         }
     }
 

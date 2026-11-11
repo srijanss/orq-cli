@@ -354,3 +354,35 @@ pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> 
         payload: serde_json::json!({ "from": from_run_id, "target_sha": target_sha }),
     })
 }
+
+/// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
+/// and starts from `run_id`, the reason otherwise. Nothing is launched.
+pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
+    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let members = run_members(store, run_id)?;
+    let plan = plan_group_resume(store, repo, &record.project_id, &members)?;
+    if plan.from.run_id == run_id {
+        Ok(())
+    } else {
+        Err(format!("{} is a later run of the same features; resume that one", plan.from.run_id))
+    }
+}
+
+/// Where run `run_id` would continue if resumed now: the next stage of a paused run's checkpoint,
+/// "where it stopped" for a failed, blocked or needs-review run, or the reason it cannot be resumed.
+/// Nothing is launched; a run whose process is gone is first recorded as failed, as it already is.
+pub fn resume_check(store: &RunStore, repo: &Path, run_id: &str) -> Result<String, String> {
+    crate::interrupted::reconcile_interrupted(store, run_id, &crate::interrupted::process_is_alive)
+        .map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let stopped = store
+        .events(run_id)
+        .map(|events| matches!(summarize_run(&events).phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview))
+        .unwrap_or(false);
+    if stopped {
+        // The pipeline continues the latest run of these features, so that is what is checked.
+        check_group_resume(store, repo, run_id)?;
+        return Ok("where it stopped".to_string());
+    }
+    let checkpoint = crate::checkpoint::validate_checkpoint(store, repo, run_id)?;
+    Ok(checkpoint.next_stage.unwrap_or_else(|| "the end".to_string()))
+}

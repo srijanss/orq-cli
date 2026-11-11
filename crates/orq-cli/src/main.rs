@@ -2235,19 +2235,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let repo = self.repo_root.as_deref().ok_or("the project is not known")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        // A run whose process is gone is a failed run, which resumes where it stopped.
-        orq_orchestrator::reconcile_interrupted(&store, run_id, &orq_orchestrator::process_is_alive).map_err(|err| format!("cannot read the run: {err:?}"))?;
-        let stopped = store
-            .events(run_id)
-            .map(|events| matches!(orq_orchestrator::summarize_run(&events).phase, orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked | orq_orchestrator::RunPhase::NeedsReview))
-            .unwrap_or(false);
-        if stopped {
-            // The pipeline continues the latest run of these features, so that is what is checked.
-            check_group_resume(&store, repo, run_id)?;
-            return Ok("where it stopped".to_string());
-        }
-        let checkpoint = orq_orchestrator::validate_checkpoint(&store, repo, run_id)?;
-        Ok(printable(checkpoint.next_stage.as_deref().unwrap_or("the end")))
+        orq_orchestrator::resume_check(&store, repo, run_id).map(|next| printable(&next))
     }
 
     fn switch_model(&mut self, run_id: &str, role: &str, profile: &str) -> Result<String, String> {
@@ -4710,19 +4698,6 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str, re
     Ok(list)
 }
 
-/// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
-/// and starts from `run_id`, the reason otherwise. Nothing is launched.
-fn check_group_resume(store: &orq_orchestrator::RunStore, repo: &std::path::Path, run_id: &str) -> Result<(), String> {
-    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
-    let members = orq_orchestrator::run_members(store, run_id)?;
-    let plan = orq_orchestrator::plan_group_resume(store, repo, &record.project_id, &members)?;
-    if plan.from.run_id == run_id {
-        Ok(())
-    } else {
-        Err(format!("{} is a later run of the same features; resume that one", plan.from.run_id))
-    }
-}
-
 /// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
 /// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
 /// not paused, or when the checkpoint no longer matches the checkout.
@@ -4796,7 +4771,7 @@ fn run_resume(args: &[OsString]) -> ExitCode {
         (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
         (_, Err(reason)) => return fail(reason),
     };
-    if let Err(reason) = check_group_resume(&store, &repo, &run_id) {
+    if let Err(reason) = orq_orchestrator::check_group_resume(&store, &repo, &run_id) {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
     }
     // A run waiting for a review decision kept its features; reviewing again starts them anew.

@@ -82,8 +82,8 @@ pub use reap::{
 };
 pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
 pub use resume::{
-    carry_rebase, plan_group_resume, plan_group_resume_with, plan_resume, rebased_onto, record_group,
-    record_inherited_implement, run_members,
+    carry_rebase, check_group_resume, plan_group_resume, plan_group_resume_with, plan_resume, rebased_onto, record_group,
+    record_inherited_implement, resume_check, run_members,
     supersede_paused, ResumePlan,
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
