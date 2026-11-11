@@ -176,3 +176,56 @@ fn settings_without_a_version_offer_no_switch() {
     assert_eq!(count(last(&out), "[data-actions-off]"), 0, "{out}");
     assert!(shown(last(&out)).iter().any(|t| t == "On"), "{out}");
 }
+
+/// Turning on with the passkey session when `/auth/confirm/begin` fails as `failure` says.
+fn begin_failing(failure: Value) -> Option<Value> {
+    let steps = json!([{"click": "[data-actions-on]"}, {"click": "[data-confirm]"}]);
+    run(json!({"url": "/settings", "responses": [settings(false)], "auth": session(), "auth_failures": {"/auth/confirm/begin": failure}, "webauthn": {"secure": true, "api": true, "answer": answer()}, "steps": steps, "selectors": SELECTORS}))
+}
+
+fn status_reads(out: &Value) -> usize {
+    out["authRequests"].as_array().unwrap().iter().filter(|r| r["url"] == "/auth/status").count()
+}
+
+#[test]
+fn a_session_that_ended_before_the_challenge_signs_the_page_out_and_changes_nothing() {
+    let Some(out) = begin_failing(json!(401)) else { return };
+    assert!(posts(&out).is_empty(), "{out}");
+    assert_eq!(status_reads(&out), 2, "signed out: the sign-in state is read again: {out}");
+    assert!(!shown(last(&out)).iter().any(|t| t == "The passkey check was cancelled."), "{out}");
+}
+
+#[test]
+fn a_challenge_the_server_could_not_give_says_so_not_cancelled_and_offers_the_switch_again() {
+    let Some(out) = begin_failing(json!(500)) else { return };
+    assert!(posts(&out).is_empty(), "{out}");
+    let frame = last(&out);
+    assert!(shown(frame).iter().any(|t| t == "The passkey check could not start."), "{out}");
+    assert!(!shown(frame).iter().any(|t| t == "The passkey check was cancelled."), "{out}");
+    assert_eq!(count(frame, "[data-actions-on]"), 1, "{out}");
+    assert_eq!(status_reads(&out), 1, "not signed out: {out}");
+
+    let Some(out) = begin_failing(json!("reject")) else { return };
+    assert!(posts(&out).is_empty(), "{out}");
+    let frame = last(&out);
+    assert!(shown(frame).iter().any(|t| t == "The server could not be reached."), "{out}");
+    assert_eq!(count(frame, "[data-actions-on]"), 1, "{out}");
+}
+
+#[test]
+fn a_change_refused_for_the_sign_in_signs_the_page_out() {
+    let refused = json!({"status": 401, "json": {"error": "unauthorized"}});
+    let Some(out) = as_token(json!([settings(true), refused]), json!([{"click": "[data-actions-off]"}, {"click": "[data-confirm]"}])) else { return };
+    assert_eq!(posts(&out).len(), 1, "{out}");
+    let frame = last(&out);
+    assert_eq!(frame["settled"]["inputs"].as_array().unwrap().len(), 1, "the token prompt is back: {out}");
+    assert!(shown(frame).iter().any(|t| t == "Could not sign in. Check the token and try again."), "{out}");
+}
+
+#[test]
+fn a_change_that_never_reached_the_server_says_so_and_offers_the_switch_again() {
+    let Some(out) = as_token(json!([settings(true), {"reject": true}]), json!([{"click": "[data-actions-off]"}, {"click": "[data-confirm]"}])) else { return };
+    let frame = last(&out);
+    assert!(shown(frame).iter().any(|t| t == "The server could not be reached."), "{out}");
+    assert_eq!(count(frame, "[data-actions-off]"), 1, "{out}");
+}

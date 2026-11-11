@@ -901,6 +901,15 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
           setPhase("idle");
           return;
         }
+        if (typeof assertion.status === "number") {
+          if (assertion.status === 401) {
+            onSignedOut();
+            return;
+          }
+          setNote("The passkey check could not start.");
+          setPhase("idle");
+          return;
+        }
         body.assertion = assertion;
       }
       const response = await actionRequest(API_SETTINGS + "/remote-actions", token, body);

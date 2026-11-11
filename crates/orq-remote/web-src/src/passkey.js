@@ -120,11 +120,11 @@ export async function signOutOfSession() {
 }
 
 // Confirms one change with the passkey again: a fresh challenge for `purpose`, answered by the
-// browser with user verification. Resolves to the answer as the server takes it, or null when no
-// challenge was given or the person dismissed the prompt.
+// browser with user verification. Resolves to the answer as the server takes it, to null when the
+// person dismissed the prompt, or to `{ status }` when the server gave no challenge.
 export async function confirmWithPasskey(purpose) {
   const began = await post("/auth/confirm/begin", { purpose });
-  if (!began.ok) return null;
+  if (!began.ok) return { status: began.status };
   const options = await began.json();
   let credential = null;
   try {
