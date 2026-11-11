@@ -1,5 +1,5 @@
 //! Whatever the settings, the web can only read, except for the listed actions when they are switched on:
-//! starting a run, pausing, resuming, stopping, accepting it and switching its model. Nothing else answers to a write.
+//! starting a run, pausing, resuming, stopping, accepting it, switching its model, and promoting a feature. Nothing else answers to a write.
 
 use orq_core::remote_inbox::{handle_with_body, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
 use orq_core::storage::StorageRoots;
@@ -22,6 +22,11 @@ impl ProjectsProvider for Counting {
     }
 
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        Ok(RunControlOutcome::Unknown)
+    }
+
+    fn promote_feature(&self, _id: &str, _feature: &str) -> Result<RunControlOutcome, String> {
         self.changes.fetch_add(1, Ordering::SeqCst);
         Ok(RunControlOutcome::Unknown)
     }
@@ -55,7 +60,7 @@ const READ_PATHS: &[&str] = &[
     "/api/audit/clear",
 ];
 
-const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model"];
+const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model", "/api/projects/p/features/f/promote"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
     let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));

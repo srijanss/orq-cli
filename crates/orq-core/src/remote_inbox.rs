@@ -244,6 +244,12 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// Promotes the draft `feature` of project `id` to pending (`Done(feature)`), or says why not in the
+    /// ledger's words. A provider that cannot does not know the feature.
+    fn promote_feature(&self, _id: &str, _feature: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
+
     /// Records that the paused run `run` of project `id` continues `role` ("implementer" or "reviewer") on the
     /// model profile `profile` when it resumes (`Done(run)`), or why not. A provider that cannot does not know the run.
     fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
@@ -378,10 +384,7 @@ fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project
 
 /// The project and feature of `/api/projects/{id}/features/{name}/runs`, when the path has that shape.
 fn run_start_target(path: &str) -> Option<(&str, &str)> {
-    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
-        [id, "features", feature, "runs"] if !id.is_empty() && !feature.is_empty() => Some((id, feature)),
-        _ => None,
-    }
+    feature_target(path, "runs")
 }
 
 /// The project, run and control of `/api/projects/{id}/runs/{run}/pause`, `.../resume`, `.../stop` or `.../accept`, when the path has that shape.
@@ -559,8 +562,7 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         audit(Outcome::Refused, None, Some("remote actions are off"));
         return error(404, "not found");
     }
-    let plain = feature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !feature.starts_with('.');
-    if !plain {
+    if !plain_feature_name(feature) {
         audit(Outcome::Refused, None, Some("not a feature name"));
         return error(404, "not found");
     }
@@ -584,6 +586,62 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         }
         _ => {
             audit(Outcome::Refused, None, Some("no such project or feature"));
+            error(404, "not found")
+        }
+    }
+}
+
+/// Whether `feature` can only be a feature name, never a path.
+fn plain_feature_name(feature: &str) -> bool {
+    feature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !feature.starts_with('.')
+}
+
+/// The project and feature of `/api/projects/{id}/features/{name}/{leaf}`, when the path has that shape.
+fn feature_target<'a>(path: &'a str, leaf: &str) -> Option<(&'a str, &'a str)> {
+    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "features", feature, last] if *last == leaf && !id.is_empty() && !feature.is_empty() => Some((id, feature)),
+        _ => None,
+    }
+}
+
+/// Promotes a draft feature for the web, if actions are on, and leaves an audit line for the attempt as
+/// feature.promote; each line names the feature, since an audit line has no feature column.
+fn promote_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the feature could not be promoted";
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "feature.promote", project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !plain_feature_name(feature) {
+        audit(Outcome::Refused, "not a feature name");
+        return error(404, "not found");
+    }
+    let refused = |why: &str| audit(Outcome::Refused, &format!("{feature}: {why}"));
+    if !remote_actions_on(roots) {
+        refused("remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &[]) {
+        refused("bad request body");
+        return refusal;
+    }
+    match provider.map(|provider| provider.promote_feature(id, feature)) {
+        Some(Ok(RunControlOutcome::Done(_))) => {
+            audit(Outcome::Allowed, feature);
+            reply(200, json!({ "feature": feature, "status": "pending" }))
+        }
+        Some(Ok(RunControlOutcome::Refused(why))) => {
+            refused(&why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            refused(failed);
+            error(500, failed)
+        }
+        _ => {
+            refused("no such project or feature");
             error(404, "not found")
         }
     }
@@ -817,6 +875,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "model")).flatten() {
         return switch_model(roots, provider, id, run, body);
+    }
+    if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "promote")).flatten() {
+        return promote_feature(roots, provider, id, feature, body);
     }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {

@@ -429,6 +429,25 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
     }
 
+    /// The popup's Promote: draft to pending under the ledger's lock. A refusal is worded as the CLI's
+    /// `orq feature promote` words it; a ledger that cannot be read or written is this machine's failure.
+    fn promote_feature(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        use orq_features::{LedgerError, PromoteError};
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunControlOutcome::Unknown) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let refused = |why: String| Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why)));
+        match orq_features::promote_feature(&orq_features::ledger_path(&git), feature) {
+            Ok(_) => Ok(RunControlOutcome::Done(feature.to_string())),
+            Err(PromoteError::UnknownFeature(_)) | Err(PromoteError::Ledger(LedgerError::Missing { .. })) => Ok(RunControlOutcome::Unknown),
+            Err(PromoteError::UnrecognisedStatus(text)) => refused(format!("feature {feature} has unrecognised status {text:?} and is left alone")),
+            Err(PromoteError::IllegalTransition(t)) => refused(format!("feature {feature}: {:?} to {:?} is not allowed", t.from, t.to)),
+            Err(PromoteError::Conflict) => refused("ledger changed while it was being edited; nothing was written, try again".to_string()),
+            Err(PromoteError::Locked) => refused("ledger is locked by another writer; nothing was written, try again".to_string()),
+            Err(error) => Err(format!("{error:?}")),
+        }
+    }
+
     fn switch_model(&self, id: &str, run: &str, role: &str, profile: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::RunControlOutcome;
         let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
