@@ -38,6 +38,22 @@ pub struct PasskeyStore {
     dir: PathBuf,
 }
 
+/// Longest label a rename gives.
+pub const MAX_RENAME: usize = 40;
+
+/// Why a rename did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameError {
+    /// Not 1 to 40 characters of printable text.
+    BadLabel,
+    /// No passkey has that credential id.
+    Unknown,
+    /// Another passkey already has that label.
+    Taken,
+    /// The store could not be read or written.
+    Store(String),
+}
+
 fn base64url(text: &str, max: usize) -> bool {
     !text.is_empty() && text.len() <= max && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
@@ -247,6 +263,32 @@ impl PasskeyStore {
             key.sign_count = new;
             Ok(moved)
         })
+    }
+
+    /// Gives the passkey with this credential id a new label, under the lock. The label is 1 to 40
+    /// characters of printable text, and no other passkey may have it.
+    pub fn rename(&self, credential_id: &str, label: &str) -> Result<(), RenameError> {
+        let length = label.chars().count();
+        if length == 0 || length > MAX_RENAME || label.chars().any(char::is_control) || label.trim().is_empty() {
+            return Err(RenameError::BadLabel);
+        }
+        let mut outcome = Ok(());
+        let written = self.change_if(|keys| {
+            if !keys.iter().any(|key| key.credential_id == credential_id) {
+                outcome = Err(RenameError::Unknown);
+                return Ok(false);
+            }
+            if keys.iter().any(|key| key.label == label && key.credential_id != credential_id) {
+                outcome = Err(RenameError::Taken);
+                return Ok(false);
+            }
+            let key = keys.iter_mut().find(|key| key.credential_id == credential_id).expect("found above");
+            let moved = key.label != label;
+            key.label = label.to_string();
+            Ok(moved)
+        });
+        written.map_err(RenameError::Store)?;
+        outcome
     }
 
     pub fn remove(&self, label: &str) -> Result<(), String> {

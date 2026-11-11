@@ -122,8 +122,21 @@ impl Rig {
     }
 
     pub fn call(&self, method: &str, path: &str, authorization: Option<&str>, cookie: Option<&str>, body: &[u8]) -> AuthReply {
-        let request = AuthRequest { method, path, peer: LOCAL, authorization, cookie, body };
+        let request = AuthRequest { method, path, peer: LOCAL, authorization, cookie, origin: None, csrf: None, body };
         self.auth.handle(&self.roots, &self.config, &request).expect("an auth route")
+    }
+
+    /// Like `call`, with the `Origin` and `X-CSRF-Token` headers a signed-in page sends with a change.
+    #[allow(dead_code)]
+    pub fn change(&self, method: &str, path: &str, cookie: Option<&str>, origin: Option<&str>, csrf: Option<&str>, body: &[u8]) -> AuthReply {
+        let request = AuthRequest { method, path, peer: LOCAL, authorization: None, cookie, origin, csrf, body };
+        self.auth.handle(&self.roots, &self.config, &request).expect("an auth route")
+    }
+
+    /// The CSRF token the page gets for the session in `cookie`.
+    #[allow(dead_code)]
+    pub fn csrf(&self, cookie: &str) -> String {
+        self.call("GET", "/auth/status", None, Some(cookie), b"").body["csrf"].as_str().unwrap().to_string()
     }
 
     /// Enrols the device with the access token.

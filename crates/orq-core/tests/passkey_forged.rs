@@ -134,7 +134,7 @@ impl Rig {
     }
 
     fn call(&self, method: &str, path: &str, authorization: Option<&str>, body: &[u8]) -> AuthReply {
-        let request = AuthRequest { method, path, peer: LOCAL, authorization, cookie: None, body };
+        let request = AuthRequest { method, path, peer: LOCAL, authorization, cookie: None, origin: None, csrf: None, body };
         self.auth.handle(&self.roots, &self.config, &request).expect("an auth route")
     }
 

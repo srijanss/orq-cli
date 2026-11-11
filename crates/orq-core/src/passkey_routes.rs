@@ -26,6 +26,10 @@ pub struct AuthRequest<'a> {
     pub peer: IpAddr,
     pub authorization: Option<&'a str>,
     pub cookie: Option<&'a str>,
+    /// The `Origin` header, which a change to the passkeys must carry as this server's own.
+    pub origin: Option<&'a str>,
+    /// The `X-CSRF-Token` header, which a change to the passkeys must carry as the session's own.
+    pub csrf: Option<&'a str>,
     pub body: &'a [u8],
 }
 
@@ -124,6 +128,48 @@ impl PasskeyAuth {
         passkey_confirm::check(&self.host, &self.confirmations, &PasskeyStore::open(roots), purpose, session, &response, now()).is_ok()
     }
 
+    /// The label of the passkey behind the session in the `Cookie` header, for the audit log.
+    fn session_label(&self, store: &PasskeyStore, cookie: Option<&str>) -> Option<String> {
+        let credential = self.session_credential(cookie)?;
+        store.find(&credential).ok().flatten().map(|key| key.label)
+    }
+
+    /// POST /auth/passkeys/{id}/label `{label}`: renames that passkey, for a passkey session presenting
+    /// its CSRF token from this server's origin. Every attempt is audited as passkey.rename.
+    fn rename(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, id: &str, live: bool) -> AuthReply {
+        use crate::passkey_store::RenameError;
+        use crate::remote_audit::{record, Attempt, Outcome};
+        let identity = self.session_label(store, request.cookie).filter(|_| live).unwrap_or_else(|| "web".to_string());
+        let audit = |outcome, reason: &str| {
+            let _ = record(roots, &Attempt { identity: &identity, action: "passkey.rename", project: "passkeys", run: None, outcome, reason: Some(reason) }, now());
+        };
+        let refused = |status: u16, reason: &str, error: &str| {
+            audit(Outcome::Refused, reason);
+            reply(status, json!({ "error": error }))
+        };
+        if !live {
+            return refused(403, "needs a passkey sign-in", "Managing passkeys needs a passkey sign-in");
+        }
+        if !self.change_allowed(roots, request.cookie, request.origin, request.csrf) {
+            return refused(403, "missing or wrong CSRF token or origin", "not allowed");
+        }
+        let body = serde_json::from_slice::<Value>(request.body).ok().filter(|body| body.as_object().is_some_and(|keys| keys.len() == 1));
+        let Some(label) = body.as_ref().and_then(|body| body.get("label")).and_then(Value::as_str) else {
+            return refused(400, "bad request body", "the request body is not one this action takes");
+        };
+        let old = store.find(id).ok().flatten().map(|key| key.label);
+        match store.rename(id, label) {
+            Ok(()) => {
+                audit(Outcome::Allowed, &format!("renamed {} to {label}", old.unwrap_or_default()));
+                reply(200, json!({ "id": id, "label": label }))
+            }
+            Err(RenameError::BadLabel) => refused(422, "bad label", "A name is 1 to 40 characters of printable text"),
+            Err(RenameError::Unknown) => refused(404, "no such passkey", "No passkey has that id"),
+            Err(RenameError::Taken) => refused(409, "label taken", "Another passkey already has that name"),
+            Err(RenameError::Store(_)) => refused(500, "the passkeys could not be written", "The passkeys could not be changed"),
+        }
+    }
+
     /// The answer for an `/auth/...` request; `None` for any other path.
     pub fn handle(&self, roots: &StorageRoots, config: &RemoteConfig, request: &AuthRequest) -> Option<AuthReply> {
         let route = request.path.strip_prefix("/auth/")?;
@@ -137,6 +183,11 @@ impl PasskeyAuth {
         let enrol = || self.authorizer.authorize(&store, config, &EnrolRequest { peer: request.peer, authorization: request.authorization, session_live: live }, at);
         let fields = || serde_json::from_slice::<Value>(request.body).ok().filter(Value::is_object);
         let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        if let Some(id) = route.strip_prefix("passkeys/").and_then(|rest| rest.strip_suffix("/label")).filter(|id| !id.is_empty() && !id.contains('/')) {
+            if post {
+                return Some(self.rename(roots, &store, request, id, live));
+            }
+        }
         Some(match (request.method, route) {
             ("GET", "status") => {
                 let mut status = json!({ "passkeys": store.any_registered(), "signed_in": live, "host": self.host.rp_id() });

@@ -122,12 +122,14 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
 
     if let Some(auth) = shared.auth.clone() {
         if path.starts_with("/auth/") {
+            let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
+            let (origin, csrf) = (text("origin"), text("x-csrf-token"));
             let Ok(bytes) = axum::body::to_bytes(body, orq_core::passkey_routes::MAX_AUTH_BODY).await else {
                 return json_reply(413, b"{\"error\":\"too large\"}".to_vec());
             };
             let (shared, path, method) = (shared.clone(), path.clone(), method.clone());
             let result = tokio::task::spawn_blocking(move || {
-                let request = orq_core::passkey_routes::AuthRequest { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref(), cookie: cookie.as_deref(), body: &bytes };
+                let request = orq_core::passkey_routes::AuthRequest { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref(), cookie: cookie.as_deref(), origin: origin.as_deref(), csrf: csrf.as_deref(), body: &bytes };
                 auth.handle(&shared.state.roots, &shared.state.config, &request)
             })
             .await;
