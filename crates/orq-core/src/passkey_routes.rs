@@ -134,40 +134,61 @@ impl PasskeyAuth {
         store.find(&credential).ok().flatten().map(|key| key.label)
     }
 
-    /// POST /auth/passkeys/{id}/label `{label}`: renames that passkey, for a passkey session presenting
-    /// its CSRF token from this server's origin. Every attempt is audited as passkey.rename.
-    fn rename(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, id: &str, live: bool) -> AuthReply {
-        use crate::passkey_store::RenameError;
-        use crate::remote_audit::{record, Attempt, Outcome};
+    /// The gate every passkey change goes through: a passkey session presenting its CSRF token from this
+    /// server's origin. `act` runs only past the gate; every attempt is audited under `action`.
+    fn manage(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, live: bool, action: &'static str, act: impl FnOnce(&Audit) -> AuthReply) -> AuthReply {
         let identity = self.session_label(store, request.cookie).filter(|_| live).unwrap_or_else(|| "web".to_string());
-        let audit = |outcome, reason: &str| {
-            let _ = record(roots, &Attempt { identity: &identity, action: "passkey.rename", project: "passkeys", run: None, outcome, reason: Some(reason) }, now());
-        };
-        let refused = |status: u16, reason: &str, error: &str| {
-            audit(Outcome::Refused, reason);
-            reply(status, json!({ "error": error }))
-        };
+        let audit = Audit { roots, identity, action };
         if !live {
-            return refused(403, "needs a passkey sign-in", "Managing passkeys needs a passkey sign-in");
+            return audit.refused(403, "needs a passkey sign-in", "Managing passkeys needs a passkey sign-in");
         }
         if !self.change_allowed(roots, request.cookie, request.origin, request.csrf) {
-            return refused(403, "missing or wrong CSRF token or origin", "not allowed");
+            return audit.refused(403, "missing or wrong CSRF token or origin", "not allowed");
         }
-        let body = serde_json::from_slice::<Value>(request.body).ok().filter(|body| body.as_object().is_some_and(|keys| keys.len() == 1));
-        let Some(label) = body.as_ref().and_then(|body| body.get("label")).and_then(Value::as_str) else {
-            return refused(400, "bad request body", "the request body is not one this action takes");
-        };
-        let old = store.find(id).ok().flatten().map(|key| key.label);
-        match store.rename(id, label) {
-            Ok(()) => {
-                audit(Outcome::Allowed, &format!("renamed {} to {label}", old.unwrap_or_default()));
-                reply(200, json!({ "id": id, "label": label }))
+        act(&audit)
+    }
+
+    /// POST /auth/passkeys/{id}/label `{label}`: renames that passkey. Audited as passkey.rename.
+    fn rename(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, id: &str, live: bool) -> AuthReply {
+        use crate::passkey_store::RenameError;
+        self.manage(roots, store, request, live, "passkey.rename", |audit| {
+            let body = serde_json::from_slice::<Value>(request.body).ok().filter(|body| body.as_object().is_some_and(|keys| keys.len() == 1));
+            let Some(label) = body.as_ref().and_then(|body| body.get("label")).and_then(Value::as_str) else {
+                return audit.refused(400, "bad request body", "the request body is not one this action takes");
+            };
+            let old = store.find(id).ok().flatten().map(|key| key.label);
+            match store.rename(id, label) {
+                Ok(()) => {
+                    audit.allowed(&format!("renamed {} to {label}", old.unwrap_or_default()));
+                    reply(200, json!({ "id": id, "label": label }))
+                }
+                Err(RenameError::BadLabel) => audit.refused(422, "bad label", "A name is 1 to 40 characters of printable text"),
+                Err(RenameError::Unknown) => audit.refused(404, "no such passkey", "No passkey has that id"),
+                Err(RenameError::Taken) => audit.refused(409, "label taken", "Another passkey already has that name"),
+                Err(RenameError::Store(_)) => audit.refused(500, "the passkeys could not be written", "The passkeys could not be changed"),
             }
-            Err(RenameError::BadLabel) => refused(422, "bad label", "A name is 1 to 40 characters of printable text"),
-            Err(RenameError::Unknown) => refused(404, "no such passkey", "No passkey has that id"),
-            Err(RenameError::Taken) => refused(409, "label taken", "Another passkey already has that name"),
-            Err(RenameError::Store(_)) => refused(500, "the passkeys could not be written", "The passkeys could not be changed"),
-        }
+        })
+    }
+
+    /// POST /auth/passkeys/{id}/remove: removes that passkey, never the last one, and ends every session it
+    /// opened. When that includes this session, the answer says `signed_out` and clears the cookie.
+    /// Audited as passkey.remove.
+    fn remove(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, id: &str, live: bool) -> AuthReply {
+        use crate::passkey_store::RemoveError;
+        self.manage(roots, store, request, live, "passkey.remove", |audit| {
+            let own = self.session_credential(request.cookie).is_some_and(|credential| credential == id);
+            match store.remove_by_id(id) {
+                Ok(label) => {
+                    self.sessions.end_for(id);
+                    audit.allowed(&format!("removed {label}"));
+                    let body = json!({ "id": id, "label": label, "signed_out": own });
+                    AuthReply { status: 200, body, set_cookie: own.then(session::clear_cookie) }
+                }
+                Err(RemoveError::Unknown) => audit.refused(404, "no such passkey", "No passkey has that id"),
+                Err(RemoveError::Last) => audit.refused(409, "the last passkey", "Add another passkey before removing this one"),
+                Err(RemoveError::Store(_)) => audit.refused(500, "the passkeys could not be written", "The passkeys could not be changed"),
+            }
+        })
     }
 
     /// The answer for an `/auth/...` request; `None` for any other path.
@@ -183,9 +204,11 @@ impl PasskeyAuth {
         let enrol = || self.authorizer.authorize(&store, config, &EnrolRequest { peer: request.peer, authorization: request.authorization, session_live: live }, at);
         let fields = || serde_json::from_slice::<Value>(request.body).ok().filter(Value::is_object);
         let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
-        if let Some(id) = route.strip_prefix("passkeys/").and_then(|rest| rest.strip_suffix("/label")).filter(|id| !id.is_empty() && !id.contains('/')) {
-            if post {
-                return Some(self.rename(roots, &store, request, id, live));
+        if let Some((id, verb)) = route.strip_prefix("passkeys/").and_then(|rest| rest.split_once('/')).filter(|(id, _)| !id.is_empty()) {
+            match (post, verb) {
+                (true, "label") => return Some(self.rename(roots, &store, request, id, live)),
+                (true, "remove") => return Some(self.remove(roots, &store, request, id, live)),
+                _ => {}
             }
         }
         Some(match (request.method, route) {
@@ -197,7 +220,11 @@ impl PasskeyAuth {
                 reply(200, status)
             }
             ("GET", "passkeys") if live => match store.list() {
-                Ok(keys) => reply(200, json!({ "passkeys": keys.iter().map(|key| json!({ "label": key.label, "id": key.credential_id })).collect::<Vec<_>>() })),
+                Ok(keys) => {
+                    let own = self.session_credential(request.cookie);
+                    let rows = keys.iter().map(|key| json!({ "label": key.label, "id": key.credential_id, "this_device": own.as_deref() == Some(key.credential_id.as_str()) }));
+                    reply(200, json!({ "passkeys": rows.collect::<Vec<_>>() }))
+                }
                 Err(_) => refuse(),
             },
             ("GET", "passkeys") => refuse(),
@@ -253,5 +280,28 @@ impl PasskeyAuth {
             }
             _ => reply(404, json!({ "error": "not found" })),
         })
+    }
+}
+
+/// One passkey change's audit trail: who asked and what for.
+struct Audit<'a> {
+    roots: &'a StorageRoots,
+    identity: String,
+    action: &'static str,
+}
+
+impl Audit<'_> {
+    fn record(&self, outcome: crate::remote_audit::Outcome, reason: &str) {
+        use crate::remote_audit::{record, Attempt};
+        let _ = record(self.roots, &Attempt { identity: &self.identity, action: self.action, project: "passkeys", run: None, outcome, reason: Some(reason) }, now());
+    }
+
+    fn allowed(&self, reason: &str) {
+        self.record(crate::remote_audit::Outcome::Allowed, reason);
+    }
+
+    fn refused(&self, status: u16, reason: &str, error: &str) -> AuthReply {
+        self.record(crate::remote_audit::Outcome::Refused, reason);
+        reply(status, json!({ "error": error }))
     }
 }

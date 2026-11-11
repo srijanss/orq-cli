@@ -107,6 +107,11 @@ impl Sessions {
         clear_cookie()
     }
 
+    /// Ends every session opened with the passkey that has this credential id, for when it is removed.
+    pub fn end_for(&self, credential: &str) {
+        self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retain(|_, entry| entry.credential != credential);
+    }
+
     /// Ends every session, for when the passkeys behind them change.
     pub fn end_all(&self) {
         self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();

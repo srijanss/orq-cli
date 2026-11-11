@@ -54,6 +54,17 @@ pub enum RenameError {
     Store(String),
 }
 
+/// Why a removal did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveError {
+    /// No passkey has that credential id.
+    Unknown,
+    /// It is the only passkey left.
+    Last,
+    /// The store could not be read or written.
+    Store(String),
+}
+
 fn base64url(text: &str, max: usize) -> bool {
     !text.is_empty() && text.len() <= max && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
@@ -288,6 +299,23 @@ impl PasskeyStore {
             Ok(moved)
         });
         written.map_err(RenameError::Store)?;
+        outcome
+    }
+
+    /// Removes the passkey with this credential id, under the lock, and gives its label. The last
+    /// passkey is never removed this way.
+    pub fn remove_by_id(&self, credential_id: &str) -> Result<String, RemoveError> {
+        let mut outcome = Err(RemoveError::Unknown);
+        let written = self.change_if(|keys| {
+            let Some(at) = keys.iter().position(|key| key.credential_id == credential_id) else { return Ok(false) };
+            if keys.len() == 1 {
+                outcome = Err(RemoveError::Last);
+                return Ok(false);
+            }
+            outcome = Ok(keys.remove(at).label);
+            Ok(true)
+        });
+        written.map_err(RemoveError::Store)?;
         outcome
     }
 
