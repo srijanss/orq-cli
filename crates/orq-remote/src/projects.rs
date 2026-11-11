@@ -46,7 +46,7 @@ type LogCache = std::collections::HashMap<String, LogSummary>;
 /// or was removed after its record was read; an unreadable event log is an error. A log whose size
 /// and time are what they were is not read again (the log only ever grows), so polling the list
 /// costs a stat per run, not a replay of its history.
-fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCache, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
+fn run_row(store: &orq_orchestrator::RunStore, state: &Path, repo: &Path, cache: &mut LogCache, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
     use orq_orchestrator::StoreError;
     if record.project_id != key {
         return Ok(None);
@@ -75,16 +75,26 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             cache.insert(record.run_id.clone(), learned);
         } else {
             cache.remove(&record.run_id);
-            return Ok(Some(row_of(&record, &learned)));
+            return Ok(Some(row_of(&record, repo, &learned)));
         }
     }
-    Ok(Some(row_of(&record, &cache[&record.run_id])))
+    Ok(Some(row_of(&record, repo, &cache[&record.run_id])))
 }
 
-fn row_of(record: &orq_orchestrator::RunRecord, log: &LogSummary) -> (Option<u64>, String, serde_json::Value) {
+fn row_of(record: &orq_orchestrator::RunRecord, repo: &Path, log: &LogSummary) -> (Option<u64>, String, serde_json::Value) {
     let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
+    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(repo, record, log.state), "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
     (sort_key, record.run_id.clone(), row)
+}
+
+/// The state the popup shows: a failed or review-waiting run whose work is on its target branch in `repo`
+/// is merged. It is asked of git each time, as a merge leaves the run's log as it was.
+fn shown_state(repo: &Path, record: &orq_orchestrator::RunRecord, state: &'static str) -> &'static str {
+    if matches!(state, "failed" | "needs_review") && orq_orchestrator::work_is_on_target(repo, record) {
+        "merged"
+    } else {
+        state
+    }
 }
 
 /// How many events one timeline answer holds; `next_cursor` continues after the last of them.
@@ -394,7 +404,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
                 Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
             };
-            if let Some(row) = run_row(&store, &self.roots.state, &mut cache, record, &key)? {
+            if let Some(row) = run_row(&store, &self.roots.state, &project.path, &mut cache, record, &key)? {
                 rows.push(row);
             }
         }
@@ -545,7 +555,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         // How many review rounds the whole run has, so live events can carry on counting.
         let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
         Ok(Some(serde_json::json!({
-            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": summary.phase.as_str(), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at)},
+            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, summary.phase.as_str()), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at)},
             "events": listed,
             "review_rounds": review_rounds,
             "next_cursor": next_cursor,
@@ -694,7 +704,7 @@ mod run_row_tests {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
             let _ = std::fs::remove_dir_all(entry.path());
         }
-        assert!(matches!(run_row(&store, &dir, &mut Default::default(), loaded, "p"), Ok(None)));
+        assert!(matches!(run_row(&store, &dir, &dir, &mut Default::default(), loaded, "p"), Ok(None)));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

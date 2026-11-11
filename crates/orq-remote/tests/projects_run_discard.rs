@@ -108,3 +108,25 @@ fn a_failed_run_is_warned_about_then_discarded_and_a_merged_one_is_cleared() {
     assert_eq!(send(&s, "POST", "/api/projects/alpha/runs/r-beta/discard").0, 404);
     assert!(!gone(&s, "r-beta"));
 }
+
+fn state_in_list(s: &Setup, run: &str) -> Value {
+    let (status, body) = send(s, "GET", "/api/projects/alpha/runs");
+    assert_eq!(status, 200, "{body}");
+    body["runs"].as_array().unwrap().iter().find(|row| row["run_id"] == run).map(|row| row["state"].clone()).unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_failed_or_review_waiting_run_whose_work_is_on_its_target_shows_as_merged() {
+    let s = setup("runs-merged");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-fail", &["run.started", "run.failed"]);
+    add_run(&s, &alpha, "r-merged", &["run.started", "run.failed"]);
+    git(&alpha, &["merge", "-q", "--ff-only", "orq/r-merged"]);
+
+    assert_eq!(state_in_list(&s, "r-fail"), json!("failed"));
+    assert_eq!(state_in_list(&s, "r-merged"), json!("merged"), "its work is on main, as the popup shows it");
+    let (status, body) = send(&s, "GET", "/api/projects/alpha/runs/r-merged");
+    assert_eq!((status, &body["run"]["state"]), (200, &json!("merged")), "{body}");
+    let (_, body) = send(&s, "GET", "/api/projects/alpha/runs/r-fail");
+    assert_eq!(body["run"]["state"], json!("failed"), "{body}");
+}
