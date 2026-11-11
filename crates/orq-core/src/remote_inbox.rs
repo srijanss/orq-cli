@@ -226,6 +226,12 @@ pub trait ProjectsProvider {
         Ok(RunStart::Unknown)
     }
 
+    /// Starts a run of `feature` in project `id` with the chosen profiles instead of the launch defaults.
+    /// A provider that cannot choose them says so.
+    fn start_run_with(&self, _id: &str, _feature: &str, _profiles: &LaunchProfiles) -> Result<RunStart, String> {
+        Ok(RunStart::Refused("this server cannot choose the profiles".to_string()))
+    }
+
     /// Pauses, resumes, stops or accepts run `run` of project `id`. An accept is done once its tests have
     /// started; they finish on their own. A provider that cannot does not know the run.
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
@@ -307,6 +313,13 @@ pub enum RunStart {
     Refused(String),
     /// There is no such project or feature.
     Unknown,
+}
+
+/// The implementer and reviewer profiles a run is started with, as the popup's launch picker chooses them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchProfiles {
+    pub implementer: String,
+    pub reviewer: String,
 }
 
 /// The run settings of the config file at `path`, as `{implementer, reviewer, models}`, for the web.
@@ -566,13 +579,21 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         audit(Outcome::Refused, None, Some("not a feature name"));
         return error(404, "not found");
     }
-    if let Some(refusal) = body_refusal(body, &[]) {
-        audit(Outcome::Refused, None, Some("bad request body"));
-        return refusal;
-    }
-    match provider.map(|provider| provider.start_run(id, feature)) {
+    let chosen = match launch_choice(body) {
+        Ok(chosen) => chosen,
+        Err(refusal) => {
+            audit(Outcome::Refused, None, Some("bad request body"));
+            return refusal;
+        }
+    };
+    let started = provider.map(|provider| match &chosen {
+        Some(profiles) => provider.start_run_with(id, feature, profiles),
+        None => provider.start_run(id, feature),
+    });
+    let named = chosen.as_ref().map(|profiles| format!("implementer {}, reviewer {}", profiles.implementer, profiles.reviewer));
+    match started {
         Some(Ok(RunStart::Started(run))) => {
-            audit(Outcome::Allowed, Some(&run), None);
+            audit(Outcome::Allowed, Some(&run), named.as_deref());
             reply(202, json!({ "run": run }))
         }
         Some(Ok(RunStart::Refused(why))) => {
@@ -588,6 +609,23 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
             audit(Outcome::Refused, None, Some("no such project or feature"));
             error(404, "not found")
         }
+    }
+}
+
+/// The profiles a start body chooses: none for an empty body or `{}`, which keep the launch defaults, or both
+/// an implementer and a reviewer, each a non-empty name, and nothing else.
+fn launch_choice(body: &[u8]) -> Result<Option<LaunchProfiles>, Response> {
+    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer"]) {
+        return Err(refusal);
+    }
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else { return Ok(None) };
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let named = |key: &str| fields.get(key).and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string);
+    match (named("implementer"), named("reviewer")) {
+        (Some(implementer), Some(reviewer)) => Ok(Some(LaunchProfiles { implementer, reviewer })),
+        _ => Err(error(400, "the request body is not one this action takes")),
     }
 }
 

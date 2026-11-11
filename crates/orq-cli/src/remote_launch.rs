@@ -96,23 +96,31 @@ impl CliLauncher {
     }
 }
 
-impl RunLauncher for CliLauncher {
-    fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError> {
+impl CliLauncher {
+    /// Checks and then starts a detached `orq run` of `feature`, with the chosen profiles or, without a
+    /// choice, the defaults the popup's launch picker preselects.
+    fn launch(&self, repo: &Path, feature: &str, chosen: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
         let refused = |reason: String| LaunchError::Refused(without_paths(&reason));
         let project = orq_git::resolve_project(repo).map_err(|err| LaunchError::Failed(format!("cannot resolve project: {err:?}")))?;
         let user_config = self.user_config.as_deref().unwrap_or(Path::new(""));
         let profiles = orq_features::load_model_profiles(user_config, &project.root.join(".orq.toml")).map_err(|err| LaunchError::Failed(err.to_string()))?;
         let reviewers = orq_features::load_reviewer_config(&project.root.join(".tdd-config.json")).map_err(|err| LaunchError::Failed(err.to_string()))?;
-        let settings = orq_features::Settings::load(user_config).ok();
-        let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
-        let (implementer, reviewer) = orq_features::default_role_profiles(
-            &profiles,
-            &reviewers,
-            agent(orq_features::AgentRole::Implementer).as_ref(),
-            agent(orq_features::AgentRole::Reviewer).as_ref(),
-        );
-        let implementer = implementer.ok_or_else(|| refused("no default implementer model is set".to_string()))?;
-        let reviewer = reviewer.ok_or_else(|| refused("no default reviewer model is set".to_string()))?;
+        let (implementer, reviewer) = match chosen {
+            Some(chosen) => (chosen.implementer.clone(), chosen.reviewer.clone()),
+            None => {
+                let settings = orq_features::Settings::load(user_config).ok();
+                let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
+                let (implementer, reviewer) = orq_features::default_role_profiles(
+                    &profiles,
+                    &reviewers,
+                    agent(orq_features::AgentRole::Implementer).as_ref(),
+                    agent(orq_features::AgentRole::Reviewer).as_ref(),
+                );
+                let implementer = implementer.ok_or_else(|| refused("no default implementer model is set".to_string()))?;
+                let reviewer = reviewer.ok_or_else(|| refused("no default reviewer model is set".to_string()))?;
+                (implementer, reviewer)
+            }
+        };
         let request = orq_features::LaunchRequest {
             repo: project.root.clone(),
             feature: feature.to_string(),
@@ -136,6 +144,16 @@ impl RunLauncher for CliLauncher {
         detached.push("--detach".into());
         let (ok, out, err) = self.run(&detached)?;
         crate::launch_outcome(ok, &out, &err).map_err(LaunchError::Failed)
+    }
+}
+
+impl RunLauncher for CliLauncher {
+    fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError> {
+        self.launch(repo, feature, None)
+    }
+
+    fn start_with(&self, repo: &Path, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
+        self.launch(repo, feature, Some(profiles))
     }
 
     fn resume(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {

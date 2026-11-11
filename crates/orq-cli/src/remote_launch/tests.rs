@@ -202,3 +202,30 @@ fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
     assert!(matches!(launcher.resume(&repo, "--yes"), Err(LaunchError::Refused(_))));
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 4);
 }
+
+#[test]
+fn a_start_with_chosen_profiles_uses_them_instead_of_the_defaults_and_checks_them_like_the_cli() {
+    let dir = scratch("launch-with");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    // No default roles at all: a choice does not need them.
+    std::fs::write(&config, "[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.sonnet]\nharness = \"claude\"\nmodel = \"sonnet\"\n").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config));
+    let chosen = |implementer: &str, reviewer: &str| orq_core::remote_inbox::LaunchProfiles { implementer: implementer.into(), reviewer: reviewer.into() };
+
+    assert_eq!(launcher.start_with(&repo, "ready", &chosen("sonnet", "opus")).unwrap(), "run-42");
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines.len(), 2, "{calls}");
+    assert!(lines[0].contains("--check") && lines[1].contains("--detach"), "{calls}");
+    for line in &lines {
+        assert!(line.contains("--feature ready") && line.contains("--implementer sonnet") && line.contains("--reviewer opus"), "{line}");
+    }
+
+    // A profile the models do not define is refused before anything runs.
+    match launcher.start_with(&repo, "ready", &chosen("gpt", "opus")) {
+        Err(LaunchError::Refused(reason)) => assert!(reason.contains("gpt"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 2);
+}

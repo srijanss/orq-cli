@@ -261,6 +261,38 @@ impl StoreProjects {
     }
 
     /// The model profiles of this machine's config and the `.orq.toml` of the project at `root`.
+    /// Starts a run of `feature` in project `id`, with the chosen profiles or the launch defaults. The CLI's
+    /// eligibility rule comes first; a chosen profile must be one the launch picker lists.
+    fn launch(&self, id: &str, feature: &str, profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<orq_core::remote_inbox::RunStart, String> {
+        use orq_core::remote_inbox::RunStart;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunStart::Unknown) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let ledger = read_ledger(&orq_features::ledger_path(&git))?;
+        match orq_features::check_run_eligibility(&ledger, feature) {
+            Ok(_) => {}
+            Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
+            Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
+        }
+        if let Some(chosen) = profiles {
+            let listed = self.model_profiles(&git.root)?;
+            for name in [&chosen.implementer, &chosen.reviewer] {
+                if !listed.profiles().iter().any(|profile| &profile.name == name) {
+                    return Ok(RunStart::Refused(orq_core::redact::redact(&format!("the profile {name} is not defined in the model profiles"))));
+                }
+            }
+        }
+        let Some(launcher) = &self.launcher else { return Ok(RunStart::Refused("this server cannot start runs".to_string())) };
+        let started = match profiles {
+            Some(chosen) => launcher.start_with(&project.path, feature, chosen),
+            None => launcher.start(&project.path, feature),
+        };
+        match started {
+            Ok(run) => Ok(RunStart::Started(run)),
+            Err(LaunchError::Refused(why)) => Ok(RunStart::Refused(orq_core::redact::redact(&why))),
+            Err(LaunchError::Failed(why)) => Err(why),
+        }
+    }
+
     fn model_profiles(&self, root: &Path) -> Result<orq_features::ModelProfiles, String> {
         orq_features::load_model_profiles(&self.roots.config_file(), &root.join(".orq.toml")).map_err(|error| error.to_string())
     }
@@ -293,6 +325,11 @@ struct AgentOptions {
 pub trait RunLauncher {
     /// Starts a run of `feature` in the project at `repo` and returns its id.
     fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError>;
+
+    /// Starts a run as `start` does, with the chosen implementer and reviewer instead of the launch defaults.
+    fn start_with(&self, _repo: &Path, _feature: &str, _profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
+        Err(LaunchError::Refused("this server cannot choose the profiles".to_string()))
+    }
 
     /// Continues run `run` of the project at `repo` and returns the id of the run that carries on.
     fn resume(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
@@ -353,21 +390,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     }
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {
-        use orq_core::remote_inbox::RunStart;
-        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunStart::Unknown) };
-        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
-        let ledger = read_ledger(&orq_features::ledger_path(&git))?;
-        match orq_features::check_run_eligibility(&ledger, feature) {
-            Ok(_) => {}
-            Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
-            Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
-        }
-        let Some(launcher) = &self.launcher else { return Ok(RunStart::Refused("this server cannot start runs".to_string())) };
-        match launcher.start(&project.path, feature) {
-            Ok(run) => Ok(RunStart::Started(run)),
-            Err(LaunchError::Refused(why)) => Ok(RunStart::Refused(orq_core::redact::redact(&why))),
-            Err(LaunchError::Failed(why)) => Err(why),
-        }
+        self.launch(id, feature, None)
+    }
+
+    fn start_run_with(&self, id: &str, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<orq_core::remote_inbox::RunStart, String> {
+        self.launch(id, feature, Some(profiles))
     }
 
     fn control_run(&self, id: &str, run: &str, control: orq_core::remote_inbox::RunControl) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
