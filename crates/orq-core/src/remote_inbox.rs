@@ -236,6 +236,29 @@ pub trait ProjectsProvider {
     fn resume_check(&self, _id: &str, _run: &str) -> Result<RunControlOutcome, String> {
         Ok(RunControlOutcome::Unknown)
     }
+
+    /// What a discard of run `run` of project `id` would take with its branch (`Done(warning)`, empty
+    /// when nothing would go), without changing anything. A provider that cannot tell does not know the run.
+    fn discard_warning(&self, _id: &str, _run: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
+
+    /// Discards run `run` of project `id` the way the popup's Discard and Clear do. A provider that
+    /// cannot does not know the run.
+    fn discard_run(&self, _id: &str, _run: &str) -> Result<RunDiscard, String> {
+        Ok(RunDiscard::Unknown)
+    }
+}
+
+/// How a request to discard a run ended.
+pub enum RunDiscard {
+    /// The run is gone. `note` says, safe to show, which features are pending again and what was kept
+    /// or deleted; `cleared` is true when the run's work was on its target branch, so its features stay.
+    Discarded { note: String, cleared: bool },
+    /// Why this run may not be discarded now; safe to show.
+    Refused(String),
+    /// There is no such project or run.
+    Unknown,
 }
 
 /// What the web may ask of a run that already exists.
@@ -602,11 +625,68 @@ fn plain_run_id(run: &str) -> bool {
     run.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !run.starts_with('.')
 }
 
-/// The project and run of `/api/projects/{id}/runs/{run}/resume-check`, when the path has that shape.
-fn resume_check_target(path: &str) -> Option<(&str, &str)> {
+/// The project and run of `/api/projects/{id}/runs/{run}/{leaf}`, when the path has that shape.
+fn run_target<'a>(path: &'a str, leaf: &str) -> Option<(&'a str, &'a str)> {
     let mut parts = path.strip_prefix("/api/projects/")?.split('/');
-    let (id, runs, run, check) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
-    (runs == "runs" && check == "resume-check" && !id.is_empty() && !run.is_empty() && parts.next().is_none()).then_some((id, run))
+    let (id, runs, run, last) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    (runs == "runs" && last == leaf && !id.is_empty() && !run.is_empty() && parts.next().is_none()).then_some((id, run))
+}
+
+/// What a discard would take with the branch, for the web's question before Discard. It changes
+/// nothing, so it is not audited, but it is there only while actions are on.
+fn discard_warning(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
+    if !remote_actions_on(roots) || !plain_run_id(run) {
+        return error(404, "not found");
+    }
+    match provider.map(|provider| provider.discard_warning(id, run)) {
+        Some(Ok(RunControlOutcome::Done(warning))) => reply(200, json!({ "run": run, "warning": warning })),
+        Some(Ok(RunControlOutcome::Refused(why))) => reply(409, json!({ "error": why })),
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => error(500, "the run could not be checked"),
+        _ => error(404, "not found"),
+    }
+}
+
+/// Discards a run for the web, if actions are on, and leaves an audit line for the attempt: run.clear
+/// when the run's work was on its target branch, run.discard otherwise.
+fn discard_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the run could not be discarded";
+    let audit = |action, outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action, project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit("run.discard", Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    if !plain_run_id(run) {
+        audit("run.discard", Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit("run.discard", Outcome::Refused, Some(run), Some("bad request body"));
+        return refusal;
+    }
+    match provider.map(|provider| provider.discard_run(id, run)) {
+        Some(Ok(RunDiscard::Discarded { note, cleared })) => {
+            audit(if cleared { "run.clear" } else { "run.discard" }, Outcome::Allowed, Some(run), None);
+            reply(202, json!({ "run": run, "note": note.trim(), "cleared": cleared }))
+        }
+        Some(Ok(RunDiscard::Refused(why))) => {
+            audit("run.discard", Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit("run.discard", Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+        _ => {
+            audit("run.discard", Outcome::Refused, None, Some("no such project or run"));
+            error(404, "not found")
+        }
+    }
 }
 
 /// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
@@ -642,6 +722,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, run, control)) = (request.method == "POST").then(|| run_control_target(path)).flatten() {
         return control_run(roots, provider, id, run, control, body);
     }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "discard")).flatten() {
+        return discard_run(roots, provider, id, run, body);
+    }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {
         return set_remote_actions(roots, body, confirm);
@@ -652,8 +735,11 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
     }
-    if let Some((id, run)) = resume_check_target(path) {
+    if let Some((id, run)) = run_target(path, "resume-check") {
         return resume_check(roots, provider, id, run);
+    }
+    if let Some((id, run)) = run_target(path, "discard-warning") {
+        return discard_warning(roots, provider, id, run);
     }
     if path == "/api/projects" {
         return match provider {

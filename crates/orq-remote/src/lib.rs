@@ -6,6 +6,7 @@
 //! action (capped, and judged by the handler), never routes by itself and never
 //! answers anything the handler did not.
 
+pub mod discard;
 pub mod projects;
 
 use std::net::{SocketAddr, TcpListener};

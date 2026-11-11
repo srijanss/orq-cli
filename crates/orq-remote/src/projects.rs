@@ -346,6 +346,26 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
     }
 
+    fn discard_warning(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        Ok(RunControlOutcome::Done(orq_core::redact::redact(&crate::discard::discard_warning(&self.roots.state, run, &project.path))))
+    }
+
+    fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {
+        use orq_core::remote_inbox::RunDiscard;
+        let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunDiscard::Unknown) };
+        // The orchestrator words why a run cannot go as "<run> ...", "... refusing ..." or "... is not the
+        // repository of <run>"; any other failure is for this machine's operator.
+        match crate::discard::discard_and_reopen(&self.roots.state, run, &project.path) {
+            Ok(done) => Ok(RunDiscard::Discarded { note: orq_core::redact::redact(&done.note), cleared: done.merged }),
+            Err(why) if why.starts_with(&format!("{run} ")) || why.contains("refusing") || why.ends_with(&format!("is not the repository of {run}")) => {
+                Ok(RunDiscard::Refused(orq_core::redact::redact(&why)))
+            }
+            Err(why) => Err(why),
+        }
+    }
+
     fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
