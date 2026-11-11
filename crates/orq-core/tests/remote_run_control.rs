@@ -66,7 +66,7 @@ fn a_run_is_paused_or_resumed_only_when_actions_are_on_and_every_attempt_is_audi
     assert_eq!(post(&roots, &fake, "POST", &url("r-none", "pause"), bearer).0, 404);
     assert_eq!(post(&roots, &fake, "POST", "/api/projects/p-9/runs/r-ok/pause", bearer).0, 404);
     assert_eq!(post(&roots, &fake, "POST", &url("..", "pause"), bearer).0, 404);
-    assert_eq!(post(&roots, &fake, "POST", &url("r-ok", "stop"), bearer).0, 405, "no other action exists");
+    assert_eq!(post(&roots, &fake, "POST", &url("r-ok", "restart"), bearer).0, 405, "no other action exists");
     assert_eq!(
         *fake.asked.lock().unwrap(),
         [("p-1".to_string(), "r-ok".to_string(), RunControl::Pause), ("p-1".to_string(), "r-ok".to_string(), RunControl::Resume)]

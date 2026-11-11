@@ -1,5 +1,5 @@
-//! Whatever the settings, the web can only read, except for the three listed actions when they are
-//! switched on: starting a run, pausing it and resuming it. Nothing else answers to a write.
+//! Whatever the settings, the web can only read, except for the listed actions when they are switched on:
+//! starting a run, pausing, resuming and stopping it. Nothing else answers to a write.
 
 use orq_core::remote_inbox::{handle_with, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
 use orq_core::storage::StorageRoots;
@@ -41,7 +41,6 @@ const READ_PATHS: &[&str] = &[
     "/api/projects/p/runs/r-1/merge",
     "/api/projects/p/runs/r-1/approve",
     "/api/projects/p/runs/r-1/restart",
-    "/api/projects/p/runs/r-1/stop",
     "/api/projects/p/features/f/approve",
     "/api/projects/p/features/f/edit",
     "/api/projects/p/features/f",
@@ -51,7 +50,7 @@ const READ_PATHS: &[&str] = &[
     "/api/audit/clear",
 ];
 
-const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume"];
+const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
     let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));
@@ -84,7 +83,7 @@ fn with_remote_actions_off_nothing_but_a_read_is_accepted_and_nothing_changes() 
 }
 
 #[test]
-fn with_remote_actions_on_only_the_three_actions_accept_a_post_and_no_other_method_changes_anything() {
+fn with_remote_actions_on_only_the_listed_actions_accept_a_post_and_no_other_method_changes_anything() {
     let roots = roots("on", true);
     let provider = Counting::default();
     for path in READ_PATHS {

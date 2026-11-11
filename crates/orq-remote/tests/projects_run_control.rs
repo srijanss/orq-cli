@@ -129,3 +129,23 @@ fn a_resume_goes_to_the_launcher_for_a_run_of_the_project_and_its_refusal_is_the
     // A server with no launcher says so instead of pretending.
     assert_eq!(post(&s, None, "/api/projects/alpha/runs/r-ok/resume"), (409, json!({"error": "this server cannot resume runs"})));
 }
+
+#[test]
+fn a_running_run_is_stopped_through_the_orchestrator_and_any_other_run_is_refused_with_its_words() {
+    let s = setup("stop");
+    let alpha = git_repo(&s.scan, "alpha");
+    let beta = git_repo(&s.scan, "beta");
+    add_run(&s, "r-run", &project_id(&alpha), &["run.started"]);
+    add_run(&s, "r-asked", &project_id(&alpha), &["run.started", "run.pause_requested"]);
+    add_run(&s, "r-done", &project_id(&alpha), &["run.started", "run.failed"]);
+    add_run(&s, "r-other", &project_id(&beta), &["run.started"]);
+    let stop = |run: &str| post(&s, None, &format!("/api/projects/alpha/runs/{run}/stop"));
+
+    assert_eq!(stop("r-run"), (202, json!({"run": "r-run"})));
+    assert_eq!(kinds(&s, "r-run"), ["run.started", "run.failed"]);
+    assert_eq!(stop("r-asked"), (202, json!({"run": "r-asked"})));
+    assert_eq!(stop("r-done"), (409, json!({"error": "r-done is failed; only a running run can be stopped"})));
+    assert_eq!(kinds(&s, "r-done"), ["run.started", "run.failed"]);
+    assert_eq!(stop("r-other").0, 404);
+    assert_eq!(kinds(&s, "r-other"), ["run.started"], "another project's run is untouched");
+}

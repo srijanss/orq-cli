@@ -313,6 +313,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 Err(why) if why.starts_with(&format!("{run} is ")) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
                 Err(why) => Err(why),
             },
+            // The popup's Stop: the owner process is ended only when its recorded start time proves it is the run's.
+            RunControl::Stop => match orq_orchestrator::stop_run(&store, run, &orq_orchestrator::owner_state, &orq_orchestrator::terminate_process, &std::thread::sleep) {
+                Ok(()) => Ok(RunControlOutcome::Done(run.to_string())),
+                Err(why) if why.starts_with(&format!("{run} is ")) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
+                Err(why) => Err(why),
+            },
             RunControl::Resume => {
                 let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
                 match launcher.resume(&project.path, run) {
