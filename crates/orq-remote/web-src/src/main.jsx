@@ -1453,6 +1453,23 @@ function ModelAction({ run, control }) {
   );
 }
 
+// The launch picker's two choices, the implementer and the reviewer, each from the offered profiles.
+function LaunchPickers({ profiles, implementer, reviewer, onImplementer, onReviewer }) {
+  const options = profiles.map((name) => <option key={name} value={name}>{name}</option>);
+  return (
+    <>
+      <label>
+        Implementer{" "}
+        <select data-launch-implementer="" value={implementer} onChange={(event) => onImplementer(event.target.value)}>{options}</select>
+      </label>
+      <label>
+        Reviewer{" "}
+        <select data-launch-reviewer="" value={reviewer} onChange={(event) => onReviewer(event.target.value)}>{options}</select>
+      </label>
+    </>
+  );
+}
+
 // The popup's launch picker, "Start with…" on a pending feature: it reads the launch profiles, preselects the
 // implementer and reviewer defaults, and asks with the picked pair before posting them to the start route.
 // A refused read or start shows the server's reason.
@@ -1512,18 +1529,7 @@ function LaunchAction({ feature, control }) {
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <span role="group" aria-label={asked} className="model-picker">
-          <label>
-            Implementer{" "}
-            <select data-launch-implementer="" value={implementer} onChange={(event) => setImplementer(event.target.value)}>
-              {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
-          </label>
-          <label>
-            Reviewer{" "}
-            <select data-launch-reviewer="" value={reviewer} onChange={(event) => setReviewer(event.target.value)}>
-              {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
-          </label>
+          <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
           <span>{asked}</span>
           <button type="button" data-confirm onClick={send}>Yes, start</button>
           <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
@@ -1688,6 +1694,95 @@ function PromoteMarked({ names, control, onFinished }) {
   );
 }
 
+// The marked features in dependency order: each comes after the marked features it depends on, and
+// otherwise in ledger order.
+function dependencyOrder(features, names) {
+  const marked = features.filter((feature) => names.includes(feature.name));
+  const placed = [];
+  const place = (feature, seen) => {
+    if (placed.includes(feature.name) || seen.includes(feature.name)) return;
+    for (const dep of Array.isArray(feature.depends_on) ? feature.depends_on : []) {
+      const before = marked.find((entry) => entry.name === dep);
+      if (before) place(before, [...seen, feature.name]);
+    }
+    placed.push(feature.name);
+  };
+  marked.forEach((feature) => place(feature, []));
+  return placed;
+}
+
+// The popup's launch marked: "Start N" reads the launch profiles, asks with the picked pair, then sends
+// one start per marked feature in the order given, and reports each run started or refused.
+function StartMarked({ names, control, onFinished }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const [offer, setOffer] = useState(null);
+  const [implementer, setImplementer] = useState("");
+  const [reviewer, setReviewer] = useState("");
+  const label = "Start " + names.length;
+  const ask = async () => {
+    setNote("");
+    setPhase("checking");
+    const { signedOut, reply, text } = await readLaunchProfiles(control);
+    if (signedOut) {
+      control.onSignedOut();
+      return;
+    }
+    if (reply !== null) {
+      setOffer(reply);
+      setImplementer(preselect(reply, "implementer"));
+      setReviewer(preselect(reply, "reviewer"));
+      setPhase("asking");
+      return;
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const send = async () => {
+    setPhase("sending");
+    const results = [];
+    for (const name of names) {
+      let text = name + ": the run could not be started.";
+      let ok = false;
+      try {
+        const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/runs"), control.token, { implementer, reviewer });
+        if (response.status === 401) {
+          control.onSignedOut();
+          return;
+        }
+        const body = await jsonOrNull(response);
+        ok = response.ok;
+        const run = body !== null && typeof body.run === "string" ? body.run : "";
+        if (ok) text = run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".";
+        else if (response.status === 403) text = name + ": Not allowed.";
+        else if (body !== null && typeof body.error === "string") text = name + ": " + body.error;
+      } catch (unreachable) {
+        text = name + ": The server could not be reached.";
+      }
+      results.push({ name, ok, text });
+    }
+    setPhase("idle");
+    onFinished(results);
+  };
+  const asked = "Start " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
+  return (
+    <span className="run-action">
+      {phase === "idle" ? <button type="button" data-start-marked onClick={ask}>{label}</button> : null}
+      {phase === "checking" ? <span role="status">Checking…</span> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={asked} className="model-picker">
+          <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
+          <span>{asked}</span>
+          <button type="button" data-confirm onClick={send}>Yes, start</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </span>
+  );
+}
+
 function FeatureList({ features, showProject = false, control = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
@@ -1703,9 +1798,11 @@ function FeatureList({ features, showProject = false, control = null }) {
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
-  // Only a draft can be marked; the marks go out in ledger order, whatever order they were made in.
-  const markable = (feature) => control !== null && feature.status === "draft";
-  const markedNames = features.filter((feature) => markable(feature) && marked.includes(feature.name)).map((feature) => feature.name);
+  // A draft can be marked to promote and a pending feature to start. Promotes go out in ledger order and
+  // starts in dependency order, whatever order the marks were made in.
+  const markable = (feature) => control !== null && (feature.status === "draft" || feature.status === "pending");
+  const markedNames = features.filter((feature) => feature.status === "draft" && markable(feature) && marked.includes(feature.name)).map((feature) => feature.name);
+  const startNames = dependencyOrder(features.filter((feature) => feature.status === "pending" && markable(feature)), marked);
   const toggle = (name) => setMarked((now) => (now.includes(name) ? now.filter((entry) => entry !== name) : [...now, name]));
   const finished = (done) => {
     setMarked([]);
@@ -1727,6 +1824,7 @@ function FeatureList({ features, showProject = false, control = null }) {
         </select>
       </div>
       {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
+      {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
       {results.length > 0 ? (
         <ul className="marked-results" role="status">
           {results.map((result) => (

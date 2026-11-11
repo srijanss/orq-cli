@@ -1,4 +1,4 @@
-//! With remote actions on, the Features list puts a checkbox on each draft row and, once any are marked,
+//! With remote actions on, the Features list puts a checkbox on each draft (and pending) row and, once any are marked,
 //! one "Promote N" button. It asks first, then sends one promote request per marked feature in ledger order
 //! (there is no bulk route, so each is audited on its own) and reports each result.
 
@@ -58,11 +58,11 @@ fn mark(name: &str) -> Value {
 }
 
 #[test]
-fn only_draft_rows_can_be_marked_and_only_with_actions_on_and_the_button_counts_the_marks() {
+fn rows_can_be_marked_only_with_actions_on_and_promote_counts_the_marked_drafts() {
     let Some(out) = list(false, vec![], vec![]) else { return };
     assert_eq!(count(last(&out), "[data-mark]"), 0, "{out}");
     let Some(out) = list(true, vec![], vec![mark("d-draft"), mark("a-draft"), mark("d-draft")]) else { return };
-    assert_eq!(count(&out["frames"][1], "[data-mark]"), 3, "a checkbox on each draft: {out}");
+    assert_eq!(count(&out["frames"][1], "[data-mark]"), 4, "a checkbox on each draft and the pending row: {out}");
     assert_eq!(count(&out["frames"][1], "[data-promote-marked]"), 0, "nothing marked, no button: {out}");
     assert!(texts(&out["frames"][2]).iter().any(|t| t == "Promote 1"), "{out}");
     assert!(texts(&out["frames"][3]).iter().any(|t| t == "Promote 2"), "{out}");

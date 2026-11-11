@@ -1,4 +1,4 @@
-//! The page offers exactly ten controls — start, start with chosen profiles, promote, promote marked, pause, resume, stop, discard, accept and switch model — each behind a confirmation,
+//! The page offers exactly eleven controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept and switch model — each behind a confirmation,
 //! and no merge, approve, restart or edit control or request.
 
 fn code() -> String {
@@ -42,11 +42,14 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert_eq!(launch.len(), 1, "{launch:?}");
     assert!(launch[0].starts_with("\"features/\"") && launch[0].ends_with("+ \"/runs\")"), "{}", launch[0]);
     // Promote marked posts to each marked feature's promote route; nothing else.
-    let marked = code.split("function PromoteMarked(").nth(1).expect("the promote marked control").split("\nfunction ").next().unwrap();
-    let paths: Vec<&str> = marked.split("controlPath(control, ").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
-    assert_eq!(paths.len(), 1, "{paths:?}");
-    assert!(paths[0].starts_with("\"features/\"") && paths[0].contains("+ \"/promote\")"), "{}", paths[0]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 14, "the definition, the seven actions, the two checks, the profiles read, the model switch, the launch picker and promote marked are the only users");
+    let promoted = paths("PromoteMarked");
+    assert_eq!(promoted.len(), 1, "{promoted:?}");
+    assert!(promoted[0].starts_with("\"features/\"") && promoted[0].contains("+ \"/promote\")"), "{}", promoted[0]);
+    // Start marked posts the chosen profiles to each marked feature's start route; nothing else.
+    let started = paths("StartMarked");
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert!(started[0].starts_with("\"features/\"") && started[0].contains("+ \"/runs\")"), "{}", started[0]);
+    assert_eq!(code.matches("controlPath(control, ").count(), 15, "the definition, the seven actions, the two checks, the profiles read, the model switch, the launch picker, start marked and promote marked are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
