@@ -1256,9 +1256,49 @@ async function actionRequest(path, token, body) {
   return fetch(path, { method: "POST", headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
-function RunAction({ kind, label, question, path, token, onSignedOut, onDone, done }) {
+// With a check, the button first reads that path and asks question(next) with the stage it names; a refused
+// check shows its reason and asks nothing.
+// The reply's JSON, or null when it has none.
+async function jsonOrNull(response) {
+  try {
+    return await response.json();
+  } catch (unreadable) {
+    return null;
+  }
+}
+
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
+  const [asked, setAsked] = useState(typeof question === "string" ? question : "");
+  const ask = async () => {
+    setNote("");
+    if (check === undefined) {
+      setPhase("asking");
+      return;
+    }
+    setPhase("checking");
+    let text = "The run could not be checked.";
+    try {
+      const response = await get(check, token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok && body !== null && typeof body.next === "string") {
+        setAsked(question(body.next));
+        setPhase("asking");
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (!response.ok && body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
   const send = async () => {
     setPhase("sending");
     let text = "The action could not be completed.";
@@ -1268,12 +1308,7 @@ function RunAction({ kind, label, question, path, token, onSignedOut, onDone, do
         onSignedOut();
         return;
       }
-      let body = null;
-      try {
-        body = await response.json();
-      } catch (unreadable) {
-        body = null;
-      }
+      const body = await jsonOrNull(response);
       if (response.ok) {
         // Done for good: the control stays closed while the list is read again, so the same action cannot be sent twice.
         setNote(done(body !== null && typeof body.run === "string" ? body.run : ""));
@@ -1290,10 +1325,11 @@ function RunAction({ kind, label, question, path, token, onSignedOut, onDone, do
   };
   return (
     <span className="run-action">
-      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={() => { setNote(""); setPhase("asking"); }}>{label}</button> : null}
+      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={ask}>{label}</button> : null}
+      {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={question}>
-          <span>{question}</span>
+        <span role="group" aria-label={asked}>
+          <span>{asked}</span>
           <button type="button" data-confirm onClick={send}>{"Yes, " + label.toLowerCase()}</button>
           <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
         </span>
@@ -1730,14 +1766,16 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
 }
 
 // The run states that have an action.
-const CONTROLLED = ["running", "pause_requested", "paused"];
+const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review"];
+const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
 
-// Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused one, when the server
-// allows actions. The run's row and its detail header show the same ones.
+// Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
+// Review again on one that needs review, when the server allows actions. Resume asks the server where the run
+// would continue before asking. The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
-  const resume = run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(next) => "Resume " + run.run_id + " from " + next + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   if (pause === null && resume === null && stop === null) return null;
   return <span className="run-actions">{pause}{resume}{stop}</span>;

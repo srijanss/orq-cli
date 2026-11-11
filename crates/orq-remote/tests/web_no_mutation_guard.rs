@@ -15,8 +15,10 @@ fn the_page_has_only_the_start_pause_resume_and_stop_actions() {
     assert!(tail(calls[0]).starts_with("\"features/\"") && tail(calls[0]).contains("+ \"/runs\")"), "{}", tail(calls[0]));
     assert!(tail(calls[1]).starts_with("\"runs/\"") && tail(calls[1]).contains("+ \"/pause\")"), "{}", tail(calls[1]));
     assert!(tail(calls[2]).starts_with("\"runs/\"") && tail(calls[2]).contains("+ \"/resume\")"), "{}", tail(calls[2]));
+    let check = calls[2].split("check={controlPath(control, ").nth(1).expect("resume asks the resume check first");
+    assert!(check.starts_with("\"runs/\"") && check.contains("+ \"/resume-check\")"), "{check}");
     assert!(tail(calls[3]).starts_with("\"runs/\"") && tail(calls[3]).contains("+ \"/stop\")"), "{}", tail(calls[3]));
-    assert_eq!(code.matches("controlPath(control, ").count(), 5, "the definition and the four actions are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 6, "the definition, the four actions and the resume check are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

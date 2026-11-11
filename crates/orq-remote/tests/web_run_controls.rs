@@ -42,6 +42,11 @@ fn runs(actions: Option<bool>) -> Value {
     json!({"status": 200, "json": body})
 }
 
+// The resume check's answer for the paused run: Resume asks it before asking the question.
+fn checked() -> Value {
+    json!({"status": 200, "json": {"run": "r-paused", "next": "review"}})
+}
+
 fn frame_texts(frame: &Value) -> Vec<String> {
     frame["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).map(String::from).collect()
 }
@@ -91,7 +96,7 @@ fn with_actions_on_only_a_pending_feature_can_be_started_and_only_running_or_pau
     assert_eq!(count(&out["frames"][1], "[data-start]"), 0, "a draft feature cannot be started: {out}");
     let Some(out) = runs_page(Some(true), vec![], vec![]) else { return };
     assert_eq!(count(&out["frames"][1], "[data-pause]"), 1, "{out}");
-    assert_eq!(count(&out["frames"][1], "[data-resume]"), 1, "{out}");
+    assert_eq!(count(&out["frames"][1], "[data-resume]"), 3, "paused, failed and needs_review: {out}");
     // Nothing is sent just by showing them.
     assert_eq!(out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "POST").count(), 0);
 }
@@ -137,7 +142,7 @@ fn pause_and_resume_post_to_their_own_routes_after_a_confirmation_naming_the_run
     let Some(out) = runs_page(Some(true), vec![ok.clone()], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-confirm]"})]) else { return };
     let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap_or_else(|| panic!("{out}"));
     assert_eq!(post["url"], "/api/projects/alpha/runs/r-run/pause");
-    let Some(out) = runs_page(Some(true), vec![ok], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let Some(out) = runs_page(Some(true), vec![checked(), ok], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
     let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap_or_else(|| panic!("{out}"));
     assert_eq!(post["url"], "/api/projects/alpha/runs/r-paused/resume");
 }
@@ -159,7 +164,7 @@ fn every_action_posts_a_json_object_body_from_the_one_helper_that_takes_it() {
 
 #[test]
 fn each_row_asks_for_itself_and_a_confirmed_action_posts_once() {
-    let Some(out) = runs_page(Some(true), vec![], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-resume]"})]) else { return };
+    let Some(out) = runs_page(Some(true), vec![checked()], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-resume]"})]) else { return };
     assert_eq!(count(&out["frames"][2], "[data-confirm]"), 1, "{out}");
     assert_eq!(count(&out["frames"][3], "[data-confirm]"), 2, "each row keeps its own question");
     let ok = json!({"status": 202, "json": {"run": "run-9"}});
@@ -191,9 +196,9 @@ fn a_successful_action_refreshes_the_list_and_does_not_offer_itself_again() {
     let gets = out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "GET" && r["url"] == "/api/projects/alpha/features").count();
     assert_eq!(gets, 2, "the ledger is read again after the start: {out}");
 
-    let Some(out) = runs_page(Some(true), vec![json!({"status": 202, "json": {"run": "r-paused"}}), runs(Some(true))], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let Some(out) = runs_page(Some(true), vec![checked(), json!({"status": 202, "json": {"run": "r-paused"}}), runs(Some(true))], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
     let last = out["frames"].as_array().unwrap().last().unwrap();
-    assert_eq!(count(last, "[data-resume]"), 0, "{last}");
+    assert_eq!(count(last, "[data-resume]"), 2, "only the failed and needs_review rows still offer it: {last}");
     assert_eq!(count(last, "[data-pause]"), 1, "other rows keep their controls");
 
     // A refusal leaves the control usable.
