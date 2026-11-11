@@ -54,6 +54,7 @@ const READ_PATHS: &[&str] = &[
     "/api/projects/p/features/f/approve",
     "/api/projects/p/features/f/edit",
     "/api/projects/p/features/f",
+    "/api/projects/p/features/f/fields",
     "/api/projects/p/reviews/r-1/merge",
     "/api/reviews/r-1/approve",
     "/api/settings/remote_actions",

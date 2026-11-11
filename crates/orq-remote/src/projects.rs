@@ -456,6 +456,25 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
     }
 
+    /// The popup's editor fields of one feature, and the version of the ledger they were read from.
+    fn feature_fields(&self, id: &str, feature: &str) -> Result<Option<serde_json::Value>, String> {
+        use orq_core::redact::redact;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let Some(bytes) = read_ledger_bytes(&orq_features::ledger_path(&git))? else { return Ok(None) };
+        let version = ledger_version(&bytes);
+        let Some(entry) = parse_ledger_bytes(bytes)?.into_iter().find(|entry| entry.feature_name == feature) else { return Ok(None) };
+        let fields = serde_json::json!({
+            "name": redact(&entry.feature_name),
+            "description": entry.description.as_deref().map(redact),
+            "depends_on": entry.depends_on.iter().map(|name| redact(name)).collect::<Vec<_>>(),
+            "parallelizable": entry.parallelizable,
+            "test_file": entry.test_file.as_deref().map(redact),
+            "target_files": entry.target_files.iter().map(|path| redact(path)).collect::<Vec<_>>(),
+        });
+        Ok(Some(serde_json::json!({ "fields": fields, "version": version })))
+    }
+
     /// The popup's Promote: draft to pending under the ledger's lock. A refusal is worded as the CLI's
     /// `orq feature promote` words it; a ledger that cannot be read or written is this machine's failure.
     fn promote_feature(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
@@ -796,11 +815,24 @@ fn ledger_entries(path: &Path) -> Result<usize, String> {
 /// The ledger's entries; a missing ledger has none. It is opened without following a link and
 /// read only up to a limit, so a hostile file cannot stall or exhaust the server.
 fn read_ledger(path: &Path) -> Result<Vec<orq_features::FeatureEntry>, String> {
+    match read_ledger_bytes(path)? {
+        Some(bytes) => parse_ledger_bytes(bytes),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn parse_ledger_bytes(bytes: Vec<u8>) -> Result<Vec<orq_features::FeatureEntry>, String> {
+    let text = String::from_utf8(bytes).map_err(|_| "the ledger is not text".to_string())?;
+    orq_features::parse_ledger(&text).map_err(|error| format!("the ledger is malformed: {error}"))
+}
+
+/// The ledger's bytes, read once without following a link and within the size limit; `None` when there is none.
+fn read_ledger_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("the ledger cannot be opened: {:?}", error.kind())),
     };
     let meta = file.metadata().map_err(|error| format!("the ledger cannot be inspected: {:?}", error.kind()))?;
@@ -815,8 +847,13 @@ fn read_ledger(path: &Path) -> Result<Vec<orq_features::FeatureEntry>, String> {
     if bytes.len() as u64 > LEDGER_LIMIT {
         return Err("the ledger is too large".to_string());
     }
-    let text = String::from_utf8(bytes).map_err(|_| "the ledger is not text".to_string())?;
-    orq_features::parse_ledger(&text).map_err(|error| format!("the ledger is malformed: {error}"))
+    Ok(Some(bytes))
+}
+
+/// The version of a ledger as it was read, for a later save to compare against: the SHA-256 of its bytes.
+fn ledger_version(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

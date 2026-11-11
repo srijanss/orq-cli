@@ -268,6 +268,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// The editable fields of `feature` of project `id`, as `{fields, version}`, for the web's editor; the
+    /// version names the ledger as it was read. `None` when there is no such project or feature.
+    fn feature_fields(&self, _id: &str, _feature: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// Discards run `run` of project `id` the way the popup's Discard and Clear do. A provider that
     /// cannot does not know the run.
     fn discard_run(&self, _id: &str, _run: &str) -> Result<RunDiscard, String> {
@@ -864,15 +870,26 @@ fn project_target<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
 /// The profiles a run can be started or switched with, for the web's pickers. It changes nothing, so it
 /// is not audited, but it is there only while actions are on.
 fn launch_profiles(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str) -> Response {
+    action_read(roots, provider, "the launch profiles could not be read", |provider| provider.launch_profiles(id))
+}
+
+/// A read only the web's actions need: 404 unless actions are on or when the provider does not know it,
+/// and a failure on this machine is only said to have failed, since its reason can name a path here.
+fn action_read(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, failed: &str, read: impl FnOnce(&dyn ProjectsProvider) -> Result<Option<Value>, String>) -> Response {
     if !remote_actions_on(roots) {
         return error(404, "not found");
     }
-    match provider.map(|provider| provider.launch_profiles(id)) {
-        Some(Ok(Some(profiles))) => reply(200, profiles),
-        // The reason can name a path on this machine, so the caller is only told it failed.
-        Some(Err(_)) => error(500, "the launch profiles could not be read"),
+    match provider.map(read) {
+        Some(Ok(Some(found))) => reply(200, found),
+        Some(Err(_)) => error(500, failed),
         _ => error(404, "not found"),
     }
+}
+
+/// A feature's editable fields and the ledger's version, for the web's editor. It changes nothing, so it is
+/// not audited, but it is there only while actions are on.
+fn feature_fields(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str) -> Response {
+    action_read(roots, provider, "the feature could not be read", |provider| provider.feature_fields(id, feature))
 }
 
 /// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
@@ -935,6 +952,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some(id) = project_target(path, "launch-profiles") {
         return launch_profiles(roots, provider, id);
+    }
+    if let Some((id, feature)) = feature_target(path, "fields") {
+        return feature_fields(roots, provider, id, feature);
     }
     if path == "/api/projects" {
         return match provider {
