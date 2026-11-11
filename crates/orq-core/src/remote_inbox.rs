@@ -688,7 +688,11 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         };
         if let Some((id, run, after)) = timeline.filter(|(id, run, after)| !id.is_empty() && !run.is_empty() && after.map_or(true, |cursor| !cursor.is_empty())) {
             return match provider.map(|provider| provider.run_timeline(id, run, after)) {
-                Some(Ok(Some(timeline))) => reply(200, timeline),
+                // The run detail offers the run's actions only when they are on.
+                Some(Ok(Some(mut timeline))) => {
+                    timeline["remote_actions"] = json!(remote_actions_on(roots));
+                    reply(200, timeline)
+                }
                 Some(Err(_)) => error(500, "the run could not be read"),
                 _ => error(404, "not found"),
             };

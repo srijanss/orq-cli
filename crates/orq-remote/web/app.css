@@ -437,6 +437,7 @@ select:hover { border-color: var(--text-muted); }
 .back-arrow { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; }
 .feature-detail-title { min-width: 0; flex: 1; }
 .feature-detail-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
+.run-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .feature-detail-line h2 { margin: 0; overflow-wrap: anywhere; }
 .feature-detail-sub { margin: 0.25rem 0 0; color: var(--text-muted); }
 .muted { color: var(--text-muted); }

@@ -1666,7 +1666,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
     set(event.target.value);
     setPage(0);
   };
-  const actions = runs.some((run) => controlOf(run) !== null && (run.state === "running" || run.state === "paused"));
+  const actions = runs.some((run) => controlOf(run) !== null && CONTROLLED.includes(run.state));
   return (
     <>
       <div className="feature-filters run-filters">
@@ -1729,12 +1729,18 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   );
 }
 
-// Pause on a running row, Resume on a paused one, when the server allows actions.
+// The run states that have an action.
+const CONTROLLED = ["running", "pause_requested", "paused"];
+
+// Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused one, when the server
+// allows actions. The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
-  if (run.state === "running") return <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} />;
-  if (run.state === "paused") return <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} />;
-  return null;
+  const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
+  const resume = run.state === "paused" ? <RunAction kind="resume" label="Resume" question={"Resume " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
+  if (pause === null && resume === null && stop === null) return null;
+  return <span className="run-actions">{pause}{resume}{stop}</span>;
 }
 
 // Every readable project's runs, read side by side and merged into one list, newest first. The
@@ -1925,7 +1931,7 @@ const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events
 // One run: its header, then three tabs that switch in place: its steps, its logs, and every event.
 // The events are fetched a page at a time; the next page is its own address, so every request stays
 // one plain GET. The logs are fetched the first time their tab opens, and kept while it is hidden.
-function RunTimeline({ timeline, listPath, runPath, follow, logs, startTab = "timeline" }) {
+function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline" }) {
   const { run, events, next_cursor: next } = timeline;
   const [tab, setTab] = useState(startTab);
   const [logsOpened, setLogsOpened] = useState(startTab === "logs");
@@ -1954,6 +1960,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, startTab = "ti
             <h2>{run.feature}</h2>
             <RunState state={run.state} />
           </div>
+          <RowActions run={run} control={control} />
           {validTime(run.started_at) === null ? null : (
             <p className="feature-detail-sub run-detail-sub">
               <span>Started <Moment at={run.started_at} /></span>
@@ -2357,7 +2364,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
             <PageHeader title="Run" subtitle={run} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
-        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} />} onSignedOut={onSignedOut} />
+        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} control={data.remote_actions === true ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
       </>
     );
   }
