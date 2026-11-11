@@ -1256,8 +1256,9 @@ async function actionRequest(path, token, body) {
   return fetch(path, { method: "POST", headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
-// With a check, the button first reads that path and asks question(next) with the stage it names; a refused
-// check shows its reason and asks nothing.
+// With a check, the button first reads that path and asks question(reply), which says the question or null
+// when the reply does not answer it; a refused check shows its reason and asks nothing. done(run, reply)
+// says what happened.
 // The reply's JSON, or null when it has none.
 async function jsonOrNull(response) {
   try {
@@ -1286,8 +1287,9 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
         return;
       }
       const body = await jsonOrNull(response);
-      if (response.ok && body !== null && typeof body.next === "string") {
-        setAsked(question(body.next));
+      const posed = response.ok && body !== null ? question(body) : null;
+      if (typeof posed === "string") {
+        setAsked(posed);
         setPhase("asking");
         return;
       }
@@ -1311,7 +1313,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       const body = await jsonOrNull(response);
       if (response.ok) {
         // Done for good: the control stays closed while the list is read again, so the same action cannot be sent twice.
-        setNote(done(body !== null && typeof body.run === "string" ? body.run : ""));
+        setNote(done(body !== null && typeof body.run === "string" ? body.run : "", body ?? {}));
         setPhase("done");
         onDone();
         return;
@@ -1766,19 +1768,36 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
 }
 
 // The run states that have an action.
-const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review"];
+const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review", "merged"];
 const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
+const DISCARDABLE = [...RESUMABLE, "merged"];
 
 // Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
-// would continue before asking. The run's row and its detail header show the same ones.
+// would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
+// branch would lose. The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
-  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(next) => "Resume " + run.run_id + " from " + next + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
-  if (pause === null && resume === null && stop === null) return null;
-  return <span className="run-actions">{pause}{resume}{stop}</span>;
+  const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
+  if (pause === null && resume === null && stop === null && discard === null) return null;
+  return <span className="run-actions">{pause}{resume}{stop}{discard}</span>;
+}
+
+// The popup's question before Discard, with what the branch would lose when the server says, or before Clear.
+function discardQuestion(run, reply) {
+  if (typeof reply.warning !== "string") return null;
+  if (run.state === "merged") return "Clear " + run.run_id + "? Its work is on the target; its features stay, its record and logs go.";
+  if (reply.warning === "") return "Discard " + run.run_id + "? Logs, a clean worktree and its branch go; uncommitted work is kept.";
+  return "Discard " + run.run_id + "? Logs and a clean worktree go, and " + reply.warning + "; uncommitted work is kept.";
+}
+
+// "Discarded {run}." or "Cleared {run}.", then the server's note on what went and what is pending again.
+function discardDone(run, reply) {
+  const note = typeof reply.note === "string" ? reply.note.trim() : "";
+  return (reply.cleared === true ? "Cleared " : "Discarded ") + run + "." + (note === "" ? "" : " " + note);
 }
 
 // Every readable project's runs, read side by side and merged into one list, newest first. The
