@@ -105,6 +105,23 @@ fn a_forged_or_unverified_assertion_is_refused() {
 }
 
 #[test]
+fn a_refused_answer_spends_its_challenge_so_a_good_answer_to_it_is_refused_too() {
+    let (rig, device, cookie) = signed_in("spent");
+    let refused = [
+        ("bad signature", Answer { flip_signature: true, ..Answer::good(3) }),
+        ("no user verification", Answer { flags: 0x01, ..Answer::good(3) }),
+        ("another origin", Answer { origin: "https://evil.example".into(), ..Answer::good(3) }),
+    ];
+    for (name, answer) in refused {
+        let issued = challenge(&rig, &cookie);
+        assert!(!rig.auth.confirm(&rig.roots, Some(&cookie), ON, &device.assertion(&issued, &answer)), "{name}");
+        assert!(!rig.auth.confirm(&rig.roots, Some(&cookie), ON, &device.assertion(&issued, &Answer::good(3))), "{name}: the challenge is spent");
+    }
+    // Nothing refused moved the counter, and a fresh challenge still confirms.
+    assert!(rig.auth.confirm(&rig.roots, Some(&cookie), ON, &device.assertion(&challenge(&rig, &cookie), &Answer::good(2))));
+}
+
+#[test]
 fn sign_in_and_confirmation_challenges_cannot_stand_in_for_each_other() {
     let (rig, device, cookie) = signed_in("crossed");
     let login = rig.call("POST", "/auth/login/begin", None, None, b"{}").body;

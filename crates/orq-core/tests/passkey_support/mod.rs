@@ -49,11 +49,12 @@ pub struct Answer {
     pub origin: String,
     pub flags: u8,
     pub count: u32,
+    pub flip_signature: bool,
 }
 
 impl Answer {
     pub fn good(count: u32) -> Answer {
-        Answer { origin: format!("https://{RP}"), flags: 0x05, count }
+        Answer { origin: format!("https://{RP}"), flags: 0x05, count, flip_signature: false }
     }
 }
 
@@ -91,11 +92,16 @@ impl Device {
         let mut signed = auth.clone();
         signed.extend(Sha256::digest(client.as_bytes()));
         let signature: Signature = self.signer.sign(&signed);
+        let mut der = signature.to_der().as_bytes().to_vec();
+        if answer.flip_signature {
+            let last = der.len() - 1;
+            der[last] ^= 0x01;
+        }
         json!({
             "id": encode_b64url(&self.id),
             "clientDataJSON": encode_b64url(client.as_bytes()),
             "authenticatorData": encode_b64url(&auth),
-            "signature": encode_b64url(signature.to_der().as_bytes()),
+            "signature": encode_b64url(&der),
         })
     }
 }
