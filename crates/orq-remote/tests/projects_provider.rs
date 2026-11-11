@@ -202,3 +202,22 @@ fn only_runs_that_are_running_or_pausing_count_as_active_and_a_bad_event_log_mak
     assert_eq!(entry(&list, "evented")["available"], false, "{list}");
     assert!(entry(&list, "evented")["active_runs"].is_null(), "{list}");
 }
+
+#[test]
+fn the_agent_options_come_from_the_source_given_found_once_and_none_without_one() {
+    let base = web_deps::private_temp_dir("projects-agent-options");
+    let without = StoreProjects::new(roots(&base), base.join("code"));
+    assert_eq!(without.setting_options().unwrap(), None);
+
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    let source = move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]), ("pi".to_string(), vec![])]
+    };
+    let with = StoreProjects::new(roots(&base), base.join("code")).with_agent_options(std::sync::Arc::new(source));
+    let expected = serde_json::json!([{"harness": "claude", "models": ["opus", "sonnet"]}, {"harness": "pi", "models": []}]);
+    assert_eq!(with.setting_options().unwrap(), Some(expected.clone()));
+    assert_eq!(with.setting_options().unwrap(), Some(expected));
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "discovery can start a process, so it runs once");
+}

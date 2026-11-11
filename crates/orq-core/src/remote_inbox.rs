@@ -215,6 +215,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// The harnesses this machine offers and the models each allows, as `[{harness, models}]`;
+    /// `None` when this provider offers none, so no agent can be chosen from the web.
+    fn setting_options(&self) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// Starts a run of `feature` in project `id`. A provider that cannot start runs does not know the project.
     fn start_run(&self, _id: &str, _feature: &str) -> Result<RunStart, String> {
         Ok(RunStart::Unknown)
@@ -398,6 +404,89 @@ fn set_remote_actions(roots: &StorageRoots, body: &[u8], confirm: Option<StepUp>
     }
 }
 
+/// Whether `harness` with `model` is one of `options` (`[{harness, models}]`), exactly as listed.
+fn offered(options: &Value, harness: &str, model: &str) -> bool {
+    options.as_array().is_some_and(|options| options.iter().any(|option| option["harness"] == harness && option["models"].as_array().is_some_and(|models| models.iter().any(|offered| offered == model))))
+}
+
+/// Sets the implementer's and reviewer's harness and model for the web, if actions are on, from the
+/// provider's options only and while the settings version presented is still current; a role left out
+/// or null is not touched. Leaves an audit line for the attempt.
+fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    use crate::remote_settings::{write_if_version, SettingsWriteError};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "settings.agents", project: "settings", run: None, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    let bad_body = || {
+        audit(Outcome::Refused, Some("bad request body"));
+        error(400, "the request body is not one this action takes")
+    };
+    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer", "version"]) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let Some(version) = fields["version"].as_str() else { return bad_body() };
+    let mut chosen: Vec<(&str, &str, &str)> = Vec::new();
+    for role in ["implementer", "reviewer"] {
+        match &fields[role] {
+            Value::Null => {}
+            Value::Object(agent) if agent.keys().all(|key| key == "harness" || key == "model") => match (agent.get("harness").and_then(Value::as_str), agent.get("model").and_then(Value::as_str)) {
+                (Some(harness), Some(model)) => chosen.push((role, harness, model)),
+                _ => return bad_body(),
+            },
+            _ => return bad_body(),
+        }
+    }
+    if chosen.is_empty() {
+        return bad_body();
+    }
+    let options = match provider.map(|provider| provider.setting_options()) {
+        Some(Ok(Some(options))) => options,
+        _ => {
+            audit(Outcome::Refused, Some("no options to choose from"));
+            return error(404, "not found");
+        }
+    };
+    if !chosen.iter().all(|(_, harness, model)| offered(&options, harness, model)) {
+        audit(Outcome::Refused, Some("not an offered harness or model"));
+        return error(422, "That harness or model is not one this machine offers");
+    }
+    let written = write_if_version(roots, version, |doc| {
+        for (role, harness, model) in &chosen {
+            let table = doc.entry(role).or_insert_with(toml_edit::table);
+            if let Some(table) = table.as_table_like_mut() {
+                table.insert("harness", toml_edit::value(*harness));
+                table.remove("profile");
+                table.insert("model", toml_edit::value(*model));
+            }
+        }
+    });
+    match written {
+        Ok(()) => {
+            audit(Outcome::Allowed, None);
+            match public_settings(&roots.config_file()) {
+                Ok(settings) => reply(200, json!({ "settings": settings })),
+                Err(why) => error(500, &why),
+            }
+        }
+        Err(conflict @ SettingsWriteError::Conflict) => {
+            audit(Outcome::Refused, Some("settings changed"));
+            error(conflict.status(), &conflict.to_string())
+        }
+        Err(failed) => {
+            audit(Outcome::Refused, Some(&failed.to_string()));
+            error(failed.status(), &failed.to_string())
+        }
+    }
+}
+
 /// Starts a run for the web, if actions are on, and leaves an audit line for the attempt.
 fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
@@ -506,6 +595,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/settings/remote-actions" && request.method == "POST" {
         return set_remote_actions(roots, body, confirm);
     }
+    if path == "/api/settings/agents" && request.method == "POST" {
+        return set_agents(roots, provider, body);
+    }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
     }
@@ -522,6 +614,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return match crate::remote_audit::read(roots, AUDIT_LIMIT) {
             Ok(lines) => reply(200, json!({ "audit": lines })),
             Err(why) => error(500, &why),
+        };
+    }
+    if path == "/api/settings/options" {
+        return match provider.map(|provider| provider.setting_options()) {
+            Some(Ok(Some(options))) => reply(200, json!({ "options": options })),
+            Some(Err(_)) => error(500, "the options could not be read"),
+            _ => error(404, "not found"),
         };
     }
     if path == "/api/settings" {

@@ -170,6 +170,7 @@ pub struct StoreProjects {
     roots: orq_core::storage::StorageRoots,
     scan_root: std::path::PathBuf,
     launcher: Option<std::sync::Arc<dyn RunLauncher + Send + Sync>>,
+    agent_options: Option<AgentOptions>,
     run_logs: std::sync::Mutex<LogCache>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
 }
@@ -186,7 +187,7 @@ struct LogSnapshot {
 
 impl StoreProjects {
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
-        StoreProjects { roots, scan_root, launcher: None, run_logs: Default::default(), log_snapshot: Default::default() }
+        StoreProjects { roots, scan_root, launcher: None, agent_options: None, run_logs: Default::default(), log_snapshot: Default::default() }
     }
 
     /// Lets this provider start runs through `launcher`; without one it says it cannot.
@@ -194,6 +195,22 @@ impl StoreProjects {
         self.launcher = Some(launcher);
         self
     }
+
+    /// Lets the web choose the implementer's and reviewer's harness and model from what `source`
+    /// finds: each harness with the models it allows. It is asked once, on first use.
+    pub fn with_agent_options(mut self, source: std::sync::Arc<AgentOptionsSource>) -> Self {
+        self.agent_options = Some(AgentOptions { source, found: Default::default() });
+        self
+    }
+}
+
+/// Finds the harnesses on this machine and the models each allows.
+pub type AgentOptionsSource = dyn Fn() -> Vec<(String, Vec<String>)> + Send + Sync;
+
+/// The harness options and what they were found to be, once asked.
+struct AgentOptions {
+    source: std::sync::Arc<AgentOptionsSource>,
+    found: std::sync::OnceLock<serde_json::Value>,
 }
 
 /// Starts a run the way the CLI does. The server never starts one by itself: whoever builds it supplies this.
@@ -242,6 +259,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn settings(&self) -> Result<Option<serde_json::Value>, String> {
         orq_core::remote_inbox::public_settings(&self.roots.config_file()).map(Some)
+    }
+
+    fn setting_options(&self) -> Result<Option<serde_json::Value>, String> {
+        let Some(options) = &self.agent_options else { return Ok(None) };
+        let found = options.found.get_or_init(|| (options.source)().into_iter().map(|(harness, models)| serde_json::json!({"harness": harness, "models": models})).collect());
+        Ok(Some(found.clone()))
     }
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {

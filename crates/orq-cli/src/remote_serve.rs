@@ -96,6 +96,8 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     if let Some(launcher) = launcher {
         projects = projects.with_launcher(launcher);
     }
+    // The web chooses agents from the same list as the popup.
+    projects = projects.with_agent_options(std::sync::Arc::new(|| crate::agent_options(&crate::find_program)));
     let projects = std::sync::Arc::new(projects);
     let state_roots = roots.clone();
     let state = std::sync::Arc::new(orq_remote::ServerState {

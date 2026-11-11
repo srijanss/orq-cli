@@ -1195,6 +1195,19 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
 }
 
 /// The executable for `harness`: a bare name found on PATH, never a path.
+/// The harnesses `find` locates and the models each offers: claude lists no models, so its two
+/// aliases are offered; pi is asked for its list. The popup and the web choose from this.
+fn agent_options(find: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<(String, Vec<String>)> {
+    let mut options = Vec::new();
+    if find("claude").is_some() {
+        options.push(("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]));
+    }
+    if let Some(program) = find("pi") {
+        options.push(("pi".to_string(), list_pi_models(&program, std::time::Duration::from_secs(5))));
+    }
+    options
+}
+
 fn find_program(harness: &str) -> Option<PathBuf> {
     if harness.is_empty() || harness.contains('/') {
         return None;
@@ -2565,18 +2578,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
             Some(programs) => programs.iter().find(|(n, _)| n == name).map(|(_, p)| p.clone()),
             None => find_program(name),
         };
-        let mut options = Vec::new();
-        if find("claude").is_some() {
-            // claude lists no models; these two aliases are offered, free text stays.
-            options.push(orq_tui::HarnessOption {
-                harness: "claude".into(),
-                models: vec!["opus".into(), "sonnet".into()],
-            });
-        }
-        if let Some(program) = find("pi") {
-            let models = list_pi_models(&program, std::time::Duration::from_secs(5));
-            options.push(orq_tui::HarnessOption { harness: "pi".into(), models });
-        }
+        let options: Vec<orq_tui::HarnessOption> = agent_options(&find).into_iter().map(|(harness, models)| orq_tui::HarnessOption { harness, models }).collect();
         self.harness_cache = Some(options.clone());
         options
     }
@@ -2775,6 +2777,18 @@ mod ledger_backend_tests {
         let models = super::list_pi_models(agent.path(), std::time::Duration::from_secs(5));
 
         assert_eq!(models, vec!["openai/gpt-6-astra".to_string()]);
+    }
+
+    #[test]
+    fn agent_options_offer_claudes_two_aliases_and_the_models_pi_lists_for_the_harnesses_found() {
+        let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
+        let programs = [("claude", agent.path().to_path_buf()), ("pi", agent.path().to_path_buf())];
+        let find = |name: &str| programs.iter().find(|(n, _)| *n == name).map(|(_, p)| p.clone());
+
+        let options = super::agent_options(&find);
+
+        assert_eq!(options, vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]), ("pi".to_string(), vec!["openai/gpt-6-astra".to_string()])]);
+        assert!(super::agent_options(&|_: &str| None).is_empty());
     }
 
     #[test]
