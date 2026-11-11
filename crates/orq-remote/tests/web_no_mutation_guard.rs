@@ -1,4 +1,4 @@
-//! The page offers exactly six controls — start, pause, resume, stop, discard and accept — each behind a confirmation,
+//! The page offers exactly seven controls — start, pause, resume, stop, discard, accept and switch model — each behind a confirmation,
 //! and no merge, approve, restart or edit control or request.
 
 fn code() -> String {
@@ -6,7 +6,7 @@ fn code() -> String {
 }
 
 #[test]
-fn the_page_has_only_the_start_pause_resume_stop_discard_and_accept_actions() {
+fn the_page_has_only_the_start_pause_resume_stop_discard_accept_and_model_actions() {
     let code = code();
     let calls: Vec<&str> = code.split("<RunAction ").skip(1).map(|call| call.split(" />").next().unwrap()).collect();
     let kinds: Vec<&str> = calls.iter().map(|call| call.split("kind=\"").nth(1).unwrap().split('"').next().unwrap()).collect();
@@ -23,7 +23,13 @@ fn the_page_has_only_the_start_pause_resume_stop_discard_and_accept_actions() {
     assert!(warning.starts_with("\"runs/\"") && warning.contains("+ \"/discard-warning\")"), "{warning}");
     assert!(tail(calls[5]).starts_with("\"runs/\"") && tail(calls[5]).contains("+ \"/accept\")"), "{}", tail(calls[5]));
     assert!(!calls[5].contains("check="), "accept asks nothing of the server first");
-    assert_eq!(code.matches("controlPath(control, ").count(), 9, "the definition, the six actions and the two checks are the only users");
+    // Switch model reads the launch profiles, then posts to the run's model route; nothing else.
+    let model = code.split("function ModelAction(").nth(1).expect("the switch model control").split("\nfunction ").next().unwrap();
+    let paths: Vec<&str> = model.split("controlPath(control, ").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    assert!(paths[0].starts_with("\"runs/\"") && paths[0].ends_with("+ \"/model\")"), "{}", paths[0]);
+    assert!(paths[1].starts_with("\"launch-profiles\")"), "{}", paths[1]);
+    assert_eq!(code.matches("controlPath(control, ").count(), 11, "the definition, the six actions, the two checks and the model switch's two paths are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

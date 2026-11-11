@@ -1342,6 +1342,105 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   );
 }
 
+const MODEL_ROLES = ["implementer", "reviewer"];
+
+// The popup's Switch model on a paused run: it reads the profiles the launch picker offers, preselects the
+// role's default, and asks with the picked role and profile before posting them. A refused read or switch
+// shows the server's reason; the switch takes effect when the run resumes.
+function ModelAction({ run, control }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const [offer, setOffer] = useState(null);
+  const [role, setRole] = useState("implementer");
+  const [profile, setProfile] = useState("");
+  const runPath = controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/model");
+  const preselect = (reply, chosen) => (typeof reply[chosen] === "string" && reply.profiles.includes(reply[chosen]) ? reply[chosen] : reply.profiles[0]);
+  const ask = async () => {
+    setNote("");
+    setPhase("checking");
+    let text = "The model profiles could not be read.";
+    try {
+      const response = await get(controlPath(control, "launch-profiles"), control.token);
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      const names = response.ok && body !== null && Array.isArray(body.profiles) ? body.profiles.filter((name) => typeof name === "string") : null;
+      if (names !== null && names.length > 0) {
+        const reply = { ...body, profiles: names };
+        setOffer(reply);
+        setRole("implementer");
+        setProfile(preselect(reply, "implementer"));
+        setPhase("asking");
+        return;
+      }
+      if (names !== null) text = "No model profiles are defined.";
+      else if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const pickRole = (picked) => {
+    setRole(picked);
+    setProfile(preselect(offer, picked));
+  };
+  const send = async () => {
+    setPhase("sending");
+    let text = "The model could not be switched.";
+    try {
+      const response = await actionRequest(runPath, control.token, { role, profile });
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok) {
+        setNote("The " + role + " of " + run.run_id + " continues on " + profile + " when it resumes.");
+        setPhase("done");
+        control.onDone();
+        return;
+      } else if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const asked = "Switch the " + role + " of " + run.run_id + " to " + profile + "? It takes effect when the run resumes.";
+  return (
+    <span className="run-action">
+      {phase === "idle" ? <button type="button" data-model="" onClick={ask}>Switch model</button> : null}
+      {phase === "checking" ? <span role="status">Checking…</span> : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={asked} className="model-picker">
+          <label>
+            Role{" "}
+            <select data-model-role="" value={role} onChange={(event) => pickRole(event.target.value)}>
+              {MODEL_ROLES.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <label>
+            Profile{" "}
+            <select data-model-profile="" value={profile} onChange={(event) => setProfile(event.target.value)}>
+              {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <span>{asked}</span>
+          <button type="button" data-confirm onClick={send}>Yes, switch model</button>
+          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+    </span>
+  );
+}
+
 function featureHref(projectId, name) {
   return "/projects/" + encodeURIComponent(projectId) + "/features/" + encodeURIComponent(name);
 }
@@ -1777,7 +1876,8 @@ const ACCEPTABLE = ["failed", "needs_review"];
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
 // branch would lose. Accept on a failed or needs_review run asks first; its tests then run on the server, so the
-// result shows as the run's state once they finish. The run's row and its detail header show the same ones.
+// result shows as the run's state once they finish. Switch model on a paused run picks a role and a profile.
+// The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
@@ -1785,8 +1885,9 @@ function RowActions({ run, control }) {
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
   const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
-  if (pause === null && resume === null && stop === null && discard === null && accept === null) return null;
-  return <span className="run-actions">{pause}{resume}{stop}{accept}{discard}</span>;
+  const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
+  if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null) return null;
+  return <span className="run-actions">{pause}{resume}{model}{stop}{accept}{discard}</span>;
 }
 
 // The popup's question before Discard, with what the branch would lose when the server says, or before Clear.
