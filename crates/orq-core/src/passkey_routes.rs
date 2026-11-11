@@ -134,13 +134,13 @@ impl PasskeyAuth {
         store.find(&credential).ok().flatten().map(|key| key.label)
     }
 
-    /// The gate every passkey change goes through: a passkey session presenting its CSRF token from this
-    /// server's origin. `act` runs only past the gate; every attempt is audited under `action`.
+    /// The gate every passkey or session change goes through: a passkey session presenting its CSRF token
+    /// from this server's origin. `act` runs only past the gate; every attempt is audited under `action`.
     fn manage(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, live: bool, action: &'static str, act: impl FnOnce(&Audit) -> AuthReply) -> AuthReply {
         let identity = self.session_label(store, request.cookie).filter(|_| live).unwrap_or_else(|| "web".to_string());
         let audit = Audit { roots, identity, action };
         if !live {
-            return audit.refused(403, "needs a passkey sign-in", "Managing passkeys needs a passkey sign-in");
+            return audit.refused(403, "needs a passkey sign-in", needs_sign_in(action));
         }
         if !self.change_allowed(roots, request.cookie, request.origin, request.csrf) {
             return audit.refused(403, "missing or wrong CSRF token or origin", "not allowed");
@@ -188,6 +188,17 @@ impl PasskeyAuth {
                 Err(RemoveError::Last) => audit.refused(409, "the last passkey", "Add another passkey before removing this one"),
                 Err(RemoveError::Store(_)) => audit.refused(500, "the passkeys could not be written", "The passkeys could not be changed"),
             }
+        })
+    }
+
+    /// POST /auth/sessions/end-all: ends every passkey session, this one included, and clears this session's
+    /// cookie. Audited as sessions.end_all.
+    fn end_all(&self, roots: &StorageRoots, store: &PasskeyStore, request: &AuthRequest, live: bool) -> AuthReply {
+        self.manage(roots, store, request, live, END_ALL, |audit| {
+            let ended = self.sessions.count();
+            self.sessions.end_all();
+            audit.allowed(&format!("ended {ended} sessions"));
+            AuthReply { status: 200, body: json!({ "signed_out": true, "ended": ended }), set_cookie: Some(session::clear_cookie()) }
         })
     }
 
@@ -272,6 +283,7 @@ impl PasskeyAuth {
                     Err(_) => reply(500, json!({ "error": "could not start" })),
                 }
             }
+            ("POST", "sessions/end-all") => self.end_all(roots, &store, request, live),
             ("POST", "logout") => {
                 if let Some(id) = request.cookie.and_then(session::id_from_cookie_header) {
                     self.sessions.end(id);
@@ -280,6 +292,16 @@ impl PasskeyAuth {
             }
             _ => reply(404, json!({ "error": "not found" })),
         })
+    }
+}
+
+const END_ALL: &str = "sessions.end_all";
+
+/// What a change refused for want of a passkey session says.
+fn needs_sign_in(action: &str) -> &'static str {
+    match action {
+        END_ALL => "Signing out every device needs a passkey sign-in",
+        _ => "Managing passkeys needs a passkey sign-in",
     }
 }
 
