@@ -1,7 +1,7 @@
 //! Whatever the settings, the web can only read, except for the listed actions when they are switched on:
-//! starting a run, pausing, resuming, stopping, accepting it, switching its model, and promoting a feature. Nothing else answers to a write.
+//! starting a run, pausing, resuming, stopping, accepting it, switching its model, promoting, adding and editing a feature. Nothing else answers to a write.
 
-use orq_core::remote_inbox::{handle_with_body, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
+use orq_core::remote_inbox::{handle_with_body, FeatureInput, FeatureSave, ProjectsProvider, RemoteConfig, Request, RunControl, RunControlOutcome, RunStart};
 use orq_core::storage::StorageRoots;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +31,11 @@ impl ProjectsProvider for Counting {
         Ok(RunControlOutcome::Unknown)
     }
 
+    fn save_feature(&self, _id: &str, _feature: Option<&str>, _fields: &FeatureInput, _version: Option<&str>) -> Result<FeatureSave, String> {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        Ok(FeatureSave::Unknown)
+    }
+
     fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
         self.changes.fetch_add(1, Ordering::SeqCst);
         Ok(RunControlOutcome::Unknown)
@@ -40,7 +45,6 @@ impl ProjectsProvider for Counting {
 const READ_PATHS: &[&str] = &[
     "/api/projects",
     "/api/projects/p",
-    "/api/projects/p/features",
     "/api/projects/p/runs",
     "/api/projects/p/reviews",
     "/api/reviews",
@@ -53,7 +57,6 @@ const READ_PATHS: &[&str] = &[
     "/api/projects/p/runs/r-1/restart",
     "/api/projects/p/features/f/approve",
     "/api/projects/p/features/f/edit",
-    "/api/projects/p/features/f",
     "/api/projects/p/features/f/fields",
     "/api/projects/p/reviews/r-1/merge",
     "/api/reviews/r-1/approve",
@@ -61,7 +64,7 @@ const READ_PATHS: &[&str] = &[
     "/api/audit/clear",
 ];
 
-const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model", "/api/projects/p/features/f/promote"];
+const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model", "/api/projects/p/features/f/promote", "/api/projects/p/features", "/api/projects/p/features/f"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
     let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));
@@ -77,8 +80,13 @@ fn roots(tag: &str, actions: bool) -> StorageRoots {
 fn status(roots: &StorageRoots, provider: &Counting, method: &str, path: &str) -> u16 {
     let config = RemoteConfig { token: "tok".into() };
     let request = Request { method, path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
-    // A model switch names the role and profile; any other action takes no body.
-    let body: &[u8] = if path.ends_with("/model") { br#"{"role":"implementer","profile":"opus"}"# } else { b"" };
+    // A model switch names the role and profile, an add or edit sends fields; any other action takes no body.
+    let body: &[u8] = match path {
+        _ if path.ends_with("/model") => br#"{"role":"implementer","profile":"opus"}"#,
+        "/api/projects/p/features" => br#"{"fields":{"name":"f-new"}}"#,
+        "/api/projects/p/features/f" => br#"{"fields":{"description":"x"},"version":"v"}"#,
+        _ => b"",
+    };
     handle_with_body(roots, &config, "p", "p", &request, body, provider).status
 }
 

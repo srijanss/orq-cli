@@ -299,6 +299,13 @@ impl StoreProjects {
 
     /// Project `id` and the run store, when `run` is a run of that project; only such a run can be
     /// acted on through it. `None` when either is unknown.
+    /// Where the feature ledger of project `id` is; `None` when there is no such project.
+    fn ledger_of(&self, id: &str) -> Result<Option<PathBuf>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        Ok(Some(orq_features::ledger_path(&git)))
+    }
+
     fn own_run(&self, id: &str, run: &str) -> Result<Option<(Project, orq_orchestrator::RunStore)>, String> {
         use orq_orchestrator::StoreError;
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
@@ -459,9 +466,8 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     /// The popup's editor fields of one feature, and the version of the ledger they were read from.
     fn feature_fields(&self, id: &str, feature: &str) -> Result<Option<serde_json::Value>, String> {
         use orq_core::redact::redact;
-        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
-        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
-        let Some(bytes) = read_ledger_bytes(&orq_features::ledger_path(&git))? else { return Ok(None) };
+        let Some(path) = self.ledger_of(id)? else { return Ok(None) };
+        let Some(bytes) = read_ledger_bytes(&path)? else { return Ok(None) };
         let version = ledger_version(&bytes);
         let Some(entry) = parse_ledger_bytes(bytes)?.into_iter().find(|entry| entry.feature_name == feature) else { return Ok(None) };
         let fields = serde_json::json!({
@@ -491,6 +497,64 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             Err(PromoteError::Conflict) => refused("ledger changed while it was being edited; nothing was written, try again".to_string()),
             Err(PromoteError::Locked) => refused("ledger is locked by another writer; nothing was written, try again".to_string()),
             Err(error) => Err(format!("{error:?}")),
+        }
+    }
+
+    /// The popup's Add and Edit for the web's editor, saved against the ledger exactly as the editor read it:
+    /// a version that no longer matches, or a file changed before the write, is a conflict and nothing is written.
+    fn save_feature(&self, id: &str, feature: Option<&str>, fields: &orq_core::remote_inbox::FeatureInput, version: Option<&str>) -> Result<orq_core::remote_inbox::FeatureSave, String> {
+        use orq_core::remote_inbox::FeatureSave;
+        use orq_features::{AppendError, EditFieldsError, SaveError};
+        let Some(path) = self.ledger_of(id)? else { return Ok(FeatureSave::Unknown) };
+        let changed = || Ok(FeatureSave::Conflict("The ledger changed since you opened it; nothing was written".to_string()));
+        let refused = |why: String| Ok(FeatureSave::Invalid(orq_core::redact::redact(&why)));
+        let loaded = match (read_ledger_bytes(&path)?, version) {
+            (None, _) if feature.is_some() => return Ok(FeatureSave::Unknown),
+            (None, Some(_)) => return changed(),
+            (None, None) => orq_features::LoadedLedger::absent(&path),
+            (Some(bytes), Some(version)) if ledger_version(&bytes) != version => return changed(),
+            (Some(bytes), _) => orq_features::LoadedLedger::from_bytes(&path, bytes).map_err(|error| format!("{error:?}"))?,
+        };
+        let save_error = |error: SaveError| match error {
+            SaveError::Conflict => changed(),
+            SaveError::Locked => Ok(FeatureSave::Conflict("the ledger is locked by another writer; nothing was written, try again".to_string())),
+            SaveError::Io(error) => Err(format!("{error}")),
+        };
+        let Some(feature) = feature else {
+            let name = fields.name.clone().unwrap_or_default();
+            if !plain_feature_name(&name) {
+                return refused("a feature name may use only letters, digits, '-', '_' and '.', and may not start with '.'".to_string());
+            }
+            let draft = orq_features::FeatureDraft {
+                feature_name: name,
+                description: fields.description.clone(),
+                depends_on: fields.depends_on.clone().filter(|names| !names.is_empty()),
+                parallelizable: fields.parallelizable,
+                test_file: fields.test_file.clone(),
+                target_files: fields.target_files.clone().filter(|paths| !paths.is_empty()),
+            };
+            return match loaded.append(&draft) {
+                Ok(_) => Ok(FeatureSave::Saved),
+                Err(AppendError::Invalid(why)) => refused(why.to_string()),
+                Err(AppendError::Save(error)) => save_error(error),
+            };
+        };
+        let Some(current) = loaded.entries().iter().find(|entry| entry.feature_name == feature) else { return Ok(FeatureSave::Unknown) };
+        // As the popup's Edit: only what differs is sent, and a field left out stays as it is.
+        let differs = |new: &Option<String>, old: &Option<String>| new.clone().filter(|_| new != old);
+        let edits = orq_features::FieldEdits {
+            description: differs(&fields.description, &current.description),
+            depends_on: fields.depends_on.clone().filter(|names| *names != current.depends_on),
+            parallelizable: fields.parallelizable.filter(|value| Some(*value) != current.parallelizable),
+            test_file: differs(&fields.test_file, &current.test_file),
+            target_files: fields.target_files.clone().filter(|paths| !paths.is_empty() && *paths != current.target_files),
+        };
+        match loaded.edit_fields(feature, &edits) {
+            Ok(_) => Ok(FeatureSave::Saved),
+            Err(EditFieldsError::UnknownFeature) => Ok(FeatureSave::Unknown),
+            Err(EditFieldsError::Invalid(why)) => refused(why.to_string()),
+            Err(EditFieldsError::Save(error)) => save_error(error),
+            Err(EditFieldsError::Malformed) => Err("the ledger could not be edited safely".to_string()),
         }
     }
 
@@ -848,6 +912,11 @@ fn read_ledger_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
         return Err("the ledger is too large".to_string());
     }
     Ok(Some(bytes))
+}
+
+/// Whether `name` can only be a feature name, never a path: the web adds no feature it could not then name.
+fn plain_feature_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !name.starts_with('.')
 }
 
 /// The version of a ledger as it was read, for a later save to compare against: the SHA-256 of its bytes.

@@ -274,11 +274,41 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Saves the web editor's `fields` as a new feature of project `id` (`feature` is `None`) or as the
+    /// fields of `feature`, if the ledger still has the `version` the editor read (an add may send none).
+    /// A provider that cannot does not know the project.
+    fn save_feature(&self, _id: &str, _feature: Option<&str>, _fields: &FeatureInput, _version: Option<&str>) -> Result<FeatureSave, String> {
+        Ok(FeatureSave::Unknown)
+    }
+
     /// Discards run `run` of project `id` the way the popup's Discard and Clear do. A provider that
     /// cannot does not know the run.
     fn discard_run(&self, _id: &str, _run: &str) -> Result<RunDiscard, String> {
         Ok(RunDiscard::Unknown)
     }
+}
+
+/// The fields the web's feature editor sends; a field left out (or null) stays as it is on an edit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeatureInput {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub depends_on: Option<Vec<String>>,
+    pub parallelizable: Option<bool>,
+    pub test_file: Option<String>,
+    pub target_files: Option<Vec<String>>,
+}
+
+/// How a save of a feature ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeatureSave {
+    Saved,
+    /// The ledger refused the values; nothing was written. Safe to show.
+    Invalid(String),
+    /// The ledger changed since the editor read it, or another writer holds it; nothing was written. Safe to show.
+    Conflict(String),
+    /// No such project or feature.
+    Unknown,
 }
 
 /// How a request to discard a run ended.
@@ -691,6 +721,116 @@ fn promote_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>
     }
 }
 
+/// The project and feature of `/api/projects/{id}/features/{name}`, when the path has that shape.
+fn feature_path(path: &str) -> Option<(&str, &str)> {
+    match path.strip_prefix("/api/projects/")?.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "features", feature] if !id.is_empty() && !feature.is_empty() => Some((id, feature)),
+        _ => None,
+    }
+}
+
+/// The editor's fields and the version they were read with, from a save body `{fields, version}`. Only the
+/// editor's fields are taken, each of its own type; an add must name the feature, and an edit must send a
+/// version and may not rename the feature.
+fn feature_save_body(body: &[u8], feature: Option<&str>) -> Result<(FeatureInput, Option<String>), Response> {
+    let bad = || error(400, "the request body is not one this action takes");
+    if let Some(refusal) = body_refusal(body, &["fields", "version"]) {
+        return Err(refusal);
+    }
+    let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(body) else { return Err(bad()) };
+    let Some(Value::Object(fields)) = body.get("fields") else { return Err(bad()) };
+    const FIELDS: [&str; 6] = ["name", "description", "depends_on", "parallelizable", "test_file", "target_files"];
+    if !fields.keys().all(|key| FIELDS.contains(&key.as_str())) {
+        return Err(bad());
+    }
+    let text = |key: &str| match fields.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        _ => Err(bad()),
+    };
+    let names = |key: &str| match fields.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => items.iter().map(|item| item.as_str().map(str::to_string).ok_or_else(bad)).collect::<Result<Vec<_>, _>>().map(Some),
+        _ => Err(bad()),
+    };
+    let parallelizable = match fields.get("parallelizable") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(bad()),
+    };
+    let input = FeatureInput {
+        name: text("name")?,
+        description: text("description")?,
+        depends_on: names("depends_on")?,
+        parallelizable,
+        test_file: text("test_file")?,
+        target_files: names("target_files")?,
+    };
+    let version = match body.get("version") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(version)) if !version.is_empty() => Some(version.clone()),
+        _ => return Err(bad()),
+    };
+    let fits = match feature {
+        None => input.name.as_deref().is_some_and(|name| !name.trim().is_empty()),
+        Some(feature) => version.is_some() && input.name.as_deref().is_none_or(|name| name == feature),
+    };
+    if fits { Ok((input, version)) } else { Err(bad()) }
+}
+
+/// Adds (`feature` is `None`) or edits a feature for the web's editor, if actions are on, and leaves an audit
+/// line for the attempt as feature.add or feature.edit, naming the feature once it is known.
+fn save_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: Option<&str>, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let action = if feature.is_some() { "feature.edit" } else { "feature.add" };
+    let failed = "the feature could not be saved";
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action, project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    let named = |name: Option<&str>, why: &str| name.map_or_else(|| why.to_string(), |name| format!("{name}: {why}"));
+    if feature.is_some_and(|feature| !plain_feature_name(feature)) {
+        audit(Outcome::Refused, "not a feature name");
+        return error(404, "not found");
+    }
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, &named(feature, "remote actions are off"));
+        return error(404, "not found");
+    }
+    let (input, version) = match feature_save_body(body, feature) {
+        Ok(parsed) => parsed,
+        Err(refusal) => {
+            audit(Outcome::Refused, &named(feature, "bad request body"));
+            return refusal;
+        }
+    };
+    let name = feature.map(str::to_string).or_else(|| input.name.clone()).unwrap_or_default();
+    let refused = |why: &str| audit(Outcome::Refused, &named(Some(&name), why));
+    match provider.map(|provider| provider.save_feature(id, feature, &input, version.as_deref())) {
+        Some(Ok(FeatureSave::Saved)) => {
+            audit(Outcome::Allowed, &name);
+            reply(200, json!({ "feature": name }))
+        }
+        Some(Ok(FeatureSave::Invalid(why))) => {
+            refused(&why);
+            reply(422, json!({ "error": why }))
+        }
+        Some(Ok(FeatureSave::Conflict(why))) => {
+            refused(&why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            refused(failed);
+            error(500, failed)
+        }
+        _ => {
+            refused("no such project or feature");
+            error(404, "not found")
+        }
+    }
+}
+
 /// Pauses, resumes, stops or accepts a run for the web, if actions are on, and leaves an audit line for the attempt.
 fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
@@ -933,6 +1073,12 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "promote")).flatten() {
         return promote_feature(roots, provider, id, feature, body);
+    }
+    if let Some(id) = (request.method == "POST").then(|| project_target(path, "features")).flatten() {
+        return save_feature(roots, provider, id, None, body);
+    }
+    if let Some((id, feature)) = (request.method == "POST").then(|| feature_path(path)).flatten() {
+        return save_feature(roots, provider, id, Some(feature), body);
     }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {

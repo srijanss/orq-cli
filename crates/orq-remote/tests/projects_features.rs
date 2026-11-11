@@ -90,7 +90,9 @@ fn the_same_token_peer_and_method_checks_apply() {
     git_repo(&s.scan, "alpha");
     assert_eq!(ask(&s, "GET", "/api/projects/alpha/features", None).0, 401);
     assert_eq!(ask(&s, "GET", "/api/projects/alpha/features", Some("Bearer wrong")).0, 401);
-    assert_eq!(ask(&s, "POST", "/api/projects/alpha/features", Some("Bearer tok")).0, 405);
+    assert_eq!(ask(&s, "PUT", "/api/projects/alpha/features", Some("Bearer tok")).0, 405);
+    // POST is the add action, which is not there while remote actions are off.
+    assert_eq!(ask(&s, "POST", "/api/projects/alpha/features", Some("Bearer tok")).0, 404);
     assert_eq!(ask(&s, "HEAD", "/api/projects/alpha/features", Some("Bearer tok")).0, 200);
 }
 

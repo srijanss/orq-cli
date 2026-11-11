@@ -106,6 +106,12 @@ impl LoadedLedger {
             std::io::ErrorKind::NotFound => LedgerError::Missing { path: path.to_path_buf() },
             _ => LedgerError::Unreadable { path: path.to_path_buf(), source },
         })?;
+        Self::from_bytes(path, bytes)
+    }
+
+    /// The ledger at `path` as `bytes` the caller already read from it. A later save goes ahead only while
+    /// the file still holds exactly these bytes, so a caller that checked them saves against what it checked.
+    pub fn from_bytes(path: &Path, bytes: Vec<u8>) -> Result<Self, LedgerError> {
         let entries = parse_ledger_bytes(path, &bytes)?;
         Ok(Self { path: path.to_path_buf(), bytes, entries, is_new: false })
     }
