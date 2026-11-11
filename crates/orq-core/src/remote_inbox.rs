@@ -280,16 +280,38 @@ pub struct ReviewScope {
 }
 
 pub fn handle(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request) -> Response {
-    answer(roots, config, project_id, project_name, request, None)
+    answer(roots, config, project_id, project_name, request, b"", None)
 }
 
 /// Like [`handle`], and `/api/projects` is answered by `provider`.
 pub fn handle_with(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: &dyn ProjectsProvider) -> Response {
-    answer(roots, config, project_id, project_name, request, Some(provider))
+    answer(roots, config, project_id, project_name, request, b"", Some(provider))
 }
 
-fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
-    let mut response = route(roots, config, project_id, project_name, request, provider);
+/// The most an action's request body may hold; the transport reads no more than this.
+pub const MAX_ACTION_BODY: usize = 4096;
+
+/// Like [`handle_with`], with the request's body, which only the action routes look at.
+pub fn handle_with_body(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: &dyn ProjectsProvider) -> Response {
+    answer(roots, config, project_id, project_name, request, body, Some(provider))
+}
+
+/// Why an action's body is refused, if it is: it must be empty or a JSON object with only `allowed` fields.
+fn body_refusal(body: &[u8], allowed: &[&str]) -> Option<Response> {
+    if body.len() > MAX_ACTION_BODY {
+        return Some(error(413, "the request body is too large"));
+    }
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(fields)) if fields.keys().all(|key| allowed.contains(&key.as_str())) => None,
+        _ => Some(error(400, "the request body is not one this action takes")),
+    }
+}
+
+fn answer(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>) -> Response {
+    let mut response = route(roots, config, project_id, project_name, request, body, provider);
     if request.method == "HEAD" {
         // Same status as GET, never a body.
         response.body = Value::Null;
@@ -325,7 +347,7 @@ fn remote_actions_on(roots: &StorageRoots) -> bool {
 }
 
 /// Starts a run for the web, if actions are on, and leaves an audit line for the attempt.
-fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str) -> Response {
+fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
     let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
@@ -339,6 +361,10 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
     if !plain {
         audit(Outcome::Refused, None, Some("not a feature name"));
         return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit(Outcome::Refused, None, Some("bad request body"));
+        return refusal;
     }
     match provider.map(|provider| provider.start_run(id, feature)) {
         Some(Ok(RunStart::Started(run))) => {
@@ -362,7 +388,7 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
 }
 
 /// Pauses or resumes a run for the web, if actions are on, and leaves an audit line for the attempt.
-fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl) -> Response {
+fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
     let (action, failed) = match control {
@@ -380,6 +406,10 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     if !plain {
         audit(Outcome::Refused, None, Some("not a run id"));
         return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit(Outcome::Refused, Some(run), Some("bad request body"));
+        return refusal;
     }
     match provider.map(|provider| provider.control_run(id, run, control)) {
         Some(Ok(RunControlOutcome::Done(now_run))) => {
@@ -402,7 +432,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     }
 }
 
-fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, provider: Option<&dyn ProjectsProvider>) -> Response {
+fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: Option<&dyn ProjectsProvider>) -> Response {
     // A stranger's address and a bad token are refused identically, so a
     // caller learns nothing about which check failed.
     if !peer_allowed(request.peer) || !token_matches(&config.token, request.authorization) {
@@ -411,13 +441,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
     if let Some((id, feature)) = run_start_target(path) {
         match request.method {
-            "POST" => return start_run(roots, provider, id, feature),
+            "POST" => return start_run(roots, provider, id, feature, body),
             "GET" | "HEAD" => {}
             _ => return error(405, "this view is read-only"),
         }
     }
     if let Some((id, run, control)) = (request.method == "POST").then(|| run_control_target(path)).flatten() {
-        return control_run(roots, provider, id, run, control);
+        return control_run(roots, provider, id, run, control, body);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");

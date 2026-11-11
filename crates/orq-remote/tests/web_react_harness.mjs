@@ -107,7 +107,7 @@ window.fetch = (url, options = {}) => {
     return Promise.resolve({ status: known ? 200 : 404, ok: known, json: () => Promise.resolve(known ? reply : {}) });
   }
   const signal = options.signal;
-  requests.push({ url, method: options.method, headers: options.headers, get aborted() { return signal ? signal.aborted : null; } });
+  requests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body, get aborted() { return signal ? signal.aborted : null; } });
   const index = requests.length - 1;
   const next = responses.shift();
   if (!next || (next.reject && next.hold !== "fetch")) {

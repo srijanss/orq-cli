@@ -929,7 +929,7 @@ function controlPath(control, tail) {
   return "/api/projects/" + encodeURIComponent(control.projectId) + "/" + tail;
 }
 
-async function actionRequest(path, token) {
+async function actionRequest(path, token, body) {
   const headers = { "Content-Type": "application/json" };
   if (token === SESSION) {
     // Only a passkey session carries a CSRF token; a bearer token goes straight out.
@@ -938,7 +938,7 @@ async function actionRequest(path, token) {
   } else {
     headers.Authorization = "Bearer " + token;
   }
-  return fetch(path, { method: "POST", headers, body: "{}", cache: "no-store", referrerPolicy: "no-referrer" });
+  return fetch(path, { method: "POST", headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
 function RunAction({ kind, label, question, path, token, onSignedOut, onDone, done }) {

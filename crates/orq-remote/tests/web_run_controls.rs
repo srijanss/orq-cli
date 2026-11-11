@@ -143,6 +143,21 @@ fn pause_and_resume_post_to_their_own_routes_after_a_confirmation_naming_the_run
 }
 
 #[test]
+fn every_action_posts_a_json_object_body_from_the_one_helper_that_takes_it() {
+    let ok = json!({"status": 202, "json": {"run": "run-9"}});
+    let Some(out) = features_page(Some(true), vec![ok.clone()], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(post["body"], "{}", "{post}");
+    let Some(out) = runs_page(Some(true), vec![ok], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(post["body"], "{}", "{post}");
+    // Later actions hand their own fields to the same helper, which sends them as JSON and nothing else.
+    let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
+    assert!(code.contains("async function actionRequest(path, token, body)"), "the helper takes an optional body");
+    assert!(code.contains("JSON.stringify(body === undefined ? {} : body)"), "the body is always JSON");
+}
+
+#[test]
 fn each_row_asks_for_itself_and_a_confirmed_action_posts_once() {
     let Some(out) = runs_page(Some(true), vec![], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-resume]"})]) else { return };
     assert_eq!(count(&out["frames"][2], "[data-confirm]"), 1, "{out}");
