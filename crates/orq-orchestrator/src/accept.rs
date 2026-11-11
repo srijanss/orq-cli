@@ -34,10 +34,13 @@ fn verify_own_worktree(run_id: &str, worktree: &Path, branch: &str) -> Result<()
     Ok(())
 }
 
-/// Mark the failed or needs-review run `run_id` review ready when its worktree holds committed work, nothing is
-/// left uncommitted and `tests(worktree)` passes. The tests run only once the run is known to be
-/// acceptable; a failure leaves the run failed and is returned as the reason.
-pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+/// Say whether the run `run_id` could be accepted, without running its tests or changing it: it must be failed or
+/// waiting on a review decision, with its own worktree holding committed work and nothing left uncommitted.
+pub fn accept_check(store: &RunStore, run_id: &str) -> Result<(), String> {
+    check(store, run_id).map(|_| ())
+}
+
+fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
@@ -60,6 +63,14 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
     if commits.trim() == "0" {
         return Err(format!("{run_id} left no committed work to accept"));
     }
+    Ok(record)
+}
+
+/// Mark the failed or needs-review run `run_id` review ready when [`accept_check`] passes and `tests(worktree)`
+/// passes. The tests run only once the run is known to be acceptable; a failure leaves the run failed and is
+/// returned as the reason.
+pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+    let record = check(store, run_id)?;
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     tests(&record.worktree).map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
     verify_own_worktree(run_id, &record.worktree, &record.branch)?;

@@ -183,7 +183,12 @@ pub struct StoreProjects {
     agent_options: Option<AgentOptions>,
     run_logs: std::sync::Mutex<LogCache>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
+    accept_tests: AcceptTests,
+    accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
+
+/// Runs the tests of a run's worktree when it is accepted; the error is what failed.
+pub type AcceptTests = std::sync::Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
 /// The redacted text of the log file last paged through, so the next page of an unchanged file is
 /// cut from it instead of reading and redacting the file again.
@@ -197,7 +202,22 @@ struct LogSnapshot {
 
 impl StoreProjects {
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
-        StoreProjects { roots, scan_root, launcher: None, agent_options: None, run_logs: Default::default(), log_snapshot: Default::default() }
+        StoreProjects {
+            roots,
+            scan_root,
+            launcher: None,
+            agent_options: None,
+            run_logs: Default::default(),
+            log_snapshot: Default::default(),
+            accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
+            accepting: Default::default(),
+        }
+    }
+
+    /// Accepting a run runs `tests` in its worktree instead of what its stacks call for.
+    pub fn with_accept_tests(mut self, tests: AcceptTests) -> Self {
+        self.accept_tests = tests;
+        self
     }
 
     /// Lets this provider start runs through `launcher`; without one it says it cannot.
@@ -211,6 +231,33 @@ impl StoreProjects {
     pub fn with_agent_options(mut self, source: std::sync::Arc<AgentOptionsSource>) -> Self {
         self.agent_options = Some(AgentOptions { source, found: Default::default() });
         self
+    }
+
+    /// The popup's Accept: the run is checked now, as the popup checks it, and its tests then run in the
+    /// background, since they can take as long as the project's whole suite. A run already being accepted is
+    /// refused; one that passes ends review ready, and one that fails stays as it was, its reason logged here.
+    fn accept(&self, store: orq_orchestrator::RunStore, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let mut accepting = self.accepting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if accepting.contains(run) {
+            return Ok(RunControlOutcome::Refused(format!("{run} is already being accepted")));
+        }
+        // A failed git command is for this machine's operator; any other answer is why the run cannot be accepted.
+        match orq_orchestrator::accept_check(&store, run) {
+            Ok(()) => {}
+            Err(why) if why.starts_with("git ") => return Err(why),
+            Err(why) => return Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
+        }
+        accepting.insert(run.to_string());
+        drop(accepting);
+        let (tests, in_flight, run_id) = (self.accept_tests.clone(), self.accepting.clone(), run.to_string());
+        std::thread::spawn(move || {
+            if let Err(why) = orq_orchestrator::accept_run(&store, &run_id, &*tests) {
+                eprintln!("orq serve: accepting {run_id} failed: {}", orq_core::redact::redact(&why));
+            }
+            in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&run_id);
+        });
+        Ok(RunControlOutcome::Done(run.to_string()))
     }
 
     /// Project `id` and the run store, when `run` is a run of that project; only such a run can be
@@ -342,6 +389,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                     Err(LaunchError::Failed(why)) => Err(why),
                 }
             }
+            RunControl::Accept => self.accept(store, run),
         }
     }
 

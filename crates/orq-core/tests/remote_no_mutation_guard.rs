@@ -50,7 +50,7 @@ const READ_PATHS: &[&str] = &[
     "/api/audit/clear",
 ];
 
-const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop"];
+const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
     let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));

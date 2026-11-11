@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{accept_run, summarize_run, Event, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{accept_check, accept_run, summarize_run, Event, RunPhase, RunRecord, RunStore};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -190,4 +190,18 @@ fn tests_that_leave_the_worktree_changed_or_move_its_head_do_not_make_the_run_re
     .unwrap_err();
     assert!(err.contains("changed the worktree"), "{err}");
     assert_eq!(phase(&store), RunPhase::Failed);
+}
+
+#[test]
+fn the_check_says_what_accept_would_refuse_without_running_the_tests_or_changing_the_run() {
+    let (_repo, _worktree, store) = failed_run("check-ok", 1);
+    assert_eq!(accept_check(&store, "run-1"), Ok(()));
+    assert_eq!(phase(&store), RunPhase::Failed);
+
+    let (_repo2, dirty, store) = failed_run("check-dirty", 1);
+    std::fs::write(dirty.join("loose.txt"), "not committed").unwrap();
+    assert_eq!(accept_check(&store, "run-1"), Err("run-1 has uncommitted changes in its worktree; commit or discard them first".to_string()));
+
+    let (_repo3, _worktree3, store) = failed_run("check-none", 0);
+    assert_eq!(accept_check(&store, "run-1"), Err("run-1 left no committed work to accept".to_string()));
 }

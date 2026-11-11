@@ -226,7 +226,8 @@ pub trait ProjectsProvider {
         Ok(RunStart::Unknown)
     }
 
-    /// Pauses, resumes or stops run `run` of project `id`. A provider that cannot does not know the run.
+    /// Pauses, resumes, stops or accepts run `run` of project `id`. An accept is done once its tests have
+    /// started; they finish on their own. A provider that cannot does not know the run.
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
         Ok(RunControlOutcome::Unknown)
     }
@@ -267,6 +268,7 @@ pub enum RunControl {
     Pause,
     Resume,
     Stop,
+    Accept,
 }
 
 /// How a request to pause or resume a run ended.
@@ -370,7 +372,7 @@ fn run_start_target(path: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// The project, run and control of `/api/projects/{id}/runs/{run}/pause`, `.../resume` or `.../stop`, when the path has that shape.
+/// The project, run and control of `/api/projects/{id}/runs/{run}/pause`, `.../resume`, `.../stop` or `.../accept`, when the path has that shape.
 fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
     let mut parts = path.strip_prefix("/api/projects/")?.split('/');
     let (id, runs, run, action) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
@@ -381,6 +383,7 @@ fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
         "pause" => Some((id, run, RunControl::Pause)),
         "resume" => Some((id, run, RunControl::Resume)),
         "stop" => Some((id, run, RunControl::Stop)),
+        "accept" => Some((id, run, RunControl::Accept)),
         _ => None,
     }
 }
@@ -574,7 +577,7 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
     }
 }
 
-/// Pauses, resumes or stops a run for the web, if actions are on, and leaves an audit line for the attempt.
+/// Pauses, resumes, stops or accepts a run for the web, if actions are on, and leaves an audit line for the attempt.
 fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
@@ -582,6 +585,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         RunControl::Pause => ("run.pause", "the run could not be paused"),
         RunControl::Resume => ("run.resume", "the run could not be resumed"),
         RunControl::Stop => ("run.stop", "the run could not be stopped"),
+        RunControl::Accept => ("run.accept", "the run could not be accepted"),
     };
     let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
         let _ = record(roots, &Attempt { identity: "web", action, project: id, run, outcome, reason }, now);
