@@ -353,11 +353,15 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(config) => config,
         Err(message) => return fail(message),
     };
+    let project_agents = match project_agents(&project) {
+        Ok(agents) => agents,
+        Err(message) => return fail(message),
+    };
     let selection = orq_features::RunSelection {
         implementer: parsed.implementer.as_deref(),
         reviewer: parsed.reviewer.as_deref(),
     };
-    let models = match orq_features::resolve_run_models(&profiles, &reviewers, &selection) {
+    let models = match orq_features::resolve_project_run_models(&profiles, &reviewers, &selection, &project_agents) {
         Ok(models) => models,
         Err(err) => {
             eprintln!("orq: {}", printable(&err.to_string()));
@@ -474,6 +478,24 @@ fn run(args: &[OsString]) -> ExitCode {
         }
         Err(pipeline::StartError::Other(message)) => fail(message),
     }
+}
+
+/// The agents the project chose for itself in this machine's orq.db, keyed by its main checkout,
+/// so a linked worktree reads its project's record. Without a database there are none.
+fn project_agents(project: &orq_git::Project) -> Result<orq_features::ProjectAgents, String> {
+    let roots = orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok())
+        .map_err(|err| format!("cannot locate the Orq data directory: {err}"))?;
+    let database = roots.database();
+    if !database.exists() {
+        return Ok(orq_features::ProjectAgents::default());
+    }
+    let root = orq_git::main_checkout_root(project).unwrap_or_else(|| project.root.clone());
+    let store = orq_core::store::Store::open(&database).map_err(|err| format!("cannot open the Orq database: {err}"))?;
+    let settings = store.project_settings(&root).map_err(|err| format!("cannot read the project's settings: {err}"))?.settings;
+    let resolved = |agent: Option<orq_core::project_settings::ProjectAgent>| {
+        agent.map(|agent| orq_features::ResolvedModel { harness: agent.harness, model: agent.model, thinking: agent.effort })
+    };
+    Ok(orq_features::ProjectAgents { implementer: resolved(settings.implementer), reviewer: resolved(settings.reviewer) })
 }
 
 /// The model profiles and the reviewer policy a project is configured with.
@@ -720,7 +742,11 @@ fn models(args: &[OsString]) -> ExitCode {
         "allowedModels": reviewers.allowed_models,
         "defaults": serde_json::Value::Null,
     });
-    match orq_features::resolve_run_models(&profiles, &reviewers, &orq_features::RunSelection::default()) {
+    let project_agents = match project_agents(&project) {
+        Ok(agents) => agents,
+        Err(message) => return fail(message),
+    };
+    match orq_features::resolve_project_run_models(&profiles, &reviewers, &orq_features::RunSelection::default(), &project_agents) {
         Ok(resolved) => {
             let role = |m: &orq_features::ResolvedModel| {
                 serde_json::json!({"harness": m.harness, "model": m.model, "thinking": m.thinking})

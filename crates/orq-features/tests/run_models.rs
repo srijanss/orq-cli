@@ -192,3 +192,34 @@ fn a_half_filled_machine_default_is_an_error_only_for_a_run_that_falls_back_to_i
     let resolved = resolve_run_models(&loaded, &config(None, None), &chosen).unwrap();
     assert_eq!(resolved.reviewer.model, "kimi-k3", "a run that names its reviewer never reads the table");
 }
+
+#[test]
+fn a_project_s_own_agents_come_after_the_flags_and_before_every_configured_source() {
+    use orq_features::{resolve_project_run_models, ProjectAgents, ResolvedModel};
+    let model = |harness: &str, model: &str, thinking: Option<&str>| ResolvedModel { harness: harness.into(), model: model.into(), thinking: thinking.map(str::to_string) };
+    let project = ProjectAgents { implementer: Some(model("claude", "haiku", Some("low"))), reviewer: Some(model("pi", "vendor/project", Some("high"))) };
+    let configured = profiles("project-agents", &format!("{USER}\n[implementer]\nharness = \"claude\"\nmodel = \"sonnet\"\n\n[reviewer]\nharness = \"pi\"\nmodel = \"vendor/checker\"\n"));
+    let tdd = config(Some(("pi", "kimi-k3")), None);
+
+    let resolved = resolve_project_run_models(&configured, &tdd, &RunSelection::default(), &project).unwrap();
+    assert_eq!(resolved.implementer, model("claude", "haiku", Some("low")), "before [roles] and the machine default");
+    assert_eq!(resolved.reviewer, model("pi", "vendor/project", Some("high")), "before .tdd-config.json, [roles] and the machine default");
+
+    let flagged = resolve_project_run_models(&configured, &tdd, &pick(Some("sonnet"), Some("kimi")), &project).unwrap();
+    assert_eq!((flagged.implementer.model.as_str(), flagged.reviewer.model.as_str()), ("sonnet", "kimi-k3"), "a flag still wins");
+
+    let unset = ProjectAgents { implementer: None, reviewer: None };
+    let fallback = resolve_project_run_models(&configured, &tdd, &RunSelection::default(), &unset).unwrap();
+    assert_eq!((fallback.implementer.model.as_str(), fallback.reviewer.model.as_str()), ("opus", "kimi-k3"), "an unset role falls back");
+
+    let allowed = config(None, Some(&["kimi-k3"]));
+    assert!(matches!(
+        resolve_project_run_models(&configured, &allowed, &RunSelection::default(), &project),
+        Err(RunModelsError::ReviewerNotAllowed { model, .. }) if model == "vendor/project"
+    ));
+    let bogus = ProjectAgents { implementer: Some(model("bogus", "m1", None)), reviewer: None };
+    assert!(matches!(
+        resolve_project_run_models(&configured, &tdd, &RunSelection::default(), &bogus),
+        Err(RunModelsError::ImplementerHarnessUnknown { .. })
+    ));
+}

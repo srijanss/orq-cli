@@ -1,6 +1,7 @@
 //! Which models a run uses. The implementer comes from the `--implementer`
-//! flag, then `[roles].implementer`, then this machine's `[implementer]`, then
-//! a built-in; the reviewer from the `--reviewer` flag, then `.tdd-config.json`
+//! flag, then the project's own implementer (orq.db), then `[roles].implementer`,
+//! then this machine's `[implementer]`, then a built-in; the reviewer from the
+//! `--reviewer` flag, then the project's own reviewer, then `.tdd-config.json`
 //! `reviewers.default`, then `[roles].reviewer`, then this machine's
 //! `[reviewer]`, then a built-in. `reviewers.allowedModels` overrides
 //! every source, and the implementer must run on the claude harness.
@@ -25,6 +26,13 @@ pub struct ResolvedModel {
     pub harness: String,
     pub model: String,
     pub thinking: Option<String>,
+}
+
+/// The agents a project chose for itself; an unset role falls back to the configured sources.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectAgents {
+    pub implementer: Option<ResolvedModel>,
+    pub reviewer: Option<ResolvedModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,15 +101,26 @@ fn built_in((harness, model): (&str, &str)) -> ResolvedModel {
     ResolvedModel { harness: harness.to_string(), model: model.to_string(), thinking: None }
 }
 
-/// Resolve both roles for a run, or say which policy refused them.
+/// Resolve both roles for a run of a project with no agents of its own.
 pub fn resolve_run_models(
     profiles: &ModelProfiles,
     reviewer_config: &TddReviewerConfig,
     selection: &RunSelection<'_>,
 ) -> Result<ResolvedModels, RunModelsError> {
-    let implementer = match selection.implementer {
-        Some(name) => named(profiles, "implementer", name)?,
-        None => match profiles.role_profile_name(AgentRole::Implementer) {
+    resolve_project_run_models(profiles, reviewer_config, selection, &ProjectAgents::default())
+}
+
+/// Resolve both roles for a run, or say which policy refused them.
+pub fn resolve_project_run_models(
+    profiles: &ModelProfiles,
+    reviewer_config: &TddReviewerConfig,
+    selection: &RunSelection<'_>,
+    project: &ProjectAgents,
+) -> Result<ResolvedModels, RunModelsError> {
+    let implementer = match (selection.implementer, &project.implementer) {
+        (Some(name), _) => named(profiles, "implementer", name)?,
+        (None, Some(chosen)) => chosen.clone(),
+        (None, None) => match profiles.role_profile_name(AgentRole::Implementer) {
             Some(name) => named(profiles, "implementer", name)?,
             None => machine_or_built_in(profiles, AgentRole::Implementer, BUILT_IN_IMPLEMENTER)?,
         },
@@ -115,6 +134,8 @@ pub fn resolve_run_models(
 
     let reviewer = if let Some(name) = selection.reviewer {
         named(profiles, "reviewer", name)?
+    } else if let Some(chosen) = &project.reviewer {
+        chosen.clone()
     } else if let Some(default) = &reviewer_config.default_reviewer {
         ResolvedModel { harness: default.harness.clone(), model: default.model.clone(), thinking: None }
     } else if let Some(name) = profiles.role_profile_name(AgentRole::Reviewer) {
