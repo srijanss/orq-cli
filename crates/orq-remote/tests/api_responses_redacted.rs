@@ -32,7 +32,7 @@ fn no_endpoint_returns_a_token_a_header_a_transcript_or_a_credential_path() {
     let id = orq_git::project_id(&orq_git::resolve_project(&alpha).unwrap());
     let store = RunStore::new(&roots.state);
     store
-        .create(&RunRecord { run_id: "r1".into(), project_id: id, feature_id: "f1".into(), remote: format!("https://user:{GITHUB}@example.com/x.git"), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: "orq/r1".into(), worktree: roots.config.join("worktree"), repository: String::new(), profiles: Default::default() })
+        .create(&RunRecord { run_id: "r1".into(), project_id: id, feature_id: "f1".into(), remote: format!("https://user:{GITHUB}@example.com/x.git"), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: "orq/r1".into(), worktree: roots.config.join("worktree"), repository: String::new(), profiles: Default::default(), delivery: Default::default() })
         .unwrap();
     let payload = json!({"header": BEARER, "note": format!("GITHUB_TOKEN={GITHUB}"), "token": "plainsecretvalue987", "path": roots.config.join("remote-token"), "transcript": "session transcript line"});
     let event = Event { schema_version: 1, event_id: "r1-0".into(), run_id: "r1".into(), project_id: String::new(), feature_id: "f1".into(), kind: "run.started".into(), stage: None, attempt: 1, occurred_at: "2026-11-01T10:00:00Z".into(), payload };

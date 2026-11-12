@@ -193,6 +193,7 @@ struct Discard {
 
 fn record(run_id: &str, project_id: &str, branch: &str, worktree: PathBuf) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.into(),
         project_id: project_id.into(),
         feature_id: "COM-01".into(),

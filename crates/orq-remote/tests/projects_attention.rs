@@ -36,7 +36,7 @@ fn at(seconds: i64) -> String {
 }
 
 fn record(base: &Path, run: &str, project: &str) -> RunRecord {
-    RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(run), repository: String::new(), profiles: Default::default() }
+    RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(run), repository: String::new(), profiles: Default::default(), delivery: Default::default() }
 }
 
 fn event(run: &str, project: &str, kind: &str, at: &str) -> Event {

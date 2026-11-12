@@ -56,6 +56,7 @@ fn launched_run(tag: &str, pid: u32) -> (RunStore, PathBuf) {
     );
     let store = RunStore::new(&root.join("state"));
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "repo-1".into(),
         feature_id: "COM-02".into(),

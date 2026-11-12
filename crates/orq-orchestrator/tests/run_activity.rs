@@ -314,6 +314,7 @@ fn gate_with_cargo(tag: &str, script: &str) -> (orq_orchestrator::RunStore, std:
     let store = orq_orchestrator::RunStore::new(&root.join("state"));
     store
         .create(&orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-02".to_string(),

@@ -25,6 +25,7 @@ fn seeded(tag: &str, launched: Option<serde_json::Value>, extra: &[(&str, serde_
     let store = RunStore::new(&root);
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

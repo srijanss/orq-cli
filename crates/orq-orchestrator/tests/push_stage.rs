@@ -88,6 +88,7 @@ fn world_pinned(
     let store = RunStore::new(&root.join("state"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-02".to_string(),
@@ -441,6 +442,7 @@ fn a_rewrite_rule_in_the_worktree_cannot_redirect_a_pinned_push() {
     record.repository = format!("https://forge.example/{}", remote.trim_start_matches('/'));
     w.store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-2".to_string(),
             ..record
         })
@@ -477,6 +479,7 @@ fn pin_to_ssh_remote(w: &World) {
     record.repository = format!("https://forge.example/{}", remote.trim_start_matches('/'));
     w.store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-2".to_string(),
             ..record
         })
@@ -530,6 +533,7 @@ fn a_pinned_push_works_from_a_checkout_whose_path_contains_a_newline_and_a_quote
     record.worktree = odd.clone();
     w.store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-4".to_string(),
             ..record
         })
@@ -617,6 +621,7 @@ fn a_pinned_push_of_a_sha256_repository_reaches_the_remote() {
     );
     w.store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-3".to_string(),
             ..record
         })
@@ -679,6 +684,7 @@ fn a_remote_that_still_resolves_to_the_pinned_repository_is_pushed_to() {
     record.repository = pinned;
     w.store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-2".to_string(),
             ..record
         })

@@ -22,6 +22,7 @@ fn event(kind: &str, payload: serde_json::Value) -> Event {
 
 fn record(worktree: &Path, branch: &str) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "p".into(),
         feature_id: "F".into(),

@@ -51,6 +51,10 @@ pub struct Options<'a> {
     /// On resume: the role continues on the profile named for it; otherwise on the paused run's own.
     pub switch_implementer: bool,
     pub switch_reviewer: bool,
+    /// What the run does once its work is ready. A resumed run keeps the paused run's unless
+    /// `delivery_named` says the flag named this one.
+    pub delivery: orq_core::project_settings::Delivery,
+    pub delivery_named: bool,
     /// The implement session is given orq's own terminal, so the agent runs interactively in it.
     pub interactive: bool,
 }
@@ -372,6 +376,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
 
     let run_id = options.run_id.map_or_else(new_run_id, str::to_string);
     let record = RunRecord {
+        delivery: match &resumed {
+            Some(r) if !options.delivery_named => r.from.delivery,
+            _ => options.delivery,
+        },
         run_id: run_id.clone(),
         project_id,
         feature_id: slug(&options.features[0]),
@@ -1383,6 +1391,7 @@ mod tests {
 
     fn record_in(worktree: std::path::PathBuf) -> orq_orchestrator::RunRecord {
         orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

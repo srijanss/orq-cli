@@ -6,6 +6,7 @@ fn record(id: &str, harness: &str, model: &str) -> RunRecord {
     let mut profiles = BTreeMap::new();
     profiles.insert("implementer".to_string(), RoleProfile { harness: harness.into(), model: model.into(), thinking: None });
     RunRecord {
+        delivery: Default::default(),
         run_id: id.into(),
         project_id: "p".into(),
         feature_id: "F".into(),

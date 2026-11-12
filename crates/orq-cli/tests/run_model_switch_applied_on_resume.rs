@@ -287,6 +287,7 @@ fn chain_record(id: &str, model: &str) -> RunRecord {
         RoleProfile { harness: "claude".into(), model: model.into(), thinking: None },
     );
     RunRecord {
+        delivery: Default::default(),
         run_id: id.into(),
         project_id: "p".into(),
         feature_id: "F".into(),

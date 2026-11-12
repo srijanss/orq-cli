@@ -9,6 +9,7 @@ fn store(tag: &str) -> (RunStore, RunRecord) {
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "repo-1".into(),
         feature_id: "COM-02".into(),

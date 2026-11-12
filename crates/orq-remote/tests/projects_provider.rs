@@ -51,6 +51,7 @@ fn each_project_lists_its_id_name_and_counts_and_an_unreadable_one_is_unavailabl
     store.save_review(&roots.data, "run-2", "someone-else", "x", &"b".repeat(40), b"{}").unwrap();
     let runs = RunStore::new(&roots.state);
     let record = |run: &str, project: &str, feature: &str| RunRecord {
+        delivery: Default::default(),
         run_id: run.into(),
         project_id: project.into(),
         feature_id: feature.into(),
@@ -132,7 +133,7 @@ fn every_project_gets_only_its_own_active_runs_when_several_projects_have_runs()
         for _ in 0..count {
             n += 1;
             let run = format!("run-{n}");
-            runs.create(&RunRecord { run_id: run.clone(), project_id: project.clone(), feature_id: format!("f{n}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(&run), repository: String::new(), profiles: Default::default() }).unwrap();
+            runs.create(&RunRecord { run_id: run.clone(), project_id: project.clone(), feature_id: format!("f{n}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(&run), repository: String::new(), profiles: Default::default(), delivery: Default::default() }).unwrap();
         }
     }
     let list = StoreProjects::new(roots, scan).projects().unwrap();
@@ -167,7 +168,7 @@ fn a_ledger_that_is_a_link_a_pipe_or_far_too_large_makes_its_project_unavailable
 }
 
 fn run_record(base: &Path, run: &str, project: &str) -> RunRecord {
-    RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(run), repository: String::new(), profiles: Default::default() }
+    RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: base.join(run), repository: String::new(), profiles: Default::default(), delivery: Default::default() }
 }
 
 fn event(run: &str, project: &str, n: u32, kind: &str, payload: serde_json::Value) -> orq_orchestrator::Event {

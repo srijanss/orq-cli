@@ -86,6 +86,7 @@ fn a_check_refuses_like_a_launch_would_a_feature_that_may_not_start_is_busy_or_b
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
     store
         .start_run(&orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-active".into(),
             project_id: project["id"].as_str().unwrap().to_string(),
             feature_id: "COM-02".into(),
@@ -139,6 +140,7 @@ fn a_check_of_a_group_is_busy_when_a_later_member_has_an_active_run() {
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
     store
         .start_run(&orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-later".into(),
             project_id: project["id"].as_str().unwrap().to_string(),
             feature_id: "COM-02".into(),

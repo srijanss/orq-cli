@@ -1094,7 +1094,7 @@ mod run_row_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = RunStore::new(&dir);
-        let record = RunRecord { run_id: "gone".into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: "b".into(), worktree: dir.join("w"), repository: String::new(), profiles: Default::default() };
+        let record = RunRecord { run_id: "gone".into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: "b".into(), worktree: dir.join("w"), repository: String::new(), profiles: Default::default(), delivery: Default::default() };
         store.create(&record).unwrap();
         let loaded = store.load("gone").unwrap();
         // Cleanup removes the run between the two reads.
@@ -1114,7 +1114,7 @@ mod merged_cache_tests {
     use std::collections::HashMap;
 
     fn record(run: &str) -> RunRecord {
-        RunRecord { run_id: run.into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: "w".into(), repository: String::new(), profiles: Default::default() }
+        RunRecord { run_id: run.into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: "w".into(), repository: String::new(), profiles: Default::default(), delivery: Default::default() }
     }
 
     fn tips(branch: &str, main: &str) -> HashMap<String, String> {

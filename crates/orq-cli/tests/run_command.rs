@@ -1414,6 +1414,7 @@ fn a_detached_launch_of_a_feature_that_is_already_running_fails_with_the_reason_
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
     store
         .start_run(&orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-active".into(),
             project_id: project["id"].as_str().unwrap().to_string(),
             feature_id: "COM-01".into(),
@@ -1452,6 +1453,7 @@ fn a_detached_group_is_refused_when_any_member_not_only_the_first_is_already_run
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
     store
         .start_run(&orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-active".into(),
             project_id: project["id"].as_str().unwrap().to_string(),
             feature_id: "COM-02".into(),

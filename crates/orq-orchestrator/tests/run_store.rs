@@ -31,6 +31,7 @@ fn record(run_id: &str) -> RunRecord {
         },
     );
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.to_string(),
         project_id: "repo-1".to_string(),
         feature_id: "COM-02".to_string(),
@@ -356,4 +357,32 @@ fn a_record_that_cannot_be_serialized_leaves_nothing_behind_and_can_be_retried()
     // The same run id is still free for a corrected record.
     store.create(&record("run-1")).unwrap();
     assert_eq!(store.load("run-1").unwrap(), record("run-1"));
+}
+
+#[test]
+fn a_run_records_its_delivery_as_text_and_older_records_without_one_read_as_review() {
+    use orq_core::project_settings::Delivery;
+    let dir = root("delivery");
+    let store = RunStore::new(&dir);
+    let mut merged = record("run-merge");
+    merged.delivery = Delivery::MergeLocal;
+    store.create(&merged).unwrap();
+    let json = fs::read_to_string(root_of(&dir, "run-merge")).unwrap();
+    assert!(json.contains("\"delivery\": \"merge_local\""), "{json}");
+    assert_eq!(store.load("run-merge").unwrap().delivery, Delivery::MergeLocal);
+
+    store.create(&record("run-old")).unwrap();
+    let path = root_of(&dir, "run-old");
+    let mut value: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("delivery");
+    fs::write(&path, value.to_string()).unwrap();
+    assert_eq!(store.load("run-old").unwrap().delivery, Delivery::Review);
+
+    value["delivery"] = serde_json::json!("ship");
+    fs::write(&path, value.to_string()).unwrap();
+    assert!(matches!(store.load("run-old"), Err(StoreError::Corrupt(_))), "an unknown delivery is never read as another");
+}
+
+fn root_of(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join("runs").join(run_id).join("run.json")
 }

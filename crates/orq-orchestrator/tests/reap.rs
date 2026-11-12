@@ -121,6 +121,7 @@ fn scenario(tag: &str, case: Case) -> Planned {
 
     let store = RunStore::new(&root.join("state"));
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".to_string(),
         project_id: "repo-1".to_string(),
         feature_id: "COM-02".to_string(),

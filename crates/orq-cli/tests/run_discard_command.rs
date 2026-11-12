@@ -40,6 +40,7 @@ fn seed(tag: &str, ending: Option<&str>) -> Seeded {
     let store = RunStore::new(&home.join("orq"));
     store
         .start_run(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

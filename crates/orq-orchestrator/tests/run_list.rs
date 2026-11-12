@@ -22,6 +22,7 @@ fn profile(model: &str) -> RoleProfile {
 
 fn record(run_id: &str, project: &str, feature: &str) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.to_string(),
         project_id: project.to_string(),
         feature_id: feature.to_string(),

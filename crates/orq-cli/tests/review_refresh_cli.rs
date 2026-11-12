@@ -56,6 +56,7 @@ fn run_with_report(sandbox: &Sandbox, fixture: &GitFixture) -> String {
 
     let store = RunStore::new(&sandbox.home.join("state").join("orq"));
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".to_string(),
         project_id: "repo-1".to_string(),
         feature_id: "COM-02".to_string(),

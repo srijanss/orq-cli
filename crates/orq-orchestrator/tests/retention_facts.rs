@@ -36,6 +36,7 @@ fn fixture(tag: &str) -> Fixture {
 
 fn record(run_id: &str, worktree: &Path) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.into(),
         project_id: "p".into(),
         feature_id: "F".into(),

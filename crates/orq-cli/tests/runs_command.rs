@@ -43,6 +43,7 @@ fn seed(state_home: &Path, project: &str, run_id: &str, feature: &str, events: &
     profiles.insert("reviewer".to_string(), profile("opus"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: run_id.into(),
             project_id: project.into(),
             feature_id: feature.into(),

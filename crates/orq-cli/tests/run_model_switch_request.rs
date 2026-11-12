@@ -50,6 +50,7 @@ fn seed(tag: &str, kind: &str, pause: bool) -> (PathBuf, RunStore, PathBuf) {
     let store = RunStore::new(&home.join("orq"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

@@ -45,6 +45,7 @@ impl Sandbox {
         let store = RunStore::new(&self.home.join("state/orq"));
         store
             .create(&RunRecord {
+                delivery: Default::default(),
                 run_id: run_id.to_string(),
                 project_id: "p".to_string(),
                 feature_id: "F".to_string(),

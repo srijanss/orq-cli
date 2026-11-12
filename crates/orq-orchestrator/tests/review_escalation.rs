@@ -102,6 +102,7 @@ fn stored_run(tag: &str) -> (orq_test_support::GitFixture, PathBuf, orq_orchestr
     let _ = fs::remove_dir_all(&root);
     let store = orq_orchestrator::RunStore::new(&root);
     let record = orq_orchestrator::RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "p".into(),
         feature_id: "F".into(),

@@ -13,6 +13,7 @@ fn store(tag: &str) -> RunStore {
 
 fn record(run_id: &str, feature: &str) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.to_string(),
         project_id: "repo-1".to_string(),
         feature_id: feature.to_string(),

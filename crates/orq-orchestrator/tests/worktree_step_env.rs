@@ -49,6 +49,7 @@ fn a_gate_step_sees_the_worktrees_database_names_and_still_nothing_else_of_the_c
     let store = RunStore::new(&root.join("state"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-01".to_string(),

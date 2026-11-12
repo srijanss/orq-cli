@@ -32,6 +32,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 fn record(run_id: &str, branch: &str, worktree: PathBuf) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: run_id.to_string(),
         project_id: "repo-1".to_string(),
         feature_id: branch.to_string(),

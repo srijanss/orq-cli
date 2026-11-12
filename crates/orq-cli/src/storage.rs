@@ -443,6 +443,7 @@ mod tests {
     fn old_failed_run(ctx: &Ctx, run_id: &str, bytes: usize) {
         ctx.runs
             .create(&RunRecord {
+                delivery: Default::default(),
                 run_id: run_id.into(),
                 project_id: "p".into(),
                 feature_id: "F".into(),

@@ -51,7 +51,7 @@ fn add_run(s: &Setup, repo: &Path, run: &str, project: &str, kinds: &[&str]) {
     git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
     let store = RunStore::new(&s.roots.state);
     store
-        .create(&RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch, worktree, repository: String::new(), profiles: Default::default() })
+        .create(&RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch, worktree, repository: String::new(), profiles: Default::default(), delivery: Default::default() })
         .unwrap();
     for (n, kind) in kinds.iter().enumerate() {
         let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), kind: (*kind).into(), stage: None, attempt: 1, occurred_at: format!("2026-11-01T10:00:0{n}Z"), payload: json!({}) };
@@ -102,7 +102,7 @@ fn a_refusal_names_a_worktree_within_the_project_or_by_its_directory_name_never_
     git(&alpha, &["worktree", "add", "-q", "-b", "orq/r-out", outside.to_str().unwrap()]);
     let base = git(&alpha, &["rev-parse", "HEAD"]);
     let store = RunStore::new(&s.roots.state);
-    let record = RunRecord { run_id: "r-out".into(), project_id: project.clone(), feature_id: "f-r-out".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch: "orq/r-out".into(), worktree: outside, repository: String::new(), profiles: Default::default() };
+    let record = RunRecord { run_id: "r-out".into(), project_id: project.clone(), feature_id: "f-r-out".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch: "orq/r-out".into(), worktree: outside, repository: String::new(), profiles: Default::default(), delivery: Default::default() };
     store.create(&record).unwrap();
     for (n, kind) in ["run.started", "run.failed"].iter().enumerate() {
         let event = Event { schema_version: 1, event_id: format!("r-out-{n}"), run_id: "r-out".into(), project_id: project.clone(), feature_id: "f-r-out".into(), kind: (*kind).into(), stage: None, attempt: 1, occurred_at: format!("2026-11-01T10:00:0{n}Z"), payload: json!({}) };

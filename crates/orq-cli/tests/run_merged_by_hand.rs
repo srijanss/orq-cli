@@ -85,6 +85,7 @@ fn merged_by_hand(tag: &str) -> Merged {
     let store = RunStore::new(&home.join("orq"));
     store
         .start_run(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: project_id.clone(),
             feature_id: "COM-01".into(),

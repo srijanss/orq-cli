@@ -86,6 +86,7 @@ fn owner_running_a_review_draft() {
     let store = RunStore::new(&dir.join("state"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-02".to_string(),

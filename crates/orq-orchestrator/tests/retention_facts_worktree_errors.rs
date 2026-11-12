@@ -32,6 +32,7 @@ fn a_worktree_that_cannot_be_inspected_is_treated_as_in_use() {
     let locked = base.join("locked");
     std::fs::create_dir_all(locked.join("worktree")).unwrap();
     runs.create(&RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "p".into(),
         feature_id: "F".into(),

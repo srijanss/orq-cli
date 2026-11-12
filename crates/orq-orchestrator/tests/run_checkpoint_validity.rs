@@ -51,6 +51,7 @@ fn paused(tag: &str) -> (RunStore, PathBuf, PathBuf) {
     let store = RunStore::new(&root.join("state"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

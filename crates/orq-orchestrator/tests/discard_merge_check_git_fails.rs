@@ -56,6 +56,7 @@ fn a_failed_run_whose_merge_check_git_cannot_answer_is_not_discarded_and_its_fea
     let store = RunStore::new(&root.join("orq"));
     store
         .start_run(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

@@ -123,6 +123,7 @@ fn world(tag: &str, tamper: Tamper) -> World {
     }
     let store = RunStore::new(&root.join("state"));
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".to_string(),
         project_id: "repo-1".to_string(),
         feature_id: "COM-02".to_string(),
@@ -166,6 +167,7 @@ fn only_the_stopped_runs_own_checkout_of_its_branch_can_be_resumed() {
 
 fn stopped_run(store: &RunStore, repo: &Path, run_id: &str, at: &str) {
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: run_id.to_string(),
         project_id: "repo-1".to_string(),
         feature_id: "COM-02".to_string(),

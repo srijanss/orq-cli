@@ -25,6 +25,7 @@ fn world(tag: &str) -> World {
     let store = RunStore::new(&state.join("orq"));
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),

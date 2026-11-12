@@ -93,6 +93,7 @@ fn store_with_run(root: &Path) -> RunStore {
     );
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".to_string(),
             project_id: "repo-1".to_string(),
             feature_id: "COM-02".to_string(),

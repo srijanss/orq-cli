@@ -62,6 +62,7 @@ fn setup(tag: &str) -> Setup {
 impl Setup {
     fn record(&self, run_id: &str) -> RunRecord {
         RunRecord {
+            delivery: Default::default(),
             run_id: run_id.into(),
             project_id: "p".into(),
             feature_id: "F".into(),

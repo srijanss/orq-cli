@@ -53,7 +53,7 @@ fn add_run(s: &Setup, repo: &Path, run: &str, kinds: &[&str]) {
     git(&worktree, &["commit", "-q", "--allow-empty", "-m", &format!("work of {run}")]);
     let store = RunStore::new(&s.roots.state);
     store
-        .create(&RunRecord { run_id: run.into(), project_id: project.clone(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch, worktree, repository: String::new(), profiles: Default::default() })
+        .create(&RunRecord { run_id: run.into(), project_id: project.clone(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch, worktree, repository: String::new(), profiles: Default::default(), delivery: Default::default() })
         .unwrap();
     for (n, kind) in kinds.iter().enumerate() {
         let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: project.clone(), feature_id: format!("f-{run}"), kind: (*kind).into(), stage: None, attempt: 1, occurred_at: format!("2026-11-01T10:00:0{n}Z"), payload: json!({}) };

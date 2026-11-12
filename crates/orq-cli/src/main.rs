@@ -15,7 +15,7 @@ mod storage;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--detach | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -193,6 +193,8 @@ struct RunArgs {
     issue: Option<String>,
     mr_assignee: Option<String>,
     mr_reviewer: Option<String>,
+    /// `--delivery review|push|merge-local`: what the run does once its work is ready.
+    delivery: Option<String>,
     no_rebase: bool,
     no_gate: bool,
     no_ci_check: bool,
@@ -209,7 +211,7 @@ struct RunArgs {
 }
 
 /// The `orq run` flags that take a value; parsing and forwarding both read this list.
-const RUN_VALUE_FLAGS: [&str; 13] = [
+const RUN_VALUE_FLAGS: [&str; 14] = [
     "--repo",
     "--feature",
     "--group",
@@ -222,6 +224,7 @@ const RUN_VALUE_FLAGS: [&str; 13] = [
     "--issue",
     "--mr-assignee",
     "--mr-reviewer",
+    "--delivery",
     "--run-id",
 ];
 
@@ -254,6 +257,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
                     "--issue" => parsed.issue = Some(value.to_str()?.to_string()),
                     "--mr-assignee" => parsed.mr_assignee = Some(value.to_str()?.to_string()),
                     "--mr-reviewer" => parsed.mr_reviewer = Some(value.to_str()?.to_string()),
+                    "--delivery" => parsed.delivery = Some(value.to_str()?.to_string()),
                     _ => parsed.reviewer = Some(value.to_str()?.to_string()),
                 }
             }
@@ -317,6 +321,10 @@ fn run(args: &[OsString]) -> ExitCode {
         },
         (None, _) => None,
     };
+    let named_delivery = match parsed.delivery.as_deref().map(delivery_flag).transpose() {
+        Ok(delivery) => delivery,
+        Err(message) => return group_error(message),
+    };
     let feature = group.as_ref().and_then(|ids| ids.first().map(String::as_str)).or(parsed.feature.as_deref());
     let (Some(repo), Some(feature), Some(remote), Some(target)) =
         (parsed.repo.as_deref(), feature, parsed.remote.as_deref(), parsed.target.as_deref())
@@ -353,10 +361,12 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(config) => config,
         Err(message) => return fail(message),
     };
-    let project_agents = match project_agents(&project) {
-        Ok(agents) => agents,
+    let project_settings = match project_settings(&project) {
+        Ok(settings) => settings,
         Err(message) => return fail(message),
     };
+    let delivery = named_delivery.unwrap_or(project_settings.delivery);
+    let project_agents = agents_of(project_settings);
     let selection = orq_features::RunSelection {
         implementer: parsed.implementer.as_deref(),
         reviewer: parsed.reviewer.as_deref(),
@@ -432,6 +442,8 @@ fn run(args: &[OsString]) -> ExitCode {
         resume: parsed.resume,
         switch_implementer: parsed.switch_implementer,
         switch_reviewer: parsed.switch_reviewer,
+        delivery,
+        delivery_named: named_delivery.is_some(),
         // A detached runner has no terminal, so it stays headless.
         interactive: {
             use std::io::IsTerminal;
@@ -480,27 +492,47 @@ fn run(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// A `--delivery` value, spelled as on the command line.
+fn delivery_flag(text: &str) -> Result<orq_core::project_settings::Delivery, String> {
+    use orq_core::project_settings::Delivery;
+    match text {
+        "review" => Ok(Delivery::Review),
+        "push" => Ok(Delivery::Push),
+        "merge-local" => Ok(Delivery::MergeLocal),
+        _ => Err(format!("--delivery: {} is not one of review, push, merge-local", printable(text))),
+    }
+}
+
 /// The agents the project chose for itself in this machine's orq.db, keyed by its main checkout,
 /// so a linked worktree reads its project's record. Without a database there are none.
 fn project_agents(project: &orq_git::Project) -> Result<orq_features::ProjectAgents, String> {
+    project_settings(project).map(agents_of)
+}
+
+/// The settings the project saved in this machine's orq.db, keyed by its main checkout, so a
+/// linked worktree reads its project's record. Without a database or a record they are the defaults.
+fn project_settings(project: &orq_git::Project) -> Result<orq_core::project_settings::ProjectSettings, String> {
     let roots = orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok())
         .map_err(|err| format!("cannot locate the Orq data directory: {err}"))?;
     let database = roots.database();
     if !database.exists() {
-        return Ok(orq_features::ProjectAgents::default());
+        return Ok(Default::default());
     }
     let root = orq_git::main_checkout_root(project).unwrap_or_else(|| project.root.clone());
     if root.to_str().is_none() {
         // Records are keyed by a UTF-8 path, so none can name this checkout.
-        return Ok(orq_features::ProjectAgents::default());
+        return Ok(Default::default());
     }
-    let settings = orq_core::store::Store::read_project_settings(&database, &root)
+    Ok(orq_core::store::Store::read_project_settings(&database, &root)
         .map_err(|err| format!("cannot read the project's settings: {err}"))?
-        .settings;
+        .settings)
+}
+
+fn agents_of(settings: orq_core::project_settings::ProjectSettings) -> orq_features::ProjectAgents {
     let resolved = |agent: Option<orq_core::project_settings::ProjectAgent>| {
         agent.map(|agent| orq_features::ResolvedModel { harness: agent.harness, model: agent.model, thinking: agent.effort })
     };
-    Ok(orq_features::ProjectAgents { implementer: resolved(settings.implementer), reviewer: resolved(settings.reviewer) })
+    orq_features::ProjectAgents { implementer: resolved(settings.implementer), reviewer: resolved(settings.reviewer) }
 }
 
 /// The model profiles and the reviewer policy a project is configured with.
@@ -3263,6 +3295,7 @@ mod ledger_backend_tests {
         let store = orq_orchestrator::RunStore::new(&root);
         let project = orq_git::resolve_project(fixture.root()).unwrap();
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: crate::pipeline::project_id(&project),
             feature_id: "COM-01".into(),
@@ -3298,6 +3331,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -3342,6 +3376,7 @@ mod ledger_backend_tests {
             profiles.insert("reviewer".to_string(), profile("kimi-k3"));
             store
                 .create(&orq_orchestrator::RunRecord {
+                    delivery: Default::default(),
                     run_id: run_id.into(),
                     project_id: project_id.into(),
                     feature_id: feature.into(),
@@ -3394,6 +3429,7 @@ mod ledger_backend_tests {
         let project_id = crate::pipeline::project_id(&project);
         store
             .create(&orq_orchestrator::RunRecord {
+                delivery: Default::default(),
                 run_id: run_id.into(),
                 project_id: project_id.clone(),
                 feature_id: "COM-01".into(),
@@ -3897,6 +3933,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-5".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -3935,6 +3972,7 @@ mod ledger_backend_tests {
 
     fn foreground_launch_fix_record(run_id: &str) -> orq_orchestrator::RunRecord {
         orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: run_id.into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -4025,6 +4063,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-9".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -4067,6 +4106,7 @@ mod ledger_backend_tests {
             move || {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let record = orq_orchestrator::RunRecord {
+                    delivery: Default::default(),
                     run_id: "run-3".into(),
                     project_id: "p".into(),
                     feature_id: "COM-01".into(),
@@ -4204,6 +4244,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -4240,6 +4281,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -4294,6 +4336,7 @@ mod ledger_backend_tests {
         std::fs::File::options().write(true).open(logs.join("implement.log")).unwrap().set_modified(old).unwrap();
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),
@@ -4360,6 +4403,7 @@ mod ledger_backend_tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "COM-01".into(),

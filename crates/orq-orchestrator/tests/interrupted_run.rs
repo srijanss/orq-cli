@@ -6,6 +6,7 @@ use orq_orchestrator::{
 
 fn record(id: &str) -> RunRecord {
     RunRecord {
+        delivery: Default::default(),
         run_id: id.into(),
         project_id: "p".into(),
         feature_id: "F".into(),

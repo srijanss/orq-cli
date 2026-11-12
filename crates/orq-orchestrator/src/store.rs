@@ -7,6 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use orq_core::project_settings::Delivery;
 use serde::{Deserialize, Serialize};
 
 /// The model profile resolved for one role at run start.
@@ -34,6 +35,26 @@ pub struct RunRecord {
     #[serde(default)]
     pub repository: String,
     pub profiles: BTreeMap<String, RoleProfile>,
+    /// What the run does once its work is ready, fixed when it starts. Records that predate it
+    /// open a review, which is all a run did then.
+    #[serde(default, with = "delivery_text")]
+    pub delivery: Delivery,
+}
+
+/// A delivery is stored as the text the project's settings use for it, so an unknown one is an
+/// error rather than read as another.
+mod delivery_text {
+    use orq_core::project_settings::Delivery;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(delivery: &Delivery, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(delivery.as_str())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Delivery, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Delivery::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("unknown delivery {text:?}")))
+    }
 }
 
 /// What [`RunStore::claim_lock`] found.

@@ -54,6 +54,7 @@ fn a_branch_whose_commits_cannot_be_inspected_once_its_worktree_is_gone_was_insp
     let store = RunStore::new(&root.join("orq"));
     store
         .start_run(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "p".into(),
             feature_id: "F".into(),

@@ -10,6 +10,7 @@ fn store(tag: &str) -> RunStore {
     let store = RunStore::new(&root);
     store
         .create(&RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "repo-1".into(),
             feature_id: "COM-02".into(),

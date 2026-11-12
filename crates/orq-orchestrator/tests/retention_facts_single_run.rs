@@ -31,6 +31,7 @@ fn fixture(tag: &str) -> Fixture {
 
 fn add_failed_run(f: &Fixture, run_id: &str, worktree: &Path) {
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: run_id.into(),
         project_id: "p".into(),
         feature_id: "F".into(),

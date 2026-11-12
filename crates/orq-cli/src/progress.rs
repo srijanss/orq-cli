@@ -148,6 +148,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "repo-1".into(),
             feature_id: "COM-01".into(),
@@ -260,6 +261,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let store = RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "repo-1".into(),
             feature_id: "COM-01".into(),
@@ -442,6 +444,7 @@ mod tests {
     fn running_run_at(root: &Path) {
         let store = RunStore::new(root);
         let record = orq_orchestrator::RunRecord {
+            delivery: Default::default(),
             run_id: "run-1".into(),
             project_id: "repo-1".into(),
             feature_id: "COM-01".into(),

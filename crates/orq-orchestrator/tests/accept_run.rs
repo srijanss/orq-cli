@@ -46,6 +46,7 @@ fn failed_run_recorded_as(tag: &str, commits: usize, recorded: impl Fn(&Path) ->
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     let record = RunRecord {
+        delivery: Default::default(),
         run_id: "run-1".into(),
         project_id: "p".into(),
         feature_id: "F".into(),

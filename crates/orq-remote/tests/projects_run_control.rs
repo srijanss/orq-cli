@@ -59,7 +59,7 @@ fn project_id(repo: &Path) -> String {
 fn add_run(s: &Setup, run: &str, project: &str, kinds: &[&str]) {
     let store = RunStore::new(&s.roots.state);
     store
-        .create(&RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: s.scan.join(run), repository: String::new(), profiles: Default::default() })
+        .create(&RunRecord { run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: s.scan.join(run), repository: String::new(), profiles: Default::default(), delivery: Default::default() })
         .unwrap();
     for (n, kind) in kinds.iter().enumerate() {
         let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), kind: (*kind).into(), stage: None, attempt: 1, occurred_at: "2026-11-01T10:00:00Z".into(), payload: json!({}) };
