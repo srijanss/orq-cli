@@ -44,11 +44,11 @@ struct LogSummary {
 
 type LogCache = std::collections::HashMap<String, LogSummary>;
 
-/// One listed run: its sort time, id and JSON row. `None` when the run belongs to another project
+/// One listed run: its sort time, id, JSON row (with the state its log gives) and record. `None` when the run belongs to another project
 /// or was removed after its record was read; an unreadable event log is an error. A log whose size
 /// and time are what they were is not read again (the log only ever grows), so polling the list
 /// costs a stat per run, not a replay of its history.
-fn run_row(store: &orq_orchestrator::RunStore, state: &Path, repo: &Path, cache: &mut LogCache, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<(Option<u64>, String, serde_json::Value)>, String> {
+fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCache, record: orq_orchestrator::RunRecord, key: &str) -> Result<Option<ListedRun>, String> {
     use orq_orchestrator::StoreError;
     if record.project_id != key {
         return Ok(None);
@@ -77,16 +77,54 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, repo: &Path, cache:
             cache.insert(record.run_id.clone(), learned);
         } else {
             cache.remove(&record.run_id);
-            return Ok(Some(row_of(&record, repo, &learned)));
+            return Ok(Some(row_of(record, &learned)));
         }
     }
-    Ok(Some(row_of(&record, repo, &cache[&record.run_id])))
+    let log = &cache[&record.run_id];
+    Ok(Some(row_of(record, log)))
 }
 
-fn row_of(record: &orq_orchestrator::RunRecord, repo: &Path, log: &LogSummary) -> (Option<u64>, String, serde_json::Value) {
+type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
+
+fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(repo, record, log.state), "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
-    (sort_key, record.run_id.clone(), row)
+    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
+    (sort_key, record.run_id.clone(), row, record)
+}
+
+/// Whether a failed or review-waiting run's work is on its target, remembered for the commits its branch
+/// and target were at when git was asked, so polling the list asks git again only after one of them moved.
+#[derive(Default)]
+struct MergedCache(std::collections::HashMap<String, (String, String, bool)>);
+
+impl MergedCache {
+    fn merged(&mut self, record: &orq_orchestrator::RunRecord, tips: &std::collections::HashMap<String, String>, check: impl FnOnce() -> bool) -> bool {
+        let (Some(branch), Some(target)) = (tips.get(&record.branch), tips.get(&record.target_branch)) else {
+            self.0.remove(&record.run_id);
+            return false;
+        };
+        if let Some((known_branch, known_target, answer)) = self.0.get(&record.run_id) {
+            if known_branch == branch && known_target == target {
+                return *answer;
+            }
+        }
+        let answer = check();
+        self.0.insert(record.run_id.clone(), (branch.clone(), target.clone(), answer));
+        answer
+    }
+}
+
+/// The commit each local branch of `repo` is at, by branch name, read with one git call; empty when git cannot say.
+fn branch_tips(repo: &Path) -> std::collections::HashMap<String, String> {
+    let Ok(out) = std::process::Command::new("git").arg("-C").arg(repo).args(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"]).output() else { return Default::default() };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter_map(|(sha, name)| Some((name.strip_prefix("refs/heads/")?.to_string(), sha.to_string())))
+        .collect()
 }
 
 /// The state the popup shows: a failed or review-waiting run whose work is on its target branch in `repo`
@@ -185,6 +223,7 @@ pub struct StoreProjects {
     agent_options: Option<AgentOptions>,
     storage: Option<std::sync::Arc<dyn StorageCleanup + Send + Sync>>,
     run_logs: std::sync::Mutex<LogCache>,
+    merged: std::sync::Mutex<MergedCache>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
     accept_tests: AcceptTests,
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -212,6 +251,7 @@ impl StoreProjects {
             agent_options: None,
             storage: None,
             run_logs: Default::default(),
+            merged: Default::default(),
             log_snapshot: Default::default(),
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
             accepting: Default::default(),
@@ -713,8 +753,20 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
                 Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
             };
-            if let Some(row) = run_row(&store, &self.roots.state, &project.path, &mut cache, record, &key)? {
+            if let Some(row) = run_row(&store, &self.roots.state, &mut cache, record, &key)? {
                 rows.push(row);
+            }
+        }
+        drop(cache);
+        // A merge leaves a run's log as it was, so a failed or review-waiting run is checked against git,
+        // which is asked again only for a run whose branch or target has moved since it last was.
+        if rows.iter().any(|row| matches!(row.2["state"].as_str(), Some("failed" | "needs_review"))) {
+            let tips = branch_tips(&project.path);
+            let mut merged = self.merged.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for row in &mut rows {
+                if matches!(row.2["state"].as_str(), Some("failed" | "needs_review")) && merged.merged(&row.3, &tips, || orq_orchestrator::work_is_on_target(&project.path, &row.3)) {
+                    row.2["state"] = "merged".into();
+                }
             }
         }
         // Newest first; a run with no readable time goes last, ties by run id.
@@ -1041,7 +1093,38 @@ mod run_row_tests {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
             let _ = std::fs::remove_dir_all(entry.path());
         }
-        assert!(matches!(run_row(&store, &dir, &dir, &mut Default::default(), loaded, "p"), Ok(None)));
+        assert!(matches!(run_row(&store, &dir, &mut Default::default(), loaded, "p"), Ok(None)));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod merged_cache_tests {
+    use super::MergedCache;
+    use orq_orchestrator::RunRecord;
+    use std::collections::HashMap;
+
+    fn record(run: &str) -> RunRecord {
+        RunRecord { run_id: run.into(), project_id: "p".into(), feature_id: "f".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: "a".repeat(40), branch: format!("orq/{run}"), worktree: "w".into(), repository: String::new(), profiles: Default::default() }
+    }
+
+    fn tips(branch: &str, main: &str) -> HashMap<String, String> {
+        HashMap::from([("orq/r-1".to_string(), branch.to_string()), ("main".to_string(), main.to_string())])
+    }
+
+    #[test]
+    fn merged_cache_asks_git_again_only_when_the_branch_or_its_target_has_moved() {
+        let mut cache = MergedCache::default();
+        let mut asked = 0;
+        let mut check = |answer: bool| {
+            asked += 1;
+            answer
+        };
+        assert!(!cache.merged(&record("r-1"), &tips("b1", "m1"), || check(false)));
+        assert!(!cache.merged(&record("r-1"), &tips("b1", "m1"), || check(true)), "the same commits give the same answer");
+        assert!(cache.merged(&record("r-1"), &tips("b1", "m2"), || check(true)), "the target moved, so git is asked again");
+        assert!(cache.merged(&record("r-1"), &tips("b1", "m2"), || check(false)));
+        assert!(!cache.merged(&record("r-1"), &HashMap::new(), || check(true)), "a branch that is gone is not merged");
+        assert_eq!(asked, 2);
     }
 }
