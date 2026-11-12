@@ -70,6 +70,8 @@ static PROCESS_TEMP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new
 
 extern "C" {
     fn atexit(callback: extern "C" fn()) -> i32;
+    fn kill(pid: i32, signal: i32) -> i32;
+    fn getuid() -> u32;
 }
 
 extern "C" fn remove_process_temp_dir() {
@@ -78,12 +80,41 @@ extern "C" fn remove_process_temp_dir() {
     }
 }
 
+/// Whether no process `pid` exists. Signal 0 only checks: a process of another user answers
+/// "not permitted", which still means it exists.
+fn process_gone(pid: i32) -> bool {
+    const ESRCH: i32 = 3;
+    // SAFETY: signal 0 sends nothing.
+    unsafe { kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(ESRCH) }
+}
+
+/// Removes this user's `orq-tests-<pid>-<n>` roots whose process no longer exists: a test process
+/// that was killed (SIGKILL, the OOM killer) never ran its exit cleanup.
+fn sweep_roots_of_gone_processes(temp: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = fs::read_dir(temp) else { return };
+    // SAFETY: getuid cannot fail.
+    let me = unsafe { getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some((pid, unique)) = name.to_str().and_then(|name| name.strip_prefix("orq-tests-")).and_then(|rest| rest.split_once('-')) else { continue };
+        let (Ok(pid), Ok(_)) = (pid.parse::<i32>(), unique.parse::<u64>()) else { continue };
+        // A symlink or another user's entry is never followed or removed.
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else { continue };
+        if pid > 0 && metadata.is_dir() && metadata.uid() == me && process_gone(pid) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// A private directory under the temp dir for everything this test process makes there, removed
 /// when the process exits (tests that pass, fail or panic alike). Tests use it where they would
-/// use `std::env::temp_dir()`, and no longer leave their scratch directories behind.
+/// use `std::env::temp_dir()`, and no longer leave their scratch directories behind. The first use
+/// also removes the roots of earlier test processes that were killed before they could clean up.
 pub fn process_temp_dir() -> PathBuf {
     PROCESS_TEMP_DIR
         .get_or_init(|| {
+            sweep_roots_of_gone_processes(&std::env::temp_dir());
             let dir = private_dir("orq-tests");
             // SAFETY: registers a plain function that only removes a directory.
             unsafe { atexit(remove_process_temp_dir) };
