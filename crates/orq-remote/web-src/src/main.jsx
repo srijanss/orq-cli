@@ -1965,6 +1965,37 @@ function changedFields(draft, opened, features) {
 // Edit (name given) or Add feature (no name): the popup's editor as plain inputs. Edit reads the fields
 // and the ledger's version first, so the save goes ahead only if nobody changed the ledger meanwhile.
 // Save asks first; refused values keep the editor open with the reason, and a changed ledger offers Reload.
+// How many features "Depends on" offers beyond the chosen ones; a larger ledger is searched.
+const DEPENDS_SHOWN = 8;
+
+// "Depends on": the chosen features first, then at most DEPENDS_SHOWN more that match the search.
+function DependsPicker({ others, chosen, onToggle }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const picked = others.filter((feature) => chosen.includes(feature.name));
+  const matching = others.filter((feature) => !chosen.includes(feature.name) && feature.name.toLowerCase().includes(needle));
+  const offered = matching.slice(0, DEPENDS_SHOWN);
+  const searchable = others.length > DEPENDS_SHOWN;
+  return (
+    <fieldset className="feature-editor-depends">
+      <legend className="field-label">Depends on</legend>
+      {searchable ? (
+        <label className="search-box">
+          <Icon name="search" size={18} />
+          <input type="search" data-depends-search aria-label="Search the features to depend on" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>
+      ) : null}
+      <div className="depends-options">
+        {[...picked, ...offered].map((feature) => (
+          <label key={feature.name} className="depends-option"><input type="checkbox" data-field-depends={feature.name} checked={chosen.includes(feature.name)} onChange={() => onToggle(feature.name)} />{feature.name}</label>
+        ))}
+      </div>
+      {matching.length > offered.length ? <p className="field-hint muted">{"Showing " + offered.length + " of " + matching.length + " matches; search to narrow them."}</p> : null}
+      {searchable && matching.length === 0 ? <p className="field-hint muted">No other features match.</p> : null}
+    </fieldset>
+  );
+}
+
 function FeatureEditor({ name = null, features, control }) {
   const adding = name === null;
   const [phase, setPhase] = useState("idle");
@@ -2043,33 +2074,24 @@ function FeatureEditor({ name = null, features, control }) {
   const others = features.filter((feature) => feature.name !== name);
   return (
     <div className="feature-editor">
-      {phase === "idle" ? (adding ? <button type="button" data-feature-add onClick={open}>Add feature</button> : <button type="button" data-feature-edit onClick={open}>Edit</button>) : null}
+      {phase === "idle" ? (adding ? <button type="button" className="primary-button" data-feature-add onClick={open}><Icon name="plus" size={16} />Add feature</button> : <button type="button" data-feature-edit onClick={open}><Icon name="pencil" size={16} />Edit</button>) : null}
       {phase === "loading" ? <span role="status">Loading the feature…</span> : null}
       {phase === "editing" ? (
         <div role="group" aria-label={adding ? "Add a feature" : "Edit " + name} className="feature-editor-fields">
-          {adding ? <label>Name <input type="text" data-field-name value={draft.name} autoComplete="off" spellCheck={false} onChange={set("name")} /></label> : null}
-          <label>Description <input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
-          <label>Test file <input type="text" data-field-test-file value={draft.test_file} autoComplete="off" spellCheck={false} onChange={set("test_file")} /></label>
-          <label>Target files <input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
-          <label>Parallelizable <select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
-          {others.length > 0 ? (
-            <fieldset className="feature-editor-depends">
-              <legend>Depends on</legend>
-              {others.map((feature) => (
-                <label key={feature.name}><input type="checkbox" data-field-depends={feature.name} checked={draft.depends_on.includes(feature.name)} onChange={() => toggle(feature.name)} /> {feature.name}</label>
-              ))}
-            </fieldset>
-          ) : null}
-          <button type="button" data-feature-save onClick={() => { setNote(""); setConflict(false); setPhase("asking"); }}>{adding ? "Add" : "Save"}</button>
-          <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
+          {adding ? <label className="field"><span className="field-label">Name</span><input type="text" data-field-name value={draft.name} autoComplete="off" spellCheck={false} onChange={set("name")} /></label> : null}
+          <label className="field field-wide"><span className="field-label">Description</span><input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
+          <label className="field"><span className="field-label">Test file</span><input type="text" data-field-test-file value={draft.test_file} autoComplete="off" spellCheck={false} onChange={set("test_file")} /></label>
+          <label className="field"><span className="field-label">Target files</span><input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
+          <label className="field"><span className="field-label">Parallelizable</span><select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+          {others.length > 0 ? <DependsPicker others={others} chosen={draft.depends_on} onToggle={toggle} /> : null}
+          <div className="feature-editor-actions">
+            <button type="button" className="primary-button" data-feature-save onClick={() => { setNote(""); setConflict(false); setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
+            <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
+          </div>
         </div>
       ) : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={question}>
-          <span>{question}</span>
-          <button type="button" data-confirm onClick={send}>{adding ? "Yes, add" : "Yes, save"}</button>
-          <button type="button" data-cancel onClick={() => setPhase("editing")}>Cancel</button>
-        </span>
+        <Confirm question={question} answer={adding ? "Yes, add" : "Yes, save"} tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
@@ -2123,8 +2145,8 @@ function FeatureList({ features, showProject = false, control = null }) {
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
+        {adder}
       </div>
-      {adder}
       {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
       {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
       {results.length > 0 ? (
