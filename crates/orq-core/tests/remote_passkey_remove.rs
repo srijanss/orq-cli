@@ -128,3 +128,60 @@ fn only_post_removes() {
     assert_eq!(reply.status, 404, "{}", reply.body);
     assert_eq!(labels(&rig).len(), 2);
 }
+
+fn rename(rig: &Rig, cookie: &str, origin: &str, csrf: &str, id: &str) -> orq_core::passkey_routes::AuthReply {
+    rig.change("POST", &format!("/auth/passkeys/{id}/label"), Some(cookie), Some(origin), Some(csrf), br#"{"label": "Laptop"}"#)
+}
+
+/// Puts a directory where `name` is in the state directory, runs `act`, then puts the file back.
+fn broken<T>(rig: &Rig, name: &str, act: impl FnOnce() -> T) -> T {
+    let path = rig.roots.state.join(name);
+    let kept = std::fs::read(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    std::fs::create_dir(&path).unwrap();
+    let out = act();
+    std::fs::remove_dir(&path).unwrap();
+    if let Some(bytes) = kept {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).unwrap().write_all(&bytes).unwrap();
+    }
+    out
+}
+
+#[test]
+fn store_a_passkey_store_that_cannot_be_written_changes_nothing_and_says_only_that_it_failed() {
+    let (rig, cookie, origin, csrf) = signed_in("remove-unwritable");
+    let other = rig.sign_in(&Device::new(4), 1);
+    let id = id_labelled(&rig, "device 4");
+    let (removed, renamed) = broken(&rig, ".passkeys.lock", || (remove(&rig, &cookie, Some(&origin), Some(&csrf), &id), rename(&rig, &cookie, &origin, &csrf, &id)));
+    for reply in [&removed, &renamed] {
+        assert_eq!(reply.status, 500, "{}", reply.body);
+        assert_eq!(reply.body["error"], "The passkeys could not be changed");
+        assert!(reply.set_cookie.is_none(), "no cookie is cleared: {:?}", reply.set_cookie);
+    }
+    assert_eq!(labels(&rig), vec!["device 3".to_string(), "device 4".to_string()], "the passkeys are as they were");
+    assert!(rig.auth.has_session(Some(&other)) && rig.auth.has_session(Some(&cookie)), "no session ended");
+    let lines = audit(&rig);
+    let seen: Vec<(&str, &str, &str)> = lines.iter().map(|l| (l["action"].as_str().unwrap(), l["outcome"].as_str().unwrap(), l["reason"].as_str().unwrap())).collect();
+    assert_eq!(seen, vec![("passkey.remove", "refused", "the passkeys could not be written"), ("passkey.rename", "refused", "the passkeys could not be written")]);
+}
+
+#[test]
+fn store_a_passkey_store_that_cannot_be_read_is_not_a_sign_in_and_changes_nothing() {
+    let (rig, cookie, origin, csrf) = signed_in("remove-unreadable");
+    let id = id_labelled(&rig, "device 4");
+    let file = PasskeyStore::path(&rig.roots);
+    let name = file.file_name().unwrap().to_str().unwrap().to_string();
+    let (removed, renamed) = broken(&rig, &name, || (remove(&rig, &cookie, Some(&origin), Some(&csrf), &id), rename(&rig, &cookie, &origin, &csrf, &id)));
+    for reply in [&removed, &renamed] {
+        assert_eq!(reply.status, 403, "{}", reply.body);
+        assert!(!reply.body.to_string().contains(rig.roots.state.to_str().unwrap()), "no path is shown: {}", reply.body);
+        assert!(reply.set_cookie.is_none(), "{:?}", reply.set_cookie);
+    }
+    assert_eq!(labels(&rig), vec!["device 3".to_string(), "device 4".to_string()]);
+    assert!(rig.auth.session_live(&rig.roots, Some(&cookie)), "the session outlives a store it could not read");
+    let lines = audit(&rig);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines.iter().all(|line| line["outcome"] == "refused" && line["identity"] == "web"), "{lines:?}");
+}
