@@ -97,3 +97,40 @@ fn a_root_still_locked_by_its_process_is_kept_even_when_its_pid_is_not_seen_here
     assert!(elsewhere.is_dir(), "a root whose process still holds its lock was removed");
     drop(held);
 }
+
+#[test]
+fn a_sweep_never_follows_a_symlink_never_takes_a_malformed_name_and_keeps_a_root_whose_pid_exists_for_another_user() {
+    let mut finished = Command::new("true").spawn().unwrap();
+    let dead = finished.id();
+    finished.wait().unwrap();
+    let temp = TempDir::new("orq-sweep-fixture");
+    // A symlink with a root's name, pointing at a directory that must not be emptied.
+    let target = TempDir::new("orq-sweep-target");
+    std::fs::write(target.join("keep"), "x").unwrap();
+    let link = temp.join(format!("orq-tests-{dead}-0"));
+    std::os::unix::fs::symlink(target.path(), &link).unwrap();
+    // Names a sweep must not read as a root: no PID, a zero or negative PID, no number after it.
+    let malformed: Vec<PathBuf> =
+        ["orq-tests-x-0".to_string(), "orq-tests-0-0".to_string(), "orq-tests--1-0".to_string(), format!("orq-tests-{dead}-x"), format!("orq-tests-{dead}")].iter().map(|name| temp.join(name)).collect();
+    for dir in &malformed {
+        std::fs::create_dir(dir).unwrap();
+    }
+    // PID 1 always exists; to a user who may not signal it, kill answers "not permitted".
+    let init = temp.join("orq-tests-1-0");
+    std::fs::create_dir(&init).unwrap();
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["child_leaves_a_mess", "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .env("TMPDIR", temp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the symlink was removed");
+    assert!(target.join("keep").is_file(), "the symlink was followed");
+    for dir in &malformed {
+        assert!(dir.is_dir(), "{dir:?} was taken for a root");
+    }
+    assert!(init.is_dir(), "a root whose PID exists was removed");
+}
