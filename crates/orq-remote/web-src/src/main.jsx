@@ -1374,6 +1374,15 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
 
 const FEATURE_GROUPS = ["draft", "pending", "in_progress", "completed", "abandoned"];
 
+// The work still to do comes first: in progress, then pending, then drafts; then completed, abandoned, and any
+// state the list does not know. Within a state the ledger's own order holds.
+const FEATURE_PRIORITY = ["in_progress", "pending", "draft", "completed", "abandoned"];
+const featureRank = (feature) => {
+  const at = FEATURE_PRIORITY.indexOf(feature.status);
+  return at === -1 ? FEATURE_PRIORITY.length : at;
+};
+const unfinishedFirst = (features) => [...features].sort((a, b) => featureRank(a) - featureRank(b));
+
 function isFeature(feature) {
   return feature !== null && typeof feature === "object" && typeof feature.name === "string" && typeof feature.status === "string" && (feature.description === null || typeof feature.description === "string") && isTextList(feature.depends_on);
 }
@@ -2223,7 +2232,7 @@ function FeatureList({ features, showProject = false, control = null }) {
   }
   const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
   const needle = query.trim().toLowerCase();
-  const shown = features.filter((feature) => (state === "all" || feature.status === state) && feature.name.toLowerCase().includes(needle));
+  const shown = unfinishedFirst(features).filter((feature) => (state === "all" || feature.status === state) && feature.name.toLowerCase().includes(needle));
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);

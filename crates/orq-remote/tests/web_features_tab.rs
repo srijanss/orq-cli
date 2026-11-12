@@ -145,7 +145,7 @@ fn chain() -> Value {
 fn features_are_searched_by_name_and_filtered_by_state_which_offers_every_state() {
     let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "MIDDLE"}, {"set": "[data-feature-search]", "value": ""}, {"set": "[data-feature-status]", "value": "draft"}, {"set": "[data-feature-status]", "value": "all"}, {"set": "[data-feature-search]", "value": "zzz"}]);
     let Some(out) = page("/projects/alpha/features", json!([chain(), projects()]), steps) else { return };
-    assert_eq!(names_in(&out["frames"][1]), ["base-work", "middle-work", "top-work"], "{out}");
+    assert_eq!(names_in(&out["frames"][1]), ["middle-work", "top-work", "base-work"], "unfinished first: {out}");
     assert_eq!(names_in(&out["frames"][2]), ["middle-work"], "search ignores case");
     assert_eq!(names_in(&out["frames"][4]), ["top-work"], "state filter");
     assert_eq!(names_in(&out["frames"][5]).len(), 3, "{out}");
