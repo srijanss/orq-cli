@@ -58,7 +58,7 @@ fn a_project_that_cannot_be_read_is_listed_as_unavailable_without_counts() {
 
 #[test]
 fn choosing_a_project_opens_it() {
-    let Some(out) = run(json!([projects()]), json!([{"submit": TOKEN}, {"click": "button", "index": 0}])) else { return };
+    let Some(out) = run(json!([projects()]), json!([{"submit": TOKEN}, {"click": ".project > button", "index": 0}])) else { return };
     assert_eq!(out["frames"][2]["settled"]["path"], "/projects/alpha/features", "{out}");
 }
 

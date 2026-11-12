@@ -654,17 +654,19 @@ function parseProjects(data) {
 // The project last opened in this tab, so the Dashboard can mark it.
 let lastProject = null;
 
-function CardStat({ icon, value, label }) {
+// A count that opens what it counts: a button to its page.
+function CardStat({ icon, value, label, to, id }) {
   return (
-    <div className="card-stat">
+    <button type="button" className="card-stat" data-card-stat={id} onClick={() => navigate(to)}>
       <Icon name={icon} size={16} />
       <span className="card-stat-value">{value}</span>
       <span className="card-stat-label">{label}</span>
-    </div>
+    </button>
   );
 }
 
 function ProjectCard({ project, selected = false }) {
+  const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
       <button type="button" onClick={() => navigate("/projects/" + encodeURIComponent(project.id) + "/features")}>
@@ -674,9 +676,9 @@ function ProjectCard({ project, selected = false }) {
       </button>
       {project.available ? (
         <div className="card-stats">
-          <CardStat icon="flag" value={project.features} label="Features" />
-          <CardStat icon="play" value={project.active_runs} label="Active runs" />
-          <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" />
+          <CardStat icon="flag" value={project.features} label="Features" to={base + "features"} id={project.id + "/features"} />
+          <CardStat icon="play" value={project.active_runs} label="Active runs" to={base + "orchestrations"} id={project.id + "/runs"} />
+          <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" to={base + "reviews"} id={project.id + "/reviews"} />
         </div>
       ) : (
         <em>Unavailable</em>
@@ -685,15 +687,21 @@ function ProjectCard({ project, selected = false }) {
   );
 }
 
-function Stat({ icon, tone, value, label }) {
-  return (
-    <div className="stat">
+// A total; given a page (`to`), it is a button that opens it.
+function Stat({ icon, tone, value, label, to = null, link = undefined }) {
+  const inside = (
+    <>
       <span className={"stat-icon " + tone}><Icon name={icon} size={24} /></span>
       <span className="stat-text">
         <span className="stat-value">{value}</span>
         <span className="stat-label">{label}</span>
       </span>
-    </div>
+    </>
+  );
+  return to === null ? (
+    <div className="stat">{inside}</div>
+  ) : (
+    <button type="button" className="stat stat-link" data-stat-link={link} onClick={() => navigate(to)}>{inside}</button>
   );
 }
 
@@ -708,8 +716,8 @@ function Dashboard({ projects }) {
     <>
       <div className="stats">
         <Stat icon="layers" tone="tone-accent" value={projects.length} label="Projects" />
-        <Stat icon="play" tone="tone-accent" value={sum("active_runs")} label="Active runs" />
-        <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" />
+        <Stat icon="play" tone="tone-accent" value={sum("active_runs")} label="Active runs" to="/orchestrations" link="runs" />
+        <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" to="/reviews" link="reviews" />
         <Stat icon="clock" tone="tone-waiting" value={<Moment at={updated} />} label="Last updated" />
       </div>
       <h2 className="section-title">Projects</h2>

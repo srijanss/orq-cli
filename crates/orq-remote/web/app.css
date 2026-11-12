@@ -318,6 +318,10 @@ p[role=alert]:empty { display: none; }
 .project > button .icon:last-child { margin-left: auto; color: var(--text-muted); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
 .stat { display: flex; flex-direction: row; align-items: center; gap: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.25rem; }
+.stat-link, .card-stat { font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.stat-link:hover { border-color: var(--accent); }
+.card-stat { background: transparent; border: 0; padding: 0.25rem; margin: -0.25rem; border-radius: 0.5rem; }
+.card-stat:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .stat-icon { flex: none; display: grid; place-items: center; width: 3rem; height: 3rem; border-radius: 0.75rem; background: color-mix(in srgb, currentColor 14%, transparent); }
 .stat-icon.tone-accent { color: var(--accent); }
 .stat-icon.tone-failed { color: var(--status-failed); }
