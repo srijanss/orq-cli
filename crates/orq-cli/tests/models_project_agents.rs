@@ -146,6 +146,43 @@ fn looking_up_a_project_s_agents_never_writes_the_database() {
 }
 
 #[test]
+fn settings_still_in_the_write_ahead_log_are_never_read_as_older_ones() {
+    let repo = GitFixture::new();
+    let home = home("wal");
+    save(&home, repo.root(), &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), ..ProjectSettings::default() });
+    let roots = roots(&home);
+    let database = roots.database();
+
+    // Another connection stays open, so the newer save stays in the -wal file.
+    let holder = rusqlite::Connection::open(&database).unwrap();
+    holder.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let _: u32 = holder.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+    save(&home, repo.root(), &ProjectSettings { implementer: Some(agent("claude", "haiku", None)), ..ProjectSettings::default() });
+    let wal = roots.data.join("orq.db-wal");
+    assert!(std::fs::metadata(&wal).map(|m| m.len() > 0).unwrap_or(false), "the newer save is in the -wal file");
+
+    // A reader that cannot use the shared-memory file cannot see the -wal file either.
+    let shm = roots.data.join("orq.db-shm");
+    set_mode(&shm, 0o000);
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["models", "--repo"])
+        .arg(repo.root())
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    set_mode(&shm, 0o600);
+    drop(holder);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("sonnet"), "the older save was read as current: {stdout}");
+    assert!(!output.status.success(), "a lookup that cannot see the latest save fails: {stdout}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("project's settings"), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn a_checkout_whose_path_is_not_utf8_has_no_project_agents_and_still_resolves() {
     use std::os::unix::ffi::OsStrExt;
     let home = home("non-utf8");

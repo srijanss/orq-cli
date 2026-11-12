@@ -140,10 +140,12 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(db)?;
         let mut store = Store { conn };
         let mut version = store.schema_version();
-        if version.is_err() {
+        if version.is_err() && !wal_may_hold_commits(path) {
             // A WAL database in a directory nobody can write to cannot get its
             // shared-memory file, so a normal reader fails. Fall back to an
             // immutable view, which reads the main file only and writes nothing.
+            // With a non-empty -wal file that view could miss committed changes,
+            // so the read error stands instead.
             if let Some(utf8) = path.to_str() {
                 let uri = format!("file:{}?immutable=1", utf8.replace('%', "%25").replace('?', "%3f").replace('#', "%23"));
                 let uri_flags = flags | rusqlite::OpenFlags::SQLITE_OPEN_URI;
@@ -527,6 +529,17 @@ fn project_key(root: &Path) -> Result<String> {
         return Err(refuse());
     }
     root.components().collect::<std::path::PathBuf>().into_os_string().into_string().map_err(|_| refuse())
+}
+
+/// Whether the database's -wal file may hold commits the main file lacks: it is non-empty, or
+/// its size cannot be read.
+fn wal_may_hold_commits(path: &Path) -> bool {
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    match std::fs::metadata(&wal) {
+        Ok(meta) => meta.len() > 0,
+        Err(err) => err.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 fn db(error: rusqlite::Error) -> Error {
