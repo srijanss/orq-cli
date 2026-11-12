@@ -592,6 +592,18 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .settings-row dt, .settings-row > span:first-child { color: var(--text-muted); font-size: 0.875rem; }
 .settings-row dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; min-width: 0; }
 .settings-row code { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; min-width: 0; }
+.settings-card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding-right: 1rem; border-bottom: 1px solid var(--border); }
+.settings-card-top .settings-card-head { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
+.settings-card-top > button, .settings-row button, .settings-block button { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; }
+.settings-value { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.5rem; }
+.settings-row dd select, .settings-row dd button { font-weight: 400; }
+.settings-row dd select { min-width: 10rem; }
+.settings-label { color: var(--text-muted); font-size: 0.875rem; }
+.settings-block { padding: 0.75rem 1rem; border-top: 1px solid var(--border); }
+.settings-card > .settings-hint { margin: 0; padding: 0 1rem 0.75rem; font-size: 0.875rem; }
+.settings-actions, .settings-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.settings-block .storage-preview, .settings-block .storage-result { margin: 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
+.confirm-detail { display: block; margin-top: 0.25rem; font-size: 0.875rem; }
 .pill-on { color: var(--status-completed); background: var(--status-completed-bg); border: 1px solid var(--status-completed); }
 .pill-off { color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
 .settings-link { display: flex; align-items: center; gap: 0.75rem; min-height: 44px; padding: 0.5rem 1rem; color: var(--text); font-weight: 600; text-decoration: none; }

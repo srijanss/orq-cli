@@ -783,13 +783,13 @@ function parseSettings(data) {
 }
 
 // One agent's fields as labelled text; a value the server did not give is a dash that says so.
-function AgentFields({ agent }) {
+function AgentFields({ agent, edit = {} }) {
   return (
     <dl className="settings-fields">
       {SETTING_FIELDS.map(([label, key]) => (
         <div key={key} className="settings-row">
           <dt>{label}</dt>
-          <dd>{agent && agent[key] !== null ? agent[key] : "—"}{agent && agent[key] !== null ? null : <span className="muted"> (not set)</span>}</dd>
+          <dd>{edit[key] !== undefined ? edit[key] : <>{agent && agent[key] !== null ? agent[key] : "—"}{agent && agent[key] !== null ? null : <span className="muted"> (not set)</span>}</>}</dd>
         </div>
       ))}
     </dl>
@@ -840,15 +840,7 @@ function PasskeyRow({ passkey, onChanged, onSignOut }) {
       <li className="settings-row">
         <strong>{passkey.label}</strong> {passkey.this_device === true && <span className="badge">This device</span>} <code>{passkey.id}</code>{" "}
         {removing ? (
-          <span role="group" aria-label={question}>
-            <span>{question}</span>
-            <button type="button" className="danger-button" data-confirm disabled={sending} onClick={remove}>
-              Yes, remove
-            </button>
-            <button type="button" data-cancel disabled={sending} onClick={close}>
-              Cancel
-            </button>
-          </span>
+          <Confirm question={question} answer="Yes, remove" tone="danger" busy={sending} onConfirm={remove} onCancel={close} />
         ) : (
           <>
             <button type="button" data-passkey-rename={passkey.id} onClick={() => { setNote(""); setLabel(passkey.label); }}>
@@ -898,15 +890,7 @@ function SignOutEverywhere({ onSignOut }) {
     <div className="settings-row">
       <span>Sign out every device</span>
       {asking ? (
-        <span role="group" aria-label={question}>
-          <span>{question}</span>
-          <button type="button" className="danger-button" data-confirm disabled={sending} onClick={endAll}>
-            Yes, sign out everywhere
-          </button>
-          <button type="button" data-cancel disabled={sending} onClick={() => setAsking(false)}>
-            Cancel
-          </button>
-        </span>
+        <Confirm question={question} answer="Yes, sign out everywhere" tone="danger" busy={sending} onConfirm={endAll} onCancel={() => setAsking(false)} />
       ) : (
         <button type="button" className="danger-button" data-sign-out-everywhere onClick={() => { setNote(""); setAsking(true); }}>
           Sign out everywhere
@@ -984,7 +968,15 @@ function AuditView({ lines }) {
 }
 
 // A settings card's title row: a line icon beside a bold title.
-function SettingsHead({ icon, children }) {
+function SettingsHead({ icon, children, action = null }) {
+  if (action !== null) {
+    return (
+      <div className="settings-card-top">
+        <SettingsHead icon={icon}>{children}</SettingsHead>
+        {action}
+      </div>
+    );
+  }
   return (
     <h2 className="settings-card-head">
       <Icon name={icon} size={18} />
@@ -1003,7 +995,7 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
-  if (typeof version !== "string") return null;
+  const can = typeof version === "string";
   const session = token === SESSION;
   const send = async () => {
     setPhase("sending");
@@ -1059,22 +1051,38 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
     setConflict(false);
     onChanged();
   };
+  const hint = !can ? null : on ? null : session ? "Turning on asks for your passkey." : "Turning remote actions on needs a passkey sign-in.";
   return (
-    <div className="settings-row settings-switch">
-      {on || session ? null : <span>Turning remote actions on needs a passkey sign-in.</span>}
-      {!on && session ? <span>Turning on asks for your passkey.</span> : null}
-      {phase === "idle" && on ? <button type="button" data-actions-off onClick={() => { setNote(""); setPhase("asking"); }}>Turn off</button> : null}
-      {phase === "idle" && !on && session ? <button type="button" data-actions-on onClick={() => { setNote(""); setPhase("asking"); }}>Turn on</button> : null}
+    <>
+      <dl className="settings-fields">
+        <div className="settings-row" data-remote-actions={on ? "on" : "off"}>
+          <dt>Remote actions</dt>
+          <dd className="settings-value">
+            <span className={"pill " + (on ? "pill-on" : "pill-off")}>{on ? "On" : "Off"}</span>
+            {can && phase === "idle" && on ? <button type="button" data-actions-off onClick={() => { setNote(""); setPhase("asking"); }}>Turn off</button> : null}
+            {can && phase === "idle" && !on && session ? <button type="button" className="primary-button" data-actions-on onClick={() => { setNote(""); setPhase("asking"); }}>Turn on</button> : null}
+          </dd>
+        </div>
+      </dl>
+      {hint !== null ? <p className="settings-hint muted">{hint}</p> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={on ? ACTIONS_OFF_QUESTION : ACTIONS_ON_QUESTION}>
-          <span>{on ? ACTIONS_OFF_QUESTION : ACTIONS_ON_QUESTION}</span>
-          <button type="button" data-confirm onClick={send}>{on ? "Yes, turn off" : "Yes, turn on"}</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        <div className="settings-block">
+          <Confirm question={on ? ACTIONS_OFF_QUESTION : ACTIONS_ON_QUESTION} answer={on ? "Yes, turn off" : "Yes, turn on"} tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
+        </div>
       ) : null}
-      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={reload} />
+    </>
+  );
+}
+
+// What a settings change says while it is sent and after a refusal, with Reload for a stale version.
+function SettingsNotes({ sending, sendingText = "Sending…", note, conflict, onReload }) {
+  if (!sending && note === "" && !conflict) return null;
+  return (
+    <div className="settings-block settings-notes">
+      {sending ? <span role="status">{sendingText}</span> : null}
       {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
-      {conflict ? <button type="button" data-settings-reload onClick={reload}>Reload</button> : null}
+      {conflict ? <button type="button" data-settings-reload onClick={onReload}>Reload</button> : null}
     </div>
   );
 }
@@ -1093,13 +1101,20 @@ function startingChoice(options, agent) {
 
 // Edit under an Implementer or Reviewer card: reads the options, offers a harness and a model from
 // them, and Save asks before it sends the choice with the version the settings were read at.
-function AgentEditor({ role, agent, version, token, onSignedOut, onChanged }) {
+function AgentEditor({ title, role, agent, version, token, onSignedOut, onChanged }) {
   const [phase, setPhase] = useState("idle");
   const [options, setOptions] = useState([]);
   const [choice, setChoice] = useState(null);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
-  if (typeof version !== "string") return null;
+  if (typeof version !== "string") {
+    return (
+      <>
+        <SettingsHead icon="cpu">{title}</SettingsHead>
+        <AgentFields agent={agent} />
+      </>
+    );
+  }
   const edit = async () => {
     setPhase("loading");
     setNote("");
@@ -1157,30 +1172,29 @@ function AgentEditor({ role, agent, version, token, onSignedOut, onChanged }) {
   };
   const question = choice === null ? "" : "Save " + role + ": " + choice.harness + " " + choice.model + "?";
   const current = options.find((option) => choice !== null && option.harness === choice.harness);
+  const editing = phase === "editing" || phase === "asking";
+  const fields = editing ? {
+    harness: <select data-agent-harness aria-label={title + " harness"} value={choice.harness} disabled={phase !== "editing"} onChange={(event) => pickHarness(event.target.value)}>{options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}</select>,
+    model: <select data-agent-model aria-label={title + " model"} value={choice.model} disabled={phase !== "editing"} onChange={(event) => setChoice({ harness: choice.harness, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select>,
+  } : {};
+  const action = phase === "idle" ? <button type="button" data-agent-edit={role} onClick={edit}><Icon name="pencil" size={16} />Edit</button> : phase === "loading" ? <span role="status" className="muted">Loading the options…</span> : null;
   return (
-    <div className="settings-row settings-switch">
-      {phase === "idle" ? <button type="button" data-agent-edit={role} onClick={edit}>Edit</button> : null}
-      {phase === "loading" ? <span role="status">Loading the options…</span> : null}
+    <>
+      <SettingsHead icon="cpu" action={action}>{title}</SettingsHead>
+      <AgentFields agent={agent} edit={fields} />
       {phase === "editing" ? (
-        <span role="group" aria-label={"Change the " + role}>
-          <label>Harness <select data-agent-harness value={choice.harness} onChange={(event) => pickHarness(event.target.value)}>{options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}</select></label>
-          <label>Model <select data-agent-model value={choice.model} onChange={(event) => setChoice({ harness: choice.harness, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
-          <button type="button" data-agent-save onClick={() => setPhase("asking")}>Save</button>
+        <div className="settings-block settings-actions">
+          <button type="button" className="primary-button" data-agent-save onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
           <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        </div>
       ) : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={question}>
-          <span>{question}</span>
-          <span className="muted">Runs already going keep their model.</span>
-          <button type="button" data-confirm onClick={send}>Yes, save</button>
-          <button type="button" data-cancel onClick={() => setPhase("editing")}>Cancel</button>
-        </span>
+        <div className="settings-block">
+          <Confirm question={question} detail="Runs already going keep their model." answer="Yes, save" tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
+        </div>
       ) : null}
-      {phase === "sending" ? <span role="status">Sending…</span> : null}
-      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
-      {conflict ? <button type="button" data-settings-reload onClick={() => { setNote(""); setConflict(false); onChanged(); }}>Reload</button> : null}
-    </div>
+      <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={() => { setNote(""); setConflict(false); onChanged(); }} />
+    </>
   );
 }
 
@@ -1261,30 +1275,34 @@ function StorageCleanup({ token, onSignedOut }) {
   };
   const something = preview !== null && preview.files + preview.metadata > 0;
   const question = preview === null ? "" : "Clean up " + preview.files + " file(s), " + preview.size + " across " + preview.runs + " run(s)" + (preview.metadata > 0 ? ", and the metadata of " + preview.metadata + " run(s)" : "") + "?";
+  // An empty preview still says so, whether or not the server worded it.
+  const listed = preview === null ? [] : something || preview.lines.length > 0 ? preview.lines : ["Nothing to prune."];
   return (
-    <div className="settings-row settings-switch">
-      {phase === "idle" ? <button type="button" data-storage-preview onClick={look}>Preview cleanup</button> : null}
-      {phase === "loading" ? <span role="status">Reading what a cleanup would remove…</span> : null}
+    <>
+      <div className="settings-row">
+        <span className="settings-label">Run files past their retention</span>
+        {phase === "idle" ? <button type="button" data-storage-preview onClick={look}><Icon name="search" size={16} />Preview cleanup</button> : null}
+        {phase === "loading" ? <span role="status" className="muted">Reading what a cleanup would remove…</span> : null}
+      </div>
       {preview !== null && phase !== "loading" ? (
-        <ul className="storage-preview">{preview.lines.map((line, index) => <li key={index} data-storage-line>{line}</li>)}</ul>
+        <div className="settings-block">
+          <ul className="storage-preview">{listed.map((line, index) => <li key={index} data-storage-line>{line}</li>)}</ul>
+        </div>
       ) : null}
       {phase === "previewed" ? (
-        <span role="group" aria-label="Storage cleanup">
-          {something ? <button type="button" data-storage-prune onClick={() => setPhase("asking")}>Clean up</button> : null}
+        <div className="settings-block settings-actions" role="group" aria-label="Storage cleanup">
+          {something ? <button type="button" className="danger-button" data-storage-prune onClick={() => setPhase("asking")}><Icon name="trash" size={16} />Clean up</button> : null}
           <button type="button" data-cancel onClick={() => { setPreview(null); setPhase("idle"); }}>Close</button>
-        </span>
+        </div>
       ) : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={question}>
-          <span>{question}</span>
-          <button type="button" data-confirm onClick={send}>Yes, clean up</button>
-          <button type="button" data-cancel onClick={() => setPhase("previewed")}>Cancel</button>
-        </span>
+        <div className="settings-block">
+          <Confirm question={question} answer="Yes, clean up" tone="danger" onConfirm={send} onCancel={() => setPhase("previewed")} />
+        </div>
       ) : null}
-      {phase === "sending" ? <span role="status">Cleaning up…</span> : null}
-      {lines.length > 0 ? <ul role="status" className="storage-result">{lines.map((line, index) => <li key={index}>{line}</li>)}</ul> : null}
-      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
-    </div>
+      {lines.length > 0 ? <div className="settings-block"><ul role="status" className="storage-result">{lines.map((line, index) => <li key={index}>{line}</li>)}</ul></div> : null}
+      <SettingsNotes sending={phase === "sending"} sendingText="Cleaning up…" note={note} conflict={false} />
+    </>
   );
 }
 
@@ -1294,19 +1312,18 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
     <>
       <section className="card settings-card">
         <SettingsHead icon="sliders">Run settings</SettingsHead>
-        <dl className="settings-fields">
-          <div className="settings-row" data-remote-actions={on ? "on" : "off"}>
-            <dt>Remote actions</dt>
-            <dd><span className={"pill " + (on ? "pill-on" : "pill-off")}>{on ? "On" : "Off"}</span></dd>
-          </div>
-        </dl>
         <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
       {[["Implementer", "implementer"], ["Reviewer", "reviewer"]].map(([title, role]) => (
         <section key={role} className="card settings-card">
-          <SettingsHead icon="cpu">{title}</SettingsHead>
-          <AgentFields agent={settings[role]} />
-          {on ? <AgentEditor key={settings.version} role={role} agent={settings[role]} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
+          {on ? (
+            <AgentEditor key={settings.version} title={title} role={role} agent={settings[role]} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
+          ) : (
+            <>
+              <SettingsHead icon="cpu">{title}</SettingsHead>
+              <AgentFields agent={settings[role]} />
+            </>
+          )}
         </section>
       ))}
       {on ? (
@@ -1384,14 +1401,14 @@ function toneClass(tone) {
 }
 
 // A question as its own block: any choices, the sentence, then the answer in the action's tone and Cancel beside it.
-function Confirm({ question, answer, tone, onConfirm, onCancel, children }) {
+function Confirm({ question, detail = null, answer, tone, busy = false, onConfirm, onCancel, children }) {
   return (
     <div className="confirm" role="group" aria-label={question}>
       {children ? <div className="confirm-fields">{children}</div> : null}
-      <p className="confirm-question">{question}</p>
+      <p className="confirm-question">{question}{detail !== null ? <span className="confirm-detail muted">{detail}</span> : null}</p>
       <div className="confirm-actions">
-        <button type="button" className={toneClass(tone === "danger" ? "danger" : "primary")} data-confirm onClick={onConfirm}>{answer}</button>
-        <button type="button" data-cancel onClick={onCancel}>Cancel</button>
+        <button type="button" className={toneClass(tone === "danger" ? "danger" : "primary")} data-confirm disabled={busy} onClick={onConfirm}>{answer}</button>
+        <button type="button" data-cancel disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
