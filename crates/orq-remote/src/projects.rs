@@ -561,6 +561,40 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
     }
 
+    /// The project's own settings in this machine's orq.db, keyed by its main checkout, and for each
+    /// role what a run would use if the project named none, with where it comes from. orq.db is only
+    /// read; without it the project has no record (revision 0).
+    fn project_settings(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        use orq_features::AgentRole;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+        let database = self.roots.database();
+        let stored = if database.exists() {
+            orq_core::store::Store::read_project_settings(&database, &root).map_err(|error| error.to_string())?
+        } else {
+            orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
+        };
+        let profiles = self.model_profiles(&git.root)?;
+        let reviewers = orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).map_err(|error| error.to_string())?;
+        let name = |text: &str| orq_core::redact::redact(text);
+        let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
+        let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| -> Result<serde_json::Value, String> {
+            let (fallback, source) = orq_features::role_fallback(&profiles, &reviewers, role).map_err(|error| error.to_string())?;
+            let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
+            Ok(serde_json::json!({
+                "project": chosen,
+                "fallback": { "harness": name(&fallback.harness), "model": name(&fallback.model), "effort": effort(fallback.thinking.as_ref()), "source": source.as_str() },
+            }))
+        };
+        Ok(Some(serde_json::json!({
+            "implementer": role(&stored.settings.implementer, AgentRole::Implementer)?,
+            "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer)?,
+            "delivery": stored.settings.delivery.as_str(),
+            "revision": stored.revision,
+        })))
+    }
+
     /// The popup's editor fields of one feature, and the version of the ledger they were read from.
     fn feature_fields(&self, id: &str, feature: &str) -> Result<Option<serde_json::Value>, String> {
         use orq_core::redact::redact;

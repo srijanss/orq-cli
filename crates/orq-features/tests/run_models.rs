@@ -223,3 +223,22 @@ fn a_project_s_own_agents_come_after_the_flags_and_before_every_configured_sourc
         Err(RunModelsError::ImplementerHarnessUnknown { .. })
     ));
 }
+
+#[test]
+fn a_role_s_fallback_is_what_a_run_without_a_project_choice_uses_and_names_where_it_comes_from() {
+    use orq_features::{role_fallback, AgentRole, FallbackSource};
+    let fallback = |text: &str, tag: &str, reviewers: &TddReviewerConfig, role| {
+        let (model, source) = role_fallback(&profiles(tag, text), reviewers, role).unwrap();
+        (model.harness, model.model, model.thinking, source)
+    };
+    let s = |text: &str| text.to_string();
+
+    assert_eq!(fallback(MACHINE, "fallback-machine", &config(None, None), AgentRole::Implementer), (s("claude"), s("sonnet"), Some(s("high")), FallbackSource::MachineDefault));
+    assert_eq!(fallback(USER, "fallback-roles", &config(None, None), AgentRole::Reviewer), (s("pi"), s("openai/gpt-6-astra"), Some(s("medium")), FallbackSource::Roles));
+    assert_eq!(fallback(USER, "fallback-tdd", &config(Some(("pi", "kimi-k3")), None), AgentRole::Reviewer), (s("pi"), s("kimi-k3"), None, FallbackSource::TddConfig));
+    assert_eq!(fallback("", "fallback-built-in", &config(None, None), AgentRole::Implementer), (s("claude"), s("opus"), None, FallbackSource::BuiltIn));
+    assert_eq!(
+        [FallbackSource::TddConfig, FallbackSource::Roles, FallbackSource::MachineDefault, FallbackSource::BuiltIn].map(FallbackSource::as_str),
+        ["tdd_config", "roles", "machine_default", "built_in"]
+    );
+}

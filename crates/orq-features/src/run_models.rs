@@ -88,12 +88,53 @@ fn named(profiles: &ModelProfiles, role: &'static str, name: &str) -> Result<Res
         .ok_or_else(|| RunModelsError::UnknownProfile { role, name: name.to_string() })
 }
 
-/// This machine's default agent for the role, else the built-in.
-fn machine_or_built_in(profiles: &ModelProfiles, role: AgentRole, fallback: (&str, &str)) -> Result<ResolvedModel, RunModelsError> {
+/// Where a role's agent comes from when neither the run nor the project names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackSource {
+    /// `.tdd-config.json` `reviewers.default` (the reviewer only).
+    TddConfig,
+    /// `[roles]` in `.orq.toml` or `config.toml`.
+    Roles,
+    /// This machine's `[implementer]` / `[reviewer]` in `config.toml`.
+    MachineDefault,
+    BuiltIn,
+}
+
+impl FallbackSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FallbackSource::TddConfig => "tdd_config",
+            FallbackSource::Roles => "roles",
+            FallbackSource::MachineDefault => "machine_default",
+            FallbackSource::BuiltIn => "built_in",
+        }
+    }
+}
+
+/// The agent a run uses for `role` when neither the command line nor the project names one, and
+/// where it comes from. `reviewers.allowedModels` is not applied here.
+pub fn role_fallback(
+    profiles: &ModelProfiles,
+    reviewer_config: &TddReviewerConfig,
+    role: AgentRole,
+) -> Result<(ResolvedModel, FallbackSource), RunModelsError> {
+    let (name, built) = match role {
+        AgentRole::Implementer => ("implementer", BUILT_IN_IMPLEMENTER),
+        AgentRole::Reviewer => ("reviewer", BUILT_IN_REVIEWER),
+    };
+    if role == AgentRole::Reviewer {
+        if let Some(default) = &reviewer_config.default_reviewer {
+            let model = ResolvedModel { harness: default.harness.clone(), model: default.model.clone(), thinking: None };
+            return Ok((model, FallbackSource::TddConfig));
+        }
+    }
+    if let Some(profile) = profiles.role_profile_name(role) {
+        return Ok((named(profiles, name, profile)?, FallbackSource::Roles));
+    }
     match profiles.machine_default(role) {
-        Some(Ok(profile)) => Ok(from_profile(profile)),
+        Some(Ok(profile)) => Ok((from_profile(profile), FallbackSource::MachineDefault)),
         Some(Err(error)) => Err(RunModelsError::MachineDefault(error.clone())),
-        None => Ok(built_in(fallback)),
+        None => Ok((built_in(built), FallbackSource::BuiltIn)),
     }
 }
 
@@ -120,10 +161,7 @@ pub fn resolve_project_run_models(
     let implementer = match (selection.implementer, &project.implementer) {
         (Some(name), _) => named(profiles, "implementer", name)?,
         (None, Some(chosen)) => chosen.clone(),
-        (None, None) => match profiles.role_profile_name(AgentRole::Implementer) {
-            Some(name) => named(profiles, "implementer", name)?,
-            None => machine_or_built_in(profiles, AgentRole::Implementer, BUILT_IN_IMPLEMENTER)?,
-        },
+        (None, None) => role_fallback(profiles, reviewer_config, AgentRole::Implementer)?.0,
     };
     if orq_agents::adapter_for(&implementer.harness).is_err() {
         return Err(RunModelsError::ImplementerHarnessUnknown {
@@ -136,12 +174,8 @@ pub fn resolve_project_run_models(
         named(profiles, "reviewer", name)?
     } else if let Some(chosen) = &project.reviewer {
         chosen.clone()
-    } else if let Some(default) = &reviewer_config.default_reviewer {
-        ResolvedModel { harness: default.harness.clone(), model: default.model.clone(), thinking: None }
-    } else if let Some(name) = profiles.role_profile_name(AgentRole::Reviewer) {
-        named(profiles, "reviewer", name)?
     } else {
-        machine_or_built_in(profiles, AgentRole::Reviewer, BUILT_IN_REVIEWER)?
+        role_fallback(profiles, reviewer_config, AgentRole::Reviewer)?.0
     };
     if let Some(allowed) = &reviewer_config.allowed_models {
         if !allowed.contains(&reviewer.model) {

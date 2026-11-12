@@ -268,6 +268,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Project `id`'s own settings for its Settings page: each role as `{project, fallback}`, the
+    /// delivery and the revision a save must name; `None` when there is no such project.
+    fn project_settings(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// The editable fields of `feature` of project `id`, as `{fields, version}`, for the web's editor; the
     /// version names the ledger as it was read. `None` when there is no such project or feature.
     fn feature_fields(&self, _id: &str, _feature: &str) -> Result<Option<Value>, String> {
@@ -1223,6 +1229,14 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some(id) = project_target(path, "launch-profiles") {
         return launch_profiles(roots, provider, id);
+    }
+    if let Some(id) = project_target(path, "settings") {
+        // A read like /api/settings: there with actions off, and its failure names no path.
+        return match provider.map(|provider| provider.project_settings(id)) {
+            Some(Ok(Some(settings))) => reply(200, json!({ "settings": settings })),
+            Some(Err(_)) => error(500, "the project's settings could not be read"),
+            _ => error(404, "not found"),
+        };
     }
     if let Some((id, feature)) = feature_target(path, "fields") {
         return feature_fields(roots, provider, id, feature);
