@@ -213,3 +213,14 @@ fn a_push_only_run_pushes_its_branch_and_stops_without_opening_a_review() {
     let summary = orq_orchestrator::summarize_run(&store(&w).events(&id).unwrap());
     assert_eq!(summary.phase.as_str(), "completed", "a pushed run has ended");
 }
+
+#[test]
+fn a_push_only_run_still_leaves_its_local_review_report() {
+    let w = world("push-report");
+    let out = run(&w, &["--delivery", "push"]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let id = store(&w).run_ids().unwrap().remove(0);
+
+    let shown = orq(&w, &["review", "show", &id, "--json"]);
+    assert!(shown.status.success(), "the Reviews tab has the pushed head's report: {}", text(&shown.stderr));
+}

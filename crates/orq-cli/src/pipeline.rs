@@ -1094,7 +1094,14 @@ fn stages(
         }
         Ok(())
     };
+    // The steps a passing gate ran; the report counts them for a commit only when the gate passed for it.
+    let gate_steps = match choose_gate(worktree, settings.gate.as_deref()) {
+        Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
+        _ => Vec::new(),
+    };
     if record.delivery == orq_core::project_settings::Delivery::Push {
+        // The pushed head's report is built while its worktree is still there to read.
+        build_review_report(store, record, options, &gate_steps, &head_sha, None, logs);
         clean_up(true, &CiOutcome::Skipped)?;
         return Ok(Report { run_id: String::new(), ending: Ending::Pushed, detail: None, review_url: None, ci_green: None });
     }
@@ -1138,11 +1145,6 @@ fn stages(
                 };
             created
         }
-    };
-    // The steps a passing gate ran; the report counts them for a commit only when the gate passed for it.
-    let gate_steps = match choose_gate(worktree, settings.gate.as_deref()) {
-        Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
-        _ => Vec::new(),
     };
     build_review_report(store, record, options, &gate_steps, &head_sha, None, logs);
 
