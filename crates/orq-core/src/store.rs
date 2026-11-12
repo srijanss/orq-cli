@@ -8,6 +8,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+use crate::project_settings::{self, Delivery, ProjectAgent, ProjectSettings, SaveOutcome, StoredProjectSettings};
 use crate::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
 use crate::storage::{check_head_sha, check_run_id, write_atomic};
 
@@ -24,7 +25,7 @@ pub struct ReviewRecord {
 
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended.
-const MIGRATIONS: [&str; 5] = ["
+const MIGRATIONS: [&str; 6] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -64,6 +65,19 @@ const MIGRATIONS: [&str; 5] = ["
     );
 ", "
     ALTER TABLE review_lifecycles ADD COLUMN observed INTEGER NOT NULL DEFAULT 0;
+", "
+    CREATE TABLE project_settings (
+        project_root        TEXT    NOT NULL PRIMARY KEY,
+        implementer_harness TEXT,
+        implementer_model   TEXT,
+        implementer_effort  TEXT,
+        reviewer_harness    TEXT,
+        reviewer_model      TEXT,
+        reviewer_effort     TEXT,
+        delivery            TEXT    NOT NULL DEFAULT 'review',
+        revision            INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+    );
 "];
 
 pub struct Store {
@@ -355,6 +369,78 @@ impl Store {
         rows.collect::<std::result::Result<Vec<String>, _>>().map_err(db)
     }
 
+    /// The settings saved for the project whose main checkout is `root`; a project with no record
+    /// has the defaults at revision 0.
+    pub fn project_settings(&self, root: &Path) -> Result<StoredProjectSettings> {
+        let key = project_key(root)?;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision FROM project_settings WHERE project_root = ?1",
+                params![key],
+                |row| {
+                    let agent = |at: usize| -> rusqlite::Result<Option<ProjectAgent>> {
+                        let harness: Option<String> = row.get(at)?;
+                        let model: Option<String> = row.get(at + 1)?;
+                        let effort: Option<String> = row.get(at + 2)?;
+                        Ok(harness.zip(model).map(|(harness, model)| ProjectAgent { harness, model, effort }))
+                    };
+                    Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?))
+                },
+            )
+            .optional()
+            .map_err(db)?;
+        let Some((implementer, reviewer, delivery, revision)) = row else {
+            return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
+        };
+        let delivery = Delivery::parse(&delivery)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("orq.db has an unknown delivery {delivery:?} for {key}")))?;
+        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery }, revision: revision as u64 })
+    }
+
+    /// Saves a project's settings if it is still at `expected_revision`; otherwise nothing is
+    /// written and the outcome is a conflict.
+    pub fn save_project_settings(&mut self, root: &Path, expected_revision: u64, settings: &ProjectSettings) -> Result<SaveOutcome> {
+        let key = project_key(root)?;
+        project_settings::check(settings)?;
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db)?;
+        let current: u64 = tx
+            .query_row("SELECT revision FROM project_settings WHERE project_root = ?1", params![key], |row| row.get::<_, i64>(0))
+            .optional()
+            .map_err(db)?
+            .map_or(0, |revision| revision as u64);
+        if current != expected_revision {
+            return Ok(SaveOutcome::Conflict);
+        }
+        let revision = current + 1;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let field = |agent: &Option<ProjectAgent>, pick: fn(&ProjectAgent) -> Option<&str>| agent.as_ref().and_then(pick).map(str::to_string);
+        let (implementer, reviewer) = (&settings.implementer, &settings.reviewer);
+        tx.execute(
+            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (project_root) DO UPDATE SET
+                 implementer_harness = excluded.implementer_harness, implementer_model = excluded.implementer_model, implementer_effort = excluded.implementer_effort,
+                 reviewer_harness = excluded.reviewer_harness, reviewer_model = excluded.reviewer_model, reviewer_effort = excluded.reviewer_effort,
+                 delivery = excluded.delivery, revision = excluded.revision, updated_at = excluded.updated_at",
+            params![
+                key,
+                field(implementer, |a| Some(&a.harness)),
+                field(implementer, |a| Some(&a.model)),
+                field(implementer, |a| a.effort.as_deref()),
+                field(reviewer, |a| Some(&a.harness)),
+                field(reviewer, |a| Some(&a.model)),
+                field(reviewer, |a| a.effort.as_deref()),
+                settings.delivery.as_str(),
+                revision as i64,
+                now
+            ],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(SaveOutcome::Saved { revision })
+    }
+
     /// Every stored report, oldest first.
     pub fn all_reviews(&self) -> Result<Vec<ReviewRecord>> {
         self.query("1 = 1", [])
@@ -403,6 +489,14 @@ pub(crate) fn check_report_path(run_id: &str, report_path: &str) -> Result<()> {
         Ok(())
     } else {
         Err(Error::new(ErrorKind::InvalidInput, format!("report path {report_path:?} is not inside runs/{run_id}/")))
+    }
+}
+
+/// A project is keyed by its main checkout's path, which must be absolute UTF-8.
+fn project_key(root: &Path) -> Result<&str> {
+    match root.to_str() {
+        Some(key) if root.is_absolute() => Ok(key),
+        _ => Err(Error::new(ErrorKind::InvalidInput, format!("project root {} must be an absolute UTF-8 path", root.display()))),
     }
 }
 

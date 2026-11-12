@@ -10,6 +10,7 @@ pub mod passkey_store;
 mod es256;
 pub mod passkey_routes;
 pub mod provider_observation;
+pub mod project_settings;
 pub mod prune;
 pub mod redact;
 pub mod remote_audit;
