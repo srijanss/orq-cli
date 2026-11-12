@@ -113,9 +113,9 @@ fn locked_process_root() -> (PathBuf, fs::File) {
 /// Whether no process `pid` exists. Signal 0 only checks: a process of another user answers
 /// "not permitted", which still means it exists.
 fn process_gone(pid: i32) -> bool {
-    const ESRCH: i32 = 3;
     // SAFETY: signal 0 sends nothing.
-    unsafe { kill(pid, 0) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(ESRCH) }
+    let result = unsafe { kill(pid, 0) };
+    sweep::gone_after_probe(result, std::io::Error::last_os_error().raw_os_error())
 }
 
 /// Removes this user's `orq-tests-<pid>-<n>` roots whose process no longer exists: a test process
@@ -128,12 +128,10 @@ fn sweep_roots_of_gone_processes(temp: &Path) {
     // SAFETY: getuid cannot fail.
     let me = unsafe { getuid() };
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some((pid, unique)) = name.to_str().and_then(|name| name.strip_prefix("orq-tests-")).and_then(|rest| rest.split_once('-')) else { continue };
-        let (Ok(pid), Ok(_)) = (pid.parse::<i32>(), unique.parse::<u64>()) else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
         // A symlink or another user's entry is never followed or removed.
         let Ok(metadata) = fs::symlink_metadata(entry.path()) else { continue };
-        if pid > 0 && metadata.is_dir() && metadata.uid() == me && process_gone(pid) {
+        if sweep::sweepable(&name, metadata.is_dir(), metadata.uid(), me, process_gone) {
             if let Some(_lock) = try_lock(&entry.path()) {
                 let _ = fs::remove_dir_all(entry.path());
             }
