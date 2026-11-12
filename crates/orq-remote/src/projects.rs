@@ -575,21 +575,20 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         } else {
             orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
         };
-        let profiles = self.model_profiles(&git.root)?;
-        let reviewers = orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).map_err(|error| error.to_string())?;
+        // A fallback that cannot be worked out (a broken config a run may never read) is unknown, so
+        // the project's own settings can still be seen and changed.
+        let sources = self.model_profiles(&git.root).ok().zip(orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).ok());
         let name = |text: &str| orq_core::redact::redact(text);
         let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
-        let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| -> Result<serde_json::Value, String> {
-            let (fallback, source) = orq_features::role_fallback(&profiles, &reviewers, role).map_err(|error| error.to_string())?;
+        let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| {
+            let fallback = sources.as_ref().and_then(|(profiles, reviewers)| orq_features::role_fallback(profiles, reviewers, role).ok());
+            let fallback = fallback.map(|(model, source)| serde_json::json!({ "harness": name(&model.harness), "model": name(&model.model), "effort": effort(model.thinking.as_ref()), "source": source.as_str() }));
             let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
-            Ok(serde_json::json!({
-                "project": chosen,
-                "fallback": { "harness": name(&fallback.harness), "model": name(&fallback.model), "effort": effort(fallback.thinking.as_ref()), "source": source.as_str() },
-            }))
+            serde_json::json!({ "project": chosen, "fallback": fallback })
         };
         Ok(Some(serde_json::json!({
-            "implementer": role(&stored.settings.implementer, AgentRole::Implementer)?,
-            "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer)?,
+            "implementer": role(&stored.settings.implementer, AgentRole::Implementer),
+            "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer),
             "delivery": stored.settings.delivery.as_str(),
             "revision": stored.revision,
         })))

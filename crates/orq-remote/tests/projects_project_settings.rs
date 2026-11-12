@@ -114,10 +114,31 @@ fn an_unknown_project_is_not_found_and_a_secret_looking_value_is_redacted() {
 }
 
 #[test]
-fn settings_that_cannot_be_read_are_a_failure_that_names_no_path() {
-    let s = setup("project-settings-broken", Some(MACHINE));
+fn a_fallback_that_cannot_be_worked_out_is_null_and_the_saved_settings_are_still_given() {
+    // A half-filled machine [implementer] that a run with the project's own implementer never reads.
+    let s = setup("project-settings-broken-fallback", Some("[implementer]\nharness = \"claude\"\n"));
     let alpha = git_repo(&s.scan, "alpha");
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::Push });
+
+    let (status, body) = send(&s, "/api/projects/alpha/settings");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["implementer"], json!({"project": {"harness": "claude", "model": "sonnet", "effort": null}, "fallback": null}));
+    assert_eq!(body["settings"]["reviewer"]["fallback"]["source"], json!("built_in"), "{body}");
+    assert_eq!((&body["settings"]["delivery"], &body["settings"]["revision"]), (&json!("push"), &json!(revision)));
+
+    // Profiles that cannot be read leave both fallbacks unknown, not the page.
     std::fs::write(alpha.join(".orq.toml"), "[models.broken]\nharness = 1\n").unwrap();
+    let (status, body) = send(&s, "/api/projects/alpha/settings");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!((&body["settings"]["implementer"]["fallback"], &body["settings"]["reviewer"]["fallback"]), (&Value::Null, &Value::Null));
+    assert_eq!(body["settings"]["revision"], json!(revision));
+}
+
+#[test]
+fn an_unreadable_orq_db_is_a_failure_that_names_no_path() {
+    let s = setup("project-settings-broken-db", Some(MACHINE));
+    git_repo(&s.scan, "alpha");
+    std::fs::write(s.roots.database(), "not a database").unwrap();
 
     assert_eq!(send(&s, "/api/projects/alpha/settings"), (500, json!({"error": "the project's settings could not be read"})));
 }
