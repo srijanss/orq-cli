@@ -619,7 +619,7 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .audit-head time { margin-left: auto; color: var(--text-muted); font-size: 0.875rem; }
 .audit-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0; font-size: 0.875rem; }
 .audit-meta > div { display: flex; gap: 0.375rem; min-width: 0; }
-.audit-meta dt { color: var(--text-muted); }
+.audit-meta dt { flex: none; white-space: nowrap; color: var(--text-muted); }
 .audit-meta dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
 .audit-reason { margin: 0; font-size: 0.875rem; color: var(--text-muted); overflow-wrap: anywhere; }
 .audit-reason-refused { color: var(--status-failed); }

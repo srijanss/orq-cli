@@ -58,4 +58,6 @@ fn the_labelled_pairs_wrap_on_a_narrow_screen() {
     let rule = css.lines().find(|line| line.starts_with(".audit-meta {")).expect("an .audit-meta rule");
     assert!(rule.contains("flex-wrap: wrap"), "{rule}");
     assert!(css.lines().any(|line| line.starts_with(".audit-entry {")), "an .audit-entry rule");
+    let label = css.lines().find(|line| line.starts_with(".audit-meta dt {")).expect("an .audit-meta dt rule");
+    assert!(label.contains("flex: none") && label.contains("white-space: nowrap"), "a long value never squeezes its label: {label}");
 }
