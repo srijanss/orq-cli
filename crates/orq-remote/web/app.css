@@ -316,6 +316,14 @@ p[role=alert]:empty { display: none; }
 .project > button { display: flex; align-items: center; gap: 0.625rem; width: 100%; text-align: left; font-size: 1.0625rem; font-weight: 700; background: transparent; border: 0; padding: 0; }
 .project > button .icon:first-child { color: var(--accent); }
 .project > button .icon:last-child { margin-left: auto; color: var(--text-muted); }
+.project { position: relative; }
+.projects-pinned { margin-bottom: 1.5rem; }
+.project > button:first-child { padding-right: 2.5rem; }
+.project > button.pin-button { position: absolute; top: 1rem; right: 0.875rem; width: 2rem; height: 2rem; display: grid; place-items: center; padding: 0; border-radius: 0.5rem; color: var(--text-muted); }
+.project > button.pin-button .icon { margin: 0; color: inherit; }
+.project > button.pin-button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
+.project > button.pin-button[aria-pressed="true"] { color: var(--accent); }
+.project > button.pin-button[aria-pressed="true"] .icon { fill: currentColor; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
 .stat { display: flex; flex-direction: row; align-items: center; gap: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.25rem; }
 .stat-link, .card-stat { font: inherit; color: inherit; text-align: left; cursor: pointer; }

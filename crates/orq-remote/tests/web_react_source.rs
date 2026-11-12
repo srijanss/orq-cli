@@ -90,12 +90,18 @@ fn the_source_never_stores_anything_or_writes_html_from_text() {
         for banned in ["indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
         }
-        // Only the theme switch keeps anything on the device: its one choice under "orq.theme".
+        // Only the theme switch and the Dashboard's pins keep anything on the device: the theme's one choice
+        // under "orq.theme" and the pinned project ids under "orq.pinned".
         let is_theme = path.file_name().map_or(false, |n| n == "theme.jsx");
-        assert!(is_theme || !text.contains("localStorage"), "{} uses localStorage", path.display());
+        let is_pins = path.file_name().map_or(false, |n| n == "pins.js");
+        assert!(is_theme || is_pins || !text.contains("localStorage"), "{} uses localStorage", path.display());
         if is_theme {
             assert_eq!(text.matches("localStorage.").count(), 3, "theme.jsx only reads, writes and clears its one key");
             assert!(text.contains("const KEY = \"orq.theme\""));
+        }
+        if is_pins {
+            assert_eq!(text.matches("localStorage.").count(), 2, "pins.js only reads and writes its one key");
+            assert!(text.contains("const KEY = \"orq.pinned\""));
         }
         // The tab's own session storage holds the token across a refresh, and only main.jsx may touch it.
         let is_main = path.file_name().map_or(false, |n| n == "main.jsx");

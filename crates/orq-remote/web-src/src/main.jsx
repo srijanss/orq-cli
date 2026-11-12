@@ -8,6 +8,7 @@ import { Shell } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
+import { readPins, writePins } from "./pins.js";
 import { authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
@@ -665,7 +666,7 @@ function CardStat({ icon, value, label, to, id }) {
   );
 }
 
-function ProjectCard({ project, selected = false }) {
+function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
@@ -674,6 +675,11 @@ function ProjectCard({ project, selected = false }) {
         {project.name}
         <Icon name="chevronRight" />
       </button>
+      {onPin !== null ? (
+        <button type="button" className="pin-button" data-pin={project.id} aria-pressed={pinned ? "true" : "false"} aria-label={(pinned ? "Unpin " : "Pin ") + project.name} title={pinned ? "Unpin" : "Pin to the top"} onClick={onPin}>
+          <Icon name="pin" size={18} />
+        </button>
+      ) : null}
       {project.available ? (
         <div className="card-stats">
           <CardStat icon="flag" value={project.features} label="Features" to={base + "features"} id={project.id + "/features"} />
@@ -708,10 +714,19 @@ function Stat({ icon, tone, value, label, to = null, link = undefined }) {
 // The totals above the project cards; a project that could not be read adds nothing to the sums.
 function Dashboard({ projects }) {
   const updated = useMemo(checkedTime, [projects]);
+  const [pins, setPins] = useState(readPins);
   if (projects.length === 0) {
     return <p>No projects found.</p>;
   }
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
+  const toggle = (id) => {
+    const next = pins.includes(id) ? pins.filter((pin) => pin !== id) : [...pins, id];
+    writePins(next);
+    setPins(next);
+  };
+  const pinned = projects.filter((project) => pins.includes(project.id));
+  const rest = projects.filter((project) => !pins.includes(project.id));
+  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} />;
   return (
     <>
       <div className="stats">
@@ -720,12 +735,18 @@ function Dashboard({ projects }) {
         <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" to="/reviews" link="reviews" />
         <Stat icon="clock" tone="tone-waiting" value={<Moment at={updated} />} label="Last updated" />
       </div>
-      <h2 className="section-title">Projects</h2>
-      <ul className="projects">
-        {projects.map((project) => (
-          <ProjectCard key={project.id} project={project} selected={project.id === lastProject} />
-        ))}
-      </ul>
+      {pinned.length > 0 ? (
+        <>
+          <h2 className="section-title">Pinned</h2>
+          <ul className="projects projects-pinned">{pinned.map(card)}</ul>
+        </>
+      ) : null}
+      {rest.length > 0 ? (
+        <>
+          <h2 className="section-title">Projects</h2>
+          <ul className="projects projects-rest">{rest.map(card)}</ul>
+        </>
+      ) : null}
     </>
   );
 }
