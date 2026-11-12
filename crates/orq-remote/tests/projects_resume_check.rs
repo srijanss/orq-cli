@@ -83,3 +83,34 @@ fn a_stopped_run_continues_where_it_stopped_and_a_finished_one_is_refused_in_the
     assert_eq!(check(&s, "/api/projects/alpha/runs/r-beta/resume-check").0, 404, "a run of another project is not this project's");
     assert_eq!(check(&s, "/api/projects/alpha/runs/r-none/resume-check").0, 404);
 }
+
+#[test]
+fn a_refusal_names_a_worktree_within_the_project_or_by_its_directory_name_never_by_its_path_on_this_machine() {
+    let s = setup("resume-check-paths");
+    let alpha = git_repo(&s.scan, "alpha");
+    let project = project_id(&alpha);
+    add_run(&s, &alpha, "r-gone", &project, &["run.started", "run.failed"]);
+    git(&alpha, &["worktree", "remove", "--force", ".claude/worktrees/r-gone"]);
+    let (status, body) = check(&s, "/api/projects/alpha/runs/r-gone/resume-check");
+    let said = body["error"].as_str().unwrap_or_default().to_string();
+    assert_eq!(status, 409, "{body}");
+    assert!(said.contains(".claude/worktrees/r-gone"), "named within the project: {said}");
+
+    // A run whose recorded worktree is a checkout outside the project.
+    let outside = s.scan.join("elsewhere").join("r-out");
+    git(&alpha, &["worktree", "add", "-q", "-b", "orq/r-out", outside.to_str().unwrap()]);
+    let base = git(&alpha, &["rev-parse", "HEAD"]);
+    let store = RunStore::new(&s.roots.state);
+    let record = RunRecord { run_id: "r-out".into(), project_id: project.clone(), feature_id: "f-r-out".into(), remote: String::new(), provider: String::new(), target_branch: "main".into(), base_sha: base, branch: "orq/r-out".into(), worktree: outside, repository: String::new(), profiles: Default::default() };
+    store.create(&record).unwrap();
+    for (n, kind) in ["run.started", "run.failed"].iter().enumerate() {
+        let event = Event { schema_version: 1, event_id: format!("r-out-{n}"), run_id: "r-out".into(), project_id: project.clone(), feature_id: "f-r-out".into(), kind: (*kind).into(), stage: None, attempt: 1, occurred_at: format!("2026-11-01T10:00:0{n}Z"), payload: json!({}) };
+        store.append_event(&event).unwrap();
+    }
+    let (status, body) = check(&s, "/api/projects/alpha/runs/r-out/resume-check");
+    let said_out = body["error"].as_str().unwrap_or_default().to_string();
+    assert_eq!(status, 409, "{body}");
+    for said in [&said, &said_out] {
+        assert!(!said.contains(s.scan.to_str().unwrap()), "no path on this machine: {said}");
+    }
+}

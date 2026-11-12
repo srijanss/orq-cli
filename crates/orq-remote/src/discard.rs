@@ -52,14 +52,28 @@ pub fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<Disc
     Ok(Discarded { note, web_note, merged: outcome.merged })
 }
 
-/// `path` relative to the project at `repo` when it is inside it, else only its last component.
+/// `path` relative to the project at `repo` when it is inside it, else only its last component. A path
+/// that no longer exists is compared as written as well as resolved.
 fn within_project(path: &Path, repo: &Path) -> String {
     let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let (path, repo) = (canonical(path), canonical(repo));
-    match path.strip_prefix(&repo) {
-        Ok(inside) => inside.display().to_string(),
-        Err(_) => path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+    for (path, repo) in [(canonical(path), canonical(repo)), (path.to_path_buf(), repo.to_path_buf())] {
+        if let Ok(inside) = path.strip_prefix(&repo) {
+            return inside.display().to_string();
+        }
     }
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// `text` with every absolute path in it named as [`within_project`] names it, for a message the web shows.
+pub(crate) fn paths_within_project(text: &str, repo: &Path) -> String {
+    let word = |word: &str| {
+        if !word.starts_with('/') {
+            return word.to_string();
+        }
+        let path = word.trim_end_matches([';', ':', ',', '.', ')', '\'', '"']);
+        format!("{}{}", within_project(Path::new(path), repo), &word[path.len()..])
+    };
+    text.split(' ').map(word).collect::<Vec<_>>().join(" ")
 }
 
 /// "2 commits not on the target branch", or "commits the target branch may not have" when the count

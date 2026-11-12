@@ -513,7 +513,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
                 match launcher.resume(&project.path, run) {
                     Ok(carried_on) => Ok(RunControlOutcome::Done(carried_on)),
-                    Err(LaunchError::Refused(why)) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
+                    Err(LaunchError::Refused(why)) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&crate::discard::paths_within_project(&why, &project.path)))),
                     Err(LaunchError::Failed(why)) => Err(why),
                 }
             }
@@ -528,7 +528,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         match orq_orchestrator::resume_check(&store, &project.path, run) {
             Ok(next) => Ok(RunControlOutcome::Done(orq_core::redact::redact(&next))),
             Err(why) if why.starts_with("cannot ") => Err(why),
-            Err(why) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
+            Err(why) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&crate::discard::paths_within_project(&why, &project.path)))),
         }
     }
 
