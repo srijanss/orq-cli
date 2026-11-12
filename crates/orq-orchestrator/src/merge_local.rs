@@ -47,9 +47,12 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                     reason: format!("{} is checked out at {} with uncommitted changes; commit or stash them, then resume this run", record.target_branch, checkout.display()),
                 });
             }
-            let merged = git_raw(&checkout, &["merge", "--ff-only", "--quiet", &head_sha])?;
+            // A local file in the way, ignored or untracked, makes git stop rather than overwrite it.
+            let merged = git_raw(&checkout, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha])?;
             if !merged.success {
-                return Err(StoreError::Corrupt(format!("git merge --ff-only failed: {}", merged.stderr.trim())));
+                return Ok(MergeOutcome::Refused {
+                    reason: format!("{} at {} could not be fast-forwarded: {}", record.target_branch, checkout.display(), merged.stderr.trim()),
+                });
             }
         }
         // With no checkout to update, only the ref moves, and only from the commit checked above,

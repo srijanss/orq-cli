@@ -155,3 +155,17 @@ fn a_base_branch_no_checkout_has_and_behind_the_fetched_target_is_fast_forwarded
     assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
 }
+
+#[test]
+fn an_ignored_local_file_the_run_would_overwrite_is_refused_and_kept() {
+    let w = world("ignored");
+    fs::write(w.repo.join(".git/info/exclude"), "mine.txt\n").unwrap();
+    fs::write(w.repo.join("mine.txt"), "my local notes\n").unwrap();
+
+    match merge_into_base(&w.store, "run-1").unwrap() {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("mine.txt"), "the reason names the file: {reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(fs::read_to_string(w.repo.join("mine.txt")).unwrap(), "my local notes\n", "the local file is kept");
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+}
