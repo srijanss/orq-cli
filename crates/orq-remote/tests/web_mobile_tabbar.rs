@@ -1,5 +1,5 @@
 //! On a phone the page is framed like a mobile app and there is no sidebar: a fixed top bar with the
-//! theme switch, the centred brand and sign-out, and a fixed bottom tab bar holding the destinations,
+//! theme switch, the centred brand and the page's Refresh (signing out is on Settings), and a fixed bottom tab bar holding the destinations,
 //! coloured like the reference sidebar with the current tab as the same light pill.
 
 mod web_deps;
@@ -42,14 +42,14 @@ fn the_tab_bar_holds_the_five_destinations_and_marks_the_current_one() {
 }
 
 #[test]
-fn a_phone_has_no_sidebar_or_menu_and_a_header_with_theme_brand_and_sign_out() {
+fn a_phone_has_no_sidebar_or_menu_and_a_header_with_theme_and_brand_but_no_sign_out() {
     let selectors = [".sidebar", "[data-menu-button]", "[data-scrim]", ".topbar > .theme-toggle", ".topbar > .brand svg", ".topbar > .sign-out"];
     let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "selectors": selectors})) else { return };
     let frame = &out["frames"][0];
-    for gone in [".sidebar", "[data-menu-button]", "[data-scrim]"] {
+    for gone in [".sidebar", "[data-menu-button]", "[data-scrim]", ".topbar > .sign-out"] {
         assert_eq!(frame["matches"][gone], 0, "{gone}: {out}");
     }
-    for here in [".topbar > .theme-toggle", ".topbar > .brand svg", ".topbar > .sign-out"] {
+    for here in [".topbar > .theme-toggle", ".topbar > .brand svg"] {
         assert_eq!(frame["matches"][here], 1, "{here}: {out}");
     }
     assert!(frame["topbarText"].as_str().unwrap().contains("Orq"), "the app name is in the header: {out}");
@@ -105,7 +105,7 @@ fn the_top_bar_is_fixed_and_the_content_clears_both_bars() {
     let phone = phone(&css);
     let top = rule(phone, ".topbar {");
     assert!(top.contains("position: sticky") && top.contains("top: 0"), "{top}");
-    assert!(top.contains("display: grid") && top.contains("grid-template-columns: 1fr auto 1fr"), "theme, brand, sign-out: {top}");
+    assert!(top.contains("display: grid") && top.contains("grid-template-columns: 1fr auto 1fr"), "theme, brand, refresh: {top}");
     assert!(rule(phone, ".topbar .brand {").contains("justify-self: center"), "the app icon and name sit in the centre of the header");
     assert!(rule(phone, ".content {").contains("padding-bottom: calc(5rem + env(safe-area-inset-bottom))"), "content is not hidden under the tab bar");
 }

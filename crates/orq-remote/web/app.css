@@ -255,7 +255,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
   .topbar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; position: sticky; top: 0; z-index: 5; }
   .topbar .brand { justify-self: center; }
   .topbar .theme-toggle { margin-left: 0; justify-self: start; }
-  .topbar [data-sign-out] { justify-self: end; width: auto; }
+  .topbar [data-refresh] { justify-self: end; }
   .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; gap: 0.25rem; padding: 0.375rem 0.5rem; padding-bottom: calc(0.25rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
   .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }

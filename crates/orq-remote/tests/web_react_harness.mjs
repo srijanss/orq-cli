@@ -22,6 +22,8 @@ const dom = new JSDOM('<!doctype html><html><body><div id="app"><p>Loading the r
 });
 const { window } = dom;
 const root = window.document.getElementById("app");
+// A phone-width screen when the scenario asks for one, since jsdom has no layout.
+if (scenario.phone === true) window.matchMedia = (query) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 
 // Intervals are faked so a test can fire them: {id, delay, active, run}. Only setInterval is faked;
 // React schedules its own work with other timers.

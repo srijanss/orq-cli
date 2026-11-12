@@ -1,6 +1,6 @@
 // The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
 // Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
-// brand, sign out) and a fixed bottom tab bar hold the same destinations. The place lives in the
+// brand, the page's Refresh) and a fixed bottom tab bar hold the same destinations. The place lives in the
 // address path, so Back and Forward move it.
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
@@ -81,21 +81,56 @@ function Announcer({ text }) {
   return <div className="sr-only" role="status" aria-live="polite" data-announcer>{text}</div>;
 }
 
+export function usePhone() {
+  return useSyncExternalStore(subscribeToPhone, isPhone, () => false);
+}
+
+// The open page's Refresh, which a phone's top bar shows (the page header then has none). A page
+// registers it while it is shown; the bar always calls the page's latest one.
+let pageRefresh = null;
+const refreshListeners = new Set();
+
+function setPageRefresh(refresh) {
+  pageRefresh = refresh;
+  for (const listener of [...refreshListeners]) listener();
+}
+
+function subscribeToRefresh(listener) {
+  refreshListeners.add(listener);
+  return () => refreshListeners.delete(listener);
+}
+
+export function usePageRefresh(onRefresh) {
+  const latest = useRef(onRefresh);
+  latest.current = onRefresh;
+  const has = Boolean(onRefresh);
+  useEffect(() => {
+    if (!has) return undefined;
+    const refresh = () => latest.current && latest.current();
+    setPageRefresh(refresh);
+    return () => {
+      if (pageRefresh === refresh) setPageRefresh(null);
+    };
+  }, [has]);
+}
+
 export function Shell(props) {
-  const phone = useSyncExternalStore(subscribeToPhone, isPhone, () => false);
+  const phone = usePhone();
   return phone ? <PhoneShell {...props} /> : <DesktopShell {...props} />;
 }
 
-function PhoneShell({ projectId = null, onSignOut = null, children }) {
+// Signing out on a phone is on the Settings page; the bar's corner holds the page's Refresh.
+function PhoneShell({ projectId = null, children }) {
   const { path, entries, announcement } = usePlace(projectId);
+  const refresh = useSyncExternalStore(subscribeToRefresh, () => pageRefresh);
   return (
     <div className="shell phone" data-shell>
       <header className="topbar">
         <ThemeToggle />
         <span className="brand"><Icon name="logo" size={24} />Orq</span>
-        {onSignOut ? (
-          <button type="button" className="sign-out" data-sign-out aria-label="Sign out" title="Sign out" onClick={onSignOut}>
-            <Icon name="logout" />
+        {refresh !== null ? (
+          <button type="button" className="icon-button topbar-refresh" data-refresh aria-label="Refresh" title="Refresh" onClick={refresh}>
+            <Icon name="refresh" />
           </button>
         ) : <span />}
       </header>

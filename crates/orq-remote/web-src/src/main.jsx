@@ -4,7 +4,7 @@
 // Every string from the API is rendered as text.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import { Shell } from "./shell.jsx";
+import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
@@ -778,7 +778,10 @@ function ConnectionStatus() {
   );
 }
 
+// On a phone the page's Refresh sits in the top bar instead of here.
 function PageHeader({ title, subtitle, onRefresh, badge = null, back = null }) {
+  const phone = usePhone();
+  usePageRefresh(phone ? onRefresh : null);
   return (
     <header className="page-header">
       <div className={back === null ? undefined : "has-back"}>
@@ -793,7 +796,7 @@ function PageHeader({ title, subtitle, onRefresh, badge = null, back = null }) {
       </div>
       <div className="header-status">
         <ConnectionStatus />
-        {refreshButton(onRefresh)}
+        {phone ? null : refreshButton(onRefresh)}
       </div>
     </header>
   );
