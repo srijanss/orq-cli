@@ -142,3 +142,20 @@ fn an_unreadable_orq_db_is_a_failure_that_names_no_path() {
 
     assert_eq!(send(&s, "/api/projects/alpha/settings"), (500, json!({"error": "the project's settings could not be read"})));
 }
+
+#[test]
+fn a_linked_worktree_reads_the_record_of_its_main_checkout() {
+    let s = setup("project-settings-worktree", Some(MACHINE));
+    let alpha = git_repo(&s.scan, "alpha");
+    let linked = s.scan.join("alpha-wt");
+    let out = Command::new("git").args(["worktree", "add", "-q", "-b", "side"]).arg(&linked).current_dir(&alpha).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal });
+
+    let (status, body) = send(&s, "/api/projects/alpha-wt/settings");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["implementer"]["project"], json!({"harness": "claude", "model": "sonnet", "effort": null}), "{body}");
+    assert_eq!((&body["settings"]["delivery"], &body["settings"]["revision"]), (&json!("merge_local"), &json!(revision)));
+    let worktree = std::fs::canonicalize(&linked).unwrap();
+    assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&worktree).unwrap().revision, 0, "no record of its own was made");
+}
