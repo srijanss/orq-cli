@@ -1184,6 +1184,110 @@ function AgentEditor({ role, agent, version, token, onSignedOut, onChanged }) {
   );
 }
 
+// The Storage card's cleanup, while remote actions are on: "Preview cleanup" reads what a cleanup would
+// remove and lists it; "Clean up" asks with the preview's totals and sends its hash, so only the set shown
+// is removed. A set that changed since, or a busy prune, is shown in the server's words.
+function parsePreview(data) {
+  const counts = ["files", "bytes", "runs", "metadata"];
+  return data !== null && typeof data === "object" && isTextList(data.lines) && counts.every((key) => Number.isInteger(data[key])) && typeof data.size === "string" && typeof data.hash === "string" ? data : null;
+}
+
+function StorageCleanup({ token, onSignedOut }) {
+  const [phase, setPhase] = useState("idle");
+  const [preview, setPreview] = useState(null);
+  const [lines, setLines] = useState([]);
+  const [note, setNote] = useState("");
+  const reasonOf = async (response, fallback) => {
+    try {
+      const reply = await response.json();
+      return reply !== null && typeof reply.error === "string" ? reply.error : fallback;
+    } catch (unreadable) {
+      return fallback;
+    }
+  };
+  const look = async () => {
+    setPhase("loading");
+    setNote("");
+    setLines([]);
+    setPreview(null);
+    try {
+      const response = await get(API_SETTINGS + "/storage/preview", token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (!response.ok) {
+        setNote(await reasonOf(response, "The cleanup could not be previewed."));
+        setPhase("idle");
+        return;
+      }
+      const found = parsePreview(await response.json());
+      if (found === null) {
+        setNote("The cleanup could not be previewed.");
+        setPhase("idle");
+        return;
+      }
+      setPreview(found);
+      setPhase("previewed");
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+      setPhase("idle");
+    }
+  };
+  const send = async () => {
+    setPhase("sending");
+    try {
+      const response = await actionRequest(API_SETTINGS + "/storage/prune", token, { hash: preview.hash });
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        let reply = null;
+        try {
+          reply = await response.json();
+        } catch (unreadable) {
+          reply = null;
+        }
+        setLines(reply !== null && isTextList(reply.lines) ? reply.lines : ["Cleaned up."]);
+      } else {
+        setNote(await reasonOf(response, "The cleanup could not be done."));
+      }
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+    setPreview(null);
+    setPhase("idle");
+  };
+  const something = preview !== null && preview.files + preview.metadata > 0;
+  const question = preview === null ? "" : "Clean up " + preview.files + " file(s), " + preview.size + " across " + preview.runs + " run(s)" + (preview.metadata > 0 ? ", and the metadata of " + preview.metadata + " run(s)" : "") + "?";
+  return (
+    <div className="settings-row settings-switch">
+      {phase === "idle" ? <button type="button" data-storage-preview onClick={look}>Preview cleanup</button> : null}
+      {phase === "loading" ? <span role="status">Reading what a cleanup would remove…</span> : null}
+      {preview !== null && phase !== "loading" ? (
+        <ul className="storage-preview">{preview.lines.map((line, index) => <li key={index} data-storage-line>{line}</li>)}</ul>
+      ) : null}
+      {phase === "previewed" ? (
+        <span role="group" aria-label="Storage cleanup">
+          {something ? <button type="button" data-storage-prune onClick={() => setPhase("asking")}>Clean up</button> : null}
+          <button type="button" data-cancel onClick={() => { setPreview(null); setPhase("idle"); }}>Close</button>
+        </span>
+      ) : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={question}>
+          <span>{question}</span>
+          <button type="button" data-confirm onClick={send}>Yes, clean up</button>
+          <button type="button" data-cancel onClick={() => setPhase("previewed")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Cleaning up…</span> : null}
+      {lines.length > 0 ? <ul role="status" className="storage-result">{lines.map((line, index) => <li key={index}>{line}</li>)}</ul> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </div>
+  );
+}
+
 function SettingsView({ settings, token, onSignedOut, onChanged }) {
   const on = settings.remote_actions === true;
   return (
@@ -1205,6 +1309,12 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
           {on ? <AgentEditor key={settings.version} role={role} agent={settings[role]} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
         </section>
       ))}
+      {on ? (
+        <section className="card settings-card">
+          <SettingsHead icon="folder">Storage</SettingsHead>
+          <StorageCleanup token={token} onSignedOut={onSignedOut} />
+        </section>
+      ) : null}
     </>
   );
 }
