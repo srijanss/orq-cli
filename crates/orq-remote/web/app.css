@@ -600,6 +600,14 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .segmented button[aria-pressed=true] { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font-weight: 600; }
 .danger-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--status-failed); border-radius: 0.5rem; background: transparent; color: var(--status-failed); font: inherit; font-weight: 600; cursor: pointer; }
 .danger-button:hover { background: var(--status-failed-bg); }
+.primary-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--primary); border-radius: 0.5rem; background: var(--primary); color: var(--on-primary); font: inherit; font-weight: 600; cursor: pointer; }
+.primary-button:hover { background: color-mix(in srgb, var(--primary) 88%, var(--text)); }
+.primary-button .icon, .danger-button .icon { flex: none; }
+.run-action { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; max-width: 100%; }
+.run-action:has(> .confirm), .run-action:has(> .run-action-note) { flex-basis: 100%; }
+.confirm { display: grid; gap: 0.625rem; width: 100%; max-width: 36rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); box-sizing: border-box; }
+.confirm-question { margin: 0; overflow-wrap: anywhere; }
+.confirm-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 @media (max-width: 480px) { .segmented button { padding: 0 0.5rem; } }
 .feature-mark { width: 20px; height: 20px; margin: 0 10px 0 0; flex: none; vertical-align: middle; }
 .feature-table td:has(> .feature-mark) .feature-link { display: inline-flex; }

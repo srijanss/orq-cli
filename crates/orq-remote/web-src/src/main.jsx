@@ -1378,7 +1378,26 @@ async function jsonOrNull(response) {
   }
 }
 
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done }) {
+// A button in the design system's tone: "primary" moves work forward, "danger" ends or throws it away.
+function toneClass(tone) {
+  return tone === "primary" ? "primary-button" : tone === "danger" ? "danger-button" : undefined;
+}
+
+// A question as its own block: any choices, the sentence, then the answer in the action's tone and Cancel beside it.
+function Confirm({ question, answer, tone, onConfirm, onCancel, children }) {
+  return (
+    <div className="confirm" role="group" aria-label={question}>
+      {children ? <div className="confirm-fields">{children}</div> : null}
+      <p className="confirm-question">{question}</p>
+      <div className="confirm-actions">
+        <button type="button" className={toneClass(tone === "danger" ? "danger" : "primary")} data-confirm onClick={onConfirm}>{answer}</button>
+        <button type="button" data-cancel onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
@@ -1436,19 +1455,13 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
     setPhase("idle");
   };
   return (
-    <span className="run-action">
-      {phase === "idle" ? <button type="button" {...{ ["data-" + kind]: "" }} onClick={ask}>{label}</button> : null}
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {phase === "asking" ? (
-        <span role="group" aria-label={asked}>
-          <span>{asked}</span>
-          <button type="button" data-confirm onClick={send}>{"Yes, " + label.toLowerCase()}</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
-      ) : null}
+      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => setPhase("idle")} /> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
-    </span>
+    </div>
   );
 }
 
@@ -1535,11 +1548,11 @@ function ModelAction({ run, control }) {
   };
   const asked = "Switch the " + role + " of " + run.run_id + " to " + profile + "? It takes effect when the run resumes.";
   return (
-    <span className="run-action">
-      {phase === "idle" ? <button type="button" data-model="" onClick={ask}>Switch model</button> : null}
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" data-model="" onClick={ask}><Icon name="cpu" size={16} />Switch model</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={asked} className="model-picker">
+        <Confirm question={asked} answer="Yes, switch model" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
           <label>
             Role{" "}
             <select data-model-role="" value={role} onChange={(event) => pickRole(event.target.value)}>
@@ -1552,14 +1565,11 @@ function ModelAction({ run, control }) {
               {offer.profiles.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </label>
-          <span>{asked}</span>
-          <button type="button" data-confirm onClick={send}>Yes, switch model</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        </Confirm>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
-    </span>
+    </div>
   );
 }
 
@@ -1634,20 +1644,17 @@ function LaunchAction({ feature, control }) {
   };
   const asked = "Start " + feature.name + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
   return (
-    <span className="run-action">
-      {phase === "idle" ? <button type="button" data-start-with="" onClick={ask}>Start with…</button> : null}
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className="primary-button" data-start-with="" onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={asked} className="model-picker">
+        <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
           <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
-          <span>{asked}</span>
-          <button type="button" data-confirm onClick={send}>Yes, start</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        </Confirm>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
-    </span>
+    </div>
   );
 }
 
@@ -1790,17 +1797,13 @@ function PromoteMarked({ names, control, onFinished }) {
     onFinished(results);
   };
   return (
-    <span className="run-action">
-      {phase === "idle" ? <button type="button" data-promote-marked onClick={() => setPhase("asking")}>{label}</button> : null}
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className="primary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={label}>
-          <span>{"Promote " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + "?"}</span>
-          <button type="button" data-confirm onClick={send}>Yes, promote</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        <Confirm question={"Promote " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + "?"} answer="Yes, promote" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
-    </span>
+    </div>
   );
 }
 
@@ -1876,20 +1879,17 @@ function StartMarked({ names, control, onFinished }) {
   };
   const asked = "Start " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
   return (
-    <span className="run-action">
-      {phase === "idle" ? <button type="button" data-start-marked onClick={ask}>{label}</button> : null}
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className="primary-button" data-start-marked onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
-        <span role="group" aria-label={asked} className="model-picker">
+        <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
           <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
-          <span>{asked}</span>
-          <button type="button" data-confirm onClick={send}>Yes, start</button>
-          <button type="button" data-cancel onClick={() => setPhase("idle")}>Cancel</button>
-        </span>
+        </Confirm>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
-    </span>
+    </div>
   );
 }
 
@@ -2151,9 +2151,9 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         </div>
         {control !== null ? <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} /> : null}
-        {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+        {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" tone="primary" icon="play" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
         {control !== null && feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
-        {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
+        {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" tone="primary" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
             <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
@@ -2410,11 +2410,11 @@ const ACCEPTABLE = ["failed", "needs_review"];
 // The run's row and its detail header show the same ones.
 function RowActions({ run, control }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
-  const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
-  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
-  const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
-  const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
-  const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
+  const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
+  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
+  const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" tone="danger" icon="trash" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
+  const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
   if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null) return null;
   return <span className="run-actions">{pause}{resume}{model}{stop}{accept}{discard}</span>;

@@ -34,6 +34,13 @@ const PATHS = {
   cpu: "M7 7h10v10H7ZM9 3v4m6-4v4M9 17v4m6-4v4M3 9h4m-4 6h4m10-6h4m-4 6h4",
   sliders: "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4m8 2v4",
   external: "M14 4h6v6m0-6-9 9M18 14v6H4V6h6",
+  pause: "M8 5v14m8-14v14",
+  stop: "M6 6h12v12H6Z",
+  trash: "M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v6m4-6v6",
+  rotate: "M4 12a8 8 0 1 0 2.300-5.700M4 4v4h4",
+  arrowUp: "M12 19V5m-6 6 6-6 6 6",
+  pencil: "M4 20h4L19 9l-4-4L4 16v4Zm9-13 4 4",
+  plus: "M12 5v14M5 12h14",
 };
 
 export function Icon({ name, size = 20 }) {
