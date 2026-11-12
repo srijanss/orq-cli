@@ -893,6 +893,7 @@ function SignOutEverywhere({ onSignOut }) {
         <Confirm question={question} answer="Yes, sign out everywhere" tone="danger" busy={sending} onConfirm={endAll} onCancel={() => setAsking(false)} />
       ) : (
         <button type="button" className="danger-button" data-sign-out-everywhere onClick={() => { setNote(""); setAsking(true); }}>
+          <Icon name="logout" size={16} />
           Sign out everywhere
         </button>
       )}
