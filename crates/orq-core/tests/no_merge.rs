@@ -80,20 +80,46 @@ fn crate_sources(krate: &str) -> Vec<(PathBuf, String)> {
     files.into_iter().map(|p| { let text = std::fs::read_to_string(&p).unwrap(); (p, text) }).collect()
 }
 
+const MERGE_CAPABLE: [&str; 10] = [
+    "\"merge\"",
+    "\"approve\"",
+    "\"--auto\"",
+    "\"--admin\"",
+    "merge_when_pipeline_succeeds",
+    "pr merge",
+    "mr merge",
+    "/merge\"",
+    "/approve\"",
+    "enable-auto-merge",
+];
+
+/// Merge-local's one fast-forward of the base branch to the reviewed head: `--ff-only` cannot make
+/// a merge commit, nothing is pushed, and no forge merges or approves anything.
+const MERGE_LOCAL_FAST_FORWARD: &str = r#"["merge", "--ff-only", "--no-overwrite-ignore""#;
+
+/// The first merge-capable text in the source `text` of `path`, if any. Only merge-local's one
+/// fast-forward is allowed, once and only in merge_local.rs; any other merge text still counts.
+fn merge_capable_text(path: &Path, text: &str) -> Option<&'static str> {
+    let text = if path.ends_with("merge_local.rs") { text.replacen(MERGE_LOCAL_FAST_FORWARD, "", 1) } else { text.to_string() };
+    MERGE_CAPABLE.into_iter().find(|needle| text.contains(needle))
+}
+
+#[test]
+fn only_merge_locals_one_fast_forward_of_the_base_branch_is_allowed() {
+    let merge_local = Path::new("crates/orq-orchestrator/src/merge_local.rs");
+    let fast_forward = r#"git_raw(&checkout, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha])?;"#;
+    assert_eq!(merge_capable_text(merge_local, fast_forward), None, "merge-local's fast-forward");
+    assert_eq!(merge_capable_text(Path::new("crates/orq-orchestrator/src/push_stage.rs"), fast_forward), Some("\"merge\""), "anywhere else");
+    let twice = format!("{fast_forward}\n{fast_forward}");
+    assert_eq!(merge_capable_text(merge_local, &twice), Some("\"merge\""), "a second one");
+    let merge_commit = format!("{fast_forward}\ngit_raw(&checkout, &[\"merge\", \"--no-ff\", &head_sha])?;");
+    assert_eq!(merge_capable_text(merge_local, &merge_commit), Some("\"merge\""), "a merge that is not a fast-forward");
+    let pr_merge = format!("{fast_forward}\nlet call = \"gh pr merge\";");
+    assert_eq!(merge_capable_text(merge_local, &pr_merge), Some("pr merge"), "other merge-capable text");
+}
+
 #[test]
 fn no_production_code_path_can_invoke_a_merge() {
-    let forbidden = [
-        "\"merge\"",
-        "\"approve\"",
-        "\"--auto\"",
-        "\"--admin\"",
-        "merge_when_pipeline_succeeds",
-        "pr merge",
-        "mr merge",
-        "/merge\"",
-        "/approve\"",
-        "enable-auto-merge",
-    ];
     let mut seen = 0;
     for krate in ["orq-agents", "orq-cli", "orq-core", "orq-features", "orq-git", "orq-herdr", "orq-orchestrator", "orq-tui"] {
         for (path, text) in crate_sources(krate) {
@@ -101,8 +127,11 @@ fn no_production_code_path_can_invoke_a_merge() {
                 continue; // the guard itself has to name what it forbids
             }
             seen += 1;
-            for needle in forbidden {
-                assert!(!text.contains(needle), "{} contains the merge-capable text {needle}", path.display());
+            if path.ends_with("merge_local.rs") {
+                assert!(text.contains(MERGE_LOCAL_FAST_FORWARD), "merge-local no longer has the fast-forward the allowlist names; drop the allowlist");
+            }
+            if let Some(needle) = merge_capable_text(&path, &text) {
+                panic!("{} contains the merge-capable text {needle}", path.display());
             }
         }
     }
