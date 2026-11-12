@@ -71,15 +71,16 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
 
 /// The working tree that has the target branch checked out, if any does.
 fn checkout_of(record: &RunRecord) -> Result<Option<PathBuf>, StoreError> {
-    let listed = git_raw(&record.worktree, &["worktree", "list", "--porcelain"])?;
+    // NUL-separated, so a path is read whole whatever characters it holds.
+    let listed = git_raw(&record.worktree, &["worktree", "list", "--porcelain", "-z"])?;
     if !listed.success {
         return Err(StoreError::Corrupt(format!("cannot list the repository's worktrees: {}", listed.stderr.trim())));
     }
     let wanted = format!("branch refs/heads/{}", record.target_branch);
-    Ok(listed.stdout.split("\n\n").find_map(|block| {
-        let mut lines = block.lines();
-        let path = lines.next()?.strip_prefix("worktree ")?;
-        lines.any(|line| line == wanted).then(|| PathBuf::from(path))
+    Ok(listed.stdout.split("\0\0").find_map(|block| {
+        let mut fields = block.split('\0');
+        let path = fields.next()?.strip_prefix("worktree ")?;
+        fields.any(|field| field == wanted).then(|| PathBuf::from(path))
     }))
 }
 

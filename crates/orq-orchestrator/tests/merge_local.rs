@@ -169,3 +169,16 @@ fn an_ignored_local_file_the_run_would_overwrite_is_refused_and_kept() {
     assert_eq!(fs::read_to_string(w.repo.join("mine.txt")).unwrap(), "my local notes\n", "the local file is kept");
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
 }
+
+#[test]
+fn a_base_branch_checked_out_at_a_path_with_a_newline_is_fast_forwarded_there() {
+    let w = world("odd-path");
+    git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+    let odd = w.repo.parent().unwrap().join("main\ncheckout");
+    git(&w.repo, &["worktree", "add", "-q", odd.to_str().unwrap(), "main"]);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
+    assert!(odd.join("mine.txt").exists(), "the checkout at that path was updated");
+}
