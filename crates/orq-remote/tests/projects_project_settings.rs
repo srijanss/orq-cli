@@ -159,3 +159,24 @@ fn a_linked_worktree_reads_the_record_of_its_main_checkout() {
     let worktree = std::fs::canonicalize(&linked).unwrap();
     assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&worktree).unwrap().revision, 0, "no record of its own was made");
 }
+
+#[test]
+fn each_fallback_needs_only_its_own_sources_so_one_broken_config_hides_only_what_depends_on_it() {
+    let s = setup("project-settings-partial-fallbacks", Some(MACHINE));
+    let alpha = git_repo(&s.scan, "alpha");
+
+    // A broken .tdd-config.json: the implementer never reads it, so its machine default is known.
+    std::fs::write(alpha.join(".tdd-config.json"), "{ not json").unwrap();
+    let (status, body) = send(&s, "/api/projects/alpha/settings");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["implementer"]["fallback"], json!({"harness": "claude", "model": "opus", "effort": "high", "source": "machine_default"}));
+    assert_eq!(body["settings"]["reviewer"]["fallback"], Value::Null);
+
+    // Broken profiles: reviewers.default comes before every profile, so the reviewer's is known.
+    std::fs::write(alpha.join(".tdd-config.json"), r#"{"reviewers":{"default":{"reviewer":"pi","model":"kimi"}}}"#).unwrap();
+    std::fs::write(alpha.join(".orq.toml"), "[models.broken]\nharness = 1\n").unwrap();
+    let (status, body) = send(&s, "/api/projects/alpha/settings");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["implementer"]["fallback"], Value::Null);
+    assert_eq!(body["settings"]["reviewer"]["fallback"], json!({"harness": "pi", "model": "kimi", "effort": null, "source": "tdd_config"}));
+}

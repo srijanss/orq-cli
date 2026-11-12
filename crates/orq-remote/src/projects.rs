@@ -576,12 +576,29 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
         };
         // A fallback that cannot be worked out (a broken config a run may never read) is unknown, so
-        // the project's own settings can still be seen and changed.
-        let sources = self.model_profiles(&git.root).ok().zip(orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).ok());
+        // the project's own settings can still be seen and changed. Each role needs only its own
+        // sources: the implementer never reads .tdd-config.json, and the reviewer's reviewers.default
+        // comes before every profile.
+        let profiles = self.model_profiles(&git.root).ok();
+        let reviewers = orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).ok();
+        let fallback_of = |role| {
+            let (profiles, reviewers) = match role {
+                AgentRole::Implementer => (profiles.clone()?, orq_features::TddReviewerConfig::default()),
+                AgentRole::Reviewer => {
+                    let reviewers = reviewers.clone()?;
+                    match profiles.clone() {
+                        Some(profiles) => (profiles, reviewers),
+                        None if reviewers.default_reviewer.is_some() => (orq_features::ModelProfiles::default(), reviewers),
+                        None => return None,
+                    }
+                }
+            };
+            orq_features::role_fallback(&profiles, &reviewers, role).ok()
+        };
         let name = |text: &str| orq_core::redact::redact(text);
         let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
         let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| {
-            let fallback = sources.as_ref().and_then(|(profiles, reviewers)| orq_features::role_fallback(profiles, reviewers, role).ok());
+            let fallback = fallback_of(role);
             let fallback = fallback.map(|(model, source)| serde_json::json!({ "harness": name(&model.harness), "model": name(&model.model), "effort": effort(model.thinking.as_ref()), "source": source.as_str() }));
             let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
             serde_json::json!({ "project": chosen, "fallback": fallback })
