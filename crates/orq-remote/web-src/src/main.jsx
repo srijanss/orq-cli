@@ -947,19 +947,26 @@ function auditTime(line) {
 function AuditView({ lines }) {
   if (lines.length === 0) return <section className="card"><p>No actions recorded yet.</p></section>;
   return (
-    <section className="card">
+    <section className="card audit-card">
       <ul className="audit-lines">
         {lines.map((line, index) => auditTime(line) === null ? (
-          <li key={index}>Unreadable entry</li>
+          <li key={index} className="audit-entry audit-damaged muted">Unreadable entry</li>
         ) : (
-          <li key={index} data-outcome={line.outcome}>
-            <Moment at={auditTime(line)} />
-            <span>{line.identity}</span>
-            <strong>{line.action}</strong>
-            <span>{line.project}</span>
-            {typeof line.run === "string" ? <span>{line.run}</span> : null}
-            <span>{line.outcome}</span>
-            {typeof line.reason === "string" ? <span>{line.reason}</span> : null}
+          <li key={index} className="audit-entry" data-outcome={line.outcome}>
+            <div className="audit-head">
+              <strong className="audit-action">{line.action}</strong>
+              <span className={"badge " + (line.outcome === "allowed" ? "badge-status-completed" : line.outcome === "refused" ? "badge-status-failed" : "badge-risk-other")}>{line.outcome}</span>
+              <Moment at={auditTime(line)} />
+            </div>
+            <dl className="audit-meta">
+              {[["By", line.identity], ["Project", line.project], ["Run", line.run]].filter(([, value]) => typeof value === "string").map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {typeof line.reason === "string" ? <p className="audit-reason">{line.reason}</p> : null}
           </li>
         ))}
       </ul>
