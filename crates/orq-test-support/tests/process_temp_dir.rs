@@ -66,3 +66,34 @@ fn the_first_use_removes_roots_left_by_test_processes_that_no_longer_exist() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!((killed.exists(), alive.is_dir(), not_ours.is_dir()), (false, true, true), "only the root of the process that no longer exists is removed");
 }
+
+extern "C" {
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+#[test]
+fn a_root_still_locked_by_its_process_is_kept_even_when_its_pid_is_not_seen_here() {
+    use std::os::fd::AsRawFd;
+    // A test process in another PID namespace (a container sharing this temp dir) has a PID this
+    // process cannot see, but it still holds the lock on its root.
+    let mut finished = Command::new("true").spawn().unwrap();
+    let unseen = finished.id();
+    finished.wait().unwrap();
+    let temp = TempDir::new("orq-sweep-fixture");
+    let elsewhere = temp.join(format!("orq-tests-{unseen}-0"));
+    std::fs::create_dir(&elsewhere).unwrap();
+    let held = std::fs::File::open(&elsewhere).unwrap();
+    // SAFETY: an exclusive lock on a descriptor this test owns.
+    assert_eq!(unsafe { flock(held.as_raw_fd(), 2) }, 0);
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["child_leaves_a_mess", "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .env("TMPDIR", temp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(elsewhere.is_dir(), "a root whose process still holds its lock was removed");
+    drop(held);
+}

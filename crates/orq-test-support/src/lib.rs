@@ -66,18 +66,47 @@ impl Drop for TempDir {
     }
 }
 
-static PROCESS_TEMP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// The process temp dir, and the open directory whose lock says its process is still running.
+static PROCESS_TEMP_DIR: std::sync::OnceLock<(PathBuf, fs::File)> = std::sync::OnceLock::new();
 
 extern "C" {
     fn atexit(callback: extern "C" fn()) -> i32;
     fn kill(pid: i32, signal: i32) -> i32;
     fn getuid() -> u32;
+    fn flock(fd: i32, operation: i32) -> i32;
 }
 
 extern "C" fn remove_process_temp_dir() {
-    if let Some(dir) = PROCESS_TEMP_DIR.get() {
+    if let Some((dir, _)) = PROCESS_TEMP_DIR.get() {
         let _ = fs::remove_dir_all(dir);
     }
+}
+
+/// Takes the exclusive lock on `dir` without waiting; `None` while another process holds it. The
+/// lock lasts while the returned file is open, and the system drops it when its process dies,
+/// however it dies, in whatever PID namespace.
+fn try_lock(dir: &Path) -> Option<fs::File> {
+    use std::os::fd::AsRawFd;
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    let file = fs::File::open(dir).ok()?;
+    // SAFETY: locks a descriptor this function owns.
+    (unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0).then_some(file)
+}
+
+/// A new process temp dir, locked before it gets the `orq-tests-<pid>-<n>` name a sweep looks for,
+/// so no sweep ever finds a live one unlocked.
+fn locked_process_root() -> (PathBuf, fs::File) {
+    let staged = private_dir("orq-tests-new");
+    let lock = try_lock(&staged).unwrap_or_else(|| panic!("lock new private temp dir {staged:?}"));
+    for _ in 0..1000 {
+        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("orq-tests-{}-{unique}", std::process::id()));
+        if fs::symlink_metadata(&dir).is_err() && fs::rename(&staged, &dir).is_ok() {
+            return (dir, lock);
+        }
+    }
+    panic!("cannot find an unused name for {staged:?}");
 }
 
 /// Whether no process `pid` exists. Signal 0 only checks: a process of another user answers
@@ -89,7 +118,9 @@ fn process_gone(pid: i32) -> bool {
 }
 
 /// Removes this user's `orq-tests-<pid>-<n>` roots whose process no longer exists: a test process
-/// that was killed (SIGKILL, the OOM killer) never ran its exit cleanup.
+/// that was killed (SIGKILL, the OOM killer) never ran its exit cleanup. A PID not seen here may
+/// belong to a process in another PID namespace sharing this temp dir, so a root is removed only
+/// when its lock is free too, and the lock is held while it is removed.
 fn sweep_roots_of_gone_processes(temp: &Path) {
     use std::os::unix::fs::MetadataExt;
     let Ok(entries) = fs::read_dir(temp) else { return };
@@ -102,7 +133,9 @@ fn sweep_roots_of_gone_processes(temp: &Path) {
         // A symlink or another user's entry is never followed or removed.
         let Ok(metadata) = fs::symlink_metadata(entry.path()) else { continue };
         if pid > 0 && metadata.is_dir() && metadata.uid() == me && process_gone(pid) {
-            let _ = fs::remove_dir_all(entry.path());
+            if let Some(_lock) = try_lock(&entry.path()) {
+                let _ = fs::remove_dir_all(entry.path());
+            }
         }
     }
 }
@@ -115,11 +148,12 @@ pub fn process_temp_dir() -> PathBuf {
     PROCESS_TEMP_DIR
         .get_or_init(|| {
             sweep_roots_of_gone_processes(&std::env::temp_dir());
-            let dir = private_dir("orq-tests");
+            let root = locked_process_root();
             // SAFETY: registers a plain function that only removes a directory.
             unsafe { atexit(remove_process_temp_dir) };
-            dir
+            root
         })
+        .0
         .clone()
 }
 
