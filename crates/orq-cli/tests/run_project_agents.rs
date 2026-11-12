@@ -105,3 +105,74 @@ fn a_project_reviewer_that_allowed_models_does_not_list_stops_the_run_before_it_
     assert!(text(&refused.stderr).contains("vendor/project"), "{}", text(&refused.stderr));
     assert_eq!(text(&refused.stdout), "", "nothing was reported ready");
 }
+
+fn git_ok(dir: &Path, args: &[&str]) {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", text(&output.stderr));
+}
+
+fn stub(dir: &Path, name: &str, target: &Path) {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\nexec '{}' \"$@\"\n", target.display())).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_run_that_names_no_agents_starts_the_project_s_agents_with_their_effort() {
+    use orq_orchestrator::{RoleProfile, RunStore};
+    use orq_test_support::{FakeAgent, FakeProvider};
+    const PR_URL: &str = "https://github.example/o/r/pull/7";
+
+    let claude = FakeAgent::builder().write_file("claude.txt", "c\n").commit("feat: claude").build();
+    let repo = GitFixture::new();
+    let remote = repo.add_bare_remote();
+    git_ok(repo.root(), &["branch", "-M", "main"]);
+    git_ok(repo.root(), &["push", "--quiet", "origin", "main"]);
+    git_ok(repo.root(), &["remote", "set-url", "origin", &format!("forge.example:{}", remote.display())]);
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    let home = home("launch");
+    let ssh = home.join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nfor a; do last=$a; done\nexec sh -c \"$last\"\n").unwrap();
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .build();
+    let bin = home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    stub(&bin, "claude", claude.path());
+    let mut dirs = vec![bin, provider.bin_dir()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let implementer = ProjectAgent { effort: Some("low".into()), ..agent("claude", "sonnet") };
+    let reviewer = ProjectAgent { effort: Some("high".into()), ..agent("pi", "vendor/project") };
+    save(&home, repo.root(), &ProjectSettings { implementer: Some(implementer), reviewer: Some(reviewer), ..ProjectSettings::default() });
+
+    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+
+    let args = claude.first_run().expect("the implementer was started").args;
+    let after = |flag: &str| args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1)).cloned();
+    assert_eq!((after("--model"), after("--effort")), (Some("sonnet".into()), Some("low".into())), "{args:?}");
+
+    let store = RunStore::new(&home.join("state/orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let profiles = store.load(&run_id).unwrap().profiles;
+    let expected = |harness: &str, model: &str, thinking: &str| RoleProfile { harness: harness.into(), model: model.into(), thinking: Some(thinking.into()) };
+    assert_eq!(profiles["implementer"], expected("claude", "sonnet", "low"));
+    assert_eq!(profiles["reviewer"], expected("pi", "vendor/project", "high"));
+}
