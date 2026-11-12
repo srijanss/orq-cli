@@ -1097,16 +1097,37 @@ function SettingsNotes({ sending, sendingText = "Sending…", note, conflict, on
   );
 }
 
-// The options as the server lists them: a harness and the models it allows, nothing else drawn.
+// The options as the server lists them: a harness, the models it allows and, when it has any, the effort
+// levels it takes; nothing else drawn.
 function parseOptions(data) {
   const options = data && data.options;
-  return Array.isArray(options) && options.every((option) => option !== null && typeof option === "object" && typeof option.harness === "string" && isTextList(option.models)) ? options.filter((option) => option.models.length > 0) : null;
+  const ok = (option) => option !== null && typeof option === "object" && typeof option.harness === "string" && isTextList(option.models) && (option.efforts === undefined || isTextList(option.efforts));
+  return Array.isArray(options) && options.every(ok) ? options.filter((option) => option.models.length > 0) : null;
 }
 
-// What an editor starts on: the role's own harness and model when they are offered, else the first.
+// The effort levels a harness option takes; none when it lists none.
+function effortsOf(option) {
+  return option && Array.isArray(option.efforts) ? option.efforts : [];
+}
+
+// An effort kept for `option`: the level when it takes it, else not set ("").
+function keptEffort(option, effort) {
+  return typeof effort === "string" && effortsOf(option).includes(effort) ? effort : "";
+}
+
+// What an editor starts on: the role's own harness, model and effort when they are offered, else the first.
 function startingChoice(options, agent) {
   const own = options.find((option) => agent && option.harness === agent.harness) || options[0];
-  return { harness: own.harness, model: agent && own.models.includes(agent.model) ? agent.model : own.models[0] };
+  return { harness: own.harness, model: agent && own.models.includes(agent.model) ? agent.model : own.models[0], effort: keptEffort(own, agent && agent.effort) };
+}
+
+// What Save sends for a choice: the effort (null when not set) only when the harness takes levels, so a
+// harness without them leaves the stored effort to the server.
+function sentChoice(options, choice) {
+  const option = options.find((each) => each.harness === choice.harness);
+  const sent = { harness: choice.harness, model: choice.model };
+  if (effortsOf(option).length > 0) sent.effort = choice.effort || null;
+  return sent;
 }
 
 // Edit under an Implementer or Reviewer card: reads the options, offers a harness and a model from
@@ -1151,13 +1172,13 @@ function AgentEditor({ title, role, agent, version, token, onSignedOut, onChange
   };
   const pickHarness = (harness) => {
     const option = options.find((each) => each.harness === harness);
-    if (option) setChoice({ harness, model: option.models[0] });
+    if (option) setChoice({ harness, model: option.models[0], effort: keptEffort(option, choice.effort) });
   };
   const send = async () => {
     setPhase("sending");
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(API_SETTINGS + "/agents", token, { [role]: choice, version });
+      const response = await actionRequest(API_SETTINGS + "/agents", token, { [role]: sentChoice(options, choice), version });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -1180,13 +1201,17 @@ function AgentEditor({ title, role, agent, version, token, onSignedOut, onChange
     setNote(text);
     setPhase("idle");
   };
-  const question = choice === null ? "" : "Save " + role + ": " + choice.harness + " " + choice.model + "?";
   const current = options.find((option) => choice !== null && option.harness === choice.harness);
+  const levels = effortsOf(current);
+  const question = choice === null ? "" : "Save " + role + ": " + choice.harness + " " + choice.model + (levels.length > 0 ? ", effort " + (choice.effort || "not set") : "") + "?";
   const editing = phase === "editing" || phase === "asking";
   const fields = editing ? {
     harness: <select data-agent-harness aria-label={title + " harness"} value={choice.harness} disabled={phase !== "editing"} onChange={(event) => pickHarness(event.target.value)}>{options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}</select>,
-    model: <select data-agent-model aria-label={title + " model"} value={choice.model} disabled={phase !== "editing"} onChange={(event) => setChoice({ harness: choice.harness, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select>,
+    model: <select data-agent-model aria-label={title + " model"} value={choice.model} disabled={phase !== "editing"} onChange={(event) => setChoice({ ...choice, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select>,
   } : {};
+  if (editing && levels.length > 0) {
+    fields.effort = <select data-agent-effort aria-label={title + " effort"} value={choice.effort} disabled={phase !== "editing"} onChange={(event) => setChoice({ ...choice, effort: event.target.value })}><option value="">Not set</option>{levels.map((level) => <option key={level} value={level}>{level}</option>)}</select>;
+  }
   const action = phase === "idle" ? <button type="button" data-agent-edit={role} onClick={edit}><Icon name="pencil" size={16} />Edit</button> : phase === "loading" ? <span role="status" className="muted">Loading the options…</span> : null;
   return (
     <>
