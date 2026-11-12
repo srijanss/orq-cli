@@ -80,6 +80,9 @@ const MIGRATIONS: [&str; 6] = ["
     );
 "];
 
+/// The schema version whose migration added `project_settings`.
+const PROJECT_SETTINGS_VERSION: u32 = 6;
+
 pub struct Store {
     conn: Connection,
 }
@@ -103,6 +106,35 @@ impl Store {
     /// tightened, migrated or switched to WAL. A database that is not at the
     /// schema this Orq understands is refused.
     pub fn open_read_only(path: &Path) -> Result<Store> {
+        let (store, version) = Self::open_read_only_at_any_version(path)?;
+        if version != Self::LATEST_VERSION {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("orq.db has schema version {version}, not the {} this Orq reads; run Orq once to upgrade it", Self::LATEST_VERSION),
+            ));
+        }
+        Ok(store)
+    }
+
+    /// The settings saved for a project, read without writing anything: the database is not
+    /// created, migrated or switched to WAL. A database from before project settings existed has
+    /// none; one newer than this Orq understands is refused.
+    pub fn read_project_settings(path: &Path, root: &Path) -> Result<StoredProjectSettings> {
+        let (store, version) = Self::open_read_only_at_any_version(path)?;
+        if version > Self::LATEST_VERSION {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("orq.db has schema version {version}, newer than this Orq understands ({})", Self::LATEST_VERSION),
+            ));
+        }
+        if version < PROJECT_SETTINGS_VERSION {
+            project_key(root)?;
+            return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
+        }
+        store.project_settings(root)
+    }
+
+    fn open_read_only_at_any_version(path: &Path) -> Result<(Store, u32)> {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let conn = Connection::open_with_flags(path, flags).map_err(db)?;
         conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(db)?;
@@ -124,14 +156,7 @@ impl Store {
                 }
             }
         }
-        let version = version?;
-        if version != Self::LATEST_VERSION {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("orq.db has schema version {version}, not the {} this Orq reads; run Orq once to upgrade it", Self::LATEST_VERSION),
-            ));
-        }
-        Ok(store)
+        Ok((store, version?))
     }
 
     pub fn schema_version(&self) -> Result<u32> {

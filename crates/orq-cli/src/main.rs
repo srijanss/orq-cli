@@ -490,8 +490,9 @@ fn project_agents(project: &orq_git::Project) -> Result<orq_features::ProjectAge
         return Ok(orq_features::ProjectAgents::default());
     }
     let root = orq_git::main_checkout_root(project).unwrap_or_else(|| project.root.clone());
-    let store = orq_core::store::Store::open(&database).map_err(|err| format!("cannot open the Orq database: {err}"))?;
-    let settings = store.project_settings(&root).map_err(|err| format!("cannot read the project's settings: {err}"))?.settings;
+    let settings = orq_core::store::Store::read_project_settings(&database, &root)
+        .map_err(|err| format!("cannot read the project's settings: {err}"))?
+        .settings;
     let resolved = |agent: Option<orq_core::project_settings::ProjectAgent>| {
         agent.map(|agent| orq_features::ResolvedModel { harness: agent.harness, model: agent.model, thinking: agent.effort })
     };

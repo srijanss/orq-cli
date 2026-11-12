@@ -111,3 +111,26 @@ fn editors_racing_from_the_same_read_save_once_and_the_rest_conflict() {
     assert_eq!(outcomes.iter().filter(|outcome| **outcome == SaveOutcome::Conflict).count(), editors - 1);
     assert_eq!(Store::open(&db).unwrap().project_settings(Path::new("/work/alpha")).unwrap().revision, 1);
 }
+
+#[test]
+fn a_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_settings() {
+    let (mut store, db) = open("read-only");
+    let chosen = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    store.save_project_settings(Path::new("/work/alpha"), 0, &chosen).unwrap();
+    drop(store);
+
+    let read = Store::read_project_settings(&db, Path::new("/work/alpha")).unwrap();
+    assert_eq!((read.settings, read.revision), (chosen, 1));
+
+    let version = |db: &Path| -> u32 { rusqlite::Connection::open(db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old;").unwrap();
+    conn.pragma_update(None, "user_version", Store::LATEST_VERSION - 1).unwrap();
+    drop(conn);
+    let older = Store::read_project_settings(&db, Path::new("/work/alpha")).unwrap();
+    assert_eq!((older.settings, older.revision), (ProjectSettings::default(), 0));
+    assert_eq!(version(&db), Store::LATEST_VERSION - 1, "left as it was");
+
+    rusqlite::Connection::open(&db).unwrap().pragma_update(None, "user_version", Store::LATEST_VERSION + 1).unwrap();
+    assert!(Store::read_project_settings(&db, Path::new("/work/alpha")).is_err(), "a newer schema is not guessed at");
+}

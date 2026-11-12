@@ -106,3 +106,41 @@ fn a_project_reviewer_outside_allowed_models_is_refused() {
     let error = json["defaultsError"].as_str().unwrap_or_default();
     assert!(error.contains("vendor/project"), "{json}");
 }
+
+fn set_mode(path: &Path, mode: u32) {
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+}
+
+fn schema_version(database: &Path) -> u32 {
+    let conn = rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn looking_up_a_project_s_agents_never_writes_the_database() {
+    let repo = GitFixture::new();
+    let home = home("read-only");
+    save(&home, repo.root(), &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), ..ProjectSettings::default() });
+    let roots = roots(&home);
+    let database = roots.database();
+    let current = schema_version(&database);
+
+    set_mode(&database, 0o400);
+    set_mode(&roots.data, 0o500);
+    let read = models(repo.root(), &home);
+    set_mode(&roots.data, 0o700);
+    // SQLite gives an empty -wal the database's mode when it opens it, so restore every file.
+    for file in ["orq.db", "orq.db-wal", "orq.db-shm"].map(|name| roots.data.join(name)).iter().filter(|file| file.exists()) {
+        set_mode(file, 0o600);
+    }
+    assert_eq!(read["defaults"]["implementer"]["model"], "sonnet", "read from a database nobody may write: {read}");
+
+    // A database from before project settings existed has none, and is left at its version.
+    let conn = rusqlite::Connection::open(&database).unwrap();
+    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old;").unwrap();
+    conn.pragma_update(None, "user_version", current - 1).unwrap();
+    drop(conn);
+    let older = models(repo.root(), &home);
+    assert_eq!(older["defaults"]["implementer"]["model"], "opus", "{older}");
+    assert_eq!(schema_version(&database), current - 1, "not migrated by a lookup");
+}
