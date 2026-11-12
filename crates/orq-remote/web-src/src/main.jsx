@@ -2341,10 +2341,13 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             <p className="feature-detail-sub">{[...(validTime(facts.updated) === null ? [] : [<Fragment key="u">{"Updated "}<Moment at={facts.updated} /></Fragment>]), ...(validTime(feature.recorded_at ?? null) === null ? [] : [<Fragment key="r">{"Recorded "}<Moment at={feature.recorded_at} /></Fragment>])].flatMap((part, index) => (index === 0 ? [part] : [" · ", part]))}</p>
           </div>
         </div>
-        {control !== null ? <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} /> : null}
-        {control !== null && feature.status === "pending" ? <FeatureAction feature={feature} control={control} /> : null}
-        {control !== null && feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
-        {control !== null && feature.status === "draft" ? <FeatureAction feature={feature} control={control} /> : null}
+        {control !== null ? (
+          <div className="feature-detail-actions">
+            <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} />
+            {feature.status === "pending" || feature.status === "draft" ? <FeatureAction feature={feature} control={control} /> : null}
+            {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
+          </div>
+        ) : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
             <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
