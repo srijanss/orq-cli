@@ -966,7 +966,7 @@ function AuditView({ lines }) {
                 </div>
               ))}
             </dl>
-            {typeof line.reason === "string" ? <p className="audit-reason">{line.reason}</p> : null}
+            {typeof line.reason === "string" ? <p className={"audit-reason" + (line.outcome === "refused" ? " audit-reason-refused" : "")}>{line.reason}</p> : null}
           </li>
         ))}
       </ul>
