@@ -3,6 +3,7 @@ mod fake_agent;
 pub use fake_agent::{FakeAgent, FakeAgentBuilder, Run};
 
 mod fake_provider;
+mod sweep;
 
 pub use fake_provider::{FakeProvider, FakeProviderBuilder, ProviderCall};
 
@@ -102,7 +103,7 @@ fn locked_process_root() -> (PathBuf, fs::File) {
     for _ in 0..1000 {
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("orq-tests-{}-{unique}", std::process::id()));
-        if fs::symlink_metadata(&dir).is_err() && fs::rename(&staged, &dir).is_ok() {
+        if sweep::publish(&staged, &dir) {
             return (dir, lock);
         }
     }
