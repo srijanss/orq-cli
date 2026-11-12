@@ -49,7 +49,12 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let started = paths("StartMarked");
     assert_eq!(started.len(), 1, "{started:?}");
     assert!(started[0].starts_with("\"features/\"") && started[0].contains("+ \"/runs\")"), "{}", started[0]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 15, "the definition, the seven actions, the two checks, the profiles read, the model switch, the launch picker, start marked and promote marked are the only users");
+    // The feature editor reads the feature's fields and posts to the ledger (add) or the feature (edit); nothing else.
+    let editor = paths("FeatureEditor");
+    assert_eq!(editor.len(), 2, "{editor:?}");
+    assert!(editor[0].starts_with("\"features/\"") && editor[0].ends_with("+ \"/fields\"), control.token)"), "{}", editor[0]);
+    assert!(editor[1].starts_with("adding ? \"features\" : \"features/\" + encodeURIComponent(name))"), "{}", editor[1]);
+    assert_eq!(code.matches("controlPath(control, ").count(), 17, "the definition, the seven actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked and the feature editor's read and save are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

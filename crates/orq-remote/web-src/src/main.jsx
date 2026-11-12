@@ -1783,14 +1783,163 @@ function StartMarked({ names, control, onFinished }) {
   );
 }
 
+// The editable fields a reply of …/features/{name}/fields carries, as the editor holds them: text for the
+// boxes, the parallelizable choice as "", "yes" or "no", and the dependencies as a list of names.
+function featureDraft(fields) {
+  const text = (value) => (typeof value === "string" ? value : "");
+  const list = (value) => (isTextList(value) ? value : []);
+  return {
+    name: text(fields.name),
+    description: text(fields.description),
+    test_file: text(fields.test_file),
+    target_files: list(fields.target_files).join(", "),
+    parallelizable: fields.parallelizable === true ? "yes" : fields.parallelizable === false ? "no" : "",
+    depends_on: list(fields.depends_on),
+  };
+}
+
+// What the editor sends: a blank box is null, the target files one path per comma or line, and the
+// dependencies in ledger order.
+function featureFields(draft, features) {
+  const blank = (value) => (value.trim() === "" ? null : value);
+  return {
+    name: draft.name.trim(),
+    description: blank(draft.description),
+    depends_on: features.map((feature) => feature.name).filter((name) => draft.depends_on.includes(name)),
+    parallelizable: draft.parallelizable === "yes" ? true : draft.parallelizable === "no" ? false : null,
+    test_file: blank(draft.test_file),
+    target_files: draft.target_files.split(/[,\n]/).map((path) => path.trim()).filter((path) => path !== ""),
+  };
+}
+
+// Edit (name given) or Add feature (no name): the popup's editor as plain inputs. Edit reads the fields
+// and the ledger's version first, so the save goes ahead only if nobody changed the ledger meanwhile.
+// Save asks first; refused values keep the editor open with the reason, and a changed ledger offers Reload.
+function FeatureEditor({ name = null, features, control }) {
+  const adding = name === null;
+  const [phase, setPhase] = useState("idle");
+  const [draft, setDraft] = useState(null);
+  const [version, setVersion] = useState(null);
+  const [note, setNote] = useState("");
+  const [conflict, setConflict] = useState(false);
+  const open = async () => {
+    setNote("");
+    setConflict(false);
+    if (adding) {
+      setDraft(featureDraft({}));
+      setVersion(null);
+      setPhase("editing");
+      return;
+    }
+    setPhase("loading");
+    let text = "The feature could not be read.";
+    try {
+      const response = await get(controlPath(control, "features/" + encodeURIComponent(name) + "/fields"), control.token);
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok && body !== null && body.fields !== null && typeof body.fields === "object" && typeof body.version === "string") {
+        setDraft(featureDraft(body.fields));
+        setVersion(body.version);
+        setPhase("editing");
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const fields = draft === null ? null : featureFields(draft, features);
+  const shownName = adding ? (fields === null ? "" : fields.name) : name;
+  const send = async () => {
+    setPhase("sending");
+    let text = "The feature could not be saved.";
+    let changed = false;
+    try {
+      const path = controlPath(control, adding ? "features" : "features/" + encodeURIComponent(name));
+      const response = await actionRequest(path, control.token, adding ? { fields } : { fields, version });
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok) {
+        // Done for good: the editor stays closed while the ledger is read again.
+        setNote((adding ? "Added " : "Saved ") + shownName + ".");
+        setPhase("done");
+        control.onDone();
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+      changed = response.status === 409;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setConflict(changed);
+    setPhase("editing");
+  };
+  const set = (key) => (event) => setDraft({ ...draft, [key]: event.target.value });
+  const toggle = (dependency) => setDraft({ ...draft, depends_on: draft.depends_on.includes(dependency) ? draft.depends_on.filter((entry) => entry !== dependency) : [...draft.depends_on, dependency] });
+  const question = (adding ? "Add " : "Save ") + shownName + "?";
+  const others = features.filter((feature) => feature.name !== name);
+  return (
+    <div className="feature-editor">
+      {phase === "idle" ? (adding ? <button type="button" data-feature-add onClick={open}>Add feature</button> : <button type="button" data-feature-edit onClick={open}>Edit</button>) : null}
+      {phase === "loading" ? <span role="status">Loading the feature…</span> : null}
+      {phase === "editing" ? (
+        <div role="group" aria-label={adding ? "Add a feature" : "Edit " + name} className="feature-editor-fields">
+          {adding ? <label>Name <input type="text" data-field-name value={draft.name} autoComplete="off" spellCheck={false} onChange={set("name")} /></label> : null}
+          <label>Description <input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
+          <label>Test file <input type="text" data-field-test-file value={draft.test_file} autoComplete="off" spellCheck={false} onChange={set("test_file")} /></label>
+          <label>Target files <input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
+          <label>Parallelizable <select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+          {others.length > 0 ? (
+            <fieldset className="feature-editor-depends">
+              <legend>Depends on</legend>
+              {others.map((feature) => (
+                <label key={feature.name}><input type="checkbox" data-field-depends={feature.name} checked={draft.depends_on.includes(feature.name)} onChange={() => toggle(feature.name)} /> {feature.name}</label>
+              ))}
+            </fieldset>
+          ) : null}
+          <button type="button" data-feature-save onClick={() => { setNote(""); setConflict(false); setPhase("asking"); }}>{adding ? "Add" : "Save"}</button>
+          <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
+        </div>
+      ) : null}
+      {phase === "asking" ? (
+        <span role="group" aria-label={question}>
+          <span>{question}</span>
+          <button type="button" data-confirm onClick={send}>{adding ? "Yes, add" : "Yes, save"}</button>
+          <button type="button" data-cancel onClick={() => setPhase("editing")}>Cancel</button>
+        </span>
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+      {conflict ? <button type="button" data-feature-reload onClick={() => { setNote(""); setConflict(false); setPhase("idle"); control.onDone(); }}>Reload</button> : null}
+    </div>
+  );
+}
+
 function FeatureList({ features, showProject = false, control = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [page, setPage] = useState(0);
   const [marked, setMarked] = useState([]);
   const [results, setResults] = useState([]);
+  const adder = control === null ? null : <FeatureEditor features={features} control={control} />;
   if (features.length === 0) {
-    return <p>No features in this project's ledger.</p>;
+    return (
+      <>
+        {adder}
+        <p>No features in this project's ledger.</p>
+      </>
+    );
   }
   const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
   const needle = query.trim().toLowerCase();
@@ -1823,6 +1972,7 @@ function FeatureList({ features, showProject = false, control = null }) {
           ))}
         </select>
       </div>
+      {adder}
       {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
       {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
       {results.length > 0 ? (
@@ -1880,6 +2030,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             <p className="feature-detail-sub">{[...(validTime(facts.updated) === null ? [] : [<Fragment key="u">{"Updated "}<Moment at={facts.updated} /></Fragment>]), ...(validTime(feature.recorded_at ?? null) === null ? [] : [<Fragment key="r">{"Recorded "}<Moment at={feature.recorded_at} /></Fragment>])].flatMap((part, index) => (index === 0 ? [part] : [" · ", part]))}</p>
           </div>
         </div>
+        {control !== null ? <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} /> : null}
         {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
         {control !== null && feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
         {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
