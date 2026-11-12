@@ -490,6 +490,10 @@ fn project_agents(project: &orq_git::Project) -> Result<orq_features::ProjectAge
         return Ok(orq_features::ProjectAgents::default());
     }
     let root = orq_git::main_checkout_root(project).unwrap_or_else(|| project.root.clone());
+    if root.to_str().is_none() {
+        // Records are keyed by a UTF-8 path, so none can name this checkout.
+        return Ok(orq_features::ProjectAgents::default());
+    }
     let settings = orq_core::store::Store::read_project_settings(&database, &root)
         .map_err(|err| format!("cannot read the project's settings: {err}"))?
         .settings;

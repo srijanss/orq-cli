@@ -144,3 +144,20 @@ fn looking_up_a_project_s_agents_never_writes_the_database() {
     assert_eq!(older["defaults"]["implementer"]["model"], "opus", "{older}");
     assert_eq!(schema_version(&database), current - 1, "not migrated by a lookup");
 }
+
+#[test]
+fn a_checkout_whose_path_is_not_utf8_has_no_project_agents_and_still_resolves() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = home("non-utf8");
+    save(&home, GitFixture::new().root(), &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), ..ProjectSettings::default() });
+    let repo = home.join(std::ffi::OsStr::from_bytes(b"repo-\xff"));
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&repo).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "--quiet"]);
+    git(&["add", "README.md"]);
+    git(&["-c", "user.name=Orq Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "initial"]);
+
+    let json = models(&repo, &home);
+    assert_eq!(json["defaults"]["implementer"]["model"], "opus", "no record can name it, so the fallbacks apply: {json}");
+}
