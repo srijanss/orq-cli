@@ -198,3 +198,40 @@ fn a_base_ref_update_that_fails_after_the_checks_is_refused_and_main_kept() {
     }
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
 }
+
+#[test]
+fn the_base_ref_is_only_moved_from_the_commit_that_was_checked() {
+    let w = world("compare-and-swap");
+    git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+    // git hands the hook each update as `<old> <new> <ref>`; <old> is all zeros unless the update
+    // was made conditional on the ref still being at that commit.
+    let seen = w.repo.parent().unwrap().join("transaction.txt");
+    let hook = w.repo.join(".git/hooks/reference-transaction");
+    fs::write(&hook, format!("#!/bin/sh\n[ \"$1\" = prepared ] && cat >> '{}'\nexit 0\n", seen.display())).unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    let transaction = fs::read_to_string(&seen).unwrap();
+    assert!(transaction.contains(&format!("{} {head} refs/heads/main", w.base)), "main moves only if it is still at {}: {transaction}", w.base);
+}
+
+#[test]
+fn a_merge_retried_after_main_already_moved_to_the_run_succeeds_again() {
+    for checked_out in [true, false] {
+        let w = world(if checked_out { "retry-checked-out" } else { "retry-ref-only" });
+        if !checked_out {
+            git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+        }
+        let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+        // The earlier attempt moved main and stopped before recording merge.completed.
+        git(&w.repo, &["update-ref", "refs/heads/main", &head]);
+        if checked_out {
+            git(&w.repo, &["reset", "-q", "--hard", &head]);
+        }
+
+        assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() }, "checked out: {checked_out}");
+        assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
+        assert!(w.store.events("run-1").unwrap().iter().any(|e| e.kind == "merge.completed"), "the retry records the merge");
+    }
+}
