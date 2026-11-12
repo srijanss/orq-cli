@@ -148,6 +148,8 @@ pub enum Ending {
     Paused,
     /// The run's delivery is push: its branch was pushed and nothing else was asked for.
     Pushed,
+    /// The run's delivery is merge-local: its base branch was fast-forwarded to it, nothing pushed.
+    Merged,
 }
 
 impl Ending {
@@ -159,6 +161,7 @@ impl Ending {
             Ending::NeedsReview => "needs_review",
             Ending::Paused => "paused",
             Ending::Pushed => "pushed",
+            Ending::Merged => "merged",
         }
     }
 }
@@ -1067,16 +1070,6 @@ fn stages(
         }
     }
 
-    if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
-        return paused("push");
-    }
-    let head_sha = match paused_at.filter(|_| done("push")) {
-        Some(checkpoint) => checkpoint.head_sha.clone(),
-        None => match push_run_branch(store, run_id, &logs.join("push.log"))? {
-            PushOutcome::Pushed { head_sha } => head_sha,
-            PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
-        },
-    };
     // The worktree of a run whose work is delivered goes, and its test databases with it; a kept
     // worktree may still need them.
     let clean_up = |ready: bool, ci: &CiOutcome| -> Result<(), StoreError> {
@@ -1099,11 +1092,31 @@ fn stages(
         Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
         _ => Vec::new(),
     };
-    if record.delivery == orq_core::project_settings::Delivery::Push {
-        // The pushed head's report is built while its worktree is still there to read.
-        build_review_report(store, record, options, &gate_steps, &head_sha, None, logs);
+    // A run whose delivery ends before any PR/MR: the delivered head's report is built while its
+    // worktree is still there to read, then the worktree goes.
+    let delivered = |head_sha: &str, ending: Ending| -> Result<Report, StoreError> {
+        build_review_report(store, record, options, &gate_steps, head_sha, None, logs);
         clean_up(true, &CiOutcome::Skipped)?;
-        return Ok(Report { run_id: String::new(), ending: Ending::Pushed, detail: None, review_url: None, ci_green: None });
+        Ok(Report { run_id: String::new(), ending, detail: None, review_url: None, ci_green: None })
+    };
+    if record.delivery == orq_core::project_settings::Delivery::MergeLocal {
+        // Delivered in this repository: the base branch is fast-forwarded and nothing is pushed.
+        let orq_orchestrator::MergeOutcome::Merged { head_sha } = orq_orchestrator::merge_into_base(store, run_id)?;
+        return delivered(&head_sha, Ending::Merged);
+    }
+
+    if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
+        return paused("push");
+    }
+    let head_sha = match paused_at.filter(|_| done("push")) {
+        Some(checkpoint) => checkpoint.head_sha.clone(),
+        None => match push_run_branch(store, run_id, &logs.join("push.log"))? {
+            PushOutcome::Pushed { head_sha } => head_sha,
+            PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
+        },
+    };
+    if record.delivery == orq_core::project_settings::Delivery::Push {
+        return delivered(&head_sha, Ending::Pushed);
     }
 
     let Some(provider) = find_program(provider_cli) else {

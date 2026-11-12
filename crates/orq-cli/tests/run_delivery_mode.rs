@@ -225,3 +225,30 @@ fn a_push_only_run_still_leaves_its_local_review_report() {
     let shown = orq(&w, &["review", "show", &id, "--json"]);
     assert!(shown.status.success(), "the Reviews tab has the pushed head's report: {}", text(&shown.stderr));
 }
+
+fn rev(dir: &Path, rev: &str) -> String {
+    let out = Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--verify", "--quiet", rev]).output().unwrap();
+    text(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn a_merge_local_run_fast_forwards_the_checked_out_base_branch_and_pushes_nothing() {
+    let w = world("merge");
+    let remote_main = rev(&w.remote, "refs/heads/main");
+    let out = run(&w, &["--delivery", "merge-local"]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("state: merged"), "{}", text(&out.stdout));
+
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let record = store(&w).load(&id).unwrap();
+    let head = rev(w.repo.root(), &format!("refs/heads/{}", record.branch));
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), head, "main was fast-forwarded to the run's branch");
+    assert_eq!(rev(w.repo.root(), "HEAD"), head, "the checked-out main moved with it");
+    assert!(w.repo.root().join("feature.txt").exists(), "the checkout has the run's work");
+    assert!(remote_branch(&w, &record.branch).is_none(), "nothing was pushed");
+    assert_eq!(rev(&w.remote, "refs/heads/main"), remote_main, "the remote's main is untouched");
+    assert!(w.provider.calls().is_empty(), "no PR/MR was looked for or opened: {:?}", w.provider.calls());
+    assert_eq!(ending(&w, &id).as_deref(), Some("merged"));
+    assert_eq!(orq_orchestrator::summarize_run(&store(&w).events(&id).unwrap()).phase.as_str(), "completed");
+    assert!(!record.worktree.exists(), "a merged run's worktree is cleaned up");
+}

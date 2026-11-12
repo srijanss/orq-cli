@@ -322,3 +322,13 @@ fn a_run_that_ended_pushed_is_completed_even_with_its_worktree_still_running_a_s
 
     assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
 }
+
+#[test]
+fn a_run_that_ended_merged_is_completed() {
+    let events = [
+        event("stage.started", Some("gate"), none()),
+        event("run.completed", None, serde_json::json!({"ending": "merged"})),
+    ];
+
+    assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
+}

@@ -175,3 +175,9 @@ fn only_failures_mode_stays_quiet_for_a_run_that_pushed_its_branch() {
     assert!(wants_notification(None, "pushed"));
     assert!(!wants_notification(Some("failures"), "pushed"));
 }
+
+#[test]
+fn only_failures_mode_stays_quiet_for_a_run_merged_locally() {
+    assert!(wants_notification(None, "merged"));
+    assert!(!wants_notification(Some("failures"), "merged"));
+}

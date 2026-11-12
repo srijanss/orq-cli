@@ -475,7 +475,7 @@ fn run(args: &[OsString]) -> ExitCode {
                 eprintln!("orq: {}", printable(detail));
             }
             ExitCode::from(match report.ending {
-                pipeline::Ending::ReviewReady | pipeline::Ending::Paused | pipeline::Ending::Pushed => 0,
+                pipeline::Ending::ReviewReady | pipeline::Ending::Paused | pipeline::Ending::Pushed | pipeline::Ending::Merged => 0,
                 pipeline::Ending::Blocked | pipeline::Ending::NeedsReview => EXIT_BLOCKED,
                 pipeline::Ending::Failed => EXIT_FAILED,
             })
