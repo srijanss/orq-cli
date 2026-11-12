@@ -83,3 +83,31 @@ fn the_same_checkout_spelled_differently_shares_one_record() {
     assert!(store.project_settings(Path::new("/work/beta/../alpha")).is_err(), "a parent step could name another checkout, so it is refused");
     assert!(store.project_settings(Path::new("work/alpha")).is_err(), "a relative path names no checkout");
 }
+
+#[test]
+fn editors_racing_from_the_same_read_save_once_and_the_rest_conflict() {
+    let (store, db) = open("race");
+    drop(store);
+    let editors = 8;
+    let start = std::sync::Arc::new(std::sync::Barrier::new(editors));
+    let outcomes: Vec<SaveOutcome> = (0..editors)
+        .map(|editor| {
+            let (db, start) = (db.clone(), start.clone());
+            std::thread::spawn(move || {
+                let mut store = Store::open(&db).unwrap();
+                let read = store.project_settings(Path::new("/work/alpha")).unwrap();
+                let model = format!("model-{editor}");
+                let settings = ProjectSettings { implementer: Some(agent("claude", &model, None)), ..ProjectSettings::default() };
+                start.wait();
+                store.save_project_settings(Path::new("/work/alpha"), read.revision, &settings).unwrap()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|editor| editor.join().unwrap())
+        .collect();
+    let saved = outcomes.iter().filter(|outcome| **outcome == SaveOutcome::Saved { revision: 1 }).count();
+    assert_eq!(saved, 1, "{outcomes:?}");
+    assert_eq!(outcomes.iter().filter(|outcome| **outcome == SaveOutcome::Conflict).count(), editors - 1);
+    assert_eq!(Store::open(&db).unwrap().project_settings(Path::new("/work/alpha")).unwrap().revision, 1);
+}
