@@ -475,7 +475,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let listed = (options.source)();
         // A harness with no models may only have failed to answer this time, so such a list is not kept.
         let complete = listed.iter().all(|(_, models)| !models.is_empty());
-        let found: serde_json::Value = listed.into_iter().map(|(harness, models)| serde_json::json!({"harness": harness, "models": models})).collect();
+        // A harness whose levels are not known lists none, so a save leaves its effort alone.
+        let option = |(harness, models): (String, Vec<String>)| {
+            let levels = orq_agents::effort_levels(&harness);
+            let mut option = serde_json::json!({"harness": harness, "models": models});
+            if !levels.is_empty() {
+                option["efforts"] = serde_json::json!(levels);
+            }
+            option
+        };
+        let found: serde_json::Value = listed.into_iter().map(option).collect();
         if complete {
             let _ = options.found.set(found.clone());
         }

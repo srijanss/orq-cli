@@ -29,6 +29,16 @@ impl Capability {
     }
 }
 
+/// The thinking levels `harness` takes: claude's `--effort` and pi's `--thinking`. Empty for a harness
+/// whose levels are not known here.
+pub fn effort_levels(harness: &str) -> &'static [&'static str] {
+    match harness {
+        "claude" => &["low", "medium", "high", "xhigh", "max"],
+        "pi" => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        _ => &[],
+    }
+}
+
 /// A resolved harness, model and thinking level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {

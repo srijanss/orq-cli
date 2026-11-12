@@ -529,9 +529,25 @@ fn offered(options: &Value, harness: &str, model: &str) -> bool {
     options.as_array().is_some_and(|options| options.iter().any(|option| option["harness"] == harness && option["models"].as_array().is_some_and(|models| models.iter().any(|offered| offered == model))))
 }
 
-/// Sets the implementer's and reviewer's harness and model for the web, if actions are on, from the
+/// The effort levels `options` list for `harness`, or `None` when they list none for it.
+fn efforts<'a>(options: &'a Value, harness: &str) -> Option<Vec<&'a str>> {
+    let option = options.as_array()?.iter().find(|option| option["harness"] == harness)?;
+    Some(option["efforts"].as_array()?.iter().filter_map(Value::as_str).collect())
+}
+
+/// What a save does to a role's effort: keep it (left out), clear it (null) or set it to a level.
+#[derive(Clone, Copy)]
+enum EffortChoice<'a> {
+    Keep,
+    Clear,
+    Set(&'a str),
+}
+
+/// Sets the implementer's and reviewer's harness, model and effort for the web, if actions are on, from the
 /// provider's options only and while the settings version presented is still current; a role left out
-/// or null is not touched. Leaves an audit line for the attempt.
+/// or null is not touched. An effort must be one of the levels listed for its harness, null clears it, and
+/// one left out is kept unless the harness lists levels that do not include it. Leaves an audit line for
+/// the attempt.
 fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     use crate::remote_settings::{write_if_version, SettingsWriteError};
@@ -553,14 +569,22 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
     }
     let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
     let Some(version) = fields["version"].as_str() else { return bad_body() };
-    let mut chosen: Vec<(&str, &str, &str)> = Vec::new();
+    let mut chosen: Vec<(&str, &str, &str, EffortChoice)> = Vec::new();
     for role in ["implementer", "reviewer"] {
         match &fields[role] {
             Value::Null => {}
-            Value::Object(agent) if agent.keys().all(|key| key == "harness" || key == "model") => match (agent.get("harness").and_then(Value::as_str), agent.get("model").and_then(Value::as_str)) {
-                (Some(harness), Some(model)) => chosen.push((role, harness, model)),
-                _ => return bad_body(),
-            },
+            Value::Object(agent) if agent.keys().all(|key| ["harness", "model", "effort"].contains(&key.as_str())) => {
+                let effort = match agent.get("effort") {
+                    None => EffortChoice::Keep,
+                    Some(Value::Null) => EffortChoice::Clear,
+                    Some(Value::String(level)) => EffortChoice::Set(level),
+                    Some(_) => return bad_body(),
+                };
+                match (agent.get("harness").and_then(Value::as_str), agent.get("model").and_then(Value::as_str)) {
+                    (Some(harness), Some(model)) => chosen.push((role, harness, model, effort)),
+                    _ => return bad_body(),
+                }
+            }
             _ => return bad_body(),
         }
     }
@@ -578,24 +602,49 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
             return error(404, "not found");
         }
     };
-    if !chosen.iter().all(|(_, harness, model)| offered(&options, harness, model)) {
+    if !chosen.iter().all(|(_, harness, model, _)| offered(&options, harness, model)) {
         audit(Outcome::Refused, Some("not an offered harness or model"));
         return error(422, "That harness or model is not one this machine offers");
+    }
+    let takes = |harness: &str, level: &str| efforts(&options, harness).is_some_and(|levels| levels.contains(&level));
+    if !chosen.iter().all(|(_, harness, _, effort)| match effort {
+        EffortChoice::Set(level) => takes(harness, level),
+        _ => true,
+    }) {
+        audit(Outcome::Refused, Some("not an offered effort"));
+        return error(422, "That effort is not one this harness takes");
     }
     // A role kept as something other than a table is left for a person to fix, and then nothing is
     // written, so a save never lands for one role and not the other.
     let mut not_a_table = false;
     let written = write_if_version(roots, version, |doc| {
-        not_a_table = chosen.iter().any(|(role, _, _)| doc.get(role).is_some_and(|item| item.as_table_like().is_none()));
+        not_a_table = chosen.iter().any(|(role, _, _, _)| doc.get(role).is_some_and(|item| item.as_table_like().is_none()));
         if not_a_table {
             return;
         }
-        for (role, harness, model) in &chosen {
+        for (role, harness, model, effort) in &chosen {
             let table = doc.entry(role).or_insert_with(toml_edit::table);
             if let Some(table) = table.as_table_like_mut() {
                 table.insert("harness", toml_edit::value(*harness));
                 table.remove("profile");
                 table.insert("model", toml_edit::value(*model));
+                match effort {
+                    EffortChoice::Set(level) => {
+                        table.insert("effort", toml_edit::value(*level));
+                    }
+                    EffortChoice::Clear => {
+                        table.remove("effort");
+                    }
+                    // A kept effort the new harness lists no level for would only fail its runs.
+                    EffortChoice::Keep => {
+                        let kept = table.get("effort").and_then(|item| item.as_str()).map(str::to_string);
+                        if let (Some(kept), Some(levels)) = (kept, efforts(&options, harness)) {
+                            if !levels.contains(&kept.as_str()) {
+                                table.remove("effort");
+                            }
+                        }
+                    }
+                }
             }
         }
     });

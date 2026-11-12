@@ -1,7 +1,8 @@
 //! GET /api/settings/options lists the harnesses and the models each allows (the popup's list), and
 //! POST /api/settings/agents sets the implementer's and reviewer's harness and model from that list only,
 //! while remote actions are on and the settings version presented is current; each attempt is audited
-//! as settings.agents.
+//! as settings.agents. An effort is one of the levels the options list for that harness; null clears it, and
+//! a save without one keeps the current effort unless the new harness does not take it.
 
 use orq_core::remote_audit;
 use orq_core::remote_inbox::{handle_with_body, public_settings, ProjectsProvider, RemoteConfig, Request};
@@ -185,7 +186,8 @@ fn only_a_signed_in_post_with_the_right_body_reaches_the_save() {
         json!({"implementer": "claude", "version": current}).to_string(),
         json!({"implementer": {"harness": "claude"}, "version": current}).to_string(),
         json!({"implementer": {"harness": "claude", "model": 1}, "version": current}).to_string(),
-        json!({"implementer": {"harness": "claude", "model": "opus", "effort": "high"}, "version": current}).to_string(),
+        json!({"implementer": {"harness": "claude", "model": "opus", "effort": 5}, "version": current}).to_string(),
+        json!({"implementer": {"harness": "claude", "model": "opus", "thinking": "high"}, "version": current}).to_string(),
         json!({"implementer": {"harness": "claude", "model": "opus"}, "version": current, "remote_actions": false}).to_string(),
         "not json".to_string(),
         String::new(),
@@ -240,4 +242,44 @@ fn a_settings_file_that_cannot_be_read_counts_as_actions_off_and_is_left_alone()
     let lines = agent_lines(&roots);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!((&lines[0]["outcome"], &lines[0]["reason"]), (&json!("refused"), &json!("remote actions are off")));
+}
+
+fn with_efforts(roots: &StorageRoots) -> Fake {
+    let options = json!([{"harness": "claude", "models": ["opus"], "efforts": ["low", "high", "max"]}, {"harness": "pi", "models": ["gpt-5"], "efforts": ["off", "minimal", "high"]}]);
+    Fake { config: roots.config_file(), options: Ok(Some(options)) }
+}
+
+fn effort_of(roots: &StorageRoots, fake: &Fake, role: &str) -> Value {
+    let (_, body) = send(roots, fake, "GET", "/api/settings", Some("tok"), b"");
+    body["settings"][role]["effort"].clone()
+}
+
+#[test]
+fn an_effort_is_one_of_the_harness_levels_null_clears_it_and_one_the_new_harness_lacks_is_dropped() {
+    let config = "remote_actions = true\n\n[implementer]\nharness = \"pi\"\nmodel = \"gpt-5\"\neffort = \"minimal\"\n\n[reviewer]\nharness = \"pi\"\nmodel = \"gpt-5\"\neffort = \"high\"\n";
+    let (roots, _) = setup("effort", config);
+    let fake = with_efforts(&roots);
+
+    let (status, reply) = save(&roots, &fake, json!({"implementer": {"harness": "pi", "model": "gpt-5", "effort": "max"}, "version": version(&roots, &fake)}));
+    assert_eq!((status, reply), (422, json!({"error": "That effort is not one this harness takes"})), "max is not one of pi's levels here");
+    assert_eq!(effort_of(&roots, &fake, "implementer"), json!("minimal"), "nothing refused was written");
+
+    let (status, reply) = save(&roots, &fake, json!({"implementer": {"harness": "claude", "model": "opus", "effort": "max"}, "version": version(&roots, &fake)}));
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["settings"]["implementer"], json!({"harness": "claude", "model": "opus", "effort": "max"}));
+
+    let (status, _) = save(&roots, &fake, json!({"implementer": {"harness": "claude", "model": "opus", "effort": null}, "version": version(&roots, &fake)}));
+    assert_eq!(status, 200);
+    assert_eq!(effort_of(&roots, &fake, "implementer"), Value::Null, "null clears it");
+
+    let (status, _) = save(&roots, &fake, json!({"reviewer": {"harness": "claude", "model": "opus"}, "version": version(&roots, &fake)}));
+    assert_eq!(status, 200);
+    assert_eq!(effort_of(&roots, &fake, "reviewer"), json!("high"), "left out, an effort the new harness takes is kept");
+    std::fs::write(roots.config_file(), config).unwrap();
+    let (status, _) = save(&roots, &fake, json!({"implementer": {"harness": "claude", "model": "opus"}, "version": version(&roots, &fake)}));
+    assert_eq!(status, 200);
+    assert_eq!(effort_of(&roots, &fake, "implementer"), Value::Null, "left out, an effort the new harness does not take is dropped");
+
+    let lines = agent_lines(&roots);
+    assert_eq!(lines.iter().map(|line| line["outcome"].as_str().unwrap()).collect::<Vec<_>>(), ["allowed", "allowed", "allowed", "allowed", "refused"], "newest first");
 }

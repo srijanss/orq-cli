@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 orq-core = { path = "../orq-core" }
+orq-agents = { path = "../orq-agents" }
 orq-git = { path = "../orq-git" }
 orq-features = { path = "../orq-features" }
 orq-orchestrator = { path = "../orq-orchestrator" }
