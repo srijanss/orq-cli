@@ -118,3 +118,29 @@ fn an_unknown_feature_or_project_is_not_found_and_an_unreadable_ledger_only_fail
     std::fs::write(beta.join(".tdd-features.json"), "not json").unwrap();
     assert_eq!(post(&s, "/api/projects/beta/features", json!({"fields": {"name": "f-new"}})), (500, json!({"error": "the feature could not be saved"})));
 }
+
+#[test]
+fn the_redacted_fields_the_editor_read_sent_back_unchanged_keep_the_originals() {
+    let s = setup("redacted");
+    let alpha = git_repo(&s.scan, "alpha");
+    let file = alpha.join(".tdd-features.json");
+    let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123";
+    let ledger = format!(
+        "[\n  {{\"featureName\":\"f-base\",\"status\":\"completed\"}},\n  {{\"featureName\":\"f-one\",\"status\":\"pending\",\"description\":\"uses {secret}\",\"testFile\":\"tests/{secret}.rs\",\"targetFiles\":[\"src/{secret}.rs\",\"src/plain.rs\"]}}\n]\n"
+    );
+    std::fs::write(&file, &ledger).unwrap();
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let config = RemoteConfig { token: "tok".into() };
+    let request = Request { method: "GET", path: "/api/projects/alpha/features/f-one/fields", peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
+    let read = handle_with_body(&s.roots, &config, "server-project", "server", &request, b"", &provider).body;
+    assert!(!read.to_string().contains(secret), "{read}");
+    let mut fields = read["fields"].clone();
+    fields["parallelizable"] = json!(true);
+    let edit = json!({"fields": fields, "version": read["version"]});
+    assert_eq!(post(&s, "/api/projects/alpha/features/f-one", edit), (200, json!({"feature": "f-one"})));
+    let entries: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(entries[1]["description"], format!("uses {secret}"));
+    assert_eq!(entries[1]["testFile"], format!("tests/{secret}.rs"));
+    assert_eq!(entries[1]["targetFiles"], json!([format!("src/{secret}.rs"), "src/plain.rs"]));
+    assert_eq!(entries[1]["parallelizable"], true);
+}

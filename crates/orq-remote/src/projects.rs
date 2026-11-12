@@ -580,13 +580,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         };
         let Some(current) = loaded.entries().iter().find(|entry| entry.feature_name == feature) else { return Ok(FeatureSave::Unknown) };
         // As the popup's Edit: only what differs is sent, and a field left out stays as it is.
-        let differs = |new: &Option<String>, old: &Option<String>| new.clone().filter(|_| new != old);
+        // The editor was shown redacted values, so one sent back as shown keeps the original it stands for.
+        let text = |new: &Option<String>, old: &Option<String>| new.as_ref().map(|value| unredacted(value, old.iter()));
+        let list = |new: &Option<Vec<String>>, old: &[String]| new.as_ref().map(|values| values.iter().map(|value| unredacted(value, old.iter())).collect::<Vec<_>>());
+        let differs = |new: Option<String>, old: &Option<String>| new.filter(|value| Some(value) != old.as_ref());
         let edits = orq_features::FieldEdits {
-            description: differs(&fields.description, &current.description),
-            depends_on: fields.depends_on.clone().filter(|names| *names != current.depends_on),
+            description: differs(text(&fields.description, &current.description), &current.description),
+            depends_on: list(&fields.depends_on, &current.depends_on).filter(|names| *names != current.depends_on),
             parallelizable: fields.parallelizable.filter(|value| Some(*value) != current.parallelizable),
-            test_file: differs(&fields.test_file, &current.test_file),
-            target_files: fields.target_files.clone().filter(|paths| !paths.is_empty() && *paths != current.target_files),
+            test_file: differs(text(&fields.test_file, &current.test_file), &current.test_file),
+            target_files: list(&fields.target_files, &current.target_files).filter(|paths| !paths.is_empty() && *paths != current.target_files),
         };
         match loaded.edit_fields(feature, &edits) {
             Ok(_) => Ok(FeatureSave::Saved),
@@ -985,6 +988,11 @@ fn read_ledger_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
         return Err("the ledger is too large".to_string());
     }
     Ok(Some(bytes))
+}
+
+/// The stored value a redacted one stands for: `value` if it is not the redacted form of one of `stored`.
+fn unredacted<'a>(value: &str, mut stored: impl Iterator<Item = &'a String>) -> String {
+    stored.find(|original| original.as_str() != value && orq_core::redact::redact(original) == value).cloned().unwrap_or_else(|| value.to_string())
 }
 
 /// Whether `name` can only be a feature name, never a path: the web adds no feature it could not then name.
