@@ -312,3 +312,13 @@ fn a_run_completed_event_wins_over_the_events_before_it_but_an_unknown_ending_is
     ]);
     assert_eq!(odd.phase, RunPhase::Running);
 }
+
+#[test]
+fn a_run_that_ended_pushed_is_completed_even_with_its_worktree_still_running_a_stage() {
+    let events = [
+        event("stage.started", Some("push"), none()),
+        event("run.completed", None, serde_json::json!({"ending": "pushed"})),
+    ];
+
+    assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
+}

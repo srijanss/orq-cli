@@ -169,3 +169,9 @@ fn a_notifier_receives_exactly_the_variables_it_is_told_to_keep() {
 
     assert_eq!(fs::read_to_string(&out).unwrap(), "s3cret|");
 }
+
+#[test]
+fn only_failures_mode_stays_quiet_for_a_run_that_pushed_its_branch() {
+    assert!(wants_notification(None, "pushed"));
+    assert!(!wants_notification(Some("failures"), "pushed"));
+}

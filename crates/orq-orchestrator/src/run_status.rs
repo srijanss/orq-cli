@@ -216,7 +216,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "worktree.removed" => RunPhase::Completed,
             // The explicit ending of the run: it wins over everything inferred before it.
             "run.completed" => match event.payload.get("ending").and_then(|e| e.as_str()) {
-                Some("review_ready" | "resumed") => RunPhase::Completed,
+                Some("review_ready" | "resumed" | "pushed") => RunPhase::Completed,
                 Some("failed") => RunPhase::Failed,
                 Some("blocked") => RunPhase::Blocked,
                 Some("needs_review") => RunPhase::NeedsReview,

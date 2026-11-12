@@ -146,6 +146,8 @@ pub enum Ending {
     NeedsReview,
     /// Stopped at a stage boundary because a pause was requested; the run can be resumed.
     Paused,
+    /// The run's delivery is push: its branch was pushed and nothing else was asked for.
+    Pushed,
 }
 
 impl Ending {
@@ -156,6 +158,7 @@ impl Ending {
             Ending::Failed => "failed",
             Ending::NeedsReview => "needs_review",
             Ending::Paused => "paused",
+            Ending::Pushed => "pushed",
         }
     }
 }
@@ -1074,6 +1077,27 @@ fn stages(
             PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
         },
     };
+    // The worktree of a run whose work is delivered goes, and its test databases with it; a kept
+    // worktree may still need them.
+    let clean_up = |ready: bool, ci: &CiOutcome| -> Result<(), StoreError> {
+        if options.publish {
+            return Ok(());
+        }
+        if cleanup_worktree(store, run_id, ready, ci)? == orq_orchestrator::CleanupOutcome::Removed {
+            let keep = settings.keep_test_db.unwrap_or(false);
+            let dropped = orq_orchestrator::drop_test_databases(&options.project.root, &databases.names,settings.test_db_drop_cmd.as_deref(), keep);
+            if !dropped.is_empty() {
+                use std::io::Write;
+                let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("databases.log"));
+                let _ = log.and_then(|mut file| file.write_all((dropped.join("\n") + "\n").as_bytes()));
+            }
+        }
+        Ok(())
+    };
+    if record.delivery == orq_core::project_settings::Delivery::Push {
+        clean_up(true, &CiOutcome::Skipped)?;
+        return Ok(Report { run_id: String::new(), ending: Ending::Pushed, detail: None, review_url: None, ci_green: None });
+    }
 
     let Some(provider) = find_program(provider_cli) else {
         return stopped(Ending::Failed, format!("{provider_cli} is not on PATH"));
@@ -1208,18 +1232,7 @@ fn stages(
         }
     };
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
-    if !options.publish {
-        // The test databases go with the worktree; a kept worktree may still need them.
-        if cleanup_worktree(store, run_id, ready, &ci)? == orq_orchestrator::CleanupOutcome::Removed {
-            let keep = settings.keep_test_db.unwrap_or(false);
-            let dropped = orq_orchestrator::drop_test_databases(&options.project.root, &databases.names,settings.test_db_drop_cmd.as_deref(), keep);
-            if !dropped.is_empty() {
-                use std::io::Write;
-                let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("databases.log"));
-                let _ = log.and_then(|mut file| file.write_all((dropped.join("\n") + "\n").as_bytes()));
-            }
-        }
-    }
+    clean_up(ready, &ci)?;
     if !ready {
         return Ok(Report {
             run_id: String::new(),

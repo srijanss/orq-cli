@@ -9,10 +9,10 @@ use crate::review_draft::{run_drafter, DraftSession};
 
 const MAX_MESSAGE_CHARS: usize = 1000;
 
-/// Whether `ending` (`review_ready`, `blocked` or `failed`) is one to tell about under `on`
-/// (`all`, the default, or `failures`).
+/// Whether `ending` (`review_ready`, `pushed`, `blocked` or `failed`) is one to tell about under
+/// `on` (`all`, the default, or `failures`).
 pub fn wants_notification(on: Option<&str>, ending: &str) -> bool {
-    on != Some("failures") || ending != "review_ready"
+    on != Some("failures") || !matches!(ending, "review_ready" | "pushed")
 }
 
 /// One redacted line saying how the run for `feature` ended, with the review's address if any.

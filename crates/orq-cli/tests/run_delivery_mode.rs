@@ -16,10 +16,11 @@ const PR_URL: &str = "https://github.example/o/r/pull/7";
 
 struct World {
     repo: GitFixture,
+    remote: PathBuf,
     home: PathBuf,
     ssh: PathBuf,
     path: std::ffi::OsString,
-    _provider: FakeProvider,
+    provider: FakeProvider,
     _agent: FakeAgent,
 }
 
@@ -57,7 +58,7 @@ fn world(tag: &str) -> World {
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let path = std::env::join_paths(dirs).unwrap();
-    World { repo, home, ssh, path, _provider: provider, _agent: agent }
+    World { repo, remote, home, ssh, path, provider, _agent: agent }
 }
 
 fn orq(w: &World, args: &[&str]) -> Output {
@@ -183,4 +184,32 @@ fn a_resumed_run_keeps_the_delivery_it_started_with() {
     assert_eq!(resumed.status.code(), Some(0), "{}\n{}", text(&resumed.stdout), text(&resumed.stderr));
     let new_id = store(&w).run_ids().unwrap().into_iter().find(|id| *id != paused).expect("a resumed run");
     assert_eq!(store(&w).load(&new_id).unwrap().delivery, Delivery::Push, "kept from the paused run");
+}
+
+fn ending(w: &World, run_id: &str) -> Option<String> {
+    store(w).events(run_id).unwrap().iter().rev().find(|e| e.kind == "run.completed").and_then(|e| e.payload["ending"].as_str().map(str::to_string))
+}
+
+fn remote_branch(w: &World, branch: &str) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(&w.remote).args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).output().unwrap();
+    out.status.success().then(|| text(&out.stdout).trim().to_string())
+}
+
+#[test]
+fn a_push_only_run_pushes_its_branch_and_stops_without_opening_a_review() {
+    let w = world("push");
+    save_delivery(&w, Delivery::Push);
+    let out = run(&w, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("state: pushed"), "{}", text(&out.stdout));
+    assert!(!text(&out.stdout).contains("review:"), "no review was opened: {}", text(&out.stdout));
+
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let record = store(&w).load(&id).unwrap();
+    assert!(remote_branch(&w, &record.branch).is_some(), "the branch {} was pushed", record.branch);
+    let opened: Vec<_> = w.provider.calls().into_iter().filter(|c| c.args.first().map(String::as_str) == Some("pr") && c.args.get(1).map(String::as_str) == Some("create")).collect();
+    assert!(opened.is_empty(), "no PR/MR was opened: {opened:?}");
+    assert_eq!(ending(&w, &id).as_deref(), Some("pushed"));
+    let summary = orq_orchestrator::summarize_run(&store(&w).events(&id).unwrap());
+    assert_eq!(summary.phase.as_str(), "completed", "a pushed run has ended");
 }
