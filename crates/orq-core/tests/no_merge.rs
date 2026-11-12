@@ -95,7 +95,8 @@ const MERGE_CAPABLE: [&str; 10] = [
 
 /// Merge-local's one fast-forward of the base branch to the reviewed head: `--ff-only` cannot make
 /// a merge commit, nothing is pushed, and no forge merges or approves anything.
-const MERGE_LOCAL_FAST_FORWARD: &str = r#"["merge", "--ff-only", "--no-overwrite-ignore""#;
+/// The whole argument list, closing bracket included, so no argument (`--no-ff`) can be added to it.
+const MERGE_LOCAL_FAST_FORWARD: &str = r#"&["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha]"#;
 
 /// The first merge-capable text in the source `text` of `path`, if any. Only merge-local's one
 /// fast-forward is allowed, once and only in merge_local.rs; any other merge text still counts.
@@ -114,6 +115,8 @@ fn only_merge_locals_one_fast_forward_of_the_base_branch_is_allowed() {
     assert_eq!(merge_capable_text(merge_local, &twice), Some("\"merge\""), "a second one");
     let merge_commit = format!("{fast_forward}\ngit_raw(&checkout, &[\"merge\", \"--no-ff\", &head_sha])?;");
     assert_eq!(merge_capable_text(merge_local, &merge_commit), Some("\"merge\""), "a merge that is not a fast-forward");
+    let no_ff = fast_forward.replace("\"--quiet\"", "\"--quiet\", \"--no-ff\"");
+    assert_eq!(merge_capable_text(merge_local, &no_ff), Some("\"merge\""), "the fast-forward with an argument appended");
     let pr_merge = format!("{fast_forward}\nlet call = \"gh pr merge\";");
     assert_eq!(merge_capable_text(merge_local, &pr_merge), Some("pr merge"), "other merge-capable text");
 }
