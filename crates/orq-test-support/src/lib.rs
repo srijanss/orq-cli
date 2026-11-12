@@ -103,8 +103,10 @@ fn locked_process_root() -> (PathBuf, fs::File) {
     for _ in 0..1000 {
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("orq-tests-{}-{unique}", std::process::id()));
-        if sweep::publish(&staged, &dir) {
-            return (dir, lock);
+        match sweep::publish(&staged, &dir) {
+            sweep::Published::Done => return (dir, lock),
+            sweep::Published::Taken => continue,
+            sweep::Published::Failed(error) => panic!("publish private temp dir {staged:?} as {dir:?}: {error}"),
         }
     }
     panic!("cannot find an unused name for {staged:?}");

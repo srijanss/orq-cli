@@ -2,23 +2,57 @@ use super::*;
 use crate::TempDir;
 use std::fs;
 
-#[test]
-fn publishing_never_replaces_a_directory_already_at_the_name() {
-    let temp = TempDir::new("orq-publish-fixture");
+fn staged_and_taken(temp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let staged = temp.join("staged");
     fs::create_dir(&staged).unwrap();
     fs::write(staged.join("mine"), "x").unwrap();
     // Another process published its empty root under this name a moment ago.
     let taken = temp.join("orq-tests-7-0");
     fs::create_dir(&taken).unwrap();
+    (staged, taken)
+}
 
-    assert!(!publish(&staged, &taken), "an existing root was replaced");
+#[test]
+fn publishing_never_replaces_a_directory_already_at_the_name() {
+    let temp = TempDir::new("orq-publish-fixture");
+    let (staged, taken) = staged_and_taken(&temp);
+
+    assert!(matches!(publish(&staged, &taken), Published::Taken), "an existing root was replaced");
     assert!(staged.join("mine").is_file(), "the staged root moved");
     assert_eq!(fs::read_dir(&taken).unwrap().count(), 0, "the other root changed");
 
     let free = temp.join("orq-tests-7-1");
-    assert!(publish(&staged, &free));
+    assert!(matches!(publish(&staged, &free), Published::Done));
     assert!(free.join("mine").is_file() && !staged.exists());
+}
+
+#[test]
+fn the_fallback_for_systems_without_a_no_replace_rename_never_replaces_either() {
+    let temp = TempDir::new("orq-publish-fixture");
+    let (staged, taken) = staged_and_taken(&temp);
+
+    assert!(matches!(publish_by_claiming_the_name(&staged, &taken), Published::Taken), "an existing root was replaced");
+    assert!(staged.join("mine").is_file(), "the staged root moved");
+    assert_eq!(fs::read_dir(&taken).unwrap().count(), 0, "the other root changed");
+
+    let free = temp.join("orq-tests-7-1");
+    assert!(matches!(publish_by_claiming_the_name(&staged, &free), Published::Done));
+    assert!(free.join("mine").is_file() && !staged.exists());
+}
+
+#[test]
+fn a_failure_other_than_a_taken_name_is_reported_as_one_not_retried_as_a_collision() {
+    let temp = TempDir::new("orq-publish-fixture");
+    let (staged, _) = staged_and_taken(&temp);
+    let nowhere = temp.join("missing-parent").join("orq-tests-7-2");
+
+    for published in [publish(&staged, &nowhere), publish_by_claiming_the_name(&staged, &nowhere)] {
+        match published {
+            Published::Failed(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+            _ => panic!("a missing parent was not reported as a failure"),
+        }
+    }
+    assert!(staged.join("mine").is_file(), "the staged root moved");
 }
 
 #[test]
