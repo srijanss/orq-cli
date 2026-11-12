@@ -62,10 +62,13 @@ fn a_setting_with_no_value_shows_a_dash_and_says_it_is_not_set() {
 
 #[test]
 fn without_a_settings_version_nothing_on_the_page_can_change_a_setting() {
-    let Some(out) = run("/settings", json!([settings()]), json!([{"submit": TOKEN}])) else { return };
+    let greyed = "[data-remote-actions] button[role=switch]:disabled";
+    let scenario = json!({"url": "/settings", "responses": [settings()], "steps": [{"submit": TOKEN}], "selectors": [greyed]});
+    let Some(out) = run_scenario(scenario) else { return };
     let frame = &out["frames"][1]["settled"];
     assert_eq!(frame["inputs"], json!([]), "{out}");
-    assert_eq!(frame["buttons"], json!(["Light", "System", "Dark", "Sign out"]), "only this browser's theme and signing out: {out}");
+    assert_eq!(frame["buttons"], json!(["Off", "Light", "System", "Dark", "Sign out"]), "the greyed-out Remote actions switch, this browser's theme and signing out: {out}");
+    assert_eq!(frame["matches"][greyed], 1, "the switch cannot be flipped: {out}");
     assert_eq!(frame["links"].as_array().unwrap().iter().map(|l| l["href"].clone()).collect::<Vec<_>>(), [json!("/settings/audit")], "only the read-only audit link: {out}");
 }
 

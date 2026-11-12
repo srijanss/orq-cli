@@ -1004,6 +1004,8 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
   const [conflict, setConflict] = useState(false);
   const can = typeof version === "string";
   const session = token === SESSION;
+  // The switch flips only when the page can send the change: never while its question is open.
+  const live = can && phase === "idle" && (on || session);
   const send = async () => {
     setPhase("sending");
     setNote("");
@@ -1065,9 +1067,10 @@ function RemoteActionsSwitch({ on, version, token, onSignedOut, onChanged }) {
         <div className="settings-row" data-remote-actions={on ? "on" : "off"}>
           <dt>Remote actions</dt>
           <dd className="settings-value">
-            <span className={"pill " + (on ? "pill-on" : "pill-off")}>{on ? "On" : "Off"}</span>
-            {can && phase === "idle" && on ? <button type="button" data-actions-off onClick={() => { setNote(""); setPhase("asking"); }}>Turn off</button> : null}
-            {can && phase === "idle" && !on && session ? <button type="button" className="primary-button" data-actions-on onClick={() => { setNote(""); setPhase("asking"); }}>Turn on</button> : null}
+            <button type="button" role="switch" className="follow-switch" aria-label="Remote actions" aria-checked={on ? "true" : "false"} disabled={!live} data-actions-off={live && on ? "" : undefined} data-actions-on={live && !on ? "" : undefined} onClick={() => { setNote(""); setPhase("asking"); }}>
+              <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+              <span>{on ? "On" : "Off"}</span>
+            </button>
           </dd>
         </div>
       </dl>
