@@ -13,6 +13,8 @@ const STAGE: &str = "merge_local";
 pub enum MergeOutcome {
     /// The base branch now points at the run's head.
     Merged { head_sha: String },
+    /// The base branch was left where it was, and why.
+    Refused { reason: String },
 }
 
 /// Fast-forward `run_id`'s target branch to the run's branch, in the checkout that has it.
@@ -23,8 +25,21 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
         return Err(StoreError::Corrupt(format!("the run branch {} has no commit", record.branch)));
     }
     let head_sha = head.stdout.trim().to_string();
+    let target = format!("refs/heads/{}", record.target_branch);
+    let fast_forward = git_raw(&record.worktree, &["merge-base", "--is-ancestor", &target, &head_sha])?;
+    if !fast_forward.success {
+        return Ok(MergeOutcome::Refused {
+            reason: format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
+        });
+    }
     match checkout_of(&record)? {
         Some(checkout) => {
+            let status = git_raw(&checkout, &["status", "--porcelain", "--untracked-files=no"])?;
+            if !status.stdout.trim().is_empty() {
+                return Ok(MergeOutcome::Refused {
+                    reason: format!("{} is checked out at {} with uncommitted changes; commit or stash them, then resume this run", record.target_branch, checkout.display()),
+                });
+            }
             let merged = git_raw(&checkout, &["merge", "--ff-only", "--quiet", &head_sha])?;
             if !merged.success {
                 return Err(StoreError::Corrupt(format!("git merge --ff-only failed: {}", merged.stderr.trim())));
@@ -34,7 +49,6 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
         // rebased onto (or started from), so a base branch that moved since is never overwritten.
         None => {
             let expected = crate::resume::rebased_onto(store, run_id)?.unwrap_or_else(|| record.base_sha.clone());
-            let target = format!("refs/heads/{}", record.target_branch);
             let reason = format!("orq: merge-local {}", record.run_id);
             let moved = git_raw(&record.worktree, &["update-ref", "-m", &reason, &target, &head_sha, &expected])?;
             if !moved.success {

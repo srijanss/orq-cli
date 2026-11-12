@@ -1101,8 +1101,11 @@ fn stages(
     };
     if record.delivery == orq_core::project_settings::Delivery::MergeLocal {
         // Delivered in this repository: the base branch is fast-forwarded and nothing is pushed.
-        let orq_orchestrator::MergeOutcome::Merged { head_sha } = orq_orchestrator::merge_into_base(store, run_id)?;
-        return delivered(&head_sha, Ending::Merged);
+        // A base branch that cannot take the run as it is stops it, with its branch and worktree kept.
+        return match orq_orchestrator::merge_into_base(store, run_id)? {
+            orq_orchestrator::MergeOutcome::Merged { head_sha } => delivered(&head_sha, Ending::Merged),
+            orq_orchestrator::MergeOutcome::Refused { reason } => stopped(Ending::Blocked, reason),
+        };
     }
 
     if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {

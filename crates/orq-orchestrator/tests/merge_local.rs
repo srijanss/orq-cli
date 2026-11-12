@@ -88,3 +88,31 @@ fn a_base_branch_no_checkout_has_is_moved_from_where_the_run_started() {
     assert_eq!(git(&w.repo, &["rev-parse", "elsewhere"]), w.base, "and so does its branch");
     assert!(!w.repo.join("mine.txt").exists(), "nothing was checked out");
 }
+
+#[test]
+fn a_checkout_with_uncommitted_changes_is_refused_and_left_alone() {
+    let w = world("dirty");
+    fs::write(w.repo.join("a.txt"), "edited\n").unwrap();
+
+    match merge_into_base(&w.store, "run-1").unwrap() {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("uncommitted changes"), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "edited\n", "the edit is left alone");
+}
+
+#[test]
+fn a_checked_out_base_branch_that_moved_since_the_run_started_is_refused() {
+    let w = world("moved");
+    fs::write(w.repo.join("theirs.txt"), "theirs\n").unwrap();
+    git(&w.repo, &["add", "."]);
+    git(&w.repo, &["commit", "-q", "-m", "theirs"]);
+    let moved = git(&w.repo, &["rev-parse", "HEAD"]);
+
+    match merge_into_base(&w.store, "run-1").unwrap() {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("moved"), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+}
