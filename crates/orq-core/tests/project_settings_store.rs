@@ -69,3 +69,17 @@ fn a_blank_or_multi_line_value_is_refused_and_nothing_is_written() {
     assert_eq!(Delivery::MergeLocal.as_str(), "merge_local");
     assert_eq!(Delivery::parse("ship-it"), None);
 }
+
+#[test]
+fn the_same_checkout_spelled_differently_shares_one_record() {
+    let (mut store, _) = open("aliases");
+    let chosen = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    assert_eq!(store.save_project_settings(Path::new("/work/alpha/."), 0, &chosen).unwrap(), SaveOutcome::Saved { revision: 1 });
+    for spelling in ["/work/alpha", "/work/alpha/", "/work//alpha/./"] {
+        let read = store.project_settings(Path::new(spelling)).unwrap();
+        assert_eq!((read.settings.delivery, read.revision), (Delivery::Push, 1), "{spelling}");
+    }
+    assert_eq!(store.save_project_settings(Path::new("/work/alpha/"), 0, &chosen).unwrap(), SaveOutcome::Conflict, "one revision history");
+    assert!(store.project_settings(Path::new("/work/beta/../alpha")).is_err(), "a parent step could name another checkout, so it is refused");
+    assert!(store.project_settings(Path::new("work/alpha")).is_err(), "a relative path names no checkout");
+}

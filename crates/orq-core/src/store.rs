@@ -492,12 +492,16 @@ pub(crate) fn check_report_path(run_id: &str, report_path: &str) -> Result<()> {
     }
 }
 
-/// A project is keyed by its main checkout's path, which must be absolute UTF-8.
-fn project_key(root: &Path) -> Result<&str> {
-    match root.to_str() {
-        Some(key) if root.is_absolute() => Ok(key),
-        _ => Err(Error::new(ErrorKind::InvalidInput, format!("project root {} must be an absolute UTF-8 path", root.display()))),
+/// A project is keyed by its main checkout's absolute UTF-8 path, spelled one way: repeated
+/// separators, `.` steps and a trailing separator are dropped. A `..` step is refused, since
+/// through a symlink it could name a different checkout than it appears to.
+fn project_key(root: &Path) -> Result<String> {
+    use std::path::Component;
+    let refuse = || Error::new(ErrorKind::InvalidInput, format!("project root {} must be an absolute UTF-8 path without `..`", root.display()));
+    if !root.is_absolute() || root.components().any(|part| part == Component::ParentDir) {
+        return Err(refuse());
     }
+    root.components().collect::<std::path::PathBuf>().into_os_string().into_string().map_err(|_| refuse())
 }
 
 fn db(error: rusqlite::Error) -> Error {
