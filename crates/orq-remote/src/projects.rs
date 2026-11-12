@@ -243,6 +243,13 @@ impl StoreProjects {
         self
     }
 
+    /// Why `run` cannot be acted on while this server is accepting it: its tests are running in its worktree,
+    /// and the run must not be resumed, stopped, paused, switched or discarded under them.
+    fn being_accepted(&self, run: &str) -> Option<String> {
+        let accepting = self.accepting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        accepting.contains(run).then(|| format!("{run} is being accepted; try again when its tests have finished"))
+    }
+
     /// The popup's Accept: the run is checked now, as the popup checks it, and its tests then run in the
     /// background, since they can take as long as the project's whole suite. A run already being accepted is
     /// refused; one that passes ends review ready, and one that fails stays as it was, its reason logged here.
@@ -446,6 +453,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn control_run(&self, id: &str, run: &str, control: orq_core::remote_inbox::RunControl) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::{RunControl, RunControlOutcome};
         let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        if let (false, Some(busy)) = (matches!(control, RunControl::Accept), self.being_accepted(run)) {
+            return Ok(RunControlOutcome::Refused(busy));
+        }
         match control {
             // The orchestrator words its own refusals "<run> is ..."; any other failure is for this machine's operator.
             RunControl::Pause => match orq_orchestrator::request_pause(&store, run) {
@@ -603,6 +613,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn switch_model(&self, id: &str, run: &str, role: &str, profile: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::RunControlOutcome;
         let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        if let Some(busy) = self.being_accepted(run) {
+            return Ok(RunControlOutcome::Refused(busy));
+        }
         let root = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?.root;
         // Only a profile the launch picker offers, as the popup's Switch model allows.
         if self.model_profiles(&root)?.get(profile).is_none() {
@@ -658,6 +671,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {
         use orq_core::remote_inbox::RunDiscard;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunDiscard::Unknown) };
+        if let Some(busy) = self.being_accepted(run) {
+            return Ok(RunDiscard::Refused(busy));
+        }
         // The orchestrator words why a run cannot go as "<run> ...", "... refusing ..." or "... is not the
         // repository of <run>"; any other failure is for this machine's operator.
         match crate::discard::discard_and_reopen(&self.roots.state, run, &project.path) {

@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use orq_core::remote_inbox::{handle_with, RemoteConfig, Request};
+use orq_core::remote_inbox::{handle_with, handle_with_body, RemoteConfig, Request};
 use orq_core::storage::StorageRoots;
 use orq_orchestrator::{Event, RunRecord, RunStore};
 use orq_remote::projects::StoreProjects;
@@ -138,4 +138,39 @@ fn a_run_whose_tests_are_running_is_not_accepted_twice_and_failing_tests_leave_i
     finish.send(()).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(kinds(&s, "r-fail"), ["run.started", "run.failed"], "failing tests leave the run failed");
+}
+
+fn act(s: &Setup, provider: &StoreProjects, run: &str, action: &str, body: &str) -> (u16, Value) {
+    let config = RemoteConfig { token: "tok".into() };
+    let path = format!("/api/projects/alpha/runs/{run}/{action}");
+    let request = Request { method: "POST", path: &path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
+    let r = handle_with_body(&s.roots, &config, "server-project", "server", &request, body.as_bytes(), provider);
+    (r.status, r.body)
+}
+
+#[test]
+fn while_its_tests_run_a_run_being_accepted_cannot_be_resumed_stopped_paused_switched_or_discarded() {
+    let s = setup("run-accept-excludes");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-fail", &["run.started", "run.failed"]);
+    let (started, on_start) = mpsc::channel::<()>();
+    let (finish, on_finish) = mpsc::channel::<()>();
+    let gate = Mutex::new((started, on_finish));
+    let tests: Tests = Arc::new(move |_: &Path| {
+        let gate = gate.lock().unwrap();
+        gate.0.send(()).unwrap();
+        gate.1.recv().unwrap();
+        Ok(())
+    });
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+
+    assert_eq!(post(&s, &provider, "r-fail").0, 202);
+    on_start.recv_timeout(Duration::from_secs(5)).unwrap();
+    let busy = json!({"error": "r-fail is being accepted; try again when its tests have finished"});
+    for (action, body) in [("resume", ""), ("pause", ""), ("stop", ""), ("discard", ""), ("model", r#"{"role":"implementer","profile":"fast"}"#)] {
+        assert_eq!(act(&s, &provider, "r-fail", action, body), (409, busy.clone()), "{action}");
+    }
+    assert!(alpha.join(".claude/worktrees/r-fail").exists(), "nothing was discarded");
+    finish.send(()).unwrap();
+    assert_eq!(kinds_once(&s, "r-fail", 3), ["run.started", "run.failed", "run.completed"]);
 }
