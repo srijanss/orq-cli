@@ -2519,7 +2519,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                   <td><Moment at={run.updated_at} /></td>
                   {actions ? (
                     <td>
-                      <RowActions run={run} control={controlOf(run)} />
+                      <RowActions run={run} control={controlOf(run)} menu />
                     </td>
                   ) : null}
                 </tr>
@@ -2544,8 +2544,9 @@ const ACCEPTABLE = ["failed", "needs_review"];
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
 // branch would lose. Accept on a failed or needs_review run asks first; its tests then run on the server, so the
 // result shows as the run's state once they finish. Switch model on a paused run picks a role and a profile.
-// The run's row and its detail header show the same ones.
-function RowActions({ run, control }) {
+// The run's row and its detail header show the same ones. In a row (menu) the first stays in sight, Pause or
+// Resume, and the rest sit behind a ⋯ button; on a phone the CSS shows them all in the row instead.
+function RowActions({ run, control, menu = false }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
@@ -2554,7 +2555,37 @@ function RowActions({ run, control }) {
   const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
   if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null) return null;
-  return <span className="run-actions">{pause}{resume}{model}{stop}{accept}{discard}</span>;
+  const all = [pause, resume, model, stop, accept, discard].filter((action) => action !== null);
+  if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
+  return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
+}
+
+// A ⋯ button that opens its actions below it; Escape or a press elsewhere closes it. The actions stay mounted
+// while it is closed, so a question one of them asked is still there when it opens again.
+function MoreMenu({ label, children }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const onPress = (event) => {
+      if (box.current && !box.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPress);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPress);
+    };
+  }, [open]);
+  return (
+    <span className={"run-more" + (open ? " open" : "")} ref={box}>
+      <button type="button" className="run-more-toggle" data-run-more aria-label={label} title="More actions" aria-haspopup="menu" aria-expanded={open ? "true" : "false"} onClick={() => setOpen(!open)}><Icon name="dots" size={18} /></button>
+      <span className="run-more-menu">{children}</span>
+    </span>
+  );
 }
 
 // The popup's question before Discard, with what the branch would lose when the server says, or before Clear.

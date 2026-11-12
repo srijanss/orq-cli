@@ -41,6 +41,7 @@ const PATHS = {
   arrowUp: "M12 19V5m-6 6 6-6 6 6",
   pencil: "M4 20h4L19 9l-4-4L4 16v4Zm9-13 4 4",
   plus: "M12 5v14M5 12h14",
+  dots: "M5 12h.010M12 12h.010M19 12h.010",
 };
 
 export function Icon({ name, size = 20 }) {
