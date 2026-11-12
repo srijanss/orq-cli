@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{merge_into_base, MergeOutcome, RunRecord, RunStore};
+use orq_orchestrator::{merge_into_base, Event, MergeOutcome, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -115,4 +115,43 @@ fn a_checked_out_base_branch_that_moved_since_the_run_started_is_refused() {
         other => panic!("expected a refusal, got {other:?}"),
     }
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+}
+
+/// The run was rebased onto a fetched target that is ahead of the local base branch, as when the
+/// remote has commits the local `main` has not pulled yet.
+fn rebased_onto_a_target_ahead_of_local_main(w: &World) -> String {
+    git(&w.worktree, &["reset", "-q", "--hard", &w.base]);
+    fs::write(w.worktree.join("upstream.txt"), "upstream\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "upstream"]);
+    let upstream = git(&w.worktree, &["rev-parse", "HEAD"]);
+    fs::write(w.worktree.join("mine.txt"), "mine\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "mine"]);
+    w.store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: "rebase-1".to_string(),
+            run_id: "run-1".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            kind: "rebase.completed".to_string(),
+            stage: Some("rebase".to_string()),
+            attempt: 1,
+            occurred_at: "2026-11-13T00:00:00Z".to_string(),
+            payload: serde_json::json!({ "target_sha": upstream }),
+        })
+        .unwrap();
+    upstream
+}
+
+#[test]
+fn a_base_branch_no_checkout_has_and_behind_the_fetched_target_is_fast_forwarded_from_where_it_is() {
+    let w = world("behind-fetched");
+    git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+    rebased_onto_a_target_ahead_of_local_main(&w);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
 }

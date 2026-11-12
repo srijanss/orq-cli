@@ -26,7 +26,14 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
     }
     let head_sha = head.stdout.trim().to_string();
     let target = format!("refs/heads/{}", record.target_branch);
-    let fast_forward = git_raw(&record.worktree, &["merge-base", "--is-ancestor", &target, &head_sha])?;
+    // Where the local base branch is now: the run was rebased onto the fetched target, which the
+    // local branch may be behind, and only this commit is fast-forwarded from.
+    let base = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("{target}^{{commit}}")])?;
+    if !base.success {
+        return Err(StoreError::Corrupt(format!("the base branch {} has no commit", record.target_branch)));
+    }
+    let base_sha = base.stdout.trim().to_string();
+    let fast_forward = git_raw(&record.worktree, &["merge-base", "--is-ancestor", &base_sha, &head_sha])?;
     if !fast_forward.success {
         return Ok(MergeOutcome::Refused {
             reason: format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
@@ -45,12 +52,11 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                 return Err(StoreError::Corrupt(format!("git merge --ff-only failed: {}", merged.stderr.trim())));
             }
         }
-        // With no checkout to update, only the ref moves, and only from the commit the run
-        // rebased onto (or started from), so a base branch that moved since is never overwritten.
+        // With no checkout to update, only the ref moves, and only from the commit checked above,
+        // so a base branch that moved meanwhile is never overwritten.
         None => {
-            let expected = crate::resume::rebased_onto(store, run_id)?.unwrap_or_else(|| record.base_sha.clone());
             let reason = format!("orq: merge-local {}", record.run_id);
-            let moved = git_raw(&record.worktree, &["update-ref", "-m", &reason, &target, &head_sha, &expected])?;
+            let moved = git_raw(&record.worktree, &["update-ref", "-m", &reason, &target, &head_sha, &base_sha])?;
             if !moved.success {
                 return Err(StoreError::Corrupt(format!("git update-ref failed: {}", moved.stderr.trim())));
             }
