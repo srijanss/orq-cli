@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use orq_core::retention::PrunePlan;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub id: String,
@@ -181,6 +183,7 @@ pub struct StoreProjects {
     scan_root: std::path::PathBuf,
     launcher: Option<std::sync::Arc<dyn RunLauncher + Send + Sync>>,
     agent_options: Option<AgentOptions>,
+    storage: Option<std::sync::Arc<dyn StorageCleanup + Send + Sync>>,
     run_logs: std::sync::Mutex<LogCache>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
     accept_tests: AcceptTests,
@@ -207,6 +210,7 @@ impl StoreProjects {
             scan_root,
             launcher: None,
             agent_options: None,
+            storage: None,
             run_logs: Default::default(),
             log_snapshot: Default::default(),
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
@@ -230,6 +234,12 @@ impl StoreProjects {
     /// finds: each harness with the models it allows. It is asked once, on first use.
     pub fn with_agent_options(mut self, source: std::sync::Arc<AgentOptionsSource>) -> Self {
         self.agent_options = Some(AgentOptions { source, found: Default::default() });
+        self
+    }
+
+    /// Lets the web clean up storage through `storage`, as `orq storage prune` does; without one it cannot.
+    pub fn with_storage(mut self, storage: std::sync::Arc<dyn StorageCleanup + Send + Sync>) -> Self {
+        self.storage = Some(storage);
         self
     }
 
@@ -342,6 +352,35 @@ pub trait RunLauncher {
     fn resume(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot resume runs".to_string()))
     }
+}
+
+/// Cleans up storage the way the CLI's prune does. The server never prunes by itself: whoever builds it supplies this.
+pub trait StorageCleanup {
+    /// What a prune would remove now: the lines a person reads, and the plan itself.
+    fn preview(&self) -> Result<(Vec<String>, PrunePlan), String>;
+
+    /// Removes what `plan` names and says, in lines a person reads, what was freed.
+    fn prune(&self, plan: &PrunePlan) -> Result<Vec<String>, CleanupError>;
+}
+
+/// Why a cleanup did not run.
+#[derive(Debug)]
+pub enum CleanupError {
+    /// It may not run now, such as while another prune runs; the reason is meant to be read by the person who asked.
+    Refused(String),
+    /// Anything else; the reason is for this machine's operator and is never sent to the web.
+    Failed(String),
+}
+
+/// The hash of a cleanup set: the files (run, path, size) and the runs whose metadata would go, in a stable
+/// order, so a prune can tell whether the set is still the one previewed.
+fn cleanup_hash(plan: &PrunePlan) -> String {
+    let mut files: Vec<String> = plan.candidates.iter().map(|c| format!("file\0{}\0{}\0{}\n", c.artifact.run_id, c.artifact.rel.display(), c.artifact.bytes)).collect();
+    files.sort();
+    let mut metadata: Vec<String> = plan.metadata.iter().map(|run| format!("metadata\0{run}\n")).collect();
+    metadata.sort();
+    files.extend(metadata);
+    ledger_version(files.concat().as_bytes())
 }
 
 /// Why a launch did not start a run.
@@ -577,6 +616,40 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         use orq_core::remote_inbox::RunControlOutcome;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
         Ok(RunControlOutcome::Done(orq_core::redact::redact(&crate::discard::discard_warning(&self.roots.state, run, &project.path))))
+    }
+
+    fn storage_preview(&self) -> Result<Option<serde_json::Value>, String> {
+        let Some(storage) = &self.storage else { return Ok(None) };
+        let (lines, plan) = storage.preview()?;
+        let runs: std::collections::BTreeSet<&str> = plan.candidates.iter().map(|c| c.artifact.run_id.as_str()).collect();
+        let bytes = plan.total_bytes();
+        Ok(Some(serde_json::json!({
+            "lines": lines.iter().map(|line| orq_core::redact::redact(line)).collect::<Vec<_>>(),
+            "files": plan.candidates.len(),
+            "bytes": bytes,
+            "size": orq_core::retention::human_bytes(bytes),
+            "runs": runs.len(),
+            "metadata": plan.metadata.len(),
+            "hash": cleanup_hash(&plan),
+        })))
+    }
+
+    fn storage_prune(&self, hash: &str) -> Result<Option<orq_core::remote_inbox::StoragePrune>, String> {
+        use orq_core::remote_inbox::StoragePrune;
+        let Some(storage) = &self.storage else { return Ok(None) };
+        // Planned again now, so only the set the person saw is removed.
+        let (_, plan) = storage.preview()?;
+        if cleanup_hash(&plan) != hash {
+            return Ok(Some(StoragePrune::Changed));
+        }
+        match storage.prune(&plan) {
+            Ok(lines) => Ok(Some(StoragePrune::Pruned(lines.iter().map(|line| orq_core::redact::redact(line)).collect()))),
+            Err(CleanupError::Refused(why)) => Ok(Some(StoragePrune::Refused(orq_core::redact::redact(&why)))),
+            Err(CleanupError::Failed(why)) => {
+                eprintln!("orq serve: storage cleanup failed: {}", orq_core::redact::redact(&why));
+                Err(why)
+            }
+        }
     }
 
     fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {

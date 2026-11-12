@@ -286,6 +286,28 @@ pub trait ProjectsProvider {
     fn discard_run(&self, _id: &str, _run: &str) -> Result<RunDiscard, String> {
         Ok(RunDiscard::Unknown)
     }
+
+    /// What a storage cleanup would remove now, as `{lines, files, bytes, size, runs, metadata, hash}`; the
+    /// hash names that set. `None` when this provider cannot clean up.
+    fn storage_preview(&self) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Removes the cleanup set if it still has `hash`. `None` when this provider cannot clean up.
+    fn storage_prune(&self, _hash: &str) -> Result<Option<StoragePrune>, String> {
+        Ok(None)
+    }
+}
+
+/// How a storage cleanup from the web ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoragePrune {
+    /// The set was removed; the lines say what was freed. Safe to show.
+    Pruned(Vec<String>),
+    /// The set is not the one previewed; nothing was removed.
+    Changed,
+    /// Why the cleanup may not run now; safe to show.
+    Refused(String),
 }
 
 /// The fields the web's feature editor sends; a field left out (or null) stays as it is on an edit.
@@ -1032,6 +1054,57 @@ fn feature_fields(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>,
     action_read(roots, provider, "the feature could not be read", |provider| provider.feature_fields(id, feature))
 }
 
+/// What a storage cleanup would remove, for the web's Settings. It changes nothing, so it is not audited,
+/// but it is there only while actions are on.
+fn storage_preview(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>) -> Response {
+    action_read(roots, provider, "the cleanup could not be previewed", |provider| provider.storage_preview())
+}
+
+/// Removes the previewed cleanup set for the web, if actions are on and the set still has the hash
+/// previewed, and leaves an audit line for the attempt as storage.prune.
+fn storage_prune(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "storage.prune", project: "settings", run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &["hash"]) {
+        audit(Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let Some(hash) = fields["hash"].as_str().filter(|hash| !hash.is_empty()) else {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    let failed = "the cleanup could not be done";
+    let conflict = |why: &str| {
+        audit(Outcome::Refused, why);
+        reply(409, json!({ "error": why }))
+    };
+    match provider.map(|provider| provider.storage_prune(hash)) {
+        Some(Ok(Some(StoragePrune::Pruned(lines)))) => {
+            audit(Outcome::Allowed, lines.first().map_or("", String::as_str));
+            reply(200, json!({ "lines": lines }))
+        }
+        Some(Ok(Some(StoragePrune::Changed))) => conflict("The cleanup changed since the preview; nothing was removed. Preview it again."),
+        Some(Ok(Some(StoragePrune::Refused(why)))) => conflict(&why),
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, failed);
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, "this server cannot clean up");
+            error(404, "not found")
+        }
+    }
+}
+
 /// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
 /// the web asked for, so it is not audited, but it is there only while actions are on.
 fn resume_check(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
@@ -1080,6 +1153,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_path(path)).flatten() {
         return save_feature(roots, provider, id, Some(feature), body);
     }
+    if path == "/api/settings/storage/prune" && request.method == "POST" {
+        return storage_prune(roots, provider, body);
+    }
     // Not behind the remote_actions gate: turning actions off must always be possible.
     if path == "/api/settings/remote-actions" && request.method == "POST" {
         return set_remote_actions(roots, body, confirm);
@@ -1101,6 +1177,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, feature)) = feature_target(path, "fields") {
         return feature_fields(roots, provider, id, feature);
+    }
+    if path == "/api/settings/storage/preview" {
+        return storage_preview(roots, provider);
     }
     if path == "/api/projects" {
         return match provider {

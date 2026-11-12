@@ -98,6 +98,8 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     }
     // The web chooses agents from the same list as the popup.
     projects = projects.with_agent_options(std::sync::Arc::new(|| crate::agent_options(&crate::find_program)));
+    // The web cleans up storage as the popup does: the same preview, the same prune and its lock.
+    projects = projects.with_storage(std::sync::Arc::new(crate::storage::WebCleanup::new()));
     let projects = std::sync::Arc::new(projects);
     let state_roots = roots.clone();
     let state = std::sync::Arc::new(orq_remote::ServerState {

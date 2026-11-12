@@ -193,8 +193,11 @@ fn try_lock_prune(roots: &StorageRoots) -> Result<Option<PruneLock>, String> {
     }
 }
 
+/// What a prune says when another one holds the lock; safe to show anyone.
+const PRUNE_BUSY: &str = "another prune is running; try again when it has finished";
+
 fn lock_prune(roots: &StorageRoots) -> Result<PruneLock, String> {
-    try_lock_prune(roots)?.ok_or_else(|| "another prune is running; try again when it has finished".to_string())
+    try_lock_prune(roots)?.ok_or_else(|| PRUNE_BUSY.to_string())
 }
 
 /// `orq storage maintain`: for a scheduler to call. Does nothing unless `[storage_maintenance]` is
@@ -395,6 +398,33 @@ pub(crate) fn ui_prune(ctx: &Ctx, previewed: &PrunePlan) -> Result<Vec<String>, 
     Ok(report_lines(previewed, &report))
 }
 
+/// The web's storage cleanup: the same preview and prune as the popup's, on storage opened afresh for each call.
+pub(crate) struct WebCleanup {
+    open: Box<dyn Fn() -> Result<Ctx, String> + Send + Sync>,
+}
+
+impl WebCleanup {
+    pub(crate) fn new() -> Self {
+        Self::with(Box::new(open_ctx))
+    }
+
+    pub(crate) fn with(open: Box<dyn Fn() -> Result<Ctx, String> + Send + Sync>) -> Self {
+        WebCleanup { open }
+    }
+}
+
+impl orq_remote::projects::StorageCleanup for WebCleanup {
+    fn preview(&self) -> Result<(Vec<String>, PrunePlan), String> {
+        ui_preview(&(self.open)()?)
+    }
+
+    fn prune(&self, plan: &PrunePlan) -> Result<Vec<String>, orq_remote::projects::CleanupError> {
+        use orq_remote::projects::CleanupError;
+        let ctx = (self.open)().map_err(CleanupError::Failed)?;
+        ui_prune(&ctx, plan).map_err(|why| if why == PRUNE_BUSY { CleanupError::Refused(why) } else { CleanupError::Failed(why) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +559,29 @@ mod tests {
         assert!(ui_view(&c).error.is_some());
         assert!(ui_preview(&c).is_err());
         assert!(ui_prune(&c, &PrunePlan::default()).is_err());
+    }
+
+    #[test]
+    fn the_web_cleanup_previews_and_prunes_as_the_cli_does_and_a_busy_prune_is_refused() {
+        use orq_remote::projects::{CleanupError, StorageCleanup};
+        let c = ctx("web");
+        old_failed_run(&c, "old-run", 2048);
+        let roots = c.roots.clone();
+        let cleanup = WebCleanup::with(Box::new(move || {
+            let store = Store::open(&roots.database()).map_err(|e| e.to_string())?;
+            let runs = RunStore::new(&roots.state.join("orq"));
+            Ok(Ctx { roots: roots.clone(), store, runs })
+        }));
+        let (lines, plan) = cleanup.preview().unwrap();
+        assert!(lines.iter().any(|l| l.contains("runs/old-run/events.jsonl")), "{lines:?}");
+        let held = lock_prune(&c.roots).unwrap();
+        match cleanup.prune(&plan) {
+            Err(CleanupError::Refused(why)) => assert_eq!(why, "another prune is running; try again when it has finished"),
+            other => panic!("{other:?}"),
+        }
+        drop(held);
+        let lines = cleanup.prune(&plan).unwrap();
+        assert!(lines.iter().any(|l| l.contains("Removed 1 file(s)")), "{lines:?}");
+        assert!(!c.roots.data.join("runs/old-run/events.jsonl").exists());
     }
 }
