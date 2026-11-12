@@ -1754,16 +1754,24 @@ function FeatureState({ status }) {
 // the newest activity comes first.
 const FEATURES_PER_PAGE = 10;
 
+// The one pager every paged list uses: where it is, then Previous and Next side by side with their chevrons.
+// prev and next are {attrs, onClick} or null when there is no page that way.
+function PagerBar({ status, prev, next, label = "Pagination" }) {
+  return (
+    <nav className="pager" aria-label={label}>
+      <span className="pager-status">{status}</span>
+      <span className="pager-buttons">
+        <button type="button" {...prev.attrs} disabled={prev.onClick === null} onClick={prev.onClick ?? undefined}><Icon name="chevronLeft" size={16} />Previous</button>
+        <button type="button" {...next.attrs} disabled={next.onClick === null} onClick={next.onClick ?? undefined}>Next<Icon name="chevronRight" size={16} /></button>
+      </span>
+    </nav>
+  );
+}
+
 // Previous and Next under a list longer than one page.
 function Pager({ at, pages, onPage }) {
   if (pages <= 1) return null;
-  return (
-    <nav className="pager" aria-label="Pagination">
-      <button type="button" data-page-prev disabled={at === 0} onClick={() => onPage(at - 1)}>Previous</button>
-      <span className="pager-status">{"Page " + (at + 1) + " of " + pages}</span>
-      <button type="button" data-page-next disabled={at === pages - 1} onClick={() => onPage(at + 1)}>Next</button>
-    </nav>
-  );
+  return <PagerBar status={"Page " + (at + 1) + " of " + pages} prev={{ attrs: { "data-page-prev": "" }, onClick: at === 0 ? null : () => onPage(at - 1) }} next={{ attrs: { "data-page-next": "" }, onClick: at === pages - 1 ? null : () => onPage(at + 1) }} />;
 }
 
 // Promote marked: it asks once, then sends one promote request per marked draft in ledger order, so the
@@ -2983,10 +2991,8 @@ function LogPage({ page, filters: { text, setText, level, setLevel }, follow, on
       {lines.length === 0 ? <p>This log has no more lines.</p> : null}
       {lines.length > 0 && shown.length === 0 ? <p>No lines match the filter.</p> : null}
       <LogLines shown={shown} total={lines.length} follow={follow} onFollow={onFollow} />
+      {onPrev !== null || next !== null ? <PagerBar label="Log pages" status={"Page " + number} prev={{ attrs: { "data-log-prev": "" }, onClick: onPrev }} next={{ attrs: { "data-more": "lines" }, onClick: next === null ? null : () => onNext(next) }} /> : null}
       <div className="log-pager">
-        <button type="button" data-log-prev disabled={onPrev === null} onClick={onPrev ?? undefined}><Icon name="chevronLeft" size={16} />Prev</button>
-        <span className="log-page">{"Page " + number}</span>
-        <button type="button" data-more="lines" disabled={next === null} onClick={() => onNext(next)}>Next<Icon name="chevronRight" size={16} /></button>
         <span className="log-count">{shown.length + " of " + lines.length + " lines"}</span>
         <button type="button" className="log-download" data-log-download disabled={shown.length === 0} onClick={() => saveLines(LOG_FILE.test(page.name) ? page.name : "log.log", shown)}><Icon name="download" size={16} />Download</button>
       </div>
