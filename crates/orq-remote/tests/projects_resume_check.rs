@@ -95,6 +95,7 @@ fn a_refusal_names_a_worktree_within_the_project_or_by_its_directory_name_never_
     let said = body["error"].as_str().unwrap_or_default().to_string();
     assert_eq!(status, 409, "{body}");
     assert!(said.contains(".claude/worktrees/r-gone"), "named within the project: {said}");
+    assert!(said.contains("no longer exists"), "a deleted worktree is said to be gone: {said}");
 
     // A run whose recorded worktree is a checkout outside the project.
     let outside = s.scan.join("elsewhere").join("r-out");

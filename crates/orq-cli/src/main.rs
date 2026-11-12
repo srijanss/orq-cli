@@ -3499,7 +3499,7 @@ mod ledger_backend_tests {
         let fixture = orq_test_support::GitFixture::new();
         let root = std::env::temp_dir().join(format!("orq-backend-resume-refuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        // The seeded run's worktree is outside the repository's worktrees directory.
+        // The seeded run's worktree (/tmp/w) is not on disk.
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
         let (dir, path) = ledger(&["a"]);
         let mut backend = LedgerBackend::new(path);
@@ -3509,7 +3509,7 @@ mod ledger_backend_tests {
         let checked = orq_tui::BrowserBackend::resume_check(&mut backend, "run-dead");
 
         let message = checked.unwrap_err();
-        assert!(message.contains("worktrees directory"), "{message}");
+        assert!(message.contains("no longer exists"), "{message}");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
     }

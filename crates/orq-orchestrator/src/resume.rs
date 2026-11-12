@@ -233,7 +233,14 @@ pub fn plan_group_resume_with(
         }
     }
     // The saved path is only trusted after it proves to be this repository's checkout of the
-    // run's branch: the agent and the setup commands run there.
+    // run's branch: the agent and the setup commands run there. A deleted one is said to be gone.
+    if !from.worktree.exists() {
+        return Err(format!(
+            "{}: the worktree {} no longer exists; start a new run instead",
+            from.run_id,
+            from.worktree.display()
+        ));
+    }
     if !within_worktrees_dir(repo, &from.worktree) {
         return Err(format!(
             "{}: {} is not under the repository's worktrees directory; start a new run instead",
