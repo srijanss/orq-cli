@@ -61,7 +61,7 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
             let reason = format!("orq: merge-local {}", record.run_id);
             let moved = git_raw(&record.worktree, &["update-ref", "-m", &reason, &target, &head_sha, &base_sha])?;
             if !moved.success {
-                return Err(StoreError::Corrupt(format!("git update-ref failed: {}", moved.stderr.trim())));
+                return Ok(MergeOutcome::Refused { reason: format!("{} could not be moved to this run's branch: {}", record.target_branch, moved.stderr.trim()) });
             }
         }
     }

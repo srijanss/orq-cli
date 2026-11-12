@@ -182,3 +182,19 @@ fn a_base_branch_checked_out_at_a_path_with_a_newline_is_fast_forwarded_there() 
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
     assert!(odd.join("mine.txt").exists(), "the checkout at that path was updated");
 }
+
+#[test]
+fn a_base_ref_update_that_fails_after_the_checks_is_refused_and_main_kept() {
+    let w = world("ref-update-fails");
+    git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+    // Something else holds main when orq moves it, as a concurrent update would.
+    let hook = w.repo.join(".git/hooks/reference-transaction");
+    fs::write(&hook, "#!/bin/sh\n[ \"$1\" = prepared ] && grep -q refs/heads/main && { echo 'main is locked by another update' >&2; exit 1; }\nexit 0\n").unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    match merge_into_base(&w.store, "run-1").unwrap() {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("main is locked by another update"), "git's reason is passed on: {reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+}
