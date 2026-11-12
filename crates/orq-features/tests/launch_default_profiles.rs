@@ -8,7 +8,7 @@ use orq_features::{default_role_profiles, load_model_profiles, AgentProfile, Mod
 const MODELS: &str = "[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.opus-again]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.astra]\nharness = \"pi\"\nmodel = \"openai/astra\"\n\n[models.kimi]\nharness = \"pi\"\nmodel = \"kimi\"\n";
 
 fn profiles(tag: &str, extra: &str) -> ModelProfiles {
-    let dir: PathBuf = std::env::temp_dir().join(format!("orq-launch-defaults-{}-{tag}", std::process::id()));
+    let dir: PathBuf = orq_test_support::process_temp_dir().join(format!("orq-launch-defaults-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, format!("{MODELS}{extra}")).unwrap();

@@ -74,7 +74,7 @@ const READ_PATHS: &[&str] = &[
 const ACTION_PATHS: &[&str] = &["/api/projects/p/features/f/runs", "/api/projects/p/runs/r-1/pause", "/api/projects/p/runs/r-1/resume", "/api/projects/p/runs/r-1/stop", "/api/projects/p/runs/r-1/accept", "/api/projects/p/runs/r-1/model", "/api/projects/p/features/f/promote", "/api/projects/p/features", "/api/projects/p/features/f", "/api/settings/storage/prune"];
 
 fn roots(tag: &str, actions: bool) -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-no-mutation-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();

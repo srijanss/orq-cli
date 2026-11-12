@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn fresh_roots(tag: &str) -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-token-create-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-token-create-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") }
 }

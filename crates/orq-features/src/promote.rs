@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn an_external_edit_between_load_and_save_is_a_conflict_and_unchanged() {
-        let dir = std::env::temp_dir().join(format!("orq-promote-conflict-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-promote-conflict-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".tdd-features.json");

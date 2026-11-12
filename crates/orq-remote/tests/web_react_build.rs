@@ -11,7 +11,7 @@ use orq_remote::{Server, ServerState};
 const TOKEN: &str = "web-react-test-token-0123456789abc";
 
 fn start(tag: &str) -> Server {
-    let base = std::env::temp_dir().join(format!("orq-remote-react-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-remote-react-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();

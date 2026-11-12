@@ -55,7 +55,7 @@ fn every_record_of_a_jsonl_log_stays_a_record() {
 
 #[test]
 fn stored_reports_and_run_files_remain_parseable() {
-    let root = std::env::temp_dir().join(format!("orq-redact-json-{}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!("orq-redact-json-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let store = Store::open(&root.join("orq.db")).unwrap();

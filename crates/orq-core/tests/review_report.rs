@@ -74,7 +74,7 @@ fn failed_tests_are_reported_as_failed_not_hidden() {
 
 #[test]
 fn test_status_comes_from_exit_codes_only() {
-    let dir = std::env::temp_dir().join(format!("orq-report-tests-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-report-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let write = |name: &str, body: &str| {
         let path = dir.join(name);

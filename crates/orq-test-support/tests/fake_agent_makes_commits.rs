@@ -105,7 +105,7 @@ fn the_session_id_is_printed_as_a_json_line_before_the_other_output() {
 
 #[test]
 fn a_commit_step_outside_a_repository_fails_loudly() {
-    let dir = std::env::temp_dir().join(format!("orq-no-repo-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-no-repo-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let agent = FakeAgent::builder().write_file("x.txt", "x\n").commit("nope").build();
 

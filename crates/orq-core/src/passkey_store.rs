@@ -463,7 +463,7 @@ mod tests {
     /// temporary file behind.
     #[test]
     fn a_failed_publish_reports_an_error_and_leaves_no_temporary_file() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let store = PasskeyStore { dir: base.join("state") };
         let dir = store.directory(true).unwrap().unwrap();
@@ -475,7 +475,7 @@ mod tests {
     }
 
     fn store(tag: &str) -> PasskeyStore {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-{tag}", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         PasskeyStore { dir: base.join("state") }
     }
@@ -543,7 +543,7 @@ mod tests {
     /// A link on the way is followed and the directories it leads through are checked too.
     #[test]
     fn a_link_ancestor_is_resolved_and_its_real_parents_are_checked() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-link", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-link", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("safe")).unwrap();
         let shared = base.join("shared");
@@ -560,7 +560,7 @@ mod tests {
     /// The directory holding the link is checked as well as the directories the link leads through.
     #[test]
     fn the_directory_holding_a_link_is_checked_too() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-holder", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-holder", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("private/owned")).unwrap();
         let holder = base.join("holder");
@@ -576,7 +576,7 @@ mod tests {
     /// A relative state path is checked from the directory it is relative to, up.
     #[test]
     fn a_relative_state_path_is_checked_from_its_starting_directory() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-relative", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-relative", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&base).unwrap();
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -590,7 +590,7 @@ mod tests {
     /// passes through is refused.
     #[test]
     fn a_chain_of_links_is_checked_at_every_step() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-chain", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-chain", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let private = |p: std::path::PathBuf| std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p).unwrap();
         private(base.join("trusted"));
@@ -609,7 +609,7 @@ mod tests {
     /// Dot-dot steps and a loop of links are handled rather than followed forever.
     #[test]
     fn dot_dot_steps_resolve_and_a_loop_of_links_is_refused() {
-        let base = std::env::temp_dir().join(format!("orq-passkeys-unit-{}-loop", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-unit-{}-loop", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(base.join("a/b")).unwrap();
         let dirs = directories_passed(&base.join("a/b/../b")).unwrap();

@@ -21,7 +21,7 @@ struct Fixture {
 }
 
 fn fixture(tag: &str) -> Fixture {
-    let base = std::env::temp_dir().join(format!("orq-register-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-register-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     Fixture { host: PasskeyHost::from_setting(HOST).unwrap(), challenges: Challenges::new(), authorizer: EnrolAuthorizer::new(), store: PasskeyStore::open(&roots) }

@@ -2758,7 +2758,7 @@ mod ledger_backend_tests {
     use super::LedgerBackend;
 
     fn ledger(names: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("orq-backend-{}-{}", std::process::id(), names.join("-")));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-backend-{}-{}", std::process::id(), names.join("-")));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".tdd-features.json");
@@ -3290,7 +3290,7 @@ mod ledger_backend_tests {
     #[test]
     fn feature_runs_names_a_run_of_several_features_once_for_each_of_them() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-group-runs-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-group-runs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let project = orq_git::resolve_project(fixture.root()).unwrap();
@@ -3327,7 +3327,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn accepting_a_run_that_has_not_failed_is_refused_by_the_ledger_backend() {
-        let root = std::env::temp_dir().join(format!("orq-backend-accept-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-accept-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
@@ -3360,7 +3360,7 @@ mod ledger_backend_tests {
     fn load_runs_lists_this_projects_runs_only() {
         use std::collections::BTreeMap;
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-runs-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-runs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let project = orq_git::resolve_project(fixture.root()).unwrap();
@@ -3462,7 +3462,7 @@ mod ledger_backend_tests {
     #[test]
     fn load_runs_shows_a_run_whose_process_is_gone_as_failed() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-dead-run-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-dead-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
         let (dir, path) = ledger(&["a"]);
@@ -3491,7 +3491,7 @@ mod ledger_backend_tests {
     #[test]
     fn load_runs_leaves_a_run_with_a_live_process_running_and_records_nothing() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-live-run-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-live-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         seed_run_with_process(&root, fixture.root(), "run-live", u64::from(std::process::id()));
 
@@ -3505,7 +3505,7 @@ mod ledger_backend_tests {
     #[test]
     fn load_runs_shows_a_pause_requested_run_by_liveness_of_its_process() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-pause-requested-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-pause-requested-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         seed_run_with_process(&root, fixture.root(), "run-live", u64::from(std::process::id()));
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
@@ -3524,7 +3524,7 @@ mod ledger_backend_tests {
     fn load_runs_still_lists_a_dead_run_when_recording_its_failure_is_refused() {
         use std::os::unix::fs::PermissionsExt;
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-unwritable-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-unwritable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
         let log = root.join("runs").join("run-dead").join("events.jsonl");
@@ -3545,7 +3545,7 @@ mod ledger_backend_tests {
     #[test]
     fn resume_check_treats_a_run_whose_process_died_as_stopped() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-resume-check-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-resume-check-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
         let (dir, path) = ledger(&["a"]);
@@ -3564,7 +3564,7 @@ mod ledger_backend_tests {
     #[test]
     fn resume_check_refuses_a_failed_run_the_group_resume_would_refuse() {
         let fixture = orq_test_support::GitFixture::new();
-        let root = std::env::temp_dir().join(format!("orq-backend-resume-refuse-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-resume-refuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         // The seeded run's worktree (/tmp/w) is not on disk.
         seed_run_with_dead_process(&root, fixture.root(), "run-dead");
@@ -3929,7 +3929,7 @@ mod ledger_backend_tests {
         );
         assert!(script.contains("press Enter") && script.trim_end().ends_with("read _"), "{script}");
 
-        let root = std::env::temp_dir().join(format!("orq-foreground-pane-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-foreground-pane-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
@@ -3965,7 +3965,7 @@ mod ledger_backend_tests {
     }
 
     fn foreground_launch_fix_store(tag: &str) -> orq_orchestrator::RunStore {
-        let root = std::env::temp_dir().join(format!("orq-foreground-fix-{tag}-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-foreground-fix-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         orq_orchestrator::RunStore::new(&root)
     }
@@ -3995,7 +3995,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn foreground_launch_fix_a_slow_registration_leaves_the_shared_grid_free_for_other_launches() {
-        let root = std::env::temp_dir().join(format!("orq-foreground-fix-grid-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-foreground-fix-grid-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let grid = std::sync::Arc::new(std::sync::Mutex::new(orq_herdr::GridTab::new("orq runs")));
@@ -4059,7 +4059,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn a_launched_run_gets_a_pane_that_is_recorded_and_a_herdr_failure_leaves_the_run_alone() {
-        let root = std::env::temp_dir().join(format!("orq-attach-pane-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-attach-pane-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
@@ -4094,7 +4094,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn the_pane_waits_for_the_runner_to_register_the_run_and_says_when_it_never_does() {
-        let root = std::env::temp_dir().join(format!("orq-attach-late-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-attach-late-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let repo = std::path::Path::new("/repo");
@@ -4133,7 +4133,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn a_registration_wait_that_runs_out_tells_the_user_the_bound_and_that_the_run_continues() {
-        let root = std::env::temp_dir().join(format!("orq-attach-bound-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-attach-bound-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let repo = std::path::Path::new("/repo");
@@ -4240,7 +4240,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn focusing_a_run_needs_a_recorded_pane_and_tells_a_gone_pane_from_a_broken_herdr() {
-        let root = std::env::temp_dir().join(format!("orq-focus-run-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-focus-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
@@ -4277,7 +4277,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn reopening_a_run_pane_follows_its_runner_log_and_records_the_new_pane() {
-        let root = std::env::temp_dir().join(format!("orq-reopen-run-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-reopen-run-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {
@@ -4313,7 +4313,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn reopening_a_run_without_a_runner_log_opens_nothing_and_says_why() {
-        let root = std::env::temp_dir().join(format!("orq-reopen-nolog-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-reopen-nolog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let herdr = ScriptHerdr(std::cell::RefCell::new(vec![]));
@@ -4325,7 +4325,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn reopening_a_foreground_run_without_a_runner_log_follows_its_newest_stage_log() {
-        let root = std::env::temp_dir().join(format!("orq-reopen-foreground-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-reopen-foreground-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let logs = root.join("logs/run-1");
         std::fs::create_dir_all(&logs).unwrap();
@@ -4378,7 +4378,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn reopening_opens_a_tab_on_the_project_that_tails_the_runner_log_and_reports_an_unrecorded_pane() {
-        let root = std::env::temp_dir().join(format!("orq-reopen-cmds-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-reopen-cmds-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("logs/run-1")).unwrap();
         std::fs::write(root.join("logs/run-1/runner.log"), "log\n").unwrap();
@@ -4399,7 +4399,7 @@ mod ledger_backend_tests {
 
     #[test]
     fn a_runs_review_link_goes_to_the_action_and_an_absent_link_says_why() {
-        let root = std::env::temp_dir().join(format!("orq-review-link-{}", std::process::id()));
+        let root = orq_test_support::process_temp_dir().join(format!("orq-review-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let store = orq_orchestrator::RunStore::new(&root);
         let record = orq_orchestrator::RunRecord {

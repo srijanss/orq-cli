@@ -1933,7 +1933,7 @@ fn a_group_run_is_announced_once_for_its_one_branch_and_review() {
 
 /// Runs `orq run push-send` with a `claude` that is the given shell script, in a directory of its own.
 fn push_send_with(tag: &str, claude_script: &str) -> Output {
-    let dir = std::env::temp_dir().join(format!("orq-push-send-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-push-send-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let claude = dir.join("claude");

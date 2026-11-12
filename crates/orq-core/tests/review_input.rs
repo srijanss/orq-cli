@@ -4,7 +4,7 @@ use orq_core::ownership::{classify, may_orq_delete, Ownership};
 use orq_core::review_input::{load_review_input, InputError};
 
 fn dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("orq-review-input-{}-{tag}", std::process::id()));
+    let d = orq_test_support::process_temp_dir().join(format!("orq-review-input-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use orq_core::review_input::{load_review_findings, FindingStatus, InputError, Severity, Verdict};
 
 fn file(tag: &str, text: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-findings-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-findings-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("review.json");
     std::fs::write(&path, text).unwrap();

@@ -7,7 +7,7 @@ use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 fn roots(tag: &str) -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-passkeys-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-passkeys-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") }
 }

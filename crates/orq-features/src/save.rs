@@ -377,7 +377,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failing_write_is_an_io_error_not_a_conflict() {
-        let dir = std::env::temp_dir().join(format!("orq-save-io-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-save-io-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".tdd-features.json");
@@ -393,7 +393,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_lock_is_held_during_the_write_and_free_after_a_failed_one() {
-        let dir = std::env::temp_dir().join(format!("orq-save-critical-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-save-critical-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".tdd-features.json");

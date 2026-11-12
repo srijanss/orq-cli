@@ -15,7 +15,7 @@ impl Drop for Restore<'_> {
 
 #[test]
 fn a_root_under_a_search_only_parent_can_still_be_deleted_from() {
-    let base = std::env::temp_dir().join(format!("orq-execonly-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-execonly-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let parent = base.join("parent");
     let root = parent.join("orq");

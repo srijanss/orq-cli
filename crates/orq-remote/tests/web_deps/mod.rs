@@ -85,7 +85,7 @@ pub fn private_temp_dir(tag: &str) -> PathBuf {
         let mut hasher = RandomState::new().build_hasher();
         hasher.write_u32(std::process::id());
         let name = format!("orq-web-{tag}-{:016x}", hasher.finish());
-        match create_private_dir(&std::env::temp_dir(), &name) {
+        match create_private_dir(&orq_test_support::process_temp_dir(), &name) {
             Ok(path) => return path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("cannot create a private temp dir: {error}"),

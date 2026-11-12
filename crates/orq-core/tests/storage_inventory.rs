@@ -3,7 +3,7 @@ use std::path::Path;
 use orq_core::retention::{inventory, ArtifactClass};
 
 fn data_root(tag: &str) -> std::path::PathBuf {
-    let base = std::env::temp_dir().join(format!("orq-inv-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-inv-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("runs")).unwrap();
     base
@@ -70,7 +70,7 @@ fn symlinks_and_unsafe_run_names_are_skipped() {
 
 #[test]
 fn a_missing_runs_directory_is_an_empty_inventory() {
-    let base = std::env::temp_dir().join(format!("orq-inv-{}-none", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-inv-{}-none", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     assert!(inventory(&base).unwrap().is_empty());

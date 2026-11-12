@@ -6,7 +6,7 @@ const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OUTSIDE: &str = r#"{"status":"current","risks":[{"severity":"high","claim":"outside"}]}"#;
 
 fn seeded(tag: &str) -> (StorageRoots, std::path::PathBuf) {
-    let base = std::env::temp_dir().join(format!("orq-inbox-conf-{}-{tag}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-inbox-conf-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();

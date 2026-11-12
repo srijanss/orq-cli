@@ -6,7 +6,7 @@ use orq_features::{EditFieldsError, FieldEdits, LoadedLedger, SaveError};
 const LEDGER: &str = r#"[{"featureName":"a","status":"pending","description":"old"}]"#;
 
 fn dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-from-bytes-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-from-bytes-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

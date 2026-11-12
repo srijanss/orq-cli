@@ -250,7 +250,7 @@ mod tests {
     }
 
     fn scratch_file(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("orq-child-groups-{}-{tag}", std::process::id()))
+        orq_test_support::process_temp_dir().join(format!("orq-child-groups-{}-{tag}", std::process::id()))
     }
 
     /// Waits for a program to write the id of what it started.

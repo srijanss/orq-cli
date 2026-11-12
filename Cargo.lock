@@ -1065,6 +1065,7 @@ dependencies = [
 name = "orq-agents"
 version = "0.1.0"
 dependencies = [
+ "orq-test-support",
  "serde_json",
 ]
 
@@ -1091,6 +1092,7 @@ name = "orq-core"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "orq-test-support",
  "p256",
  "regex",
  "rusqlite",
@@ -1153,6 +1155,7 @@ dependencies = [
  "orq-features",
  "orq-git",
  "orq-orchestrator",
+ "orq-test-support",
  "p256",
  "serde_json",
  "sha2",

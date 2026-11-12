@@ -135,7 +135,7 @@ mod tests {
     }
 
     fn fixture(tag: &str, counter: u32) -> Fixture {
-        let base = std::env::temp_dir().join(format!("orq-login-{}-{tag}", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-login-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
         let store = PasskeyStore::open(&roots);
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn a_counterless_sign_in_checks_the_store_without_rewriting_it() {
         let f = fixture("no-write", 0);
-        let path = PasskeyStore::path(&StorageRoots { data: "d".into(), config: "c".into(), state: std::env::temp_dir().join(format!("orq-login-{}-no-write", std::process::id())).join("state"), cache: "x".into() });
+        let path = PasskeyStore::path(&StorageRoots { data: "d".into(), config: "c".into(), state: orq_test_support::process_temp_dir().join(format!("orq-login-{}-no-write", std::process::id())).join("state"), cache: "x".into() });
         let before = std::fs::metadata(&path).unwrap();
         let inode = std::os::unix::fs::MetadataExt::ino(&before);
         assert!(sign_in(&f, &Assertion::good(0), 120).is_ok());

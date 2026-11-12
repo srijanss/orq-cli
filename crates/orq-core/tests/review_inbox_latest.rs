@@ -5,7 +5,7 @@ use orq_core::store::Store;
 const OURS: &str = "orq-cli-0a1b2c3d";
 
 fn roots() -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-inbox-latest-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-inbox-latest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();

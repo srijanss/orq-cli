@@ -7,7 +7,7 @@ use orq_features::{reopen_features, reopen_features_before_save, set_entry_statu
 use orq_core::FeatureStatus;
 
 fn dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-reopen-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-reopen-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

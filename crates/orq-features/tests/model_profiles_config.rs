@@ -279,7 +279,7 @@ fn role_references_are_checked_after_both_files_are_merged() {
 }
 
 fn tempfile_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = orq_test_support::process_temp_dir().join(format!(
         "orq-model-profiles-{tag}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()

@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn a_config_that_cannot_be_inspected_counts_as_configured_not_absent() {
         // `loop/x` fails with ELOOP, an error that is not NotFound.
-        let dir = std::env::temp_dir().join(format!("orq-ci-wait-loop-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-ci-wait-loop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::os::unix::fs::symlink("loop", dir.join("loop")).unwrap();

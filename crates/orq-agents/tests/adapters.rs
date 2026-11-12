@@ -291,7 +291,7 @@ fn push_session_is_a_connected_interactive_session_with_only_the_push_tool_and_t
 
 #[test]
 fn push_session_marks_when_the_tool_has_run_wherever_the_marker_lives() {
-    let dir = std::env::temp_dir().join(format!("orq-push-it's $(x) {}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-push-it's $(x) {}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("sent");
     let argv = orq_agents::push_notification_argv("orq: COM-02 failed", "n", &marker).unwrap();

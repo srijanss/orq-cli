@@ -7,7 +7,7 @@ const HEAD: &str = "1111111111111111111111111111111111111111";
 const OTHER: &str = "2222222222222222222222222222222222222222";
 
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("orq-lifecycle-store-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-lifecycle-store-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

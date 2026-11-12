@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn empty_store(tag: &str) -> PasskeyStore {
-        let base = std::env::temp_dir().join(format!("orq-enrol-unit-{}-{tag}", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-enrol-unit-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let roots = crate::storage::StorageRoots { data: base.join("d"), config: base.join("c"), state: base.join("s"), cache: base.join("k") };
         PasskeyStore::open(&roots)

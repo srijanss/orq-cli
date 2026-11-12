@@ -18,4 +18,5 @@ libc = "0.2"
 sha2 = "0.10"
 
 [dev-dependencies]
+orq-test-support = { path = "../orq-test-support" }
 p256 = { version = "0.13", features = ["ecdsa"] }

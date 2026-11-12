@@ -9,7 +9,7 @@ fn mode(path: &Path) -> u32 {
 
 #[test]
 fn temp_directories_are_private_and_never_adopt_pre_created_ones() {
-    let tmp = std::env::temp_dir().join(format!("orq-private-{}", std::process::id()));
+    let tmp = orq_test_support::process_temp_dir().join(format!("orq-private-{}", std::process::id()));
     // Atomic and private: fails if the path already exists, so a pre-created
     // directory or symlink is never adopted.
     std::fs::DirBuilder::new().mode(0o700).create(&tmp).unwrap();

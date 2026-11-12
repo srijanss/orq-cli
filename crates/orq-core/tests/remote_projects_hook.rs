@@ -21,7 +21,7 @@ impl ProjectsProvider for Counting {
 }
 
 fn roots() -> StorageRoots {
-    let base = std::env::temp_dir().join(format!("orq-projects-hook-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-projects-hook-{}", std::process::id()));
     StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") }
 }
 

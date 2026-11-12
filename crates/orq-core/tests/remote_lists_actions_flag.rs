@@ -31,7 +31,7 @@ fn get(roots: &StorageRoots, path: &str) -> Value {
 
 #[test]
 fn the_features_and_runs_lists_say_whether_remote_actions_are_on() {
-    let base = std::env::temp_dir().join(format!("orq-actions-flag-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-actions-flag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();

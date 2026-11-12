@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn a_log_swapped_for_a_fifo_after_inspection_is_refused_without_blocking() {
-        let dir = std::env::temp_dir().join(format!("orq-open-log-fifo-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-open-log-fifo-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let log = dir.join("stage.log");
@@ -555,7 +555,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("orq-open-log-{tag}-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-open-log-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn a_marker_swapped_after_it_was_inspected_is_not_followed_and_does_not_block() {
-        let dir = std::env::temp_dir().join(format!("orq-marker-swap-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-marker-swap-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (marker, secret) = (dir.join("done"), dir.join("secret"));

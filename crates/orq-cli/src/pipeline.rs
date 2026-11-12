@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn has_commits_assumes_the_work_is_there_when_git_cannot_tell_and_none_when_the_worktree_is_gone() {
-        let dir = std::env::temp_dir().join(format!("orq-has-commits-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-has-commits-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

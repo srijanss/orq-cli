@@ -5,7 +5,7 @@ use orq_core::store::Store;
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn dir(tag: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("orq-publish-rollback-{}-{tag}", std::process::id()));
+    let path = orq_test_support::process_temp_dir().join(format!("orq-publish-rollback-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path

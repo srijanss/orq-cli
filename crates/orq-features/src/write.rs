@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn a_failure_at_any_stage_keeps_the_original_bytes_and_mode_and_removes_the_temp_file() {
         for stage in [Stage::Created, Stage::PermissionsSet, Stage::Written, Stage::Synced] {
-            let dir = std::env::temp_dir().join(format!("orq-atomic-stage-{}-{stage:?}", std::process::id()));
+            let dir = orq_test_support::process_temp_dir().join(format!("orq-atomic-stage-{}-{stage:?}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join(".tdd-features.json");

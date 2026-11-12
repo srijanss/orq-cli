@@ -798,7 +798,7 @@ fn each_look_at_unfinished_checks_leaves_a_line_saying_what_is_awaited() {
     let w = world("logged", "github", "https://github.example/o/r.git");
     let provider = github_provider().reply(&["api"], &gh_checks(RUNNING, 1)).build();
     let short = CiWaitConfig { timeout: Duration::from_millis(400), ..config() };
-    let log = std::env::temp_dir().join(format!("orq-ci-log-{}", std::process::id()));
+    let log = orq_test_support::process_temp_dir().join(format!("orq-ci-log-{}", std::process::id()));
     let _ = fs::remove_file(&log);
 
     orq_orchestrator::wait_for_ci_logged(&w.store, "run-1", &provider.gh(), SHA, &short, Some(&log)).unwrap();
@@ -811,7 +811,7 @@ fn each_look_at_unfinished_checks_leaves_a_line_saying_what_is_awaited() {
 }
 
 fn log_path(tag: &str) -> std::path::PathBuf {
-    let log = std::env::temp_dir().join(format!("orq-ci-log-{tag}-{}", std::process::id()));
+    let log = orq_test_support::process_temp_dir().join(format!("orq-ci-log-{tag}-{}", std::process::id()));
     let _ = fs::remove_file(&log);
     log
 }

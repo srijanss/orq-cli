@@ -56,7 +56,7 @@ fn evidence_naming_no_commit_is_unverified_and_makes_the_report_incomplete() {
 
 #[test]
 fn loaders_read_the_commit_the_evidence_names() {
-    let dir = std::env::temp_dir().join(format!("orq-report-binding-{}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-report-binding-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let tests_path = dir.join("tests.json");
     std::fs::write(&tests_path, format!(r#"{{"schema_version":1,"head_sha":"{HEAD}","commands":[]}}"#)).unwrap();

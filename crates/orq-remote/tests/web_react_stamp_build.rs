@@ -16,7 +16,7 @@ fn the_build_writes_a_stamp_holding_the_hash_of_the_bundle_it_made() {
     if !web_deps::ready() {
         return;
     }
-    let out = std::env::temp_dir().join(format!("orq-react-stamp-{}", std::process::id()));
+    let out = orq_test_support::process_temp_dir().join(format!("orq-react-stamp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap();
     let built = Command::new("node").arg(crate_dir().join("web-src/build.mjs")).arg("--out").arg(out.join("app.react.js")).output().unwrap();
