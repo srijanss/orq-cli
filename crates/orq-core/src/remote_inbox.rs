@@ -274,6 +274,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Saves `settings` as project `id`'s own, if its record is still at `revision`, and gives the
+    /// settings read back. A provider that cannot does not know the project.
+    fn save_project_settings(&self, _id: &str, _revision: u64, _settings: &crate::project_settings::ProjectSettings) -> Result<ProjectSettingsSave, String> {
+        Ok(ProjectSettingsSave::Unknown)
+    }
+
     /// The editable fields of `feature` of project `id`, as `{fields, version}`, for the web's editor; the
     /// version names the ledger as it was read. `None` when there is no such project or feature.
     fn feature_fields(&self, _id: &str, _feature: &str) -> Result<Option<Value>, String> {
@@ -325,6 +331,17 @@ pub struct FeatureInput {
     pub parallelizable: Option<bool>,
     pub test_file: Option<String>,
     pub target_files: Option<Vec<String>>,
+}
+
+/// How a save of a project's own settings ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectSettingsSave {
+    /// Saved; the project's settings as a read now gives them.
+    Saved(Value),
+    /// The record was saved since the revision presented; nothing was written.
+    Conflict,
+    /// No such project.
+    Unknown,
 }
 
 /// How a save of a feature ended.
@@ -1160,6 +1177,92 @@ fn storage_prune(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, 
     }
 }
 
+/// Saves project `id`'s own agents and delivery for its Settings page. The body names the whole
+/// record and the revision it was read at; a null role is reset so runs fall back again.
+fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
+    use crate::project_settings::{Delivery, ProjectAgent, ProjectSettings};
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "project.settings", project: id, run: None, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    const KEYS: [&str; 4] = ["implementer", "reviewer", "delivery", "revision"];
+    if let Some(refusal) = body_refusal(body, &KEYS) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    // A role is null (reset) or exactly {harness, model} with an optional effort, a string or null.
+    let agent = |role: &str| -> Option<Option<ProjectAgent>> {
+        match fields.get(role)? {
+            Value::Null => Some(None),
+            Value::Object(agent) if agent.keys().all(|key| ["harness", "model", "effort"].contains(&key.as_str())) => {
+                let effort = match agent.get("effort") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(level)) => Some(level.clone()),
+                    Some(_) => return None,
+                };
+                let text = |key: &str| agent.get(key).and_then(Value::as_str).map(str::to_string);
+                Some(Some(ProjectAgent { harness: text("harness")?, model: text("model")?, effort }))
+            }
+            _ => None,
+        }
+    };
+    let parsed = (agent("implementer"), agent("reviewer"), fields.get("delivery").and_then(Value::as_str).and_then(Delivery::parse), fields.get("revision").and_then(Value::as_u64));
+    let (Some(implementer), Some(reviewer), Some(delivery), Some(revision)) = parsed else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let chosen: Vec<&ProjectAgent> = implementer.iter().chain(reviewer.iter()).collect();
+    // Resetting both roles names no agent, so it needs nothing offered.
+    if !chosen.is_empty() {
+        let options = match provider.map(|provider| provider.setting_options()) {
+            Some(Ok(Some(options))) => options,
+            Some(Err(_)) => {
+                audit(Outcome::Refused, Some("the options could not be read"));
+                return error(500, "the options could not be read");
+            }
+            _ => {
+                audit(Outcome::Refused, Some("no options to choose from"));
+                return error(404, "not found");
+            }
+        };
+        if !chosen.iter().all(|agent| offered(&options, &agent.harness, &agent.model)) {
+            audit(Outcome::Refused, Some("not an offered harness or model"));
+            return error(422, "That harness or model is not one this machine offers");
+        }
+        let takes = |agent: &&ProjectAgent| agent.effort.as_deref().is_none_or(|level| efforts(&options, &agent.harness).is_some_and(|levels| levels.contains(&level)));
+        if !chosen.iter().all(takes) {
+            audit(Outcome::Refused, Some("not an offered effort"));
+            return error(422, "That effort is not one this harness takes");
+        }
+    }
+    let settings = ProjectSettings { implementer, reviewer, delivery };
+    match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
+        Some(Ok(ProjectSettingsSave::Saved(settings))) => {
+            audit(Outcome::Allowed, None);
+            reply(200, json!({ "settings": settings }))
+        }
+        Some(Ok(ProjectSettingsSave::Conflict)) => {
+            audit(Outcome::Refused, Some("settings changed"));
+            error(409, "The project's settings changed since they were read")
+        }
+        // The reason can name a path on this machine, so neither the caller nor the audit is told it.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, Some("the project's settings could not be saved"));
+            error(500, "the project's settings could not be saved")
+        }
+        _ => {
+            audit(Outcome::Refused, Some("unknown project"));
+            error(404, "not found")
+        }
+    }
+}
+
 /// Where a run would continue if resumed, for the web's question before Resume. It changes nothing
 /// the web asked for, so it is not audited, but it is there only while actions are on.
 fn resume_check(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
@@ -1217,6 +1320,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if path == "/api/settings/agents" && request.method == "POST" {
         return set_agents(roots, provider, body);
+    }
+    if let Some(id) = (request.method == "POST").then(|| project_target(path, "settings")).flatten() {
+        return save_project_settings(roots, provider, id, body);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");

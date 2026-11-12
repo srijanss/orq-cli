@@ -270,6 +270,15 @@ impl StoreProjects {
         self
     }
 
+    /// Project `id`'s git project and the main checkout its own settings are kept under, so a linked
+    /// worktree shares them; `None` when there is no such project.
+    fn settings_key(&self, id: &str) -> Result<Option<(orq_git::Project, std::path::PathBuf)>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+        Ok(Some((git, root)))
+    }
+
     /// Lets the web choose the implementer's and reviewer's harness and model from what `source`
     /// finds: each harness with the models it allows. It is asked once, on first use.
     pub fn with_agent_options(mut self, source: std::sync::Arc<AgentOptionsSource>) -> Self {
@@ -566,9 +575,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     /// read; without it the project has no record (revision 0).
     fn project_settings(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         use orq_features::AgentRole;
-        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
-        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
-        let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
         let database = self.roots.database();
         let stored = if database.exists() {
             orq_core::store::Store::read_project_settings(&database, &root).map_err(|error| error.to_string())?
@@ -609,6 +616,22 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             "delivery": stored.settings.delivery.as_str(),
             "revision": stored.revision,
         })))
+    }
+
+    /// Saves the project's own settings in this machine's orq.db, keyed by its main checkout like a
+    /// read, if its record is still at `revision`; then gives the settings as a read now does.
+    fn save_project_settings(&self, id: &str, revision: u64, settings: &orq_core::project_settings::ProjectSettings) -> Result<orq_core::remote_inbox::ProjectSettingsSave, String> {
+        use orq_core::project_settings::SaveOutcome;
+        use orq_core::remote_inbox::ProjectSettingsSave;
+        let Some((_, root)) = self.settings_key(id)? else { return Ok(ProjectSettingsSave::Unknown) };
+        let mut store = orq_core::store::Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
+        match store.save_project_settings(&root, revision, settings).map_err(|error| error.to_string())? {
+            SaveOutcome::Conflict => Ok(ProjectSettingsSave::Conflict),
+            SaveOutcome::Saved { .. } => match self.project_settings(id)? {
+                Some(read) => Ok(ProjectSettingsSave::Saved(read)),
+                None => Ok(ProjectSettingsSave::Unknown),
+            },
+        }
     }
 
     /// The popup's editor fields of one feature, and the version of the ledger they were read from.
