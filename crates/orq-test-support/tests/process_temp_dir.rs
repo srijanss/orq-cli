@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use orq_test_support::process_temp_dir;
+use orq_test_support::{process_temp_dir, TempDir};
 
 const CHILD: &str = "ORQ_PROCESS_TEMP_DIR_CHILD";
 
@@ -45,25 +45,24 @@ fn the_first_use_removes_roots_left_by_test_processes_that_no_longer_exist() {
     let mut finished = Command::new("true").spawn().unwrap();
     let dead = finished.id();
     finished.wait().unwrap();
-    let temp = std::env::temp_dir();
+    // The fixtures live in a private temp dir of their own, which the child takes as its temp
+    // dir: no other test's sweep can reach them, and nothing is made in the shared temp dir.
+    let temp = TempDir::new("orq-sweep-fixture");
     let killed = temp.join(format!("orq-tests-{dead}-0"));
     std::fs::create_dir_all(killed.join("a/b")).unwrap();
     std::fs::write(killed.join("a/b/file"), "x").unwrap();
     let alive = temp.join(format!("orq-tests-{}-999999", std::process::id()));
-    std::fs::create_dir_all(&alive).unwrap();
+    std::fs::create_dir(&alive).unwrap();
     let not_ours = temp.join(format!("orq-other-{dead}-0"));
-    std::fs::create_dir_all(&not_ours).unwrap();
+    std::fs::create_dir(&not_ours).unwrap();
 
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["child_leaves_a_mess", "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD, "1")
+        .env("TMPDIR", temp.path())
         .output()
         .unwrap();
 
-    let left = (killed.exists(), alive.is_dir(), not_ours.is_dir());
-    for dir in [&killed, &alive, &not_ours] {
-        let _ = std::fs::remove_dir_all(dir);
-    }
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(left, (false, true, true), "only the root of the process that no longer exists is removed");
+    assert_eq!((killed.exists(), alive.is_dir(), not_ours.is_dir()), (false, true, true), "only the root of the process that no longer exists is removed");
 }
