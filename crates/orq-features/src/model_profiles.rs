@@ -2,8 +2,10 @@
 //! `[roles]` in the user-level `config.toml`, overridden by an optional
 //! per-repo `.orq.toml`. Read-only: Orq never rewrites either file here.
 //!
-//! The MVP 1.1 `[implementer]` / `[reviewer]` tables in `config.toml` are a
-//! separate mechanism and are ignored by this reader.
+//! The `[implementer]` / `[reviewer]` tables of the user-level `config.toml`
+//! (what Settings saves: harness, model, effort) are this machine's default
+//! agents, which a run falls back to after `[roles]`. The same tables in
+//! `.orq.toml` are not read.
 
 use std::path::{Path, PathBuf};
 
@@ -52,6 +54,9 @@ pub enum ModelProfilesError {
     InvalidRole { path: PathBuf, role: AgentRole },
     /// A role names a profile no file defines.
     UnknownRoleProfile { role: AgentRole, profile: String },
+    /// A machine default (`[implementer]` / `[reviewer]`) is not a table or
+    /// has a missing, blank or wrongly typed field.
+    InvalidMachineAgent { path: PathBuf, role: AgentRole, field: &'static str, problem: FieldProblem },
 }
 
 impl std::fmt::Display for ModelProfilesError {
@@ -65,12 +70,7 @@ impl std::fmt::Display for ModelProfilesError {
                 write!(f, "{}: models entry {profile:?} is not a table", path.display())
             }
             ModelProfilesError::InvalidField { path, profile, field, problem } => {
-                let what = match problem {
-                    FieldProblem::Missing => "is missing",
-                    FieldProblem::Blank => "is empty",
-                    FieldProblem::NotASingleLineString => "is not a single-line string",
-                };
-                write!(f, "{}: models.{profile} {field} {what}", path.display())
+                write!(f, "{}: models.{profile} {field} {}", path.display(), problem_text(*problem))
             }
             ModelProfilesError::InvalidProfileName { path, profile } => {
                 write!(f, "{}: models name {profile:?} is empty, padded or has control characters", path.display())
@@ -84,11 +84,22 @@ impl std::fmt::Display for ModelProfilesError {
             ModelProfilesError::UnknownRoleProfile { role, profile } => {
                 write!(f, "roles.{} names unknown profile {profile:?}", role_key(*role))
             }
+            ModelProfilesError::InvalidMachineAgent { path, role, field, problem } => {
+                write!(f, "{}: {} {field} {}", path.display(), role_key(*role), problem_text(*problem))
+            }
         }
     }
 }
 
 impl std::error::Error for ModelProfilesError {}
+
+fn problem_text(problem: FieldProblem) -> &'static str {
+    match problem {
+        FieldProblem::Missing => "is missing",
+        FieldProblem::Blank => "is empty",
+        FieldProblem::NotASingleLineString => "is not a single-line string",
+    }
+}
 
 fn role_key(role: AgentRole) -> &'static str {
     match role {
@@ -103,6 +114,9 @@ pub struct ModelProfiles {
     profiles: Vec<ModelProfile>,
     implementer: Option<String>,
     reviewer: Option<String>,
+    // A table that cannot be read is kept as its error: it fails only a run that falls back to it.
+    machine_implementer: Option<Result<ModelProfile, ModelProfilesError>>,
+    machine_reviewer: Option<Result<ModelProfile, ModelProfilesError>>,
 }
 
 impl ModelProfiles {
@@ -126,6 +140,17 @@ impl ModelProfiles {
     pub fn role(&self, role: AgentRole) -> Option<&ModelProfile> {
         self.get(self.role_profile_name(role)?)
     }
+
+    /// This machine's default agent for the role: the `[implementer]` /
+    /// `[reviewer]` table of `config.toml`, its effort as the thinking level,
+    /// or why that table cannot be used.
+    pub fn machine_default(&self, role: AgentRole) -> Option<Result<&ModelProfile, &ModelProfilesError>> {
+        let entry = match role {
+            AgentRole::Implementer => &self.machine_implementer,
+            AgentRole::Reviewer => &self.machine_reviewer,
+        };
+        entry.as_ref().map(Result::as_ref)
+    }
 }
 
 /// One file's contribution before merging.
@@ -141,6 +166,10 @@ struct Layer {
 /// contribute nothing.
 pub fn load_model_profiles(user_config: &Path, repo_config: &Path) -> Result<ModelProfiles, ModelProfilesError> {
     let mut merged = ModelProfiles::default();
+    if let Some(doc) = read_document(user_config)? {
+        merged.machine_implementer = read_machine_agent(user_config, &doc, AgentRole::Implementer).transpose();
+        merged.machine_reviewer = read_machine_agent(user_config, &doc, AgentRole::Reviewer).transpose();
+    }
     for path in [user_config, repo_config] {
         let Some(layer) = read_layer(path)? else { continue };
         for profile in layer.profiles {
@@ -166,7 +195,8 @@ pub fn load_model_profiles(user_config: &Path, repo_config: &Path) -> Result<Mod
     Ok(merged)
 }
 
-fn read_layer(path: &Path) -> Result<Option<Layer>, ModelProfilesError> {
+/// The parsed file, `None` when it does not exist.
+fn read_document(path: &Path) -> Result<Option<DocumentMut>, ModelProfilesError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -174,9 +204,40 @@ fn read_layer(path: &Path) -> Result<Option<Layer>, ModelProfilesError> {
             return Err(ModelProfilesError::Io { path: path.to_path_buf(), message: error.to_string() })
         }
     };
-    let doc = text
-        .parse::<DocumentMut>()
-        .map_err(|error| ModelProfilesError::Malformed { path: path.to_path_buf(), message: error.to_string() })?;
+    text.parse::<DocumentMut>()
+        .map(Some)
+        .map_err(|error| ModelProfilesError::Malformed { path: path.to_path_buf(), message: error.to_string() })
+}
+
+/// The `[implementer]` / `[reviewer]` table as a profile named after the role.
+/// The model may still be under `profile`, its name before the rename.
+fn read_machine_agent(path: &Path, doc: &DocumentMut, role: AgentRole) -> Result<Option<ModelProfile>, ModelProfilesError> {
+    let Some(item) = doc.get(role_key(role)) else { return Ok(None) };
+    let invalid = |field, problem| ModelProfilesError::InvalidMachineAgent { path: path.to_path_buf(), role, field, problem };
+    let table = item.as_table_like().ok_or_else(|| invalid("harness", FieldProblem::NotASingleLineString))?;
+    let field = |field: &'static str, required: bool| -> Result<Option<String>, ModelProfilesError> {
+        let found = table.get(field).or_else(|| if field == "model" { table.get("profile") } else { None });
+        match found {
+            None if required => Err(invalid(field, FieldProblem::Missing)),
+            None => Ok(None),
+            Some(item) => match clean(item) {
+                Ok(Some(text)) => Ok(Some(text)),
+                Ok(None) => Err(invalid(field, FieldProblem::Blank)),
+                Err(()) => Err(invalid(field, FieldProblem::NotASingleLineString)),
+            },
+        }
+    };
+    Ok(Some(ModelProfile {
+        name: role_key(role).to_string(),
+        harness: field("harness", true)?.unwrap_or_default(),
+        model: field("model", true)?.unwrap_or_default(),
+        thinking: field("effort", false)?,
+        provider: None,
+    }))
+}
+
+fn read_layer(path: &Path) -> Result<Option<Layer>, ModelProfilesError> {
+    let Some(doc) = read_document(path)? else { return Ok(None) };
     let not_a_profile = |profile: &str| ModelProfilesError::NotAProfile {
         path: path.to_path_buf(),
         profile: profile.to_string(),

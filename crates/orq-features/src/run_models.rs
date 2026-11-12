@@ -1,10 +1,11 @@
 //! Which models a run uses. The implementer comes from the `--implementer`
-//! flag, then `[roles].implementer`, then a built-in; the reviewer from the
-//! `--reviewer` flag, then `.tdd-config.json` `reviewers.default`, then
-//! `[roles].reviewer`, then a built-in. `reviewers.allowedModels` overrides
+//! flag, then `[roles].implementer`, then this machine's `[implementer]`, then
+//! a built-in; the reviewer from the `--reviewer` flag, then `.tdd-config.json`
+//! `reviewers.default`, then `[roles].reviewer`, then this machine's
+//! `[reviewer]`, then a built-in. `reviewers.allowedModels` overrides
 //! every source, and the implementer must run on the claude harness.
 
-use crate::model_profiles::{ModelProfile, ModelProfiles};
+use crate::model_profiles::{ModelProfile, ModelProfiles, ModelProfilesError};
 use crate::profiles::{AgentProfile, AgentRole};
 use crate::reviewer_config::TddReviewerConfig;
 
@@ -38,6 +39,8 @@ pub enum RunModelsError {
     /// The implementer's profile names a harness no adapter exists for.
     ImplementerHarnessUnknown { harness: String, model: String },
     ReviewerNotAllowed { model: String, allowed: Vec<String> },
+    /// The run falls back to this machine's default agent, and its table cannot be used.
+    MachineDefault(ModelProfilesError),
 }
 
 impl std::fmt::Display for RunModelsError {
@@ -55,6 +58,7 @@ impl std::fmt::Display for RunModelsError {
                 "reviewer model {model} is not in reviewers.allowedModels ({})",
                 allowed.join(", ")
             ),
+            RunModelsError::MachineDefault(error) => write!(f, "{error}"),
         }
     }
 }
@@ -76,6 +80,15 @@ fn named(profiles: &ModelProfiles, role: &'static str, name: &str) -> Result<Res
         .ok_or_else(|| RunModelsError::UnknownProfile { role, name: name.to_string() })
 }
 
+/// This machine's default agent for the role, else the built-in.
+fn machine_or_built_in(profiles: &ModelProfiles, role: AgentRole, fallback: (&str, &str)) -> Result<ResolvedModel, RunModelsError> {
+    match profiles.machine_default(role) {
+        Some(Ok(profile)) => Ok(from_profile(profile)),
+        Some(Err(error)) => Err(RunModelsError::MachineDefault(error.clone())),
+        None => Ok(built_in(fallback)),
+    }
+}
+
 fn built_in((harness, model): (&str, &str)) -> ResolvedModel {
     ResolvedModel { harness: harness.to_string(), model: model.to_string(), thinking: None }
 }
@@ -90,7 +103,7 @@ pub fn resolve_run_models(
         Some(name) => named(profiles, "implementer", name)?,
         None => match profiles.role_profile_name(AgentRole::Implementer) {
             Some(name) => named(profiles, "implementer", name)?,
-            None => built_in(BUILT_IN_IMPLEMENTER),
+            None => machine_or_built_in(profiles, AgentRole::Implementer, BUILT_IN_IMPLEMENTER)?,
         },
     };
     if orq_agents::adapter_for(&implementer.harness).is_err() {
@@ -107,7 +120,7 @@ pub fn resolve_run_models(
     } else if let Some(name) = profiles.role_profile_name(AgentRole::Reviewer) {
         named(profiles, "reviewer", name)?
     } else {
-        built_in(BUILT_IN_REVIEWER)
+        machine_or_built_in(profiles, AgentRole::Reviewer, BUILT_IN_REVIEWER)?
     };
     if let Some(allowed) = &reviewer_config.allowed_models {
         if !allowed.contains(&reviewer.model) {

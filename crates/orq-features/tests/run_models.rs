@@ -142,3 +142,53 @@ fn a_pi_profile_is_accepted_as_the_implementer_from_the_flag_and_from_the_roles_
     assert_eq!(from_roles.implementer.harness, "pi");
     assert_eq!(from_roles.implementer.thinking.as_deref(), Some("medium"));
 }
+
+const MACHINE: &str = r#"
+[models.opus]
+harness = "claude"
+model = "opus"
+
+[implementer]
+harness = "claude"
+model = "sonnet"
+effort = "high"
+
+[reviewer]
+harness = "pi"
+model = "vendor/checker"
+effort = "low"
+"#;
+
+#[test]
+fn the_machine_defaults_come_after_roles_and_tdd_config_and_before_the_built_in() {
+    let resolved = |text: &str, tag: &str, reviewers: &TddReviewerConfig| {
+        resolve_run_models(&profiles(tag, text), reviewers, &RunSelection::default()).unwrap()
+    };
+    let plain = resolved(MACHINE, "machine-plain", &config(None, None));
+    assert_eq!((plain.implementer.harness.as_str(), plain.implementer.model.as_str(), plain.implementer.thinking.as_deref()), ("claude", "sonnet", Some("high")));
+    assert_eq!((plain.reviewer.harness.as_str(), plain.reviewer.model.as_str(), plain.reviewer.thinking.as_deref()), ("pi", "vendor/checker", Some("low")));
+
+    let with_roles = format!("{MACHINE}\n[roles]\nimplementer = \"opus\"\nreviewer = \"opus\"\n");
+    let roles = resolved(&with_roles, "machine-roles", &config(None, None));
+    assert_eq!(roles.implementer.model, "opus", "[roles] wins over the machine default");
+    assert_eq!(roles.reviewer.model, "opus", "[roles] wins over the machine default");
+
+    let tdd = resolved(MACHINE, "machine-tdd", &config(Some(("pi", "kimi-k3")), None));
+    assert_eq!(tdd.reviewer.model, "kimi-k3", ".tdd-config.json wins over the machine default");
+
+    // Settings written before the rename keep the model under `profile`.
+    let legacy = resolved("[implementer]\nharness = \"claude\"\nprofile = \"haiku\"\n", "machine-legacy", &config(None, None));
+    assert_eq!(legacy.implementer.model, "haiku");
+    assert_eq!(legacy.implementer.thinking, None);
+}
+
+#[test]
+fn a_half_filled_machine_default_is_an_error_only_for_a_run_that_falls_back_to_it() {
+    let loaded = profiles("machine-half", "[models.kimi]\nharness = \"pi\"\nmodel = \"kimi-k3\"\n\n[reviewer]\nharness = \"pi\"\n");
+    let error = resolve_run_models(&loaded, &config(None, None), &RunSelection::default()).unwrap_err();
+    assert!(error.to_string().contains("reviewer model is missing"), "{error}");
+
+    let chosen = RunSelection { implementer: None, reviewer: Some("kimi") };
+    let resolved = resolve_run_models(&loaded, &config(None, None), &chosen).unwrap();
+    assert_eq!(resolved.reviewer.model, "kimi-k3", "a run that names its reviewer never reads the table");
+}
