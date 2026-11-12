@@ -265,6 +265,18 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value").set.call(el, step.value);
       el.dispatchEvent(new window.Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
+    } else if (step.swipe !== undefined) {
+      // A finger moved sideways across an element by dx pixels: one touchstart, one touchend.
+      const el = root.querySelector(step.swipe);
+      const touch = (type, x) => {
+        const event = new window.Event(type, { bubbles: true, cancelable: true });
+        const points = [{ clientX: x, clientY: 300 }];
+        Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : points });
+        Object.defineProperty(event, "changedTouches", { value: points });
+        el.dispatchEvent(event);
+      };
+      touch("touchstart", 200);
+      touch("touchend", 200 + step.dx);
     } else if (step.select !== undefined) {
       root.querySelector(`[data-project-option="${step.select}"]`).click();
     } else if (step.back) {

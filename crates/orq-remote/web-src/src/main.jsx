@@ -1449,8 +1449,8 @@ function Confirm({ question, detail = null, answer, tone, busy = false, onConfir
   );
 }
 
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon }) {
-  const [phase, setPhase] = useState("idle");
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null }) {
+  const [phase, setPhase] = useState(asking ? "asking" : "idle");
   const [note, setNote] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
   const ask = async () => {
@@ -1510,7 +1510,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
     <div className="run-action">
       {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => setPhase("idle")} /> : null}
+      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => (onCancel === null ? setPhase("idle") : onCancel())} /> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
     </div>
@@ -2128,12 +2128,55 @@ function FeatureEditor({ name = null, features, control }) {
   );
 }
 
+// A sideways swipe across a row: left (onSwipe(true)) or right (onSwipe(false)) when it moved more across than
+// down, so scrolling the list is not mistaken for one.
+function swipeHandlers(touchAt, onSwipe) {
+  return {
+    onTouchStart: (event) => {
+      const point = event.touches[0];
+      touchAt.current = point ? { x: point.clientX, y: point.clientY } : null;
+    },
+    onTouchEnd: (event) => {
+      const from = touchAt.current;
+      const point = event.changedTouches[0];
+      touchAt.current = null;
+      if (!from || !point) return;
+      const dx = point.clientX - from.x;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(point.clientY - from.y)) onSwipe(dx < 0);
+    },
+  };
+}
+
+// The action a swipe reveals on a phone: Promote for a draft, Start for a pending feature.
+function SwipeButton({ feature, shown, onPress }) {
+  const draft = feature.status === "draft";
+  const kind = draft ? "data-swipe-promote" : "data-swipe-start";
+  return (
+    <button type="button" className="primary-button" {...{ [kind]: feature.name }} tabIndex={shown ? 0 : -1} aria-hidden={shown ? undefined : "true"} onClick={onPress}>
+      <Icon name={draft ? "arrowUp" : "play"} size={16} />{draft ? "Promote" : "Start"}
+    </button>
+  );
+}
+
+// One feature's Start (pending) or Promote (draft), on its page or under a swiped row; a swiped row's opens
+// on its question, and cancelling it closes the row's action.
+function FeatureAction({ feature, control, asking = false, onCancel = null }) {
+  const name = encodeURIComponent(feature.name);
+  const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
+  return feature.status === "pending"
+    ? <RunAction {...shared} kind="start" label="Start" icon="play" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} />
+    : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
+}
+
 function FeatureList({ features, showProject = false, control = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [page, setPage] = useState(0);
   const [marked, setMarked] = useState([]);
   const [results, setResults] = useState([]);
+  const [swiped, setSwiped] = useState(null);
+  const [asking, setAsking] = useState(null);
+  const touchAt = useRef(null);
   const adder = control === null ? null : <FeatureEditor features={features} control={control} />;
   if (features.length === 0) {
     return (
@@ -2175,8 +2218,12 @@ function FeatureList({ features, showProject = false, control = null }) {
         </select>
         {adder}
       </div>
-      {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
-      {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
+      {markedNames.length > 0 || startNames.length > 0 ? (
+        <div className="marked-actions">
+          {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
+          {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
+        </div>
+      ) : null}
       {results.length > 0 ? (
         <ul className="marked-results" role="status">
           {results.map((result) => (
@@ -2189,17 +2236,25 @@ function FeatureList({ features, showProject = false, control = null }) {
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th></tr>
+              <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th><th scope="col" className="swipe-cell"><span className="sr-only">Action</span></th></tr>
             </thead>
             <tbody>
               {visible.map((feature) => (
-                <tr key={feature.projectId + "/" + feature.name} className="feature">
+                <Fragment key={feature.projectId + "/" + feature.name}>
+                <tr className={swiped === feature.name ? "feature swiped" : "feature"} data-feature-row={feature.name} {...(markable(feature) ? swipeHandlers(touchAt, (left) => setSwiped(left ? feature.name : null)) : {})}>
                   <td>
                     {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(feature.name)} onChange={() => toggle(feature.name)} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                   </td>
                   <td><FeatureState status={feature.status} /></td>
+                  <td className="swipe-cell">{markable(feature) ? <SwipeButton feature={feature} shown={swiped === feature.name} onPress={() => { setSwiped(null); setAsking(feature.name); }} /> : null}</td>
                 </tr>
+                {asking === feature.name ? (
+                  <tr className="swipe-confirm">
+                    <td colSpan={3}><FeatureAction feature={feature} control={control} asking onCancel={() => setAsking(null)} /></td>
+                  </tr>
+                ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -2233,9 +2288,9 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         </div>
         {control !== null ? <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} /> : null}
-        {control !== null && feature.status === "pending" ? <RunAction kind="start" label="Start" tone="primary" icon="play" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} /> : null}
+        {control !== null && feature.status === "pending" ? <FeatureAction feature={feature} control={control} /> : null}
         {control !== null && feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
-        {control !== null && feature.status === "draft" ? <RunAction kind="promote" label="Promote" tone="primary" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + encodeURIComponent(feature.name) + "/promote")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} /> : null}
+        {control !== null && feature.status === "draft" ? <FeatureAction feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
             <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
