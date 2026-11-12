@@ -579,7 +579,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             };
         };
         let Some(current) = loaded.entries().iter().find(|entry| entry.feature_name == feature) else { return Ok(FeatureSave::Unknown) };
-        // As the popup's Edit: only what differs is sent, and a field left out stays as it is.
+        // As the popup's Edit: only what differs is sent, a field left out stays as it is, and one sent empty is cleared.
         // The editor was shown redacted values, so one sent back as shown keeps the original it stands for.
         let text = |new: &Option<String>, old: &Option<String>| new.as_ref().map(|value| unredacted(value, old.iter()));
         let list = |new: &Option<Vec<String>>, old: &[String]| new.as_ref().map(|values| values.iter().map(|value| unredacted(value, old.iter())).collect::<Vec<_>>());
@@ -589,7 +589,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             depends_on: list(&fields.depends_on, &current.depends_on).filter(|names| *names != current.depends_on),
             parallelizable: fields.parallelizable.filter(|value| Some(*value) != current.parallelizable),
             test_file: differs(text(&fields.test_file, &current.test_file), &current.test_file),
-            target_files: list(&fields.target_files, &current.target_files).filter(|paths| !paths.is_empty() && *paths != current.target_files),
+            target_files: list(&fields.target_files, &current.target_files).filter(|paths| *paths != current.target_files),
         };
         match loaded.edit_fields(feature, &edits) {
             Ok(_) => Ok(FeatureSave::Saved),

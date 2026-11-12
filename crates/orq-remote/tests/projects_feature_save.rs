@@ -144,3 +144,19 @@ fn the_redacted_fields_the_editor_read_sent_back_unchanged_keep_the_originals() 
     assert_eq!(entries[1]["targetFiles"], json!([format!("src/{secret}.rs"), "src/plain.rs"]));
     assert_eq!(entries[1]["parallelizable"], true);
 }
+
+#[test]
+fn an_edit_clears_a_field_sent_empty_and_leaves_out_fields_alone() {
+    let s = setup("clear");
+    let alpha = git_repo(&s.scan, "alpha");
+    let file = alpha.join(".tdd-features.json");
+    std::fs::write(&file, LEDGER).unwrap();
+    let edit = json!({"fields": {"description": "", "depends_on": [], "test_file": "", "target_files": []}, "version": sha256(LEDGER.as_bytes())});
+    assert_eq!(post(&s, "/api/projects/alpha/features/f-one", edit), (200, json!({"feature": "f-one"})));
+    let entries: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(entries[1]["description"], "");
+    assert_eq!(entries[1]["dependsOn"], json!([]));
+    assert_eq!(entries[1]["testFile"], "");
+    assert_eq!(entries[1]["targetFiles"], json!([]));
+    assert_eq!(entries[1]["status"], "pending");
+}

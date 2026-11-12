@@ -123,7 +123,7 @@ fn edit_reads_the_fields_then_asks_and_posts_them_with_the_version_read() {
     assert_eq!(sent[0]["url"], "/api/projects/alpha/features/next-one");
     assert_eq!(sent[0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let body: Value = serde_json::from_str(sent[0]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(body, json!({"fields": {"name": "next-one", "description": "Reworded", "depends_on": ["sketch"], "parallelizable": null, "test_file": "tests/one.rs", "target_files": ["src/a.rs", "src/b.rs"]}, "version": "v1"}));
+    assert_eq!(body, json!({"fields": {"description": "Reworded", "depends_on": ["sketch"], "target_files": ["src/a.rs", "src/b.rs"]}, "version": "v1"}), "only what was changed is sent");
     assert!(texts(&out["frames"][7]).iter().any(|t| t == "Saved next-one."), "{out}");
 }
 
@@ -183,4 +183,22 @@ fn an_empty_ledger_still_offers_add_feature() {
     assert!(texts(&out["frames"][1]).iter().any(|t| t == "No features in this project's ledger."), "{out}");
     assert_eq!(count(last(&out), "[data-field-name]"), 1, "{out}");
     assert_eq!(count(last(&out), "[data-field-depends]"), 0, "nothing to depend on: {out}");
+}
+
+#[test]
+fn an_edit_sends_an_emptied_box_as_a_clear_and_leaves_out_what_was_not_touched() {
+    let saved = json!({"status": 200, "json": {"feature": "next-one"}});
+    let steps = vec![
+        json!({"click": "[data-feature-edit]"}),
+        json!({"set": "[data-field-description]", "value": "  "}),
+        json!({"set": "[data-field-test-file]", "value": ""}),
+        json!({"set": "[data-field-target-files]", "value": ""}),
+        json!({"click": "[data-feature-save]"}),
+        json!({"click": "[data-confirm]"}),
+    ];
+    let Some(out) = detail("next-one", true, vec![fields(), saved], steps) else { return };
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    let body: Value = serde_json::from_str(sent[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body, json!({"fields": {"description": "", "test_file": "", "target_files": []}, "version": "v1"}));
 }

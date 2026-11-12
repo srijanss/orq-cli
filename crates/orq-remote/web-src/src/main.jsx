@@ -1910,8 +1910,8 @@ function featureDraft(fields) {
 
 // What the editor sends: a blank box is null, the target files one path per comma or line, and the
 // dependencies in ledger order.
-function featureFields(draft, features) {
-  const blank = (value) => (value.trim() === "" ? null : value);
+function featureFields(draft, features, empty = null) {
+  const blank = (value) => (value.trim() === "" ? empty : value);
   return {
     name: draft.name.trim(),
     description: blank(draft.description),
@@ -1922,6 +1922,14 @@ function featureFields(draft, features) {
   };
 }
 
+// What an edit sends: only the fields changed since the editor opened, so a field left alone (and any
+// redacted text it was shown) is not sent back, and an emptied box is sent as a clear ("" or []).
+function changedFields(draft, opened, features) {
+  const now = featureFields(draft, features, "");
+  const was = featureFields(opened, features, "");
+  return Object.fromEntries(Object.keys(now).filter((key) => key !== "name" && JSON.stringify(now[key]) !== JSON.stringify(was[key])).map((key) => [key, now[key]]));
+}
+
 // Edit (name given) or Add feature (no name): the popup's editor as plain inputs. Edit reads the fields
 // and the ledger's version first, so the save goes ahead only if nobody changed the ledger meanwhile.
 // Save asks first; refused values keep the editor open with the reason, and a changed ledger offers Reload.
@@ -1929,6 +1937,7 @@ function FeatureEditor({ name = null, features, control }) {
   const adding = name === null;
   const [phase, setPhase] = useState("idle");
   const [draft, setDraft] = useState(null);
+  const [opened, setOpened] = useState(null);
   const [version, setVersion] = useState(null);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
@@ -1952,6 +1961,7 @@ function FeatureEditor({ name = null, features, control }) {
       const body = await jsonOrNull(response);
       if (response.ok && body !== null && body.fields !== null && typeof body.fields === "object" && typeof body.version === "string") {
         setDraft(featureDraft(body.fields));
+        setOpened(featureDraft(body.fields));
         setVersion(body.version);
         setPhase("editing");
         return;
@@ -1972,7 +1982,7 @@ function FeatureEditor({ name = null, features, control }) {
     let changed = false;
     try {
       const path = controlPath(control, adding ? "features" : "features/" + encodeURIComponent(name));
-      const response = await actionRequest(path, control.token, adding ? { fields } : { fields, version });
+      const response = await actionRequest(path, control.token, adding ? { fields } : { fields: changedFields(draft, opened, features), version });
       if (response.status === 401) {
         control.onSignedOut();
         return;
