@@ -130,3 +130,16 @@ fn a_failed_or_review_waiting_run_whose_work_is_on_its_target_shows_as_merged() 
     let (_, body) = send(&s, "GET", "/api/projects/alpha/runs/r-fail");
     assert_eq!(body["run"]["state"], json!("failed"), "{body}");
 }
+
+#[test]
+fn a_worktree_kept_for_its_uncommitted_work_is_named_within_the_project_not_by_its_path_on_this_machine() {
+    let s = setup("run-discard-kept");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-dirty", &["run.started", "run.failed"]);
+    std::fs::write(alpha.join(".claude/worktrees/r-dirty/left.txt"), "x").unwrap();
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/runs/r-dirty/discard");
+    assert_eq!(status, 202, "{body}");
+    let note = body["note"].as_str().unwrap();
+    assert!(note.contains("Uncommitted work: kept .claude/worktrees/r-dirty and its branch."), "{body}");
+    assert!(!note.contains(alpha.to_str().unwrap()), "no path on this machine: {body}");
+}

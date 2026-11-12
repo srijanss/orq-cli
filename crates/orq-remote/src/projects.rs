@@ -677,7 +677,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         // The orchestrator words why a run cannot go as "<run> ...", "... refusing ..." or "... is not the
         // repository of <run>"; any other failure is for this machine's operator.
         match crate::discard::discard_and_reopen(&self.roots.state, run, &project.path) {
-            Ok(done) => Ok(RunDiscard::Discarded { note: orq_core::redact::redact(&done.note), cleared: done.merged }),
+            Ok(done) => Ok(RunDiscard::Discarded { note: orq_core::redact::redact(&done.web_note), cleared: done.merged }),
             Err(why) if why.starts_with(&format!("{run} ")) || why.contains("refusing") || why.ends_with(&format!("is not the repository of {run}")) => {
                 Ok(RunDiscard::Refused(orq_core::redact::redact(&why)))
             }

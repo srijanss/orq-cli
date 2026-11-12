@@ -8,6 +8,9 @@ use std::path::Path;
 /// target branch (the popup calls that Clear).
 pub struct Discarded {
     pub note: String,
+    /// The note for the web: the same, but a kept worktree is named within the project, never by where it
+    /// is on this machine.
+    pub web_note: String,
     pub merged: bool,
 }
 
@@ -29,20 +32,34 @@ pub fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<Disc
     if outcome.merged {
         note.push_str(" Its work is on the target branch; its features stay as the ledger has them.");
     }
+    let mut web_note = note.clone();
     if let Some(kept) = outcome.kept_worktree {
         note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
+        web_note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&within_project(&kept, repo))));
     }
     if let Some(deleted) = outcome.deleted_branch {
         if deleted.commits_ahead != Some(0) {
-            note.push_str(&format!(
+            let line = format!(
                 " Deleted the branch {} with {}; its last commit was {}.",
                 printable(&deleted.name),
                 commits_not_on_target(deleted.commits_ahead),
                 printable(&deleted.last_commit)
-            ));
+            );
+            note.push_str(&line);
+            web_note.push_str(&line);
         }
     }
-    Ok(Discarded { note, merged: outcome.merged })
+    Ok(Discarded { note, web_note, merged: outcome.merged })
+}
+
+/// `path` relative to the project at `repo` when it is inside it, else only its last component.
+fn within_project(path: &Path, repo: &Path) -> String {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (path, repo) = (canonical(path), canonical(repo));
+    match path.strip_prefix(&repo) {
+        Ok(inside) => inside.display().to_string(),
+        Err(_) => path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+    }
 }
 
 /// "2 commits not on the target branch", or "commits the target branch may not have" when the count
