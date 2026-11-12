@@ -279,6 +279,47 @@ impl StoreProjects {
         Ok(Some((git, root)))
     }
 
+    /// Project `git`'s `stored` settings as the web reads them: each role's own choice and what a
+    /// run would use if it named none, with where that comes from, all redacted. It cannot fail: a
+    /// fallback that cannot be worked out is null.
+    fn settings_answer(&self, git: &orq_git::Project, stored: &orq_core::project_settings::StoredProjectSettings) -> serde_json::Value {
+        use orq_features::AgentRole;
+        // A fallback that cannot be worked out (a broken config a run may never read) is unknown, so
+        // the project's own settings can still be seen and changed. Each role needs only its own
+        // sources: the implementer never reads .tdd-config.json, and the reviewer's reviewers.default
+        // comes before every profile.
+        let profiles = self.model_profiles(&git.root).ok();
+        let reviewers = orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).ok();
+        let fallback_of = |role| {
+            let (profiles, reviewers) = match role {
+                AgentRole::Implementer => (profiles.clone()?, orq_features::TddReviewerConfig::default()),
+                AgentRole::Reviewer => {
+                    let reviewers = reviewers.clone()?;
+                    match profiles.clone() {
+                        Some(profiles) => (profiles, reviewers),
+                        None if reviewers.default_reviewer.is_some() => (orq_features::ModelProfiles::default(), reviewers),
+                        None => return None,
+                    }
+                }
+            };
+            orq_features::role_fallback(&profiles, &reviewers, role).ok()
+        };
+        let name = |text: &str| orq_core::redact::redact(text);
+        let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
+        let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| {
+            let fallback = fallback_of(role);
+            let fallback = fallback.map(|(model, source)| serde_json::json!({ "harness": name(&model.harness), "model": name(&model.model), "effort": effort(model.thinking.as_ref()), "source": source.as_str() }));
+            let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
+            serde_json::json!({ "project": chosen, "fallback": fallback })
+        };
+        serde_json::json!({
+            "implementer": role(&stored.settings.implementer, AgentRole::Implementer),
+            "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer),
+            "delivery": stored.settings.delivery.as_str(),
+            "revision": stored.revision,
+        })
+    }
+
     /// Lets the web choose the implementer's and reviewer's harness and model from what `source`
     /// finds: each harness with the models it allows. It is asked once, on first use.
     pub fn with_agent_options(mut self, source: std::sync::Arc<AgentOptionsSource>) -> Self {
@@ -574,7 +615,6 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     /// role what a run would use if the project named none, with where it comes from. orq.db is only
     /// read; without it the project has no record (revision 0).
     fn project_settings(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
-        use orq_features::AgentRole;
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
         let database = self.roots.database();
         let stored = if database.exists() {
@@ -582,55 +622,24 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         } else {
             orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
         };
-        // A fallback that cannot be worked out (a broken config a run may never read) is unknown, so
-        // the project's own settings can still be seen and changed. Each role needs only its own
-        // sources: the implementer never reads .tdd-config.json, and the reviewer's reviewers.default
-        // comes before every profile.
-        let profiles = self.model_profiles(&git.root).ok();
-        let reviewers = orq_features::load_reviewer_config(&git.root.join(".tdd-config.json")).ok();
-        let fallback_of = |role| {
-            let (profiles, reviewers) = match role {
-                AgentRole::Implementer => (profiles.clone()?, orq_features::TddReviewerConfig::default()),
-                AgentRole::Reviewer => {
-                    let reviewers = reviewers.clone()?;
-                    match profiles.clone() {
-                        Some(profiles) => (profiles, reviewers),
-                        None if reviewers.default_reviewer.is_some() => (orq_features::ModelProfiles::default(), reviewers),
-                        None => return None,
-                    }
-                }
-            };
-            orq_features::role_fallback(&profiles, &reviewers, role).ok()
-        };
-        let name = |text: &str| orq_core::redact::redact(text);
-        let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
-        let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| {
-            let fallback = fallback_of(role);
-            let fallback = fallback.map(|(model, source)| serde_json::json!({ "harness": name(&model.harness), "model": name(&model.model), "effort": effort(model.thinking.as_ref()), "source": source.as_str() }));
-            let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
-            serde_json::json!({ "project": chosen, "fallback": fallback })
-        };
-        Ok(Some(serde_json::json!({
-            "implementer": role(&stored.settings.implementer, AgentRole::Implementer),
-            "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer),
-            "delivery": stored.settings.delivery.as_str(),
-            "revision": stored.revision,
-        })))
+        Ok(Some(self.settings_answer(&git, &stored)))
     }
 
     /// Saves the project's own settings in this machine's orq.db, keyed by its main checkout like a
-    /// read, if its record is still at `revision`; then gives the settings as a read now does.
+    /// read, if its record is still at `revision`; then gives the saved settings as a read gives them.
     fn save_project_settings(&self, id: &str, revision: u64, settings: &orq_core::project_settings::ProjectSettings) -> Result<orq_core::remote_inbox::ProjectSettingsSave, String> {
         use orq_core::project_settings::SaveOutcome;
         use orq_core::remote_inbox::ProjectSettingsSave;
-        let Some((_, root)) = self.settings_key(id)? else { return Ok(ProjectSettingsSave::Unknown) };
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(ProjectSettingsSave::Unknown) };
         let mut store = orq_core::store::Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
         match store.save_project_settings(&root, revision, settings).map_err(|error| error.to_string())? {
             SaveOutcome::Conflict => Ok(ProjectSettingsSave::Conflict),
-            SaveOutcome::Saved { .. } => match self.project_settings(id)? {
-                Some(read) => Ok(ProjectSettingsSave::Saved(read)),
-                None => Ok(ProjectSettingsSave::Unknown),
-            },
+            // Once committed, the answer is built from what was saved and the project already found,
+            // so nothing read afterwards can report a save that happened as refused.
+            SaveOutcome::Saved { revision } => {
+                let saved = orq_core::project_settings::StoredProjectSettings { settings: settings.clone(), revision };
+                Ok(ProjectSettingsSave::Saved(self.settings_answer(&git, &saved)))
+            }
         }
     }
 
