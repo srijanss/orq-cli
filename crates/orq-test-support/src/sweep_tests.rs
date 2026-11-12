@@ -25,12 +25,24 @@ fn publishing_never_replaces_a_directory_already_at_the_name() {
 fn a_root_is_swept_only_when_well_named_a_real_directory_this_users_and_its_process_is_gone() {
     let me = 1000;
     let gone = |_| true;
-    assert!(sweepable("orq-tests-42-0", true, me, me, gone));
-    assert!(!sweepable("orq-tests-42-0", true, 0, me, gone), "another user's root");
-    assert!(!sweepable("orq-tests-42-0", false, me, me, gone), "a symlink or file");
-    assert!(!sweepable("orq-tests-42-0", true, me, me, |_| false), "its process exists");
-    for name in ["orq-tests-x-0", "orq-tests-0-0", "orq-tests--1-0", "orq-tests-42-x", "orq-tests-42", "orq-other-42-0"] {
-        assert!(!sweepable(name, true, me, me, gone), "{name}");
+    let dir_of = |owner| move || Some((true, owner));
+    assert!(sweepable("orq-tests-42-0", dir_of(me), me, gone));
+    assert!(!sweepable("orq-tests-42-0", dir_of(0), me, gone), "another user's root");
+    assert!(!sweepable("orq-tests-42-0", || Some((false, me)), me, gone), "a symlink or file");
+    assert!(!sweepable("orq-tests-42-0", || None, me, gone), "an entry already gone");
+    assert!(!sweepable("orq-tests-42-0", dir_of(me), me, |_| false), "its process exists");
+}
+
+#[test]
+fn an_entry_not_named_like_a_root_is_never_looked_up() {
+    for name in ["orq-tests-x-0", "orq-tests-0-0", "orq-tests--1-0", "orq-tests-42-x", "orq-tests-42", "orq-other-42-0", "unrelated.sock"] {
+        let looked_up = std::cell::Cell::new(false);
+        let metadata = || {
+            looked_up.set(true);
+            Some((true, 1000))
+        };
+        assert!(!sweepable(name, metadata, 1000, |_| true), "{name}");
+        assert!(!looked_up.get(), "{name} was looked up");
     }
 }
 

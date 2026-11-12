@@ -130,8 +130,8 @@ fn sweep_roots_of_gone_processes(temp: &Path) {
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
         // A symlink or another user's entry is never followed or removed.
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else { continue };
-        if sweep::sweepable(&name, metadata.is_dir(), metadata.uid(), me, process_gone) {
+        let metadata = || fs::symlink_metadata(entry.path()).ok().map(|metadata| (metadata.is_dir(), metadata.uid()));
+        if sweep::sweepable(&name, metadata, me, process_gone) {
             if let Some(_lock) = try_lock(&entry.path()) {
                 let _ = fs::remove_dir_all(entry.path());
             }
