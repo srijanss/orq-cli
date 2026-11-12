@@ -1826,11 +1826,15 @@ function Pager({ at, pages, onPage }) {
   return <PagerBar status={"Page " + (at + 1) + " of " + pages} prev={{ attrs: { "data-page-prev": "" }, onClick: at === 0 ? null : () => onPage(at - 1) }} next={{ attrs: { "data-page-next": "" }, onClick: at === pages - 1 ? null : () => onPage(at + 1) }} />;
 }
 
+// "in alpha" for the every-project list's buttons and questions, so each names the project it sends to.
+const placeSuffix = (place) => (place === null ? "" : " in " + place);
+const featuresPhrase = (names, place) => names.length + (names.length === 1 ? " feature" : " features") + placeSuffix(place) + ": " + names.join(", ");
+
 // Promote marked: it asks once, then sends one promote request per marked draft in ledger order, so the
 // server audits each on its own; there is no bulk route. A refused sign-in stops the rest.
-function PromoteMarked({ names, control, onFinished }) {
+function PromoteMarked({ names, control, onFinished, place = null }) {
   const [phase, setPhase] = useState("idle");
-  const label = "Promote " + names.length;
+  const label = "Promote " + names.length + placeSuffix(place);
   const send = async () => {
     setPhase("sending");
     const results = [];
@@ -1860,7 +1864,7 @@ function PromoteMarked({ names, control, onFinished }) {
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
       {phase === "asking" ? (
-        <Confirm question={"Promote " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + "?"} answer="Yes, promote" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
+        <Confirm question={"Promote " + featuresPhrase(names, place) + "?"} answer="Yes, promote" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
     </div>
@@ -1886,13 +1890,13 @@ function dependencyOrder(features, names) {
 
 // The popup's launch marked: "Start N" reads the launch profiles, asks with the picked pair, then sends
 // one start per marked feature in the order given, and reports each run started or refused.
-function StartMarked({ names, control, onFinished }) {
+function StartMarked({ names, control, onFinished, place = null }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const [offer, setOffer] = useState(null);
   const [implementer, setImplementer] = useState("");
   const [reviewer, setReviewer] = useState("");
-  const label = "Start " + names.length;
+  const label = "Start " + names.length + placeSuffix(place);
   const ask = async () => {
     setNote("");
     setPhase("checking");
@@ -1937,7 +1941,7 @@ function StartMarked({ names, control, onFinished }) {
     setPhase("idle");
     onFinished(results);
   };
-  const asked = "Start " + names.length + (names.length === 1 ? " feature: " : " features: ") + names.join(", ") + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
+  const asked = "Start " + featuresPhrase(names, place) + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-start-marked onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
@@ -2032,6 +2036,21 @@ function FeatureEditor({ name = null, features, control }) {
   const [version, setVersion] = useState(null);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
+  // Adding opens in a popup (on a phone the stylesheet lays it in the page); Close or Escape shuts it unsent.
+  const popup = adding && (phase === "editing" || phase === "asking" || phase === "sending");
+  const close = () => {
+    setNote("");
+    setConflict(false);
+    setPhase("idle");
+  };
+  useEffect(() => {
+    if (!popup || phase === "sending") return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [popup, phase]);
   const open = async () => {
     setNote("");
     setConflict(false);
@@ -2100,10 +2119,8 @@ function FeatureEditor({ name = null, features, control }) {
   const toggle = (dependency) => setDraft({ ...draft, depends_on: draft.depends_on.includes(dependency) ? draft.depends_on.filter((entry) => entry !== dependency) : [...draft.depends_on, dependency] });
   const question = (adding ? "Add " : "Save ") + shownName + "?";
   const others = features.filter((feature) => feature.name !== name);
-  return (
-    <div className="feature-editor">
-      {phase === "idle" ? (adding ? <button type="button" className="primary-button" data-feature-add onClick={open}><Icon name="plus" size={16} />Add feature</button> : <button type="button" data-feature-edit onClick={open}><Icon name="pencil" size={16} />Edit</button>) : null}
-      {phase === "loading" ? <span role="status">Loading the feature…</span> : null}
+  const parts = (
+    <>
       {phase === "editing" ? (
         <div role="group" aria-label={adding ? "Add a feature" : "Edit " + name} className="feature-editor-fields">
           {adding ? <label className="field"><span className="field-label">Name</span><input type="text" data-field-name value={draft.name} autoComplete="off" spellCheck={false} onChange={set("name")} /></label> : null}
@@ -2124,6 +2141,23 @@ function FeatureEditor({ name = null, features, control }) {
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
       {conflict ? <button type="button" data-feature-reload onClick={() => { setNote(""); setConflict(false); setPhase("idle"); control.onDone(); }}>Reload</button> : null}
+    </>
+  );
+  return (
+    <div className="feature-editor">
+      {phase === "idle" ? (adding ? <button type="button" className="primary-button" data-feature-add onClick={open}><Icon name="plus" size={16} />Add feature</button> : <button type="button" data-feature-edit onClick={open}><Icon name="pencil" size={16} />Edit</button>) : null}
+      {phase === "loading" ? <span role="status">Loading the feature…</span> : null}
+      {popup ? (
+        <div className="feature-modal" data-feature-modal>
+          <div className="feature-modal-box" role="dialog" aria-modal="true" aria-labelledby="feature-modal-title">
+            <div className="feature-modal-head">
+              <h2 id="feature-modal-title">Add feature</h2>
+              <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={phase === "sending"} onClick={close}><Icon name="close" size={18} /></button>
+            </div>
+            {parts}
+          </div>
+        </div>
+      ) : parts}
     </div>
   );
 }
@@ -2147,12 +2181,12 @@ function swipeHandlers(touchAt, onSwipe) {
   };
 }
 
-// The action a swipe reveals on a phone: Promote for a draft, Start for a pending feature.
-function SwipeButton({ feature, shown, onPress }) {
+// The action a swipe reveals on a phone, beside the row's state: Promote for a draft, Start for a pending feature.
+function SwipeButton({ feature, onPress }) {
   const draft = feature.status === "draft";
   const kind = draft ? "data-swipe-promote" : "data-swipe-start";
   return (
-    <button type="button" className="primary-button" {...{ [kind]: feature.name }} tabIndex={shown ? 0 : -1} aria-hidden={shown ? undefined : "true"} onClick={onPress}>
+    <button type="button" className="primary-button" {...{ [kind]: feature.name }} onClick={onPress}>
       <Icon name={draft ? "arrowUp" : "play"} size={16} />{draft ? "Promote" : "Start"}
     </button>
   );
@@ -2192,16 +2226,28 @@ function FeatureList({ features, showProject = false, control = null }) {
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
-  // A draft can be marked to promote and a pending feature to start. Promotes go out in ledger order and
-  // starts in dependency order, whatever order the marks were made in.
-  const markable = (feature) => control !== null && (feature.status === "draft" || feature.status === "pending");
-  const markedNames = features.filter((feature) => feature.status === "draft" && markable(feature) && marked.includes(feature.name)).map((feature) => feature.name);
-  const startNames = dependencyOrder(features.filter((feature) => feature.status === "pending" && markable(feature)), marked);
-  const toggle = (name) => setMarked((now) => (now.includes(name) ? now.filter((entry) => entry !== name) : [...now, name]));
-  const finished = (done) => {
+  // A draft can be marked to promote and a pending feature to start, when its project allows actions: a row of
+  // the every-project list carries its own project's control. Promotes go out in ledger order and starts in
+  // dependency order, whatever order the marks were made in, each project's to that project.
+  const controlOf = (feature) => (feature.control === undefined ? control : feature.control);
+  const keyOf = (feature) => feature.projectId + "/" + feature.name;
+  const markable = (feature) => controlOf(feature) !== null && (feature.status === "draft" || feature.status === "pending");
+  const groups = [...new Set(features.filter(markable).map((feature) => feature.projectId))].map((projectId) => {
+    const own = features.filter((feature) => feature.projectId === projectId && markable(feature));
+    const names = own.filter((feature) => marked.includes(keyOf(feature))).map((feature) => feature.name);
+    return {
+      projectId,
+      control: controlOf(own[0]),
+      place: showProject ? own[0].projectName : null,
+      promote: own.filter((feature) => feature.status === "draft" && names.includes(feature.name)).map((feature) => feature.name),
+      start: dependencyOrder(own.filter((feature) => feature.status === "pending"), names),
+    };
+  }).filter((group) => group.promote.length > 0 || group.start.length > 0);
+  const toggle = (key) => setMarked((now) => (now.includes(key) ? now.filter((entry) => entry !== key) : [...now, key]));
+  const finished = (group) => (done) => {
     setMarked([]);
     setResults(done);
-    if (done.some((result) => result.ok)) control.onDone();
+    if (done.some((result) => result.ok)) group.control.onDone();
   };
   return (
     <>
@@ -2218,10 +2264,14 @@ function FeatureList({ features, showProject = false, control = null }) {
         </select>
         {adder}
       </div>
-      {markedNames.length > 0 || startNames.length > 0 ? (
+      {groups.length > 0 ? (
         <div className="marked-actions">
-          {markedNames.length > 0 ? <PromoteMarked names={markedNames} control={control} onFinished={finished} /> : null}
-          {startNames.length > 0 ? <StartMarked names={startNames} control={control} onFinished={finished} /> : null}
+          {groups.map((group) => (
+            <Fragment key={group.projectId}>
+              {group.promote.length > 0 ? <PromoteMarked names={group.promote} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
+              {group.start.length > 0 ? <StartMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
+            </Fragment>
+          ))}
         </div>
       ) : null}
       {results.length > 0 ? (
@@ -2236,22 +2286,26 @@ function FeatureList({ features, showProject = false, control = null }) {
         <div className="feature-table-wrap">
           <table className="feature-table">
             <thead>
-              <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th><th scope="col" className="swipe-cell"><span className="sr-only">Action</span></th></tr>
+              <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th></tr>
             </thead>
             <tbody>
               {visible.map((feature) => (
-                <Fragment key={feature.projectId + "/" + feature.name}>
-                <tr className={swiped === feature.name ? "feature swiped" : "feature"} data-feature-row={feature.name} {...(markable(feature) ? swipeHandlers(touchAt, (left) => setSwiped(left ? feature.name : null)) : {})}>
+                <Fragment key={keyOf(feature)}>
+                <tr className={swiped === keyOf(feature) ? "feature swiped" : "feature"} data-feature-row={feature.name} {...(markable(feature) ? swipeHandlers(touchAt, (left) => setSwiped(left ? keyOf(feature) : null)) : {})}>
                   <td>
-                    {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(feature.name)} onChange={() => toggle(feature.name)} /> : null}
+                    {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(keyOf(feature))} onChange={() => toggle(keyOf(feature))} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                   </td>
-                  <td><FeatureState status={feature.status} /></td>
-                  <td className="swipe-cell">{markable(feature) ? <SwipeButton feature={feature} shown={swiped === feature.name} onPress={() => { setSwiped(null); setAsking(feature.name); }} /> : null}</td>
+                  <td>
+                    <span className="feature-state-cell">
+                      <FeatureState status={feature.status} />
+                      {swiped === keyOf(feature) && markable(feature) ? <SwipeButton feature={feature} onPress={() => { setSwiped(null); setAsking(keyOf(feature)); }} /> : null}
+                    </span>
+                  </td>
                 </tr>
-                {asking === feature.name ? (
+                {asking === keyOf(feature) ? (
                   <tr className="swipe-confirm">
-                    <td colSpan={3}><FeatureAction feature={feature} control={control} asking onCancel={() => setAsking(null)} /></td>
+                    <td colSpan={2}><FeatureAction feature={feature} control={controlOf(feature)} asking onCancel={() => setAsking(null)} /></td>
                   </tr>
                 ) : null}
                 </Fragment>
@@ -2362,8 +2416,13 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
   return state;
 }
 
-function AllFeatures({ token, projects, reloads, onSignedOut }) {
-  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows: (parsed, project) => tagged(parsed.rows, project.id, project.name) });
+// Each row carries its own project's control, so a project that allows actions offers them here too.
+function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh }) {
+  const toRows = (parsed, project) => {
+    const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null;
+    return tagged(parsed.rows, project.id, project.name).map((feature) => ({ ...feature, control }));
+  };
+  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows });
   if (state.loading) {
     return (
       <div className="skeleton" role="status" aria-busy="true">
@@ -3313,7 +3372,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
         <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
           <>
             <ProjectSelect projects={projects} projectId={null} />
-            <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} />
+            <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} />
           </>
         ) : (
           <>
