@@ -207,6 +207,7 @@ fn a_push_only_run_pushes_its_branch_and_stops_without_opening_a_review() {
     let id = store(&w).run_ids().unwrap().remove(0);
     let record = store(&w).load(&id).unwrap();
     assert!(remote_branch(&w, &record.branch).is_some(), "the branch {} was pushed", record.branch);
+    assert!(!record.worktree.exists(), "a delivered run's worktree is cleaned up: {}", record.worktree.display());
     let opened: Vec<_> = w.provider.calls().into_iter().filter(|c| c.args.first().map(String::as_str) == Some("pr") && c.args.get(1).map(String::as_str) == Some("create")).collect();
     assert!(opened.is_empty(), "no PR/MR was opened: {opened:?}");
     assert_eq!(ending(&w, &id).as_deref(), Some("pushed"));
