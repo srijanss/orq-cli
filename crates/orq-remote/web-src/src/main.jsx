@@ -1495,9 +1495,20 @@ function Confirm({ question, detail = null, answer, tone, busy = false, onConfir
   );
 }
 
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null }) {
+// The link a start's confirmation carries to the new run's orchestration page, or nothing for an empty or
+// unroutable run id.
+function OpenRun({ projectId, run }) {
+  if (!RUN_ID.test(run)) return null;
+  const href = "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
+  return <a data-open-run={run} href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>Open run</a>;
+}
+
+// opensIn: the project whose orchestration page the run the action started is linked to, or null for an
+// action that starts no run.
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null }) {
   const [phase, setPhase] = useState(asking ? "asking" : "idle");
   const [note, setNote] = useState("");
+  const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
   const ask = async () => {
     setNote("");
@@ -1540,7 +1551,9 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       const body = await jsonOrNull(response);
       if (response.ok) {
         // Done for good: the control stays closed while the list is read again, so the same action cannot be sent twice.
-        setNote(done(body !== null && typeof body.run === "string" ? body.run : "", body ?? {}));
+        const started = body !== null && typeof body.run === "string" ? body.run : "";
+        setNote(done(started, body ?? {}));
+        setRun(started);
         setPhase("done");
         onDone();
         return;
@@ -1559,6 +1572,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => (onCancel === null ? setPhase("idle") : onCancel())} /> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+      {phase === "done" && opensIn !== null ? <OpenRun projectId={opensIn} run={run} /> : null}
     </div>
   );
 }
@@ -1742,6 +1756,7 @@ function useLaunchChoice() {
 function LaunchAction({ feature, control }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
+  const [run, setRun] = useState("");
   const choice = useLaunchChoice();
   const startPath = controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs");
   const ask = async () => {
@@ -1773,6 +1788,7 @@ function LaunchAction({ feature, control }) {
       if (response.ok) {
         const run = body !== null && typeof body.run === "string" ? body.run : "";
         setNote(run === "" ? "Started." : "Started run " + run + ".");
+        setRun(run);
         setPhase("done");
         control.onDone();
         return;
@@ -1796,6 +1812,7 @@ function LaunchAction({ feature, control }) {
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+      {phase === "done" ? <OpenRun projectId={control.projectId} run={run} /> : null}
     </div>
   );
 }
@@ -2018,6 +2035,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
     for (const name of names) {
       let text = name + ": the run could not be started.";
       let ok = false;
+      let started = "";
       try {
         const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/runs"), control.token, choice.body);
         if (response.status === 401) {
@@ -2027,13 +2045,16 @@ function StartMarked({ names, control, onFinished, place = null }) {
         const body = await jsonOrNull(response);
         ok = response.ok;
         const run = body !== null && typeof body.run === "string" ? body.run : "";
-        if (ok) text = run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".";
+        if (ok) {
+          text = run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".";
+          started = run;
+        }
         else if (response.status === 403) text = name + ": Not allowed.";
         else if (body !== null && typeof body.error === "string") text = name + ": " + body.error;
       } catch (unreachable) {
         text = name + ": The server could not be reached.";
       }
-      results.push({ name, ok, text });
+      results.push({ name, ok, text, run: started, projectId: control.projectId });
     }
     setPhase("idle");
     onFinished(results);
@@ -2296,7 +2317,7 @@ function FeatureAction({ feature, control, asking = false, onCancel = null }) {
   const name = encodeURIComponent(feature.name);
   const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
   return feature.status === "pending"
-    ? <RunAction {...shared} kind="start" label="Start" icon="play" question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} />
+    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} />
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
 }
 
@@ -2375,7 +2396,7 @@ function FeatureList({ features, showProject = false, control = null }) {
       {results.length > 0 ? (
         <ul className="marked-results" role="status">
           {results.map((result) => (
-            <li key={result.name} data-marked-result className={result.ok ? "run-action-note" : "run-action-note error-text"}>{result.text}</li>
+            <li key={result.name} data-marked-result className={result.ok ? "run-action-note" : "run-action-note error-text"}><span>{result.text}</span>{result.ok && typeof result.run === "string" ? <OpenRun projectId={result.projectId} run={result.run} /> : null}</li>
           ))}
         </ul>
       ) : null}
