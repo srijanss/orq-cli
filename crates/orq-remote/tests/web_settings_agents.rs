@@ -116,3 +116,20 @@ fn a_stale_version_shows_the_reason_and_offers_reload() {
     assert!(shown(frame).iter().any(|t| t == "The settings changed since they were read."), "{out}");
     assert_eq!(count(frame, "[data-settings-reload]"), 1, "{out}");
 }
+
+/// The agents on Settings are the machine's defaults, which each project can override on its own
+/// Settings page; the heading says so with remote actions on or off.
+#[test]
+fn the_agents_section_is_titled_machine_defaults_and_says_each_project_can_override_it() {
+    for on in [true, false] {
+        let Some(out) = as_token(json!([settings(on, "opus"), options()]), json!([])) else { return };
+        let texts = shown(last(&out));
+        let heading = texts.iter().position(|t| t == "Machine defaults").unwrap_or_else(|| panic!("on={on}: {texts:?}"));
+        assert!(
+            texts.iter().any(|t| t == "Each project can override these on its own Settings page."),
+            "on={on}: {texts:?}"
+        );
+        let implementer = texts.iter().position(|t| t == "Implementer").unwrap_or_else(|| panic!("on={on}: {texts:?}"));
+        assert!(heading < implementer, "the heading comes before the agents: {texts:?}");
+    }
+}

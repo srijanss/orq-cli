@@ -1382,6 +1382,10 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
         <SettingsHead icon="sliders">Run settings</SettingsHead>
         <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
+      <div className="settings-group-head" data-machine-defaults>
+        <h2>Machine defaults</h2>
+        <p>Each project can override these on its own Settings page.</p>
+      </div>
       {[["Implementer", "implementer"], ["Reviewer", "reviewer"]].map(([title, role]) => (
         <section key={role} className="card settings-card">
           {on ? (
