@@ -75,6 +75,12 @@ pub fn rebase_onto_target(
 /// fetching: a merge-local run whose local base branch moved is rebased onto where it is now.
 pub fn rebase_onto_commit(store: &RunStore, run_id: &str, target_sha: &str) -> Result<RebaseOutcome, StoreError> {
     let record = store.load(run_id)?;
+    // Only a full object id of a commit is taken: anything else, an option or a name, never
+    // reaches `git rebase`.
+    let full_id = matches!(target_sha.len(), 40 | 64) && target_sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !full_id || !git_raw(&record.worktree, &["cat-file", "-e", &format!("{target_sha}^{{commit}}")])?.success {
+        return Err(StoreError::Corrupt(format!("{target_sha:?} is not the id of a commit to rebase onto")));
+    }
     on_run_branch(&record)?;
     rebase_record_onto(store, &record, target_sha.to_string())
 }

@@ -426,3 +426,18 @@ fn the_run_branch_is_rebased_onto_a_given_local_commit_without_fetching_and_its_
     assert_eq!(events[0].kind, "rebase.completed");
     assert_eq!(events[0].payload["target_sha"], local.as_str());
 }
+
+#[test]
+fn a_commit_to_rebase_onto_that_is_not_a_commit_id_is_an_error_and_nothing_runs() {
+    let w = world("not-a-sha", None);
+    let marker = w.worktree.join("ran");
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+
+    for given in [format!("--exec=touch {}", marker.display()), "main".to_string(), "HEAD~1".to_string()] {
+        assert!(rebase_onto_commit(&w.store, "run-1", &given).is_err(), "{given} was taken as a commit id");
+    }
+
+    assert!(!marker.exists(), "an option was run");
+    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), head, "the branch was not touched");
+    assert!(kinds(&w).is_empty(), "nothing was recorded");
+}
