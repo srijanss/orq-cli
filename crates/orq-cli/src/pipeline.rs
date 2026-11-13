@@ -1098,14 +1098,16 @@ fn stages(
         Ok(())
     };
     // The steps a passing gate ran; the report counts them for a commit only when the gate passed for it.
-    let gate_steps = match choose_gate(worktree, settings.gate.as_deref()) {
+    // Read from the worktree when the report is built, since catching up with a base that moved may
+    // have changed what the gate checks.
+    let gate_steps = || match choose_gate(worktree, settings.gate.as_deref()) {
         Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
         _ => Vec::new(),
     };
     // A run whose delivery ends before any PR/MR: the delivered head's report is built while its
     // worktree is still there to read, then the worktree goes.
     let delivered = |head_sha: &str, ending: Ending| -> Result<Report, StoreError> {
-        build_review_report(store, record, options, &gate_steps, head_sha, None, logs);
+        build_review_report(store, record, options, &gate_steps(), head_sha, None, logs);
         clean_up(true, &CiOutcome::Skipped)?;
         Ok(Report { run_id: String::new(), ending, detail: None, review_url: None, ci_green: None })
     };
@@ -1192,7 +1194,7 @@ fn stages(
             created
         }
     };
-    build_review_report(store, record, options, &gate_steps, &head_sha, None, logs);
+    build_review_report(store, record, options, &gate_steps(), &head_sha, None, logs);
 
     if at_boundary(store, run_id, &["implement_and_review", "rebase", "gate", "push", "review_request"], "ci", Some(&record.branch), Some(&review_url))? {
         return paused("ci");
@@ -1209,7 +1211,7 @@ fn stages(
     let ci = if options.publish || !options.ci_check {
         let ci = wait_for_ci_logged(store, run_id, &provider, &head_sha, &ci_config, Some(&ci_log))?;
         if ci != CiOutcome::Skipped {
-            build_review_report(store, record, options, &gate_steps, &head_sha, Some(&ci), logs);
+            build_review_report(store, record, options, &gate_steps(), &head_sha, Some(&ci), logs);
         }
         ci
     } else {
@@ -1247,7 +1249,7 @@ fn stages(
             config: &ci_config,
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
-            report: &|head, ci| build_review_report(store, record, options, &gate_steps, head, ci, logs),
+            report: &|head, ci| build_review_report(store, record, options, &gate_steps(), head, ci, logs),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,

@@ -460,3 +460,28 @@ fn a_merge_local_run_whose_repair_after_catching_up_is_not_committed_is_blocked_
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
     assert!(record.worktree.join("fixed.txt").exists(), "the uncommitted repair is kept");
 }
+
+#[test]
+fn a_merge_local_run_that_catches_up_with_a_base_adding_a_stack_reports_the_steps_its_delivered_head_passed() {
+    let w = world("merge-moved-steps");
+    // Local main adds a Node package the remote's main does not have: the run's first gate finds
+    // nothing to check, the gate after catching up runs its test script.
+    commit_on_local_main(&w, ".pnp.cjs", "");
+    commit_on_local_main(&w, "package.json", "{\"scripts\": {\"test\": \"node test.js\"}}\n");
+    let npm_runs = w.home.join("npm-runs");
+    executable(&w.home.join("bin/npm"), &format!("#!/bin/sh\necho \"$*\" >> '{}'\n", npm_runs.display()));
+
+    let out = run(&w, &["--delivery", "merge-local"]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&npm_runs).unwrap_or_default(), "run test\n", "the gate after catching up ran the test script once");
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let shown = orq(&w, &["review", "show", &id, "--json"]);
+    assert!(shown.status.success(), "{}", text(&shown.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(
+        report["tests"]["commands"],
+        serde_json::json!([{"command": "npm run test", "exit_code": 0}]),
+        "the report lists the steps run on the delivered head: {report}"
+    );
+}
