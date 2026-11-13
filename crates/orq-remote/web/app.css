@@ -471,7 +471,7 @@ select:hover { border-color: var(--text-muted); }
 .project-picker { position: relative; display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-weight: 600; }
 .project-picker .project-switcher { flex: 0 1 18rem; padding: 0 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface); }
 .project-picker .project-list { left: 0; right: auto; top: calc(100% + 0.25rem); min-width: 14rem; }
-.project-settings-link { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface); color: var(--text-muted); }
+.project-settings-link { display: inline-flex; align-items: center; flex: none; padding: 0.25rem; color: var(--text-muted); }
 .project-settings-link:hover { color: var(--text); }
 .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; margin-top: 0.75rem; }
 .pager-buttons { display: inline-flex; gap: 0.5rem; margin-left: auto; }

@@ -71,3 +71,17 @@ fn the_settings_page_itself_has_no_cog() {
     assert_eq!(count(frame, "[data-project-select]"), 1, "the picker is there: {out}");
     assert_eq!(count(frame, "[data-settings-link]"), 0, "{out}");
 }
+
+fn css_rule(selector: &str) -> String {
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    css.lines().find(|line| line.starts_with(&format!("{selector} {{"))).unwrap_or_else(|| panic!("a {selector} rule")).to_string()
+}
+
+/// The cog is the gear alone beside the picker: no box drawn around it, so no border, background or fixed size.
+#[test]
+fn the_cog_is_a_bare_icon_without_a_box() {
+    let rule = css_rule(".project-settings-link");
+    for boxed in ["border:", "border-radius", "background", "width:", "height:"] {
+        assert!(!rule.contains(boxed), "{boxed} in {rule}");
+    }
+}
