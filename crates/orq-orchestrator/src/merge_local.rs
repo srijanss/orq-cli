@@ -51,6 +51,9 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
             // A local file in the way, ignored or untracked, makes git stop rather than overwrite it.
             let merged = git_raw(&checkout, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha])?;
             if !merged.success {
+                if let Some(base_sha) = moved_on_from(&record, &base_sha)? {
+                    return Ok(MergeOutcome::BaseMoved { base_sha });
+                }
                 return Ok(MergeOutcome::Refused {
                     reason: format!("{} at {} could not be fast-forwarded: {}", record.target_branch, checkout.display(), merged.stderr.trim()),
                 });
@@ -62,12 +65,23 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
             let reason = format!("orq: merge-local {}", record.run_id);
             let moved = git_raw(&record.worktree, &["update-ref", "-m", &reason, &target, &head_sha, &base_sha])?;
             if !moved.success {
+                if let Some(base_sha) = moved_on_from(&record, &base_sha)? {
+                    return Ok(MergeOutcome::BaseMoved { base_sha });
+                }
                 return Ok(MergeOutcome::Refused { reason: format!("{} could not be moved to this run's branch: {}", record.target_branch, moved.stderr.trim()) });
             }
         }
     }
     record_event(store, &record, "merge.completed", serde_json::json!({ "head_sha": head_sha, "target_branch": record.target_branch }))?;
     Ok(MergeOutcome::Merged { head_sha })
+}
+
+/// Where the base branch is now, when a fast-forward from `base_sha` failed because it moved on
+/// meanwhile; `None` when it is still there and the failure has another cause.
+fn moved_on_from(record: &RunRecord, base_sha: &str) -> Result<Option<String>, StoreError> {
+    let now = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", record.target_branch)])?;
+    let now = now.stdout.trim();
+    Ok((!now.is_empty() && now != base_sha).then(|| now.to_string()))
 }
 
 /// The working tree that has the target branch checked out, if any does.

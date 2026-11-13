@@ -232,3 +232,57 @@ fn a_merge_retried_after_main_already_moved_to_the_run_succeeds_again() {
         assert!(w.store.events("run-1").unwrap().iter().any(|e| e.kind == "merge.completed"), "the retry records the merge");
     }
 }
+
+/// Makes the first update of `main` fail and, once its lock is released, moves `main` on by one
+/// commit, as another process would between the ancestry check and the fast-forward. The returned
+/// file then holds the commit `main` was moved to.
+fn move_main_during_the_first_update(w: &World) -> PathBuf {
+    let hooks = PathBuf::from(git(&w.repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])).join("hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let mark = w.repo.with_file_name("late-mark");
+    let late = w.repo.with_file_name("late-sha");
+    let hook = hooks.join("reference-transaction");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nunset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE\ngrep -q ' refs/heads/main$' || exit 0\n\
+             case \"$1\" in\n\
+             prepared) [ -e '{mark}' ] && exit 0; echo armed > '{mark}'; exit 1;;\n\
+             aborted) [ \"$(cat '{mark}')\" = armed ] || exit 0; echo done > '{mark}'\n\
+               sha=$(git -C '{repo}' -c user.name=t -c user.email=t@example.com commit-tree -p refs/heads/main -m late 'refs/heads/main^{{tree}}') || exit 1\n\
+               git -C '{repo}' update-ref refs/heads/main \"$sha\" && echo \"$sha\" > '{late}';;\n\
+             esac\nexit 0\n",
+            mark = mark.display(),
+            repo = w.repo.display(),
+            late = late.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    late
+}
+
+#[test]
+fn a_base_branch_no_checkout_has_that_moves_during_the_fast_forward_is_named_for_a_rebase_onto_it() {
+    let w = world("late-not-checked-out");
+    git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
+    let late = move_main_during_the_first_update(&w);
+
+    let outcome = merge_into_base(&w.store, "run-1").unwrap();
+
+    let moved = fs::read_to_string(&late).expect("main was moved during the fast-forward").trim().to_string();
+    assert_eq!(outcome, MergeOutcome::BaseMoved { base_sha: moved.clone() });
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+}
+
+#[test]
+fn a_checked_out_base_branch_that_moves_during_the_fast_forward_is_named_for_a_rebase_onto_it() {
+    let w = world("late-checked-out");
+    let late = move_main_during_the_first_update(&w);
+
+    let outcome = merge_into_base(&w.store, "run-1").unwrap();
+
+    let moved = fs::read_to_string(&late).expect("main was moved during the fast-forward").trim().to_string();
+    assert_eq!(outcome, MergeOutcome::BaseMoved { base_sha: moved.clone() });
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+}
