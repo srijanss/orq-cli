@@ -1882,7 +1882,18 @@ function ProjectSelect({ projects, projectId, section = "features", onOpen = nul
           </li>
         ))}
       </ul>
+      {section === "settings" ? null : <SettingsLink projectId={projectId} />}
     </div>
+  );
+}
+
+// The cog beside the picker: the chosen project's Settings page, or this machine's while All projects is chosen.
+function SettingsLink({ projectId }) {
+  const href = projectId === null ? "/settings" : "/projects/" + encodeURIComponent(projectId) + "/settings";
+  return (
+    <a className="project-settings-link" data-settings-link href={href} aria-label={projectId === null ? "Settings" : "Project settings"} title={projectId === null ? "Settings" : "Project settings"} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>
+      <Icon name="gear" size={18} />
+    </a>
   );
 }
 

@@ -96,7 +96,7 @@ fn a_report_opens_with_its_sections_and_a_safe_link_and_back_returns_to_the_list
     assert_eq!(out["requests"][1]["url"], "/api/reviews/run-1");
     let shown = page(&out, 2);
     assert!(shown.contains("adds the thing") && shown.contains("none recorded") && shown.contains("Review rounds"), "{shown}");
-    let links = out["frames"][2]["settled"]["links"].as_array().unwrap();
+    let links = report_links(&out["frames"][2]);
     assert_eq!(links.len(), 1, "{out}");
     assert_eq!(links[0]["href"], "https://github.com/o/r/pull/7");
     assert_eq!(links[0]["rel"], "noopener noreferrer");
@@ -109,10 +109,10 @@ fn a_report_opens_with_its_sections_and_a_safe_link_and_back_returns_to_the_list
 fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offered() {
     let Some(out) = run(json!([list(), detail(true, json!("https://github.com/o/r/pull/7"))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
     assert!(page(&out, 2).contains("STALE"), "{out}");
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
     for link in ["http://x.test/a", "javascript:alert(1)", "https://user:pw@x.test/a"] {
         let Some(out) = run(json!([list(), detail(false, json!(link))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
-        assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{link}: {out}");
+        assert!(report_links(&out["frames"][2]).is_empty(), "{link}: {out}");
     }
 }
 
@@ -135,4 +135,9 @@ fn a_slow_answer_for_an_earlier_page_never_draws_over_the_current_one() {
     let Some(out) = run(json!([list(), slow, list()]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}, {"back": true}, {"release": 1}])) else { return };
     let shown = page(&out, 4);
     assert!(shown.contains("first-feature") && !shown.contains("adds the thing"), "{shown}");
+}
+
+/// The links the report offers: every link on the page but the settings cog beside the project picker.
+fn report_links(frame: &Value) -> Vec<&Value> {
+    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| !l["href"].as_str().unwrap_or("").ends_with("/settings")).collect()
 }

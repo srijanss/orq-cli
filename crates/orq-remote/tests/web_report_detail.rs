@@ -78,7 +78,7 @@ fn opening_a_run_reads_its_report_with_the_held_token_and_shows_every_section_as
 #[test]
 fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
     let Some(out) = open_first(detail(false, json!("https://github.com/o/r/pull/7"))) else { return };
-    let links = out["frames"][2]["settled"]["links"].as_array().unwrap();
+    let links = report_links(&out["frames"][2]);
     assert_eq!(links.len(), 1, "{out}");
     assert_eq!(links[0]["href"], "https://github.com/o/r/pull/7");
     let rel = links[0]["rel"].as_str().unwrap();
@@ -86,7 +86,7 @@ fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
 
     for bad in ["javascript:alert(1)", "http://github.com/o/r/pull/7", "data:text/html,x", "//evil.test/x", "https://user:pw@github.com/x", "not a url", ""] {
         let Some(out) = open_first(detail(false, json!(bad))) else { return };
-        assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{bad:?}: {out}");
+        assert!(report_links(&out["frames"][2]).is_empty(), "{bad:?}: {out}");
     }
 }
 
@@ -94,7 +94,7 @@ fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
 fn a_stale_report_shows_the_marker_and_no_link_even_when_the_link_is_safe() {
     let Some(out) = open_first(detail(true, json!("https://github.com/o/r/pull/7"))) else { return };
     assert!(page(&out, 2).contains("STALE"), "{out}");
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
 }
 
 const LINK: &str = "https://github.com/o/r/pull/7";
@@ -108,7 +108,7 @@ fn a_stale_report_shows_a_red_banner_with_both_hashes_above_the_summary_and_no_l
     }
     assert!(shown.find("STALE").unwrap() < shown.find("adds the thing").unwrap(), "{shown}");
     assert!(!shown.contains("UNVERIFIED"), "{shown}");
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn an_unverified_report_shows_an_amber_banner_and_no_link_and_names_no_provider_
     assert!(shown.contains("UNVERIFIED") && shown.contains("1111111aaaa"), "{shown}");
     assert!(shown.find("UNVERIFIED").unwrap() < shown.find("adds the thing").unwrap(), "{shown}");
     assert!(!shown.contains("STALE") && !shown.contains("2222222bbbb"), "{shown}");
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
 }
 
 #[test]
@@ -126,16 +126,16 @@ fn a_current_report_has_no_banner_and_the_link_needs_the_server_to_allow_it() {
     let Some(out) = open_first(detail_with("current", true, json!(LINK))) else { return };
     let shown = page(&out, 2);
     assert!(!shown.contains("STALE") && !shown.contains("UNVERIFIED"), "{shown}");
-    assert_eq!(out["frames"][2]["settled"]["links"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(report_links(&out["frames"][2]).len(), 1, "{out}");
     // A current report whose link the server does not allow, or one with no freshness at all, gets no link.
     let Some(out) = open_first(detail_with("current", false, json!(LINK))) else { return };
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
     let mut old = detail_with("current", true, json!(LINK));
     old["json"].as_object_mut().unwrap().remove("freshness");
     let Some(out) = open_first(old) else { return };
     let shown = page(&out, 2);
     assert!(shown.contains("UNVERIFIED"), "a report without a freshness is unverified: {shown}");
-    assert!(out["frames"][2]["settled"]["links"].as_array().unwrap().is_empty(), "{out}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
 }
 
 #[test]
@@ -180,4 +180,9 @@ fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
     assert_eq!(code.matches("\"POST\"").count(), 1, "a single POST site");
     assert!(code.contains("function actionRequest(") && code.find("\"POST\"") > code.find("function actionRequest("), "the POST belongs to actionRequest");
     assert!(code.contains("encodeURIComponent"), "the run id is encoded into the path");
+}
+
+/// The links the report offers: every link on the page but the settings cog beside the project picker.
+fn report_links(frame: &Value) -> Vec<&Value> {
+    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| !l["href"].as_str().unwrap_or("").ends_with("/settings")).collect()
 }
