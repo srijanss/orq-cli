@@ -129,6 +129,8 @@ impl CliLauncher {
         }
         let mut detached = args;
         detached.push("--detach".into());
+        // While Herdr is running the run goes in a pane of its own, where its session can be answered.
+        detached.push("--in-herdr".into());
         let (ok, out, err) = self.run(&detached)?;
         crate::launch_outcome(ok, &out, &err).map_err(LaunchError::Failed)
     }

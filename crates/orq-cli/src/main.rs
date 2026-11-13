@@ -15,7 +15,7 @@ mod storage;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -204,6 +204,9 @@ struct RunArgs {
     switch_implementer: bool,
     switch_reviewer: bool,
     detach: bool,
+    /// `--in-herdr`, with `--detach`: while Herdr is running, the run goes in the foreground of a
+    /// new Herdr pane instead, where its session can be watched and answered.
+    in_herdr: bool,
     /// `--check`: make every check a launch makes, then stop without starting anything.
     check: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
@@ -241,6 +244,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--switch-implementer" => parsed.switch_implementer = true,
             "--switch-reviewer" => parsed.switch_reviewer = true,
             "--detach" => parsed.detach = true,
+            "--in-herdr" => parsed.in_herdr = true,
             "--check" => parsed.check = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
@@ -290,14 +294,15 @@ fn group_error(message: String) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// The `orq run` arguments without the `--detach` flag. An option value that happens to be
-/// spelled `--detach` is kept: values are skipped as the parser reads them.
+/// The `orq run` arguments without the `--detach` and `--in-herdr` flags, which say how the run is
+/// launched, not what it does. An option value spelled like either is kept: values are skipped as
+/// the parser reads them.
 fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
     let mut kept = Vec::with_capacity(args.len());
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
-            Some("--detach") => {}
+            Some("--detach" | "--in-herdr") => {}
             Some(name) if RUN_VALUE_FLAGS.contains(&name) => {
                 kept.push(arg.clone());
                 kept.extend(iter.next().cloned());
@@ -412,6 +417,9 @@ fn run(args: &[OsString]) -> ExitCode {
     }
     if parsed.detach {
         let forwarded = without_detach_flag(args);
+        if parsed.in_herdr && herdr_running(&|name| std::env::var(name).ok()) {
+            return launch_in_herdr(&project.root, &forwarded);
+        }
         return match pipeline::launch_detached(&forwarded) {
             Ok((run_id, log)) => {
                 println!("run: {run_id}");
@@ -1615,6 +1623,52 @@ fn launch_outcome(success: bool, stdout: &str, stderr: &str) -> Result<String, S
     }
     let reason = stderr.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("orq run failed");
     Err(printable(reason.trim_start_matches("orq: ")))
+}
+
+/// Whether Herdr is running for this launcher: its environment names Herdr's socket.
+fn herdr_running(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    env("HERDR_SOCKET_PATH").is_some_and(|path| !path.is_empty())
+}
+
+/// `orq run --detach --in-herdr` while Herdr is running: the run goes in the foreground of a new
+/// Herdr pane, so its implementer's session is there to watch and answer, with the worktree's
+/// permissions; when no pane opens nothing started, and it runs detached instead. `forwarded` are
+/// the `orq run` arguments without the launch flags.
+fn launch_in_herdr(repo: &Path, forwarded: &[OsString]) -> ExitCode {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => return fail(format!("cannot find the orq executable: {err}")),
+    };
+    let Some(root) = pipeline::state_root() else {
+        return fail("no state location: set XDG_STATE_HOME or HOME".to_string());
+    };
+    let run_id = pipeline::new_run_id();
+    let mut args = vec![OsString::from("run")];
+    args.extend(forwarded.iter().cloned());
+    // The pane's shell is not this process's, so it is given the state and config locations.
+    let env: Vec<(&str, OsString)> =
+        ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
+    let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
+    let command = foreground_command(&exe, &args, &run_id, &env);
+    let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
+    let detach = |_reason: &str| pipeline::launch_detached(forwarded).map(|(id, _)| id);
+    let store = orq_orchestrator::RunStore::new(&root);
+    match start_in_pane_or_detached(&orq_herdr::HerdrBinary, &store, workspace.as_deref(), repo, &run_id, &command, REGISTRATION_WAIT, None, detach) {
+        Ok(outcome) => {
+            let (id, note) = match outcome.split_once(" (") {
+                Some((id, note)) => (id, Some(note.strip_suffix(')').unwrap_or(note))),
+                None => (outcome.as_str(), None),
+            };
+            println!("run: {id}");
+            println!("log: {}", root.join("logs").join(id).display());
+            println!("state: launched");
+            if let Some(note) = note {
+                eprintln!("orq: {note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(message) => fail(message),
+    }
 }
 
 /// How long a launch waits for the detached runner to register its run before giving up on
@@ -3929,6 +3983,19 @@ mod ledger_backend_tests {
             }
             Ok(r#"{"result":{"root_pane":{"pane_id":"w1:p5","tab_id":"w1:t2","workspace_id":"w1"}}}"#.to_string())
         }
+    }
+
+    /// Herdr is running when the launcher's environment names its socket; the web server started
+    /// outside Herdr has none, so its runs stay detached.
+    #[test]
+    fn herdr_counts_as_running_only_when_its_socket_is_named() {
+        let with = |value: Option<&'static str>| move |name: &str| (name == "HERDR_SOCKET_PATH").then_some(value).flatten().map(str::to_string);
+        assert!(crate::herdr_running(&with(Some("/run/herdr.sock"))));
+        assert!(!crate::herdr_running(&with(Some(""))));
+        assert!(!crate::herdr_running(&with(None)));
+        let in_herdr: Vec<std::ffi::OsString> = ["--feature", "F", "--detach", "--in-herdr", "--context", "--in-herdr"].iter().map(Into::into).collect();
+        let kept: Vec<std::ffi::OsString> = ["--feature", "F", "--context", "--in-herdr"].iter().map(Into::into).collect();
+        assert_eq!(crate::without_detach_flag(&in_herdr), kept, "a value spelled like the flag is kept");
     }
 
     #[test]

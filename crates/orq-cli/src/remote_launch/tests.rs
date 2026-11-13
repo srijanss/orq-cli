@@ -59,6 +59,8 @@ fn a_run_is_checked_then_started_detached_leaving_the_default_models_to_the_run(
     assert_eq!(lines.len(), 2, "{calls}");
     assert!(lines[0].contains("--check") && !lines[0].contains("--detach"), "{calls}");
     assert!(lines[1].contains("--detach") && !lines[1].contains("--check"), "{calls}");
+    // While Herdr is running the run goes in a pane of its own, where its session can be answered.
+    assert!(lines[1].contains("--in-herdr") && !lines[0].contains("--in-herdr"), "{calls}");
     for line in &lines {
         assert!(line.contains("--feature ready") && !line.contains("--implementer") && !line.contains("--reviewer") && line.contains("--remote origin"), "{line}");
     }
