@@ -225,3 +225,56 @@ fn a_background_refresh_keeps_the_open_editor_and_its_draft_and_save_names_the_r
     assert_eq!(body(&sent[0])["revision"], 3, "the revision the editor was opened at");
     assert!(shown(last(&out)).iter().any(|t| t == "The project's settings changed since they were read"));
 }
+
+/// Whether the frame shows the token screen again.
+fn signed_out(frame: &Value) -> bool {
+    shown(frame).iter().any(|t| t == "Access token")
+}
+
+#[test]
+fn a_401_at_any_step_of_an_edit_signs_out_and_sends_nothing_after_it() {
+    let refused = json!({"status": 401, "json": {"error": "unauthorized"}});
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let full = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let cases = [
+        ("the machine settings read", json!([project_settings("review", 1), projects(), refused]), json!([full[0]])),
+        ("the options read", json!([project_settings("review", 1), projects(), machine_settings(true), refused]), json!([full[0]])),
+        ("the save", json!([project_settings("review", 1), projects(), machine_settings(true), options(), refused, ok]), full.clone()),
+    ];
+    for (stage, responses, steps) in cases {
+        let count_before = responses.as_array().unwrap().len();
+        let Some(out) = run(responses, steps) else { return };
+        assert!(signed_out(last(&out)), "a 401 on {stage} asks for the token again: {:?}", shown(last(&out)));
+        assert_eq!(out["requests"].as_array().unwrap().len(), count_before - usize::from(stage == "the save"), "nothing is sent after {stage}: {:?}", out["requests"]);
+    }
+}
+
+#[test]
+fn a_failed_save_shows_the_reason_and_keeps_the_draft_so_save_can_be_tried_again() {
+    let failed = json!({"status": 422, "json": {"error": "That harness or model is not one this machine offers"}});
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"set": "[data-delivery]", "value": "push"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), failed, ok, project_settings("push", 2)]);
+    let Some(out) = run(responses, steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    let refused = &frames[5];
+    assert!(shown(refused).iter().any(|t| t == "That harness or model is not one this machine offers"), "{:?}", shown(refused));
+    assert_eq!(count(refused, "[data-settings-reload]"), 0, "only a stale revision offers Reload");
+    assert_eq!(count(refused, "[data-project-settings-save]"), 1, "Save can be tried again");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 2, "{:?}", out["requests"]);
+    assert_eq!(body(&sent[1]), body(&sent[0]), "the retry sends the same draft");
+    assert_eq!(body(&sent[1])["delivery"], "push");
+    assert!(shown(last(&out)).iter().any(|t| t == "Push only"));
+}
