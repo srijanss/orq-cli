@@ -1650,15 +1650,17 @@ fn with_repo(args: &[OsString], root: &Path) -> Vec<OsString> {
 }
 
 /// Where this launcher keeps its state and config, as a Herdr pane must be told: the pane's shell has
-/// Herdr's environment, so an unset location is spelled out from HOME rather than left to it.
-fn pane_env(env: &dyn Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsString)> {
-    let home = env("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
-    [("XDG_STATE_HOME", ".local/state"), ("XDG_CONFIG_HOME", ".config")]
+/// Herdr's environment and starts elsewhere, so each location is the one the launcher reads, spelled
+/// out in full. State takes a relative location from the launcher's directory `cwd`; settings read
+/// only an absolute one, else HOME's, and a pane is told none when the launcher reads none.
+fn pane_env(env: &dyn Fn(&str) -> Option<OsString>, cwd: &Path) -> Vec<(&'static str, OsString)> {
+    let set = |name: &str| env(name).filter(|value| !value.is_empty()).map(PathBuf::from);
+    let state = set("XDG_STATE_HOME").or_else(|| set("HOME").map(|home| home.join(".local/state"))).map(|state| cwd.join(state));
+    let config = orq_features::settings_path(env("XDG_CONFIG_HOME").as_deref(), env("HOME").as_deref())
+        .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_path_buf));
+    [("XDG_STATE_HOME", state), ("XDG_CONFIG_HOME", config)]
         .into_iter()
-        .filter_map(|(name, default)| {
-            let value = env(name).filter(|value| !value.is_empty()).or_else(|| home.as_ref().map(|home| home.join(default).into_os_string()))?;
-            Some((name, value))
-        })
+        .filter_map(|(name, value)| Some((name, value?.into_os_string())))
         .collect()
 }
 
@@ -1684,7 +1686,7 @@ fn launch_in_herdr(repo: &Path, forwarded: &[OsString]) -> ExitCode {
     let mut args = vec![OsString::from("run")];
     args.extend(with_repo(forwarded, repo));
     // The pane's shell is not this process's, so it is given the state and config locations.
-    let env = pane_env(&|name| std::env::var_os(name));
+    let env = pane_env(&|name| std::env::var_os(name), &std::env::current_dir().unwrap_or_default());
     let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
     let command = foreground_command(&exe, &args, &run_id, &env);
     let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
@@ -2151,7 +2153,7 @@ reviewer: String,
         return detached_without_pane("no state location: set XDG_STATE_HOME or HOME", detach);
     };
     let run_id = pipeline::new_run_id();
-    let env = pane_env(&|name| std::env::var_os(name));
+    let env = pane_env(&|name| std::env::var_os(name), &std::env::current_dir().unwrap_or_default());
     let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
     let command = foreground_command(&exe, &args, &run_id, &env);
     let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
@@ -4053,14 +4055,35 @@ mod ledger_backend_tests {
         let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| std::ffi::OsString::from(v));
         let os = |text: &str| std::ffi::OsString::from(text);
         assert_eq!(
-            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "/s"), ("XDG_CONFIG_HOME", "/c")])),
+            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "/s"), ("XDG_CONFIG_HOME", "/c")]), std::path::Path::new("/launch")),
             vec![("XDG_STATE_HOME", os("/s")), ("XDG_CONFIG_HOME", os("/c"))]
         );
         assert_eq!(
-            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "")])),
+            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "")]), std::path::Path::new("/launch")),
             vec![("XDG_STATE_HOME", os("/h/.local/state")), ("XDG_CONFIG_HOME", os("/h/.config"))]
         );
-        assert_eq!(crate::pane_env(&env(&[])), vec![]);
+        assert_eq!(crate::pane_env(&env(&[]), std::path::Path::new("/launch")), vec![]);
+    }
+
+    #[test]
+    fn a_pane_is_told_no_config_location_when_the_launcher_reads_none() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| std::ffi::OsString::from(v));
+        let found = crate::pane_env(&env(&[("XDG_CONFIG_HOME", "cf"), ("XDG_STATE_HOME", "/s")]), std::path::Path::new("/launch"));
+        assert_eq!(found, vec![("XDG_STATE_HOME", std::ffi::OsString::from("/s"))]);
+    }
+
+    #[test]
+    fn a_pane_is_told_relative_locations_as_the_launcher_reads_them() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| std::ffi::OsString::from(v));
+        let os = |text: &str| std::ffi::OsString::from(text);
+        let cwd = std::path::Path::new("/launch");
+        // Settings ignore a relative XDG_CONFIG_HOME and read HOME's; state takes it from the launcher's directory.
+        assert_eq!(
+            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "st"), ("XDG_CONFIG_HOME", "cf")]), cwd),
+            vec![("XDG_STATE_HOME", os("/launch/st")), ("XDG_CONFIG_HOME", os("/h/.config"))]
+        );
+        // A relative HOME gives settings nothing to read, and state a place under the launcher's directory.
+        assert_eq!(crate::pane_env(&env(&[("HOME", "h")]), cwd), vec![("XDG_STATE_HOME", os("/launch/h/.local/state"))]);
     }
 
     #[test]
