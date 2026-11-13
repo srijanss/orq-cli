@@ -201,17 +201,18 @@ fn a_check_counts_a_single_local_commit_as_one() {
     assert_eq!(text(&ahead.stderr), "orq: warning: main has 1 commit origin/main does not; the run starts from origin/main without them\n");
 }
 
-/// A publish delivers the checked-out branch and a resume carries on the run's own branch: neither starts
-/// from the remote's target, so neither is warned about commits only the local target has.
+/// A publish delivers the checked-out branch, not a branch from the remote's target, so a ready check of
+/// one is not warned about commits only the local target has. (A resume, which carries on the run's own
+/// branch, is held to the same rule by `run_branches_from_the_remote_target` in main.rs.)
 #[test]
-fn a_check_of_a_publish_or_a_resume_is_not_warned_about_the_local_target() {
+fn a_check_of_a_publish_is_not_warned_about_the_local_target() {
     let repo = forge_repo();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
     git(repo.root(), &["branch", "-M", "main"]);
     git(repo.root(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     commit(repo.root(), "one");
-    for (tag, mode) in [("publish", "--publish"), ("resume", "--resume")] {
-        let checked = run(repo.root(), &env(tag), &["--feature", "COM-01", mode, "--check"]);
-        assert!(!text(&checked.stderr).contains("warning"), "{mode}: {}", text(&checked.stderr));
-    }
+    let checked = run(repo.root(), &env("publish"), &["--feature", "COM-01", "--publish", "--check"]);
+    assert_eq!(checked.status.code(), Some(0), "{}", text(&checked.stderr));
+    assert_eq!(text(&checked.stdout), "state: ready\n");
+    assert_eq!(text(&checked.stderr), "", "no warning");
 }

@@ -454,9 +454,7 @@ fn run(args: &[OsString]) -> ExitCode {
     if parsed.check {
         return match pipeline::check(&options) {
             Ok(()) => {
-                // Only a fresh run branches from the remote's target: a publish delivers the checked-out
-                // branch and a resume carries on the run's own.
-                let fresh = !parsed.publish && !parsed.resume;
+                let fresh = run_branches_from_the_remote_target(parsed.publish, parsed.resume);
                 if let Some(warning) = fresh.then(|| target_ahead_warning(&project.root, remote, target)).flatten() {
                     eprintln!("orq: warning: {}", printable(&warning));
                 }
@@ -1909,6 +1907,12 @@ fn default_target_branch(repo: &Path) -> String {
         .and_then(|text| text.trim().strip_prefix("origin/").map(str::to_string))
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| "main".to_string())
+}
+
+/// Only a fresh run branches from the remote's target: a publish delivers the checked-out branch and a
+/// resume carries on the run's own.
+fn run_branches_from_the_remote_target(publish: bool, resume: bool) -> bool {
+    !publish && !resume
 }
 
 /// A run branches from `remote/target`, so commits only the local `target` has are not in it: said
@@ -4472,6 +4476,18 @@ mod ledger_backend_tests {
             let got = crate::with_checked_url(bad, &act);
             assert!(matches!(&got, Err(reason) if reason.contains("not a web link")), "{bad:?} gave {got:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod target_warning_tests {
+    use super::run_branches_from_the_remote_target;
+
+    #[test]
+    fn only_a_fresh_run_branches_from_the_remote_target() {
+        assert!(run_branches_from_the_remote_target(false, false));
+        assert!(!run_branches_from_the_remote_target(true, false), "a publish delivers the checked-out branch");
+        assert!(!run_branches_from_the_remote_target(false, true), "a resume carries on the run's own branch");
     }
 }
 
