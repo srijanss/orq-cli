@@ -1649,6 +1649,19 @@ fn with_repo(args: &[OsString], root: &Path) -> Vec<OsString> {
     kept
 }
 
+/// Where this launcher keeps its state and config, as a Herdr pane must be told: the pane's shell has
+/// Herdr's environment, so an unset location is spelled out from HOME rather than left to it.
+fn pane_env(env: &dyn Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsString)> {
+    let home = env("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
+    [("XDG_STATE_HOME", ".local/state"), ("XDG_CONFIG_HOME", ".config")]
+        .into_iter()
+        .filter_map(|(name, default)| {
+            let value = env(name).filter(|value| !value.is_empty()).or_else(|| home.as_ref().map(|home| home.join(default).into_os_string()))?;
+            Some((name, value))
+        })
+        .collect()
+}
+
 /// Whether Herdr is running for this launcher: its environment names Herdr's socket.
 fn herdr_running(env: &dyn Fn(&str) -> Option<String>) -> bool {
     env("HERDR_SOCKET_PATH").is_some_and(|path| !path.is_empty())
@@ -1671,8 +1684,7 @@ fn launch_in_herdr(repo: &Path, forwarded: &[OsString]) -> ExitCode {
     let mut args = vec![OsString::from("run")];
     args.extend(with_repo(forwarded, repo));
     // The pane's shell is not this process's, so it is given the state and config locations.
-    let env: Vec<(&str, OsString)> =
-        ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
+    let env = pane_env(&|name| std::env::var_os(name));
     let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
     let command = foreground_command(&exe, &args, &run_id, &env);
     let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
@@ -2139,8 +2151,7 @@ reviewer: String,
         return detached_without_pane("no state location: set XDG_STATE_HOME or HOME", detach);
     };
     let run_id = pipeline::new_run_id();
-    let env: Vec<(&str, OsString)> =
-        ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
+    let env = pane_env(&|name| std::env::var_os(name));
     let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
     let command = foreground_command(&exe, &args, &run_id, &env);
     let workspace = std::env::var("HERDR_WORKSPACE_ID").ok().filter(|id| !id.is_empty());
@@ -4033,6 +4044,23 @@ mod ledger_backend_tests {
             os(&["--context", "--repo", "--repo", "/abs/repo", "--feature", "F"])
         );
         assert_eq!(crate::with_repo(&os(&["--feature", "F"]), root), os(&["--feature", "F", "--repo", "/abs/repo"]));
+    }
+
+    /// The pane's shell has Herdr's environment, not the launcher's, so it is always told where the
+    /// launcher's state and config are, its HOME-based defaults included.
+    #[test]
+    fn a_pane_is_told_the_launchers_effective_state_and_config_locations() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| std::ffi::OsString::from(v));
+        let os = |text: &str| std::ffi::OsString::from(text);
+        assert_eq!(
+            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "/s"), ("XDG_CONFIG_HOME", "/c")])),
+            vec![("XDG_STATE_HOME", os("/s")), ("XDG_CONFIG_HOME", os("/c"))]
+        );
+        assert_eq!(
+            crate::pane_env(&env(&[("HOME", "/h"), ("XDG_STATE_HOME", "")])),
+            vec![("XDG_STATE_HOME", os("/h/.local/state")), ("XDG_CONFIG_HOME", os("/h/.config"))]
+        );
+        assert_eq!(crate::pane_env(&env(&[])), vec![]);
     }
 
     #[test]
