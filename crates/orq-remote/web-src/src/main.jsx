@@ -2770,6 +2770,10 @@ function MoreMenu({ label, children }) {
   useLayoutEffect(() => {
     if (!open) return undefined;
     const place = () => {
+      // Measured at the window's top left: an auto-width fixed menu shrinks to the room on its right, so only
+      // there is it its own width, whatever its place in the row or where it was put last.
+      menu.current.style.top = "0px";
+      menu.current.style.left = "0px";
       const at = placeMenu(toggle.current.getBoundingClientRect(), menu.current.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
       menu.current.style.top = at.top + "px";
       menu.current.style.left = at.left + "px";

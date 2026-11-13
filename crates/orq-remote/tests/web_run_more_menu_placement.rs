@@ -135,3 +135,15 @@ fn the_menu_is_placed_against_the_window_and_scrolls_when_taller_than_it() {
     assert!(!rule.contains("top:") && !rule.contains("right:"), "the page places it: {rule}");
     assert!(rule.contains("max-height: calc(100vh - 1rem);") && rule.contains("overflow-y: auto;"), "{rule}");
 }
+
+#[test]
+fn an_open_menu_is_measured_where_its_width_does_not_depend_on_where_it_last_was() {
+    // A fixed menu of auto width shrinks to the room on its right, so it is only its own width when measured
+    // at the window's left edge; anywhere else (its place in the row, or where it was last put) it is narrower.
+    let rects = vec![rect(TOGGLE, 200, 960, 36, 36), rect(".run-more-menu[style*=\"left: 0px\"]", 0, 0, 256, 120), rect(MENU, 0, 0, 100, 120)];
+    let moved = json!({"rects": [rect(TOGGLE, 200, 900, 36, 36), rect(".run-more-menu[style*=\"left: 0px\"]", 0, 0, 256, 120), rect(MENU, 0, 0, 100, 120)], "event": "scroll", "on": ".feature-table-wrap"});
+    let Some(out) = failed_row(rects, vec![], vec![json!({"click": TOGGLE}), moved]) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(style(&frames[2]).contains("left: 740px"), "right edges together on opening: {out}");
+    assert!(style(last(&out)).contains("left: 680px"), "and again after the table scrolls: {out}");
+}
