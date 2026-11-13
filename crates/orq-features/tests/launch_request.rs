@@ -38,8 +38,8 @@ fn request(implementer: &str, reviewer: &str) -> LaunchRequest {
         feature: "COM-01".to_string(),
         remote: "origin".to_string(),
         target: "main".to_string(),
-        implementer: implementer.to_string(),
-        reviewer: reviewer.to_string(),
+        implementer: Some(implementer.to_string()),
+        reviewer: Some(reviewer.to_string()),
         context: None,
         issue: None,
     }

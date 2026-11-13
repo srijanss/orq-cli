@@ -15,9 +15,9 @@ pub struct LaunchRequest {
     pub feature: String,
     pub remote: String,
     pub target: String,
-    /// Model profile names, as `--implementer` and `--reviewer` take them.
-    pub implementer: String,
-    pub reviewer: String,
+    /// Model profile names, as `--implementer` and `--reviewer` take them; one left out is the run's to pick.
+    pub implementer: Option<String>,
+    pub reviewer: Option<String>,
     /// Free text for the implementer, passed whole as `--context`.
     pub context: Option<String>,
     /// An issue the review closes, passed as `--issue`.
@@ -31,7 +31,7 @@ impl LaunchRequest {
         profiles: &ModelProfiles,
         reviewer_config: &TddReviewerConfig,
     ) -> Result<ResolvedModels, RunModelsError> {
-        let selection = RunSelection { implementer: Some(&self.implementer), reviewer: Some(&self.reviewer) };
+        let selection = RunSelection { implementer: self.implementer.as_deref(), reviewer: self.reviewer.as_deref() };
         resolve_run_models(profiles, reviewer_config, &selection)
     }
 
@@ -42,12 +42,13 @@ impl LaunchRequest {
         args.push("--repo".into());
         args.push(self.repo.clone().into_os_string());
         for (flag, value) in [
-            ("--feature", &self.feature),
-            ("--remote", &self.remote),
-            ("--target", &self.target),
-            ("--implementer", &self.implementer),
-            ("--reviewer", &self.reviewer),
+            ("--feature", Some(&self.feature)),
+            ("--remote", Some(&self.remote)),
+            ("--target", Some(&self.target)),
+            ("--implementer", self.implementer.as_ref()),
+            ("--reviewer", self.reviewer.as_ref()),
         ] {
+            let Some(value) = value else { continue };
             args.push(flag.into());
             args.push(value.into());
         }

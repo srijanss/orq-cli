@@ -1,5 +1,5 @@
 //! The web server's launcher asks `orq run --check` first, then starts the run detached, with the
-//! default models; every refusal comes back as a reason and a missing program as a failure.
+//! models the run picks itself unless profiles were chosen; every refusal comes back as a reason and a missing program as a failure.
 
 use super::CliLauncher;
 use orq_remote::projects::{LaunchError, RunLauncher};
@@ -45,19 +45,13 @@ fn fake_orq(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn a_run_is_checked_then_started_detached_with_the_default_models() {
+fn a_run_is_checked_then_started_detached_leaving_the_default_models_to_the_run() {
     let dir = scratch("launch");
     let repo = repo(&dir);
     let config = dir.join("config.toml");
     let launcher = CliLauncher::new(fake_orq(&dir), Some(config.clone()));
 
-    // No models configured: nothing is launched.
-    match launcher.start(&repo, "ready") {
-        Err(LaunchError::Refused(reason)) => assert!(reason.contains("model"), "{reason}"),
-        other => panic!("{other:?}"),
-    }
-    assert!(!dir.join("calls.log").exists());
-
+    // Roles are configured, yet the run is the one that picks them, as it does on the command line.
     std::fs::write(&config, MODELS).unwrap();
     assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
     let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
@@ -66,7 +60,7 @@ fn a_run_is_checked_then_started_detached_with_the_default_models() {
     assert!(lines[0].contains("--check") && !lines[0].contains("--detach"), "{calls}");
     assert!(lines[1].contains("--detach") && !lines[1].contains("--check"), "{calls}");
     for line in &lines {
-        assert!(line.contains("--feature ready") && line.contains("--implementer opus") && line.contains("--reviewer opus") && line.contains("--remote origin"), "{line}");
+        assert!(line.contains("--feature ready") && !line.contains("--implementer") && !line.contains("--reviewer") && line.contains("--remote origin"), "{line}");
     }
 
     // The run's own refusal is the reason, and nothing starts after it.
@@ -228,4 +222,24 @@ fn a_start_with_chosen_profiles_uses_them_instead_of_the_defaults_and_checks_the
         other => panic!("{other:?}"),
     }
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 2);
+}
+
+/// A start with no profiles chosen names none, so `orq run` picks the agents itself as it does on the
+/// command line: the project's own, else the machine's. No matching profile is needed to start.
+#[test]
+fn a_start_without_a_choice_names_no_profiles_so_the_run_picks_the_projects_agents() {
+    let dir = scratch("launch-project-default");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[implementer]\nharness = \"pi\"\nmodel = \"glm\"\n").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config));
+
+    assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines.len(), 2, "{calls}");
+    assert!(lines[0].contains("--check") && lines[1].contains("--detach"), "{calls}");
+    for line in &lines {
+        assert!(line.contains("--feature ready") && !line.contains("--implementer") && !line.contains("--reviewer"), "{line}");
+    }
 }
