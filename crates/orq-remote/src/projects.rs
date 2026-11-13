@@ -295,6 +295,19 @@ impl StoreProjects {
         Ok(Some((git, root)))
     }
 
+    /// Project `id`'s git and its own settings in this machine's orq.db, keyed by its main checkout.
+    /// orq.db is only read; without it the project has no record (revision 0). None for an unknown project.
+    fn stored_settings_of(&self, id: &str) -> Result<Option<(orq_git::Project, orq_core::project_settings::StoredProjectSettings)>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        let database = self.roots.database();
+        let stored = if database.exists() {
+            orq_core::store::Store::read_project_settings(&database, &root).map_err(|error| error.to_string())?
+        } else {
+            orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
+        };
+        Ok(Some((git, stored)))
+    }
+
     /// Project `git`'s `stored` settings as the web reads them: each role's own choice and what a
     /// run would use if it named none, with where that comes from, all redacted. It cannot fail: a
     /// fallback that cannot be worked out is null.
@@ -617,27 +630,35 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let reviewers = orq_features::load_reviewer_config(&root.join(".tdd-config.json")).unwrap_or_default();
         let settings = orq_features::Settings::load(&user_config).ok();
         let agent = |role| settings.as_ref().and_then(|settings| settings.agent(role).ok().flatten());
-        let (implementer, reviewer) = orq_features::default_role_profiles(
+        let (machine_implementer, machine_reviewer) = orq_features::default_role_profiles(
             &profiles,
             &reviewers,
             agent(orq_features::AgentRole::Implementer).as_ref(),
             agent(orq_features::AgentRole::Reviewer).as_ref(),
         );
+        // The project's own agent for a role is what a run naming no profile uses, so it comes first:
+        // the profile with its harness and model, or none, and then only "Project default" starts with it.
+        let own = self.stored_settings_of(id)?.map(|(_, stored)| stored.settings).unwrap_or_default();
+        let mut project_default = false;
+        let mut pick = |own: Option<orq_core::project_settings::ProjectAgent>, machine: Option<String>| match own {
+            None => machine,
+            Some(agent) => {
+                let found = profiles.profiles().iter().find(|p| p.harness == agent.harness && p.model == agent.model).map(|p| p.name.clone());
+                project_default |= found.is_none();
+                found
+            }
+        };
+        let implementer = pick(own.implementer, machine_implementer);
+        let reviewer = pick(own.reviewer, machine_reviewer);
         let names: Vec<&str> = profiles.profiles().iter().map(|profile| profile.name.as_str()).collect();
-        Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer })))
+        Ok(Some(serde_json::json!({ "profiles": names, "implementer": implementer, "reviewer": reviewer, "project_default": project_default })))
     }
 
     /// The project's own settings in this machine's orq.db, keyed by its main checkout, and for each
     /// role what a run would use if the project named none, with where it comes from. orq.db is only
     /// read; without it the project has no record (revision 0).
     fn project_settings(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
-        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
-        let database = self.roots.database();
-        let stored = if database.exists() {
-            orq_core::store::Store::read_project_settings(&database, &root).map_err(|error| error.to_string())?
-        } else {
-            orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
-        };
+        let Some((git, stored)) = self.stored_settings_of(id)? else { return Ok(None) };
         Ok(Some(self.settings_answer(&git, &stored)))
     }
 

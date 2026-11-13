@@ -1671,9 +1671,16 @@ function ModelAction({ run, control }) {
   );
 }
 
-// The launch picker's two choices, the implementer and the reviewer, each from the offered profiles.
-function LaunchPickers({ profiles, implementer, reviewer, onImplementer, onReviewer }) {
-  const options = profiles.map((name) => <option key={name} value={name}>{name}</option>);
+// Project default: a start that names no profiles, so the run uses the project's own agents.
+const PROJECT_DEFAULT = "";
+
+// The launch picker's two choices, the implementer and the reviewer, each from the offered profiles, and
+// Project default when the server offers it.
+function LaunchPickers({ profiles, projectDefault, implementer, reviewer, onImplementer, onReviewer }) {
+  const options = [
+    ...(projectDefault ? [<option key={PROJECT_DEFAULT} value={PROJECT_DEFAULT}>Project default</option>] : []),
+    ...profiles.map((name) => <option key={name} value={name}>{name}</option>),
+  ];
   return (
     <>
       <label>
@@ -1688,15 +1695,52 @@ function LaunchPickers({ profiles, implementer, reviewer, onImplementer, onRevie
   );
 }
 
+// The pair a launch picker holds. begin(reply) preselects the server's defaults, or Project default for both
+// roles when the server offers it. A start names both profiles or neither, so Project default goes for both
+// roles: picking it for one picks it for the other, and picking a profile for one gives the other its
+// preselected profile. body is what the start route is sent, and phrase how the question names the pair.
+function useLaunchChoice() {
+  const [offer, setOffer] = useState(null);
+  const [implementer, setImplementer] = useState("");
+  const [reviewer, setReviewer] = useState("");
+  const begin = (reply) => {
+    const onDefault = reply.project_default === true;
+    setOffer(reply);
+    setImplementer(onDefault ? PROJECT_DEFAULT : preselect(reply, "implementer"));
+    setReviewer(onDefault ? PROJECT_DEFAULT : preselect(reply, "reviewer"));
+  };
+  const pick = (set, other, setOther, otherRole) => (name) => {
+    set(name);
+    if (name === PROJECT_DEFAULT) setOther(PROJECT_DEFAULT);
+    else if (other === PROJECT_DEFAULT) setOther(preselect(offer, otherRole));
+  };
+  const onDefault = implementer === PROJECT_DEFAULT || reviewer === PROJECT_DEFAULT;
+  const pickers =
+    offer === null ? null : (
+      <LaunchPickers
+        profiles={offer.profiles}
+        projectDefault={offer.project_default === true}
+        implementer={implementer}
+        reviewer={reviewer}
+        onImplementer={pick(setImplementer, reviewer, setReviewer, "reviewer")}
+        onReviewer={pick(setReviewer, implementer, setImplementer, "implementer")}
+      />
+    );
+  return {
+    begin,
+    pickers,
+    body: onDefault ? {} : { implementer, reviewer },
+    phrase: onDefault ? "the project's default agents" : implementer + " as implementer and " + reviewer + " as reviewer",
+  };
+}
+
 // The popup's launch picker, "Start with…" on a pending feature: it reads the launch profiles, preselects the
 // implementer and reviewer defaults, and asks with the picked pair before posting them to the start route.
 // A refused read or start shows the server's reason.
 function LaunchAction({ feature, control }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
-  const [offer, setOffer] = useState(null);
-  const [implementer, setImplementer] = useState("");
-  const [reviewer, setReviewer] = useState("");
+  const choice = useLaunchChoice();
   const startPath = controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs");
   const ask = async () => {
     setNote("");
@@ -1707,9 +1751,7 @@ function LaunchAction({ feature, control }) {
       return;
     }
     if (reply !== null) {
-      setOffer(reply);
-      setImplementer(preselect(reply, "implementer"));
-      setReviewer(preselect(reply, "reviewer"));
+      choice.begin(reply);
       setPhase("asking");
       return;
     }
@@ -1720,7 +1762,7 @@ function LaunchAction({ feature, control }) {
     setPhase("sending");
     let text = "The run could not be started.";
     try {
-      const response = await actionRequest(startPath, control.token, { implementer, reviewer });
+      const response = await actionRequest(startPath, control.token, choice.body);
       if (response.status === 401) {
         control.onSignedOut();
         return;
@@ -1740,14 +1782,14 @@ function LaunchAction({ feature, control }) {
     setNote(text);
     setPhase("idle");
   };
-  const asked = "Start " + feature.name + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
+  const asked = "Start " + feature.name + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-start-with="" onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
-          <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
+          {choice.pickers}
         </Confirm>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
@@ -1939,9 +1981,7 @@ function dependencyOrder(features, names) {
 function StartMarked({ names, control, onFinished, place = null }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
-  const [offer, setOffer] = useState(null);
-  const [implementer, setImplementer] = useState("");
-  const [reviewer, setReviewer] = useState("");
+  const choice = useLaunchChoice();
   const label = "Start " + names.length + placeSuffix(place);
   const ask = async () => {
     setNote("");
@@ -1952,9 +1992,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
       return;
     }
     if (reply !== null) {
-      setOffer(reply);
-      setImplementer(preselect(reply, "implementer"));
-      setReviewer(preselect(reply, "reviewer"));
+      choice.begin(reply);
       setPhase("asking");
       return;
     }
@@ -1968,7 +2006,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
       let text = name + ": the run could not be started.";
       let ok = false;
       try {
-        const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/runs"), control.token, { implementer, reviewer });
+        const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/runs"), control.token, choice.body);
         if (response.status === 401) {
           control.onSignedOut();
           return;
@@ -1987,14 +2025,14 @@ function StartMarked({ names, control, onFinished, place = null }) {
     setPhase("idle");
     onFinished(results);
   };
-  const asked = "Start " + featuresPhrase(names, place) + " with " + implementer + " as implementer and " + reviewer + " as reviewer?";
+  const asked = "Start " + featuresPhrase(names, place) + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-start-marked onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
-          <LaunchPickers profiles={offer.profiles} implementer={implementer} reviewer={reviewer} onImplementer={setImplementer} onReviewer={setReviewer} />
+          {choice.pickers}
         </Confirm>
       ) : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}

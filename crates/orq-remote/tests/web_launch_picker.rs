@@ -8,7 +8,18 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 6] = ["[data-start-with]", "[data-start]", "[data-confirm]", "[data-cancel]", "[data-launch-implementer]", "[data-launch-reviewer]"];
+const SELECTORS: [&str; 10] = [
+    "[data-start-with]",
+    "[data-start]",
+    "[data-confirm]",
+    "[data-cancel]",
+    "[data-launch-implementer]",
+    "[data-launch-reviewer]",
+    "[data-launch-implementer] option[value=\"\"]",
+    "[data-launch-reviewer] option[value=\"\"]",
+    "[data-launch-implementer] option[value=\"\"]:checked",
+    "[data-launch-reviewer] option[value=\"\"]:checked",
+];
 
 fn run(scenario: Value) -> Option<Value> {
     if !web_deps::ready() {
@@ -111,4 +122,68 @@ fn a_refusal_shows_the_reason_no_profiles_says_so_and_cancel_sends_nothing() {
 
     let Some(out) = page("next-one", true, vec![profiles()], vec![json!({"click": "[data-start-with]"}), json!({"click": "[data-cancel]"})]) else { return };
     assert!(posts(&out).is_empty(), "cancelling sends nothing: {out}");
+}
+
+/// The project's agents as the server preselects them, and whether it offers Project default.
+fn project_profiles(implementer: Value, reviewer: Value, project_default: bool) -> Value {
+    json!({"status": 200, "json": {"profiles": ["haiku", "opus", "sonnet"], "implementer": implementer, "reviewer": reviewer, "project_default": project_default}})
+}
+
+const IMPLEMENTER_DEFAULT: &str = "[data-launch-implementer] option[value=\"\"]";
+const REVIEWER_DEFAULT: &str = "[data-launch-reviewer] option[value=\"\"]";
+const IMPLEMENTER_DEFAULT_PICKED: &str = "[data-launch-implementer] option[value=\"\"]:checked";
+const REVIEWER_DEFAULT_PICKED: &str = "[data-launch-reviewer] option[value=\"\"]:checked";
+
+/// When no profile has the project's harness and model, both pickers offer Project default and start
+/// on it; the question says so and the start names no profiles, so the run uses the project's agents.
+#[test]
+fn project_default_is_offered_and_preselected_and_starts_with_no_profiles_named() {
+    let started = json!({"status": 202, "json": {"run": "run-8"}});
+    let steps = vec![json!({"click": "[data-start-with]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = page("next-one", true, vec![project_profiles(json!(null), json!(null), true), started], steps) else { return };
+    let asking = &out["frames"][2];
+    for selector in [IMPLEMENTER_DEFAULT, REVIEWER_DEFAULT, IMPLEMENTER_DEFAULT_PICKED, REVIEWER_DEFAULT_PICKED] {
+        assert_eq!(count(asking, selector), 1, "{selector}: {out}");
+    }
+    assert!(texts(asking).iter().any(|t| t == "Project default"), "{out}");
+    assert!(texts(asking).iter().any(|t| t == "Start next-one with the project's default agents?"), "{out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(sent[0]["url"], "/api/projects/alpha/features/next-one/runs");
+    assert_eq!(sent[0]["body"], "{}", "no --implementer / --reviewer: {out}");
+    assert!(texts(last(&out)).iter().any(|t| t == "Started run run-8."), "{out}");
+}
+
+/// Project default applies to both roles, since a start names both profiles or neither: picking a
+/// profile for one role gives the other its preselected profile, and picking Project default for one
+/// role picks it for both.
+#[test]
+fn project_default_goes_for_both_roles_or_neither() {
+    let started = json!({"status": 202, "json": {"run": "run-9"}});
+    let steps = vec![
+        json!({"click": "[data-start-with]"}),
+        json!({"set": "[data-launch-implementer]", "value": "haiku"}),
+        json!({"set": "[data-launch-reviewer]", "value": ""}),
+        json!({"set": "[data-launch-reviewer]", "value": "opus"}),
+        json!({"click": "[data-confirm]"}),
+    ];
+    let Some(out) = page("next-one", true, vec![project_profiles(json!(null), json!("sonnet"), true), started], steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(texts(&frames[3]).iter().any(|t| t == "Start next-one with haiku as implementer and sonnet as reviewer?"), "{out}");
+    assert_eq!(count(&frames[3], REVIEWER_DEFAULT_PICKED), 0, "{out}");
+    assert!(texts(&frames[4]).iter().any(|t| t == "Start next-one with the project's default agents?"), "{out}");
+    assert_eq!(count(&frames[4], IMPLEMENTER_DEFAULT_PICKED), 1, "{out}");
+    assert!(texts(&frames[5]).iter().any(|t| t == "Start next-one with haiku as implementer and opus as reviewer?"), "the implementer goes back to the first profile: {out}");
+    assert_eq!(posts(&out)[0]["body"], r#"{"implementer":"haiku","reviewer":"opus"}"#, "{out}");
+}
+
+/// When a profile has each of the project's agents, or the project names none, there is no Project default.
+#[test]
+fn without_project_default_the_pickers_offer_only_profiles() {
+    for reply in [profiles(), project_profiles(json!("sonnet"), json!("opus"), false)] {
+        let Some(out) = page("next-one", true, vec![reply], vec![json!({"click": "[data-start-with]"})]) else { return };
+        let frame = last(&out);
+        assert_eq!(count(frame, IMPLEMENTER_DEFAULT) + count(frame, REVIEWER_DEFAULT), 0, "{out}");
+        assert_eq!(count(frame, "[data-launch-implementer]"), 1, "{out}");
+    }
 }

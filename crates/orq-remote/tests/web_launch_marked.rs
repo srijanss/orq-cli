@@ -118,3 +118,19 @@ fn cancelling_sends_nothing_no_profiles_says_so_and_a_refused_sign_in_stops_the_
     let Some(out) = list(vec![profiles(), json!({"status": 401})], steps) else { return };
     assert_eq!(posts(&out).len(), 1, "nothing more is sent once signed out: {out}");
 }
+
+/// Start N offers Project default like Start with…: preselected when no profile has the project's
+/// agents, it starts each marked feature with no profiles named.
+#[test]
+fn start_marked_with_project_default_starts_each_feature_with_no_profiles_named() {
+    let offer = json!({"status": 200, "json": {"profiles": ["haiku", "opus"], "implementer": null, "reviewer": null, "project_default": true}});
+    let started = |run: &str| json!({"status": 202, "json": {"run": run}});
+    let steps = vec![mark("a-base"), mark("c-mid"), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = list(vec![offer, started("run-1"), started("run-2"), ledger(), projects()], steps) else { return };
+    assert!(texts(&out["frames"][4]).iter().any(|t| t == "Start 2 features: a-base, c-mid with the project's default agents?"), "{out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 2, "{out}");
+    for request in &sent {
+        assert_eq!(request["body"], "{}", "{out}");
+    }
+}

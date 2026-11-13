@@ -64,8 +64,41 @@ fn the_profiles_of_this_machine_and_the_project_are_listed_with_the_popups_defau
 fn a_project_with_no_defaults_has_none_and_an_unreadable_profile_file_is_a_failure() {
     let s = setup("launch-profiles-none", "remote_actions = true\n\n[models.sonnet]\nharness = \"claude\"\nmodel = \"sonnet\"\n");
     let alpha = git_repo(&s.scan, "alpha");
-    assert_eq!(send(&s, "/api/projects/alpha/launch-profiles"), (200, json!({"profiles": ["sonnet"], "implementer": null, "reviewer": null})));
+    assert_eq!(send(&s, "/api/projects/alpha/launch-profiles"), (200, json!({"profiles": ["sonnet"], "implementer": null, "reviewer": null, "project_default": false})));
 
     std::fs::write(alpha.join(".orq.toml"), "[models.broken]\nharness = 1\n").unwrap();
     assert_eq!(send(&s, "/api/projects/alpha/launch-profiles"), (500, json!({"error": "the launch profiles could not be read"})));
+}
+
+fn save_agents(s: &Setup, repo: &Path, implementer: Option<(&str, &str)>, reviewer: Option<(&str, &str)>) {
+    use orq_core::project_settings::{ProjectAgent, ProjectSettings};
+    let agent = |pair: Option<(&str, &str)>| pair.map(|(harness, model)| ProjectAgent { harness: harness.into(), model: model.into(), effort: Some("high".into()) });
+    let settings = ProjectSettings { implementer: agent(implementer), reviewer: agent(reviewer), ..Default::default() };
+    let mut store = orq_core::store::Store::open(&s.roots.database()).unwrap();
+    let root = std::fs::canonicalize(repo).unwrap();
+    let revision = store.project_settings(&root).unwrap().revision;
+    store.save_project_settings(&root, revision, &settings).unwrap();
+}
+
+/// The project's own agents come before the machine's: each role preselects the profile with the
+/// project's harness and model, and a role whose agent no profile has preselects none and offers
+/// Project default, a start with no profiles named.
+#[test]
+fn the_projects_agents_are_preselected_and_one_no_profile_has_offers_project_default() {
+    let s = setup("launch-profiles-project", PROFILES);
+    let alpha = git_repo(&s.scan, "alpha");
+    assert_eq!(send(&s, "/api/projects/alpha/launch-profiles").1["project_default"], json!(false), "no project settings: nothing to offer");
+
+    save_agents(&s, &alpha, Some(("claude", "sonnet")), Some(("pi", "kimi")));
+    let (status, body) = send(&s, "/api/projects/alpha/launch-profiles");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!("sonnet"), &json!("kimi"), &json!(false)), "{body}");
+
+    save_agents(&s, &alpha, Some(("pi", "glm")), None);
+    let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
+    assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!(null), &json!(null), &json!(true)), "{body}");
+
+    save_agents(&s, &alpha, None, Some(("pi", "glm")));
+    let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
+    assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!("opus"), &json!(null), &json!(true)), "{body}");
 }
