@@ -7,6 +7,7 @@ use std::process::Command;
 
 use orq_core::remote_inbox::{handle_with, RemoteConfig, Request};
 use orq_core::storage::StorageRoots;
+use orq_core::project_settings::Delivery;
 use orq_orchestrator::{Event, RunRecord, RunStore};
 use orq_remote::projects::StoreProjects;
 use serde_json::{json, Value};
@@ -75,7 +76,7 @@ fn a_project_lists_only_its_own_runs_newest_first_with_state_stage_feature_branc
     assert_eq!(status, 200, "{body}");
     let runs = body["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2, "{body}");
-    assert_eq!(runs[0], json!({"run_id": "new", "feature": "f-new", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-02T10:30:00Z"}), "{body}");
+    assert_eq!(runs[0], json!({"run_id": "new", "feature": "f-new", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-02T10:30:00Z", "delivery": "review", "ending": null}), "{body}");
     assert_eq!(runs[1]["run_id"], "old", "{body}");
     assert_eq!(runs[1]["stage"], Value::Null, "{body}");
     assert!(!body.to_string().contains("secret reason"), "{body}");
@@ -183,4 +184,44 @@ fn appending_valid_events_refreshes_the_learned_summary_and_a_removed_run_is_for
     let body = list();
     let ids: Vec<_> = body["runs"].as_array().unwrap().iter().map(|r| r["run_id"].clone()).collect();
     assert_eq!(ids, [json!("r1")], "{body}");
+}
+
+/// A run that delivers with `delivery` and finished, when `ending` is given, with that ending.
+fn add_delivered(s: &Setup, run: &str, project: &str, delivery: Delivery, ending: Option<&str>) {
+    add_run(s, run, project, "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+    let store = RunStore::new(&s.roots.state);
+    let mut record = store.load(run).unwrap();
+    record.delivery = delivery;
+    std::fs::write(s.roots.state.join("runs").join(run).join("run.json"), serde_json::to_string(&record).unwrap()).unwrap();
+    if let Some(ending) = ending {
+        let event = Event { schema_version: 1, event_id: format!("{run}-end"), run_id: run.into(), project_id: project.into(), feature_id: format!("f-{run}"), kind: "run.completed".into(), stage: None, attempt: 1, occurred_at: "2026-11-01T11:00:00Z".into(), payload: json!({"ending": ending}) };
+        store.append_event(&event).unwrap();
+    }
+}
+
+#[test]
+fn a_run_lists_and_details_its_delivery_and_how_a_delivered_run_ended() {
+    let s = setup("runs-delivery");
+    let alpha = git_repo(&s.scan, "alpha");
+    let a = project_id(&alpha);
+    add_delivered(&s, "pushed", &a, Delivery::Push, Some("pushed"));
+    add_delivered(&s, "merged", &a, Delivery::MergeLocal, Some("merged"));
+    add_delivered(&s, "reviewed", &a, Delivery::Review, Some("review_ready"));
+    add_delivered(&s, "going", &a, Delivery::MergeLocal, None);
+
+    let (status, body) = get(&s, "/api/projects/alpha/runs");
+    assert_eq!(status, 200, "{body}");
+    let row = |id: &str| body["runs"].as_array().unwrap().iter().find(|r| r["run_id"] == id).cloned().unwrap_or_else(|| panic!("{id}: {body}"));
+    for (id, delivery, state, ending) in [
+        ("pushed", "push", "completed", json!("pushed")),
+        ("merged", "merge_local", "completed", json!("merged")),
+        ("reviewed", "review", "completed", Value::Null),
+        ("going", "merge_local", "running", Value::Null),
+    ] {
+        let listed = row(id);
+        assert_eq!((&listed["delivery"], &listed["state"], &listed["ending"]), (&json!(delivery), &json!(state), &ending), "{id}: {listed}");
+        let (status, detail) = get(&s, &format!("/api/projects/alpha/runs/{id}"));
+        assert_eq!(status, 200, "{detail}");
+        assert_eq!((&detail["run"]["delivery"], &detail["run"]["ending"]), (&json!(delivery), &ending), "{id}: {detail}");
+    }
 }

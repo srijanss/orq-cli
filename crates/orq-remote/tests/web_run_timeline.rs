@@ -93,3 +93,34 @@ fn the_run_card_has_a_back_arrow_timeline_and_logs_tabs_and_each_step_shows_how_
     assert!(t.iter().any(|x| x == "2m 30s"), "the step's duration: {t:?}");
     assert!(t.iter().any(|x| x == "Connected") && t.iter().any(|x| x == "Project:"), "{t:?}");
 }
+
+/// A run's page says how the run delivers its work, and how a delivered run ended.
+#[test]
+fn a_run_page_shows_its_delivery_mode_and_a_delivered_runs_ending() {
+    let delivered = |delivery: &str, state: &str, ending: Value| {
+        let mut head = header();
+        head["delivery"] = json!(delivery);
+        head["state"] = json!(state);
+        head["ending"] = ending;
+        json!({"status": 200, "json": {"run": head, "events": [], "next_cursor": null}})
+    };
+    for (delivery, state, ending, mode, pill) in [
+        ("review", "needs_review", Value::Null, "Open review", "Needs review"),
+        ("push", "completed", json!("pushed"), "Push only", "Pushed"),
+        ("merge_local", "completed", json!("merged"), "Merge locally", "Merged locally"),
+    ] {
+        let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([delivered(delivery, state, ending), projects()]), json!([{"submit": TOKEN}])) else { return };
+        let t = texts(&out["frames"][1]);
+        assert!(t.iter().any(|x| x == &format!("Delivery: {mode}")), "{delivery}: {t:?}");
+        assert!(t.iter().any(|x| x == pill), "{delivery}: {t:?}");
+    }
+    // A run whose delivery the page does not know, or that has none, shows no delivery line.
+    for delivery in [json!("teleport"), Value::Null] {
+        let mut head = header();
+        head["delivery"] = delivery.clone();
+        let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([{"status": 200, "json": {"run": head, "events": [], "next_cursor": null}}, projects()]), json!([{"submit": TOKEN}])) else { return };
+        let t = texts(&out["frames"][1]);
+        assert!(!t.iter().any(|x| x.starts_with("Delivery")), "{delivery}: {t:?}");
+        assert!(t.iter().any(|x| x == "<b>login</b>"), "the run is still shown: {t:?}");
+    }
+}

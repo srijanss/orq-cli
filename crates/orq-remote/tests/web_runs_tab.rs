@@ -130,3 +130,27 @@ fn the_list_is_a_table_under_the_header_status_and_project_picker_narrowed_by_se
     assert_eq!(rows(6), ["older-feature"], "search");
     assert!(shown(&out["frames"][6]).iter().any(|t| t == "1"), "the count follows the filters: {:?}", shown(&out["frames"][6]));
 }
+
+/// A completed run that was delivered without a review shows how it ended; a hand-merged run is
+/// still shown as Merged.
+#[test]
+fn a_finished_run_that_was_pushed_or_merged_locally_shows_that_ending() {
+    let with_ending = |id: &str, feature: &str, ending: Value| {
+        let mut r = row(id, feature, "completed", Value::Null);
+        r["delivery"] = json!("push");
+        r["ending"] = ending;
+        r
+    };
+    let runs = json!({"status": 200, "json": {"runs": [
+        with_ending("run-p", "pushed-feature", json!("pushed")),
+        with_ending("run-m", "merged-feature", json!("merged")),
+        with_ending("run-r", "reviewed-feature", Value::Null),
+        row("run-h", "hand-merged-feature", "merged", Value::Null)
+    ]}});
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs, projects()]), json!([{"submit": TOKEN}])) else { return };
+    let texts = shown(&out["frames"][1]);
+    assert!(texts.iter().any(|t| t == "Pushed"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Merged locally"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Completed"), "a run with no delivery ending stays Completed: {texts:?}");
+    assert!(texts.iter().any(|t| t == "Merged"), "{texts:?}");
+}

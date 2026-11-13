@@ -37,6 +37,7 @@ struct LogSummary {
     len: u64,
     modified: Option<std::time::SystemTime>,
     state: &'static str,
+    ending: Option<&'static str>,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -69,6 +70,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             len: stat.map_or(0, |(len, _)| len),
             modified: stat.and_then(|(_, modified)| modified),
             state: summary.phase.as_str(),
+            ending: delivered_ending(&events, summary.phase),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -84,11 +86,25 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
     Ok(Some(row_of(record, log)))
 }
 
+/// How a completed run that delivered its work without a review ended: `pushed` or `merged`
+/// (into its base, locally). `None` for any other run, a run that ended in a review among them.
+fn delivered_ending(events: &[orq_orchestrator::Event], phase: orq_orchestrator::RunPhase) -> Option<&'static str> {
+    if phase != orq_orchestrator::RunPhase::Completed {
+        return None;
+    }
+    let completed = events.iter().rev().find(|event| event.kind == "run.completed")?;
+    match completed.payload.get("ending").and_then(|ending| ending.as_str()) {
+        Some("pushed") => Some("pushed"),
+        Some("merged") => Some("merged"),
+        _ => None,
+    }
+}
+
 type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
 
 fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated});
+    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
     (sort_key, record.run_id.clone(), row, record)
 }
 
@@ -1007,7 +1023,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         // How many review rounds the whole run has, so live events can carry on counting.
         let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
         Ok(Some(serde_json::json!({
-            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, summary.phase.as_str()), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at)},
+            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, summary.phase.as_str()), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)},
             "events": listed,
             "review_rounds": review_rounds,
             "next_cursor": next_cursor,

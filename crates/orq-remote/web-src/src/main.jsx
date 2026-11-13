@@ -2404,7 +2404,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
               {facts.runs.map((run) => (
                 <li key={run.run_id} className="run">
                   <span className="run-id">{run.run_id}</span>
-                  <RunState state={run.state} />
+                  <RunState state={run.state} ending={run.ending} />
                   {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
                   {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
                 </li>
@@ -2530,9 +2530,21 @@ function byUpdated(runs, order) {
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
 const RUN_ICONS = { running: "play", completed: "check", merged: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock" };
 
-function RunState({ state }) {
+// How a completed run that was delivered without a review ended: pushed, or merged into its base.
+const RUN_ENDINGS = { pushed: "Pushed", merged: "Merged locally" };
+
+// How a run delivers its work when it finishes, as its project's settings name it.
+const RUN_DELIVERIES = { review: "Open review", push: "Push only", merge_local: "Merge locally" };
+
+// The delivery a run's page shows, or null when the run has none the page knows.
+function deliveryOf(run) {
+  return typeof run.delivery === "string" && Object.hasOwn(RUN_DELIVERIES, run.delivery) ? RUN_DELIVERIES[run.delivery] : null;
+}
+
+function RunState({ state, ending }) {
   const known = Object.hasOwn(RUN_STATES, state);
-  return <span className={"run-state feature-state run-" + (known ? state : "unknown")}><Icon name={known ? RUN_ICONS[state] : "flag"} size={14} />{known ? RUN_STATES[state] : "Unknown"}</span>;
+  const label = !known ? "Unknown" : state === "completed" && typeof ending === "string" && Object.hasOwn(RUN_ENDINGS, ending) ? RUN_ENDINGS[ending] : RUN_STATES[state];
+  return <span className={"run-state feature-state run-" + (known ? state : "unknown")}><Icon name={known ? RUN_ICONS[state] : "flag"} size={14} />{label}</span>;
 }
 
 // The pill beside the Orchestrations title: how many of the listed runs are running now.
@@ -2618,7 +2630,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
                     <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
                   </td>
-                  <td><RunState state={run.state} /></td>
+                  <td><RunState state={run.state} ending={run.ending} /></td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
                   <td><Moment at={run.updated_at} /></td>
                   {actions ? (
@@ -2896,6 +2908,7 @@ const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events
 // one plain GET. The logs are fetched the first time their tab opens, and kept while it is hidden.
 function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline" }) {
   const { run, events, next_cursor: next } = timeline;
+  const delivery = deliveryOf(run);
   const [tab, setTab] = useState(startTab);
   const [logsOpened, setLogsOpened] = useState(startTab === "logs");
   const rounds = timeline.review_rounds;
@@ -2921,12 +2934,13 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
         <div className="feature-detail-title">
           <div className="feature-detail-line">
             <h2>{run.feature}</h2>
-            <RunState state={run.state} />
+            <RunState state={run.state} ending={run.ending} />
           </div>
           <RowActions run={run} control={control} />
-          {validTime(run.started_at) === null ? null : (
+          {validTime(run.started_at) === null && delivery === null ? null : (
             <p className="feature-detail-sub run-detail-sub">
-              <span>Started <Moment at={run.started_at} /></span>
+              {validTime(run.started_at) === null ? null : <span>Started <Moment at={run.started_at} /></span>}
+              {delivery === null ? null : <span data-run-delivery>{"Delivery: " + delivery}</span>}
             </p>
           )}
         </div>

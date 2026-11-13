@@ -68,7 +68,7 @@ fn a_run_gives_its_events_in_order_with_stage_attempt_and_time_and_never_the_pay
     add_run(&s, "r1", &project_id(&alpha), "develop", &[("run.started", None, "2026-11-01T10:00:00Z"), ("stage.started", Some("implement"), "2026-11-01T10:05:00Z"), ("stage.completed", Some("implement"), "2026-11-01T10:20:00Z")]);
     let (status, body) = get(&s, "/api/projects/alpha/runs/r1");
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["run"], json!({"run_id": "r1", "feature": "f-r1", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-01T10:20:00Z"}), "{body}");
+    assert_eq!(body["run"], json!({"run_id": "r1", "feature": "f-r1", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-01T10:20:00Z", "delivery": "review", "ending": null}), "{body}");
     let events = body["events"].as_array().unwrap();
     assert_eq!(events.len(), 3, "{body}");
     assert_eq!(events[1], json!({"event_id": "r1-1", "kind": "stage.started", "stage": "implement", "attempt": 1, "occurred_at": "2026-11-01T10:05:00Z"}), "{body}");
