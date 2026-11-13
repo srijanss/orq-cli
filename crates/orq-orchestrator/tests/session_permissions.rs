@@ -64,6 +64,27 @@ fn an_added_rule_that_would_publish_to_a_remote_is_left_out_with_a_note() {
     assert!(!allow.iter().any(|rule| rule.contains("push") || rule.contains("publish")), "{allow:?}");
 }
 
+/// A rule broad enough to reach publishing another way, a whole program that can publish or a
+/// shell that can run anything, is left out too; a narrow one stays.
+#[test]
+fn an_added_rule_broad_enough_to_publish_another_way_is_left_out() {
+    let (_repo, worktree) = checkout("permissions-broad");
+    let broad = ["Bash", "Bash(*)", "Bash(git:*)", "Bash(git *)", "Bash(git -C:*)", "Bash(cargo:*)", "Bash(npm *)", "Bash(gh:*)", "Bash(sh:*)", "Bash(bash -c:*)", "Bash(env:*)", "Bash(xargs:*)"];
+    let narrow = ["Bash(make lint:*)", "Bash(cargo nextest:*)", "Bash(git fetch:*)", "WebFetch"];
+    let extra: Vec<String> = broad.iter().chain(narrow.iter()).map(|rule| rule.to_string()).collect();
+
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"));
+
+    assert_eq!(notes.len(), broad.len(), "{notes:?}");
+    let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
+    for rule in broad {
+        assert!(!allow.iter().any(|allowed| allowed == rule), "{rule} in {allow:?}");
+    }
+    for rule in narrow {
+        assert!(allow.iter().any(|allowed| allowed == rule), "{rule} not in {allow:?}");
+    }
+}
+
 #[test]
 fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
     let (_repo, worktree) = checkout("permissions-bad");

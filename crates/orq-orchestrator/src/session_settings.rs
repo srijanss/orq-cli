@@ -247,10 +247,43 @@ const ALLOWED: &[&str] = &[
 /// Publishing to a remote is orq's own step, never the session's, whatever else is allowed.
 const DENIED: [&str; 3] = ["Bash(git push:*)", "Bash(cargo publish:*)", "Bash(npm publish:*)"];
 
-/// Whether a permission rule would let the session publish to a remote.
+/// Shells and wrappers run any command they are given, publishing included.
+const RUNS_ANYTHING: [&str; 10] = ["sh", "bash", "zsh", "env", "xargs", "eval", "exec", "sudo", "nohup", "command"];
+
+/// Programs with a subcommand that publishes: a rule for one of them must name a subcommand.
+const PUBLISHING_PROGRAMS: [&str; 7] = ["git", "cargo", "npm", "gh", "glab", "pnpm", "yarn"];
+
+/// Whether a permission rule would let the session publish to a remote: it names publishing, or
+/// is broad enough to reach it another way, any command, a shell or wrapper, or a whole program
+/// that can publish without naming its subcommand.
 fn publishes(rule: &str) -> bool {
     let words = rule.split(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-    words.into_iter().any(|word| word == "push" || word == "publish")
+    if words.into_iter().any(|word| word == "push" || word == "publish") {
+        return true;
+    }
+    let rule = rule.trim();
+    if rule == "Bash" {
+        return true;
+    }
+    let Some(command) = rule.strip_prefix("Bash(").and_then(|rest| rest.strip_suffix(')')) else {
+        return false;
+    };
+    let command = command.trim_end();
+    let command = command.strip_suffix(":*").or_else(|| command.strip_suffix('*')).unwrap_or(command);
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return true;
+    };
+    if program.contains('*') || RUNS_ANYTHING.contains(&program) {
+        return true;
+    }
+    if PUBLISHING_PROGRAMS.contains(&program) {
+        return match words.next() {
+            None => true,
+            Some(sub) => sub.contains('*') || sub.starts_with('-'),
+        };
+    }
+    false
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
@@ -267,7 +300,7 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> 
     allowed.push(&marker_rule);
     for rule in extra {
         if publishes(rule) {
-            notes.push(format!("allowed_tools rule {rule} would publish to a remote, which orq does itself; it was left out"));
+            notes.push(format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead"));
         } else {
             allowed.push(rule);
         }
