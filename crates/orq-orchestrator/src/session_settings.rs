@@ -247,8 +247,11 @@ const ALLOWED: &[&str] = &[
 /// Publishing to a remote is orq's own step, never the session's, whatever else is allowed.
 const DENIED: [&str; 3] = ["Bash(git push:*)", "Bash(cargo publish:*)", "Bash(npm publish:*)"];
 
-/// Shells and wrappers run any command they are given, publishing included.
-const RUNS_ANYTHING: [&str; 10] = ["sh", "bash", "zsh", "env", "xargs", "eval", "exec", "sudo", "nohup", "command"];
+/// Shells, wrappers and interpreters run any command or code they are given, publishing included.
+const RUNS_ANYTHING: [&str; 21] = [
+    "sh", "bash", "zsh", "dash", "fish", "env", "xargs", "eval", "exec", "sudo", "nohup", "command", "python", "node", "perl",
+    "ruby", "php", "deno", "bun", "lua", "osascript",
+];
 
 /// Programs with a subcommand that publishes: a rule for one of them must name a subcommand.
 const PUBLISHING_PROGRAMS: [&str; 7] = ["git", "cargo", "npm", "gh", "glab", "pnpm", "yarn"];
@@ -274,7 +277,10 @@ fn publishes(rule: &str) -> bool {
     let Some(program) = words.next() else {
         return true;
     };
-    if program.contains('*') || RUNS_ANYTHING.contains(&program) {
+    // A program named by its path is the same program; `python3.12` is `python`.
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let family = program.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    if program.is_empty() || program.contains('*') || RUNS_ANYTHING.contains(&family) {
         return true;
     }
     if PUBLISHING_PROGRAMS.contains(&program) {

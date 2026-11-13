@@ -85,6 +85,23 @@ fn an_added_rule_broad_enough_to_publish_another_way_is_left_out() {
     }
 }
 
+/// A program named by its path is the same program, and an interpreter runs any code it is given.
+#[test]
+fn a_rule_naming_a_program_by_its_path_or_an_interpreter_is_left_out() {
+    let (_repo, worktree) = checkout("permissions-paths");
+    let broad = ["Bash(/bin/bash:*)", "Bash(/usr/bin/git:*)", "Bash(./git -C:*)", "Bash(python3:*)", "Bash(node -e:*)", "Bash(perl:*)", "Bash(ruby:*)", "Bash(/usr/bin/env python3:*)"];
+    let narrow = ["Bash(/usr/bin/make lint:*)", "Bash(/usr/bin/git fetch:*)"];
+    let extra: Vec<String> = broad.iter().chain(narrow.iter()).map(|rule| rule.to_string()).collect();
+
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"));
+
+    assert_eq!(notes.len(), broad.len(), "{notes:?}");
+    let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
+    for rule in narrow {
+        assert!(allow.iter().any(|allowed| allowed == rule), "{rule} not in {allow:?}");
+    }
+}
+
 #[test]
 fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
     let (_repo, worktree) = checkout("permissions-bad");
