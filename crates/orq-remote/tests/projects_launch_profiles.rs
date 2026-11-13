@@ -123,3 +123,13 @@ fn a_profile_with_another_thinking_level_is_not_the_projects_agent() {
     let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
     assert_eq!((&body["reviewer"], &body["project_default"]), (&json!("kimi"), &json!(false)), "no effort is the profile without a thinking level: {body}");
 }
+
+/// The project's own agents come from orq.db: one that cannot be read fails the read, saying only that it
+/// failed, since the reason can name a path on this machine.
+#[test]
+fn an_unreadable_database_fails_the_read_without_its_reason() {
+    let s = setup("launch-profiles-bad-db", PROFILES);
+    git_repo(&s.scan, "alpha");
+    std::fs::write(s.roots.database(), "not a database, just some text that is long enough to be a header").unwrap();
+    assert_eq!(send(&s, "/api/projects/alpha/launch-profiles"), (500, json!({"error": "the launch profiles could not be read"})));
+}
