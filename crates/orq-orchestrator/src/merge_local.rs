@@ -52,6 +52,19 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
             let merged = git_raw(&checkout, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha])?;
             if !merged.success {
                 if let Some(base_sha) = moved_on_from(&record, &base_sha)? {
+                    // A fast-forward updates the checkout before the branch: when the branch had
+                    // moved by then, the checkout may hold this run's files over the new commit,
+                    // which only a person can tell from their own edits.
+                    let left = git_raw(&checkout, &["status", "--porcelain", "--untracked-files=no"])?;
+                    if !left.stdout.trim().is_empty() {
+                        return Ok(MergeOutcome::Refused {
+                            reason: format!(
+                                "{} moved while {} was being fast-forwarded, and the checkout was left with changes; check them, then resume this run",
+                                record.target_branch,
+                                checkout.display()
+                            ),
+                        });
+                    }
                     return Ok(MergeOutcome::BaseMoved { base_sha });
                 }
                 return Ok(MergeOutcome::Refused {

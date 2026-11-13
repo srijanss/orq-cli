@@ -276,13 +276,17 @@ fn a_base_branch_no_checkout_has_that_moves_during_the_fast_forward_is_named_for
 }
 
 #[test]
-fn a_checked_out_base_branch_that_moves_during_the_fast_forward_is_named_for_a_rebase_onto_it() {
+fn a_checked_out_base_branch_that_moves_during_the_fast_forward_and_leaves_its_checkout_changed_is_refused_for_a_person_to_check() {
     let w = world("late-checked-out");
     let late = move_main_during_the_first_update(&w);
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
 
     let moved = fs::read_to_string(&late).expect("main was moved during the fast-forward").trim().to_string();
-    assert_eq!(outcome, MergeOutcome::BaseMoved { base_sha: moved.clone() });
+    match outcome {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("moved while") && reason.contains("left with changes"), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+    assert!(w.repo.join("mine.txt").exists(), "what the failed fast-forward left is kept for a person to check");
 }
