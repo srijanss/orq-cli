@@ -103,17 +103,14 @@ fn a_checkout_with_uncommitted_changes_is_refused_and_left_alone() {
 }
 
 #[test]
-fn a_checked_out_base_branch_that_moved_since_the_run_started_is_refused() {
+fn a_checked_out_base_branch_that_moved_since_the_run_started_is_left_and_named_for_a_rebase_onto_it() {
     let w = world("moved");
     fs::write(w.repo.join("theirs.txt"), "theirs\n").unwrap();
     git(&w.repo, &["add", "."]);
     git(&w.repo, &["commit", "-q", "-m", "theirs"]);
     let moved = git(&w.repo, &["rev-parse", "HEAD"]);
 
-    match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("moved"), "{reason}"),
-        other => panic!("expected a refusal, got {other:?}"),
-    }
+    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::BaseMoved { base_sha: moved.clone() });
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
 }
 

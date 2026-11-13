@@ -15,6 +15,9 @@ pub enum MergeOutcome {
     Merged { head_sha: String },
     /// The base branch was left where it was, and why.
     Refused { reason: String },
+    /// The base branch moved past the commit the run was rebased onto, to `base_sha`, and was
+    /// left there: rebasing the run onto `base_sha` makes the fast-forward possible again.
+    BaseMoved { base_sha: String },
 }
 
 /// Fast-forward `run_id`'s target branch to the run's branch, in the checkout that has it.
@@ -35,9 +38,7 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
     let base_sha = base.stdout.trim().to_string();
     let fast_forward = git_raw(&record.worktree, &["merge-base", "--is-ancestor", &base_sha, &head_sha])?;
     if !fast_forward.success {
-        return Ok(MergeOutcome::Refused {
-            reason: format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
-        });
+        return Ok(MergeOutcome::BaseMoved { base_sha });
     }
     match checkout_of(&record)? {
         Some(checkout) => {

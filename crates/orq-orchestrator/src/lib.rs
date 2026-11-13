@@ -82,7 +82,7 @@ pub use reap::{
     plan_orphans, plan_reap, reap_orphan_ref, reap_run, reap_run_databases, Orphans, ReapItem,
     ReapVerdict,
 };
-pub use rebase::{private_ref_name, rebase_onto_target, RebaseOutcome};
+pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, RebaseOutcome};
 pub use resume::{
     carry_rebase, check_group_resume, plan_group_resume, plan_group_resume_with, plan_resume, rebased_onto, record_group,
     record_inherited_implement, resume_check, run_members,

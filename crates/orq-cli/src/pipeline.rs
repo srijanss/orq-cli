@@ -18,6 +18,8 @@ use orq_orchestrator::{
 /// How many times a red gate is handed to a fix session before the run fails.
 const GATE_FIX_ATTEMPTS: u32 = 2;
 const CI_FIX_ATTEMPTS: u32 = 2;
+/// How many times a merge-local run catches up with a base branch that keeps moving before it stops.
+const MERGE_LOCAL_RETRIES: u32 = 3;
 
 #[derive(Clone)]
 pub struct Options<'a> {
@@ -994,14 +996,10 @@ fn stages(
         .then(|| logs.parent().and_then(Path::parent).map(|root| crate::progress::Progress::start(root.to_path_buf(), run_id.to_string(), logs.to_path_buf())))
         .flatten();
 
-    if !done("gate") {
-        if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
-            return paused("rebase");
-        }
-        if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
-            return stopped(Ending::Blocked, reason);
-        }
-
+    // Runs the gate, with its fix sessions, on the run's branch as it is now: `Some` with how the run
+    // stops when the branch does not pass.
+    let check = || -> Result<Option<Report>, StoreError> {
+        let stopped_now = |ending: Ending, detail: String| stopped(ending, detail).map(Some);
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
         let gate_log = logs.join("gate.log");
         let fix_log = logs.join("gate-fix.log");
@@ -1051,11 +1049,11 @@ fn stages(
             })?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
-                return stopped(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
+                return stopped_now(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
             }
             // Left alone on purpose: the person decides whether it is fixed first, in its own change.
             GateFixOutcome::Unrelated { summary } => {
-                return stopped(
+                return stopped_now(
                     Ending::Blocked,
                     format!("the gate fails for a reason unrelated to this run: {summary}. Get that fixed separately and merged into the target branch, then resume this run"),
                 );
@@ -1063,10 +1061,22 @@ fn stages(
             // A repair that was not committed would leave the pushed commit unfixed.
             GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {
                 if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
-                    return stopped(Ending::Blocked, reason);
+                    return stopped_now(Ending::Blocked, reason);
                 }
             }
             _ => {}
+        }
+        Ok(None)
+    };
+    if !done("gate") {
+        if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
+            return paused("rebase");
+        }
+        if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
+            return stopped(Ending::Blocked, reason);
+        }
+        if let Some(stop) = check()? {
+            return Ok(stop);
         }
     }
 
@@ -1102,10 +1112,30 @@ fn stages(
     if record.delivery == orq_core::project_settings::Delivery::MergeLocal {
         // Delivered in this repository: the base branch is fast-forwarded and nothing is pushed.
         // A base branch that cannot take the run as it is stops it, with its branch and worktree kept.
-        return match orq_orchestrator::merge_into_base(store, run_id)? {
-            orq_orchestrator::MergeOutcome::Merged { head_sha } => delivered(&head_sha, Ending::Merged),
-            orq_orchestrator::MergeOutcome::Refused { reason } => stopped(Ending::Blocked, reason),
-        };
+        // A base branch that moved on since the run was rebased is caught up with: the run is
+        // rebased onto where it is now and checked again, a few times at most.
+        let mut retries = 0;
+        loop {
+            match orq_orchestrator::merge_into_base(store, run_id)? {
+                orq_orchestrator::MergeOutcome::Merged { head_sha } => return delivered(&head_sha, Ending::Merged),
+                orq_orchestrator::MergeOutcome::Refused { reason } => return stopped(Ending::Blocked, reason),
+                orq_orchestrator::MergeOutcome::BaseMoved { base_sha } => {
+                    if !options.rebase || retries == MERGE_LOCAL_RETRIES {
+                        return stopped(
+                            Ending::Blocked,
+                            format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
+                        );
+                    }
+                    retries += 1;
+                    if let RebaseOutcome::Conflict { reason } = orq_orchestrator::rebase_onto_commit(store, run_id, &base_sha)? {
+                        return stopped(Ending::Blocked, reason);
+                    }
+                    if let Some(stop) = check()? {
+                        return Ok(stop);
+                    }
+                }
+            }
+        }
     }
 
     if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {

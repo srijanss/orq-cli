@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{rebase_onto_target, RebaseOutcome, RunRecord, RunStore};
+use orq_orchestrator::{rebase_onto_commit, rebase_onto_target, RebaseOutcome, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -401,4 +401,28 @@ fn two_linked_worktrees_each_rebase_onto_their_own_target_and_clean_only_their_o
 
     let first_outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
     assert_eq!(first_outcome, RebaseOutcome::Rebased { target_sha: main });
+}
+
+#[test]
+fn the_run_branch_is_rebased_onto_a_given_local_commit_without_fetching_and_its_sha_recorded() {
+    let w = world("local", None);
+    git(&w.worktree, &["checkout", "-q", "main"]);
+    fs::write(w.worktree.join("local.txt"), "local\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "local"]);
+    let local = git(&w.worktree, &["rev-parse", "HEAD"]);
+    git(&w.worktree, &["checkout", "-q", "fix--COM-02"]);
+    // The remote moved too; a rebase onto the given commit does not look there.
+    advance_target(&w, "theirs.txt", "theirs\n");
+
+    let outcome = rebase_onto_commit(&w.store, "run-1", &local).unwrap();
+
+    assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: local.clone() });
+    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD~1"]), local, "the run's commit sits on the given commit");
+    assert!(w.worktree.join("local.txt").is_file() && w.worktree.join("mine.txt").is_file());
+    assert!(!w.worktree.join("theirs.txt").exists(), "nothing was fetched");
+    let events = w.store.events("run-1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "rebase.completed");
+    assert_eq!(events[0].payload["target_sha"], local.as_str());
 }

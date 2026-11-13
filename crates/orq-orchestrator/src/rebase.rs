@@ -29,14 +29,7 @@ pub fn rebase_onto_target(
         return Ok(RebaseOutcome::Skipped);
     }
     let worktree = record.worktree.as_path();
-    // Only ever rewrite the run's own branch: a switched or detached HEAD is left alone.
-    let head = git_raw(worktree, &["symbolic-ref", "-q", "HEAD"])?;
-    if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
-        return Err(StoreError::Corrupt(format!(
-            "the worktree is not on the run branch {}",
-            record.branch
-        )));
-    }
+    on_run_branch(&record)?;
     // Fetch into a ref of this run instead of the FETCH_HEAD that every worktree
     // of the repository shares, so a concurrent fetch cannot swap the commit.
     let private_ref = private_ref_name(&record.run_id);
@@ -75,11 +68,37 @@ pub fn rebase_onto_target(
     }
     let target_sha = target_sha.stdout.trim().to_string();
 
+    rebase_record_onto(store, &record, target_sha)
+}
+
+/// Rebase `run_id`'s branch onto `target_sha`, a commit the repository already has, without
+/// fetching: a merge-local run whose local base branch moved is rebased onto where it is now.
+pub fn rebase_onto_commit(store: &RunStore, run_id: &str, target_sha: &str) -> Result<RebaseOutcome, StoreError> {
+    let record = store.load(run_id)?;
+    on_run_branch(&record)?;
+    rebase_record_onto(store, &record, target_sha.to_string())
+}
+
+/// Only ever rewrite the run's own branch: a switched or detached HEAD is left alone.
+fn on_run_branch(record: &RunRecord) -> Result<(), StoreError> {
+    let head = git_raw(&record.worktree, &["symbolic-ref", "-q", "HEAD"])?;
+    if head.stdout.trim() != format!("refs/heads/{}", record.branch) {
+        return Err(StoreError::Corrupt(format!(
+            "the worktree is not on the run branch {}",
+            record.branch
+        )));
+    }
+    Ok(())
+}
+
+/// Rebase the run's branch onto `target_sha`: recorded when done, the run blocked on a conflict.
+fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String) -> Result<RebaseOutcome, StoreError> {
+    let worktree = record.worktree.as_path();
     let rebased = git_raw(worktree, &["rebase", &target_sha])?;
     if rebased.success {
         record_event(
             store,
-            &record,
+            record,
             "rebase.completed",
             serde_json::json!({ "target_sha": target_sha }),
         )?;
@@ -98,7 +117,7 @@ pub fn rebase_onto_target(
     );
     record_event(
         store,
-        &record,
+        record,
         "run.blocked",
         serde_json::json!({ "reason": reason }),
     )?;
