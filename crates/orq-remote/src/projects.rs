@@ -423,7 +423,10 @@ impl StoreProjects {
             None => launcher.start(&project.path, feature),
         };
         match started {
-            Ok(run) => Ok(RunStart::Started(run)),
+            Ok(run) => Ok(match launcher.start_warning(&project.path) {
+                Some(warning) => RunStart::StartedWithWarning { run, warning: orq_core::redact::redact(&warning) },
+                None => RunStart::Started(run),
+            }),
             Err(LaunchError::Refused(why)) => Ok(RunStart::Refused(orq_core::redact::redact(&why))),
             Err(LaunchError::Failed(why)) => Err(why),
         }
@@ -472,6 +475,12 @@ pub trait RunLauncher {
     /// Starts a run as `start` does, with the chosen implementer and reviewer instead of the launch defaults.
     fn start_with(&self, _repo: &Path, _feature: &str, _profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot choose the profiles".to_string()))
+    }
+
+    /// What whoever started a run in the project at `repo` should know about it, such as commits only the
+    /// local target branch has, which the run will not see; `None` when there is nothing to say.
+    fn start_warning(&self, _repo: &Path) -> Option<String> {
+        None
     }
 
     /// Continues run `run` of the project at `repo` and returns the id of the run that carries on.

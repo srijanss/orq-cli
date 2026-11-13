@@ -100,6 +100,20 @@ fn check_branch(repo: &Path, branch: &str) -> Result<(), FetchError> {
     }
 }
 
+/// How many commits the local `branch` has that `remote/branch`, as last fetched, does not. A run branches
+/// from the remote's target, so those commits are not in it. None when either branch is missing, a name is
+/// unsafe, or git fails: there is then nothing to say.
+pub fn local_commits_not_on_remote(repo: &Path, remote: &str, branch: &str) -> Option<usize> {
+    check_remote(remote).ok()?;
+    check_branch(repo, branch).ok()?;
+    let range = format!("refs/remotes/{remote}/{branch}..refs/heads/{branch}");
+    let counted = git(repo, &["rev-list", "--count", &range, "--"]).ok()?;
+    if !counted.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&counted.stdout).trim().parse().ok()
+}
+
 fn failure(output: &Output) -> FetchError {
     FetchError::Git { message: redact_urls(String::from_utf8_lossy(&output.stderr).trim()) }
 }

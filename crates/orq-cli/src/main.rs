@@ -454,6 +454,9 @@ fn run(args: &[OsString]) -> ExitCode {
     if parsed.check {
         return match pipeline::check(&options) {
             Ok(()) => {
+                if let Some(warning) = target_ahead_warning(&project.root, remote, target) {
+                    eprintln!("orq: warning: {}", printable(&warning));
+                }
                 println!("state: ready");
                 ExitCode::SUCCESS
             }
@@ -1903,6 +1906,18 @@ fn default_target_branch(repo: &Path) -> String {
         .and_then(|text| text.trim().strip_prefix("origin/").map(str::to_string))
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| "main".to_string())
+}
+
+/// A run branches from `remote/target`, so commits only the local `target` has are not in it: said
+/// when there are any, as last fetched.
+fn target_ahead_warning(repo: &Path, remote: &str, target: &str) -> Option<String> {
+    match orq_git::local_commits_not_on_remote(repo, remote, target)? {
+        0 => None,
+        count => {
+            let commits = if count == 1 { "commit" } else { "commits" };
+            Some(format!("{target} has {count} {commits} {remote}/{target} does not; the run starts from {remote}/{target} without them"))
+        }
+    }
 }
 
 /// The configured base branch (settings file or `ORQ_BASE_BRANCH`), else the remote's default.

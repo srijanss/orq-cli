@@ -7,7 +7,7 @@ mod diff;
 pub use diff::{diff_evidence, DiffError, DiffEvidence, FileChange};
 
 mod fetch;
-pub use fetch::{fetch_target_base, redact_urls, FetchError};
+pub use fetch::{fetch_target_base, local_commits_not_on_remote, redact_urls, FetchError};
 
 mod worktree;
 pub use worktree::{create_run_worktree, WorktreeError};

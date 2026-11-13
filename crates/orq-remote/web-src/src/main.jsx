@@ -1497,6 +1497,12 @@ function Confirm({ question, detail = null, answer, tone, busy = false, onConfir
 
 // The link a start's confirmation carries to the new run's orchestration page, or nothing for an empty or
 // unroutable run id.
+// A start's confirmation with the server's warning about it, such as the run not seeing commits only the
+// local target branch has, when the reply carries one.
+function withWarning(text, body) {
+  return body !== null && typeof body.warning === "string" && body.warning !== "" ? text + " Warning: " + body.warning + "." : text;
+}
+
 function OpenRun({ projectId, run }) {
   if (!RUN_ID.test(run)) return null;
   const href = "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
@@ -1787,7 +1793,7 @@ function LaunchAction({ feature, control }) {
       const body = await jsonOrNull(response);
       if (response.ok) {
         const run = body !== null && typeof body.run === "string" ? body.run : "";
-        setNote(run === "" ? "Started." : "Started run " + run + ".");
+        setNote(withWarning(run === "" ? "Started." : "Started run " + run + ".", body));
         setRun(run);
         setPhase("done");
         control.onDone();
@@ -2046,7 +2052,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
         ok = response.ok;
         const run = body !== null && typeof body.run === "string" ? body.run : "";
         if (ok) {
-          text = run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".";
+          text = withWarning(run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".", body);
           started = run;
         }
         else if (response.status === 403) text = name + ": Not allowed.";
@@ -2317,7 +2323,7 @@ function FeatureAction({ feature, control, asking = false, onCancel = null }) {
   const name = encodeURIComponent(feature.name);
   const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
   return feature.status === "pending"
-    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run) => (run === "" ? "Started." : "Started run " + run + ".")} />
+    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
 }
 

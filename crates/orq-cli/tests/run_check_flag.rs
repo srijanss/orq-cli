@@ -161,3 +161,42 @@ fn a_check_of_a_group_is_busy_when_a_later_member_has_an_active_run() {
     assert!(text(&busy.stderr).contains("COM-02") && text(&busy.stderr).contains("run-later"), "{}", text(&busy.stderr));
     assert_eq!(store.run_ids().unwrap(), ["run-later"]);
 }
+
+fn commit(repo: &Path, message: &str) {
+    let output = Command::new("git").arg("-C").arg(repo).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", message]).output().unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+}
+
+/// The run branches from the remote's target, so commits only the local target has are not in it: a check
+/// says so, and still says ready. A local target its remote already has says nothing more.
+#[test]
+fn a_check_warns_when_the_local_target_has_commits_its_remote_does_not() {
+    let repo = forge_repo();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    git(repo.root(), &["branch", "-M", "main"]);
+    git(repo.root(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let env = env("ahead");
+
+    let even = run(repo.root(), &env, &["--feature", "COM-01", "--check"]);
+    assert_eq!(even.status.code(), Some(0), "{}", text(&even.stderr));
+    assert_eq!(text(&even.stderr), "", "nothing to warn about");
+
+    commit(repo.root(), "one");
+    commit(repo.root(), "two");
+    let ahead = run(repo.root(), &env, &["--feature", "COM-01", "--check"]);
+    assert_eq!(ahead.status.code(), Some(0), "{}", text(&ahead.stderr));
+    assert_eq!(text(&ahead.stdout), "state: ready\n");
+    assert_eq!(text(&ahead.stderr), "orq: warning: main has 2 commits origin/main does not; the run starts from origin/main without them\n");
+    assert!(state_is_empty(&env), "nothing was recorded");
+}
+
+#[test]
+fn a_check_counts_a_single_local_commit_as_one() {
+    let repo = forge_repo();
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    git(repo.root(), &["branch", "-M", "main"]);
+    git(repo.root(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    commit(repo.root(), "one");
+    let ahead = run(repo.root(), &env("one-ahead"), &["--feature", "COM-01", "--check"]);
+    assert_eq!(text(&ahead.stderr), "orq: warning: main has 1 commit origin/main does not; the run starts from origin/main without them\n");
+}

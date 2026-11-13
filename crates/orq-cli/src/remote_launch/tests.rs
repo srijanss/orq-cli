@@ -243,3 +243,19 @@ fn a_start_without_a_choice_names_no_profiles_so_the_run_picks_the_projects_agen
         assert!(line.contains("--feature ready") && !line.contains("--implementer") && !line.contains("--reviewer"), "{line}");
     }
 }
+
+/// The launcher warns, as `orq run --check` does, when the local target branch has commits the remote's
+/// does not, since the run starts from the remote's without them.
+#[test]
+fn a_start_is_warned_about_local_target_commits_its_remote_lacks() {
+    let dir = scratch("ahead");
+    let repo = repo(&dir);
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).status().unwrap().success());
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let launcher = CliLauncher::new(fake_orq(&dir), None);
+    assert_eq!(launcher.start_warning(&repo), None, "even with origin/main");
+
+    git(&["commit", "-q", "--allow-empty", "-m", "local"]);
+    assert_eq!(launcher.start_warning(&repo).as_deref(), Some("main has 1 commit origin/main does not; the run starts from origin/main without them"));
+}

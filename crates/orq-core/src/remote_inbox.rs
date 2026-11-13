@@ -390,6 +390,9 @@ pub enum RunControlOutcome {
 pub enum RunStart {
     /// The run that began, by id.
     Started(String),
+    /// The run that began, with what its starter should know about it, such as commits only the local
+    /// target branch has, which the run will not see; safe to show.
+    StartedWithWarning { run: String, warning: String },
     /// Why this feature may not start a run now; safe to show.
     Refused(String),
     /// There is no such project or feature.
@@ -725,6 +728,10 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         Some(Ok(RunStart::Started(run))) => {
             audit(Outcome::Allowed, Some(&run), named.as_deref());
             reply(202, json!({ "run": run }))
+        }
+        Some(Ok(RunStart::StartedWithWarning { run, warning })) => {
+            audit(Outcome::Allowed, Some(&run), named.as_deref());
+            reply(202, json!({ "run": run, "warning": warning }))
         }
         Some(Ok(RunStart::Refused(why))) => {
             audit(Outcome::Refused, None, Some(&why));

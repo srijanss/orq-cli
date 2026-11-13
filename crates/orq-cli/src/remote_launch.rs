@@ -143,6 +143,12 @@ impl RunLauncher for CliLauncher {
         self.launch(repo, feature, Some(profiles))
     }
 
+    fn start_warning(&self, repo: &Path) -> Option<String> {
+        let project = orq_git::resolve_project(repo).ok()?;
+        let target = crate::configured_target_branch(&project.root).ok()?;
+        crate::target_ahead_warning(&project.root, "origin", &target)
+    }
+
     fn resume(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
         // The command validates the run itself; a run id is never allowed to read as an option.
         if run.is_empty() || run.starts_with('-') {
