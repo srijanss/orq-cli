@@ -42,9 +42,13 @@ fn a_run_started_for_the_web_while_herdr_is_running_runs_in_the_foreground_of_a_
     let dir = scratch("pane");
     let herdr = fake_herdr(&dir);
 
+    // Named relative to where the launch is made, which is not where the pane starts.
+    let parent = repo.root().parent().unwrap();
+    let relative = repo.root().file_name().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .current_dir(parent)
         .args(["run", "--repo"])
-        .arg(repo.root())
+        .arg(relative)
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--detach", "--in-herdr"])
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_STATE_HOME", dir.join("state"))
@@ -67,7 +71,8 @@ fn a_run_started_for_the_web_while_herdr_is_running_runs_in_the_foreground_of_a_
     // The pane runs `exec sh -c <script>`; the script, unquoted, is what runs the run.
     let quoted = command.strip_prefix("exec sh -c ").unwrap_or_else(|| panic!("{command}"));
     let command = text(&Command::new("sh").args(["-c", &format!("printf %s {quoted}")]).output().unwrap().stdout);
-    for wanted in ["'run'", "'--feature' 'COM-01'", &format!("'--run-id' '{run_id}'"), "XDG_STATE_HOME="] {
+    let root = format!("'--repo' '{}'", repo.root().canonicalize().unwrap().display());
+    for wanted in [root.as_str(), "'run'", "'--feature' 'COM-01'", &format!("'--run-id' '{run_id}'"), "XDG_STATE_HOME="] {
         assert!(command.contains(wanted), "{wanted} in {command}");
     }
     assert!(!command.contains("--detach") && !command.contains("--in-herdr"), "the pane runs it in the foreground: {command}");

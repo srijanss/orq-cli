@@ -1625,6 +1625,30 @@ fn launch_outcome(success: bool, stdout: &str, stderr: &str) -> Result<String, S
     Err(printable(reason.trim_start_matches("orq: ")))
 }
 
+/// The `orq run` arguments `args` with `--repo` naming `root`, added when missing. Option values
+/// are skipped as the parser reads them, so only the flag itself is replaced.
+fn with_repo(args: &[OsString], root: &Path) -> Vec<OsString> {
+    let mut kept = Vec::with_capacity(args.len() + 2);
+    let mut named = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        kept.push(arg.clone());
+        match arg.to_str() {
+            Some("--repo") => {
+                iter.next();
+                kept.push(root.as_os_str().to_owned());
+                named = true;
+            }
+            Some(name) if RUN_VALUE_FLAGS.contains(&name) => kept.extend(iter.next().cloned()),
+            _ => {}
+        }
+    }
+    if !named {
+        kept.extend([OsString::from("--repo"), root.as_os_str().to_owned()]);
+    }
+    kept
+}
+
 /// Whether Herdr is running for this launcher: its environment names Herdr's socket.
 fn herdr_running(env: &dyn Fn(&str) -> Option<String>) -> bool {
     env("HERDR_SOCKET_PATH").is_some_and(|path| !path.is_empty())
@@ -1643,8 +1667,9 @@ fn launch_in_herdr(repo: &Path, forwarded: &[OsString]) -> ExitCode {
         return fail("no state location: set XDG_STATE_HOME or HOME".to_string());
     };
     let run_id = pipeline::new_run_id();
+    // The pane starts in the repository, not where this launch was made, so it is named absolutely.
     let mut args = vec![OsString::from("run")];
-    args.extend(forwarded.iter().cloned());
+    args.extend(with_repo(forwarded, repo));
     // The pane's shell is not this process's, so it is given the state and config locations.
     let env: Vec<(&str, OsString)> =
         ["XDG_STATE_HOME", "XDG_CONFIG_HOME"].into_iter().filter_map(|name| std::env::var_os(name).map(|value| (name, value))).collect();
@@ -3996,6 +4021,18 @@ mod ledger_backend_tests {
         let in_herdr: Vec<std::ffi::OsString> = ["--feature", "F", "--detach", "--in-herdr", "--context", "--in-herdr"].iter().map(Into::into).collect();
         let kept: Vec<std::ffi::OsString> = ["--feature", "F", "--context", "--in-herdr"].iter().map(Into::into).collect();
         assert_eq!(crate::without_detach_flag(&in_herdr), kept, "a value spelled like the flag is kept");
+    }
+
+    /// A pane starts elsewhere than the launch, so the run it starts names the repository absolutely.
+    #[test]
+    fn the_run_a_pane_starts_names_the_resolved_repository_in_place_of_the_given_one() {
+        let os = |words: &[&str]| words.iter().map(Into::into).collect::<Vec<std::ffi::OsString>>();
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            crate::with_repo(&os(&["--context", "--repo", "--repo", "./repo", "--feature", "F"]), root),
+            os(&["--context", "--repo", "--repo", "/abs/repo", "--feature", "F"])
+        );
+        assert_eq!(crate::with_repo(&os(&["--feature", "F"]), root), os(&["--feature", "F", "--repo", "/abs/repo"]));
     }
 
     #[test]
