@@ -274,14 +274,27 @@ fn an_unattended_session_names_a_refused_command_or_tool_in_its_marker() {
 }
 
 /// With nobody to answer, a Claude implementer refuses whatever its run's permissions do not allow
-/// instead of waiting on a prompt; an attended one asks in its pane.
+/// instead of waiting on a prompt; an attended one runs in auto mode, so its pane is not stopped by
+/// prompts it can decide for itself.
 #[test]
-fn an_unattended_claude_implementer_refuses_instead_of_asking() {
+fn an_unattended_claude_implementer_refuses_and_an_attended_one_decides_in_auto_mode() {
     let features = ["COM-01"];
     let adapter = adapter_for("claude").unwrap();
     let mode = |argv: &[String]| argv.windows(2).find(|pair| pair[0] == "--permission-mode").map(|pair| pair[1].clone());
     let unattended = adapter.implement_argv(&ImplementRequest { attended: false, ..request("claude", "opus", &features) }).unwrap();
     assert_eq!(mode(&unattended), Some("dontAsk".to_string()), "{unattended:?}");
     let attended = adapter.implement_argv(&ImplementRequest { attended: true, ..request("claude", "opus", &features) }).unwrap();
-    assert_eq!(mode(&attended), None, "{attended:?}");
+    assert_eq!(mode(&attended), Some("auto".to_string()), "{attended:?}");
+}
+
+/// An attended Claude fix session runs in auto mode too, so its pane is not stopped by prompts it can
+/// decide for itself; an unattended one is headless and asks nobody.
+#[test]
+fn an_attended_claude_fix_session_decides_in_auto_mode() {
+    let adapter = adapter_for("claude").unwrap();
+    let mode = |argv: &[String]| argv.windows(2).find(|pair| pair[0] == "--permission-mode").map(|pair| pair[1].clone());
+    let attended = adapter.fix_argv(&fix_request("claude", "opus", None, true)).unwrap();
+    assert_eq!(mode(&attended), Some("auto".to_string()), "{attended:?}");
+    let unattended = adapter.fix_argv(&fix_request("claude", "opus", None, false)).unwrap();
+    assert_eq!(mode(&unattended), None, "{unattended:?}");
 }

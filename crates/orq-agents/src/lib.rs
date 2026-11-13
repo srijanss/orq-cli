@@ -296,17 +296,17 @@ impl HarnessAdapter for Claude {
             argv.push("--remote-control".to_string());
             argv.push(name.to_string());
         }
-        // Nobody can answer a permission prompt: what the run's settings do not allow is refused.
-        if !request.attended {
-            argv.extend(["--permission-mode".to_string(), "dontAsk".to_string()]);
-        }
+        // Nobody can answer a permission prompt: what the run's settings do not allow is refused. With
+        // someone watching, auto mode decides what it can and leaves them only what it cannot.
+        let mode = if request.attended { "auto" } else { "dontAsk" };
+        argv.extend(["--permission-mode".to_string(), mode.to_string()]);
         argv.push(prompt);
         Ok(argv)
     }
 
     fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
         let prompt = fix_prompt("claude", request)?;
-        let mut argv = if request.attended { Vec::new() } else { vec!["-p".to_string()] };
+        let mut argv = if request.attended { vec!["--permission-mode".to_string(), "auto".to_string()] } else { vec!["-p".to_string()] };
         // `--add-dir` takes any number of values, so an option has to follow it before the prompt.
         argv.extend(["--add-dir".to_string(), request.logs_dir.to_string()]);
         argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
@@ -456,7 +456,7 @@ impl HarnessAdapter for Pi {
 
     fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
         let prompt = fix_prompt("pi", request)?;
-        let mut argv = if request.attended { Vec::new() } else { vec!["-p".to_string()] };
+        let mut argv = if request.attended { vec!["--permission-mode".to_string(), "auto".to_string()] } else { vec!["-p".to_string()] };
         argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
         Ok(argv)
     }
