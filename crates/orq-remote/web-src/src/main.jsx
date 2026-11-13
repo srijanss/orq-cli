@@ -3356,8 +3356,8 @@ function RoleFields({ title, role, entry, options, choice, disabled, onChoose })
 const PROJECT_ROLES = [["Implementer", "implementer"], ["Reviewer", "reviewer"]];
 
 // A project's settings: each role and the delivery, read only until Edit. Edit checks that remote actions
-// are on and reads the machine's options; Save asks, then sends the whole record with the revision it was
-// read at, and a refusal shows the server's reason, with Reload when the settings changed meanwhile.
+// are on and reads the machine's options; Save asks, then sends the whole record with the revision Edit
+// read, and a refusal shows the server's reason, with Reload when the settings changed meanwhile.
 function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) {
   const [phase, setPhase] = useState("idle");
   const [options, setOptions] = useState([]);
@@ -3392,7 +3392,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: settings.delivery });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: settings.delivery, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -3403,12 +3403,13 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setPhase("sending");
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, revision: settings.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
       }
       if (response.ok) {
+        setPhase("idle");
         onChanged();
         return;
       }
@@ -3456,7 +3457,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
       {phase === "asking" ? (
         <Confirm question="Save this project's settings?" detail="Runs already going keep their agents and delivery." answer="Yes, save" tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
       ) : null}
-      <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={() => { setNote(""); setConflict(false); onChanged(); }} />
+      <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={() => { setNote(""); setConflict(false); setPhase("idle"); onChanged(); }} />
     </div>
   );
 }
@@ -3482,7 +3483,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
           <PageHeader title="Project settings" subtitle="How this project's runs work, over the machine defaults" onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} section="settings" />
         </>
-      )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView key={settings.revision} settings={settings} path={settingsPath} token={token} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
+      )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView settings={settings} path={settingsPath} token={token} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
     );
   }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {

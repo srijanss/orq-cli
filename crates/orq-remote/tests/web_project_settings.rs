@@ -202,3 +202,26 @@ fn edit_keeps_a_project_agent_whose_harness_or_model_is_not_offered_so_saving_th
         json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "push", "revision": 3})
     );
 }
+
+#[test]
+fn a_background_refresh_keeps_the_open_editor_and_its_draft_and_save_names_the_revision_it_was_read_at() {
+    let stale = json!({"status": 409, "json": {"error": "The project's settings changed since they were read"}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"set": "[data-delivery]", "value": "push"},
+        {"tick": 30000},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), project_settings("review", 4), stale]);
+    let until_refresh = json!(steps.as_array().unwrap()[..3]);
+    let Some(refreshed) = run(responses.clone(), until_refresh) else { return };
+    let refreshed = last(&refreshed);
+    assert_eq!(count(refreshed, "[data-project-settings-save]"), 1, "the editor stays open: {:?}", shown(refreshed));
+    let Some(out) = run(responses, steps) else { return };
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "the draft is still there to save: {:?}", out["requests"]);
+    assert_eq!(body(&sent[0])["delivery"], "push");
+    assert_eq!(body(&sent[0])["revision"], 3, "the revision the editor was opened at");
+    assert!(shown(last(&out)).iter().any(|t| t == "The project's settings changed since they were read"));
+}
