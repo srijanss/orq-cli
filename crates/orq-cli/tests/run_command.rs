@@ -584,44 +584,53 @@ fn the_commit_a_ci_fix_pushes_gets_its_own_review_report() {
     }
 }
 
-/// A CI fix that changes what the gate would detect is checked with the gate the fix loop runs,
-/// and its report lists only the steps that gate ran.
-#[test]
-fn the_report_of_a_ci_fix_that_changes_the_detected_gate_lists_only_the_steps_that_ran() {
-    let w = world("reportfixsteps");
+/// A run of a project whose main has a Node package with a test script. The fix session that
+/// `prompt` starts runs `fix` (sh) and commits what it changed; every `api` call gets `ci`. The fake
+/// `npm` leaves each of its runs as a line in the returned file, then runs `npm_status` (sh).
+fn node_package_run(w: &World, ci: &str, prompt: &str, fix: &str, npm_status: &str) -> (Output, PathBuf) {
     std::fs::write(w.repo.root().join(".pnp.cjs"), "").unwrap();
     std::fs::write(w.repo.root().join("package.json"), "{\"scripts\": {\"test\": \"node test.js\"}}\n").unwrap();
     git(w.repo.root(), &["add", ".pnp.cjs", "package.json"]);
     git(w.repo.root(), &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "a node package"]);
     git(w.repo.root(), &["push", "--quiet", &w.remote.display().to_string(), "main"]);
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
-    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
     let provider = FakeProvider::builder()
         .reply(&["pr", "list"], "[]\n")
         .reply(&["pr", "create"], &format!("{PR_URL}\n"))
         .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
-        .reply(&["api"], red)
+        .reply(&["api"], ci)
         .build();
-    // The fix session adds a typecheck script, which a gate detected afresh would run first.
-    let shims = orq_test_support::process_temp_dir().join(format!("orq-run-fixing-steps-{}", std::process::id()));
+    let shims = orq_test_support::process_temp_dir().join(format!("orq-run-node-{}-{}", std::process::id(), w.tag));
     std::fs::create_dir_all(&shims).unwrap();
     let npm_runs = shims.join("npm-runs");
-    let fix = "printf '{\"scripts\": {\"typecheck\": \"tsc\", \"test\": \"node test.js\"}}\\n' > package.json";
     std::fs::write(
         shims.join("claude"),
         format!(
-            "#!/bin/sh\ncase \"$*\" in *'CI failed on the pushed branch'*)\n  {fix}\n  git add -A\n  exec git -c user.name=Fixer -c user.email=fixer@example.invalid commit -q -m fix\nesac\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ncase \"$*\" in *'{prompt}'*)\n  {fix}\n  git add -A\n  exec git -c user.name=Fixer -c user.email=fixer@example.invalid commit -q -m fix\nesac\nexec '{}' \"$@\"\n",
             agent.path().display()
         ),
     )
     .unwrap();
-    std::fs::write(shims.join("npm"), format!("#!/bin/sh\necho \"$*\" >> '{}'\n", npm_runs.display())).unwrap();
+    std::fs::write(shims.join("npm"), format!("#!/bin/sh\necho \"$*\" >> '{}'\n{npm_status}\n", npm_runs.display())).unwrap();
     for tool in ["claude", "npm"] {
         std::fs::set_permissions(shims.join(tool), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
     let path = format!("{}:{}", shims.display(), path_with(&agent, &provider, &w.tag).display());
+    let output = run_command(w, &agent, &provider, &["--feature", "COM-01"], &[]).env("PATH", path).output().unwrap();
+    (output, npm_runs)
+}
 
-    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &[]).env("PATH", path).output().unwrap();
+/// A fix that adds a typecheck script, which a gate detected afresh would run first.
+const ADDS_TYPECHECK: &str = "printf '{\"scripts\": {\"typecheck\": \"tsc\", \"test\": \"node test.js\"}}\\n' > package.json";
+
+/// A CI fix that changes what the gate would detect is checked with the gate the fix loop runs,
+/// and its report lists only the steps that gate ran.
+#[test]
+fn the_report_of_a_ci_fix_that_changes_the_detected_gate_lists_only_the_steps_that_ran() {
+    let w = world("reportfixsteps");
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+
+    let (output, npm_runs) = node_package_run(&w, red, "CI failed on the pushed branch", ADDS_TYPECHECK, "true");
 
     let run_id = printed_run_id(&output);
     let pushed = git(&w.remote, &["rev-list", "main..fix--COM-01"]);
@@ -634,6 +643,31 @@ fn the_report_of_a_ci_fix_that_changes_the_detected_gate_lists_only_the_steps_th
         report["tests"]["commands"],
         serde_json::json!([{"command": "npm run test", "exit_code": 0}, {"command": "CI check test", "exit_code": 1}]),
         "the fix's report lists the steps its gate ran: {report}"
+    );
+}
+
+/// A local gate fix that changes what the gate would detect leaves the pushed head's report with
+/// the steps the gate ran for it, also when CI then passes without a fix.
+#[test]
+fn the_report_of_a_head_whose_local_gate_fix_changed_the_detected_gate_lists_only_the_steps_that_ran() {
+    let w = world("reportgatefixsteps");
+    // One reply for every `api` call: the check runs and the commit status both read green.
+    let green = "{\"state\":\"success\",\"statuses\":[],\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n";
+    // The test script fails until the gate's fix session repairs it.
+    let fix = format!("{ADDS_TYPECHECK}; echo fixed > fixed.txt");
+
+    let (output, npm_runs) = node_package_run(&w, green, "local gate failed", &fix, "test -e fixed.txt");
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let run_id = printed_run_id(&output);
+    let ran = std::fs::read_to_string(&npm_runs).unwrap_or_default();
+    assert_eq!(ran, "run test\nrun test\n", "the gate failed, was fixed and ran again");
+    let head = git(&w.remote, &["rev-parse", "fix--COM-01"]).trim().to_string();
+    let report = stored_report(&w, &run_id, &head);
+    assert_eq!(
+        report["tests"]["commands"],
+        serde_json::json!([{"command": "npm run test", "exit_code": 0}, {"command": "CI checks", "exit_code": 0}]),
+        "the pushed head's report lists the steps its gate ran: {report}"
     );
 }
 
