@@ -2290,7 +2290,8 @@ function SwipeButton({ feature, onPress }) {
 }
 
 // One feature's Start (pending) or Promote (draft), on its page or under a swiped row; a swiped row's opens
-// on its question, and cancelling it closes the row's action.
+// on its question, and cancelling it closes the row's action. Keyed by the feature's status where it is shown,
+// so a draft just promoted offers a fresh Start rather than the finished Promote.
 function FeatureAction({ feature, control, asking = false, onCancel = null }) {
   const name = encodeURIComponent(feature.name);
   const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
@@ -2441,7 +2442,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
         {control !== null ? (
           <div className="feature-detail-actions">
             <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} />
-            {feature.status === "pending" || feature.status === "draft" ? <FeatureAction feature={feature} control={control} /> : null}
+            {feature.status === "pending" || feature.status === "draft" ? <FeatureAction key={feature.status} feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
           </div>
         ) : null}

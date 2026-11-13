@@ -92,3 +92,27 @@ fn a_confirmed_promote_posts_and_says_the_feature_is_pending_and_a_refusal_shows
     let Some(out) = page("sketch", true, vec![], vec![json!({"click": "[data-promote]"}), json!({"click": "[data-cancel]"})]) else { return };
     assert!(posts(&out).is_empty(), "cancelling sends nothing: {out}");
 }
+
+/// Once promoted, the page read again shows the pending feature's Start beside Start with straight away,
+/// as it does when the page is loaded afresh.
+#[test]
+fn a_promoted_draft_offers_start_once_the_page_is_read_again() {
+    let ok = json!({"status": 200, "json": {"feature": "sketch", "status": "pending"}});
+    let feature = |name: &str, status: &str| json!({"name": name, "description": null, "status": status, "depends_on": [], "recorded_at": null});
+    let promoted = json!({"status": 200, "json": {"features": [feature("sketch", "pending"), feature("next-one", "pending"), feature("done-one", "completed")], "remote_actions": true}});
+    let Some(out) = page("sketch", true, vec![ok, promoted, runs()], vec![json!({"click": "[data-promote]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let end = last(&out);
+    assert_eq!(count(end, "[data-promote]"), 0, "{out}");
+    assert_eq!(count(end, "[data-start]"), 1, "Start is offered at once: {out}");
+}
+
+/// The Start a promoted draft offers is the pending feature's own: it asks to start that feature.
+#[test]
+fn the_start_a_promoted_draft_offers_asks_to_start_it() {
+    let ok = json!({"status": 200, "json": {"feature": "sketch", "status": "pending"}});
+    let feature = |name: &str, status: &str| json!({"name": name, "description": null, "status": status, "depends_on": [], "recorded_at": null});
+    let promoted = json!({"status": 200, "json": {"features": [feature("sketch", "pending")], "remote_actions": true}});
+    let steps = vec![json!({"click": "[data-promote]"}), json!({"click": "[data-confirm]"}), json!({"click": "[data-start]"})];
+    let Some(out) = page("sketch", true, vec![ok, promoted, runs()], steps) else { return };
+    assert!(texts(last(&out)).iter().any(|t| t == "Start sketch?"), "{out}");
+}
