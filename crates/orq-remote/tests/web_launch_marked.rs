@@ -134,3 +134,16 @@ fn start_marked_with_project_default_starts_each_feature_with_no_profiles_named(
         assert_eq!(request["body"], "{}", "{out}");
     }
 }
+
+/// Start N with no profiles defined still starts with Project default when the server offers it.
+#[test]
+fn start_marked_with_no_profiles_starts_with_project_default() {
+    let only_default = json!({"status": 200, "json": {"profiles": [], "implementer": null, "reviewer": null, "project_default": true}});
+    let started = json!({"status": 202, "json": {"run": "run-1"}});
+    let steps = vec![mark("a-base"), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = list(vec![only_default, started, ledger(), projects()], steps) else { return };
+    assert!(texts(&out["frames"][3]).iter().any(|t| t == "Start 1 feature: a-base with the project's default agents?"), "{out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(sent[0]["body"], "{}", "{out}");
+}

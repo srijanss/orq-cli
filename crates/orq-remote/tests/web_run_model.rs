@@ -124,4 +124,10 @@ fn a_refused_switch_or_unreadable_profiles_show_the_reason_in_the_run_detail() {
     let Some(out) = detail("r-paused", "paused", vec![none], vec![json!({"click": "[data-model]"})]) else { return };
     assert!(texts(last(&out)).iter().any(|t| t == "No model profiles are defined."), "{out}");
     assert_eq!(count(last(&out), "[data-confirm]"), 0, "{out}");
+
+    // Project default only starts a run; switching a paused run's model needs a profile.
+    let only_default = json!({"status": 200, "json": {"profiles": [], "implementer": null, "reviewer": null, "project_default": true}});
+    let Some(out) = detail("r-paused", "paused", vec![only_default], vec![json!({"click": "[data-model]"})]) else { return };
+    assert!(texts(last(&out)).iter().any(|t| t == "No model profiles are defined."), "{out}");
+    assert_eq!(count(last(&out), "[data-confirm]"), 0, "{out}");
 }

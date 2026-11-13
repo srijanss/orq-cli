@@ -1565,16 +1565,18 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
 
 const MODEL_ROLES = ["implementer", "reviewer"];
 
-// Reads the profiles the launch picker offers: {reply} with at least one profile, {signedOut} on a refused
-// sign-in, or the reason to show: none defined, not allowed, the server's error, or unreachable.
-async function readLaunchProfiles(control) {
+// Reads the profiles the launch picker offers: {reply} with at least one profile, or with none when
+// `startsRuns` and the server offers Project default, {signedOut} on a refused sign-in, or the reason to
+// show: none defined, not allowed, the server's error, or unreachable.
+async function readLaunchProfiles(control, startsRuns = false) {
   let text = "The model profiles could not be read.";
   try {
     const response = await get(controlPath(control, "launch-profiles"), control.token);
     if (response.status === 401) return { signedOut: true, reply: null, text: "" };
     const body = await jsonOrNull(response);
     const names = response.ok && body !== null && Array.isArray(body.profiles) ? body.profiles.filter((name) => typeof name === "string") : null;
-    if (names !== null && names.length > 0) return { signedOut: false, reply: { ...body, profiles: names }, text: "" };
+    const choice = names !== null && (names.length > 0 || (startsRuns && body.project_default === true));
+    if (choice) return { signedOut: false, reply: { ...body, profiles: names }, text: "" };
     if (names !== null) text = "No model profiles are defined.";
     else if (response.status === 403) text = "Not allowed.";
     else if (body !== null && typeof body.error === "string") text = body.error;
@@ -1745,7 +1747,7 @@ function LaunchAction({ feature, control }) {
   const ask = async () => {
     setNote("");
     setPhase("checking");
-    const { signedOut, reply, text } = await readLaunchProfiles(control);
+    const { signedOut, reply, text } = await readLaunchProfiles(control, true);
     if (signedOut) {
       control.onSignedOut();
       return;
@@ -1986,7 +1988,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
   const ask = async () => {
     setNote("");
     setPhase("checking");
-    const { signedOut, reply, text } = await readLaunchProfiles(control);
+    const { signedOut, reply, text } = await readLaunchProfiles(control, true);
     if (signedOut) {
       control.onSignedOut();
       return;

@@ -187,3 +187,21 @@ fn without_project_default_the_pickers_offer_only_profiles() {
         assert_eq!(count(frame, "[data-launch-implementer]"), 1, "{out}");
     }
 }
+
+/// With no profiles defined, a project with its own agents can still start with Project default, the only
+/// choice either picker offers.
+#[test]
+fn with_no_profiles_project_default_is_the_only_choice_and_starts_with_no_profiles_named() {
+    let only_default = json!({"status": 200, "json": {"profiles": [], "implementer": null, "reviewer": null, "project_default": true}});
+    let started = json!({"status": 202, "json": {"run": "run-10"}});
+    let steps = vec![json!({"click": "[data-start-with]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = page("next-one", true, vec![only_default, started], steps) else { return };
+    let asking = &out["frames"][2];
+    assert!(!texts(asking).iter().any(|t| t == "No model profiles are defined."), "{out}");
+    assert_eq!(count(asking, IMPLEMENTER_DEFAULT_PICKED), 1, "{out}");
+    assert_eq!(count(asking, REVIEWER_DEFAULT_PICKED), 1, "{out}");
+    assert!(texts(asking).iter().any(|t| t == "Start next-one with the project's default agents?"), "{out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(sent[0]["body"], "{}", "{out}");
+}
