@@ -419,6 +419,9 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str(" and then stop.");
         prompt.push_str(MARKER_FORMAT);
         prompt.push_str(" If any part of this could not be done the way it was asked, including a review that could not run, write what went wrong into that file after PROBLEM instead of leaving it empty.");
+        if !request.attended {
+            prompt.push_str(" Nobody can answer a permission prompt here, so a command or tool outside this run's permissions is refused: if the work needed one, name the command or tool that was refused in that file, so it can be allowed.");
+        }
     }
     Ok(prompt)
 }

@@ -719,3 +719,19 @@ fn the_claude_push_switch_comes_from_the_files_or_the_environment() {
         matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_CLAUDE_PUSH")
     );
 }
+
+/// The project adds to what a run's session may do without asking, as permission rules.
+#[test]
+fn allowed_tools_are_permission_rules_the_private_file_and_environment_override() {
+    let r = repo("allowedtools");
+    shared(&r, "allowed_tools = [\"Bash(make lint:*)\", \"WebFetch\"]\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().allowed_tools, Some(vec!["Bash(make lint:*)".to_string(), "WebFetch".to_string()]));
+    private(&r, "allowed_tools = []\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().allowed_tools, Some(vec![]));
+    let env = |name: &str| (name == "ORQ_ALLOWED_TOOLS").then(|| "[\"Bash(just:*)\"]".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().allowed_tools, Some(vec!["Bash(just:*)".to_string()]));
+    for bad in ["allowed_tools = \"WebFetch\"\n", "allowed_tools = [\"\"]\n", "allowed_tools = [\"Bash(a\\nb)\"]\n"] {
+        private(&r, bad);
+        assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Invalid { .. })), "{bad}");
+    }
+}

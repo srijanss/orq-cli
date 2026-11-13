@@ -895,6 +895,8 @@ fn stages(
         notes.extend(orq_orchestrator::exclude_worktrees_dir(&options.project.root));
         let mcpctl = find_program("mcpctl");
         notes.extend(orq_orchestrator::prepare_mcp_servers(worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref()));
+        // Nobody may be there to answer a permission prompt, and the exit marker goes into the logs.
+        notes.extend(orq_orchestrator::write_run_permissions(worktree, settings.allowed_tools.as_deref().unwrap_or_default(), logs));
         // Only a session with a terminal has someone to ask.
         if options.interactive {
             match std::env::current_exe() {

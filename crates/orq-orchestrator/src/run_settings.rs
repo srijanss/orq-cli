@@ -68,6 +68,8 @@ pub struct RunSettings {
     pub branch_prefix: Option<String>,
     /// The context size, in tokens, at which a run's sessions auto-compact; `None` leaves the harness's own.
     pub compact_window: Option<u32>,
+    /// Permission rules a run's session may use without asking, beside orq's own; `None` adds none.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,7 @@ struct Layer {
     model: Option<String>,
     branch_prefix: Option<String>,
     compact_window: Option<u32>,
+    allowed_tools: Option<Vec<String>>,
 }
 
 impl Layer {
@@ -144,6 +147,7 @@ impl Layer {
             model: self.model.or(lower.model),
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
             compact_window: self.compact_window.or(lower.compact_window),
+            allowed_tools: self.allowed_tools.or(lower.allowed_tools),
         }
     }
 }
@@ -189,6 +193,7 @@ pub fn load_run_settings(
         model: merged.model,
         branch_prefix: merged.branch_prefix,
         compact_window: merged.compact_window,
+        allowed_tools: merged.allowed_tools,
     })
 }
 
@@ -407,6 +412,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
                         .to_string(),
                 )
             }
+            "allowed_tools" => layer.allowed_tools = Some(tool_rules(&json_of(value)).map_err(|r| bad(&r))?),
             "compact_window" => {
                 layer.compact_window = Some(
                     window(
@@ -530,6 +536,10 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_DB_NAME_TEMPLATE") {
         layer.db_name_template = Some(v.trim().to_string());
+    }
+    if let Some(v) = get("ORQ_ALLOWED_TOOLS") {
+        layer.allowed_tools =
+            Some(tool_rules(&json("ORQ_ALLOWED_TOOLS", &v)?).map_err(|r| invalid("ORQ_ALLOWED_TOOLS", r))?);
     }
     if let Some(v) = get("ORQ_COMPACT_WINDOW") {
         let tokens: i64 = v
@@ -716,6 +726,21 @@ fn argv(value: &serde_json::Value) -> Result<Vec<String>, String> {
         Some(program) if program.trim().is_empty() => Err("must start with a program".to_string()),
         Some(_) => Ok(words),
     }
+}
+
+/// Permission rules, such as `Bash(make lint:*)`: a list, possibly empty, of one-line strings.
+fn tool_rules(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    value
+        .as_array()
+        .ok_or("must be a list of permission rules")?
+        .iter()
+        .map(|rule| match rule.as_str() {
+            Some(rule) if rule.trim().is_empty() => Err("must not hold an empty rule".to_string()),
+            Some(rule) if rule.chars().any(char::is_control) => Err("must hold one-line rules".to_string()),
+            Some(rule) => Ok(rule.to_string()),
+            None => Err("must hold only strings".to_string()),
+        })
+        .collect()
 }
 
 fn steps(value: &serde_json::Value) -> Result<Vec<Vec<String>>, String> {

@@ -232,6 +232,63 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
     }
 }
 
+/// What a run's session may do without asking: the local git commands, building and testing, and
+/// the MCP tools the implement-and-review skill works through.
+const ALLOWED: [&str; 31] = [
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git add:*)",
+    "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(git branch:*)", "Bash(git stash:*)",
+    "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(git ls-files:*)", "Bash(git grep:*)",
+    "Bash(git merge-base:*)", "Bash(cargo build:*)", "Bash(cargo test:*)", "Bash(cargo check:*)",
+    "Bash(cargo fmt:*)", "Bash(cargo clippy:*)", "Bash(cargo run:*)", "Bash(cargo metadata:*)",
+    "Bash(cargo tree:*)", "Bash(npm ci)", "Bash(node build.mjs)", "Bash(ls:*)", "Bash(cat:*)",
+    "Bash(head:*)", "Bash(wc:*)", "mcp__outside-in-tdd", "mcp__project-mcp",
+];
+/// Publishing to a remote is orq's own step, never the session's, whatever else is allowed.
+const DENIED: [&str; 3] = ["Bash(git push:*)", "Bash(cargo publish:*)", "Bash(npm publish:*)"];
+
+/// Whether a permission rule would let the session publish to a remote.
+fn publishes(rule: &str) -> bool {
+    let words = rule.split(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+    words.into_iter().any(|word| word == "push" || word == "publish")
+}
+
+/// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
+/// commands and tools of `ALLOWED` and the project's `extra` (its `allowed_tools`) run without
+/// asking, publishing is refused, and `logs` is writable so the session can leave its exit marker.
+/// Anything else the session is refused. An added rule that would publish is left out. Other keys
+/// and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
+pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut allowed: Vec<&str> = ALLOWED.to_vec();
+    for rule in extra {
+        if publishes(rule) {
+            notes.push(format!("allowed_tools rule {rule} would publish to a remote, which orq does itself; it was left out"));
+        } else {
+            allowed.push(rule);
+        }
+    }
+    let logs = logs.to_string_lossy();
+    let edited = edit_settings(worktree, |root| {
+        let permissions = root.entry("permissions").or_insert_with(|| serde_json::json!({}));
+        let permissions = permissions.as_object_mut().ok_or("its permissions is not a JSON object")?;
+        permissions.insert("defaultMode".to_string(), serde_json::json!("acceptEdits"));
+        for (key, rules) in [("allow", allowed.as_slice()), ("deny", DENIED.as_slice()), ("additionalDirectories", &[logs.as_ref()][..])] {
+            let list = permissions.entry(key).or_insert_with(|| serde_json::json!([]));
+            let list = list.as_array_mut().ok_or_else(|| format!("its permissions.{key} is not a JSON array"))?;
+            for rule in rules {
+                if !list.iter().any(|item| item.as_str() == Some(rule)) {
+                    list.push(serde_json::json!(rule));
+                }
+            }
+        }
+        Ok(())
+    });
+    if let Err(why) = edited {
+        notes.push(format!("{SETTINGS} was not updated: {why}"));
+    }
+    notes
+}
+
 /// Takes out of `entries` the commands `write_needs_input_hook` wrote and nothing beside them: an
 /// entry goes only when one of ours was all it held.
 fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {

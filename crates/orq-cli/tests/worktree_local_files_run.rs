@@ -181,3 +181,31 @@ fn with_no_servers_configured_the_run_locks_the_servers_of_the_carried_mcpctl_to
     approved.sort();
     assert_eq!(approved, ["project", "tdd"], "both generated servers are approved");
 }
+
+/// The implementer has nobody to answer a permission prompt: the worktree's session settings accept
+/// its edits, allow the local commands and MCP tools a run needs plus those the project adds, never
+/// publishing to a remote, and let it write its exit marker into the run's logs.
+#[test]
+fn the_worktrees_session_settings_let_the_implementer_work_unattended() {
+    let w = world("unattended-permissions");
+    let gate_seen = w.base.join("settings-seen");
+    settings(&w, &format!("allowed_tools = [\"Bash(make lint:*)\"]\ngate = [\"sh\", \"-c\", \"cat .claude/settings.local.json > {}\"]\n", gate_seen.display()));
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let seen: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&gate_seen).unwrap()).unwrap();
+    let permissions = &seen["permissions"];
+    assert_eq!(permissions["defaultMode"], "acceptEdits", "{seen}");
+    let allow: Vec<String> = serde_json::from_value(permissions["allow"].clone()).unwrap();
+    for wanted in ["Bash(git add:*)", "Bash(git commit:*)", "Bash(cargo test:*)", "Bash(npm ci)", "Bash(node build.mjs)", "mcp__outside-in-tdd", "mcp__project-mcp", "Bash(make lint:*)"] {
+        assert!(allow.iter().any(|rule| rule == wanted), "{wanted} in {allow:?}");
+    }
+    assert!(!allow.iter().any(|rule| rule.contains("push") || rule.contains("publish")), "{allow:?}");
+    let deny: Vec<String> = serde_json::from_value(permissions["deny"].clone()).unwrap();
+    assert!(deny.iter().any(|rule| rule == "Bash(git push:*)"), "{deny:?}");
+    let dirs: Vec<std::path::PathBuf> = serde_json::from_value(permissions["additionalDirectories"].clone()).unwrap();
+    let logs = w.state.join("orq").join("logs");
+    assert!(dirs.iter().any(|dir| dir.parent() == Some(logs.as_path())), "the run's logs directory, under {}: {dirs:?}", logs.display());
+}

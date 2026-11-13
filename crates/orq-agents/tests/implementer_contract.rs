@@ -254,3 +254,21 @@ fn a_session_with_a_marker_is_told_to_start_it_with_ok_or_problem_and_when_each_
         assert!(prompt.contains("PROBLEM") && prompt.contains("OK") && prompt.contains("first line"), "{harness}: {prompt}");
     });
 }
+
+/// An unattended session is refused whatever its run's permissions do not allow, with nobody to ask:
+/// it says which command or tool it needed, so a person can allow it.
+#[test]
+fn an_unattended_session_names_a_refused_command_or_tool_in_its_marker() {
+    for_each_harness(|harness, model| {
+        let features = ["COM-01"];
+        let adapter = adapter_for(harness).unwrap();
+        let wording = "name the command or tool that was refused";
+        let marked = |attended| ImplementRequest { attended, exit_marker: Some("/state/logs/run-1/implement.done"), ..request(harness, model, &features) };
+        let unattended = adapter.implement_argv(&marked(false)).unwrap().last().unwrap().clone();
+        assert!(unattended.contains(wording), "{harness}: {unattended}");
+        let attended = adapter.implement_argv(&marked(true)).unwrap().last().unwrap().clone();
+        assert!(!attended.contains(wording), "{harness}: {attended}");
+        let unmarked = adapter.implement_argv(&request(harness, model, &features)).unwrap().last().unwrap().clone();
+        assert!(!unmarked.contains(wording), "{harness}: {unmarked}");
+    });
+}
