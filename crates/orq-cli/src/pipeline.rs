@@ -996,11 +996,14 @@ fn stages(
         .then(|| logs.parent().and_then(Path::parent).map(|root| crate::progress::Progress::start(root.to_path_buf(), run_id.to_string(), logs.to_path_buf())))
         .flatten();
 
+    // The steps of the gate this process last ran, for the report of the head it checked.
+    let ran_steps: std::cell::RefCell<Option<Vec<Vec<String>>>> = std::cell::RefCell::new(None);
     // Runs the gate, with its fix sessions, on the run's branch as it is now: `Some` with how the run
     // stops when the branch does not pass.
     let check = || -> Result<Option<Report>, StoreError> {
         let stopped_now = |ending: Ending, detail: String| stopped(ending, detail).map(Some);
         let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        *ran_steps.borrow_mut() = Some(steps_of(&gate));
         let gate_log = logs.join("gate.log");
         let fix_log = logs.join("gate-fix.log");
         // Where a fix session says that the failure is not the run's; the session is told in its environment too.
@@ -1098,11 +1101,10 @@ fn stages(
         Ok(())
     };
     // The steps a passing gate ran; the report counts them for a commit only when the gate passed for it.
-    // Read from the worktree when the report is built, since catching up with a base that moved may
-    // have changed what the gate checks.
-    let gate_steps = || match choose_gate(worktree, settings.gate.as_deref()) {
-        Ok(orq_orchestrator::Gate::Steps { steps, .. }) => steps,
-        _ => Vec::new(),
+    // Those of the gate last run, which catching up with a base that moved may have changed; a
+    // resumed run whose gate ran before it stopped reads them from its worktree.
+    let gate_steps = || {
+        ran_steps.borrow().clone().unwrap_or_else(|| choose_gate(worktree, settings.gate.as_deref()).map(|gate| steps_of(&gate)).unwrap_or_default())
     };
     // A run whose delivery ends before any PR/MR: the delivered head's report is built while its
     // worktree is still there to read, then the worktree goes.
@@ -1249,7 +1251,8 @@ fn stages(
             config: &ci_config,
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
-            report: &|head, ci| build_review_report(store, record, options, &gate_steps(), head, ci, logs),
+            // A fix is checked with this gate, whatever the fix changes in what a gate would detect.
+            report: &|head, ci| build_review_report(store, record, options, &steps_of(&gate), head, ci, logs),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,
@@ -1302,6 +1305,14 @@ const REVIEW_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The wait for the report; `ORQ_REVIEW_BUILD_TIMEOUT_MS` shortens it for tests.
 fn review_report_timeout() -> Duration {
     std::env::var("ORQ_REVIEW_BUILD_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(REVIEW_REPORT_TIMEOUT)
+}
+
+/// The commands `gate` runs; none for a gate with nothing to check.
+fn steps_of(gate: &orq_orchestrator::Gate) -> Vec<Vec<String>> {
+    match gate {
+        orq_orchestrator::Gate::Steps { steps, .. } => steps.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// Leaves the report of the pushed commit for the Reviews tab. Best effort: a report that fails or takes too long
