@@ -110,7 +110,7 @@ fn a_stale_report_shows_the_marker_and_no_link_and_an_unsafe_link_is_never_offer
     let Some(out) = run(json!([list(), detail(true, json!("https://github.com/o/r/pull/7"))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
     assert!(page(&out, 2).contains("STALE"), "{out}");
     assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
-    for link in ["http://x.test/a", "javascript:alert(1)", "https://user:pw@x.test/a"] {
+    for link in ["http://x.test/a", "javascript:alert(1)", "https://user:pw@x.test/a", "javascript:alert(1)//settings"] {
         let Some(out) = run(json!([list(), detail(false, json!(link))]), json!([{"submit": TOKEN}, {"click": "button[data-open-run]", "index": 0}])) else { return };
         assert!(report_links(&out["frames"][2]).is_empty(), "{link}: {out}");
     }
@@ -139,5 +139,5 @@ fn a_slow_answer_for_an_earlier_page_never_draws_over_the_current_one() {
 
 /// The links the report offers: every link on the page but the settings cog beside the project picker.
 fn report_links(frame: &Value) -> Vec<&Value> {
-    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| !l["href"].as_str().unwrap_or("").ends_with("/settings")).collect()
+    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| l["settings"] != true).collect()
 }

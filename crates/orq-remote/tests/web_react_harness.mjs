@@ -169,7 +169,7 @@ function snapshot() {
     if (own) texts.push(own);
     if (node.tagName === "INPUT") inputs.push({ type: node.type, value: node.value, autocomplete: node.autocomplete });
     if (node.tagName === "BUTTON" && !node.hasAttribute("data-refresh")) buttons.push(node.textContent);
-    if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent });
+    if (node.tagName === "A") links.push({ href: node.getAttribute("href"), rel: node.getAttribute("rel"), text: node.textContent, settings: node.hasAttribute("data-settings-link") });
   }
   const switchers = [...root.querySelectorAll("[data-project-switcher]")].map((el) => ({ value: el.getAttribute("data-value"), options: [...root.querySelectorAll("[data-project-option]")].map((o) => o.getAttribute("data-project-option")) }));
   const sidebarLinks = [...root.querySelectorAll(".sidebar nav a")].map((a) => a.getAttribute("href"));

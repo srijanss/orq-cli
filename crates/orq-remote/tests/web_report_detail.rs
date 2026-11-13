@@ -84,7 +84,7 @@ fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
     let rel = links[0]["rel"].as_str().unwrap();
     assert!(rel.contains("noopener") && rel.contains("noreferrer"), "{rel}");
 
-    for bad in ["javascript:alert(1)", "http://github.com/o/r/pull/7", "data:text/html,x", "//evil.test/x", "https://user:pw@github.com/x", "not a url", ""] {
+    for bad in ["javascript:alert(1)", "http://github.com/o/r/pull/7", "data:text/html,x", "//evil.test/x", "https://user:pw@github.com/x", "not a url", "", "javascript:alert(1)//settings", "/settings"] {
         let Some(out) = open_first(detail(false, json!(bad))) else { return };
         assert!(report_links(&out["frames"][2]).is_empty(), "{bad:?}: {out}");
     }
@@ -184,5 +184,5 @@ fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
 
 /// The links the report offers: every link on the page but the settings cog beside the project picker.
 fn report_links(frame: &Value) -> Vec<&Value> {
-    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| !l["href"].as_str().unwrap_or("").ends_with("/settings")).collect()
+    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| l["settings"] != true).collect()
 }

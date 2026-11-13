@@ -68,7 +68,7 @@ fn a_review_report_is_literal_and_only_plain_https_links_are_offered() {
     assert_eq!(links[0]["href"], "https://github.com/o/r/pull/7", "{out}");
     let Some(out) = run("/reviews", json!([list.clone(), detail_with("https://github.com/o/r/pull/7", false)]), steps.clone()) else { return };
     assert!(report_links(&out["frames"][2]).is_empty(), "a link the server does not allow: {out}");
-    for bad in ["http://github.com/o/r/pull/7", "https://user:pw@github.com/x", "javascript:alert(1)"] {
+    for bad in ["http://github.com/o/r/pull/7", "https://user:pw@github.com/x", "javascript:alert(1)", "https://user:pw@github.com/settings"] {
         let Some(out) = run("/reviews", json!([list.clone(), detail(bad)]), steps.clone()) else { return };
         assert!(report_links(&out["frames"][2]).is_empty(), "{bad}: {out}");
     }
@@ -76,5 +76,5 @@ fn a_review_report_is_literal_and_only_plain_https_links_are_offered() {
 
 /// The links the report offers: every link on the page but the settings cog beside the project picker.
 fn report_links(frame: &Value) -> Vec<&Value> {
-    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| !l["href"].as_str().unwrap_or("").ends_with("/settings")).collect()
+    frame["settled"]["links"].as_array().unwrap().iter().filter(|l| l["settings"] != true).collect()
 }
