@@ -1697,7 +1697,7 @@ function ModelAction({ run, control }) {
 const PROJECT_DEFAULT = "";
 
 // The launch picker's two choices, the implementer and the reviewer, each from the offered profiles, and
-// Project default when the server offers it.
+// Project default when the server offers it. Each is a labelled field, as in the feature editor.
 function LaunchPickers({ profiles, projectDefault, implementer, reviewer, onImplementer, onReviewer }) {
   const options = [
     ...(projectDefault ? [<option key={PROJECT_DEFAULT} value={PROJECT_DEFAULT}>Project default</option>] : []),
@@ -1705,12 +1705,12 @@ function LaunchPickers({ profiles, projectDefault, implementer, reviewer, onImpl
   ];
   return (
     <>
-      <label>
-        Implementer{" "}
+      <label className="field">
+        <span className="field-label">Implementer</span>
         <select data-launch-implementer="" value={implementer} onChange={(event) => onImplementer(event.target.value)}>{options}</select>
       </label>
-      <label>
-        Reviewer{" "}
+      <label className="field">
+        <span className="field-label">Reviewer</span>
         <select data-launch-reviewer="" value={reviewer} onChange={(event) => onReviewer(event.target.value)}>{options}</select>
       </label>
     </>

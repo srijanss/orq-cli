@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 10] = [
+const SELECTORS: [&str; 12] = [
     "[data-start-with]",
     "[data-start]",
     "[data-confirm]",
@@ -19,6 +19,8 @@ const SELECTORS: [&str; 10] = [
     "[data-launch-reviewer] option[value=\"\"]",
     "[data-launch-implementer] option[value=\"\"]:checked",
     "[data-launch-reviewer] option[value=\"\"]:checked",
+    IMPLEMENTER_FIELD,
+    REVIEWER_FIELD,
 ];
 
 fn run(scenario: Value) -> Option<Value> {
@@ -204,4 +206,34 @@ fn with_no_profiles_project_default_is_the_only_choice_and_starts_with_no_profil
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(sent[0]["body"], "{}", "{out}");
+}
+
+/// Each picker is a labelled field of the confirmation's form, as in the feature editor: its label above a
+/// full-width select, both inside .confirm-fields ahead of the question.
+const IMPLEMENTER_FIELD: &str = ".confirm > .confirm-fields > label.field > span.field-label + select[data-launch-implementer]";
+const REVIEWER_FIELD: &str = ".confirm > .confirm-fields > label.field > span.field-label + select[data-launch-reviewer]";
+
+#[test]
+fn the_pickers_are_labelled_fields_of_the_confirmation_form() {
+    let Some(out) = page("next-one", true, vec![profiles()], vec![json!({"click": "[data-start-with]"})]) else { return };
+    let asking = last(&out);
+    assert_eq!(count(asking, IMPLEMENTER_FIELD), 1, "{out}");
+    assert_eq!(count(asking, REVIEWER_FIELD), 1, "{out}");
+    assert!(texts(asking).iter().any(|t| t == "Implementer"), "{out}");
+    assert!(texts(asking).iter().any(|t| t == "Reviewer"), "{out}");
+}
+
+fn css() -> String {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap()
+}
+
+/// The confirmation's fields form a grid, as the feature editor's do: one column on phones and two from
+/// 720px, so the implementer and reviewer pickers line up side by side above the question.
+#[test]
+fn the_confirmation_fields_are_a_grid_of_one_column_then_two_from_720px() {
+    let css = css();
+    let grid = css.lines().find(|line| line.starts_with(".confirm-fields {")).expect("a .confirm-fields rule");
+    assert!(grid.contains("display: grid") && grid.contains("grid-template-columns: 1fr;") && grid.contains("gap: 0.75rem 1rem"), "{grid}");
+    let wide = css.lines().find(|line| line.starts_with("@media (min-width: 720px)") && line.contains(".confirm-fields {")).expect("a 720px .confirm-fields rule");
+    assert!(wide.contains("grid-template-columns: 1fr 1fr"), "{wide}");
 }
