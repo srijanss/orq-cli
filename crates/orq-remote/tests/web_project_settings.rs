@@ -296,3 +296,45 @@ fn a_successful_retry_clears_the_earlier_failure() {
     assert!(!shown(frame).iter().any(|t| t == "That effort is not one this harness takes"), "the saved settings show no failure: {:?}", shown(frame));
     assert_eq!(count(frame, "[data-project-settings-edit]"), 1);
 }
+
+#[test]
+fn an_unreachable_server_while_opening_the_editor_says_so_and_offers_edit_again() {
+    let offline = json!({"reject": true});
+    let cases = [
+        ("the machine settings read", json!([project_settings("review", 1), projects(), offline])),
+        ("the options read", json!([project_settings("review", 1), projects(), machine_settings(true), offline])),
+    ];
+    for (stage, responses) in cases {
+        let Some(out) = run(responses, json!([{"click": "[data-project-settings-edit]"}])) else { return };
+        let frame = last(&out);
+        assert!(shown(frame).iter().any(|t| t == "The server could not be reached."), "{stage}: {:?}", shown(frame));
+        assert_eq!(count(frame, "[data-project-settings-edit]"), 1, "{stage}: Edit can be tried again");
+        assert_eq!(count(frame, "[data-role-harness]"), 0, "{stage}");
+        assert!(posts(&out).is_empty(), "{stage}");
+    }
+}
+
+#[test]
+fn an_unreachable_server_on_save_says_so_and_keeps_the_draft_for_a_retry_that_succeeds() {
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"set": "[data-delivery]", "value": "push"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), {"reject": true}, ok, project_settings("push", 2)]);
+    let Some(out) = run(responses, steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    let refused = &frames[5];
+    assert!(shown(refused).iter().any(|t| t == "The server could not be reached."), "{:?}", shown(refused));
+    assert_eq!(count(refused, "[data-project-settings-save]"), 1, "Save can be tried again");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 2, "{:?}", out["requests"]);
+    assert_eq!(body(&sent[1])["delivery"], "push", "the retry sends the same draft");
+    let frame = last(&out);
+    assert!(shown(frame).iter().any(|t| t == "Push only"));
+    assert!(!shown(frame).iter().any(|t| t == "The server could not be reached."));
+}
