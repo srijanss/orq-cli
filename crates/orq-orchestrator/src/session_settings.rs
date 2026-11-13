@@ -232,9 +232,10 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
     }
 }
 
-/// What a run's session may do without asking: the local git commands, building and testing, and
-/// the MCP tools the implement-and-review skill works through.
-const ALLOWED: [&str; 31] = [
+/// What a run's session may do without asking: edit the worktree, read, use its skills, the local
+/// git commands, building and testing, and the MCP tools the implement-and-review skill works through.
+const ALLOWED: &[&str] = &[
+    "Edit(./**)", "Read", "Glob", "Grep", "Skill", "ToolSearch", "TodoWrite",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git add:*)",
     "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(git branch:*)", "Bash(git stash:*)",
     "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(git ls-files:*)", "Bash(git grep:*)",
@@ -259,7 +260,11 @@ fn publishes(rule: &str) -> bool {
 /// and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> Vec<String> {
     let mut notes = Vec::new();
+    let logs = logs.to_string_lossy();
+    // A path rule beginning with `//` is absolute: the session writes its exit marker there.
+    let marker_rule = format!("Edit(/{logs}/**)");
     let mut allowed: Vec<&str> = ALLOWED.to_vec();
+    allowed.push(&marker_rule);
     for rule in extra {
         if publishes(rule) {
             notes.push(format!("allowed_tools rule {rule} would publish to a remote, which orq does itself; it was left out"));
@@ -267,7 +272,6 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> 
             allowed.push(rule);
         }
     }
-    let logs = logs.to_string_lossy();
     let edited = edit_settings(worktree, |root| {
         let permissions = root.entry("permissions").or_insert_with(|| serde_json::json!({}));
         let permissions = permissions.as_object_mut().ok_or("its permissions is not a JSON object")?;

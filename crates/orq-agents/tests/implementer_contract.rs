@@ -127,7 +127,7 @@ fn each_harness_names_the_skill_and_the_thinking_flag_its_own_way_and_only_claud
 
     let claude = adapter_for("claude").unwrap().implement_argv(&with("claude", "opus")).unwrap();
     assert_eq!(&claude[..6], ["--model", "opus", "--effort", "high", "--remote-control", "my-session"], "{claude:?}");
-    assert!(claude[6].starts_with("/implement-and-review COM-01"), "{}", claude[6]);
+    assert!(claude[8].starts_with("/implement-and-review COM-01"), "{}", claude[8]);
 
     for harness in ["claude", "pi"] {
         let model = if harness == "claude" { "opus" } else { "team/model" };
@@ -271,4 +271,17 @@ fn an_unattended_session_names_a_refused_command_or_tool_in_its_marker() {
         let unmarked = adapter.implement_argv(&request(harness, model, &features)).unwrap().last().unwrap().clone();
         assert!(!unmarked.contains(wording), "{harness}: {unmarked}");
     });
+}
+
+/// With nobody to answer, a Claude implementer refuses whatever its run's permissions do not allow
+/// instead of waiting on a prompt; an attended one asks in its pane.
+#[test]
+fn an_unattended_claude_implementer_refuses_instead_of_asking() {
+    let features = ["COM-01"];
+    let adapter = adapter_for("claude").unwrap();
+    let mode = |argv: &[String]| argv.windows(2).find(|pair| pair[0] == "--permission-mode").map(|pair| pair[1].clone());
+    let unattended = adapter.implement_argv(&ImplementRequest { attended: false, ..request("claude", "opus", &features) }).unwrap();
+    assert_eq!(mode(&unattended), Some("dontAsk".to_string()), "{unattended:?}");
+    let attended = adapter.implement_argv(&ImplementRequest { attended: true, ..request("claude", "opus", &features) }).unwrap();
+    assert_eq!(mode(&attended), None, "{attended:?}");
 }

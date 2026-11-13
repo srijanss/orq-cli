@@ -76,3 +76,17 @@ fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
     assert!(notes.iter().any(|note| note.contains("settings.local.json")), "{notes:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"permissions":["nonsense"]}"#);
 }
+
+/// A session that refuses what it was not allowed still edits the worktree and writes its marker.
+#[test]
+fn the_session_may_edit_the_worktree_and_write_into_the_runs_logs() {
+    let (_repo, worktree) = checkout("permissions-edits");
+
+    assert_eq!(write_run_permissions(&worktree, &[], Path::new("/state/orq/logs/run-1")), Vec::<String>::new());
+
+    let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
+    for wanted in ["Edit(./**)", "Edit(//state/orq/logs/run-1/**)", "Read", "Skill"] {
+        assert!(allow.iter().any(|rule| rule == wanted), "{wanted} in {allow:?}");
+    }
+    assert!(!allow.iter().any(|rule| rule == "Edit"), "no edit anywhere: {allow:?}");
+}

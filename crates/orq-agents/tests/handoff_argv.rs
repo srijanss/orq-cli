@@ -19,8 +19,8 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         review_again: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
-    assert_eq!(argv.len(), 3, "the summary stays inside the one prompt argument: {argv:?}");
-    let prompt = &argv[2];
+    assert_eq!(argv.len(), 5, "the summary stays inside the one prompt argument: {argv:?}");
+    let prompt = &argv[4];
     let request_at = prompt.find("/implement-and-review COM-02").expect("the request");
     let handoff_at = prompt.find("Handoff from the previous session:\nPlan:\n- COM-02 (in_progress)\nRemaining: gate").expect("the summary");
     let marker_at = prompt.find("/logs/implement.done").expect("the marker");
@@ -29,6 +29,6 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
     // No handoff, no section; a blank one is no handoff.
     for none in [None, Some("  \n ")] {
         let argv = claude.implement_argv(&ImplementRequest { handoff: none, ..request.clone() }).unwrap();
-        assert!(!argv[2].contains("Handoff"), "{}", argv[2]);
+        assert!(!argv[4].contains("Handoff"), "{}", argv[4]);
     }
 }

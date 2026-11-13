@@ -296,6 +296,10 @@ impl HarnessAdapter for Claude {
             argv.push("--remote-control".to_string());
             argv.push(name.to_string());
         }
+        // Nobody can answer a permission prompt: what the run's settings do not allow is refused.
+        if !request.attended {
+            argv.extend(["--permission-mode".to_string(), "dontAsk".to_string()]);
+        }
         argv.push(prompt);
         Ok(argv)
     }

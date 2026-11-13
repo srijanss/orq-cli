@@ -45,6 +45,8 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         vec![
             "--model".to_string(),
             "opus".to_string(),
+            "--permission-mode".to_string(),
+            "dontAsk".to_string(),
             "/implement-and-review COM-02 --reviewer pi --model openai/gpt-6-astra --thinking medium".to_string(),
         ]
     );
@@ -52,7 +54,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
     // A reviewer without a thinking level passes none.
     let plain = ImplementRequest { reviewer: spec("pi", "kimi-k3", None), ..request };
     let argv = claude.implement_argv(&plain).unwrap();
-    assert_eq!(argv[2], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
+    assert_eq!(argv[4], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
 }
 
 #[test]
@@ -104,7 +106,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(&argv[..4], ["--model", "sonnet", "--effort", "high"]);
-    assert_eq!(argv.len(), 5);
+    assert_eq!(argv.len(), 7);
 
     // A level that is not a plain word is refused, not passed on.
     let bad = ImplementRequest { implementer: spec("claude", "sonnet", Some("--x y")), ..request };
@@ -146,15 +148,15 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         review_again: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
-    assert_eq!(argv.len(), 3, "the context stays inside the one prompt argument");
+    assert_eq!(argv.len(), 5, "the context stays inside the one prompt argument");
     assert_eq!(
-        argv[2],
+        argv[4],
         "/implement-and-review COM-02 --reviewer pi --model kimi-k3\n\nExtra context:\nkeep the API stable\nand mention it in the MR"
     );
 
     // Blank context is no context.
     request.context = Some("  \n ");
-    assert_eq!(claude.implement_argv(&request).unwrap()[2], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
+    assert_eq!(claude.implement_argv(&request).unwrap()[4], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
 
     // Control characters other than newline and tab, and over-long text, are refused.
     let long = "x".repeat(4001);
@@ -246,7 +248,7 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
     };
     let argv = ask(Some("orq/com-02")).unwrap();
     assert_eq!(&argv[..4], ["--model", "opus", "--remote-control", "orq/com-02"]);
-    assert_eq!(argv.len(), 5);
+    assert_eq!(argv.len(), 7);
     assert!(!ask(None).unwrap().iter().any(|a| a == "--remote-control"));
     for bad in ["", "-x", "a b", "a;b"] {
         assert!(ask(Some(bad)).is_err(), "{bad:?}");
@@ -329,7 +331,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
         review_again: None,
     };
     let argv = claude.implement_argv(&request).unwrap();
-    let prompt = &argv[2];
+    let prompt = &argv[4];
     assert!(
         prompt.starts_with("/implement-and-review COM-01 COM-02 COM-03 --reviewer pi --model kimi-k3"),
         "{prompt}"
@@ -339,7 +341,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
     // A single feature asks for nothing extra, so its prompt is unchanged.
     let single = ImplementRequest { features: &["COM-01"], ..request.clone() };
     let argv = claude.implement_argv(&single).unwrap();
-    assert_eq!(argv[2], "/implement-and-review COM-01 --reviewer pi --model kimi-k3");
+    assert_eq!(argv[4], "/implement-and-review COM-01 --reviewer pi --model kimi-k3");
 
     // Every id must stay a single plain argument, and there must be at least one.
     let bad = ImplementRequest { features: &["COM-01", "x y"], ..request.clone() };
