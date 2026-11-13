@@ -3313,9 +3313,15 @@ function deliveryLabel(delivery) {
   return DELIVERIES.find(([value]) => value === delivery)[1];
 }
 
-// What a role's editor starts on: the project's own agent, when its harness is offered, or the machine default (null).
-function startingRole(options, agent) {
-  return agent !== null && options.some((option) => option.harness === agent.harness) ? startingChoice(options, agent) : null;
+// What a role's editor starts on: the project's own agent as it is, even one this machine no longer offers,
+// so opening the editor never changes it, or the machine default (null).
+function startingRole(agent) {
+  return agent === null ? null : { harness: agent.harness, model: agent.model, effort: typeof agent.effort === "string" ? agent.effort : "" };
+}
+
+// The entries a select offers: the listed ones, after the current value when it is not among them.
+function withCurrent(listed, current) {
+  return listed.includes(current) ? listed.map((value) => [value, value]) : [[current, current + " (not offered)"], ...listed.map((value) => [value, value])];
 }
 
 // What Save sends for a role: null leaves it to the machine default.
@@ -3328,6 +3334,7 @@ function sentRole(choice) {
 function RoleFields({ title, role, entry, options, choice, disabled, onChoose }) {
   const current = choice === null ? null : options.find((option) => option.harness === choice.harness);
   const levels = effortsOf(current);
+  const harnesses = options.map((option) => option.harness);
   const pickHarness = (harness) => {
     const option = options.find((each) => each.harness === harness);
     onChoose(option ? { harness, model: option.models[0], effort: keptEffort(option, choice && choice.effort) } : null);
@@ -3337,10 +3344,10 @@ function RoleFields({ title, role, entry, options, choice, disabled, onChoose })
     <div className="settings-block project-role-fields">
       <select data-role-harness={role} aria-label={title + " harness"} value={choice === null ? "" : choice.harness} disabled={disabled} onChange={(event) => pickHarness(event.target.value)}>
         <option value="">{machine}</option>
-        {options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}
+        {(choice === null ? harnesses.map((harness) => [harness, harness]) : withCurrent(harnesses, choice.harness)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select>
-      {current ? <select data-role-model={role} aria-label={title + " model"} value={choice.model} disabled={disabled} onChange={(event) => onChoose({ ...choice, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select> : null}
-      {current && levels.length > 0 ? <select data-role-effort={role} aria-label={title + " effort"} value={choice.effort} disabled={disabled} onChange={(event) => onChoose({ ...choice, effort: event.target.value })}><option value="">Not set</option>{levels.map((level) => <option key={level} value={level}>{level}</option>)}</select> : null}
+      {choice !== null ? <select data-role-model={role} aria-label={title + " model"} value={choice.model} disabled={disabled} onChange={(event) => onChoose({ ...choice, model: event.target.value })}>{withCurrent(current ? current.models : [], choice.model).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : null}
+      {current && levels.length > 0 ? <select data-role-effort={role} aria-label={title + " effort"} value={choice.effort} disabled={disabled} onChange={(event) => onChoose({ ...choice, effort: event.target.value })}><option value="">Not set</option>{(choice.effort === "" ? levels.map((level) => [level, level]) : withCurrent(levels, choice.effort)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : null}
       <button type="button" data-role-reset={role} disabled={disabled || choice === null} onClick={() => onChoose(null)}>Use machine default</button>
     </div>
   );
@@ -3385,7 +3392,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(listed, settings.implementer.project), reviewer: startingRole(listed, settings.reviewer.project), delivery: settings.delivery });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: settings.delivery });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");

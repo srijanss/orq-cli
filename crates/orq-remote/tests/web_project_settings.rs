@@ -176,3 +176,29 @@ fn cancel_closes_the_editor_and_sends_nothing() {
     assert!(shown(frame).iter().any(|t| t == "claude sonnet, effort medium"), "the project's own agent is shown again: {out}");
     assert!(posts(&out).is_empty(), "{out}");
 }
+
+#[test]
+fn edit_keeps_a_project_agent_whose_harness_or_model_is_not_offered_so_saving_the_delivery_leaves_it_as_it_was() {
+    let unoffered = json!({"status": 200, "json": {"settings": {
+        "implementer": {"project": {"harness": "claude", "model": "haiku", "effort": "medium"}, "fallback": null},
+        "reviewer": {"project": {"harness": "codex", "model": "gpt", "effort": null}, "fallback": null},
+        "delivery": "review",
+        "revision": 3
+    }}});
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"set": "[data-delivery]", "value": "push"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let Some(out) = run(json!([unoffered, projects(), machine_settings(true), options(), ok, project_settings("push", 4)]), steps) else { return };
+    let editing = &out["frames"].as_array().unwrap()[2];
+    assert_eq!(count(editing, "[data-role-model]"), 2, "both roles keep their own agent: {out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(
+        body(&sent[0]),
+        json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "push", "revision": 3})
+    );
+}
