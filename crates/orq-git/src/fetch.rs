@@ -12,6 +12,8 @@ pub enum FetchError {
     InvalidName { what: &'static str, value: String },
     RemoteNotFound { remote: String },
     BranchNotFound { remote: String, branch: String },
+    /// The project root has no local branch of that name to start from.
+    LocalBranchNotFound { branch: String },
     /// Git could not be run, or failed for another reason (network, not a
     /// repository, ...).
     Git { message: String },
@@ -24,6 +26,9 @@ impl std::fmt::Display for FetchError {
             FetchError::RemoteNotFound { remote } => write!(f, "remote {remote:?} does not exist"),
             FetchError::BranchNotFound { remote, branch } => {
                 write!(f, "branch {branch:?} does not exist on remote {remote:?}")
+            }
+            FetchError::LocalBranchNotFound { branch } => {
+                write!(f, "branch {branch:?} does not exist in the project root; create it or check it out first")
             }
             FetchError::Git { message } => write!(f, "git failed: {message}"),
         }
@@ -66,6 +71,24 @@ pub fn fetch_target_base(repo: &Path, remote: &str, branch: &str) -> Result<Stri
     let parsed = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{tracking}^{{commit}}")])?;
     if !parsed.status.success() {
         return Err(failure(&parsed));
+    }
+    let sha = String::from_utf8_lossy(&parsed.stdout).trim().to_string();
+    if sha.len() < 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(FetchError::Git { message: format!("unexpected rev-parse output {sha:?}") });
+    }
+    Ok(sha)
+}
+
+/// The SHA of the local `branch` in `repo`, the commit a run starts from. Nothing is fetched, and
+/// the checkout's HEAD, index and working tree are never used or touched.
+pub fn local_target_base(repo: &Path, branch: &str) -> Result<String, FetchError> {
+    check_branch(repo, branch)?;
+    let parsed = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}^{{commit}}")])?;
+    if !parsed.status.success() {
+        return Err(match parsed.status.code() {
+            Some(1) => FetchError::LocalBranchNotFound { branch: branch.to_string() },
+            _ => failure(&parsed),
+        });
     }
     let sha = String::from_utf8_lossy(&parsed.stdout).trim().to_string();
     if sha.len() < 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {

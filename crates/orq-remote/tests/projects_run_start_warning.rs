@@ -12,7 +12,7 @@ use orq_core::storage::StorageRoots;
 use orq_remote::projects::{LaunchError, RunLauncher, StoreProjects};
 use serde_json::{json, Value};
 
-const WARNING: &str = "main has 2 commits origin/main does not; the run starts from origin/main without them";
+const WARNING: &str = "main has 2 commits origin/main does not; the run starts from main with them, and its review carries them too";
 
 struct Launcher {
     warning: Option<String>,

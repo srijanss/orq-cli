@@ -462,7 +462,7 @@ fn run(args: &[OsString]) -> ExitCode {
     if parsed.check {
         return match pipeline::check(&options) {
             Ok(()) => {
-                let fresh = run_branches_from_the_remote_target(parsed.publish, parsed.resume);
+                let fresh = run_branches_from_the_target(parsed.publish, parsed.resume);
                 if let Some(warning) = fresh.then(|| target_ahead_warning(&project.root, remote, target)).flatten() {
                     eprintln!("orq: warning: {}", printable(&warning));
                 }
@@ -2004,18 +2004,18 @@ fn default_target_branch(repo: &Path) -> String {
 
 /// Only a fresh run branches from the remote's target: a publish delivers the checked-out branch and a
 /// resume carries on the run's own.
-fn run_branches_from_the_remote_target(publish: bool, resume: bool) -> bool {
+fn run_branches_from_the_target(publish: bool, resume: bool) -> bool {
     !publish && !resume
 }
 
-/// A run branches from `remote/target`, so commits only the local `target` has are not in it: said
+/// A run branches from the local `target`, so commits its remote lacks go out with the run's review: said
 /// when there are any, as last fetched.
 fn target_ahead_warning(repo: &Path, remote: &str, target: &str) -> Option<String> {
     match orq_git::local_commits_not_on_remote(repo, remote, target)? {
         0 => None,
         count => {
             let commits = if count == 1 { "commit" } else { "commits" };
-            Some(format!("{target} has {count} {commits} {remote}/{target} does not; the run starts from {remote}/{target} without them"))
+            Some(format!("{target} has {count} {commits} {remote}/{target} does not; the run starts from {target} with them, and its review carries them too"))
         }
     }
 }
@@ -4636,13 +4636,13 @@ mod ledger_backend_tests {
 
 #[cfg(test)]
 mod target_warning_tests {
-    use super::run_branches_from_the_remote_target;
+    use super::run_branches_from_the_target;
 
     #[test]
-    fn only_a_fresh_run_branches_from_the_remote_target() {
-        assert!(run_branches_from_the_remote_target(false, false));
-        assert!(!run_branches_from_the_remote_target(true, false), "a publish delivers the checked-out branch");
-        assert!(!run_branches_from_the_remote_target(false, true), "a resume carries on the run's own branch");
+    fn only_a_fresh_run_branches_from_the_target() {
+        assert!(run_branches_from_the_target(false, false));
+        assert!(!run_branches_from_the_target(true, false), "a publish delivers the checked-out branch");
+        assert!(!run_branches_from_the_target(false, true), "a resume carries on the run's own branch");
     }
 }
 

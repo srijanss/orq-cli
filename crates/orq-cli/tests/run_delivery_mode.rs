@@ -280,6 +280,26 @@ fn commit_on_local_main(w: &World, file: &str, contents: &str) -> String {
     rev(w.repo.root(), "refs/heads/main")
 }
 
+/// Has the implementer, on its first call, commit `file` to the local main in the project root: the
+/// run started from main, and main then moves on while it works. The commit is found by its message.
+fn local_main_moves_while_implementing(w: &World, file: &str, contents: &str) {
+    let root = w.repo.root().display();
+    let done = w.home.join("moved");
+    let commit = format!(
+        "[ -f '{done}' ] || {{ touch '{done}'; printf '%s' '{contents}' > '{root}/{file}'; git -C '{root}' add '{file}'; git -C '{root}' -c user.name=Someone -c user.email=someone@example.invalid commit --quiet -m 'local: {file}'; }}",
+        done = done.display(),
+        contents = contents.trim_end(),
+    );
+    executable(
+        &w.home.join("bin/claude"),
+        &format!("#!/bin/sh\ncase \"$*\" in *'local gate failed'*) exit 0;; esac\n{commit}\nexec '{}' \"$@\"\n", w._agent.path().display()),
+    );
+}
+
+fn moved_main(w: &World, file: &str) -> String {
+    rev(w.repo.root(), &format!(":/local: {file}"))
+}
+
 /// A gate that runs `script` (sh) and leaves the `GATE_BASE` of each of its runs as a line in the returned file.
 fn gate_that_records_its_base(w: &World, tag: &str, script: &str) -> PathBuf {
     let seen = orq_test_support::process_temp_dir().join(format!("orq-merge-gate-{}-{tag}", std::process::id()));
@@ -298,12 +318,12 @@ fn gate_bases(seen: &Path) -> Vec<String> {
 fn a_merge_local_run_whose_base_moved_is_rebased_onto_it_checked_again_and_then_fast_forwarded() {
     let w = world("merge-moved");
     let remote_main = rev(&w.remote, "refs/heads/main");
-    // A commit on the local main that the remote does not have: the run rebases onto the remote's
-    // main, so local main is no longer behind the run's branch.
-    let local_main = commit_on_local_main(&w, "local.txt", "local\n");
+    // Local main moves on while the run works, so it is no longer behind the run's branch.
+    local_main_moves_while_implementing(&w, "local.txt", "local\n");
     let seen = gate_that_records_its_base(&w, "moved", "true");
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stdout).contains("state: merged"), "{}", text(&out.stdout));
@@ -321,11 +341,12 @@ fn a_merge_local_run_whose_base_moved_is_rebased_onto_it_checked_again_and_then_
 #[test]
 fn a_merge_local_run_whose_rebase_onto_the_moved_base_conflicts_is_blocked_with_main_left_alone() {
     let w = world("merge-moved-conflict");
-    // The run adds feature.txt too, with other contents: the rebase onto local main conflicts.
-    let local_main = commit_on_local_main(&w, "feature.txt", "theirs\n");
+    // Local main gets feature.txt too, with other contents: the rebase onto local main conflicts.
+    local_main_moves_while_implementing(&w, "feature.txt", "theirs\n");
     let seen = gate_that_records_its_base(&w, "moved-conflict", "true");
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "feature.txt");
 
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("stopped on a conflict"), "the reason is given: {}", text(&out.stderr));
@@ -363,10 +384,11 @@ fn a_merge_local_run_whose_base_keeps_moving_is_blocked_after_three_catch_ups() 
 #[test]
 fn a_merge_local_run_with_rebasing_off_is_blocked_when_its_base_moved_without_catching_up() {
     let w = world("merge-moved-no-rebase");
-    let local_main = commit_on_local_main(&w, "local.txt", "local\n");
+    local_main_moves_while_implementing(&w, "local.txt", "local\n");
     let seen = gate_that_records_its_base(&w, "moved-no-rebase", "true");
 
     let out = run(&w, &["--delivery", "merge-local", "--no-rebase"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("main moved since this run rebased onto it"), "the reason is given: {}", text(&out.stderr));

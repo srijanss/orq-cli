@@ -486,6 +486,39 @@ fn a_finished_run_leaves_its_review_report_without_the_model_summary() {
     assert!(w.env.data.join("orq/runs").join(&run_id).join("review").join(&head).join("review.md").exists());
 }
 
+/// A run starts from the local target branch in the project root, commits its remote does not have
+/// included, rather than from the remote's.
+#[test]
+fn a_run_starts_from_the_local_target_branch_with_commits_its_remote_lacks() {
+    let w = world("localbase");
+    git(w.repo.root(), &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "local only"]);
+    let local = git(w.repo.root(), &["rev-parse", "main"]).trim().to_string();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let run_id = printed_run_id(&output);
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(w.env.state.join("orq/runs").join(&run_id).join("run.json")).unwrap()).unwrap();
+    assert_eq!(record["base_sha"], local.as_str(), "{}", stderr(&output));
+    assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01^"]).trim(), local, "the branch is built on the local commit");
+}
+
+/// A target with no local branch in the project root has nothing to start from: the run is refused,
+/// naming it, before anything is recorded.
+#[test]
+fn a_run_whose_target_has_no_local_branch_is_refused_naming_it() {
+    let w = world("nolocal");
+    git(w.repo.root(), &["checkout", "--quiet", "-b", "work"]);
+    git(w.repo.root(), &["branch", "--quiet", "-D", "main"]);
+    let agent = FakeAgent::builder().build();
+
+    let output = run_with(&w, &agent, &github(), &[]);
+
+    assert_ne!(output.status.code(), Some(0));
+    assert!(stderr(&output).contains("branch \"main\" does not exist in the project root"), "{}", stderr(&output));
+    assert!(state_is_empty(&w.env), "nothing was recorded");
+}
+
 /// The diff is `base..head`: measured from the commit the run started on, a rebased branch would
 /// claim the target's newer commits as its own changes.
 #[test]

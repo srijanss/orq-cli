@@ -126,3 +126,19 @@ fn names_that_could_be_read_as_options_or_refspecs_are_refused() {
         );
     }
 }
+
+/// A run starts from the local target branch: its own commit, never the remote's, and nothing is
+/// fetched. A branch that does not exist locally is named as such.
+#[test]
+fn the_local_base_is_the_local_branch_tip_and_nothing_is_fetched() {
+    let (fixture, main_sha, _) = fixture_with_remote();
+    let root = fixture.root();
+    let local = git(root, &["rev-parse", "refs/heads/main"]);
+    let tracking = git(root, &["for-each-ref", "refs/remotes"]);
+
+    assert_eq!(orq_git::local_target_base(root, "main").unwrap(), local);
+    assert_ne!(local, main_sha, "the remote's newer commit is not the base");
+    assert_eq!(git(root, &["for-each-ref", "refs/remotes"]), tracking, "nothing was fetched");
+    assert_eq!(orq_git::local_target_base(root, "nope"), Err(FetchError::LocalBranchNotFound { branch: "nope".to_string() }));
+    assert!(matches!(orq_git::local_target_base(root, "--all"), Err(FetchError::InvalidName { .. })));
+}

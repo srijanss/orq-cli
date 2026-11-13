@@ -174,7 +174,7 @@ fn a_gate_rerun_after_a_resume_is_still_told_the_commit_the_branch_was_rebased_o
     assert!(bases.iter().all(|base| *base == moved), "expected {moved}: {bases:?}");
 }
 
-/// The events of the paused run turn unreadable during the fetch of the next run, after the resume
+/// The events of the paused run turn unreadable while the next run reads its base, after the resume
 /// has checked them. The rebase then cannot be carried, so the resume stops before it does anything,
 /// and because a resume continues a feature's newest run, it leaves no run behind to take the
 /// paused one's place.
@@ -192,22 +192,26 @@ fn a_resume_that_cannot_carry_the_rebase_stops_and_the_paused_run_can_be_resumed
     let intact = std::fs::read_to_string(&events).unwrap();
     let armed = w.base.join("break-events");
     std::fs::write(&armed, "").unwrap();
+    // The next run reads its base from the local target branch; that read breaks the events.
+    let real_git = String::from_utf8_lossy(&Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).trim().to_string();
+    let wrapper = w.base.join("bin/git");
     std::fs::write(
-        &w.ssh,
+        &wrapper,
         format!(
-            "#!/bin/sh\nif [ -f '{armed}' ]; then rm '{armed}'; echo broken >> '{events}'; fi\nfor a; do last=$a; done\nexec sh -c \"$last\"\n",
+            "#!/bin/sh\ncase \"$*\" in *'refs/heads/main^{{commit}}'*) if [ -f '{armed}' ]; then rm '{armed}'; echo broken >> '{events}'; fi;; esac\nexec '{real_git}' \"$@\"\n",
             armed = armed.display(),
             events = events.display(),
         ),
     )
     .unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     let aborted = resume(&w, &run_id);
 
     let stderr = String::from_utf8_lossy(&aborted.stderr).into_owned();
     assert_ne!(aborted.status.code(), Some(0), "{}\n{stderr}", String::from_utf8_lossy(&aborted.stdout));
     assert!(stderr.contains("cannot carry the rebase"), "{stderr}");
-    assert!(!armed.exists(), "the fetch of the resume broke the events");
+    assert!(!armed.exists(), "reading the resume's base broke the events");
     assert_eq!(store.run_ids().unwrap(), vec![run_id.clone()], "the aborted resume leaves no run behind");
     assert_eq!(count_calls(&w, &["pr", "create"]), 0);
     // Apart from the broken line, the paused run was not touched.

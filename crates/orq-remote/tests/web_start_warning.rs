@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const WARNING: &str = "main has 2 commits origin/main does not; the run starts from origin/main without them";
+const WARNING: &str = "main has 2 commits origin/main does not; the run starts from main with them, and its review carries them too";
 
 fn run(url: &str, responses: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {

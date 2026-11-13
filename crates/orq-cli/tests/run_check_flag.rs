@@ -167,7 +167,7 @@ fn commit(repo: &Path, message: &str) {
     assert!(output.status.success(), "{}", text(&output.stderr));
 }
 
-/// The run branches from the remote's target, so commits only the local target has are not in it: a check
+/// The run branches from the local target, so commits its remote lacks go out with its review: a check
 /// says so, and still says ready. A local target its remote already has says nothing more.
 #[test]
 fn a_check_warns_when_the_local_target_has_commits_its_remote_does_not() {
@@ -186,7 +186,7 @@ fn a_check_warns_when_the_local_target_has_commits_its_remote_does_not() {
     let ahead = run(repo.root(), &env, &["--feature", "COM-01", "--check"]);
     assert_eq!(ahead.status.code(), Some(0), "{}", text(&ahead.stderr));
     assert_eq!(text(&ahead.stdout), "state: ready\n");
-    assert_eq!(text(&ahead.stderr), "orq: warning: main has 2 commits origin/main does not; the run starts from origin/main without them\n");
+    assert_eq!(text(&ahead.stderr), "orq: warning: main has 2 commits origin/main does not; the run starts from main with them, and its review carries them too\n");
     assert!(state_is_empty(&env), "nothing was recorded");
 }
 
@@ -198,7 +198,7 @@ fn a_check_counts_a_single_local_commit_as_one() {
     git(repo.root(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     commit(repo.root(), "one");
     let ahead = run(repo.root(), &env("one-ahead"), &["--feature", "COM-01", "--check"]);
-    assert_eq!(text(&ahead.stderr), "orq: warning: main has 1 commit origin/main does not; the run starts from origin/main without them\n");
+    assert_eq!(text(&ahead.stderr), "orq: warning: main has 1 commit origin/main does not; the run starts from main with them, and its review carries them too\n");
 }
 
 /// A publish delivers the checked-out branch, not a branch from the remote's target, so a ready check of

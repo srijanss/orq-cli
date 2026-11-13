@@ -247,7 +247,7 @@ fn a_start_without_a_choice_names_no_profiles_so_the_run_picks_the_projects_agen
 }
 
 /// The launcher warns, as `orq run --check` does, when the local target branch has commits the remote's
-/// does not, since the run starts from the remote's without them.
+/// does not, since the run starts from the local one and its review carries them.
 #[test]
 fn a_start_is_warned_about_local_target_commits_its_remote_lacks() {
     let dir = scratch("ahead");
@@ -259,5 +259,5 @@ fn a_start_is_warned_about_local_target_commits_its_remote_lacks() {
     assert_eq!(launcher.start_warning(&repo), None, "even with origin/main");
 
     git(&["commit", "-q", "--allow-empty", "-m", "local"]);
-    assert_eq!(launcher.start_warning(&repo).as_deref(), Some("main has 1 commit origin/main does not; the run starts from origin/main without them"));
+    assert_eq!(launcher.start_warning(&repo).as_deref(), Some("main has 1 commit origin/main does not; the run starts from main with them, and its review carries them too"));
 }

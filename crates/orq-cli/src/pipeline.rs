@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use orq_agents::{adapter_for, FixRequest, ImplementRequest, ModelSpec};
 use orq_features::ResolvedModel;
-use orq_git::{detect_provider, fetch_target_base, ProviderHosts};
+use orq_git::{detect_provider, local_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
     plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
@@ -378,7 +378,9 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
     let store = RunStore::new(&root);
     let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store)?;
-    let base_sha = fetch_target_base(repo, options.remote, options.target).map_err(|e| other(e.to_string()))?;
+    // A run starts from the local target branch in the project root, with whatever it has that its
+    // remote does not: the project as it is here, not as last pushed.
+    let base_sha = local_target_base(repo, options.target).map_err(|e| other(e.to_string()))?;
     let published = if options.publish { Some(published_branch(repo, options.target, &base_sha).map_err(other)?) } else { None };
     let project_id = project_id(options.project);
 
