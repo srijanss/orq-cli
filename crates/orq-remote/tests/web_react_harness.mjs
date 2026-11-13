@@ -23,6 +23,20 @@ const dom = new JSDOM('<!doctype html><html><body><div id="app"><p>Loading the r
 const { window } = dom;
 const root = window.document.getElementById("app");
 // A phone-width screen when the scenario asks for one, since jsdom has no layout.
+// A screen of the given size and boxes where the scenario places them, since jsdom has no layout:
+// rects is [{selector, top, left, width, height}], the first whose selector an element matches wins.
+if (scenario.viewport) {
+  Object.defineProperty(window, "innerWidth", { value: scenario.viewport.width, configurable: true });
+  Object.defineProperty(window, "innerHeight", { value: scenario.viewport.height, configurable: true });
+}
+if (scenario.rects) {
+  const measured = window.Element.prototype.getBoundingClientRect;
+  window.Element.prototype.getBoundingClientRect = function () {
+    const box = scenario.rects.find((rect) => this.matches(rect.selector));
+    if (!box) return measured.call(this);
+    return { top: box.top, left: box.left, width: box.width, height: box.height, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top };
+  };
+}
 if (scenario.phone === true) window.matchMedia = (query) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 
 // Intervals are faked so a test can fire them: {id, delay, active, run}. Only setInterval is faked;
@@ -184,7 +198,7 @@ function snapshot() {
   const times = [...page().querySelectorAll("time")].map((el) => ({ label: [...el.parentNode.childNodes].filter((c) => c.nodeType === 3).map((c) => c.data).join("").trim(), text: el.textContent, title: el.getAttribute("title"), datetime: el.getAttribute("datetime") }));
   const doc = window.document;
   const a11y = { mains: doc.querySelectorAll("main").length, banners: [...doc.querySelectorAll("header")].filter((h) => h.closest("main") === null).length, navs: [...doc.querySelectorAll("nav")].map((n) => n.getAttribute("aria-label")), live: [...doc.querySelectorAll("[aria-live], [role=status], [role=log]")].map((el) => ({ live: el.getAttribute("aria-live"), role: el.getAttribute("role"), text: el.textContent })) };
-  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), styles: Object.fromEntries((scenario.styles || []).map((sel) => [sel, root.querySelector(sel) === null ? null : root.querySelector(sel).getAttribute("style")])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -245,6 +259,11 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       const el = root.querySelector(step.scrollto);
       el.scrollTop = step.top;
       el.dispatchEvent(new window.Event("scroll"));
+    } else if (step.rects !== undefined) {
+      // The boxes move (the page scrolled or the window changed size), then that event reaches `on` (the window when absent).
+      scenario.rects = step.rects;
+      const target = step.on ? root.querySelector(step.on) : window;
+      target.dispatchEvent(new window.Event(step.event));
     } else if (step.fire !== undefined) {
       for (const timer of timeouts.filter((t) => t.active)) { timer.active = false; timer.run(); }
     } else if (step.visibility !== undefined) {

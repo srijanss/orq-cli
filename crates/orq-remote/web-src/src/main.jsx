@@ -2759,11 +2759,35 @@ function RowActions({ run, control, menu = false }) {
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
 }
 
-// A ⋯ button that opens its actions below it; Escape or a press elsewhere closes it. The actions stay mounted
+// A ⋯ button that opens its actions next to it, placed against the window (see placeMenu) so the run table's
+// sideways scroll cannot cut them or a question they ask off; Escape or a press elsewhere closes it. The actions stay mounted
 // while it is closed, so a question one of them asked is still there when it opens again.
 function MoreMenu({ label, children }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
+  const toggle = useRef(null);
+  const menu = useRef(null);
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const at = placeMenu(toggle.current.getBoundingClientRect(), menu.current.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+      menu.current.style.top = at.top + "px";
+      menu.current.style.left = at.left + "px";
+    };
+    place();
+    // A question an action asks makes the menu taller, so it is placed again whenever what it holds changes, and
+    // it follows its button when the page or the run table scrolls (captured: a scroll does not bubble) or the
+    // window changes size.
+    const changes = new MutationObserver(place);
+    changes.observe(menu.current, { childList: true, subtree: true, characterData: true });
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      changes.disconnect();
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return undefined;
     const onKeyDown = (event) => {
@@ -2781,10 +2805,25 @@ function MoreMenu({ label, children }) {
   }, [open]);
   return (
     <span className={"run-more" + (open ? " open" : "")} ref={box}>
-      <button type="button" className="run-more-toggle" data-run-more aria-label={label} title="More actions" aria-haspopup="menu" aria-expanded={open ? "true" : "false"} onClick={() => setOpen(!open)}><Icon name="dots" size={18} /></button>
-      <span className="run-more-menu">{children}</span>
+      <button type="button" ref={toggle} className="run-more-toggle" data-run-more aria-label={label} title="More actions" aria-haspopup="menu" aria-expanded={open ? "true" : "false"} onClick={() => setOpen(!open)}><Icon name="dots" size={18} /></button>
+      <span className="run-more-menu" ref={menu}>{children}</span>
     </span>
   );
+}
+
+// Where an open ⋯ menu goes in a window `view`: just under its button, right edges together, or just above the
+// button when it would run past the window's bottom there and fits above; never past the window's edges, even
+// when that means covering the button.
+const MENU_GAP = 4;
+const MENU_EDGE = 8;
+function placeMenu(button, menu, view) {
+  const below = button.bottom + MENU_GAP;
+  const above = button.top - MENU_GAP - menu.height;
+  const fitsBelow = below + menu.height <= view.height - MENU_EDGE;
+  const left = Math.max(MENU_EDGE, Math.min(button.right - menu.width, view.width - MENU_EDGE - menu.width));
+  const side = fitsBelow || above < MENU_EDGE ? below : above;
+  const top = Math.max(MENU_EDGE, Math.min(side, view.height - MENU_EDGE - menu.height));
+  return { top, left };
 }
 
 // The popup's question before Discard, with what the branch would lose when the server says, or before Clear.
