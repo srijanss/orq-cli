@@ -35,10 +35,11 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
     // Every path is a fixed same-origin one, plus an encoded run id, with no query string.
     for call in code.split("<Loaded ").skip(1) {
         let target: String = call.split("path={").nth(1).unwrap().chars().take_while(|c| *c != '}').collect();
-        assert!(["API_REVIEWS", "API_PROJECTS", "API_SETTINGS", "API_AUDIT", "path", "base", "featuresPath", "runsPath", "timelinePath", "apiRun", "pagePath", "api"].contains(&target.trim()), "path {target:?} is not fixed");
+        assert!(["API_REVIEWS", "API_PROJECTS", "API_SETTINGS", "API_AUDIT", "path", "base", "featuresPath", "runsPath", "timelinePath", "apiRun", "pagePath", "api", "settingsPath"].contains(&target.trim()), "path {target:?} is not fixed");
     }
     assert!(code.contains("api + \"/\" + encodeURIComponent(open)"), "the run id is encoded");
     assert!(code.contains("\"/api/projects/\" + encodeURIComponent(projectId) + \"/reviews\""), "the project id is encoded");
+    assert!(code.contains("\"/api/projects/\" + encodeURIComponent(projectId) + \"/settings\""), "the project id is encoded for its settings");
     assert!(!code.contains("API_REVIEWS + \"?"), "no query string");
 }
 
@@ -68,7 +69,7 @@ fn a_401_clears_the_token_and_asks_again_with_one_message_that_blames_neither_si
     for blamed in ["wrong", "invalid", "incorrect", "expired", "network", "offline", "unreachable", "timeout"] {
         assert!(!lower.contains(blamed), "the message says {blamed}: {message}");
     }
-    assert_eq!(code.matches("onSignedOut()").count(), 22, "used for a 401 on a page, on the project list, on the sidebar dropdown's list, on the combined features read, on the live stream, on an action, on a resume check, on the model switch's profiles read and its switch, on the launch picker's profiles read and its start, on a start of the marked features and its profiles read, on a promote of the marked features, on a settings change, on a passkey challenge, on the options read, on an agent save, on the feature editor's read and save, and on the storage cleanup's preview and prune, never for a failed request");
+    assert_eq!(code.matches("onSignedOut()").count(), 25, "used for a 401 on a page, on the project list, on the sidebar dropdown's list, on the combined features read, on the live stream, on an action, on a resume check, on the model switch's profiles read and its switch, on the launch picker's profiles read and its start, on a start of the marked features and its profiles read, on a promote of the marked features, on a settings change, on a passkey challenge, on the options read, on an agent save, on the feature editor's read and save, on the storage cleanup's preview and prune, and on the project settings' machine read, options read and save, never for a failed request");
 }
 
 #[test]

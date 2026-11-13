@@ -3283,6 +3283,177 @@ function LogPage({ page, filters: { text, setText, level, setLevel }, follow, on
   );
 }
 
+// A project's own settings as the server gives them: each role the project's choice (or null) with what a
+// run uses instead (or null), the delivery and the revision a save names.
+const DELIVERIES = [["review", "Open review"], ["push", "Push only"], ["merge_local", "Merge locally"]];
+
+function isPicked(agent) {
+  return agent !== null && typeof agent === "object" && typeof agent.harness === "string" && typeof agent.model === "string" && (agent.effort === null || agent.effort === undefined || typeof agent.effort === "string");
+}
+
+function parseProjectSettings(data) {
+  const settings = data && data.settings;
+  const role = (entry) => entry !== null && typeof entry === "object" && (entry.project === null || isPicked(entry.project)) && (entry.fallback === null || isPicked(entry.fallback));
+  const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && DELIVERIES.some(([value]) => value === settings.delivery) && Number.isInteger(settings.revision) && settings.revision >= 0;
+  return ok ? settings : null;
+}
+
+// An agent as one line: "claude sonnet, effort medium".
+function agentLine(agent) {
+  return agent.harness + " " + agent.model + (typeof agent.effort === "string" ? ", effort " + agent.effort : "");
+}
+
+// What a role runs with: the project's own agent, or the machine's default it falls back to.
+function roleLine(entry) {
+  if (entry.project !== null) return agentLine(entry.project);
+  return entry.fallback === null ? "Machine default" : "Machine default (" + agentLine(entry.fallback) + ")";
+}
+
+function deliveryLabel(delivery) {
+  return DELIVERIES.find(([value]) => value === delivery)[1];
+}
+
+// What a role's editor starts on: the project's own agent, when its harness is offered, or the machine default (null).
+function startingRole(options, agent) {
+  return agent !== null && options.some((option) => option.harness === agent.harness) ? startingChoice(options, agent) : null;
+}
+
+// What Save sends for a role: null leaves it to the machine default.
+function sentRole(choice) {
+  return choice === null ? null : { harness: choice.harness, model: choice.model, effort: choice.effort || null };
+}
+
+// A role while editing: the harness, whose first entry is the machine default, then the model and effort
+// of the harness picked, and a reset back to the machine default.
+function RoleFields({ title, role, entry, options, choice, disabled, onChoose }) {
+  const current = choice === null ? null : options.find((option) => option.harness === choice.harness);
+  const levels = effortsOf(current);
+  const pickHarness = (harness) => {
+    const option = options.find((each) => each.harness === harness);
+    onChoose(option ? { harness, model: option.models[0], effort: keptEffort(option, choice && choice.effort) } : null);
+  };
+  const machine = entry.fallback === null ? "Machine default" : "Machine default (" + agentLine(entry.fallback) + ")";
+  return (
+    <div className="settings-block project-role-fields">
+      <select data-role-harness={role} aria-label={title + " harness"} value={choice === null ? "" : choice.harness} disabled={disabled} onChange={(event) => pickHarness(event.target.value)}>
+        <option value="">{machine}</option>
+        {options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}
+      </select>
+      {current ? <select data-role-model={role} aria-label={title + " model"} value={choice.model} disabled={disabled} onChange={(event) => onChoose({ ...choice, model: event.target.value })}>{current.models.map((model) => <option key={model} value={model}>{model}</option>)}</select> : null}
+      {current && levels.length > 0 ? <select data-role-effort={role} aria-label={title + " effort"} value={choice.effort} disabled={disabled} onChange={(event) => onChoose({ ...choice, effort: event.target.value })}><option value="">Not set</option>{levels.map((level) => <option key={level} value={level}>{level}</option>)}</select> : null}
+      <button type="button" data-role-reset={role} disabled={disabled || choice === null} onClick={() => onChoose(null)}>Use machine default</button>
+    </div>
+  );
+}
+
+const PROJECT_ROLES = [["Implementer", "implementer"], ["Reviewer", "reviewer"]];
+
+// A project's settings: each role and the delivery, read only until Edit. Edit checks that remote actions
+// are on and reads the machine's options; Save asks, then sends the whole record with the revision it was
+// read at, and a refusal shows the server's reason, with Reload when the settings changed meanwhile.
+function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) {
+  const [phase, setPhase] = useState("idle");
+  const [options, setOptions] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [note, setNote] = useState("");
+  const [conflict, setConflict] = useState(false);
+  const edit = async () => {
+    setPhase("loading");
+    setNote("");
+    setConflict(false);
+    try {
+      const machine = await get(API_SETTINGS, token);
+      if (machine.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const read = machine.ok ? await jsonOrNull(machine) : null;
+      if (!(read && read.settings && read.settings.remote_actions === true)) {
+        setNote(read && read.settings ? "Turn remote actions on in Settings to change this project's settings." : "The settings could not be read.");
+        setPhase("idle");
+        return;
+      }
+      const response = await get(API_SETTINGS + "/options", token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const listed = response.ok ? parseOptions(await jsonOrNull(response)) : null;
+      if (listed === null || listed.length === 0) {
+        setNote("There are no harnesses to choose from.");
+        setPhase("idle");
+        return;
+      }
+      setOptions(listed);
+      setDraft({ implementer: startingRole(listed, settings.implementer.project), reviewer: startingRole(listed, settings.reviewer.project), delivery: settings.delivery });
+      setPhase("editing");
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+      setPhase("idle");
+    }
+  };
+  const send = async () => {
+    setPhase("sending");
+    let text = "The change could not be made.";
+    try {
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, revision: settings.revision });
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        onChanged();
+        return;
+      }
+      const reply = await jsonOrNull(response);
+      if (reply !== null && typeof reply.error === "string") text = reply.error;
+      setConflict(response.status === 409);
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("editing");
+  };
+  const editing = phase === "editing" || phase === "asking" || phase === "sending";
+  const action = phase === "idle" ? <button type="button" data-project-settings-edit onClick={edit}><Icon name="pencil" size={16} />Edit</button> : phase === "loading" ? <span role="status" className="muted">Loading the options…</span> : null;
+  return (
+    <div className="settings-page project-settings">
+      {PROJECT_ROLES.map(([title, role], index) => (
+        <section key={role} className="card settings-card" data-project-role={role}>
+          <SettingsHead icon="cpu" action={index === 0 ? action : null}>{title}</SettingsHead>
+          {editing ? (
+            <RoleFields title={title} role={role} entry={settings[role]} options={options} choice={draft[role]} disabled={phase !== "editing"} onChoose={(choice) => setDraft({ ...draft, [role]: choice })} />
+          ) : (
+            <div className="settings-block"><span>{roleLine(settings[role])}</span></div>
+          )}
+        </section>
+      ))}
+      <section className="card settings-card">
+        <SettingsHead icon="flag">When a run finishes</SettingsHead>
+        <div className="settings-block">
+          {editing ? (
+            <select data-delivery aria-label="When a run finishes" value={draft.delivery} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, delivery: event.target.value })}>
+              {DELIVERIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          ) : (
+            <span data-project-delivery>{deliveryLabel(settings.delivery)}</span>
+          )}
+        </div>
+      </section>
+      {phase === "editing" ? (
+        <div className="settings-block settings-actions">
+          <button type="button" className="primary-button" data-project-settings-save onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
+          <button type="button" data-cancel onClick={() => { setPhase("idle"); setNote(""); setConflict(false); }}>Cancel</button>
+        </div>
+      ) : null}
+      {phase === "asking" ? (
+        <Confirm question="Save this project's settings?" detail="Runs already going keep their agents and delivery." answer="Yes, save" tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
+      ) : null}
+      <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={() => { setNote(""); setConflict(false); onChanged(); }} />
+    </div>
+  );
+}
+
 // What a project's address shows. Only the Reviews tab is built: its list and reports come from
 // the project's own endpoints and stay under the project's address.
 function ProjectPage({ token, onSignedOut, projectId, projects, path: address, reloads, onRefresh }) {
@@ -3295,6 +3466,17 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       return <NotFound />;
     }
     return <FeaturesPage token={token} onSignedOut={onSignedOut} projectId={projectId} projects={projects} name={name} reloads={reloads} onRefresh={onRefresh} />;
+  }
+  if (/^\/projects\/[^/]+\/settings$/.test(address)) {
+    const settingsPath = "/api/projects/" + encodeURIComponent(projectId) + "/settings";
+    return (
+      <Loaded key={settingsPath} reloads={reloads} header={() => (
+        <>
+          <PageHeader title="Project settings" subtitle="How this project's runs work, over the machine defaults" onRefresh={onRefresh} />
+          <ProjectSelect projects={projects} projectId={projectId} section="settings" />
+        </>
+      )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView key={settings.revision} settings={settings} path={settingsPath} token={token} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
+    );
   }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {
     const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";

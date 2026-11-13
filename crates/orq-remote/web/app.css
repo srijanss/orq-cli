@@ -707,3 +707,6 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .feature-mark { width: 20px; height: 20px; margin: 0 10px 0 0; flex: none; vertical-align: middle; }
 .feature-table td:has(> .feature-mark) .feature-link { display: inline-flex; }
 .marked-results { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 4px; }
+
+/* A project's role while editing: harness, model, effort and the reset on one wrapping row. */
+.project-role-fields { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
