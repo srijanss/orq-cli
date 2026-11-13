@@ -637,13 +637,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             agent(orq_features::AgentRole::Reviewer).as_ref(),
         );
         // The project's own agent for a role is what a run naming no profile uses, so it comes first:
-        // the profile with its harness and model, or none, and then only "Project default" starts with it.
+        // the profile that runs as it does, with its harness, model and effort as the thinking level,
+        // or none, and then only "Project default" starts with it.
         let own = self.stored_settings_of(id)?.map(|(_, stored)| stored.settings).unwrap_or_default();
         let mut project_default = false;
         let mut pick = |own: Option<orq_core::project_settings::ProjectAgent>, machine: Option<String>| match own {
             None => machine,
             Some(agent) => {
-                let found = profiles.profiles().iter().find(|p| p.harness == agent.harness && p.model == agent.model).map(|p| p.name.clone());
+                let found = profiles.profiles().iter().find(|p| p.harness == agent.harness && p.model == agent.model && p.thinking == agent.effort).map(|p| p.name.clone());
                 project_default |= found.is_none();
                 found
             }

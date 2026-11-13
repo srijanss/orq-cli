@@ -70,9 +70,11 @@ fn a_project_with_no_defaults_has_none_and_an_unreadable_profile_file_is_a_failu
     assert_eq!(send(&s, "/api/projects/alpha/launch-profiles"), (500, json!({"error": "the launch profiles could not be read"})));
 }
 
-fn save_agents(s: &Setup, repo: &Path, implementer: Option<(&str, &str)>, reviewer: Option<(&str, &str)>) {
+type Agent<'a> = Option<(&'a str, &'a str, Option<&'a str>)>;
+
+fn save_agents(s: &Setup, repo: &Path, implementer: Agent, reviewer: Agent) {
     use orq_core::project_settings::{ProjectAgent, ProjectSettings};
-    let agent = |pair: Option<(&str, &str)>| pair.map(|(harness, model)| ProjectAgent { harness: harness.into(), model: model.into(), effort: Some("high".into()) });
+    let agent = |chosen: Agent| chosen.map(|(harness, model, effort)| ProjectAgent { harness: harness.into(), model: model.into(), effort: effort.map(Into::into) });
     let settings = ProjectSettings { implementer: agent(implementer), reviewer: agent(reviewer), ..Default::default() };
     let mut store = orq_core::store::Store::open(&s.roots.database()).unwrap();
     let root = std::fs::canonicalize(repo).unwrap();
@@ -89,16 +91,35 @@ fn the_projects_agents_are_preselected_and_one_no_profile_has_offers_project_def
     let alpha = git_repo(&s.scan, "alpha");
     assert_eq!(send(&s, "/api/projects/alpha/launch-profiles").1["project_default"], json!(false), "no project settings: nothing to offer");
 
-    save_agents(&s, &alpha, Some(("claude", "sonnet")), Some(("pi", "kimi")));
+    save_agents(&s, &alpha, Some(("claude", "sonnet", None)), Some(("pi", "kimi", None)));
     let (status, body) = send(&s, "/api/projects/alpha/launch-profiles");
     assert_eq!(status, 200, "{body}");
     assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!("sonnet"), &json!("kimi"), &json!(false)), "{body}");
 
-    save_agents(&s, &alpha, Some(("pi", "glm")), None);
+    save_agents(&s, &alpha, Some(("pi", "glm", None)), None);
     let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
     assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!(null), &json!(null), &json!(true)), "{body}");
 
-    save_agents(&s, &alpha, None, Some(("pi", "glm")));
+    save_agents(&s, &alpha, None, Some(("pi", "glm", None)));
     let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
     assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!("opus"), &json!(null), &json!(true)), "{body}");
+}
+
+/// A profile stands for the project's agent only with the agent's effort as its thinking level too, since
+/// starting with the profile runs at the profile's level: otherwise the role preselects none and Project
+/// default is offered, so the project's effort is kept.
+#[test]
+fn a_profile_with_another_thinking_level_is_not_the_projects_agent() {
+    let config = format!("{PROFILES}\n[models.deep]\nharness = \"pi\"\nmodel = \"kimi\"\nthinking = \"high\"\n");
+    let s = setup("launch-profiles-effort", &config);
+    let alpha = git_repo(&s.scan, "alpha");
+
+    save_agents(&s, &alpha, Some(("claude", "sonnet", Some("high"))), Some(("pi", "kimi", Some("high"))));
+    let (status, body) = send(&s, "/api/projects/alpha/launch-profiles");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!((&body["implementer"], &body["reviewer"], &body["project_default"]), (&json!(null), &json!("deep"), &json!(true)), "{body}");
+
+    save_agents(&s, &alpha, None, Some(("pi", "kimi", None)));
+    let (_, body) = send(&s, "/api/projects/alpha/launch-profiles");
+    assert_eq!((&body["reviewer"], &body["project_default"]), (&json!("kimi"), &json!(false)), "no effort is the profile without a thinking level: {body}");
 }
