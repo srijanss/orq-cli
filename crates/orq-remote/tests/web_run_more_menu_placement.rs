@@ -147,3 +147,13 @@ fn an_open_menu_is_measured_where_its_width_does_not_depend_on_where_it_last_was
     assert!(style(&frames[2]).contains("left: 740px"), "right edges together on opening: {out}");
     assert!(style(last(&out)).contains("left: 680px"), "and again after the table scrolls: {out}");
 }
+
+#[test]
+fn an_open_menu_stays_inside_a_window_that_shrinks() {
+    let rects = vec![rect(TOGGLE, 200, 960, 36, 36), rect(MENU, 0, 0, 256, 120)];
+    let shrunk = json!({"rects": [rect(TOGGLE, 200, 860, 36, 36), rect(MENU, 0, 0, 256, 120)], "viewport": {"width": 900, "height": 300}, "event": "resize"});
+    let Some(out) = failed_row(rects, vec![], vec![json!({"click": TOGGLE}), shrunk]) else { return };
+    let placed = style(last(&out));
+    assert!(placed.contains("left: 636px"), "8px in from the 900px window's right edge: {placed:?} {out}");
+    assert!(placed.contains("top: 76px"), "no room below in a 300px window, so above the button: {placed:?} {out}");
+}

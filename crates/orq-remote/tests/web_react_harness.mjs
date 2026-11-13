@@ -25,10 +25,11 @@ const root = window.document.getElementById("app");
 // A phone-width screen when the scenario asks for one, since jsdom has no layout.
 // A screen of the given size and boxes where the scenario places them, since jsdom has no layout:
 // rects is [{selector, top, left, width, height}], the first whose selector an element matches wins.
-if (scenario.viewport) {
-  Object.defineProperty(window, "innerWidth", { value: scenario.viewport.width, configurable: true });
-  Object.defineProperty(window, "innerHeight", { value: scenario.viewport.height, configurable: true });
-}
+const resize = (view) => {
+  Object.defineProperty(window, "innerWidth", { value: view.width, configurable: true });
+  Object.defineProperty(window, "innerHeight", { value: view.height, configurable: true });
+};
+if (scenario.viewport) resize(scenario.viewport);
 if (scenario.rects) {
   const measured = window.Element.prototype.getBoundingClientRect;
   window.Element.prototype.getBoundingClientRect = function () {
@@ -260,8 +261,9 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       el.scrollTop = step.top;
       el.dispatchEvent(new window.Event("scroll"));
     } else if (step.rects !== undefined) {
-      // The boxes move (the page scrolled or the window changed size), then that event reaches `on` (the window when absent).
+      // The boxes move (the page scrolled or the window changed size, to `viewport` when given), then that event reaches `on` (the window when absent).
       scenario.rects = step.rects;
+      if (step.viewport) resize(step.viewport);
       const target = step.on ? root.querySelector(step.on) : window;
       target.dispatchEvent(new window.Event(step.event));
     } else if (step.fire !== undefined) {
