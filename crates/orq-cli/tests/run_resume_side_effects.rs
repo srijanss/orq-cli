@@ -68,6 +68,7 @@ fn orq(w: &World, args: &[&str]) -> Output {
         .env("GIT_SSH_COMMAND", &w.ssh)
         .env("PATH", &w.path)
         .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .env_remove("HERDR_SOCKET_PATH")
         .output()
         .unwrap()
 }
@@ -323,4 +324,74 @@ fn a_run_whose_events_cannot_be_read_does_not_claim_it_cannot_resume() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(stderr.starts_with("orq: "), "{stderr}");
     assert!(!stderr.starts_with("orq: cannot resume"), "{stderr}");
+}
+
+/// The web always asks for a pane; without Herdr running, the resume is detached as before.
+#[test]
+fn a_resume_in_herdr_without_herdr_running_still_resumes_detached() {
+    let agent = agent();
+    let w = world("no-herdr", &agent);
+    let (run_id, store) = start_paused(&w);
+
+    let out = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--detach", "--in-herdr", "--repo", w.repo.root().to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while count_calls(&w, &["pr", "create"]) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(count_calls(&w, &["pr", "create"]), 1);
+    assert_eq!(store.run_ids().unwrap().len(), 2);
+}
+
+/// A stand-in for `herdr`: logs each call, names a new tab's pane, and keeps the command a pane is
+/// asked to run without running it.
+fn fake_herdr(dir: &Path) -> PathBuf {
+    let path = dir.join("herdr");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {calls}\ncase \"$1 $2\" in\n\"tab create\") echo '{{\"result\":{{\"root_pane\":{{\"workspace_id\":\"w1\",\"tab_id\":\"t1\",\"pane_id\":\"p1\"}}}}}}';;\n\"pane run\") printf '%s' \"$4\" > {command};;\nesac\n",
+        calls = dir.join("herdr-calls.log").display(),
+        command = dir.join("herdr-command.txt").display(),
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    path
+}
+
+/// The web resumes a run as it starts one: while Herdr is running, the resumed run goes in the
+/// foreground of a Herdr pane, where its session can be watched and answered, not unseen in the background.
+#[test]
+fn a_resume_for_the_web_while_herdr_is_running_runs_in_the_foreground_of_a_herdr_pane() {
+    let agent = agent();
+    let w = world("herdr-pane", &agent);
+    let (run_id, store) = start_paused(&w);
+    let herdr = fake_herdr(&w.base);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", &run_id, "--yes", "--detach", "--in-herdr", "--repo", w.repo.root().to_str().unwrap()])
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", &w.path)
+        .env("HERDR_BIN_PATH", &herdr)
+        .env("HERDR_SOCKET_PATH", w.base.join("herdr.sock"))
+        .env("HERDR_WORKSPACE_ID", "w1")
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let resumed = stdout.lines().find_map(|line| line.strip_prefix("run: ")).unwrap_or_else(|| panic!("no run id in {stdout}")).to_string();
+    let calls = std::fs::read_to_string(w.base.join("herdr-calls.log")).unwrap_or_default();
+    assert!(calls.lines().next().is_some_and(|create| create.starts_with("tab create")), "{calls}");
+    let command = std::fs::read_to_string(w.base.join("herdr-command.txt")).unwrap();
+    let quoted = command.strip_prefix("exec sh -c ").unwrap_or_else(|| panic!("{command}"));
+    let command = String::from_utf8_lossy(&Command::new("sh").args(["-c", &format!("printf %s {quoted}")]).output().unwrap().stdout).into_owned();
+    assert!(command.contains("'--resume'") && command.contains("'--feature' 'COM-01'"), "{command}");
+    assert!(command.contains(&format!("'--run-id' '{resumed}'")), "the pane runs the resume the web was told of: {command}");
+    assert!(!command.contains("--detach") && !command.contains("--in-herdr"), "the pane runs it in the foreground: {command}");
+    assert_eq!(count_calls(&w, &["pr", "create"]), 0, "nothing runs detached");
+    assert_eq!(store.run_ids().unwrap(), vec![run_id], "the resume is the pane's to record");
 }

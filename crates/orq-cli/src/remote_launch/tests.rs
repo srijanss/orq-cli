@@ -157,7 +157,7 @@ fn finite_output_past_the_cap_on_both_streams_is_drained_and_the_run_id_survives
 }
 
 #[test]
-fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
+fn a_resume_runs_orq_run_resume_detached_in_herdr_and_its_refusal_is_the_reason() {
     let dir = scratch("resume");
     let repo = repo(&dir);
     let exe = dir.join("orq");
@@ -174,7 +174,8 @@ fn a_resume_runs_orq_run_resume_detached_and_its_refusal_is_the_reason() {
 
     assert_eq!(launcher.resume(&repo, "r-1").unwrap(), "run-77");
     let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
-    assert_eq!(calls.trim_end(), format!("run resume r-1 --yes --detach --repo {}", repo.display()));
+    // While Herdr is running the resumed run goes in a pane of its own, as a started one does.
+    assert_eq!(calls.trim_end(), format!("run resume r-1 --yes --detach --in-herdr --repo {}", repo.display()));
 
     // The command's own refusal is the reason, without the machine's paths.
     std::fs::write(dir.join("refuse"), "").unwrap();

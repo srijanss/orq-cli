@@ -4890,12 +4890,14 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     let mut yes = false;
     let mut no_ci_check = false;
     let mut detach = false;
+    let mut in_herdr = false;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
             Some("--detach") => detach = true,
+            Some("--in-herdr") => in_herdr = true,
             Some("--no-ci-check") => no_ci_check = true,
             Some("--repo") => match iter.next() {
                 Some(value) => repo = PathBuf::from(value),
@@ -5003,6 +5005,9 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     }
     if detach {
         forwarded.push("--detach".into());
+    }
+    if in_herdr {
+        forwarded.push("--in-herdr".into());
     }
     run(&forwarded)
 }

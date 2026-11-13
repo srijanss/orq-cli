@@ -156,7 +156,8 @@ impl RunLauncher for CliLauncher {
         if run.is_empty() || run.starts_with('-') {
             return Err(LaunchError::Refused("not a run id".to_string()));
         }
-        let args: Vec<std::ffi::OsString> = vec!["run".into(), "resume".into(), run.into(), "--yes".into(), "--detach".into(), "--repo".into(), repo.into()];
+        // While Herdr is running the resumed run goes in a pane of its own, as a started one does.
+        let args: Vec<std::ffi::OsString> = vec!["run".into(), "resume".into(), run.into(), "--yes".into(), "--detach".into(), "--in-herdr".into(), "--repo".into(), repo.into()];
         let (ok, out, err) = self.run(&args)?;
         if !ok {
             let reason = crate::launch_outcome(false, "", &err).unwrap_or_else(|reason| reason);
