@@ -3401,6 +3401,8 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
   };
   const send = async () => {
     setPhase("sending");
+    setNote("");
+    setConflict(false);
     let text = "The change could not be made.";
     try {
       const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, revision: draft.revision });

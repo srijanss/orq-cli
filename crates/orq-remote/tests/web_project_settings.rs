@@ -278,3 +278,21 @@ fn a_failed_save_shows_the_reason_and_keeps_the_draft_so_save_can_be_tried_again
     assert_eq!(body(&sent[1])["delivery"], "push");
     assert!(shown(last(&out)).iter().any(|t| t == "Push only"));
 }
+
+#[test]
+fn a_successful_retry_clears_the_earlier_failure() {
+    let failed = json!({"status": 422, "json": {"error": "That effort is not one this harness takes"}});
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), failed, ok, project_settings("review", 2)]);
+    let Some(out) = run(responses, steps) else { return };
+    let frame = last(&out);
+    assert!(!shown(frame).iter().any(|t| t == "That effort is not one this harness takes"), "the saved settings show no failure: {:?}", shown(frame));
+    assert_eq!(count(frame, "[data-project-settings-edit]"), 1);
+}
