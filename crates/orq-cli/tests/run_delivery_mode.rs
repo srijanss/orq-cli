@@ -392,3 +392,71 @@ fn a_merge_local_run_whose_gate_fails_after_catching_up_fails_with_main_left_alo
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
     assert!(gate_bases(&seen).len() >= 2, "the gate ran again after the catch-up");
 }
+
+/// Gives the run's gate-fix sessions `script` (sh, in the run's worktree) to run instead of doing nothing.
+fn fixer(w: &World, script: &str) {
+    executable(
+        &w.home.join("bin/claude"),
+        &format!("#!/bin/sh\ncase \"$*\" in *'local gate failed'*) {script}\nexit 0;; esac\nexec '{}' \"$@\"\n", w._agent.path().display()),
+    );
+}
+
+/// A merge-local run whose gate is green until it catches up with a local main that adds
+/// local.txt, and green again once a fix leaves fixed.txt in the worktree.
+fn red_after_catching_up(w: &World, tag: &str) -> String {
+    let local_main = commit_on_local_main(w, "local.txt", "local\n");
+    gate_that_records_its_base(w, tag, "test -e fixed.txt || test ! -e local.txt");
+    local_main
+}
+
+#[test]
+fn a_merge_local_run_whose_gate_is_repaired_after_catching_up_fast_forwards_main_to_the_repair() {
+    let w = world("merge-moved-fixed");
+    let local_main = red_after_catching_up(&w, "moved-fixed");
+    fixer(&w, "echo fixed > fixed.txt && git add fixed.txt && git -c user.name=Fixer -c user.email=fixer@example.invalid commit --quiet -m fix");
+
+    let out = run(&w, &["--delivery", "merge-local"]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let record = store(&w).load(&id).unwrap();
+    let head = rev(w.repo.root(), &format!("refs/heads/{}", record.branch));
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), head, "main was fast-forwarded to the repaired branch");
+    assert_eq!(rev(w.repo.root(), &format!("{head}~2")), local_main, "the run's work and its repair sit on the local main");
+    assert!(w.repo.root().join("fixed.txt").exists(), "the checkout has the repair");
+    assert_eq!(ending(&w, &id).as_deref(), Some("merged"));
+}
+
+#[test]
+fn a_merge_local_run_whose_gate_fails_for_an_unrelated_reason_after_catching_up_is_blocked_with_main_left_alone() {
+    let w = world("merge-moved-unrelated");
+    let local_main = red_after_catching_up(&w, "moved-unrelated");
+    fixer(&w, "echo 'local.txt breaks the gate on main already' > \"$ORQ_UNRELATED_FAILURE_FILE\"");
+
+    let out = run(&w, &["--delivery", "merge-local"]);
+
+    assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stderr).contains("unrelated to this run"), "the reason is given: {}", text(&out.stderr));
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let record = store(&w).load(&id).unwrap();
+    assert_eq!(ending(&w, &id).as_deref(), Some("blocked"));
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
+    assert!(record.worktree.exists(), "the run's worktree is kept");
+}
+
+#[test]
+fn a_merge_local_run_whose_repair_after_catching_up_is_not_committed_is_blocked_with_main_left_alone() {
+    let w = world("merge-moved-uncommitted");
+    let local_main = red_after_catching_up(&w, "moved-uncommitted");
+    fixer(&w, "echo fixed > fixed.txt");
+
+    let out = run(&w, &["--delivery", "merge-local"]);
+
+    assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stderr).contains("uncommitted changes"), "the reason is given: {}", text(&out.stderr));
+    let id = store(&w).run_ids().unwrap().remove(0);
+    let record = store(&w).load(&id).unwrap();
+    assert_eq!(ending(&w, &id).as_deref(), Some("blocked"));
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
+    assert!(record.worktree.join("fixed.txt").exists(), "the uncommitted repair is kept");
+}
