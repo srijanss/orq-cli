@@ -454,7 +454,10 @@ fn run(args: &[OsString]) -> ExitCode {
     if parsed.check {
         return match pipeline::check(&options) {
             Ok(()) => {
-                if let Some(warning) = target_ahead_warning(&project.root, remote, target) {
+                // Only a fresh run branches from the remote's target: a publish delivers the checked-out
+                // branch and a resume carries on the run's own.
+                let fresh = !parsed.publish && !parsed.resume;
+                if let Some(warning) = fresh.then(|| target_ahead_warning(&project.root, remote, target)).flatten() {
                     eprintln!("orq: warning: {}", printable(&warning));
                 }
                 println!("state: ready");
