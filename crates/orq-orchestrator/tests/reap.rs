@@ -51,6 +51,15 @@ struct Case {
     provider_fails: bool,
     /// The run was paused at a stage boundary instead of ending.
     paused: bool,
+    /// Installed packages in an ignored `web/node_modules`, and whether the lockfile is committed.
+    deps: Deps,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Deps {
+    None,
+    Locked,
+    Unlocked,
 }
 
 const GOOD: Case = Case {
@@ -63,6 +72,7 @@ const GOOD: Case = Case {
     detached_ahead: false,
     provider_fails: false,
     paused: false,
+    deps: Deps::None,
 };
 
 struct Planned {
@@ -87,7 +97,7 @@ fn scenario(tag: &str, case: Case) -> Planned {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
-    fs::write(repo.join(".git/info/exclude"), "*.log\n").unwrap();
+    fs::write(repo.join(".git/info/exclude"), "*.log\nnode_modules/\n").unwrap();
     let worktree = if case.inside_worktrees_dir {
         repo.join(".claude/worktrees/fix--COM-02")
     } else {
@@ -106,6 +116,13 @@ fn scenario(tag: &str, case: Case) -> Planned {
         ],
     );
     fs::write(worktree.join("mine.txt"), "mine\n").unwrap();
+    if case.deps != Deps::None {
+        fs::create_dir_all(worktree.join("web")).unwrap();
+        fs::write(worktree.join("web/package.json"), "{}\n").unwrap();
+        if case.deps == Deps::Locked {
+            fs::write(worktree.join("web/package-lock.json"), "{}\n").unwrap();
+        }
+    }
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
     let tip = git(&worktree, &["rev-parse", "HEAD"]);
@@ -117,6 +134,10 @@ fn scenario(tag: &str, case: Case) -> Planned {
     }
     if case.dirty {
         fs::write(worktree.join("scratch.txt"), "x\n").unwrap();
+    }
+    if case.deps != Deps::None {
+        fs::create_dir_all(worktree.join("web/node_modules/.bin")).unwrap();
+        fs::write(worktree.join("web/node_modules/.bin/esbuild"), "installed\n").unwrap();
     }
 
     let store = RunStore::new(&root.join("state"));
@@ -382,4 +403,41 @@ fn a_plan_gone_stale_removes_nothing() {
             "{tag}: the branch stays"
         );
     }
+}
+
+#[test]
+fn installed_node_modules_without_a_committed_lockfile_keep_the_run_and_the_reason_says_why() {
+    let planned = scenario(
+        "deps-unlocked",
+        Case {
+            deps: Deps::Unlocked,
+            ..GOOD
+        },
+    );
+    let ReapVerdict::Keep(reason) = &planned.verdict else {
+        panic!("a run with unlocked installed packages must be kept")
+    };
+    assert!(
+        reason.contains(
+            "web/node_modules/.bin/esbuild (web/node_modules is removed with the worktree only when \
+             web/package.json and a lockfile such as web/package-lock.json are committed; no lockfile is committed)"
+        ),
+        "{reason}"
+    );
+    assert!(planned.worktree.exists());
+}
+
+#[test]
+fn a_finished_run_holding_only_locked_installed_node_modules_is_reaped() {
+    let planned = scenario(
+        "deps-locked",
+        Case {
+            deps: Deps::Locked,
+            ..GOOD
+        },
+    );
+    assert_eq!(planned.verdict, ReapVerdict::Reap);
+    reap_run(&planned.repo, &planned.item).unwrap();
+    assert!(!planned.worktree.exists());
+    assert!(git(&planned.repo, &["branch", "--list", "fix--COM-02"]).is_empty());
 }

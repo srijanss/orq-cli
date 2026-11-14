@@ -477,3 +477,102 @@ fn discard_ahead_the_preview_names_the_commits_a_discard_would_delete_and_change
         assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_ok(), "{tag}");
     }
 }
+
+/// Ignores `patterns` in every worktree of `repo`, through the shared info/exclude.
+fn exclude(repo: &GitFixture, patterns: &str) {
+    let info = repo.root().join(".git").join("info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("exclude"), patterns).unwrap();
+}
+
+#[test]
+fn discard_ignored_a_hand_placed_ignored_file_keeps_the_worktree_and_branch() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("ignored-env", &repo);
+    exclude(&repo, ".env\n");
+    std::fs::write(worktree.join(".env"), "SECRET=1\n").unwrap();
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
+    assert_eq!(std::fs::read_to_string(worktree.join(".env")).unwrap(), "SECRET=1\n");
+    assert!(branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-1").is_err());
+}
+
+#[test]
+fn discard_ignored_the_kept_reason_names_the_hand_placed_ignored_file() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("ignored-env-reason", &repo);
+    exclude(&repo, ".env\n");
+    std::fs::write(worktree.join(".env"), "SECRET=1\n").unwrap();
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(outcome.kept_reason.as_deref(), Some("the worktree has uncommitted changes: .env"));
+}
+
+#[test]
+fn discard_race_a_worktree_git_would_not_remove_is_kept_with_a_reason() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("race-reason", &repo);
+
+    let outcome = discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
+        std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
+    })
+    .unwrap();
+
+    let reason = outcome.kept_reason.expect("a kept worktree says why");
+    assert!(reason.starts_with("git would not remove the worktree"), "{reason}");
+}
+
+#[test]
+fn discard_ignored_the_preview_keeps_the_branch_of_a_worktree_with_a_hand_placed_ignored_file() {
+    let repo = GitFixture::new();
+    let (worktree, _, store) = failed_run_ahead("preview-ignored", &repo, 1);
+    exclude(&repo, ".env\n");
+    std::fs::write(worktree.join(".env"), "SECRET=1\n").unwrap();
+
+    assert_eq!(discard_preview(&store, "run-1", repo.root()).unwrap(), None);
+}
+
+/// A worktree holding `web/package.json`, `web/package-lock.json` when `locked`, and an ignored,
+/// installed `web/node_modules`.
+fn install_node_modules(repo: &GitFixture, worktree: &Path, locked: bool) {
+    exclude(repo, "node_modules/\n");
+    std::fs::create_dir_all(worktree.join("web/node_modules/.bin")).unwrap();
+    std::fs::write(worktree.join("web/package.json"), "{}\n").unwrap();
+    if locked {
+        std::fs::write(worktree.join("web/package-lock.json"), "{}\n").unwrap();
+    }
+    git_in(worktree, &["add", "web"]);
+    git_in(worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "web"]);
+    std::fs::write(worktree.join("web/node_modules/.bin/esbuild"), "installed\n").unwrap();
+}
+
+#[test]
+fn discard_installed_a_worktree_holding_only_locked_node_modules_is_removed_with_its_branch() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("node-modules-locked", &repo);
+    install_node_modules(&repo, &worktree, true);
+
+    assert!(discard_preview(&store, "run-1", repo.root()).unwrap().is_some());
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!((outcome.kept_worktree, outcome.kept_reason), (None, None));
+    assert!(!worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+}
+
+#[test]
+fn discard_installed_node_modules_without_a_committed_lockfile_keep_the_worktree_and_say_why() {
+    let repo = GitFixture::new();
+    let (_, worktree, store) = paused_run("node-modules-unlocked", &repo);
+    install_node_modules(&repo, &worktree, false);
+
+    let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
+    let reason = outcome.kept_reason.unwrap();
+    assert!(reason.starts_with("the worktree has uncommitted changes: web/node_modules/.bin/esbuild (web/node_modules is removed"), "{reason}");
+    assert!(branch_exists(repo.root(), "orq-run-1"));
+}

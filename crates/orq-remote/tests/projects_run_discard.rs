@@ -143,3 +143,19 @@ fn a_worktree_kept_for_its_uncommitted_work_is_named_within_the_project_not_by_i
     assert!(note.contains("Uncommitted work: kept .claude/worktrees/r-dirty and its branch."), "{body}");
     assert!(!note.contains(alpha.to_str().unwrap()), "no path on this machine: {body}");
 }
+
+#[test]
+fn the_reply_for_a_kept_worktree_says_which_file_kept_it() {
+    let s = setup("run-discard-kept-reason");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-env", &["run.started", "run.failed"]);
+    std::fs::write(alpha.join(".git/info/exclude"), ".env\n").unwrap();
+    std::fs::write(alpha.join(".claude/worktrees/r-env/.env"), "SECRET=1\n").unwrap();
+
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/runs/r-env/discard");
+
+    assert_eq!(status, 202, "{body}");
+    let note = body["note"].as_str().unwrap();
+    assert!(note.contains("Uncommitted work: kept .claude/worktrees/r-env and its branch. Reason: the worktree has uncommitted changes: .env."), "{body}");
+    assert!(alpha.join(".claude/worktrees/r-env/.env").exists());
+}

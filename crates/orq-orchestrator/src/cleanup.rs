@@ -42,24 +42,8 @@ pub fn cleanup_worktree(
     }
     // Anything uncommitted is work that removal would lose: untracked files, and ignored
     // ones too, since `git worktree remove` deletes ignored files without --force.
-    match uncommitted_work(&record.worktree)? {
-        Some(UncommittedWork::Unreadable) => {
-            return keep(
-                store,
-                &record,
-                "the worktree state could not be read".to_string(),
-                true,
-            )
-        }
-        Some(UncommittedWork::Present(path)) => {
-            return keep(
-                store,
-                &record,
-                format!("the worktree has uncommitted changes: {path}"),
-                true,
-            )
-        }
-        None => {}
+    if let Some(work) = uncommitted_work(&record.worktree)? {
+        return keep(store, &record, work.reason(), true);
     }
     let common = git_raw(
         &record.worktree,
@@ -102,8 +86,24 @@ pub fn cleanup_worktree(
 
 pub(crate) enum UncommittedWork {
     Unreadable,
-    /// Something is uncommitted; this is the first path git listed for it.
-    Present(String),
+    /// Something is uncommitted: `path` is the first path git listed for it, and `hint` says, when it
+    /// can, what would have let it go with the worktree. Both are printable.
+    Present { path: String, hint: Option<String> },
+}
+
+impl UncommittedWork {
+    /// Why the worktree stays, for a person to read.
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            UncommittedWork::Unreadable => "the worktree state could not be read".to_string(),
+            UncommittedWork::Present { path, hint: None } => {
+                format!("the worktree has uncommitted changes: {path}")
+            }
+            UncommittedWork::Present { path, hint: Some(hint) } => {
+                format!("the worktree has uncommitted changes: {path} ({hint})")
+            }
+        }
+    }
 }
 
 /// Whether `worktree` holds anything uncommitted besides the ignored files orq wrote itself.
@@ -128,23 +128,61 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
     // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
     // Whether each directory holds a cache tag is looked up once: a build cache lists thousands of files.
     let mut tagged: HashMap<PathBuf, bool> = HashMap::new();
+    let mut installs: HashMap<(String, &'static str), Result<(), String>> = HashMap::new();
     let mut own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
             // A folder git lists whole (a repository nested in it) is exempt only below a tagged cache
             // directory: anywhere else it may hold commits that exist nowhere else.
             in_cache_dir(worktree, path, &mut tagged)
                 || (!path.ends_with('/')
-                    && (crate::orq_written::is_unchanged_orq_file(worktree, path)
+                    && (in_installed_deps(worktree, path, &mut installs)
+                        || crate::orq_written::is_unchanged_orq_file(worktree, path)
                         || is_tooling_state(path)
                         || is_tooling_folder(path)))
         })
     };
-    Ok(status
-        .stdout
-        .split('\0')
-        .find(|entry| !entry.is_empty() && !own(entry))
-        // An entry is "XY path": the two status letters, a space, then the path.
-        .map(|entry| UncommittedWork::Present(printable(entry.get(3..).unwrap_or(entry)))))
+    let Some(entry) = status.stdout.split('\0').find(|entry| !entry.is_empty() && !own(entry)) else {
+        return Ok(None);
+    };
+    // An entry is "XY path": the two status letters, a space, then the path.
+    let path = entry.get(3..).unwrap_or(entry);
+    let hint = if entry.starts_with("!! ") { ignored_hint(worktree, path, &installs)? } else { None };
+    Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) }))
+}
+
+/// What would have let the ignored `path` go with the worktree: what its install folder lacks, or,
+/// for a file in some other ignored folder, the cache tag. `None` for an ignored file in no ignored folder.
+fn ignored_hint(
+    worktree: &Path,
+    path: &str,
+    installs: &HashMap<(String, &'static str), Result<(), String>>,
+) -> Result<Option<String>, StoreError> {
+    let install = (!path.ends_with('/'))
+        .then(|| install_folder_of(path))
+        .flatten()
+        .and_then(|(project, folder)| installs.get(&(project.to_string(), folder.name)));
+    if let Some(Err(missing)) = install {
+        return Ok(Some(missing.clone()));
+    }
+    Ok(in_ignored_folder(worktree, path)?
+        .then(|| "an ignored folder holding a CACHEDIR.TAG is removed with the worktree".to_string()))
+}
+
+/// Whether one of the folders `path` lies in is itself ignored, so tagging it as a cache would let it go.
+fn in_ignored_folder(worktree: &Path, path: &str) -> Result<bool, StoreError> {
+    let folders: Vec<String> = Path::new(path.trim_end_matches('/'))
+        .ancestors()
+        .skip(1)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| format!("{}/", dir.to_string_lossy()))
+        .collect();
+    if folders.is_empty() {
+        return Ok(false);
+    }
+    let mut args = vec!["check-ignore", "--"];
+    args.extend(folders.iter().map(String::as_str));
+    // It succeeds when at least one of the folders is ignored.
+    Ok(git_raw(worktree, &args)?.success)
 }
 
 /// `name` with control characters (a newline, an escape sequence) written out as `\n`, `\u{1b}`, so a
@@ -174,6 +212,100 @@ fn is_tooling_folder(path: &str) -> bool {
         Some(".claude") => matches!(parts.next(), Some("agents" | "commands" | "settings.json")),
         _ => false,
     }
+}
+
+/// A folder a package manager installs dependencies into, rebuildable from its project folder's
+/// manifest and lockfile.
+struct InstallFolder {
+    name: &'static str,
+    /// The manifests, any one of which the project folder must have committed.
+    manifests: &'static [&'static str],
+    /// The lockfiles, any one of which the project folder must have committed.
+    lockfiles: &'static [&'static str],
+}
+
+const INSTALL_FOLDERS: &[InstallFolder] = &[
+    InstallFolder {
+        name: "node_modules",
+        manifests: &["package.json"],
+        lockfiles: &["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"],
+    },
+    InstallFolder {
+        name: ".venv",
+        manifests: &["pyproject.toml", "Pipfile"],
+        lockfiles: &["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock"],
+    },
+];
+
+/// The outermost install folder the file `path` lies in, with its project folder (the folder that
+/// holds it, `""` at the top of the worktree).
+fn install_folder_of(path: &str) -> Option<(&str, &'static InstallFolder)> {
+    let mut start = 0;
+    // The last component is the file itself, never a folder.
+    let (folders, _file) = path.rsplit_once('/')?;
+    for part in folders.split('/') {
+        if let Some(folder) = INSTALL_FOLDERS.iter().find(|f| f.name == part) {
+            return Some((path[..start].trim_end_matches('/'), folder));
+        }
+        start += part.len() + 1;
+    }
+    None
+}
+
+/// Whether the file `path` (relative to `worktree`) lies in an install folder whose project folder has
+/// a manifest and a lockfile committed at `HEAD`: the folder can be installed again from them. Each
+/// project folder is asked once: an install folder lists thousands of files.
+fn in_installed_deps(
+    worktree: &Path,
+    path: &str,
+    installs: &mut HashMap<(String, &'static str), Result<(), String>>,
+) -> bool {
+    let Some((project, folder)) = install_folder_of(path) else {
+        return false;
+    };
+    installs
+        .entry((project.to_string(), folder.name))
+        .or_insert_with(|| install_missing(worktree, project, folder))
+        .is_ok()
+}
+
+/// `Ok` when `project` has one of `folder`'s manifests and one of its lockfiles committed at `HEAD`;
+/// otherwise what is missing, as a hint for the kept reason.
+fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Result<(), String> {
+    let prefix = if project.is_empty() { String::new() } else { format!("{project}/") };
+    // The project folder's own entries only, not its subfolders'; the whole top level for the worktree's.
+    let mut args = vec!["ls-tree", "-z", "--full-tree", "HEAD"];
+    if !project.is_empty() {
+        args.extend(["--", prefix.as_str()]);
+    }
+    let committed: Vec<String> = match git_raw(worktree, &args) {
+        // Each entry is "mode type sha\tpath"; only a plain file counts.
+        Ok(out) if out.success => out
+            .stdout
+            .split('\0')
+            .filter_map(|entry| entry.split_once('\t'))
+            .filter(|(meta, _)| meta.split(' ').nth(1) == Some("blob"))
+            .filter_map(|(_, name)| name.strip_prefix(&prefix).map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let has = |names: &[&str]| names.iter().any(|n| committed.iter().any(|c| c == n));
+    if has(folder.manifests) && has(folder.lockfiles) {
+        return Ok(());
+    }
+    // A lockfile on disk but not committed is the one to name: committing it is all that is missing.
+    let on_disk = folder.lockfiles.iter().find(|lock| worktree.join(format!("{prefix}{lock}")).is_file());
+    let what = format!(
+        "{prefix}{} is removed with the worktree only when {prefix}{} and a lockfile such as {prefix}{} are committed",
+        folder.name,
+        folder.manifests[0],
+        on_disk.unwrap_or(&folder.lockfiles[0]),
+    );
+    Err(match on_disk {
+        _ if !has(folder.manifests) => format!("{what}; {prefix}{} is not committed", folder.manifests[0]),
+        Some(lock) => format!("{what}; {prefix}{lock} is not committed"),
+        None => format!("{what}; no lockfile is committed"),
+    })
 }
 
 /// The first line of the `CACHEDIR.TAG` that cargo and other tools put in a directory of rebuildable

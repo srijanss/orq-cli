@@ -147,14 +147,7 @@ fn judge(
 
 /// Anything uncommitted, ignored files included, is work that removal would lose.
 fn uncommitted_problem(worktree: &Path) -> Result<Option<String>, StoreError> {
-    use crate::cleanup::{uncommitted_work, UncommittedWork};
-    Ok(match uncommitted_work(worktree)? {
-        Some(UncommittedWork::Unreadable) => {
-            Some("the worktree state could not be read".to_string())
-        }
-        Some(UncommittedWork::Present(path)) => Some(format!("the worktree has uncommitted changes: {path}")),
-        None => None,
-    })
+    Ok(crate::cleanup::uncommitted_work(worktree)?.map(|work| work.reason()))
 }
 
 /// Why the worktree is not, verifiably, the checkout of `branch` at `tip` of this repository.

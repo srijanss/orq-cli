@@ -36,6 +36,10 @@ pub fn discard_and_reopen(root: &Path, run_id: &str, repo: &Path) -> Result<Disc
     if let Some(kept) = outcome.kept_worktree {
         note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&kept.display().to_string())));
         web_note.push_str(&format!(" Uncommitted work: kept {} and its branch.", printable(&within_project(&kept, repo))));
+        if let Some(reason) = outcome.kept_reason {
+            note.push_str(&format!(" Reason: {}.", printable(&reason)));
+            web_note.push_str(&format!(" Reason: {}.", printable(&paths_within_project(&reason, repo))));
+        }
     }
     if let Some(deleted) = outcome.deleted_branch {
         if deleted.commits_ahead != Some(0) {

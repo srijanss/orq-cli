@@ -674,3 +674,176 @@ fn the_kept_reason_shows_control_characters_in_a_file_name_escaped_not_raw() {
     assert!(!reason.contains('\n') && !reason.contains('\x1b'), "{reason:?}");
     assert!(reason.contains("forged: line"), "{reason:?}");
 }
+
+/// Writes and commits each of `files` (relative to the worktree) with a placeholder body.
+fn commit_files(w: &World, files: &[&str]) {
+    for file in files {
+        write(w, file, "{}\n");
+    }
+    git(&w.worktree, &["add", "--", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "manifests"]);
+}
+
+/// Installed dependency files a package manager wrote under `folder`, nested ones included.
+fn install(w: &World, folder: &str) {
+    for file in [".bin/esbuild", "esbuild/package.json", "a/node_modules/b/index.js"] {
+        write(w, &format!("{folder}/{file}"), "installed\n");
+    }
+}
+
+#[test]
+fn installed_node_modules_with_a_committed_manifest_and_lockfile_are_removed_with_the_worktree() {
+    let w = world("node-modules");
+    ignore(&w, "node_modules/\n");
+    commit_files(&w, &["web/package.json", "web/package-lock.json"]);
+    install(&w, "web/node_modules");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists());
+}
+
+#[test]
+fn installed_node_modules_whose_lockfile_is_not_committed_keep_the_worktree_and_the_reason_says_so() {
+    let w = world("lock-uncommitted");
+    // The project ignores its lockfile, so it is on disk but never committed.
+    ignore(&w, "node_modules/\npackage-lock.json\n");
+    commit_files(&w, &["web/package.json"]);
+    write(&w, "web/package-lock.json", "{}\n");
+    install(&w, "web/node_modules");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.starts_with("the worktree has uncommitted changes: "), "{reason}");
+    assert!(
+        reason.contains(
+            "(web/node_modules is removed with the worktree only when web/package.json and a lockfile such as \
+             web/package-lock.json are committed; web/package-lock.json is not committed)"
+        ),
+        "{reason}"
+    );
+    assert!(w.worktree.join("web/node_modules/.bin/esbuild").exists());
+}
+
+#[test]
+fn a_file_in_an_ignored_build_folder_keeps_the_worktree_and_the_reason_points_at_the_cache_tag() {
+    let w = world("dist");
+    ignore(&w, "dist/\n");
+    write(&w, "web-src/dist/app.js", "built\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert_eq!(
+        reason,
+        "the worktree has uncommitted changes: web-src/dist/app.js \
+         (an ignored folder holding a CACHEDIR.TAG is removed with the worktree)"
+    );
+}
+
+#[test]
+fn an_ignored_file_outside_any_ignored_folder_and_an_untracked_file_keep_todays_reason() {
+    for (tag, file) in [("lone-ignored", "local.cfg"), ("plain-untracked", "src/new.rs")] {
+        let w = world(tag);
+        ignore(&w, "*.cfg\n");
+        write(&w, file, "mine\n");
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        let CleanupOutcome::Kept { reason } = outcome else { panic!("{tag}: {outcome:?}") };
+        assert_eq!(reason, format!("the worktree has uncommitted changes: {file}"), "{tag}");
+    }
+}
+
+#[test]
+fn installed_node_modules_with_no_committed_manifest_keep_the_worktree_and_the_reason_names_the_manifest() {
+    let w = world("no-manifest");
+    ignore(&w, "node_modules/\n");
+    commit_files(&w, &["web/package-lock.json"]);
+    install(&w, "web/node_modules");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.contains("web/node_modules/"), "{reason}");
+    assert!(reason.ends_with("; web/package.json is not committed)"), "{reason}");
+}
+
+#[test]
+fn installed_node_modules_with_no_lockfile_at_all_keep_the_worktree_and_the_reason_says_none_is_committed() {
+    let w = world("no-lockfile");
+    ignore(&w, "node_modules/\n");
+    commit_files(&w, &["package.json"]);
+    install(&w, "node_modules");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(
+        reason.ends_with(
+            "(node_modules is removed with the worktree only when package.json and a lockfile such as \
+             package-lock.json are committed; no lockfile is committed)"
+        ),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_python_venv_with_a_committed_pyproject_and_lockfile_is_removed_with_the_worktree() {
+    let w = world("venv");
+    ignore(&w, ".venv/\n");
+    commit_files(&w, &["pyproject.toml", "uv.lock"]);
+    write(&w, ".venv/lib/python3.12/site-packages/pkg/__init__.py", "installed\n");
+    write(&w, ".venv/bin/python", "installed\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists());
+}
+
+#[test]
+fn a_venv_folder_without_the_dot_keeps_the_worktree_even_with_a_committed_lockfile() {
+    let w = world("venv-no-dot");
+    ignore(&w, "venv/\n");
+    commit_files(&w, &["pyproject.toml", "uv.lock"]);
+    write(&w, "venv/lib/notes.py", "mine\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.contains("venv/lib/notes.py"), "{reason}");
+}
+
+#[test]
+fn a_nested_repository_inside_passing_node_modules_keeps_the_worktree_and_is_named() {
+    let w = world("node-modules-nested-repo");
+    ignore(&w, "node_modules/\n");
+    commit_files(&w, &["web/package.json", "web/package-lock.json"]);
+    install(&w, "web/node_modules");
+    let holder = w.worktree.join("web/node_modules/linked");
+    fs::create_dir_all(&holder).unwrap();
+    git(&holder, &["init", "-q"]);
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.contains("web/node_modules/linked/"), "{reason}");
+    assert!(holder.join(".git").exists());
+}
+
+#[test]
+fn passing_node_modules_beside_another_ignored_file_keep_the_worktree_naming_that_file() {
+    let w = world("node-modules-and-local");
+    ignore(&w, "node_modules/\nlocal.cfg\n");
+    commit_files(&w, &["web/package.json", "web/package-lock.json"]);
+    install(&w, "web/node_modules");
+    write(&w, "local.cfg", "SECRET=1\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert_eq!(reason, "the worktree has uncommitted changes: local.cfg");
+}

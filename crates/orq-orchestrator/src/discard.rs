@@ -15,6 +15,8 @@ pub struct DiscardOutcome {
     pub features: Vec<String>,
     /// The worktree left in place, with its branch, because it held uncommitted or untracked work.
     pub kept_worktree: Option<PathBuf>,
+    /// Why the worktree was kept, naming the first file that holds work, when it was.
+    pub kept_reason: Option<String>,
     /// The branch deleted with the worktree, and the commits that went with it.
     pub deleted_branch: Option<DeletedBranch>,
     /// The run's work was on its target branch (see [`crate::work_is_on_target`]), so its features
@@ -78,6 +80,7 @@ pub fn discard_run_before_remove(
     // Every check happens before anything is removed.
     let has_worktree = record.worktree.exists();
     let mut kept_worktree = None;
+    let mut kept_reason = None;
     if has_worktree {
         let same_as_repo = match (record.worktree.canonicalize(), repo.canonicalize()) {
             (Ok(worktree), Ok(repo)) => worktree == repo,
@@ -100,7 +103,14 @@ pub fn discard_run_before_remove(
         }
         // Uncommitted or untracked work is never deleted: the worktree and its branch stay.
         // The flags override any configuration that would hide new files or submodule changes.
-        if is_dirty(&record.worktree).map_err(|reason| format!("cannot tell whether the worktree of {run_id} has uncommitted work: {reason}"))? {
+        let dirty = is_dirty(&record.worktree).map_err(|reason| format!("cannot tell whether the worktree of {run_id} has uncommitted work: {reason}"))?;
+        // Ignored files are work too, unless they are installed packages a committed lockfile
+        // brings back or an ignored cache: an unforced `worktree remove` would delete them.
+        kept_reason = match crate::cleanup::uncommitted_work(&record.worktree).map_err(|e| e.to_string())? {
+            Some(work) => Some(work.reason()),
+            None => dirty.then(|| "the worktree has uncommitted changes".to_string()),
+        };
+        if kept_reason.is_some() {
             kept_worktree = Some(record.worktree.clone());
         }
     }
@@ -139,6 +149,7 @@ pub fn discard_run_before_remove(
         if !removed.success {
             if record.worktree.exists() {
                 kept_worktree = Some(record.worktree.clone());
+                kept_reason = Some(format!("git would not remove the worktree: {}", removed.stderr.trim()));
             } else {
                 return Err(format!("git would not remove the worktree: {}", removed.stderr.trim()));
             }
@@ -185,14 +196,17 @@ pub fn discard_run_before_remove(
         }
     }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
-    Ok(DiscardOutcome { features: members, kept_worktree, deleted_branch, merged })
+    Ok(DiscardOutcome { features: members, kept_worktree, kept_reason, deleted_branch, merged })
 }
 
 /// The branch a discard of `run_id` would delete now, with its commits, without changing anything:
 /// `None` when the branch would stay, because the worktree is gone or holds uncommitted work.
 pub fn discard_preview(store: &RunStore, run_id: &str, repo: &Path) -> Result<Option<DeletedBranch>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
-    if !record.worktree.exists() || is_dirty(&record.worktree)? {
+    if !record.worktree.exists()
+        || is_dirty(&record.worktree)?
+        || crate::cleanup::uncommitted_work(&record.worktree).map_err(|e| e.to_string())?.is_some()
+    {
         return Ok(None);
     }
     branch_commits(repo, &record).map(Some)
