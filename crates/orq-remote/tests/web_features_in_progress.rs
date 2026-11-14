@@ -98,6 +98,17 @@ fn the_every_project_page_shows_no_pill_when_no_ledger_could_be_read() {
 }
 
 #[test]
+fn an_empty_ledger_beside_one_that_failed_still_says_zero() {
+    for unreadable in [failed(), malformed()] {
+        let Some(out) = page("/features", json!([projects(), ledger(&[]), unreadable]), json!([{"submit": TOKEN}])) else { return };
+        let frame = &out["frames"][1];
+        assert!(texts(frame).iter().any(|t| t == "One project could not be read."), "{:?}", texts(frame));
+        assert_eq!(pills(frame), 1, "one ledger was read, and it has nothing in progress: {out}");
+        assert!(texts(frame).iter().any(|t| t == "0 in progress"), "{:?}", texts(frame));
+    }
+}
+
+#[test]
 fn a_ledger_with_nothing_in_progress_says_zero_and_a_ledger_still_loading_shows_no_pill() {
     let held = json!({"hold": "json", "status": 200, "json": {"features": [feature("a-done", "completed"), feature("b-next", "pending")]}});
     let Some(out) = page("/projects/alpha/features", json!([held, projects()]), json!([{"submit": TOKEN}, {"release": 0}])) else { return };

@@ -2511,7 +2511,7 @@ function tagged(rows, projectId, projectName) {
 // Reads one list from every readable project side by side; toRows turns a project's parsed reply
 // into rows, and a project that cannot be read is counted rather than shown.
 function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, toRows }) {
-  const [state, setState] = useState({ loading: true, rows: [], unread: 0 });
+  const [state, setState] = useState({ loading: true, rows: [], read: 0, unread: 0 });
   const readable = projects.filter((project) => project.available !== false);
   const key = readable.map((project) => project.id).join("\n");
   useEffect(() => {
@@ -2534,7 +2534,8 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
         onSignedOut();
         return;
       }
-      setState({ loading: false, rows: results.filter((rows) => rows !== null).flat(), unread: results.filter((rows) => rows === null).length });
+      const read = results.filter((rows) => rows !== null);
+      setState({ loading: false, rows: read.flat(), read: read.length, unread: results.length - read.length });
     })();
     return () => {
       current = false;
@@ -2551,10 +2552,10 @@ function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh, onRows 
     return tagged(parsed.rows, project.id, project.name).map((feature) => ({ ...feature, control }));
   };
   const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows });
-  // No count when not one project's ledger was read: "0 in progress" would claim what nobody knows.
+  // No count when every project's ledger failed: "0 in progress" would claim what nobody knows.
   useEffect(() => {
-    if (!state.loading) onRows(state.rows.length === 0 && state.unread > 0 ? null : state.rows);
-  }, [state.loading, state.rows, state.unread]);
+    if (!state.loading) onRows(state.read === 0 && state.unread > 0 ? null : state.rows);
+  }, [state.loading, state.rows, state.read, state.unread]);
   if (state.loading) {
     return (
       <div className="skeleton" role="status" aria-busy="true">
