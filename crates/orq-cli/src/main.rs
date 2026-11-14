@@ -324,6 +324,21 @@ fn resumable_features(project: &orq_git::Project, members: &[String]) -> Result<
 /// `orq run --repo <path> --feature <id> --remote <name> --target <branch>`: check that the
 /// feature may start and which models it would use, before anything is created.
 fn run(args: &[OsString]) -> ExitCode {
+    run_as(args, None)
+}
+
+/// A refusal the run makes before it starts anything, worded as a refusal to resume `resuming` when
+/// the run continues one, with the same exit code either way.
+fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
+    match resuming {
+        Some(run_id) => eprintln!("orq: cannot resume {}: {message}", printable(run_id)),
+        None => eprintln!("orq: {message}"),
+    }
+    ExitCode::from(code)
+}
+
+/// [`run`], for the run that resumes `resuming` when given.
+fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     let Some(parsed) = parse_run_args(args) else { return usage_error() };
     // A group of one is the feature itself; several features wait for grouped runs.
     let group = match (parsed.group.as_deref(), parsed.feature.as_deref()) {
@@ -369,10 +384,7 @@ fn run(args: &[OsString]) -> ExitCode {
             |free| orq_features::order_resume_group(&ledger, ids, free),
         ) {
             Ok(ordered) => ordered.into_iter().map(|entry| entry.feature_name.clone()).collect(),
-            Err(err) => {
-                eprintln!("orq: the group may not start a run: {}", printable(&err.to_string()));
-                return ExitCode::from(EXIT_INELIGIBLE);
-            }
+            Err(err) => return refuse(resuming, &format!("the group may not start a run: {}", printable(&err.to_string())), EXIT_INELIGIBLE),
         },
         None => {
             let eligible = match &free {
@@ -380,8 +392,7 @@ fn run(args: &[OsString]) -> ExitCode {
                 None => orq_features::check_run_eligibility(&ledger, feature),
             };
             if let Err(err) = eligible {
-                eprintln!("orq: feature {} may not start a run: {}", printable(feature), printable(&err.to_string()));
-                return ExitCode::from(EXIT_INELIGIBLE);
+                return refuse(resuming, &format!("feature {} may not start a run: {}", printable(feature), printable(&err.to_string())), EXIT_INELIGIBLE);
             }
             vec![feature.to_string()]
         }
@@ -403,10 +414,7 @@ fn run(args: &[OsString]) -> ExitCode {
     };
     let models = match orq_features::resolve_project_run_models(&profiles, &reviewers, &selection, &project_agents) {
         Ok(models) => models,
-        Err(err) => {
-            eprintln!("orq: {}", printable(&err.to_string()));
-            return ExitCode::from(EXIT_MODEL_SELECTION);
-        }
+        Err(err) => return refuse(resuming, &printable(&err.to_string()), EXIT_MODEL_SELECTION),
     };
     // Checked before a detached launch spawns anything, so a bad settings file is an error the
     // caller sees, not a runner that exits unseen.
@@ -434,26 +442,10 @@ fn run(args: &[OsString]) -> ExitCode {
         match pipeline::active_group_run(&project, &features) {
             Ok(None) => {}
             Ok(Some((busy, active))) => {
-                eprintln!("orq: feature {} already has an active run: {}", printable(&busy), printable(&active));
-                return ExitCode::from(EXIT_BUSY);
+                return refuse(resuming, &format!("feature {} already has an active run: {}", printable(&busy), printable(&active)), EXIT_BUSY);
             }
             Err(message) => return fail(message),
         }
-    }
-    if parsed.detach {
-        let forwarded = without_detach_flag(args);
-        if parsed.in_herdr && herdr_running(&|name| std::env::var(name).ok()) {
-            return launch_in_herdr(&project.root, &forwarded);
-        }
-        return match pipeline::launch_detached(&forwarded) {
-            Ok((run_id, log)) => {
-                println!("run: {run_id}");
-                println!("log: {}", log.display());
-                println!("state: launched");
-                ExitCode::SUCCESS
-            }
-            Err(message) => fail(message),
-        };
     }
     let options = pipeline::Options {
         project: &project,
@@ -483,6 +475,31 @@ fn run(args: &[OsString]) -> ExitCode {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
         },
     };
+    // A resume the run would refuse is refused here, worded as a resume, before anything is launched.
+    if parsed.detach && resuming.is_some() {
+        match pipeline::check(&options) {
+            Ok(()) => {}
+            Err(pipeline::StartError::Busy(active)) => {
+                return refuse(resuming, &format!("feature {} already has an active run: {}", printable(feature), printable(&active)), EXIT_BUSY);
+            }
+            Err(pipeline::StartError::Other(message)) => return refuse(resuming, &printable(&message), 1),
+        }
+    }
+    if parsed.detach {
+        let forwarded = without_detach_flag(args);
+        if parsed.in_herdr && herdr_running(&|name| std::env::var(name).ok()) {
+            return launch_in_herdr(&project.root, &forwarded);
+        }
+        return match pipeline::launch_detached(&forwarded) {
+            Ok((run_id, log)) => {
+                println!("run: {run_id}");
+                println!("log: {}", log.display());
+                println!("state: launched");
+                ExitCode::SUCCESS
+            }
+            Err(message) => fail(message),
+        };
+    }
     // Every refusal the run itself makes before it starts, and nothing started.
     if parsed.check {
         return match pipeline::check(&options) {
@@ -5034,5 +5051,5 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     if in_herdr {
         forwarded.push("--in-herdr".into());
     }
-    run(&forwarded)
+    run_as(&forwarded, Some(&run_id))
 }

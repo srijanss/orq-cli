@@ -290,3 +290,98 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
     assert!(pushed.contains("feature.txt"), "the stopped run's work was continued: {pushed}");
     assert!(!pushed.contains("again.txt"), "the agent was not started again: {pushed}");
 }
+
+fn only_run_id(w: &World) -> String {
+    let runs = w.state.join("orq/runs");
+    std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned()
+}
+
+fn resume_with(w: &World, agent: &FakeAgent, run_id: &str, extra: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", run_id, "--yes", "--no-ci-check", "--repo"])
+        .arg(w.repo.root())
+        .args(extra)
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", path_with(agent, &github(), &w.tag))
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn resuming_a_run_whose_feature_may_not_start_is_refused_as_a_resume_with_the_ineligible_exit_code() {
+    let w = world("ineligible-resume");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "abandoned")]);
+
+    let output = resume_with(&w, &agent, &run_id, &[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(20), "{stderr}");
+    assert!(stderr.contains(&format!("orq: cannot resume {run_id}: feature COM-01 may not start a run: ")), "{stderr}");
+}
+
+/// Takes `feature`'s lock for `holder`, as a live run of the same project would hold it.
+fn hold_feature(w: &World, run_id: &str, feature: &str, holder: &str) {
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(w.state.join("orq/runs").join(run_id).join("run.json")).unwrap()).unwrap();
+    let locks = w.state.join("orq/locks").join(record["project_id"].as_str().unwrap());
+    std::fs::create_dir_all(&locks).unwrap();
+    std::fs::write(locks.join(format!("{feature}.lock")), holder).unwrap();
+}
+
+#[test]
+fn resuming_a_run_whose_feature_has_an_active_run_is_refused_as_a_resume_with_the_busy_exit_code() {
+    let w = world("busy-resume");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    hold_feature(&w, &run_id, "COM-01", "run-active");
+
+    let output = resume_with(&w, &agent, &run_id, &["--detach"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(22), "{stderr}");
+    assert!(stderr.contains(&format!("orq: cannot resume {run_id}: feature COM-01 already has an active run: run-active")), "{stderr}");
+}
+
+#[test]
+fn a_detached_resume_the_run_would_refuse_is_refused_as_a_resume_before_anything_is_launched() {
+    let w = world("check-resume");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    git(w.repo.root(), &["remote", "remove", "origin"]);
+
+    let output = resume_with(&w, &agent, &run_id, &["--detach"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains(&format!("orq: cannot resume {run_id}: ")), "{stderr}");
+    assert!(!stdout.contains("state: launched"), "{stdout}");
+}
+
+#[test]
+fn resuming_a_run_whose_models_cannot_be_selected_is_refused_as_a_resume_with_the_model_selection_exit_code() {
+    let w = world("models-resume");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    std::fs::write(w.config.join("orq/config.toml"), "[models.odd]\nharness = \"nope\"\nmodel = \"m1\"\n\n[roles]\nimplementer = \"odd\"\n").unwrap();
+
+    let output = resume_with(&w, &agent, &run_id, &["--detach"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(21), "{stderr}");
+    assert!(stderr.contains(&format!("orq: cannot resume {run_id}: ")), "{stderr}");
+    assert!(stderr.contains("nope"), "{stderr}");
+}
