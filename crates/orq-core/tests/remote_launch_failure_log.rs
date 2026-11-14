@@ -56,7 +56,8 @@ fn run_child(stderr: std::process::Stdio) -> std::process::Output {
 }
 
 /// The log is the operator's diagnostic, never a reason to drop the request: a log that cannot be written
-/// still leaves the start and the resume answered.
+/// still leaves the start and the resume answered. `/dev/full`, whose writes always fail, is Linux's.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_log_that_cannot_be_written_does_not_stop_the_failure_being_answered() {
     let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
