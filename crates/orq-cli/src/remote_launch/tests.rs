@@ -290,3 +290,21 @@ fn the_default_fallback_is_the_first_executable_orq_on_the_path() {
     assert_eq!(super::orq_on(Some(std::env::join_paths([&empty]).unwrap())), None);
     assert_eq!(super::orq_on(None), None);
 }
+
+/// An `orq` whose execute bits are only for others (mode 0o011, owned by this user) cannot be run by
+/// the server, so it does not hide a runnable one later on the PATH. Root may run it, so root skips this.
+#[test]
+fn an_orq_the_server_may_not_run_does_not_hide_one_later_on_the_path() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let dir = scratch("denied");
+    let (denied, real) = (dir.join("denied"), dir.join("real"));
+    for folder in [&denied, &real] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let locked = fake_orq(&denied);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o011)).unwrap();
+    let found = fake_orq(&real);
+    assert_eq!(super::orq_on(Some(std::env::join_paths([&denied, &real]).unwrap())), Some(found));
+}

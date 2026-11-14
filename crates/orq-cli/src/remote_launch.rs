@@ -45,11 +45,16 @@ fn without_paths(text: &str) -> String {
     text.split_whitespace().map(|word| if word.contains('/') { "<path>" } else { word }).collect::<Vec<_>>().join(" ")
 }
 
-/// The first executable `orq` in the folders of `path`, a PATH value; looked up at each launch, so an
-/// `orq` installed since the server started is the one found.
+/// The first `orq` in the folders of `path`, a PATH value, that this process may run; looked up at each
+/// launch, so an `orq` installed since the server started is the one found.
 pub(crate) fn orq_on(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(&path?).map(|dir| dir.join("orq")).find(|candidate| candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+    std::env::split_paths(&path?).map(|dir| dir.join("orq")).find(|candidate| candidate.is_file() && may_execute(candidate))
+}
+
+/// Whether this process may execute `file`, as the kernel decides it for this user, not by its mode bits alone.
+fn may_execute(file: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(file.as_os_str().as_bytes()).is_ok_and(|file| unsafe { libc::access(file.as_ptr(), libc::X_OK) } == 0)
 }
 
 /// Ends the call and everything it started: the call leads a process group of its own.
