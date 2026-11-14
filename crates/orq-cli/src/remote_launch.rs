@@ -13,10 +13,14 @@ const DEADLINE: Duration = Duration::from_secs(60);
 /// How much of a call's output is kept; the rest is read and dropped.
 const OUTPUT_CAP: usize = 64 * 1024;
 
+/// Where to find an `orq` when the server's own program is gone.
+type Fallback = Box<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 pub struct CliLauncher {
     exe: PathBuf,
     user_config: Option<PathBuf>,
     deadline: Duration,
+    fallback: Fallback,
 }
 
 /// Reads `source` to its end, keeping only the first `OUTPUT_CAP` bytes.
@@ -41,6 +45,13 @@ fn without_paths(text: &str) -> String {
     text.split_whitespace().map(|word| if word.contains('/') { "<path>" } else { word }).collect::<Vec<_>>().join(" ")
 }
 
+/// The first executable `orq` in the folders of `path`, a PATH value; looked up at each launch, so an
+/// `orq` installed since the server started is the one found.
+pub(crate) fn orq_on(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(&path?).map(|dir| dir.join("orq")).find(|candidate| candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+}
+
 /// Ends the call and everything it started: the call leads a process group of its own.
 fn stop(child: &mut std::process::Child) {
     if let Ok(group) = libc::pid_t::try_from(child.id()) {
@@ -52,7 +63,23 @@ fn stop(child: &mut std::process::Child) {
 
 impl CliLauncher {
     pub fn new(exe: PathBuf, user_config: Option<PathBuf>) -> Self {
-        CliLauncher { exe, user_config, deadline: DEADLINE }
+        CliLauncher { exe, user_config, deadline: DEADLINE, fallback: Box::new(|| orq_on(std::env::var_os("PATH"))) }
+    }
+
+    /// The `orq` to run instead when `exe` no longer exists, as after `cargo clean` deleted the
+    /// binary the server was started from. The server keeps the default: the `orq` on PATH.
+    #[cfg(test)]
+    pub fn with_fallback(mut self, fallback: impl Fn() -> Option<PathBuf> + Send + Sync + 'static) -> Self {
+        self.fallback = Box::new(fallback);
+        self
+    }
+
+    /// The program to run: the server's own while it is there, else the fallback.
+    fn program(&self) -> PathBuf {
+        if self.exe.is_file() {
+            return self.exe.clone();
+        }
+        (self.fallback)().unwrap_or_else(|| self.exe.clone())
     }
 
     #[cfg(test)]
@@ -64,7 +91,7 @@ impl CliLauncher {
     /// Runs the program for at most the deadline; one that is still going then is killed.
     fn run(&self, args: &[std::ffi::OsString]) -> Result<(bool, String, String), LaunchError> {
         let failed = |what: &str| LaunchError::Failed(format!("cannot start orq run: {what}"));
-        let mut child = std::process::Command::new(&self.exe)
+        let mut child = std::process::Command::new(self.program())
             .args(args)
             .stdin(std::process::Stdio::null())
             .process_group(0)

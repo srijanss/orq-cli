@@ -73,8 +73,8 @@ fn a_run_is_checked_then_started_detached_leaving_the_default_models_to_the_run(
     }
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 3);
 
-    // A program that is not there is a failure, not a refusal.
-    let missing = CliLauncher::new(dir.join("no-such-orq"), Some(config));
+    // A program that is not there, with no other orq to run, is a failure, not a refusal.
+    let missing = CliLauncher::new(dir.join("no-such-orq"), Some(config)).with_fallback(|| None);
     assert!(matches!(missing.start(&repo, "ready"), Err(LaunchError::Failed(_))));
 }
 
@@ -193,7 +193,7 @@ fn a_resume_runs_orq_run_resume_detached_in_herdr_and_its_refusal_is_the_reason(
     // A resume that names no run, or a program that is not there, is a failure.
     std::fs::write(dir.join("no-id"), "").unwrap();
     assert!(matches!(launcher.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
-    let missing = CliLauncher::new(dir.join("no-such-orq"), None);
+    let missing = CliLauncher::new(dir.join("no-such-orq"), None).with_fallback(|| None);
     assert!(matches!(missing.resume(&repo, "r-1"), Err(LaunchError::Failed(_))));
     // A run id that could be read as an option never reaches the command.
     assert!(matches!(launcher.resume(&repo, "--yes"), Err(LaunchError::Refused(_))));
@@ -261,4 +261,32 @@ fn a_start_is_warned_about_local_target_commits_its_remote_lacks() {
 
     git(&["commit", "-q", "--allow-empty", "-m", "local"]);
     assert_eq!(launcher.start_warning(&repo).as_deref(), Some("main has 1 commit origin/main does not; the run starts from main with them, and its review carries them too"));
+}
+
+/// A server whose own program was deleted since it started (cargo clean) launches the orq it finds instead.
+#[test]
+fn a_launcher_whose_program_is_gone_starts_the_run_with_the_fallback_orq() {
+    let dir = scratch("gone");
+    let repo = repo(&dir);
+    let fallback = fake_orq(&dir);
+    let launcher = CliLauncher::new(dir.join("deleted-orq"), Some(dir.join("config.toml"))).with_fallback(move || Some(fallback.clone()));
+    assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
+    assert_eq!(launcher.resume(&repo, "r-1").unwrap(), "run-42");
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 3);
+}
+
+/// The fallback the server uses: the first executable `orq` on a PATH, never a directory or a plain file.
+#[test]
+fn the_default_fallback_is_the_first_executable_orq_on_the_path() {
+    let dir = scratch("path");
+    let (empty, plain, real) = (dir.join("empty"), dir.join("plain"), dir.join("real"));
+    for folder in [&empty, &plain, &real] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(plain.join("orq"), "not runnable").unwrap();
+    let found = fake_orq(&real);
+    let path = std::env::join_paths([&empty, &plain, &real]).unwrap();
+    assert_eq!(super::orq_on(Some(path)), Some(found));
+    assert_eq!(super::orq_on(Some(std::env::join_paths([&empty]).unwrap())), None);
+    assert_eq!(super::orq_on(None), None);
 }
