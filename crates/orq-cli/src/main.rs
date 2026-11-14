@@ -475,8 +475,9 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
         },
     };
-    // A resume the run would refuse is refused here, worded as a resume, before anything is launched.
-    if parsed.detach && resuming.is_some() {
+    // A resume the run would refuse is refused here, worded as a resume, before anything is launched
+    // or started.
+    if resuming.is_some() {
         match pipeline::check(&options) {
             Ok(()) => {}
             Err(pipeline::StartError::Busy(active)) => {

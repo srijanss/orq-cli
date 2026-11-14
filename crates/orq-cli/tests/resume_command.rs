@@ -370,6 +370,22 @@ fn a_detached_resume_the_run_would_refuse_is_refused_as_a_resume_before_anything
 }
 
 #[test]
+fn a_foreground_resume_the_run_would_refuse_is_refused_as_a_resume() {
+    let w = world("check-foreground-resume");
+    set_gate(&w, "false");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    git(w.repo.root(), &["remote", "remove", "origin"]);
+
+    let output = resume_with(&w, &agent, &run_id, &[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains(&format!("orq: cannot resume {run_id}: ")), "{stderr}");
+}
+
+#[test]
 fn resuming_a_run_whose_models_cannot_be_selected_is_refused_as_a_resume_with_the_model_selection_exit_code() {
     let w = world("models-resume");
     set_gate(&w, "false");
