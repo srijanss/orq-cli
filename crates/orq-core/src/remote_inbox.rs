@@ -740,7 +740,7 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         // The reason can name a path on this machine, so the caller is only told it failed; the server's
         // own log, which only the operator reads, says why.
         Some(Err(why)) => {
-            eprintln!("{}", launch_failure_line("run.start", id, feature, &why));
+            log_line(&launch_failure_line("run.start", id, feature, &why));
             audit(Outcome::Refused, None, Some("the run could not be started"));
             error(500, "the run could not be started")
         }
@@ -972,7 +972,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         // The reason can name a path on this machine, so the caller is only told it failed; the server's
         // own log, which only the operator reads, says why.
         Some(Err(why)) => {
-            eprintln!("{}", launch_failure_line(action, id, run, &why));
+            log_line(&launch_failure_line(action, id, run, &why));
             audit(Outcome::Refused, Some(run), Some(failed));
             error(500, failed)
         }
@@ -997,6 +997,12 @@ pub fn launch_failure_line(action: &str, project: &str, target: &str, why: &str)
         kept
     };
     format!("orq-remote: {action} {} {} failed: {}", shown(project, 100), shown(target, 100), shown(why, LOGGED_REASON_CAP))
+}
+
+/// Writes `line` to the server's log, stderr, at best: a log that cannot be written never stops the request.
+fn log_line(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
 
 /// Whether `run` can only be a run id, never a path.
