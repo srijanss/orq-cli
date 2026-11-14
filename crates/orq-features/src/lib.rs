@@ -262,7 +262,7 @@ mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
 
 mod reopen;
-pub use reopen::{reopen_discarded_features, reopen_features, reopen_features_before_save};
+pub use reopen::{reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features};
 
 mod validate;
 pub use validate::{validate_entries, ValidationError};
@@ -289,7 +289,7 @@ mod model_profiles;
 pub use model_profiles::{load_model_profiles, FieldProblem, ModelProfile, ModelProfiles, ModelProfilesError};
 
 mod eligibility;
-pub use eligibility::{check_run_eligibility, order_run_group, GroupRefusal, Ineligible, UnmetDependency};
+pub use eligibility::{check_resume_eligibility, check_run_eligibility, order_resume_group, order_run_group, GroupRefusal, Ineligible, UnmetDependency};
 
 mod launch_request;
 pub use launch_request::LaunchRequest;

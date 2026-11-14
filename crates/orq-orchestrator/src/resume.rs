@@ -124,18 +124,14 @@ pub fn plan_group_resume(
     plan_group_resume_with(store, repo, project_id, members, &crate::interrupted::process_is_alive)
 }
 
-/// [`plan_group_resume`] with the owner-liveness check supplied (pid, recorded start time).
-pub fn plan_group_resume_with(
-    store: &RunStore,
-    repo: &Path,
-    project_id: &str,
-    members: &[String],
-    alive: &dyn Fn(u32, Option<u64>) -> bool,
-) -> Result<ResumePlan, String> {
-    let feature_id = members
-        .first()
-        .map(String::as_str)
-        .ok_or("a run needs a feature")?;
+/// The run of `project_id` named after `feature_id` (a single feature's run, or a group's that it
+/// leads) that started last: the one a resume of that feature continues. `None` when it never ran.
+/// Nothing is reconciled or changed.
+pub fn newest_run_of(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<String>, String> {
+    Ok(newest_record(store, project_id, feature_id)?.map(|record| record.run_id))
+}
+
+fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<RunRecord>, String> {
     let mut latest: Option<(RunOrder, RunRecord)> = None;
     for run_id in store
         .run_ids()
@@ -160,7 +156,22 @@ pub fn plan_group_resume_with(
             latest = Some((order, record));
         }
     }
-    let Some((_, from)) = latest else {
+    Ok(latest.map(|(_, record)| record))
+}
+
+/// [`plan_group_resume`] with the owner-liveness check supplied (pid, recorded start time).
+pub fn plan_group_resume_with(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+    members: &[String],
+    alive: &dyn Fn(u32, Option<u64>) -> bool,
+) -> Result<ResumePlan, String> {
+    let feature_id = members
+        .first()
+        .map(String::as_str)
+        .ok_or("a run needs a feature")?;
+    let Some(from) = newest_record(store, project_id, feature_id)? else {
         return Err(format!("{feature_id} has no earlier run to resume"));
     };
     // A run killed mid-flight never recorded an ending: if its process is gone, it is a failed run.
@@ -367,12 +378,17 @@ pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> 
 pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
     let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     let members = run_members(store, run_id)?;
-    let plan = plan_group_resume(store, repo, &record.project_id, &members)?;
-    if plan.from.run_id == run_id {
-        Ok(())
-    } else {
-        Err(format!("{} is a later run of the same features; resume that one", plan.from.run_id))
+    // A later run named after the same feature took it over, whatever else it was for.
+    if let Some(later) = newest_run_of(store, &record.project_id, &record.feature_id)?.filter(|newest| newest != run_id) {
+        let theirs = run_members(store, &later)?;
+        return Err(if theirs == members {
+            format!("{later} is a later run of the same features; resume that one")
+        } else {
+            let taken: Vec<&str> = members.iter().filter(|m| theirs.contains(m)).map(String::as_str).collect();
+            format!("{later} is a later run that took {}; this run can no longer be resumed", taken.join(", "))
+        });
     }
+    plan_group_resume(store, repo, &record.project_id, &members).map(|_| ())
 }
 
 /// Where run `run_id` would continue if resumed now: the next stage of a paused run's checkpoint,

@@ -25,17 +25,35 @@ pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, Str
 /// `completed_too` also go back to `pending` when the ledger records them as `completed`. The caller
 /// leaves out a feature whose `completed` this run cannot have written.
 pub fn reopen_discarded_features(path: &Path, names: &[String], completed_too: &[String]) -> Result<Vec<String>, String> {
-    reopen(path, names, completed_too, &mut || {})
+    reopen(path, names, &|status, name| is(status, FeatureStatus::InProgress) || (is(status, FeatureStatus::Completed) && completed_too.iter().any(|c| c == name)), FeatureStatus::Pending, &mut || {})
+}
+
+/// For a run that ended without delivering but left commits to resume: each of `names` that the
+/// ledger at `path` records as `completed` goes back to `in_progress`, since the agent marked it
+/// before its run was done. Saved as [`reopen_features`] saves; returns the names that were reopened.
+pub fn reopen_unfinished_features(path: &Path, names: &[String]) -> Result<Vec<String>, String> {
+    reopen(path, names, &|status, _| is(status, FeatureStatus::Completed), FeatureStatus::InProgress, &mut || {})
 }
 
 /// [`reopen_features`], calling `before_save` between each load and its save: a seam for tests
 /// that race another writer against the save.
 #[doc(hidden)]
 pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &mut dyn FnMut()) -> Result<Vec<String>, String> {
-    reopen(path, names, &[], before_save)
+    reopen(path, names, &|status, _| is(status, FeatureStatus::InProgress), FeatureStatus::Pending, before_save)
 }
 
-fn reopen(path: &Path, names: &[String], completed_too: &[String], before_save: &mut dyn FnMut()) -> Result<Vec<String>, String> {
+fn is(status: &LedgerStatus, wanted: FeatureStatus) -> bool {
+    *status == LedgerStatus::Known(wanted)
+}
+
+/// Sets each of `names` whose entry `reopenable` accepts (given its status and name) to `to`.
+fn reopen(
+    path: &Path,
+    names: &[String],
+    reopenable: &dyn Fn(&LedgerStatus, &str) -> bool,
+    to: FeatureStatus,
+    before_save: &mut dyn FnMut(),
+) -> Result<Vec<String>, String> {
     for _ in 0..CONFLICT_RETRIES {
         let loaded = match LoadedLedger::load(path) {
             Ok(loaded) => loaded,
@@ -45,10 +63,7 @@ fn reopen(path: &Path, names: &[String], completed_too: &[String], before_save: 
         let reopenable: HashSet<&str> = loaded
             .entries()
             .iter()
-            .filter(|e| {
-                e.status == LedgerStatus::Known(FeatureStatus::InProgress)
-                    || (e.status == LedgerStatus::Known(FeatureStatus::Completed) && completed_too.contains(&e.feature_name))
-            })
+            .filter(|e| reopenable(&e.status, &e.feature_name))
             .map(|e| e.feature_name.as_str())
             .collect();
         let reopened: Vec<String> = names.iter().filter(|name| reopenable.contains(name.as_str())).cloned().collect();
@@ -56,7 +71,7 @@ fn reopen(path: &Path, names: &[String], completed_too: &[String], before_save: 
             return Ok(reopened);
         }
         let text = std::str::from_utf8(loaded.bytes()).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))?;
-        let text = set_entry_statuses(text, &reopened, FeatureStatus::Pending).map_err(|e| format!("cannot edit {}: {e:?}", path.display()))?;
+        let text = set_entry_statuses(text, &reopened, to).map_err(|e| format!("cannot edit {}: {e:?}", path.display()))?;
         before_save();
         match loaded.save(&text) {
             Ok(()) => return Ok(reopened),

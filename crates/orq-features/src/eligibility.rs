@@ -22,6 +22,11 @@ pub enum Ineligible {
     NotPending { status: String },
     /// Every `dependsOn` entry that is not `completed`, in ledger order.
     UnmetDependencies(Vec<UnmetDependency>),
+    /// A resume takes a feature only as its agent may have left it: `pending`, `in_progress` or
+    /// `completed`; carries the actual status text.
+    NotResumable { status: String },
+    /// The feature is `completed` and a later run took it: that run's work is what the status says.
+    TakenByLaterRun,
 }
 
 impl std::fmt::Display for Ineligible {
@@ -44,6 +49,12 @@ impl std::fmt::Display for Ineligible {
                 }
                 Ok(())
             }
+            Ineligible::NotResumable { status } => {
+                write!(f, "feature is {status}, only a pending, in_progress or completed feature can be resumed")
+            }
+            Ineligible::TakenByLaterRun => {
+                write!(f, "feature is completed by a later run that took it, so this run cannot pick it up again")
+            }
         }
     }
 }
@@ -56,15 +67,47 @@ pub fn check_run_eligibility<'a>(
     ledger: &'a [FeatureEntry],
     feature_name: &str,
 ) -> Result<&'a FeatureEntry, Ineligible> {
+    check_eligibility(ledger, feature_name, &fresh)
+}
+
+/// As [`check_run_eligibility`] for resuming a run: the feature may be as the run's agent left it,
+/// `pending`, `in_progress`, or `completed` when it is in `free` (no later run took it).
+pub fn check_resume_eligibility<'a>(
+    ledger: &'a [FeatureEntry],
+    feature_name: &str,
+    free: &[String],
+) -> Result<&'a FeatureEntry, Ineligible> {
+    check_eligibility(ledger, feature_name, &|entry| resumable(entry, free))
+}
+
+/// Whether `entry`'s status lets a fresh run start it.
+fn fresh(entry: &FeatureEntry) -> Result<(), Ineligible> {
+    match entry.status.known() {
+        Some(FeatureStatus::Pending) => Ok(()),
+        _ => Err(Ineligible::NotPending { status: entry.status.as_str().to_string() }),
+    }
+}
+
+/// Whether `entry`'s status lets a resumed run take it, given the features no later run took.
+fn resumable(entry: &FeatureEntry, free: &[String]) -> Result<(), Ineligible> {
+    match entry.status.known() {
+        Some(FeatureStatus::Pending | FeatureStatus::InProgress) => Ok(()),
+        Some(FeatureStatus::Completed) if free.contains(&entry.feature_name) => Ok(()),
+        Some(FeatureStatus::Completed) => Err(Ineligible::TakenByLaterRun),
+        _ => Err(Ineligible::NotResumable { status: entry.status.as_str().to_string() }),
+    }
+}
+
+fn check_eligibility<'a>(
+    ledger: &'a [FeatureEntry],
+    feature_name: &str,
+    startable: &dyn Fn(&FeatureEntry) -> Result<(), Ineligible>,
+) -> Result<&'a FeatureEntry, Ineligible> {
     let entry = ledger
         .iter()
         .find(|e| e.feature_name == feature_name)
         .ok_or(Ineligible::NotFound)?;
-    if entry.status.known() != Some(FeatureStatus::Pending) {
-        return Err(Ineligible::NotPending {
-            status: entry.status.as_str().to_string(),
-        });
-    }
+    startable(entry)?;
     if entry.depends_on.is_empty() {
         return Ok(entry);
     }
@@ -121,6 +164,20 @@ impl std::error::Error for GroupRefusal {}
 /// on, and otherwise in the order given. Every member must be `pending`, and every dependency
 /// outside the group must be `completed`.
 pub fn order_run_group<'a>(ledger: &'a [FeatureEntry], ids: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    order_group(ledger, ids, &fresh)
+}
+
+/// As [`order_run_group`] for resuming a group's run: each member may be as the run's agent left it,
+/// as [`check_resume_eligibility`] says.
+pub fn order_resume_group<'a>(ledger: &'a [FeatureEntry], ids: &[String], free: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    order_group(ledger, ids, &|entry| resumable(entry, free))
+}
+
+fn order_group<'a>(
+    ledger: &'a [FeatureEntry],
+    ids: &[String],
+    startable: &dyn Fn(&FeatureEntry) -> Result<(), Ineligible>,
+) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
     if let Some(index) = (1..ids.len()).find(|&i| ids[..i].contains(&ids[i])) {
         return Err(GroupRefusal::Duplicate(ids[index].clone()));
     }
@@ -129,9 +186,7 @@ pub fn order_run_group<'a>(ledger: &'a [FeatureEntry], ids: &[String]) -> Result
         let entry = ledger.iter().find(|e| &e.feature_name == id);
         let refuse = |reason| GroupRefusal::Feature { id: id.clone(), reason };
         let entry = entry.ok_or_else(|| refuse(Ineligible::NotFound))?;
-        if entry.status.known() != Some(FeatureStatus::Pending) {
-            return Err(refuse(Ineligible::NotPending { status: entry.status.as_str().to_string() }));
-        }
+        startable(entry).map_err(refuse)?;
         let unmet: Vec<UnmetDependency> = entry
             .depends_on
             .iter()

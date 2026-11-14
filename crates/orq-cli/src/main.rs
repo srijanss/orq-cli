@@ -313,6 +313,17 @@ fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
     kept
 }
 
+/// The `members` a resume of `feature`'s newest run may take back although its agent marked them
+/// `completed`: those no later run took. None when the feature never ran.
+fn resumable_features(project: &orq_git::Project, feature: &str, members: &[String]) -> Result<Vec<String>, String> {
+    let root = pipeline::state_root().ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
+    let store = orq_orchestrator::RunStore::new(&root);
+    match orq_orchestrator::newest_run_of(&store, &pipeline::project_id(project), feature)? {
+        Some(newest) => orq_orchestrator::features_no_later_run_took(&store, &newest, members),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// `orq run --repo <path> --feature <id> --remote <name> --target <branch>`: check that the
 /// feature may start and which models it would use, before anything is created.
 fn run(args: &[OsString]) -> ExitCode {
@@ -344,9 +355,22 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(entries) => entries,
         Err(err) => return fail(ledger_error_text(&err)),
     };
+    // A resume takes its features as the run's agent left them; a fresh run needs them pending.
+    let free = if parsed.resume {
+        let members = group.clone().unwrap_or_else(|| vec![feature.to_string()]);
+        match resumable_features(&project, feature, &members) {
+            Ok(free) => Some(free),
+            Err(message) => return fail(message),
+        }
+    } else {
+        None
+    };
     // The features of the run, in the order to do them: dependencies first for a group.
     let features: Vec<String> = match &group {
-        Some(ids) => match orq_features::order_run_group(&ledger, ids) {
+        Some(ids) => match free.as_ref().map_or_else(
+            || orq_features::order_run_group(&ledger, ids),
+            |free| orq_features::order_resume_group(&ledger, ids, free),
+        ) {
             Ok(ordered) => ordered.into_iter().map(|entry| entry.feature_name.clone()).collect(),
             Err(err) => {
                 eprintln!("orq: the group may not start a run: {}", printable(&err.to_string()));
@@ -354,7 +378,11 @@ fn run(args: &[OsString]) -> ExitCode {
             }
         },
         None => {
-            if let Err(err) = orq_features::check_run_eligibility(&ledger, feature) {
+            let eligible = match &free {
+                Some(free) => orq_features::check_resume_eligibility(&ledger, feature, free),
+                None => orq_features::check_run_eligibility(&ledger, feature),
+            };
+            if let Err(err) = eligible {
                 eprintln!("orq: feature {} may not start a run: {}", printable(feature), printable(&err.to_string()));
                 return ExitCode::from(EXIT_INELIGIBLE);
             }

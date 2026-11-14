@@ -562,11 +562,8 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None, ci_green: None },
     };
     // Reopened while the run still holds the locks, so a run launched next is never reset.
-    if matches!(report.ending, Ending::Blocked | Ending::Failed) && !has_commits(&record) {
-        // Nothing was built, so nothing continues the features: they may be launched again.
-        if let Err(err) = orq_features::reopen_features(&orq_features::ledger_path(options.project), options.features) {
-            eprintln!("orq: cannot put {} back to pending: {err}", options.features.join(","));
-        }
+    if matches!(report.ending, Ending::Blocked | Ending::Failed | Ending::Paused) {
+        reopen_undelivered(&store, &record, &report.ending, &orq_features::ledger_path(options.project), options.features);
     }
     let released = finish(&store);
     // A lock left behind blocks the next run of the feature, so it is never reported as success.
@@ -633,6 +630,26 @@ fn open_findings_text(review: &orq_orchestrator::EscalatedReview) -> String {
         "(none: each was fixed, rejected or deferred since)".to_string()
     } else {
         lines.join("\n")
+    }
+}
+
+/// Takes the features of a run that ended without delivering out of `completed`, which its agent
+/// may have marked before the run was done; a feature a later run took is left to that run. A
+/// blocked or failed run that built nothing puts its features back to `pending` (an `in_progress`
+/// one too), so they may be launched again; otherwise the run is resumed, so they go back to
+/// `in_progress`. Best effort: a failure is said and changes nothing else about how the run ended.
+fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, ledger: &Path, features: &[String]) {
+    let free = orq_orchestrator::features_no_later_run_took(store, &record.run_id, features).unwrap_or_else(|err| {
+        eprintln!("orq: cannot tell whether a later run took {}: {err}", features.join(","));
+        Vec::new()
+    });
+    let (reopened, to) = if matches!(ending, Ending::Blocked | Ending::Failed) && !has_commits(record) {
+        (orq_features::reopen_discarded_features(ledger, features, &free), "pending")
+    } else {
+        (orq_features::reopen_unfinished_features(ledger, &free), "in_progress")
+    };
+    if let Err(err) = reopened {
+        eprintln!("orq: cannot put {} back to {to}: {err}", features.join(","));
     }
 }
 
