@@ -220,20 +220,33 @@ struct InstallFolder {
     name: &'static str,
     /// The manifests, any one of which the project folder must have committed.
     manifests: &'static [&'static str],
-    /// The lockfiles, any one of which the project folder must have committed.
-    lockfiles: &'static [&'static str],
+    /// The lockfiles, each with the manifest it is made from: the project folder must have one of
+    /// them committed beside its own manifest.
+    lockfiles: &'static [(&'static str, &'static str)],
 }
 
 const INSTALL_FOLDERS: &[InstallFolder] = &[
     InstallFolder {
         name: "node_modules",
         manifests: &["package.json"],
-        lockfiles: &["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"],
+        lockfiles: &[
+            ("package-lock.json", "package.json"),
+            ("npm-shrinkwrap.json", "package.json"),
+            ("yarn.lock", "package.json"),
+            ("pnpm-lock.yaml", "package.json"),
+            ("bun.lock", "package.json"),
+            ("bun.lockb", "package.json"),
+        ],
     },
     InstallFolder {
         name: ".venv",
         manifests: &["pyproject.toml", "Pipfile"],
-        lockfiles: &["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock"],
+        lockfiles: &[
+            ("uv.lock", "pyproject.toml"),
+            ("poetry.lock", "pyproject.toml"),
+            ("pdm.lock", "pyproject.toml"),
+            ("Pipfile.lock", "Pipfile"),
+        ],
     },
 ];
 
@@ -269,7 +282,7 @@ fn in_installed_deps(
         .is_ok()
 }
 
-/// `Ok` when `project` has one of `folder`'s manifests and one of its lockfiles committed at `HEAD`;
+/// `Ok` when `project` has one of `folder`'s lockfiles and the manifest it is made from committed at `HEAD`;
 /// otherwise what is missing, as a hint for the kept reason.
 fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Result<(), String> {
     let prefix = if project.is_empty() { String::new() } else { format!("{project}/") };
@@ -290,22 +303,33 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
             .collect(),
         _ => Vec::new(),
     };
-    let has = |names: &[&str]| names.iter().any(|n| committed.iter().any(|c| c == n));
-    if has(folder.manifests) && has(folder.lockfiles) {
+    let is_committed = |name: &str| committed.iter().any(|c| c == name);
+    if folder.lockfiles.iter().any(|(lock, manifest)| is_committed(lock) && is_committed(manifest)) {
         return Ok(());
     }
     // A lockfile on disk but not committed is the one to name: committing it is all that is missing.
-    let on_disk = folder.lockfiles.iter().find(|lock| worktree.join(format!("{prefix}{lock}")).is_file());
+    let on_disk = folder
+        .lockfiles
+        .iter()
+        .map(|(lock, _)| lock)
+        .find(|lock| !is_committed(lock) && worktree.join(format!("{prefix}{lock}")).is_file());
     let what = format!(
         "{prefix}{} is removed with the worktree only when {prefix}{} and a lockfile such as {prefix}{} are committed",
         folder.name,
         folder.manifests[0],
-        on_disk.unwrap_or(&folder.lockfiles[0]),
+        on_disk.unwrap_or(&folder.lockfiles[0].0),
     );
-    Err(match on_disk {
-        _ if !has(folder.manifests) => format!("{what}; {prefix}{} is not committed", folder.manifests[0]),
-        Some(lock) => format!("{what}; {prefix}{lock} is not committed"),
-        None => format!("{what}; no lockfile is committed"),
+    // A committed lockfile whose own manifest is not: it cannot be installed from as it stands.
+    let unpaired = folder.lockfiles.iter().find(|(lock, _)| is_committed(lock));
+    Err(match (unpaired, on_disk) {
+        _ if !folder.manifests.iter().any(|m| is_committed(m)) => {
+            format!("{what}; {prefix}{} is not committed", folder.manifests[0])
+        }
+        (Some((lock, manifest)), _) => {
+            format!("{what}; {prefix}{lock} goes with {prefix}{manifest}, which is not committed")
+        }
+        (None, Some(lock)) => format!("{what}; {prefix}{lock} is not committed"),
+        (None, None) => format!("{what}; no lockfile is committed"),
     })
 }
 

@@ -865,3 +865,17 @@ fn a_lockfile_committed_as_a_symlink_into_node_modules_keeps_the_worktree_and_it
     assert!(reason.contains("web/node_modules/"), "{reason}");
     assert!(w.worktree.join("web/node_modules/.bin/esbuild").exists());
 }
+
+#[test]
+fn a_venv_whose_committed_lockfile_belongs_to_another_manifest_keeps_the_worktree_and_says_which() {
+    let w = world("venv-mismatched-lock");
+    ignore(&w, ".venv/\n");
+    commit_files(&w, &["Pipfile", "uv.lock"]);
+    write(&w, ".venv/bin/python", "installed\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.ends_with("; uv.lock goes with pyproject.toml, which is not committed)"), "{reason}");
+    assert!(w.worktree.join(".venv/bin/python").exists());
+}
