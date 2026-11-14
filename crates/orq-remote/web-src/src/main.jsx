@@ -2551,9 +2551,10 @@ function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh, onRows 
     return tagged(parsed.rows, project.id, project.name).map((feature) => ({ ...feature, control }));
   };
   const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows });
+  // No count when not one project's ledger was read: "0 in progress" would claim what nobody knows.
   useEffect(() => {
-    if (!state.loading) onRows(state.rows);
-  }, [state.loading, state.rows]);
+    if (!state.loading) onRows(state.rows.length === 0 && state.unread > 0 ? null : state.rows);
+  }, [state.loading, state.rows, state.unread]);
   if (state.loading) {
     return (
       <div className="skeleton" role="status" aria-busy="true">

@@ -47,6 +47,14 @@ fn pills(frame: &Value) -> u64 {
     frame["settled"]["matches"][PILL].as_u64().unwrap()
 }
 
+fn failed() -> Value {
+    json!({"status": 500, "json": {"error": "the ledger could not be read"}})
+}
+
+fn malformed() -> Value {
+    json!({"status": 200, "json": {"features": "not a list"}})
+}
+
 #[test]
 fn a_projects_features_page_counts_the_in_progress_features_whatever_the_filters_show() {
     let steps = json!([{"submit": TOKEN}, {"set": "[data-feature-search]", "value": "b-"}, {"set": "[data-feature-status]", "value": "completed"}]);
@@ -69,6 +77,27 @@ fn the_every_project_features_page_counts_the_in_progress_features_of_every_proj
 }
 
 #[test]
+fn the_every_project_count_leaves_out_a_ledger_that_failed_or_is_malformed_and_the_banner_says_so() {
+    let alpha = ledger(&[("a-busy", "in_progress"), ("a-also", "in_progress")]);
+    for unreadable in [failed(), malformed()] {
+        let Some(out) = page("/features", json!([projects(), alpha.clone(), unreadable]), json!([{"submit": TOKEN}])) else { return };
+        let frame = &out["frames"][1];
+        assert_eq!(pills(frame), 1, "{out}");
+        let t = texts(frame);
+        assert!(t.iter().any(|t| t == "2 in progress"), "{t:?}");
+        assert!(t.iter().any(|t| t == "One project could not be read."), "{t:?}");
+    }
+}
+
+#[test]
+fn the_every_project_page_shows_no_pill_when_no_ledger_could_be_read() {
+    let Some(out) = page("/features", json!([projects(), failed(), malformed()]), json!([{"submit": TOKEN}])) else { return };
+    let frame = &out["frames"][1];
+    assert!(texts(frame).iter().any(|t| t == "2 projects could not be read."), "{:?}", texts(frame));
+    assert_eq!(pills(frame), 0, "no count when no ledger was read, rather than 0 in progress: {out}");
+}
+
+#[test]
 fn a_ledger_with_nothing_in_progress_says_zero_and_a_ledger_still_loading_shows_no_pill() {
     let held = json!({"hold": "json", "status": 200, "json": {"features": [feature("a-done", "completed"), feature("b-next", "pending")]}});
     let Some(out) = page("/projects/alpha/features", json!([held, projects()]), json!([{"submit": TOKEN}, {"release": 0}])) else { return };
@@ -76,6 +105,14 @@ fn a_ledger_with_nothing_in_progress_says_zero_and_a_ledger_still_loading_shows_
     let frame = &out["frames"][2];
     assert_eq!(pills(frame), 1, "{out}");
     assert!(texts(frame).iter().any(|t| t == "0 in progress"), "{:?}", texts(frame));
+}
+
+#[test]
+fn a_projects_ledger_that_could_not_be_read_shows_no_pill() {
+    for unreadable in [failed(), malformed()] {
+        let Some(out) = page("/projects/alpha/features", json!([unreadable, projects()]), json!([{"submit": TOKEN}])) else { return };
+        assert_eq!(pills(&out["frames"][1]), 0, "{out}");
+    }
 }
 
 #[test]
