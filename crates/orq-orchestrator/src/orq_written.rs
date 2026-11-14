@@ -9,10 +9,11 @@ use crate::outcome::git_raw;
 
 /// Ignored paths orq itself writes (or links) into a run's worktree.
 const DOTENV: &str = concat!(".", "env");
-const CANDIDATES: [&str; 5] = [
+const CANDIDATES: [&str; 6] = [
     ".mcp.json",
     ".mcpctl.toml",
     ".mcpctl.lock",
+    ".mcpctl.scaffold.json",
     ".claude/settings.local.json",
     DOTENV,
 ];

@@ -315,3 +315,24 @@ fn a_recorded_link_replaced_by_a_regular_file_is_work() {
 
     assert!(matches!(cleanup(&w), CleanupOutcome::Kept { .. }));
 }
+
+/// `mcpctl setup` writes its scaffold manifest next to its config and lock; recorded with them after
+/// setup, it is orq's and does not keep the worktree.
+#[test]
+fn the_files_mcpctl_setup_writes_do_not_keep_the_worktree() {
+    let w = world("mcpctl");
+    orq_files(&w);
+    let exclude = w.repo.join(".git/info/exclude");
+    let ignored = fs::read_to_string(&exclude).unwrap() + ".mcpctl.*\n";
+    fs::write(&exclude, ignored).unwrap();
+    for (name, body) in [
+        (".mcpctl.toml", "[servers]\n"),
+        (".mcpctl.lock", "{}\n"),
+        (".mcpctl.scaffold.json", "{\"version\":1,\"files\":{}}\n"),
+    ] {
+        fs::write(w.worktree.join(name), body).unwrap();
+    }
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    assert_eq!(cleanup(&w), CleanupOutcome::Removed);
+}
