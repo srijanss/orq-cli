@@ -130,6 +130,8 @@ fn a_finished_session_records_start_and_completion_with_its_session_log_and_exit
         log.contains("out-ok\n") && log.contains("err-ok\n"),
         "{log}"
     );
+    // The session's own output only: orq writes its lines only for a session on the terminal.
+    assert!(!log.contains("[orq "), "{log}");
 }
 
 #[cfg(unix)]
@@ -191,14 +193,9 @@ fn a_session_killed_by_a_signal_is_failed_without_an_exit_code_and_says_so() {
     assert_eq!(kinds(&s.store), ["stage.started", "stage.failed"]);
     let failed = &s.store.events("run-1").unwrap()[1];
     assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
-    assert!(
-        failed.payload["reason"]
-            .as_str()
-            .unwrap()
-            .contains("signal"),
-        "{}",
-        failed.payload
-    );
+    assert_eq!(failed.payload["signal"], 15);
+    // Only SIGKILL points at the out-of-memory killer.
+    assert_eq!(failed.payload["reason"], "sh was stopped by signal 15 (SIGTERM)");
 }
 
 #[test]
@@ -263,4 +260,85 @@ fn a_terminal_session_runs_attached_and_still_records_its_outcome() {
 
     assert!(outcome.success);
     assert_eq!(kinds(&s.store), ["stage.started", "stage.completed"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_session_killed_by_sigkill_names_the_signal_and_points_at_the_out_of_memory_killer() {
+    let s = setup("sigkill");
+    let args = argv(&["-c", "kill -KILL $$"]);
+
+    let outcome = run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+
+    assert!(!outcome.success);
+    assert_eq!(outcome.exit_code, None);
+    let failed = &s.store.events("run-1").unwrap()[1];
+    assert_eq!(failed.kind, "stage.failed");
+    assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
+    assert_eq!(failed.payload["signal"], 9);
+    assert_eq!(
+        failed.payload["reason"],
+        "sh was stopped by signal 9 (SIGKILL) — often the kernel's out-of-memory killer; check dmesg"
+    );
+}
+
+#[test]
+fn a_terminal_session_leaves_a_log_saying_when_it_started_and_how_it_ended() {
+    let s = setup("terminal-log");
+    let args = argv(&["-c", "exit 0"]);
+    let mut request = session(&s, &args, &[]);
+    request.terminal = true;
+
+    run_implement_stage(&s.store, "run-1", &request).unwrap();
+
+    let log = fs::read_to_string(&s.log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    assert!(lines[0].starts_with("[orq "), "{log}");
+    assert!(
+        lines[0].contains("started sh (pid ")
+            && lines[0].ends_with(&format!("in {}", s.cwd.display())),
+        "{log}"
+    );
+    assert!(lines[1].starts_with("[orq ") && lines[1].ends_with("sh exited with status 0"), "{log}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminal_session_killed_by_a_signal_logs_the_same_reason_as_its_event() {
+    let s = setup("terminal-signal");
+    let args = argv(&["-c", "kill -KILL $$"]);
+    let mut request = session(&s, &args, &[]);
+    request.terminal = true;
+
+    run_implement_stage(&s.store, "run-1", &request).unwrap();
+
+    let reason = s.store.events("run-1").unwrap()[1].payload["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let log = fs::read_to_string(&s.log).unwrap();
+    let last = log.lines().last().unwrap();
+    assert!(last.starts_with("[orq ") && last.ends_with(&format!("] {reason}")), "{log}");
+}
+
+#[test]
+fn a_terminal_session_closed_through_its_exit_marker_logs_that_orq_closed_it() {
+    let s = setup("terminal-closed");
+    let marker = s.cwd.join("done");
+    let script = format!("touch {}; sleep 30", marker.display());
+    let args = argv(&["-c", &script]);
+    let mut request = session(&s, &args, &[]);
+    request.terminal = true;
+    request.exit_marker = Some(&marker);
+
+    let outcome = run_implement_stage(&s.store, "run-1", &request).unwrap();
+
+    assert!(outcome.success);
+    let log = fs::read_to_string(&s.log).unwrap();
+    let last = log.lines().last().unwrap();
+    assert!(
+        last.ends_with("sh was closed by orq after it wrote its exit marker"),
+        "{log}"
+    );
 }

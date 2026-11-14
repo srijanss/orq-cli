@@ -2,7 +2,7 @@
 //! worktree and record what happened as stage events.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,11 +92,14 @@ pub(crate) fn run_session_stage(
         }
     }
     command.envs(session.env.iter().map(|(name, value)| (name, value)));
+    // A session on the terminal writes nothing to its log, so orq writes there how it started and ended.
+    let mut terminal_log = None;
     if session.terminal {
         command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        terminal_log = Some(log);
     } else {
         command
             .stdin(Stdio::null())
@@ -139,6 +142,17 @@ pub(crate) fn run_session_stage(
     let status = cleared
         .and_then(|()| crate::child_groups::spawn(&mut command))
         .and_then(|child| {
+            if let Some(log) = &terminal_log {
+                log_line(
+                    log,
+                    &format!(
+                        "started {} (pid {}) in {}",
+                        session.program,
+                        child.id(),
+                        session.cwd.display()
+                    ),
+                );
+            }
             let end = wait_for_session(child, session.exit_marker);
             #[cfg(unix)]
             if let Some(settings) = &terminal_settings {
@@ -161,6 +175,20 @@ pub(crate) fn run_session_stage(
         Ok(SessionEnd::Closed) => true,
         Ok(SessionEnd::Exited(status)) => status.success(),
         Err(_) => false,
+    };
+    let signal = match &status {
+        Ok(SessionEnd::Exited(status)) => exit_signal(status),
+        _ => None,
+    };
+    let ended = match &status {
+        Ok(SessionEnd::Closed) => {
+            format!("{} was closed by orq after it wrote its exit marker", session.program)
+        }
+        Ok(SessionEnd::Exited(status)) => match status.code() {
+            Some(code) => format!("{} exited with status {code}", session.program),
+            None => format!("{} was stopped by {}", session.program, describe_signal(signal)),
+        },
+        Err(err) => format!("could not start {}: {err}", session.program),
     };
     let (outcome, reason) = match status {
         _ if finished && reported.is_some() => (
@@ -187,38 +215,43 @@ pub(crate) fn run_session_stage(
             },
             None,
         ),
-        Ok(SessionEnd::Exited(status)) => {
-            let reason = match status.code() {
-                Some(code) => format!("{} exited with status {code}", session.program),
-                None => format!("{} was stopped by a signal", session.program),
-            };
-            (
-                ImplementOutcome {
-                    success: false,
-                    exit_code: status.code(),
-                    reported: None,
-                },
-                Some(reason),
-            )
-        }
-        Err(err) => (
+        // How a session that failed ended is the reason it failed.
+        Ok(SessionEnd::Exited(status)) => (
+            ImplementOutcome {
+                success: false,
+                exit_code: status.code(),
+                reported: None,
+            },
+            Some(ended.clone()),
+        ),
+        Err(_) => (
             ImplementOutcome {
                 success: false,
                 exit_code: None,
                 reported: None,
             },
-            Some(format!("could not start {}: {err}", session.program)),
+            Some(ended.clone()),
         ),
     };
+    if let Some(log) = &terminal_log {
+        log_line(log, &ended);
+        // A reason the end line does not already give, such as a problem the session reported.
+        if let Some(reason) = reason.as_ref().filter(|reason| **reason != ended) {
+            log_line(log, reason);
+        }
+    }
     let closing = match reason {
         None => event(
             "stage.completed",
             serde_json::json!({ "exit_code": outcome.exit_code }),
         ),
-        Some(reason) => event(
-            "stage.failed",
-            serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason }),
-        ),
+        Some(reason) => {
+            let mut payload = serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason });
+            if let Some(signal) = signal {
+                payload["signal"] = serde_json::json!(signal);
+            }
+            event("stage.failed", payload)
+        }
     };
     store.append_event(&closing)?;
     // Notes from a session that finished are kept for the report; a failed stage already says why.
@@ -226,6 +259,69 @@ pub(crate) fn run_session_stage(
         store.append_event(&event("session.notes", serde_json::json!({ "notes": notes })))?;
     }
     Ok(outcome)
+}
+
+/// Writes one timestamped line of orq's own to a session log. The log is a record for people, so a
+/// write that fails does not fail the stage.
+fn log_line(mut log: &fs::File, text: &str) {
+    let _ = writeln!(log, "[orq {}] {text}", now_rfc3339());
+}
+
+/// The signal that stopped a session, when one did.
+fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
+/// `signal 9 (SIGKILL) — often the kernel's out-of-memory killer; check dmesg`, or `a signal` when unknown.
+fn describe_signal(signal: Option<i32>) -> String {
+    let Some(number) = signal else {
+        return "a signal".to_string();
+    };
+    match signal_name(number) {
+        Some(name @ "SIGKILL") => {
+            format!("signal {number} ({name}) — often the kernel's out-of-memory killer; check dmesg")
+        }
+        Some(name) => format!("signal {number} ({name})"),
+        None => format!("signal {number}"),
+    }
+}
+
+fn signal_name(number: i32) -> Option<&'static str> {
+    #[cfg(unix)]
+    {
+        const NAMES: [(i32, &str); 15] = [
+            (libc::SIGHUP, "SIGHUP"),
+            (libc::SIGINT, "SIGINT"),
+            (libc::SIGQUIT, "SIGQUIT"),
+            (libc::SIGILL, "SIGILL"),
+            (libc::SIGTRAP, "SIGTRAP"),
+            (libc::SIGABRT, "SIGABRT"),
+            (libc::SIGBUS, "SIGBUS"),
+            (libc::SIGFPE, "SIGFPE"),
+            (libc::SIGKILL, "SIGKILL"),
+            (libc::SIGUSR1, "SIGUSR1"),
+            (libc::SIGSEGV, "SIGSEGV"),
+            (libc::SIGUSR2, "SIGUSR2"),
+            (libc::SIGPIPE, "SIGPIPE"),
+            (libc::SIGALRM, "SIGALRM"),
+            (libc::SIGTERM, "SIGTERM"),
+        ];
+        NAMES.iter().find(|(n, _)| *n == number).map(|(_, name)| *name)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = number;
+        None
+    }
 }
 
 /// A marker is read only this far: it is a short note, and nothing limits what a session writes there.
