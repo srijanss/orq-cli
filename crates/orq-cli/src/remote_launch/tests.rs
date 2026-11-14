@@ -308,3 +308,42 @@ fn an_orq_the_server_may_not_run_does_not_hide_one_later_on_the_path() {
     let found = fake_orq(&real);
     assert_eq!(super::orq_on(Some(std::env::join_paths([&denied, &real]).unwrap())), Some(found));
 }
+
+/// One launcher across a server's life: its own program wins while it is there, without asking for
+/// another; once it is deleted the fallback is asked at each launch, so an orq installed after a launch
+/// failed is the one the next launch runs.
+#[test]
+fn one_launcher_uses_its_program_until_it_is_deleted_then_asks_for_the_fallback_at_each_launch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = scratch("lifecycle");
+    let repo = repo(&dir);
+    let (own, other) = (dir.join("own"), dir.join("other"));
+    for folder in [&own, &other] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let program = fake_orq(&own);
+    let (asked, installed) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(None::<PathBuf>)));
+    let launcher = {
+        let (asked, installed) = (asked.clone(), installed.clone());
+        CliLauncher::new(program.clone(), Some(dir.join("config.toml"))).with_fallback(move || {
+            asked.fetch_add(1, Ordering::SeqCst);
+            installed.lock().unwrap().clone()
+        })
+    };
+
+    assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
+    assert_eq!(std::fs::read_to_string(own.join("calls.log")).unwrap().lines().count(), 2);
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the fallback is not asked while the program is there");
+
+    std::fs::remove_file(&program).unwrap();
+    assert!(matches!(launcher.start(&repo, "ready"), Err(LaunchError::Failed(_))));
+    let asked_before = asked.load(Ordering::SeqCst);
+    assert!(asked_before >= 1);
+
+    *installed.lock().unwrap() = Some(fake_orq(&other));
+    assert_eq!(launcher.start(&repo, "ready").unwrap(), "run-42");
+    assert!(asked.load(Ordering::SeqCst) > asked_before, "the fallback is asked again, not remembered");
+    assert_eq!(std::fs::read_to_string(other.join("calls.log")).unwrap().lines().count(), 2);
+    assert_eq!(std::fs::read_to_string(own.join("calls.log")).unwrap().lines().count(), 2);
+}
