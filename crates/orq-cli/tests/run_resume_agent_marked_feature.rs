@@ -247,3 +247,57 @@ fn a_failed_run_whose_feature_a_later_group_led_by_another_left_in_progress_is_n
     assert_ne!(output.status.code(), Some(0), "{}", text(&output.stdout));
     assert!(text(&output.stderr).contains("later run"), "{}", text(&output.stderr));
 }
+
+#[test]
+fn a_failed_run_whose_feature_the_ledger_still_says_completed_is_resumed() {
+    let w = world("still-completed");
+    let failed = run(&w, &failing_agent(), "completed", "first");
+    assert!(text(&failed.stdout).contains("failed"), "{}\n{}", text(&failed.stdout), text(&failed.stderr));
+    let run_id = only_run(&w);
+    // As a run that crashed, or one recorded before runs reopened their features, leaves it.
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
+
+    let output = resume(&w, &run_id, &finishing_agent(), "completed", "second");
+
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", text(&output.stderr));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(pushed.contains("feature.txt") && pushed.contains("again.txt"), "{pushed}");
+}
+
+/// As [`path_with`], with a `claude` that also asks for the only run to pause before running `agent`.
+fn path_pausing(w: &World, agent: &FakeAgent, mark: &str, tag: &str) -> std::ffi::OsString {
+    let path = path_with(w, agent, mark, tag);
+    let claude = w.base.join(format!("bin-{tag}/claude"));
+    let script = std::fs::read_to_string(&claude).unwrap().replacen(
+        "exec ",
+        &format!(
+            "XDG_STATE_HOME='{state}' '{orq}' run pause \"$(ls '{runs}')\" >/dev/null\nexec ",
+            state = w.state.display(),
+            orq = env!("CARGO_BIN_EXE_orq"),
+            runs = w.state.join("orq/runs").display()
+        ),
+        1,
+    );
+    std::fs::write(&claude, script).unwrap();
+    path
+}
+
+#[test]
+fn a_paused_run_whose_agent_marked_its_feature_completed_leaves_it_in_progress_and_is_resumed() {
+    let w = world("paused-completed");
+    let agent = FakeAgent::builder().write_file("feature.txt", "half\n").commit("wip").build();
+    let path = path_pausing(&w, &agent, "completed", "first");
+    let paused = orq(&w, path, &["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+    assert!(text(&paused.stdout).contains("paused"), "{}\n{}", text(&paused.stdout), text(&paused.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress", "{}", text(&paused.stderr));
+    let run_id = only_run(&w);
+
+    let output = resume(&w, &run_id, &finishing_agent(), "completed", "second");
+
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", text(&output.stderr));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+}
