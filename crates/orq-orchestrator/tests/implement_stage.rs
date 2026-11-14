@@ -342,3 +342,50 @@ fn a_terminal_session_closed_through_its_exit_marker_logs_that_orq_closed_it() {
         "{log}"
     );
 }
+
+#[test]
+fn a_terminal_session_that_cannot_start_logs_why_and_no_start_line() {
+    let s = setup("terminal-no-start");
+    let args = argv(&[]);
+    let mut request = session(&s, &args, &[]);
+    request.program = "/nonexistent/orq-no-such-program";
+    request.terminal = true;
+
+    let outcome = run_implement_stage(&s.store, "run-1", &request).unwrap();
+
+    assert!(!outcome.success);
+    let failed = &s.store.events("run-1").unwrap()[1];
+    assert_eq!(failed.kind, "stage.failed");
+    let reason = failed.payload["reason"].as_str().unwrap();
+    assert!(reason.starts_with("could not start /nonexistent/orq-no-such-program: "), "{reason}");
+    let log = fs::read_to_string(&s.log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].starts_with("[orq ") && lines[0].ends_with(&format!("] {reason}")), "{log}");
+}
+
+#[test]
+fn a_terminal_session_whose_marker_reports_a_problem_logs_how_it_ended_and_the_problem() {
+    let s = setup("terminal-problem");
+    let marker = s.cwd.join("done");
+    let script = format!("printf 'PROBLEM\\nthe tests fail\\n' > {}; sleep 30", marker.display());
+    let args = argv(&["-c", &script]);
+    let mut request = session(&s, &args, &[]);
+    request.terminal = true;
+    request.exit_marker = Some(&marker);
+
+    let outcome = run_implement_stage(&s.store, "run-1", &request).unwrap();
+
+    assert!(!outcome.success);
+    let reason = s.store.events("run-1").unwrap()[1].payload["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(reason, "the session reported a problem: the tests fail");
+    let log = fs::read_to_string(&s.log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 3, "{log}");
+    assert!(lines[0].contains("started sh (pid "), "{log}");
+    assert!(lines[1].ends_with("] sh was closed by orq after it wrote its exit marker"), "{log}");
+    assert!(lines[2].ends_with(&format!("] {reason}")), "{log}");
+}
