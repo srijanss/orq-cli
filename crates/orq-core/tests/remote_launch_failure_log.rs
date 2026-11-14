@@ -45,6 +45,21 @@ fn child_a_failed_start_and_resume() {
     };
     assert_eq!(post("/api/projects/p-1/features/ready/runs"), (500, json!({"error": "the run could not be started"})));
     assert_eq!(post("/api/projects/p-1/runs/r-1/resume"), (500, json!({"error": "the run could not be resumed"})));
+
+    // Both attempts are audited, whatever became of the log, with the generic reason and never the private one.
+    let audited: Vec<(String, String, String)> = orq_core::remote_audit::read(&roots, 10)
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|line| [&line["action"], &line["outcome"], &line["reason"]].map(|field| field.as_str().unwrap_or("").to_string()).into())
+        .collect();
+    assert_eq!(
+        audited,
+        [
+            ("run.start".to_string(), "refused".to_string(), "the run could not be started".to_string()),
+            ("run.resume".to_string(), "refused".to_string(), "the run could not be resumed".to_string()),
+        ]
+    );
 }
 
 /// Runs `child_a_failed_start_and_resume` in a child of this test binary with its stderr sent to `stderr`.
