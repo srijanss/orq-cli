@@ -26,6 +26,7 @@ struct Calls {
 struct Fake {
     calls: Rc<RefCell<Calls>>,
     link_error: Option<String>,
+    reviews: Option<Vec<ReviewRow>>,
 }
 
 impl BrowserBackend for Fake {
@@ -36,6 +37,9 @@ impl BrowserBackend for Fake {
         PromoteOutcome::Saved
     }
     fn load_reviews(&mut self) -> Result<Vec<ReviewRow>, String> {
+        if let Some(reviews) = &self.reviews {
+            return Ok(reviews.clone());
+        }
         Ok(vec![
             row("COM-01", "orq-cli", "ready", "high", false),
             row("COM-02", "other", "draft", "low", true),
@@ -76,12 +80,16 @@ fn click(column: u16, row: u16) -> Event {
 }
 
 fn run(link_error: Option<String>, more: Vec<Event>) -> (Vec<String>, Rc<RefCell<Calls>>) {
+    run_with(None, link_error, more)
+}
+
+fn run_with(reviews: Option<Vec<ReviewRow>>, link_error: Option<String>, more: Vec<Event>) -> (Vec<String>, Rc<RefCell<Calls>>) {
     let calls = Rc::new(RefCell::new(Calls::default()));
     let model = PopupModel { project_name: "orq-cli".into(), repo_path: "/repo".into() };
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let mut events = vec![key(KeyCode::Char('V'))];
     events.extend(more);
-    let _ = run_browser(&mut terminal, &model, &mut Fake { calls: calls.clone(), link_error }, &mut Script(events.into()));
+    let _ = run_browser(&mut terminal, &model, &mut Fake { calls: calls.clone(), link_error, reviews }, &mut Script(events.into()));
     let buffer = terminal.backend().buffer();
     let lines = (0..24u16)
         .map(|y| (0..80u16).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string())
@@ -198,4 +206,16 @@ fn nothing_offers_to_approve_or_merge() {
     let lines = screen(chars("a"));
     let text = lines.join("\n").to_lowercase();
     assert!(!text.contains("approve") && !text.contains("merge"), "{text}");
+}
+
+#[test]
+fn the_risk_filter_offers_resolved_after_low_and_before_an_unrated_review() {
+    let reviews = vec![row("COM-11", "orq-cli", "ready", "-", false), row("COM-12", "orq-cli", "ready", "resolved", false), row("COM-13", "orq-cli", "ready", "low", false)];
+    let shown = |presses: &str| run_with(Some(reviews.clone()), None, chars(presses)).0;
+    let first = shown("x");
+    assert!(has(&first, "Risk: low") && has(&first, "COM-13") && !has(&first, "COM-12"), "{first:?}");
+    let second = shown("xx");
+    assert!(has(&second, "Risk: resolved") && has(&second, "COM-12") && !has(&second, "COM-13"), "{second:?}");
+    let third = shown("xxx");
+    assert!(has(&third, "Risk: -") && has(&third, "COM-11") && !has(&third, "COM-12"), "{third:?}");
 }

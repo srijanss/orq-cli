@@ -308,7 +308,7 @@ a { display: inline-block; min-height: 44px; line-height: 44px; }
 .content p[role=alert]:not(.banner) { margin: 0.5rem 0; color: var(--status-failed); font-size: 0.875rem; }
 p[role=alert]:empty { display: none; }
 .error-text { color: var(--status-failed); font-size: 0.875rem; }
-.badge-risk-other { color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); }
+.badge-risk-other, .badge-risk-resolved { color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); }
 .not-found { max-width: 24rem; }
 
 .projects { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr)); gap: 0.75rem; }

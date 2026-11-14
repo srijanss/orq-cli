@@ -1674,7 +1674,7 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
             json!({
                 "generated_at": row.generated_at,
                 "run_id": row.run_id, "feature": row.feature, "project": row.project, "current": row.current,
-                "status": row.status, "risk": row.risk, "stale": row.stale, "link": link,
+                "status": row.status, "risk": row.risk, "fixed_risk": row.fixed_risk, "stale": row.stale, "link": link,
                 "freshness": freshness, "link_allowed": link_allowed,
             })
         })

@@ -202,10 +202,15 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
 
 // A risk the reference knows gets its coloured badge. A placeholder such as "-" means the review gave
 // no rating, which a muted pill says plainly; any other word is shown as it came, in the same shape.
-function RiskBadge({ risk }) {
+// "resolved" means the review found risks and every one is fixed; its label names the worst of them.
+function RiskBadge({ risk, fixed }) {
   if (risk === undefined || risk === null) return null;
   const word = String(risk).trim();
   const kind = "risk-" + word.toLowerCase();
+  if (kind === "risk-resolved") {
+    const worst = typeof fixed === "string" ? fixed.trim() : "";
+    return <Badge kind={kind} title={worst === "" ? "Risks fixed" : "Risks fixed (highest was " + worst + ")"} />;
+  }
   if (Object.hasOwn(BADGES, kind)) return <Badge kind={kind} />;
   const unrated = word === "" || /^(-+|none|n\/a|unknown)$/i.test(word);
   return <span className="badge badge-risk-other">{unrated ? "No risk rating" : word + " risk"}</span>;
@@ -235,7 +240,7 @@ function ReviewRow({ run, detailPrefix, selected = false, showProject = false })
       </span>
       <span className="review-tags">
         <span className="review-status">{String(run.status)}</span>
-        <RiskBadge risk={run.risk} />
+        <RiskBadge risk={run.risk} fixed={run.fixed_risk} />
         <FreshnessPill freshness={freshness} />
       </span>
     </>
@@ -269,9 +274,14 @@ function reviewedToday(run, now) {
   return when !== null && when.getFullYear() === now.getFullYear() && when.getMonth() === now.getMonth() && when.getDate() === now.getDate();
 }
 
+// Risk choices go from most to least severe, then "resolved"; anything else follows by name.
+const RISK_ORDER = ["critical", "high", "medium", "low", "resolved"];
+const riskRank = (value) => (RISK_ORDER.includes(value) ? RISK_ORDER.indexOf(value) : RISK_ORDER.length);
+const byRisk = (a, b) => riskRank(a) - riskRank(b) || (a < b ? -1 : a > b ? 1 : 0);
+
 const REVIEW_FILTERS = [
   ["status", "Status", (run) => String(run.status)],
-  ["risk", "Risk", (run) => (run.risk === undefined || run.risk === null ? "" : String(run.risk))],
+  ["risk", "Risk", (run) => (run.risk === undefined || run.risk === null ? "" : String(run.risk)), byRisk],
   ["freshness", "Freshness", rowFreshness],
 ];
 
@@ -310,12 +320,12 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
         </button>
       </div>
       <div className="filters review-filters" role="group" aria-label="Filter reviews">
-        {REVIEW_FILTERS.map(([key, label, read]) => (
+        {REVIEW_FILTERS.map(([key, label, read, order]) => (
           <label key={key}>
             <span className="sr-only">{label}</span>
             <select data-filter={key} value={chosen[key] || ""} onChange={(event) => setChosen({ ...chosen, [key]: event.target.value })}>
               <option value="">{label + ": All"}</option>
-              {[...new Set(runs.map(read).filter((value) => value !== ""))].sort().map((value) => (
+              {[...new Set(runs.map(read).filter((value) => value !== ""))].sort(order).map((value) => (
                 <option key={value} value={value}>{value}</option>
               ))}
             </select>
@@ -392,7 +402,7 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
         <h2>{row !== null ? String(row.feature) : "Review report"}</h2>
         <span className="review-tags">
           <FreshnessPill freshness={freshness} />
-          {row !== null ? <RiskBadge risk={row.risk} /> : null}
+          {row !== null ? <RiskBadge risk={row.risk} fixed={row.fixed_risk} /> : null}
           {row !== null ? <span className="review-status">{String(row.status)}</span> : null}
         </span>
       </div>

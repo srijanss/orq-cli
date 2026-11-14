@@ -3946,6 +3946,7 @@ mod ledger_backend_tests {
             current: true,
             status: "ready".into(),
             risk: "low".into(),
+            fixed_risk: None,
             stale: false,
             generated_at: None,
         };
@@ -3977,6 +3978,7 @@ mod ledger_backend_tests {
             current,
             status: "ready".into(),
             risk: "low".into(),
+            fixed_risk: None,
             stale: false,
             generated_at: None,
         };
@@ -4006,6 +4008,7 @@ mod ledger_backend_tests {
             current: true,
             status: "ready".into(),
             risk: "low".into(),
+            fixed_risk: None,
             stale: false,
             generated_at: None,
         };

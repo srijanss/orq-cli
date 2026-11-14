@@ -154,3 +154,26 @@ fn insecure_links_are_dropped_not_passed_on() {
     assert!(get(&roots, "/api/reviews/run-1", lan(), Some(&auth)).1["link"].is_null());
     assert!(get(&roots, "/api/reviews", lan(), Some(&auth)).1["reviews"][0]["link"].is_null());
 }
+
+fn seed_risks(roots: &StorageRoots, run_id: &str, risks: serde_json::Value) {
+    let store = Store::open(&roots.database()).unwrap();
+    let body = serde_json::to_vec(&json!({"status": "current", "summary": {}, "files": [], "tests": {"status": "passed", "commands": []}, "risks": risks, "rounds": [], "gaps": []})).unwrap();
+    store.save_review(&roots.data, run_id, OURS, run_id, HEAD_A, &body).unwrap();
+}
+
+#[test]
+fn a_rows_risk_is_its_highest_open_finding_and_all_fixed_reads_resolved_with_the_worst_fixed() {
+    let roots = roots("open-risk");
+    seed_risks(&roots, "run-fixed", json!([{"severity": "medium", "unresolved": false}, {"severity": "high", "unresolved": false}]));
+    seed_risks(&roots, "run-mixed", json!([{"severity": "high", "unresolved": false}, {"severity": "medium", "unresolved": true}]));
+    seed_risks(&roots, "run-unsaid", json!([{"severity": "low", "unresolved": false}, {"severity": "high"}]));
+    seed_risks(&roots, "run-none", json!([]));
+    let (status, body) = get(&roots, "/api/reviews", lan(), Some(&bearer()));
+    assert_eq!(status, 200, "{body}");
+    let row = |id: &str| body["reviews"].as_array().unwrap().iter().find(|r| r["run_id"] == id).cloned().unwrap();
+    let pair = |id: &str| { let r = row(id); (r["risk"].clone(), r["fixed_risk"].clone()) };
+    assert_eq!(pair("run-fixed"), (json!("resolved"), json!("high")), "{body}");
+    assert_eq!(pair("run-mixed"), (json!("medium"), json!(null)), "{body}");
+    assert_eq!(pair("run-unsaid"), (json!("high"), json!(null)), "{body}");
+    assert_eq!(pair("run-none"), (json!("-"), json!(null)), "{body}");
+}

@@ -97,3 +97,32 @@ fn clearing_a_filter_brings_back_its_rows_while_another_filter_stays() {
     assert_eq!(rows(&frames[n - 2]), ["f-newest", "f-middle"], "status cleared, risk stays: {out}");
     assert_eq!(rows(&frames[n - 1]), ["f-newest", "f-middle", "f-old", "f-undated"], "all back, newest first: {out}");
 }
+
+#[test]
+fn a_review_with_every_finding_fixed_shows_risks_fixed_naming_the_worst_and_sorts_after_low() {
+    let label = "Risks fixed (highest was high)";
+    let badge = format!(".badge-risk-resolved[aria-label=\"{label}\"][title=\"{label}\"]");
+    let reviews = json!({"status": 200, "json": {"reviews": [
+        {"run_id": "run-1", "feature": "f-low", "status": "approved", "risk": "low", "stale": false, "freshness": "current", "generated_at": "2026-11-01T10:00:00Z"},
+        {"run_id": "run-2", "feature": "f-fixed", "status": "approved", "risk": "resolved", "fixed_risk": "high", "stale": false, "freshness": "current", "generated_at": "2026-11-05T10:00:00Z"},
+        {"run_id": "run-3", "feature": "f-medium", "status": "approved", "risk": "medium", "stale": false, "freshness": "current", "generated_at": "2026-11-03T10:00:00Z"},
+        {"run_id": "run-4", "feature": "f-high", "status": "approved", "risk": "high", "stale": false, "freshness": "current", "generated_at": "2026-11-02T10:00:00Z"}
+    ]}});
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let steps = json!([{"submit": TOKEN}, {"set": "select[data-filter=risk]", "value": "resolved"}]);
+    let scenario = json!({"url": "/reviews", "responses": [reviews], "steps": steps, "selectors": [badge]});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let listed = &out["frames"][1];
+    assert_eq!(listed["settled"]["matches"][&badge], 1, "{out}");
+    assert!(texts(listed).contains("Risks fixed"), "{out}");
+    let all: Vec<&str> = listed["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
+    let at = all.iter().position(|t| *t == "Risk: All").unwrap();
+    assert_eq!(all[at + 1..at + 5], ["high", "medium", "low", "resolved"], "{out}");
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(rows(last), ["f-fixed"], "{out}");
+}

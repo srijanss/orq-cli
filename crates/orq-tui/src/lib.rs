@@ -2220,9 +2220,9 @@ struct ReviewsState {
     typing: bool,
 }
 
-/// Orders risk levels from most to least severe; unknown levels sort last, by name.
+/// Orders risk levels from most to least severe, then `resolved` (every finding fixed); unknown levels sort last, by name.
 fn risk_rank(level: &str) -> (usize, String) {
-    let rank = ["critical", "high", "medium", "low"].iter().position(|l| *l == level).unwrap_or(4);
+    let rank = ["critical", "high", "medium", "low", "resolved"].iter().position(|l| *l == level).unwrap_or(5);
     (rank, level.to_string())
 }
 

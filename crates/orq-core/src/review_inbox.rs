@@ -19,7 +19,12 @@ pub struct InboxRow {
     /// project id (two projects may share a display name).
     pub current: bool,
     pub status: String,
+    /// The highest severity among the report's open findings; `resolved` when it has findings and
+    /// every one is fixed; `-` when it has none. A finding that does not say whether it is resolved
+    /// counts as open.
     pub risk: String,
+    /// When `risk` is `resolved`, the highest severity that was fixed; otherwise `None`.
+    pub fixed_risk: Option<String>,
     pub stale: bool,
     /// When the report was generated, as plain UTC text (`2026-11-03T10:20:30Z`); `None` when absent or odd.
     pub generated_at: Option<String>,
@@ -79,12 +84,12 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
         // A lifecycle that cannot be read is unknown, never treated as "no lifecycle".
         let lifecycles = store.lifecycles_for_run(&record.run_id);
         let lifecycle = lifecycles.as_ref().ok().and_then(|all| all.iter().rev().find(|l| l.reported_head_sha == record.head_sha));
-        let (mut status, risk) = match &report {
+        let (mut status, (risk, fixed_risk)) = match &report {
             Ok(report) => (
                 if report["status"] == "current" { "ready" } else { "draft" }.to_string(),
-                highest_risk(report),
+                open_risk(report),
             ),
-            Err(_) => ("unreadable".to_string(), "-".to_string()),
+            Err(_) => ("unreadable".to_string(), ("-".to_string(), None)),
         };
         if report.is_ok() {
             if let Some(l) = lifecycle {
@@ -102,6 +107,7 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
             current: record.project == current_project_id,
             status,
             risk,
+            fixed_risk,
             stale: unknown || lifecycle.is_some_and(|l| l.stale),
             generated_at: report.as_ref().ok().and_then(generated_at),
         });
@@ -208,16 +214,23 @@ fn display_project(id: &str) -> String {
     }
 }
 
-fn highest_risk(report: &Value) -> String {
+/// The row's risk and, when every finding is fixed, the highest fixed severity (see [`InboxRow`]).
+fn open_risk(report: &Value) -> (String, Option<String>) {
+    let risks: Vec<&Value> = report["risks"].as_array().into_iter().flatten().collect();
+    // Only `unresolved: false` marks a finding as fixed; anything else leaves it open.
+    let (fixed, open): (Vec<&Value>, Vec<&Value>) = risks.into_iter().partition(|r| r["unresolved"] == Value::Bool(false));
+    if !open.is_empty() {
+        return (highest_severity(&open).unwrap_or_else(|| "-".to_string()), None);
+    }
+    match highest_severity(&fixed) {
+        Some(level) => ("resolved".to_string(), Some(level)),
+        None => ("-".to_string(), None),
+    }
+}
+
+fn highest_severity(risks: &[&Value]) -> Option<String> {
     let rank = |level: &str| ["critical", "high", "medium", "low"].iter().position(|l| *l == level).unwrap_or(4);
-    report["risks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|r| r["severity"].as_str())
-        .min_by_key(|level| rank(level))
-        .unwrap_or("-")
-        .to_string()
+    risks.iter().filter_map(|r| r["severity"].as_str()).min_by_key(|level| rank(level)).map(str::to_string)
 }
 
 fn text(value: &Value) -> String {
