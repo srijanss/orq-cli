@@ -720,6 +720,23 @@ fn the_claude_push_switch_comes_from_the_files_or_the_environment() {
     );
 }
 
+/// A project whose gate is not a full suite lets the implement session run the full suite itself.
+#[test]
+fn the_full_suite_in_session_switch_comes_from_the_files_or_the_environment() {
+    let r = repo("fullsuiteinsession");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().full_suite_in_session, None);
+    shared(&r, "full_suite_in_session = true\n");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().full_suite_in_session, Some(true));
+    let env = |key: &str| (key == "ORQ_FULL_SUITE_IN_SESSION").then(|| "0".to_string());
+    assert_eq!(load_run_settings(&r, &env).unwrap().full_suite_in_session, Some(false));
+
+    assert!(invalid("full_suite_in_session = \"yes\"\n", "fsisstr").contains("full_suite_in_session"));
+    let bad = |key: &str| (key == "ORQ_FULL_SUITE_IN_SESSION").then(|| "maybe".to_string());
+    assert!(
+        matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_FULL_SUITE_IN_SESSION")
+    );
+}
+
 /// The project adds to what a run's session may do without asking, as permission rules.
 #[test]
 fn allowed_tools_are_permission_rules_the_private_file_and_environment_override() {

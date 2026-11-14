@@ -70,6 +70,9 @@ pub struct RunSettings {
     pub compact_window: Option<u32>,
     /// Permission rules a run's session may use without asking, beside orq's own; `None` adds none.
     pub allowed_tools: Option<Vec<String>>,
+    /// The implement session may run the full suite itself, for a project whose gate is not one (off when
+    /// unset: the session is told the gate runs it).
+    pub full_suite_in_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +121,7 @@ struct Layer {
     branch_prefix: Option<String>,
     compact_window: Option<u32>,
     allowed_tools: Option<Vec<String>>,
+    full_suite_in_session: Option<bool>,
 }
 
 impl Layer {
@@ -148,6 +152,7 @@ impl Layer {
             branch_prefix: self.branch_prefix.or(lower.branch_prefix),
             compact_window: self.compact_window.or(lower.compact_window),
             allowed_tools: self.allowed_tools.or(lower.allowed_tools),
+            full_suite_in_session: self.full_suite_in_session.or(lower.full_suite_in_session),
         }
     }
 }
@@ -194,6 +199,7 @@ pub fn load_run_settings(
         branch_prefix: merged.branch_prefix,
         compact_window: merged.compact_window,
         allowed_tools: merged.allowed_tools,
+        full_suite_in_session: merged.full_suite_in_session,
     })
 }
 
@@ -470,6 +476,13 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
                         .ok_or_else(|| bad("must be true or false"))?,
                 )
             }
+            "full_suite_in_session" => {
+                layer.full_suite_in_session = Some(
+                    value
+                        .as_bool()
+                        .ok_or_else(|| bad("must be true or false"))?,
+                )
+            }
             other => return Err(invalid(label, format!("unknown setting {other}"))),
         }
     }
@@ -586,6 +599,13 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
             "1" | "true" => true,
             "0" | "false" => false,
             _ => return Err(invalid("ORQ_CLAUDE_PUSH", "must be 1, 0, true or false")),
+        });
+    }
+    if let Some(v) = get("ORQ_FULL_SUITE_IN_SESSION") {
+        layer.full_suite_in_session = Some(match v.trim() {
+            "1" | "true" => true,
+            "0" | "false" => false,
+            _ => return Err(invalid("ORQ_FULL_SUITE_IN_SESSION", "must be 1, 0, true or false")),
         });
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {

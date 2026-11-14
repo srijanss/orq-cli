@@ -38,6 +38,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(
@@ -71,6 +72,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     // The implementer model must belong to the adapter's own harness.
     assert!(matches!(claude.implement_argv(&request), Err(AdapterError::WrongHarness { .. })));
@@ -103,6 +105,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(&argv[..4], ["--model", "sonnet", "--effort", "high"]);
@@ -126,6 +129,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     assert!(matches!(
         claude.implement_argv(&request),
@@ -146,6 +150,7 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(argv.len(), 5, "the context stays inside the one prompt argument");
@@ -197,6 +202,7 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
 
     let argv = claude.implement_argv(&request).unwrap();
@@ -221,6 +227,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
             remote_control: None,
             handoff: None,
             review_again: None,
+            leave_full_suite_to_gate: false,
         })
     };
     let argv = ask("/my repo/.git/orq/exit").unwrap();
@@ -244,6 +251,7 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
             remote_control: name,
             handoff: None,
             review_again: None,
+            leave_full_suite_to_gate: false,
         })
     };
     let argv = ask(Some("orq/com-02")).unwrap();
@@ -329,6 +337,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     let argv = claude.implement_argv(&request).unwrap();
     let prompt = &argv[4];
@@ -363,6 +372,7 @@ fn a_group_implement_request_asks_for_every_feature_to_be_completed_the_usual_wa
         remote_control: None,
         handoff: None,
         review_again: None,
+        leave_full_suite_to_gate: false,
     };
     let prompt = claude.implement_argv(&request).unwrap().pop().unwrap();
     assert!(prompt.contains("Complete every one of these features"), "{prompt}");

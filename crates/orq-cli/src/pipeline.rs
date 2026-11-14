@@ -980,6 +980,9 @@ fn stages(
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
                     review_again: review_again.zip(open_findings.as_deref()).map(|(review, findings)| orq_agents::ReviewAgain { from: &review.reviewed_head, findings }),
+                    // The gate runs the full suite after the session, so the session need not; a project
+                    // whose gate is not a full suite opts out.
+                    leave_full_suite_to_gate: options.gate && settings.full_suite_in_session != Some(true),
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {

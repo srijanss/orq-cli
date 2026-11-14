@@ -258,6 +258,45 @@ fn extra_context_reaches_the_agent_inside_the_one_prompt_argument() {
     assert!(prompt.contains("implement.done"), "the session is asked for its exit marker: {prompt}");
 }
 
+/// What the implement prompt says when orq's gate will run the full suite after the session.
+const LEAVE_FULL_SUITE: &str = "orq's gate runs the full suite after review";
+
+/// The prompt of the implement session a run with `extra` arguments and `settings` (a `.orq/run.toml`) starts.
+fn implement_prompt_of(tag: &str, settings: Option<&str>, extra: &[&str]) -> String {
+    let w = world(tag);
+    if let Some(settings) = settings {
+        std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+        std::fs::write(w.repo.root().join(".orq/run.toml"), settings).unwrap();
+    }
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = run_with(&w, &agent, &github(), &[&["--no-ci-check"], extra].concat());
+    let args = agent.first_run().unwrap_or_else(|| panic!("the agent ran: {}", stderr(&output))).args;
+    args.last().unwrap().clone()
+}
+
+#[test]
+fn full_suite_is_left_to_the_gate_by_the_implement_prompt_of_a_gated_run() {
+    let prompt = implement_prompt_of("fullsuitegated", None, &[]);
+    assert!(prompt.contains(LEAVE_FULL_SUITE), "{prompt}");
+    assert!(prompt.contains("run_tests"), "{prompt}");
+}
+
+/// Without a gate nothing else runs the full suite, so the prompt says nothing about leaving it.
+#[test]
+fn full_suite_is_not_left_to_a_gate_a_no_gate_run_does_not_have() {
+    let prompt = implement_prompt_of("fullsuitenogate", None, &["--no-gate"]);
+    assert!(prompt.starts_with("/implement-and-review COM-01"), "{prompt}");
+    assert!(!prompt.contains(LEAVE_FULL_SUITE), "{prompt}");
+}
+
+/// A project whose gate is not a full suite keeps today's prompt.
+#[test]
+fn full_suite_in_session_setting_keeps_the_implement_prompt_silent_about_the_full_suite() {
+    let prompt = implement_prompt_of("fullsuiteinsession", Some("full_suite_in_session = true\n"), &[]);
+    assert!(prompt.starts_with("/implement-and-review COM-01"), "{prompt}");
+    assert!(!prompt.contains(LEAVE_FULL_SUITE), "{prompt}");
+}
+
 #[test]
 fn bad_extra_context_is_refused_before_a_run_is_recorded() {
     let repo = GitFixture::new();

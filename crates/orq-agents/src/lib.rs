@@ -68,6 +68,9 @@ pub struct ImplementRequest<'a> {
     /// The run's review escalated and a human asked for another: the session reviews and fixes the
     /// commits after the escalated head instead of implementing the features.
     pub review_again: Option<ReviewAgain<'a>>,
+    /// orq's gate runs the full suite after the session: the session is told to run only the tests for
+    /// what it changed. `false` keeps the prompt that says nothing about it.
+    pub leave_full_suite_to_gate: bool,
 }
 
 /// Where a review asked for again starts, and the findings that were open when it escalated.
@@ -354,6 +357,9 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
 /// How a session says how it went in its finish marker: the first line decides (see the orchestrator).
 const MARKER_FORMAT: &str = " The first line of that file says how it went: leave it empty, or write OK, when the work is done; any notes go after OK. Write PROBLEM on the first line, and what went wrong after it, only if the work is not done, a required review could not run or did not end done, or tests are failing.";
 
+/// What an implement session is told when orq's gate runs the full suite after it.
+const LEAVE_FULL_SUITE_TO_GATE: &str = "Testing: run only the tests for what you changed, through run_tests; don't run the full suite or workspace-wide test commands (including a full-suite regression sweep), because orq's gate runs the full suite after review and a gate-fix session repairs what it finds.";
+
 /// The one prompt argument of an implementer session on `harness`, after checking everything the
 /// request puts into it. `command` is how that harness names the implement-and-review skill. Every
 /// adapter builds its prompt here so they all refuse the same unsafe values.
@@ -400,6 +406,10 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str(&again.findings.replace('\0', " "));
     } else if request.features.len() > 1 {
         prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
+    }
+    if request.leave_full_suite_to_gate {
+        prompt.push_str("\n\n");
+        prompt.push_str(LEAVE_FULL_SUITE_TO_GATE);
     }
     if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
         prompt.push_str("\n\nExtra context:\n");
