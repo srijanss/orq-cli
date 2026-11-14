@@ -121,3 +121,19 @@ fn a_resume_may_take_back_the_members_no_run_after_the_newest_took_whatever_led_
     // A feature that never ran has nothing that took it.
     assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-09"])).unwrap(), names(&["COM-09"]));
 }
+
+#[test]
+fn a_run_of_the_project_whose_history_cannot_be_read_stops_the_resume_rather_than_being_passed_over() {
+    let w = world("unreadable");
+    failed_run(&w, "run-1700000001-1", "COM-02", "2026-01-01T00:00:01Z");
+    let group = failed_run(&w, "run-1700000002-1", "COM-04", "2026-01-01T00:00:02Z");
+    record_group(&w.store, &group, &names(&["COM-04", "COM-02"])).unwrap();
+    let events = w.repo.parent().unwrap().join("state/runs/run-1700000002-1/events.jsonl");
+    let mut text = fs::read_to_string(&events).unwrap();
+    text.push_str("not an event\n");
+    fs::write(&events, text).unwrap();
+
+    let refused = resumable_members(&w.store, "repo-1", &names(&["COM-02"])).unwrap_err();
+
+    assert!(refused.contains("run-1700000002-1"), "{refused}");
+}

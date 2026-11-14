@@ -132,10 +132,34 @@ pub fn newest_run_of(store: &RunStore, project_id: &str, feature_id: &str) -> Re
 }
 
 fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<RunRecord>, String> {
-    Ok(newest_ordered(store, project_id, feature_id)?.map(|(_, record)| record))
+    let mut latest: Option<(RunOrder, RunRecord)> = None;
+    for run_id in store
+        .run_ids()
+        .map_err(|e| format!("cannot list the runs: {e:?}"))?
+    {
+        let Ok(record) = store.load(&run_id) else {
+            continue;
+        };
+        if record.project_id != project_id || record.feature_id != feature_id {
+            continue;
+        }
+        let order = run_order(&run_id, &store.events(&run_id).unwrap_or_default());
+        if latest.as_ref().is_none_or(|(best, _)| *best < order) {
+            latest = Some((order, record));
+        }
+    }
+    Ok(latest.map(|(_, record)| record))
 }
 
-/// The runs of `project_id` with their order and events, the unreadable ones left out.
+fn run_order(run_id: &str, events: &[Event]) -> RunOrder {
+    RunOrder {
+        started: events.first().map(|e| e.occurred_at.clone()).unwrap_or_default(),
+        id: id_key(run_id),
+    }
+}
+
+/// The runs of `project_id` with their order and events. A run whose events cannot be read is an
+/// error: when it began and what it took are unknown, so nothing may be assumed about it.
 fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, RunRecord, Vec<Event>)>, String> {
     let mut runs = Vec::new();
     for run_id in store
@@ -148,22 +172,12 @@ fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, Run
         if record.project_id != project_id {
             continue;
         }
-        let events = store.events(&run_id).unwrap_or_default();
-        let order = RunOrder {
-            started: events.first().map(|e| e.occurred_at.clone()).unwrap_or_default(),
-            id: id_key(&run_id),
-        };
-        runs.push((order, record, events));
+        let events = store
+            .events(&run_id)
+            .map_err(|e| format!("cannot tell what run {run_id} took: its events cannot be read: {e:?}"))?;
+        runs.push((run_order(&run_id, &events), record, events));
     }
     Ok(runs)
-}
-
-fn newest_ordered(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<(RunOrder, RunRecord)>, String> {
-    Ok(project_runs(store, project_id)?
-        .into_iter()
-        .filter(|(_, record, _)| record.feature_id == feature_id)
-        .map(|(order, record, _)| (order, record))
-        .max_by(|a, b| a.0.cmp(&b.0)))
 }
 
 /// The `members` (led by the first) that a resume of their newest run may still take: those no run
