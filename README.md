@@ -32,6 +32,18 @@ A project set up for the old orchestrate script keeps its gate. When nothing abo
 
 The full list of keys is in `crates/orq-orchestrator/src/run_settings.rs`.
 
+### Setup steps (installing dependencies)
+
+Before the agent session and the gate, a run installs dependencies in its worktree. It runs the `setup` steps from the settings first, then one install step it detects from the worktree **root** only: `uv sync --locked` for `uv.lock`, or `npm ci` / `pnpm` / `yarn` / `bun` for a root `package.json` with its lockfile. Steps run from the worktree root, each as an argv list, and their output goes to the run's `setup.log`. A failed step fails the run at setup.
+
+A project whose packages live in a subfolder must name them, because detection does not look there. This repository's are in `crates/orq-remote/web-src`. Without them, the gate's `orq-remote` tests that check for them (`crates/orq-remote/tests/web_deps/mod.rs`, used by `web_a11y.rs` and others) fail with "node is installed but the web dependencies are not", and the run is blocked at `gate_fix` as an unrelated failure.
+
+```toml
+setup = [["npm", "ci", "--prefix", "crates/orq-remote/web-src"]]
+```
+
+This line is currently set only in this machine's private `.git/orq/run.toml` (added 2026-11-14), not in a checked-in `.orq/run.toml`. A fresh clone or another machine needs it added to either file. A `setup` list in the private file replaces the checked-in one rather than adding to it, so keep the two identical if both are set. To recover a run already blocked this way, run `npm ci` in `crates/orq-remote/web-src` inside the run's worktree and resume it. See `docs/run-setup-web-deps-draft.md`.
+
 ## Running a feature
 
 ```
