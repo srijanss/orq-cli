@@ -847,3 +847,21 @@ fn passing_node_modules_beside_another_ignored_file_keep_the_worktree_naming_tha
     let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
     assert_eq!(reason, "the worktree has uncommitted changes: local.cfg");
 }
+
+#[test]
+fn a_lockfile_committed_as_a_symlink_into_node_modules_keeps_the_worktree_and_its_packages() {
+    let w = world("lockfile-symlink");
+    ignore(&w, "node_modules/\n");
+    install(&w, "web/node_modules");
+    write(&w, "web/node_modules/.package-lock.json", "{}\n");
+    write(&w, "web/package.json", "{}\n");
+    std::os::unix::fs::symlink("node_modules/.package-lock.json", w.worktree.join("web/package-lock.json")).unwrap();
+    git(&w.worktree, &["add", "--", "web/package.json", "web/package-lock.json"]);
+    git(&w.worktree, &["commit", "-q", "-m", "manifests"]);
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    assert!(reason.contains("web/node_modules/"), "{reason}");
+    assert!(w.worktree.join("web/node_modules/.bin/esbuild").exists());
+}

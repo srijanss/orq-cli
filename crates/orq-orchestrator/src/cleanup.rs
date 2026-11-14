@@ -279,12 +279,13 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
         args.extend(["--", prefix.as_str()]);
     }
     let committed: Vec<String> = match git_raw(worktree, &args) {
-        // Each entry is "mode type sha\tpath"; only a plain file counts.
+        // Each entry is "mode type sha\tpath"; only a plain file counts. A link (mode 120000) is a
+        // blob too, but what it points at may be uncommitted, even inside the install folder itself.
         Ok(out) if out.success => out
             .stdout
             .split('\0')
             .filter_map(|entry| entry.split_once('\t'))
-            .filter(|(meta, _)| meta.split(' ').nth(1) == Some("blob"))
+            .filter(|(meta, _)| matches!(meta.split(' ').next(), Some("100644" | "100755")))
             .filter_map(|(_, name)| name.strip_prefix(&prefix).map(str::to_string))
             .collect(),
         _ => Vec::new(),
