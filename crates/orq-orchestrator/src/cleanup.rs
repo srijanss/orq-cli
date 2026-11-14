@@ -291,18 +291,21 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
     if !project.is_empty() {
         args.extend(["--", prefix.as_str()]);
     }
-    let committed: Vec<String> = match git_raw(worktree, &args) {
+    let listing: Result<Vec<String>, String> = match git_raw(worktree, &args) {
         // Each entry is "mode type sha\tpath"; only a plain file counts. A link (mode 120000) is a
         // blob too, but what it points at may be uncommitted, even inside the install folder itself.
-        Ok(out) if out.success => out
+        Ok(out) if out.success => Ok(out
             .stdout
             .split('\0')
             .filter_map(|entry| entry.split_once('\t'))
             .filter(|(meta, _)| matches!(meta.split(' ').next(), Some("100644" | "100755")))
             .filter_map(|(_, name)| name.strip_prefix(&prefix).map(str::to_string))
-            .collect(),
-        _ => Vec::new(),
+            .collect()),
+        Ok(out) => Err(out.stderr.trim().to_string()),
+        Err(err) => Err(format!("{err:?}")),
     };
+    // Nothing counts as committed when the commit cannot be read, so the folder is never let go then.
+    let committed = listing.as_ref().cloned().unwrap_or_default();
     let is_committed = |name: &str| committed.iter().any(|c| c == name);
     if folder.lockfiles.iter().any(|(lock, manifest)| is_committed(lock) && is_committed(manifest)) {
         return Ok(());
@@ -319,6 +322,10 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
         folder.manifests[0],
         on_disk.unwrap_or(&folder.lockfiles[0].0),
     );
+    if let Err(why) = listing {
+        let place = if prefix.is_empty() { "the worktree" } else { prefix.as_str() };
+        return Err(format!("{what}; cannot tell what {place} has committed: {why}"));
+    }
     // A committed lockfile whose own manifest is not: it cannot be installed from as it stands.
     let unpaired = folder.lockfiles.iter().find(|(lock, _)| is_committed(lock));
     Err(match (unpaired, on_disk) {
