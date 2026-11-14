@@ -85,3 +85,14 @@ fn a_very_long_reason_is_cut_short() {
     assert!(line.len() < 1_200, "{}", line.len());
     assert!(line.ends_with('…'), "{line}");
 }
+
+/// The real reason reaches the server's log from the handler itself, for a start and for a resume, while
+/// the browser is answered with the generic 500 (checked in the child).
+#[test]
+fn a_failed_start_and_resume_put_the_real_reason_in_the_server_log() {
+    let out = run_child(std::process::Stdio::piped());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("orq-remote: run.start p-1 ready failed: /home/me/secret/start exploded\n"), "{log}");
+    assert!(log.contains("orq-remote: run.resume p-1 r-1 failed: /home/me/secret/resume exploded\n"), "{log}");
+}
