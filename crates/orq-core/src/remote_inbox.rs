@@ -737,8 +737,10 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
             audit(Outcome::Refused, None, Some(&why));
             reply(409, json!({ "error": why }))
         }
-        // The reason can name a path on this machine, so the caller is only told it failed.
-        Some(Err(_)) => {
+        // The reason can name a path on this machine, so the caller is only told it failed; the server's
+        // own log, which only the operator reads, says why.
+        Some(Err(why)) => {
+            eprintln!("{}", launch_failure_line("run.start", id, feature, &why));
             audit(Outcome::Refused, None, Some("the run could not be started"));
             error(500, "the run could not be started")
         }
@@ -967,8 +969,10 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
             audit(Outcome::Refused, Some(run), Some(&why));
             reply(409, json!({ "error": why }))
         }
-        // The reason can name a path on this machine, so the caller is only told it failed.
-        Some(Err(_)) => {
+        // The reason can name a path on this machine, so the caller is only told it failed; the server's
+        // own log, which only the operator reads, says why.
+        Some(Err(why)) => {
+            eprintln!("{}", launch_failure_line(action, id, run, &why));
             audit(Outcome::Refused, Some(run), Some(failed));
             error(500, failed)
         }
@@ -977,6 +981,22 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
             error(404, "not found")
         }
     }
+}
+
+/// How much of a failure's reason the server log keeps.
+const LOGGED_REASON_CAP: usize = 1000;
+
+/// One line for the server's log when a run could not be started or controlled: the action, project and
+/// feature or run, and the real reason, escaped so it stays on one line and cut short when long.
+pub fn launch_failure_line(action: &str, project: &str, target: &str, why: &str) -> String {
+    let shown = |text: &str, cap: usize| {
+        let mut kept: String = text.chars().take(cap).flat_map(char::escape_default).collect();
+        if text.chars().nth(cap).is_some() {
+            kept.push('…');
+        }
+        kept
+    };
+    format!("orq-remote: {action} {} {} failed: {}", shown(project, 100), shown(target, 100), shown(why, LOGGED_REASON_CAP))
 }
 
 /// Whether `run` can only be a run id, never a path.
