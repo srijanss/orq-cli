@@ -313,15 +313,12 @@ fn without_detach_flag(args: &[OsString]) -> Vec<OsString> {
     kept
 }
 
-/// The `members` a resume of `feature`'s newest run may take back although its agent marked them
-/// `completed`: those no later run took. None when the feature never ran.
-fn resumable_features(project: &orq_git::Project, feature: &str, members: &[String]) -> Result<Vec<String>, String> {
+/// The `members` (led by the first) a resume of their newest run may take back as its agent left
+/// them: those no run that started after it took. All of them when the lead never ran.
+fn resumable_features(project: &orq_git::Project, members: &[String]) -> Result<Vec<String>, String> {
     let root = pipeline::state_root().ok_or("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set")?;
     let store = orq_orchestrator::RunStore::new(&root);
-    match orq_orchestrator::newest_run_of(&store, &pipeline::project_id(project), feature)? {
-        Some(newest) => orq_orchestrator::features_no_later_run_took(&store, &newest, members),
-        None => Ok(Vec::new()),
-    }
+    orq_orchestrator::resumable_members(&store, &pipeline::project_id(project), members)
 }
 
 /// `orq run --repo <path> --feature <id> --remote <name> --target <branch>`: check that the
@@ -358,7 +355,7 @@ fn run(args: &[OsString]) -> ExitCode {
     // A resume takes its features as the run's agent left them; a fresh run needs them pending.
     let free = if parsed.resume {
         let members = group.clone().unwrap_or_else(|| vec![feature.to_string()]);
-        match resumable_features(&project, feature, &members) {
+        match resumable_features(&project, &members) {
             Ok(free) => Some(free),
             Err(message) => return fail(message),
         }

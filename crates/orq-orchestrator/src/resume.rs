@@ -132,7 +132,12 @@ pub fn newest_run_of(store: &RunStore, project_id: &str, feature_id: &str) -> Re
 }
 
 fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<RunRecord>, String> {
-    let mut latest: Option<(RunOrder, RunRecord)> = None;
+    Ok(newest_ordered(store, project_id, feature_id)?.map(|(_, record)| record))
+}
+
+/// The runs of `project_id` with their order and events, the unreadable ones left out.
+fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, RunRecord, Vec<Event>)>, String> {
+    let mut runs = Vec::new();
     for run_id in store
         .run_ids()
         .map_err(|e| format!("cannot list the runs: {e:?}"))?
@@ -140,23 +145,44 @@ fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result
         let Ok(record) = store.load(&run_id) else {
             continue;
         };
-        if record.project_id != project_id || record.feature_id != feature_id {
+        if record.project_id != project_id {
             continue;
         }
-        let started = store
-            .events(&run_id)
-            .ok()
-            .and_then(|events| events.first().map(|e| e.occurred_at.clone()))
-            .unwrap_or_default();
+        let events = store.events(&run_id).unwrap_or_default();
         let order = RunOrder {
-            started,
+            started: events.first().map(|e| e.occurred_at.clone()).unwrap_or_default(),
             id: id_key(&run_id),
         };
-        if latest.as_ref().is_none_or(|(best, _)| *best < order) {
-            latest = Some((order, record));
-        }
+        runs.push((order, record, events));
     }
-    Ok(latest.map(|(_, record)| record))
+    Ok(runs)
+}
+
+fn newest_ordered(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<(RunOrder, RunRecord)>, String> {
+    Ok(project_runs(store, project_id)?
+        .into_iter()
+        .filter(|(_, record, _)| record.feature_id == feature_id)
+        .map(|(order, record, _)| (order, record))
+        .max_by(|a, b| a.0.cmp(&b.0)))
+}
+
+/// The `members` (led by the first) that a resume of their newest run may still take: those no run
+/// of `project_id` that started after it took, whatever feature led that run. All of them when the
+/// lead never ran. Nothing is reconciled or changed.
+pub fn resumable_members(store: &RunStore, project_id: &str, members: &[String]) -> Result<Vec<String>, String> {
+    let Some(lead) = members.first() else {
+        return Ok(Vec::new());
+    };
+    let runs = project_runs(store, project_id)?;
+    let Some(newest) = runs.iter().filter(|(_, record, _)| &record.feature_id == lead).map(|(order, _, _)| order).max() else {
+        return Ok(members.to_vec());
+    };
+    let taken: Vec<String> = runs
+        .iter()
+        .filter(|(order, _, _)| order > newest)
+        .flat_map(|(_, record, events)| members_of(record, events))
+        .collect();
+    Ok(members.iter().filter(|m| !taken.contains(m)).cloned().collect())
 }
 
 /// [`plan_group_resume`] with the owner-liveness check supplied (pid, recorded start time).

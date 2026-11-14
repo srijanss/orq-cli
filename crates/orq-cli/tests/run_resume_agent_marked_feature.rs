@@ -227,3 +227,23 @@ fn a_failed_run_whose_feature_a_later_run_took_and_completed_is_not_resumed() {
     assert!(text(&output.stderr).contains("later run"), "{}", text(&output.stderr));
     assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
 }
+
+#[test]
+fn a_failed_run_whose_feature_a_later_group_led_by_another_left_in_progress_is_not_resumed() {
+    let w = world("later-group-in-progress");
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
+    run(&w, &failing_agent(), "completed", "first");
+    let failed_run = only_run(&w);
+    // Someone put the features back by hand, and a group led by COM-02 took COM-01 and failed too.
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
+    let group_agent = failing_agent();
+    let group = path_with(&w, &group_agent, "in_progress", "group");
+    let failed = orq(&w, group, &["run", "--group", "COM-02,COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+    assert!(text(&failed.stdout).contains("failed"), "{}\n{}", text(&failed.stdout), text(&failed.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress");
+
+    let output = resume(&w, &failed_run, &finishing_agent(), "in_progress", "second");
+
+    assert_ne!(output.status.code(), Some(0), "{}", text(&output.stdout));
+    assert!(text(&output.stderr).contains("later run"), "{}", text(&output.stderr));
+}

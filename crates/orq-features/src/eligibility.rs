@@ -25,7 +25,7 @@ pub enum Ineligible {
     /// A resume takes a feature only as its agent may have left it: `pending`, `in_progress` or
     /// `completed`; carries the actual status text.
     NotResumable { status: String },
-    /// The feature is `completed` and a later run took it: that run's work is what the status says.
+    /// A later run took the feature: that run's work, not this one's, is what its status says.
     TakenByLaterRun,
 }
 
@@ -53,7 +53,7 @@ impl std::fmt::Display for Ineligible {
                 write!(f, "feature is {status}, only a pending, in_progress or completed feature can be resumed")
             }
             Ineligible::TakenByLaterRun => {
-                write!(f, "feature is completed by a later run that took it, so this run cannot pick it up again")
+                write!(f, "a later run took the feature, so this run cannot pick it up again")
             }
         }
     }
@@ -71,7 +71,7 @@ pub fn check_run_eligibility<'a>(
 }
 
 /// As [`check_run_eligibility`] for resuming a run: the feature may be as the run's agent left it,
-/// `pending`, `in_progress`, or `completed` when it is in `free` (no later run took it).
+/// `pending`, `in_progress` or `completed`, when it is in `free` (no later run took it).
 pub fn check_resume_eligibility<'a>(
     ledger: &'a [FeatureEntry],
     feature_name: &str,
@@ -88,12 +88,13 @@ fn fresh(entry: &FeatureEntry) -> Result<(), Ineligible> {
     }
 }
 
-/// Whether `entry`'s status lets a resumed run take it, given the features no later run took.
+/// Whether a resumed run may take `entry`: its status is one a run leaves behind, and no later run
+/// took it (`free`), since that run, not this one, is what its status speaks for.
 fn resumable(entry: &FeatureEntry, free: &[String]) -> Result<(), Ineligible> {
     match entry.status.known() {
-        Some(FeatureStatus::Pending | FeatureStatus::InProgress) => Ok(()),
-        Some(FeatureStatus::Completed) if free.contains(&entry.feature_name) => Ok(()),
-        Some(FeatureStatus::Completed) => Err(Ineligible::TakenByLaterRun),
+        Some(FeatureStatus::Pending | FeatureStatus::InProgress | FeatureStatus::Completed) => {
+            free.contains(&entry.feature_name).then_some(()).ok_or(Ineligible::TakenByLaterRun)
+        }
         _ => Err(Ineligible::NotResumable { status: entry.status.as_str().to_string() }),
     }
 }

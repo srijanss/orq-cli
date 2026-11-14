@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{check_group_resume, newest_run_of, record_group, RunRecord, RunStore};
+use orq_orchestrator::{check_group_resume, newest_run_of, record_group, resumable_members, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -98,4 +98,26 @@ fn an_earlier_run_whose_feature_a_later_group_run_took_is_refused_saying_so() {
     let refused = check_group_resume(&w.store, &w.repo, "run-1700000001-1").unwrap_err();
 
     assert!(refused.contains("run-1700000002-1") && refused.contains("later run") && refused.contains("COM-02"), "{refused}");
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|n| n.to_string()).collect()
+}
+
+#[test]
+fn a_resume_may_take_back_the_members_no_run_after_the_newest_took_whatever_led_it() {
+    let w = world("resumable");
+    // Two runs of COM-02 in the same second: the newest is the one with the larger id, and the
+    // other is not later than it.
+    failed_run(&w, "run-1700000001-1", "COM-02", "2026-01-01T00:00:01Z");
+    failed_run(&w, "run-1700000001-2", "COM-02", "2026-01-01T00:00:01Z");
+    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(), names(&["COM-02", "COM-03"]));
+
+    // A later group led by COM-04 took COM-03.
+    let group = failed_run(&w, "run-1700000002-1", "COM-04", "2026-01-01T00:00:02Z");
+    record_group(&w.store, &group, &names(&["COM-04", "COM-03"])).unwrap();
+    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(), names(&["COM-02"]));
+
+    // A feature that never ran has nothing that took it.
+    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-09"])).unwrap(), names(&["COM-09"]));
 }
