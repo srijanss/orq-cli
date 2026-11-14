@@ -291,6 +291,35 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
     assert!(!pushed.contains("again.txt"), "the agent was not started again: {pushed}");
 }
 
+#[test]
+fn a_failed_run_resumed_detached_passes_the_pre_start_checks_and_continues_its_work() {
+    let w = world("detached-resume");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    set_gate(&w, "true");
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
+
+    let output = resume_with(&w, &second_agent, &run_id, &["--detach"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("state: launched"), "{stdout}");
+    // The detached runner finishes on its own and pushes the stopped run's work.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let pushed = loop {
+        let listed = Command::new("git").arg("-C").arg(&w.remote).args(["ls-tree", "-r", "--name-only", "fix--COM-01"]).output().unwrap();
+        if listed.status.success() {
+            break String::from_utf8_lossy(&listed.stdout).into_owned();
+        }
+        assert!(std::time::Instant::now() < deadline, "the detached resume never pushed the run branch");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert!(pushed.contains("feature.txt"), "the stopped run's work was continued: {pushed}");
+    assert!(!pushed.contains("again.txt"), "the agent was not started again: {pushed}");
+}
+
 fn only_run_id(w: &World) -> String {
     let runs = w.state.join("orq/runs");
     std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned()
