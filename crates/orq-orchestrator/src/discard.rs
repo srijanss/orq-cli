@@ -101,15 +101,12 @@ pub fn discard_run_before_remove(
         if theirs.is_none() || ours.is_none() || theirs.and_then(|p| p.canonicalize().ok()) != ours.and_then(|p| p.canonicalize().ok()) {
             return Err(format!("{} is not the repository of {run_id}", repo.display()));
         }
-        // Uncommitted or untracked work is never deleted: the worktree and its branch stay.
-        // The flags override any configuration that would hide new files or submodule changes.
-        let dirty = is_dirty(&record.worktree).map_err(|reason| format!("cannot tell whether the worktree of {run_id} has uncommitted work: {reason}"))?;
-        // Ignored files are work too, unless they are installed packages a committed lockfile
-        // brings back or an ignored cache: an unforced `worktree remove` would delete them.
-        kept_reason = match crate::cleanup::uncommitted_work(&record.worktree).map_err(|e| e.to_string())? {
-            Some(work) => Some(work.reason()),
-            None => dirty.then(|| "the worktree has uncommitted changes".to_string()),
-        };
+        // Uncommitted, untracked or ignored work is never deleted: the worktree and its branch stay.
+        // Ignored files count unless they are installed packages a committed lockfile brings back or
+        // an ignored cache, as an unforced `worktree remove` would delete them.
+        kept_reason = uncommitted_work(&record.worktree)
+            .map_err(|reason| format!("cannot tell whether the worktree of {run_id} has uncommitted work: {reason}"))?
+            .map(|work| work.reason());
         if kept_reason.is_some() {
             kept_worktree = Some(record.worktree.clone());
         }
@@ -203,10 +200,7 @@ pub fn discard_run_before_remove(
 /// `None` when the branch would stay, because the worktree is gone or holds uncommitted work.
 pub fn discard_preview(store: &RunStore, run_id: &str, repo: &Path) -> Result<Option<DeletedBranch>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
-    if !record.worktree.exists()
-        || is_dirty(&record.worktree)?
-        || crate::cleanup::uncommitted_work(&record.worktree).map_err(|e| e.to_string())?.is_some()
-    {
+    if !record.worktree.exists() || uncommitted_work(&record.worktree)?.is_some() {
         return Ok(None);
     }
     branch_commits(repo, &record).map(Some)
@@ -267,12 +261,7 @@ pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[St
     Ok(free)
 }
 
-/// Whether `worktree` has uncommitted or untracked work. The flags override any configuration that
-/// would hide new files or submodule changes.
-fn is_dirty(worktree: &Path) -> Result<bool, String> {
-    let status = git_raw(worktree, &["status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none"]).map_err(|e| e.to_string())?;
-    if !status.success {
-        return Err(status.stderr.trim().to_string());
-    }
-    Ok(!status.stdout.is_empty())
+/// What in `worktree` would be lost with it, from one status scan; git's message when it cannot tell.
+fn uncommitted_work(worktree: &Path) -> Result<Option<crate::cleanup::UncommittedWork>, String> {
+    crate::cleanup::read_uncommitted_work(worktree).map_err(|e| e.to_string())?
 }

@@ -106,8 +106,15 @@ impl UncommittedWork {
     }
 }
 
-/// Whether `worktree` holds anything uncommitted besides the ignored files orq wrote itself.
+/// Whether `worktree` holds anything uncommitted besides the ignored files orq wrote itself. A status
+/// git cannot give counts as work it cannot read.
 pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork>, StoreError> {
+    Ok(read_uncommitted_work(worktree)?.unwrap_or(Some(UncommittedWork::Unreadable)))
+}
+
+/// [`uncommitted_work`] from one status scan, but a status git cannot give is git's message, for a
+/// caller that refuses to go on rather than keeping the worktree.
+pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<UncommittedWork>, String>, StoreError> {
     let status = git_raw(
         worktree,
         &[
@@ -117,12 +124,17 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
             "-z",
             "--untracked-files=all",
             "--ignored",
+            // A submodule's changes are work too, whatever the configuration says.
+            "--ignore-submodules=none",
         ],
     )?;
+    if !status.success {
+        return Ok(Err(status.stderr.trim().to_string()));
+    }
     // git_raw reads output lossily: a path that is not UTF-8 comes back as another name, which could
     // be taken for a cache directory of its own. Such a worktree is not judged, but kept.
-    if !status.success || status.stdout.contains(char::REPLACEMENT_CHARACTER) {
-        return Ok(Some(UncommittedWork::Unreadable));
+    if status.stdout.contains(char::REPLACEMENT_CHARACTER) {
+        return Ok(Ok(Some(UncommittedWork::Unreadable)));
     }
     // Untracked files are listed one by one, so an ignored directory is never exempt as a whole: each
     // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
@@ -142,12 +154,12 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
         })
     };
     let Some(entry) = status.stdout.split('\0').find(|entry| !entry.is_empty() && !own(entry)) else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
     // An entry is "XY path": the two status letters, a space, then the path.
     let path = entry.get(3..).unwrap_or(entry);
     let hint = if entry.starts_with("!! ") { ignored_hint(worktree, path, &installs)? } else { None };
-    Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) }))
+    Ok(Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) })))
 }
 
 /// What would have let the ignored `path` go with the worktree: what its install folder lacks, or,
