@@ -2487,7 +2487,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
               {facts.runs.map((run) => (
                 <li key={run.run_id} className="run">
                   <span className="run-id">{run.run_id}</span>
-                  <RunState state={run.state} ending={run.ending} />
+                  <RunState state={run.state} />
                   {run.stage ? <span>{"Stage: " + run.stage}</span> : null}
                   {RUN_ID.test(run.run_id) ? <button type="button" data-open={run.run_id} onClick={() => navigate("/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run.run_id))}>Open timeline</button> : null}
                 </li>
@@ -2589,7 +2589,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   );
 }
 
-const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", merged: "Merged" };
+const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused" };
 
 function isOrchestration(run) {
   const text = (value) => value === null || typeof value === "string";
@@ -2600,8 +2600,14 @@ function parseOrchestrations(data) {
   return data && Array.isArray(data.runs) && data.runs.every(isOrchestration) ? { rows: data.runs, actions: data.remote_actions === true } : null;
 }
 
-// The states a run can be in, needs-attention first, as the state filter offers them.
-const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "merged"];
+// The states a run is shown in, needs-attention first, as the state filter offers them.
+const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed"];
+
+// The state a run is shown, filtered and grouped in. A run merged by hand finished like a completed
+// one, so it is Completed; how it was delivered is said beside the pill, never in it.
+function shownState(state) {
+  return state === "merged" ? "completed" : state;
+}
 
 // By when each run last moved (its update, else its start), newest first or oldest first. The sort
 // is stable, so runs with the same time keep the server's order.
@@ -2611,23 +2617,34 @@ function byUpdated(runs, order) {
 }
 
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
-const RUN_ICONS = { running: "play", completed: "check", merged: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock" };
+const RUN_ICONS = { running: "play", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock" };
 
-// How a completed run that was delivered without a review ended: pushed, or merged into its base.
-const RUN_ENDINGS = { pushed: "Pushed", merged: "Merged locally" };
+// How a completed run that was delivered without a review was delivered: pushed, or merged into its base.
+const DELIVERED = { pushed: "Pushed", merged: "Merged locally" };
 
 // How a run delivers its work when it finishes, as its project's settings name it.
 const RUN_DELIVERIES = { review: "Open review", push: "Push only", merge_local: "Merge locally" };
 
-// The delivery a run's page shows, or null when the run has none the page knows.
+// The delivery a run's page shows: how a finished run was delivered, else the mode its project
+// delivers by, or null when the run has none the page knows. An ending the page does not know
+// falls back to the mode.
 function deliveryOf(run) {
+  if (run.state === "merged") return "Merged by hand";
+  if (run.state === "completed" && typeof run.ending === "string" && Object.hasOwn(DELIVERED, run.ending)) return DELIVERED[run.ending];
   return typeof run.delivery === "string" && Object.hasOwn(RUN_DELIVERIES, run.delivery) ? RUN_DELIVERIES[run.delivery] : null;
 }
 
-function RunState({ state, ending }) {
-  const known = Object.hasOwn(RUN_STATES, state);
-  const label = !known ? "Unknown" : state === "completed" && typeof ending === "string" && Object.hasOwn(RUN_ENDINGS, ending) ? RUN_ENDINGS[ending] : RUN_STATES[state];
-  return <span className={"run-state feature-state run-" + (known ? state : "unknown")}><Icon name={known ? RUN_ICONS[state] : "flag"} size={14} />{label}</span>;
+// How a finished run was delivered, as the quiet line under its pill in the list, or null when it is
+// not finished or the page does not know how.
+function endingOf(run) {
+  if (run.state === "merged") return "merged by hand";
+  return run.state === "completed" && typeof run.ending === "string" && Object.hasOwn(DELIVERED, run.ending) ? DELIVERED[run.ending].toLowerCase() : null;
+}
+
+function RunState({ state }) {
+  const shown = shownState(state);
+  const known = Object.hasOwn(RUN_STATES, shown);
+  return <span className={"run-state feature-state run-" + (known ? shown : "unknown")}><Icon name={known ? RUN_ICONS[shown] : "flag"} size={14} />{known ? RUN_STATES[shown] : "Unknown"}</span>;
 }
 
 // The pill beside the Orchestrations title: how many of the listed runs are running now.
@@ -2656,11 +2673,11 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   }
   const projectOf = (run) => run.projectId ?? projectId;
   const controlOf = (run) => (run.control === undefined ? control : run.control);
-  const known = (run) => Object.hasOwn(RUN_STATES, run.state);
+  const known = (run) => Object.hasOwn(RUN_STATES, shownState(run.state));
   const states = STATE_ORDER;
   const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
   const needle = query.trim().toLowerCase();
-  const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : run.state === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
+  const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : shownState(run.state) === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
   const shown = byUpdated(matches, sort);
   const pages = Math.max(1, Math.ceil(shown.length / RUNS_PER_PAGE));
   const at = Math.min(page, pages - 1);
@@ -2713,7 +2730,10 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
                     <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
                   </td>
-                  <td><RunState state={run.state} ending={run.ending} /></td>
+                  <td>
+                    <RunState state={run.state} />
+                    {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
+                  </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
                   <td><Moment at={run.updated_at} /></td>
                   {actions ? (
@@ -3060,7 +3080,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
         <div className="feature-detail-title">
           <div className="feature-detail-line">
             <h2>{run.feature}</h2>
-            <RunState state={run.state} ending={run.ending} />
+            <RunState state={run.state} />
           </div>
           <RowActions run={run} control={control} />
           {validTime(run.started_at) === null && delivery === null ? null : (

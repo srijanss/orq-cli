@@ -73,7 +73,8 @@ fn the_updated_button_sorts_newest_first_and_each_click_flips_the_order() {
 fn the_state_filter_offers_every_run_state_even_when_no_run_is_in_it() {
     let Some(out) = run(json!([{"status": 200, "json": {"runs": [row("a", "running")]}}, projects()]), json!([{"submit": TOKEN}])) else { return };
     let t = texts(&out["frames"][1]);
-    for label in ["State: All", "Running", "Pause requested", "Paused", "Needs review", "Blocked", "Failed", "Completed", "Merged"] {
+    for label in ["State: All", "Running", "Pause requested", "Paused", "Needs review", "Blocked", "Failed", "Completed"] {
         assert!(t.iter().any(|t| t == label), "{label} missing: {t:?}");
     }
+    assert!(!t.iter().any(|t| t == "Merged"), "a hand-merged run is filtered under Completed, so there is no Merged option: {t:?}");
 }

@@ -82,4 +82,4 @@ stays.
 - The Settings page's agents section is titled "Machine defaults" and says projects can override it.
 - The launch picker preselects the project's agents. When no profile has that harness and model, it
   offers "Project default", which starts the run without `--implementer` / `--reviewer`.
-- A run's page shows its delivery mode, and the endings Pushed and Merged locally.
+- A run's page shows its delivery mode, and once delivered, how: Pushed, Merged locally or Merged by hand. Its status is Completed.

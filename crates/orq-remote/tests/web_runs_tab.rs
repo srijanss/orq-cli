@@ -131,8 +131,8 @@ fn the_list_is_a_table_under_the_header_status_and_project_picker_narrowed_by_se
     assert!(shown(&out["frames"][6]).iter().any(|t| t == "1"), "the count follows the filters: {:?}", shown(&out["frames"][6]));
 }
 
-/// A completed run that was delivered without a review shows how it ended; a hand-merged run is
-/// still shown as Merged.
+/// A finished run's status is Completed, whether its work was pushed, merged locally, merged by
+/// hand or delivered by review; how it was delivered is a quiet line under the pill, when known.
 #[test]
 fn a_finished_run_that_was_pushed_or_merged_locally_shows_that_ending() {
     let with_ending = |id: &str, feature: &str, ending: Value| {
@@ -149,8 +149,29 @@ fn a_finished_run_that_was_pushed_or_merged_locally_shows_that_ending() {
     ]}});
     let Some(out) = run("/projects/alpha/orchestrations", json!([runs, projects()]), json!([{"submit": TOKEN}])) else { return };
     let texts = shown(&out["frames"][1]);
-    assert!(texts.iter().any(|t| t == "Pushed"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Merged locally"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Completed"), "a run with no delivery ending stays Completed: {texts:?}");
-    assert!(texts.iter().any(|t| t == "Merged"), "{texts:?}");
+    let states: Vec<&str> = texts.iter().map(String::as_str).filter(|t| ["Completed", "Merged", "Pushed", "Merged locally", "pushed", "merged locally", "merged by hand"].contains(t)).collect();
+    // The first is the state filter's one Completed option; there is no Merged option.
+    assert_eq!(states, ["Completed", "Completed", "pushed", "Completed", "merged locally", "Completed", "Completed", "merged by hand"], "each row is Completed, with its ending under it when it has one: {texts:?}");
+}
+
+/// The state filter's Completed takes in every finished run: pushed, merged locally, delivered by
+/// review and merged by hand.
+#[test]
+fn filtering_by_completed_lists_hand_merged_runs_too() {
+    let finished = |id: &str, feature: &str, state: &str, ending: Value| {
+        let mut r = row(id, feature, state, Value::Null);
+        r["ending"] = ending;
+        r
+    };
+    let runs = json!({"status": 200, "json": {"runs": [
+        finished("run-p", "pushed-feature", "completed", json!("pushed")),
+        finished("run-m", "merged-feature", "completed", json!("merged")),
+        finished("run-r", "reviewed-feature", "completed", Value::Null),
+        finished("run-h", "hand-merged-feature", "merged", Value::Null),
+        row("run-x", "running-feature", "running", json!("implement"))
+    ]}});
+    let steps = json!([{"submit": TOKEN}, {"set": "select[data-run-state]", "value": "completed"}]);
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs, projects()]), steps) else { return };
+    let rows: Vec<String> = shown(&out["frames"][2]).into_iter().filter(|t| t.ends_with("-feature")).collect();
+    assert_eq!(rows, ["pushed-feature", "merged-feature", "reviewed-feature", "hand-merged-feature"]);
 }

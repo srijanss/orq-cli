@@ -94,7 +94,8 @@ fn the_run_card_has_a_back_arrow_timeline_and_logs_tabs_and_each_step_shows_how_
     assert!(t.iter().any(|x| x == "Connected") && t.iter().any(|x| x == "Project:"), "{t:?}");
 }
 
-/// A run's page says how the run delivers its work, and how a delivered run ended.
+/// A run's page says how the run delivers its work, and once delivered, how; its status pill is
+/// Completed whether the run was pushed, merged locally or merged by hand.
 #[test]
 fn a_run_page_shows_its_delivery_mode_and_a_delivered_runs_ending() {
     let delivered = |delivery: &str, state: &str, ending: Value| {
@@ -104,15 +105,20 @@ fn a_run_page_shows_its_delivery_mode_and_a_delivered_runs_ending() {
         head["ending"] = ending;
         json!({"status": 200, "json": {"run": head, "events": [], "next_cursor": null}})
     };
-    for (delivery, state, ending, mode, pill) in [
+    for (delivery, state, ending, line, pill) in [
         ("review", "needs_review", Value::Null, "Open review", "Needs review"),
-        ("push", "completed", json!("pushed"), "Push only", "Pushed"),
-        ("merge_local", "completed", json!("merged"), "Merge locally", "Merged locally"),
+        ("push", "completed", json!("pushed"), "Pushed", "Completed"),
+        ("merge_local", "completed", json!("merged"), "Merged locally", "Completed"),
+        ("merge_local", "running", Value::Null, "Merge locally", "Running"),
+        ("push", "failed", Value::Null, "Push only", "Failed"),
+        ("merge_local", "completed", json!("teleported"), "Merge locally", "Completed"),
+        ("review", "merged", Value::Null, "Merged by hand", "Completed"),
     ] {
-        let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([delivered(delivery, state, ending), projects()]), json!([{"submit": TOKEN}])) else { return };
+        let Some(out) = run("/projects/alpha/orchestrations/run-1", json!([delivered(delivery, state, ending.clone()), projects()]), json!([{"submit": TOKEN}])) else { return };
         let t = texts(&out["frames"][1]);
-        assert!(t.iter().any(|x| x == &format!("Delivery: {mode}")), "{delivery}: {t:?}");
-        assert!(t.iter().any(|x| x == pill), "{delivery}: {t:?}");
+        assert!(t.iter().any(|x| x == &format!("Delivery: {line}")), "{delivery} {state} {ending}: {t:?}");
+        assert!(t.iter().any(|x| x == pill), "{delivery} {state} {ending}: {t:?}");
+        assert!(!t.iter().any(|x| x == "Merged" || x == "Pushed" || x == "Merged locally"), "no pill names the ending: {t:?}");
     }
     // A run whose delivery the page does not know, or that has none, shows no delivery line.
     for delivery in [json!("teleport"), Value::Null] {
