@@ -475,15 +475,23 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
         },
     };
-    // A resume the run would refuse is refused here, worded as a resume, before anything is launched
-    // or started.
-    if resuming.is_some() {
+    let busy = |active: &str| {
+        let message = if features.len() > 1 {
+            format!("a feature of the group {} already has an active run: {}", printable(&features.join(",")), printable(active))
+        } else {
+            format!("feature {} already has an active run: {}", printable(feature), printable(active))
+        };
+        refuse(resuming, &message, EXIT_BUSY)
+    };
+    // A detached resume the run would refuse is refused here, worded as a resume, before anything is
+    // launched. Run in the foreground, the run's own checks refuse it the same way.
+    if resuming.is_some() && parsed.detach {
         match pipeline::check(&options) {
             Ok(()) => {}
-            Err(pipeline::StartError::Busy(active)) => {
-                return refuse(resuming, &format!("feature {} already has an active run: {}", printable(feature), printable(&active)), EXIT_BUSY);
+            Err(pipeline::StartError::Busy(active)) => return busy(&active),
+            Err(pipeline::StartError::Refused(message) | pipeline::StartError::Other(message)) => {
+                return refuse(resuming, &printable(&message), 1)
             }
-            Err(pipeline::StartError::Other(message)) => return refuse(resuming, &printable(&message), 1),
         }
     }
     if parsed.detach {
@@ -512,10 +520,8 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
                 println!("state: ready");
                 ExitCode::SUCCESS
             }
-            Err(pipeline::StartError::Busy(active)) => {
-                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
-                ExitCode::from(EXIT_BUSY)
-            }
+            Err(pipeline::StartError::Busy(active)) => busy(&active),
+            Err(pipeline::StartError::Refused(message)) => refuse(resuming, &printable(&message), 1),
             Err(pipeline::StartError::Other(message)) => fail(message),
         };
     }
@@ -535,14 +541,8 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
                 pipeline::Ending::Failed => EXIT_FAILED,
             })
         }
-        Err(pipeline::StartError::Busy(active)) => {
-            if features.len() > 1 {
-                eprintln!("orq: a feature of the group {} already has an active run: {}", printable(&features.join(",")), printable(&active));
-            } else {
-                eprintln!("orq: feature {} already has an active run: {}", printable(feature), printable(&active));
-            }
-            ExitCode::from(EXIT_BUSY)
-        }
+        Err(pipeline::StartError::Busy(active)) => busy(&active),
+        Err(pipeline::StartError::Refused(message)) => refuse(resuming, &printable(&message), 1),
         Err(pipeline::StartError::Other(message)) => fail(message),
     }
 }

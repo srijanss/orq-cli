@@ -320,6 +320,25 @@ fn a_failed_run_resumed_detached_passes_the_pre_start_checks_and_continues_its_w
     assert!(!pushed.contains("again.txt"), "the agent was not started again: {pushed}");
 }
 
+#[test]
+fn a_foreground_resume_checks_the_run_once_before_it_starts() {
+    let w = world("resume-checked-once");
+    set_gate(&w, "false");
+    let first_agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    assert_eq!(run_with(&w, &first_agent, &[]).status.code(), Some(EXIT_FAILED));
+    let run_id = only_run_id(&w);
+    // The gate now comes from the script's settings file, which the run announces when it reads its settings.
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "explain_failures = false\n").unwrap();
+    std::fs::write(w.repo.root().join(".orchestrate.env"), "GATE_CMD=true\n").unwrap();
+    let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
+
+    let output = resume_with(&w, &second_agent, &run_id, &[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr.matches("using GATE_CMD from").count(), 1, "the run's settings are read once: {stderr}");
+}
+
 fn only_run_id(w: &World) -> String {
     let runs = w.state.join("orq/runs");
     std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().into_owned()

@@ -181,7 +181,17 @@ pub struct Report {
 pub enum StartError {
     /// Another run of the feature is active.
     Busy(String),
+    /// The run's own pre-start checks refused it; nothing was created or started.
+    Refused(String),
     Other(String),
+}
+
+/// A refusal of the pre-start checks, told apart from a failure once the run has started.
+fn refused(err: StartError) -> StartError {
+    match err {
+        StartError::Other(message) => StartError::Refused(message),
+        err => err,
+    }
 }
 
 impl From<StoreError> for StartError {
@@ -370,14 +380,14 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
 /// Every refusal [`execute`] makes before it fetches or records anything, with nothing started.
 pub fn check(options: &Options<'_>) -> Result<(), StartError> {
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
-    preflight(options, &RunStore::new(&root)).map(|_| ())
+    preflight(options, &RunStore::new(&root)).map(|_| ()).map_err(refused)
 }
 
 fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let repo = &options.project.root;
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
     let store = RunStore::new(&root);
-    let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store)?;
+    let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store).map_err(refused)?;
     // A run starts from the local target branch in the project root, with whatever it has that its
     // remote does not: the project as it is here, not as last pushed.
     let base_sha = local_target_base(repo, options.target).map_err(|e| other(e.to_string()))?;
