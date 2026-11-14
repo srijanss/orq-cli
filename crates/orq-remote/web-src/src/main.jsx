@@ -2545,12 +2545,15 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
 }
 
 // Each row carries its own project's control, so a project that allows actions offers them here too.
-function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh }) {
+function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh, onRows }) {
   const toRows = (parsed, project) => {
     const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null;
     return tagged(parsed.rows, project.id, project.name).map((feature) => ({ ...feature, control }));
   };
   const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows });
+  useEffect(() => {
+    if (!state.loading) onRows(state.rows);
+  }, [state.loading, state.rows]);
   if (state.loading) {
     return (
       <div className="skeleton" role="status" aria-busy="true">
@@ -2568,6 +2571,20 @@ function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh }) {
   );
 }
 
+// The Features page across every project: the header with the in-progress pill, the project picker,
+// and the merged ledgers.
+function AllFeaturesPage({ token, reloads, onRefresh, onSignedOut }) {
+  const [rows, setRows] = useState(null);
+  return (
+    <Loaded key={API_PROJECTS} reloads={reloads} header={() => <PageHeader title="Features" subtitle="Every project's feature ledger" badge={inProgressBadge(rows)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+      <>
+        <ProjectSelect projects={projects} projectId={null} />
+        <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
+      </>
+    )} onSignedOut={onSignedOut} />
+  );
+}
+
 // The Features pages of one project: the list, or one feature's details when its name is given.
 function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
   const runs = useFeatureRuns(token, projectId, reloads, name !== null);
@@ -2577,7 +2594,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
     <>
       <Loaded key={featuresPath} reloads={reloads} header={(state) => (
         <>
-          <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} onRefresh={onRefresh} />
+          <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} badge={name === null ? inProgressBadge(state.data?.rows) : null} onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
@@ -2652,6 +2669,14 @@ function runningBadge(rows) {
   if (!Array.isArray(rows)) return null;
   const running = rows.filter((run) => run.state === "running").length;
   return <span className="feature-state run-running running-badge" data-running-count><span className="dot" aria-hidden="true" />{running + " running"}</span>;
+}
+
+// The pill beside the Features title: how many of the ledger's features are in progress, whatever
+// the filters show.
+function inProgressBadge(rows) {
+  if (!Array.isArray(rows)) return null;
+  const busy = rows.filter((feature) => feature.status === "in_progress").length;
+  return <span className="feature-state state-in_progress running-badge" data-in-progress-count><span className="dot" aria-hidden="true" />{busy + " in progress"}</span>;
 }
 
 function runHref(projectId, runId) {
@@ -3757,38 +3782,11 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
       </>
     );
   }
-  const everywhere = { "/features": ["Features", "Every project's feature ledger", "features", "Loading the features…", parseFeatures], "/orchestrations": ["Orchestrations", "Runs and pipeline executions across every project", "runs", "Loading the runs…", parseOrchestrations] }[hash];
+  if (hash === "/features") {
+    return <AllFeaturesPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
+  }
   if (hash === "/orchestrations") {
     return <AllOrchestrationsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
-  }
-  if (everywhere !== undefined) {
-    const [title, subtitle, part, loading, parse] = everywhere;
-    const onRefresh = () => setReloads(reloads + 1);
-    return (
-      <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title={title} subtitle={subtitle} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => part === "features" ? (
-          <>
-            <ProjectSelect projects={projects} projectId={null} />
-            <AllFeatures token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} />
-          </>
-        ) : (
-          <>
-            {projects.map((project) => {
-              const id = encodeURIComponent(project.id);
-              const base = "/api/projects/" + id + "/" + part;
-              return (
-                <section key={project.id} className="project-section">
-                  <h2>{project.name}</h2>
-                  <Loaded key={base} reloads={reloads} token={token} path={base} loading={loading} parse={parse} onSignedOut={onSignedOut} draw={(data) => {
-                    return <OrchestrationList runs={data.rows} projectId={project.id} control={data.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null} />;
-                  }} />
-                </section>
-              );
-            })}
-          </>
-        )} onSignedOut={onSignedOut} />
-      </>
-    );
   }
   const review = /^\/reviews(?:\/([^/]*))?$/.exec(hash);
   if (review !== null && (review[1] === undefined || RUN_ID.test(review[1]))) {
