@@ -59,6 +59,9 @@ pub struct Options<'a> {
     pub delivery_named: bool,
     /// The implement session is given orq's own terminal, so the agent runs interactively in it.
     pub interactive: bool,
+    /// A merge-local delivery blocked by uncommitted changes to the run's files sets them aside while
+    /// it merges, then puts them back (`orq run merge --set-aside`).
+    pub set_aside: bool,
 }
 
 /// A run id no other run has: `run-<seconds>-<pid>-<sequence>`, the sequence telling apart the
@@ -1157,24 +1160,38 @@ fn stages(
         // rebased onto where it is now and checked again, a few times at most.
         let mut retries = 0;
         loop {
-            match orq_orchestrator::merge_into_base(store, run_id)? {
+            let base_sha = match orq_orchestrator::merge_into_base(store, run_id)? {
                 orq_orchestrator::MergeOutcome::Merged { head_sha } => return delivered(&head_sha, Ending::Merged),
-                orq_orchestrator::MergeOutcome::Refused { reason } => return stopped(Ending::Blocked, reason),
-                orq_orchestrator::MergeOutcome::BaseMoved { base_sha } => {
-                    if !options.rebase || retries == MERGE_LOCAL_RETRIES {
-                        return stopped(
-                            Ending::Blocked,
-                            format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
-                        );
-                    }
-                    retries += 1;
-                    if let RebaseOutcome::Conflict { reason } = orq_orchestrator::rebase_onto_commit(store, run_id, &base_sha)? {
+                orq_orchestrator::MergeOutcome::Refused { reason } => {
+                    // Asked to set aside uncommitted changes in the way: they are stashed, the run merged,
+                    // and the changes put back (or named in their stash when they conflict with the run).
+                    if !options.set_aside || !orq_orchestrator::waiting_on_dirty_checkout(&store.events(run_id)?) {
                         return stopped(Ending::Blocked, reason);
                     }
-                    if let Some(stop) = check()? {
-                        return Ok(stop);
+                    match orq_orchestrator::merge_setting_aside(store, run_id)? {
+                        orq_orchestrator::SetAsideOutcome::Merged { head_sha, note } => {
+                            let mut report = delivered(&head_sha, Ending::Merged)?;
+                            report.detail = note;
+                            return Ok(report);
+                        }
+                        orq_orchestrator::SetAsideOutcome::Refused { reason } => return stopped(Ending::Blocked, reason),
+                        orq_orchestrator::SetAsideOutcome::BaseMoved { base_sha } => base_sha,
                     }
                 }
+                orq_orchestrator::MergeOutcome::BaseMoved { base_sha } => base_sha,
+            };
+            if !options.rebase || retries == MERGE_LOCAL_RETRIES {
+                return stopped(
+                    Ending::Blocked,
+                    format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
+                );
+            }
+            retries += 1;
+            if let RebaseOutcome::Conflict { reason } = orq_orchestrator::rebase_onto_commit(store, run_id, &base_sha)? {
+                return stopped(Ending::Blocked, reason);
+            }
+            if let Some(stop) = check()? {
+                return Ok(stop);
             }
         }
     }

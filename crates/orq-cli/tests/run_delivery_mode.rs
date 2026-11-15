@@ -274,6 +274,54 @@ fn a_merge_local_run_into_a_checkout_with_uncommitted_changes_is_blocked_and_kee
     assert!(remote_branch(&w, &record.branch).is_none(), "nothing was pushed");
 }
 
+/// A merge-local run blocked because the checkout has its own feature.txt staged, which the run adds.
+fn blocked_on_a_dirty_checkout(tag: &str) -> (World, String) {
+    let w = world(tag);
+    std::fs::write(w.repo.root().join("feature.txt"), "edited, not committed\n").unwrap();
+    git(w.repo.root(), &["add", "feature.txt"]);
+    let out = run(&w, &["--delivery", "merge-local"]);
+    assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
+    let id = store(&w).run_ids().unwrap().remove(0);
+    (w, id)
+}
+
+#[test]
+fn merging_a_run_blocked_on_a_dirty_checkout_with_set_aside_delivers_it_and_names_the_stash_its_conflicting_changes_are_in() {
+    let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside");
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let out = orq(&w, &["run", "merge", &blocked, "--set-aside", "--no-ci-check", "--repo", &repo]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("state: merged"), "{}", text(&out.stdout));
+
+    let merged = store(&w).run_ids().unwrap().into_iter().find(|id| *id != blocked).expect("a resumed run");
+    let record = store(&w).load(&merged).unwrap();
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), rev(w.repo.root(), &format!("refs/heads/{}", record.branch)), "main was fast-forwarded");
+    assert_eq!(ending(&w, &merged).as_deref(), Some("merged"));
+    let stash = rev(w.repo.root(), "refs/stash");
+    assert!(!stash.is_empty(), "the conflicting changes are kept in a stash entry");
+    let completed = store(&w).events(&merged).unwrap().into_iter().rev().find(|e| e.kind == "run.completed").unwrap();
+    let note = completed.payload["reason"].as_str().unwrap_or_default().to_string();
+    assert!(note.contains(&format!("your changes to feature.txt conflicted with this run and are in stash {stash} (orq set-aside {merged})")), "{note}");
+    let file = std::fs::read_to_string(w.repo.root().join("feature.txt")).unwrap();
+    assert!(file.contains("<<<<<<<") && file.contains("edited, not committed"), "{file}");
+}
+
+#[test]
+fn merging_with_set_aside_a_run_not_blocked_on_a_dirty_checkout_is_refused() {
+    let w = world("merge-set-aside-not-waiting");
+    let first = run(&w, &["--delivery", "merge-local"]);
+    assert!(text(&first.stdout).contains("state: merged"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let merged = store(&w).run_ids().unwrap().remove(0);
+    let main = rev(w.repo.root(), "refs/heads/main");
+
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let out = orq(&w, &["run", "merge", &merged, "--set-aside", "--repo", &repo]);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(text(&out.stderr).contains("this run is not waiting on a dirty checkout"), "{}", text(&out.stderr));
+    assert_eq!(store(&w).run_ids().unwrap(), vec![merged], "nothing was resumed");
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), main);
+}
+
 /// Commits `file` on the repository's checked-out main, without pushing it.
 fn commit_on_local_main(w: &World, file: &str, contents: &str) -> String {
     std::fs::write(w.repo.root().join(file), contents).unwrap();

@@ -26,19 +26,8 @@ pub enum MergeOutcome {
 /// Fast-forward `run_id`'s target branch to the run's branch, in the checkout that has it.
 pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, StoreError> {
     let record = store.load(run_id)?;
-    let head = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", record.branch)])?;
-    if !head.success {
-        return Err(StoreError::Corrupt(format!("the run branch {} has no commit", record.branch)));
-    }
-    let head_sha = head.stdout.trim().to_string();
+    let (head_sha, base_sha) = tips(&record)?;
     let target = format!("refs/heads/{}", record.target_branch);
-    // Where the local base branch is now: the run was rebased onto the fetched target, which the
-    // local branch may be behind, and only this commit is fast-forwarded from.
-    let base = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("{target}^{{commit}}")])?;
-    if !base.success {
-        return Err(StoreError::Corrupt(format!("the base branch {} has no commit", record.target_branch)));
-    }
-    let base_sha = base.stdout.trim().to_string();
     let fast_forward = git_raw(&record.worktree, &["merge-base", "--is-ancestor", &base_sha, &head_sha])?;
     if !fast_forward.success {
         return Ok(MergeOutcome::BaseMoved { base_sha });
@@ -125,6 +114,159 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
     }
     record_event(store, &record, "merge.completed", completed)?;
     Ok(MergeOutcome::Merged { head_sha })
+}
+
+/// How a merge that set the checkout's overlapping changes aside ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetAsideOutcome {
+    /// The base branch now points at the run's head; `note` says what the person must do about
+    /// changes that could not be put back cleanly.
+    Merged { head_sha: String, note: Option<String> },
+    /// The base branch was left where it was, with the checkout's changes put back, and why.
+    Refused { reason: String },
+    /// As [`MergeOutcome::BaseMoved`], with the checkout's changes put back.
+    BaseMoved { base_sha: String },
+}
+
+/// Fast-forward `run_id`'s target branch as [`merge_into_base`] does, first stashing the checkout's
+/// uncommitted changes to the files the run changes and applying them again afterwards.
+pub fn merge_setting_aside(store: &RunStore, run_id: &str) -> Result<SetAsideOutcome, StoreError> {
+    let record = store.load(run_id)?;
+    if !waiting_on_dirty_checkout(&store.events(run_id)?) {
+        return Ok(SetAsideOutcome::Refused { reason: "this run is not waiting on a dirty checkout".to_string() });
+    }
+    let Some(checkout) = checkout_of(&record)? else { return merged_as_is(store, run_id) };
+    let (head_sha, base_sha) = tips(&record)?;
+    let changed = match changed_paths(&record.worktree, &base_sha, &head_sha)? {
+        Ok(changed) => changed,
+        Err(reason) => return Ok(SetAsideOutcome::Refused { reason }),
+    };
+    let dirty = match dirty_paths(&checkout)? {
+        Ok(dirty) => dirty,
+        Err(reason) => return Ok(SetAsideOutcome::Refused { reason }),
+    };
+    let overlapping: Vec<&PathBuf> = dirty.intersection(&changed).collect();
+    if overlapping.is_empty() {
+        return merged_as_is(store, run_id);
+    }
+    let message = format!("orq set-aside {} {}", record.run_id, now_rfc3339());
+    let mut args = ["--literal-pathspecs", "stash", "push", "--quiet", "-m", &message, "--"].map(OsStr::new).to_vec();
+    args.extend(overlapping.iter().map(|path| path.as_os_str()));
+    let pushed = git_bytes(&checkout, &args)?;
+    if !pushed.status.success() {
+        return Ok(SetAsideOutcome::Refused {
+            reason: format!("cannot stash the uncommitted changes at {}: {}", checkout.display(), String::from_utf8_lossy(&pushed.stderr).trim()),
+        });
+    }
+    let Some((_, stash)) = stash_entry(&stash_listing(&checkout)?, &message) else { return merged_as_is(store, run_id) };
+    let files: Vec<String> = overlapping.iter().map(|path| printable(&path.to_string_lossy())).collect();
+    match merge_into_base(store, run_id)? {
+        MergeOutcome::Merged { head_sha } => {
+            let applied = git_raw(&checkout, &["stash", "apply", "--quiet", &stash])?;
+            if !applied.success {
+                // Nothing is dropped after a failed apply: the entry is the person's only copy.
+                let conflicted = unmerged_paths(&checkout)?;
+                let label = format!("orq set-aside {}", record.run_id);
+                let note = if conflicted.is_empty() {
+                    format!("your changes could not be put back and are in stash {stash} ({label}): {}", applied.stderr.trim())
+                } else {
+                    let files = named(&conflicted);
+                    format!("your changes to {files} conflicted with this run and are in stash {stash} ({label}); the checkout has conflict markers in {files}")
+                };
+                let payload = serde_json::json!({ "stash": stash, "restored": false, "files": files, "conflicted": conflicted, "note": note });
+                record_event(store, &record, "merge.set_aside", payload)?;
+                return Ok(SetAsideOutcome::Merged { head_sha, note: Some(note) });
+            }
+            drop_stash(&checkout, &message, &stash)?;
+            record_event(store, &record, "merge.set_aside", serde_json::json!({ "stash": stash, "restored": true, "files": files }))?;
+            Ok(SetAsideOutcome::Merged { head_sha, note: None })
+        }
+        MergeOutcome::Refused { reason } => {
+            let reason = match put_back(&checkout, &message, &stash, &record.run_id)? {
+                None => reason,
+                Some(kept) => format!("{reason}; {kept}"),
+            };
+            Ok(SetAsideOutcome::Refused { reason })
+        }
+        MergeOutcome::BaseMoved { base_sha } => match put_back(&checkout, &message, &stash, &record.run_id)? {
+            None => Ok(SetAsideOutcome::BaseMoved { base_sha }),
+            // Rebasing on would set aside again over changes that are not back yet.
+            Some(kept) => Ok(SetAsideOutcome::Refused { reason: format!("{} moved while this run was being merged; {kept}", record.target_branch) }),
+        },
+    }
+}
+
+/// Apply the entry back, staged state and all, into the checkout the merge left as it was, and
+/// drop it; `None` when that worked, or what to tell the person about the entry kept.
+fn put_back(checkout: &Path, message: &str, stash: &str, run_id: &str) -> Result<Option<String>, StoreError> {
+    let applied = git_raw(checkout, &["stash", "apply", "--index", "--quiet", stash])?;
+    if !applied.success {
+        return Ok(Some(format!("your changes could not be put back and are in stash {stash} (orq set-aside {run_id}): {}", applied.stderr.trim())));
+    }
+    drop_stash(checkout, message, stash)?;
+    Ok(None)
+}
+
+/// Whether a run's last merge attempt was refused over uncommitted changes to files it changes.
+pub fn waiting_on_dirty_checkout(events: &[Event]) -> bool {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.kind.starts_with("merge."))
+        .is_some_and(|event| event.kind == "merge.refused" && event.payload["reason"] == "dirty_checkout")
+}
+
+/// [`merge_into_base`], with nothing set aside.
+fn merged_as_is(store: &RunStore, run_id: &str) -> Result<SetAsideOutcome, StoreError> {
+    Ok(match merge_into_base(store, run_id)? {
+        MergeOutcome::Merged { head_sha } => SetAsideOutcome::Merged { head_sha, note: None },
+        MergeOutcome::Refused { reason } => SetAsideOutcome::Refused { reason },
+        MergeOutcome::BaseMoved { base_sha } => SetAsideOutcome::BaseMoved { base_sha },
+    })
+}
+
+/// The run's head and the base branch's commit.
+fn tips(record: &RunRecord) -> Result<(String, String), StoreError> {
+    let head = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", record.branch)])?;
+    if !head.success {
+        return Err(StoreError::Corrupt(format!("the run branch {} has no commit", record.branch)));
+    }
+    // Where the local base branch is now: the run was rebased onto the fetched target, which the
+    // local branch may be behind, and only this commit is fast-forwarded from.
+    let base = git_raw(&record.worktree, &["rev-parse", "--verify", &format!("refs/heads/{}^{{commit}}", record.target_branch)])?;
+    if !base.success {
+        return Err(StoreError::Corrupt(format!("the base branch {} has no commit", record.target_branch)));
+    }
+    Ok((head.stdout.trim().to_string(), base.stdout.trim().to_string()))
+}
+
+/// The files left with conflict markers in `checkout`, escaped for showing.
+fn unmerged_paths(checkout: &Path) -> Result<Vec<String>, StoreError> {
+    let args = ["diff", "--name-only", "-z", "--diff-filter=U"].map(OsStr::new);
+    let diff = git_bytes(checkout, &args)?;
+    let mut paths: Vec<String> =
+        diff.stdout.split(|byte| *byte == 0).filter(|path| !path.is_empty()).map(|path| printable(&String::from_utf8_lossy(path))).collect();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn stash_listing(checkout: &Path) -> Result<String, StoreError> {
+    let listed = git_raw(checkout, &["stash", "list", "--format=%H %gs"])?;
+    if !listed.success {
+        return Err(StoreError::Corrupt(format!("cannot list the stash at {}: {}", checkout.display(), listed.stderr.trim())));
+    }
+    Ok(listed.stdout)
+}
+
+/// Drop the entry saved with `message`, found again where it is now: the stack is shared, and
+/// other entries may have been pushed on top of it.
+fn drop_stash(checkout: &Path, message: &str, stash: &str) -> Result<(), StoreError> {
+    if let Some((index, sha)) = stash_entry(&stash_listing(checkout)?, message) {
+        if sha == stash {
+            git_raw(checkout, &["stash", "drop", "--quiet", &format!("stash@{{{index}}}")])?;
+        }
+    }
+    Ok(())
 }
 
 /// How many overlapping files a refusal names before it only counts the rest.
@@ -264,6 +406,16 @@ fn checkout_of(record: &RunRecord) -> Result<Option<PathBuf>, StoreError> {
     }))
 }
 
+/// Where the stash entry saved with `message` is in `listing` (`git stash list --format='%H %gs'`
+/// output), and its commit: other entries may have been pushed on top of it meanwhile.
+fn stash_entry(listing: &str, message: &str) -> Option<(usize, String)> {
+    listing.lines().enumerate().find_map(|(index, line)| {
+        let (sha, subject) = line.split_once(' ')?;
+        let (_, saved) = subject.split_once(": ")?;
+        (saved == message).then(|| (index, sha.to_string()))
+    })
+}
+
 fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
@@ -311,5 +463,17 @@ mod tests {
         assert_eq!(read.get(Path::new("gone")), Some(&Content::Absent));
         assert_eq!(read.get(Path::new("plain/f")), Some(&Content::Absent));
         let _ = std::fs::remove_dir_all(&checkout);
+    }
+
+    #[test]
+    fn a_stash_entry_is_found_by_its_message_wherever_it_is_on_the_stack() {
+        let listing = format!(
+            "{top} On main: someone else's\n{ours} On main: orq set-aside run-1 2026-11-15T00:00:00Z\n{older} WIP on main: abc base\n",
+            top = "1".repeat(40),
+            ours = "2".repeat(40),
+            older = "3".repeat(40)
+        );
+        assert_eq!(stash_entry(&listing, "orq set-aside run-1 2026-11-15T00:00:00Z"), Some((1, "2".repeat(40))));
+        assert_eq!(stash_entry(&listing, "orq set-aside run-2 2026-11-15T00:00:00Z"), None);
     }
 }

@@ -15,7 +15,7 @@ mod storage;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -50,7 +50,8 @@ fn main() -> ExitCode {
         (Some("run"), Some("needs-input")) => run_needs_input(&args[2..]),
         (Some("run"), Some("needs-input-send")) => run_needs_input_send(&args[2..]),
         (Some("run"), Some("push-send")) => run_push_send(&args[2..]),
-        (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..]),
+        (Some("run"), Some("resume")) if args.get(2).is_some_and(|a| !a.to_string_lossy().starts_with("-")) => run_resume(&args[2..], false),
+        (Some("run"), Some("merge")) => run_merge(&args[2..]),
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
@@ -209,6 +210,9 @@ struct RunArgs {
     in_herdr: bool,
     /// `--check`: make every check a launch makes, then stop without starting anything.
     check: bool,
+    /// Set by `orq run merge --set-aside`: a merge-local delivery blocked by uncommitted changes to the
+    /// run's files sets those changes aside, merges, and puts them back.
+    set_aside: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
 }
@@ -246,6 +250,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--detach" => parsed.detach = true,
             "--in-herdr" => parsed.in_herdr = true,
             "--check" => parsed.check = true,
+            "--set-aside" => parsed.set_aside = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
                 match name {
@@ -469,6 +474,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         switch_reviewer: parsed.switch_reviewer,
         delivery,
         delivery_named: named_delivery.is_some(),
+        set_aside: parsed.set_aside,
         // A detached runner has no terminal, so it stays headless.
         interactive: {
             use std::io::IsTerminal;
@@ -4995,7 +5001,44 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str, re
 /// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
 /// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
 /// not paused, or when the checkpoint no longer matches the checkout.
-fn run_resume(args: &[OsString]) -> ExitCode {
+/// `orq run merge <run-id> --set-aside`: resumes a merge-local run blocked by uncommitted changes in
+/// the checkout, setting aside the changes that overlap the run's files while it is merged.
+fn run_merge(args: &[OsString]) -> ExitCode {
+    let mut run_id = None;
+    let mut set_aside = false;
+    let mut no_ci_check = false;
+    let mut repo = PathBuf::from(".");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.to_str() {
+            Some("--set-aside") => set_aside = true,
+            Some("--no-ci-check") => no_ci_check = true,
+            Some("--repo") => match iter.next() {
+                Some(value) => repo = PathBuf::from(value),
+                None => return usage_error(),
+            },
+            Some(id) if !id.starts_with('-') && run_id.is_none() => run_id = Some(id.to_string()),
+            _ => return usage_error(),
+        }
+    }
+    let (Some(run_id), true) = (run_id, set_aside) else { return usage_error() };
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    let store = orq_orchestrator::RunStore::new(&root);
+    match store.events(&run_id) {
+        Ok(events) if orq_orchestrator::waiting_on_dirty_checkout(&events) => {}
+        Ok(_) => return fail(format!("cannot merge {}: this run is not waiting on a dirty checkout", printable(&run_id))),
+        Err(_) => return fail(format!("cannot merge {}: no such run", printable(&run_id))),
+    }
+    let mut resume: Vec<OsString> = vec![run_id.into(), "--yes".into(), "--repo".into(), repo.into_os_string()];
+    if no_ci_check {
+        resume.push("--no-ci-check".into());
+    }
+    run_resume(&resume, true)
+}
+
+fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     let mut run_id = None;
     let mut yes = false;
     let mut no_ci_check = false;
@@ -5118,6 +5161,9 @@ fn run_resume(args: &[OsString]) -> ExitCode {
     }
     if in_herdr {
         forwarded.push("--in-herdr".into());
+    }
+    if set_aside {
+        forwarded.push("--set-aside".into());
     }
     run_as(&forwarded, Some(&run_id))
 }
