@@ -2110,10 +2110,32 @@ function featureDraft(fields) {
 
 // What the editor sends: a blank box is null, the target files one path per comma or line, and the
 // dependencies in ledger order.
+// The ledger's rule for a feature name, as orq_features::feature_name_problem says it: letters, digits, '-', '_'
+// and '.', not starting with '.'. The first refused character is named with its position (in characters from 1);
+// a space or an invisible character only by its code point, so a hidden one can be found.
+const WHITE_SPACE = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$/u;
+const INVISIBLE = /^[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]$/u;
+const DASHES = ["\u2014", "\u2013", "\u2010", "\u2011", "\u2212"];
+
+function featureNameProblem(name) {
+  if (name === "") return "a feature name is required";
+  if (name.startsWith(".")) return "a feature name may not start with '.'";
+  const chars = Array.from(name);
+  const index = chars.findIndex((c) => !/^[A-Za-z0-9._-]$/.test(c));
+  if (index < 0) return null;
+  const bad = chars[index];
+  const code = "U+" + bad.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+  const spacing = WHITE_SPACE.test(bad);
+  const shown = bad === " " ? "a space" : spacing || INVISIBLE.test(bad) ? code : '"' + bad + '" (' + code + ")";
+  const hint = DASHES.includes(bad) ? " (use '-')" : spacing ? " (use '-' between words)" : "";
+  return shown + " at position " + (index + 1) + " is not allowed in a feature name; use letters, digits, '-', '_' or '.'" + hint;
+}
+
 function featureFields(draft, features, empty = null) {
   const blank = (value) => (value.trim() === "" ? empty : value);
   return {
-    name: draft.name.trim(),
+    // Sent as typed: a name the rule allows has nothing to trim, and one it refuses is never rewritten.
+    name: draft.name,
     description: blank(draft.description),
     depends_on: features.map((feature) => feature.name).filter((name) => draft.depends_on.includes(name)),
     parallelizable: draft.parallelizable === "yes" ? true : draft.parallelizable === "no" ? false : null,
@@ -2172,6 +2194,8 @@ function FeatureEditor({ name = null, features, control }) {
   const [version, setVersion] = useState(null);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
+  // Save pressed with an empty name: only then does the empty box say a name is required.
+  const [pressed, setPressed] = useState(false);
   // Adding opens in a popup (on a phone the stylesheet lays it in the page); Close or Escape shuts it unsent.
   const popup = adding && (phase === "editing" || phase === "asking" || phase === "sending");
   const close = () => {
@@ -2191,6 +2215,7 @@ function FeatureEditor({ name = null, features, control }) {
     setNote("");
     setConflict(false);
     if (adding) {
+      setPressed(false);
       setDraft(featureDraft({}));
       setVersion(null);
       setPhase("editing");
@@ -2222,6 +2247,7 @@ function FeatureEditor({ name = null, features, control }) {
   };
   const fields = draft === null ? null : featureFields(draft, features);
   const shownName = adding ? (fields === null ? "" : fields.name) : name;
+  const nameProblem = adding && draft !== null && (draft.name !== "" || pressed) ? featureNameProblem(draft.name) : null;
   const send = async () => {
     setPhase("sending");
     let text = "The feature could not be saved.";
@@ -2259,14 +2285,20 @@ function FeatureEditor({ name = null, features, control }) {
     <>
       {phase === "editing" ? (
         <div role="group" aria-label={adding ? "Add a feature" : "Edit " + name} className="feature-editor-fields">
-          {adding ? <label className="field"><span className="field-label">Name</span><input type="text" data-field-name value={draft.name} autoComplete="off" spellCheck={false} onChange={set("name")} /></label> : null}
+          {adding ? (
+            <label className="field">
+              <span className="field-label">Name</span>
+              <input type="text" data-field-name value={draft.name} autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off" inputMode="text" aria-invalid={nameProblem !== null} aria-describedby="feature-name-problem" onChange={set("name")} />
+              <span id="feature-name-problem" className="field-hint error-text" data-name-problem={nameProblem === null ? undefined : ""} aria-live="polite">{nameProblem}</span>
+            </label>
+          ) : null}
           <label className="field field-wide"><span className="field-label">Description</span><input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
           <label className="field"><span className="field-label">Test file</span><input type="text" data-field-test-file value={draft.test_file} autoComplete="off" spellCheck={false} onChange={set("test_file")} /></label>
           <label className="field"><span className="field-label">Target files</span><input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
           <label className="field"><span className="field-label">Parallelizable</span><select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
           {others.length > 0 ? <DependsPicker others={others} chosen={draft.depends_on} onToggle={toggle} /> : null}
           <div className="feature-editor-actions">
-            <button type="button" className="primary-button" data-feature-save onClick={() => { setNote(""); setConflict(false); setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
+            <button type="button" className="primary-button" data-feature-save disabled={nameProblem !== null} onClick={() => { setNote(""); setConflict(false); if (adding && featureNameProblem(draft.name) !== null) { setPressed(true); return; } setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
             <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
           </div>
         </div>

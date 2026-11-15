@@ -936,6 +936,10 @@ fn feature_add(args: &[OsString]) -> ExitCode {
     };
     let Some(repo) = flags.repo else { return fail("--repo is required") };
     let Some(name) = flags.name else { return fail("--name is required") };
+    // The rule the web and the popup apply, in the same words: it says which character is refused and where.
+    if let Some(problem) = orq_features::feature_name_problem(&name) {
+        return fail(problem);
+    }
     let project = match orq_git::resolve_project(&repo) {
         Ok(project) => project,
         Err(err) => return fail(format!("cannot resolve project: {err:?}")),
@@ -2673,6 +2677,10 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     fn add_feature(&mut self, fields: &orq_tui::FeatureFields) -> orq_tui::FormSaveOutcome {
         use orq_features::{AppendError, SaveError};
         use orq_tui::FormSaveOutcome;
+        // The rule the web and `orq feature add` apply, in the same words.
+        if let Some(reason) = orq_features::feature_name_problem(&fields.name) {
+            return FormSaveOutcome::Invalid { reason };
+        }
         // Appended against the snapshot the popup showed, so a file changed
         // behind its back is a conflict; an absent file is created.
         let loaded = match self.loaded.take() {

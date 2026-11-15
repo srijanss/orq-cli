@@ -229,3 +229,31 @@ fn the_browser_shows_the_product_header_and_the_features_tab() {
     assert!(drawn.contains("Features"), "{drawn}");
     assert!(drawn.contains("Orchestrations"), "the Orchestrations tab sits beside Features: {drawn}");
 }
+
+#[test]
+fn the_popups_add_refuses_a_look_alike_dash_saying_which_character_and_where() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("alpha", "draft")]);
+    let before = ledger_text(repo.root());
+
+    // "a", then the name "a—b" (an em dash), then Ctrl-S to save.
+    let (code, drawn) = drive(
+        repo.root(),
+        serde_json::json!([
+            {"wait": "alpha"},
+            {"send": "61"},
+            {"wait": "Add Feature"},
+            {"send": "61e2809462"},
+            {"sleep": 0.3},
+            {"send": "13"},
+            {"sleep": 0.5},
+            {"send": ESC},
+            {"sleep": 0.3},
+            {"send": ESC},
+        ]),
+    );
+
+    assert_eq!(code, 0, "{drawn}");
+    assert!(drawn.contains("(U+2014) at position 2 is not allowed in a feature name"), "{drawn}");
+    assert_eq!(ledger_text(repo.root()), before);
+}

@@ -101,8 +101,28 @@ fn an_add_appends_a_draft_and_refused_values_are_said_in_the_ledgers_words() {
     let refused = |name: &str, depends: &str| json!({"fields": {"name": name, "depends_on": [depends]}});
     assert_eq!(post(&s, "/api/projects/alpha/features", refused("f-two", "f-base")), (422, json!({"error": "featureName \"f-two\" is repeated"})));
     assert_eq!(post(&s, "/api/projects/alpha/features", refused("f-three", "f-nope")), (422, json!({"error": "feature \"f-three\" depends on \"f-nope\", which does not exist"})));
-    assert_eq!(post(&s, "/api/projects/alpha/features", refused("../f-four", "f-base")), (422, json!({"error": "a feature name may use only letters, digits, '-', '_' and '.', and may not start with '.'"})));
+    assert_eq!(post(&s, "/api/projects/alpha/features", refused("../f-four", "f-base")), (422, json!({"error": "a feature name may not start with '.'"})));
     assert_eq!(std::fs::read(&file).unwrap(), before, "a refused save writes nothing");
+}
+
+#[test]
+fn a_refused_name_says_which_character_and_where() {
+    let s = setup("name-character");
+    let alpha = git_repo(&s.scan, "alpha");
+    let file = alpha.join(".tdd-features.json");
+    std::fs::write(&file, LEDGER).unwrap();
+    let add = |name: &str| post(&s, "/api/projects/alpha/features", json!({"fields": {"name": name}, "version": sha256(LEDGER.as_bytes())}));
+    let refused = |error: &str| (422, json!({"error": error}));
+    let rule = "is not allowed in a feature name; use letters, digits, '-', '_' or '.'";
+    assert_eq!(add("my feature"), refused(&format!("a space at position 3 {rule} (use '-' between words)")));
+    assert_eq!(add("a\u{2014}b"), refused(&format!("\"\u{2014}\" (U+2014) at position 2 {rule} (use '-')")));
+    assert_eq!(add("a\u{00a0}b"), refused(&format!("U+00A0 at position 2 {rule} (use '-' between words)")));
+    assert_eq!(add("a\u{200b}b"), refused(&format!("U+200B at position 2 {rule}")));
+    assert_eq!(add("caf\u{e9}"), refused(&format!("\"\u{e9}\" (U+00E9) at position 4 {rule}")));
+    assert_eq!(add(".x"), refused("a feature name may not start with '.'"));
+    assert_eq!(add(""), (400, json!({"error": "the request body is not one this action takes"})), "an add must name its feature");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), LEDGER, "a refused name writes nothing");
+    assert_eq!(add("a-b_c.d"), (200, json!({"feature": "a-b_c.d"})));
 }
 
 #[test]

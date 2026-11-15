@@ -74,7 +74,7 @@ fn validation_errors_exit_non_zero_and_leave_the_file_unchanged() {
         (vec!["--name", "a"], "repeated"),
         (vec!["--name", "b", "--depends-on", "ghost"], "ghost"),
         (vec!["--name", "b", "--depends-on", "b"], "itself"),
-        (vec!["--name", "  "], "blank"),
+        (vec!["--name", "  "], "a space at position 1"),
         (vec!["--name", "b", "--parallelizable", "maybe"], "parallelizable"),
         (vec!["--description", "no name"], "--name"),
     ] {
@@ -96,4 +96,20 @@ fn a_malformed_ledger_is_never_written() {
 
     assert!(!out.status.success());
     assert_eq!(ledger_text(repo.root()), "{\"not\":\"an array\"}");
+}
+
+#[test]
+fn a_refused_name_says_which_character_and_where_as_the_web_does() {
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("a", "draft")]);
+    let before = ledger_text(repo.root());
+
+    for name in ["a\u{2014}b", "my feature", "a\u{200b}b", ".x", ""] {
+        let out = add(repo.root(), &["--name", name]);
+        assert!(!out.status.success(), "{name:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let problem = orq_features::feature_name_problem(name).unwrap();
+        assert!(stderr.contains(&problem), "{name:?}: {stderr}");
+        assert_eq!(ledger_text(repo.root()), before, "{name:?}");
+    }
 }

@@ -25,13 +25,17 @@ fn projects() -> Value {
 }
 
 fn run(steps: Vec<Value>) -> Option<Value> {
+    run_with(&SELECTORS, steps)
+}
+
+fn run_with(selectors: &[&str], steps: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    let scenario = json!({"url": "/projects/alpha/features", "responses": [ledger(), projects()], "steps": all, "selectors": SELECTORS});
+    let scenario = json!({"url": "/projects/alpha/features", "responses": [ledger(), projects()], "steps": all, "selectors": selectors});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -73,4 +77,42 @@ fn the_popup_is_over_the_page_on_a_wide_screen_and_in_the_page_on_a_phone() {
     // The popup drops the fields' own frame, but only where it is a popup; on a phone the fields keep it.
     assert!(css.contains("@media (min-width: 701px) { .feature-modal-box .feature-editor-fields { max-width: none; padding: 0; border: 0; } }"), "frameless only in the popup");
     assert!(!css.lines().any(|line| line.starts_with(".feature-modal-box .feature-editor-fields")), "not on a phone");
+}
+
+const NAME_INPUT: &str = "[data-field-name][autocapitalize=none][autocorrect=off][spellcheck=false][autocomplete=off][inputmode=text]";
+const PROBLEM: &str = ".feature-editor-fields [data-name-problem][aria-live=polite]";
+const SAVE_OFF: &str = "[data-feature-save]:disabled";
+
+fn problem_text(frame: &Value) -> Option<String> {
+    frame["settled"]["a11y"]["live"].as_array().unwrap().iter().find(|l| l["live"] == "polite" && l["text"].as_str().unwrap().contains("feature name")).map(|l| l["text"].as_str().unwrap().to_string())
+}
+
+#[test]
+fn the_name_box_says_live_which_character_is_refused_and_save_waits_until_it_is_fixed() {
+    let steps = vec![
+        json!({"click": "[data-feature-add]"}),
+        json!({"set": "[data-field-name]", "value": "a\u{2014}b"}),
+        json!({"set": "[data-field-name]", "value": "a-b"}),
+        json!({"set": "[data-field-name]", "value": ""}),
+        json!({"click": "[data-feature-save]"}),
+    ];
+    let Some(out) = run_with(&[NAME_INPUT, PROBLEM, SAVE_OFF], steps) else { return };
+    // Frame 0 is the sign-in.
+    let frames = out["frames"].as_array().unwrap();
+    let opened = &frames[2];
+    assert_eq!(count(opened, NAME_INPUT), 1, "the phone keyboard leaves the name as typed: {out}");
+    assert_eq!((count(opened, PROBLEM), count(opened, SAVE_OFF)), (0, 0), "an empty box says nothing yet: {out}");
+
+    let dashed = &frames[3];
+    assert_eq!((count(dashed, PROBLEM), count(dashed, SAVE_OFF)), (1, 1), "{out}");
+    assert_eq!(problem_text(dashed).as_deref(), Some("\"\u{2014}\" (U+2014) at position 2 is not allowed in a feature name; use letters, digits, '-', '_' or '.' (use '-')"), "{out}");
+
+    let fixed = &frames[4];
+    assert_eq!((count(fixed, PROBLEM), count(fixed, SAVE_OFF)), (0, 0), "{out}");
+    assert_eq!(count(&frames[5], PROBLEM), 0, "emptied, but Save not pressed yet: {out}");
+
+    let pressed = &frames[6];
+    assert_eq!(problem_text(pressed).as_deref(), Some("a feature name is required"), "{out}");
+    assert_eq!(count(pressed, SAVE_OFF), 1, "{out}");
+    assert!(out["requests"].as_array().unwrap().iter().all(|r| r["method"] != "POST"), "nothing sent: {out}");
 }

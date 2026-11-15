@@ -41,6 +41,41 @@ impl std::fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
+/// What `name` would need changed to be a feature name, or `None` when it is one: only ASCII letters, digits,
+/// '-', '_' and '.', and no leading '.', so a name can never be a path. The refusal names the first character
+/// it refused, its code point and its position (in characters, from 1), so a look-alike dash or a hidden
+/// space can be found; a space is written as "a space" and an invisible character only by its code point,
+/// so nothing invisible or controlling reaches the reader raw. The web page holds the same rule.
+pub fn feature_name_problem(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("a feature name is required".to_string());
+    }
+    if name.starts_with('.') {
+        return Some("a feature name may not start with '.'".to_string());
+    }
+    let (index, bad) = name.chars().enumerate().find(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))?;
+    let code = format!("U+{:04X}", bad as u32);
+    let shown = match bad {
+        ' ' => "a space".to_string(),
+        c if invisible(c) => code,
+        c => format!("\"{c}\" ({code})"),
+    };
+    let hint = match bad {
+        '\u{2014}' | '\u{2013}' | '\u{2010}' | '\u{2011}' | '\u{2212}' => " (use '-')",
+        c if c.is_whitespace() => " (use '-' between words)",
+        _ => "",
+    };
+    Some(format!("{shown} at position {} is not allowed in a feature name; use letters, digits, '-', '_' or '.'{hint}", index + 1))
+}
+
+/// A character that shows nothing, or changes how the text around it shows: whitespace, a control character,
+/// or a format character (zero-width spaces and joiners, bidirectional marks, the byte-order mark).
+fn invisible(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_control()
+        || matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
+}
+
 /// Validates a whole candidate array: unique names, every dependency present,
 /// no self-dependency, no cycle.
 pub fn validate_entries(entries: &[FeatureEntry]) -> Result<(), ValidationError> {

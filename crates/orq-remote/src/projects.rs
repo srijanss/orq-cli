@@ -775,8 +775,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         };
         let Some(feature) = feature else {
             let name = fields.name.clone().unwrap_or_default();
-            if !plain_feature_name(&name) {
-                return refused("a feature name may use only letters, digits, '-', '_' and '.', and may not start with '.'".to_string());
+            // The web adds no feature it could not then name: never a path, and a refusal says which character.
+            if let Some(problem) = orq_features::feature_name_problem(&name) {
+                return refused(problem);
             }
             let draft = orq_features::FeatureDraft {
                 feature_name: name,
@@ -1225,11 +1226,6 @@ fn read_ledger_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
 /// The stored value a redacted one stands for: `value` if it is not the redacted form of one of `stored`.
 fn unredacted<'a>(value: &str, mut stored: impl Iterator<Item = &'a String>) -> String {
     stored.find(|original| original.as_str() != value && orq_core::redact::redact(original) == value).cloned().unwrap_or_else(|| value.to_string())
-}
-
-/// Whether `name` can only be a feature name, never a path: the web adds no feature it could not then name.
-fn plain_feature_name(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !name.starts_with('.')
 }
 
 /// The version of a ledger as it was read, for a later save to compare against: the SHA-256 of its bytes.

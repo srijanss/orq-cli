@@ -265,7 +265,7 @@ mod reopen;
 pub use reopen::{reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features};
 
 mod validate;
-pub use validate::{validate_entries, ValidationError};
+pub use validate::{feature_name_problem, validate_entries, ValidationError};
 
 mod spec_file;
 pub use spec_file::{resolve_spec_file, spec_file_candidates, spec_file_choices, SpecFileError};
