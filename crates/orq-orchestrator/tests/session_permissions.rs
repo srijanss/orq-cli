@@ -186,6 +186,36 @@ fn an_interpreter_rule_on_anything_but_a_checked_in_script_is_left_out_saying_wh
     assert!(deny.iter().any(|rule| rule == "Bash(git push:*)"), "{deny:?}");
 }
 
+/// A symlink the base itself holds is not a checked-in script, even unchanged; nor is a script the
+/// run's new base (after a rebase) holds as a symlink where an earlier base held a regular file.
+#[test]
+fn a_script_the_base_holds_as_a_symlink_is_left_out() {
+    let (_repo, worktree) = checkout("permissions-base-link");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    std::os::unix::fs::symlink("/etc/passwd", worktree.join("a/link.mjs")).unwrap();
+    git(&worktree, &["add", "a/link.mjs"]);
+    git(&worktree, &["commit", "--quiet", "-m", "link"]);
+    let earlier = head(&worktree);
+    let linked = "Bash(node a/link.mjs)".to_string();
+    let replaced = "Bash(node a/make.mjs:*)".to_string();
+    let extra = vec![linked.clone(), replaced.clone()];
+    let not_script = |rule: &str| format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out");
+
+    assert_eq!(write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &earlier), [not_script(&linked)]);
+    assert!(allowed(&worktree).contains(&replaced), "{:?}", allowed(&worktree));
+
+    fs::remove_file(worktree.join("a/make.mjs")).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", worktree.join("a/make.mjs")).unwrap();
+    git(&worktree, &["add", "a/make.mjs"]);
+    git(&worktree, &["commit", "--quiet", "-m", "make is a link"]);
+    let rebased = head(&worktree);
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &rebased);
+
+    assert_eq!(notes, [not_script(&linked), not_script(&replaced)]);
+    let allow = allowed(&worktree);
+    assert!(!allow.contains(&linked) && !allow.contains(&replaced), "{allow:?}");
+}
+
 /// A session cannot write itself a push script and run it: a script the run changed, in a commit or
 /// still in the worktree, is not run without asking by the next session, even if an earlier one could.
 #[test]
