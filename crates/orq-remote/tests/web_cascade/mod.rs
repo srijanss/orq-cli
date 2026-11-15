@@ -90,6 +90,26 @@ pub fn can_match(selector: &str, target: &str) -> bool {
     }
 }
 
+/// Whether a rule's selector reaches one representative element, written as a selector: its
+/// tag (with no class of its own) under ancestors with the given classes, like `.signin input`.
+/// Unlike `can_match`, a selector that names an ancestor class the element does not sit under, or
+/// a class on the element itself, does not reach it; an ancestor named only by its tag is assumed
+/// to be there. Classes inside a pseudo-class such as `:not(.x)` are not required.
+pub fn matches_element(selector: &str, element: &str) -> bool {
+    let classes = |compound: &str| -> Vec<String> {
+        let before_pseudo = compound.split(':').next().unwrap_or("");
+        before_pseudo.split('.').skip(1).map(|c| c.split(['[', '#']).next().unwrap_or("").to_string()).collect()
+    };
+    let compounds = |s: &str| -> Vec<String> { s.split([' ', '>', '+', '~']).filter(|c| !c.is_empty()).map(str::to_string).collect() };
+    let (element_compounds, rule_compounds) = (compounds(element), compounds(selector));
+    let (Some(tag), Some(rule_subject)) = (element_compounds.last(), rule_compounds.last()) else { return false };
+    let ancestors: Vec<String> = element_compounds[..element_compounds.len() - 1].iter().flat_map(|c| classes(c)).collect();
+    rule_subject.split(['.', ':', '[', '#']).next() == Some(tag.as_str())
+        && classes(rule_subject).is_empty()
+        && !rule_subject.split(':').next().unwrap_or("").contains('#')
+        && rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !c.contains('#') && classes(c).iter().all(|class| ancestors.contains(class)))
+}
+
 /// (ids, classes/attributes/pseudo-classes, tags) as one comparable number.
 pub fn specificity(selector: &str) -> usize {
     let mut score = 0;

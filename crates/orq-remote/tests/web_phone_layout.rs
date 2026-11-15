@@ -90,11 +90,10 @@ fn on_a_phone_the_content_is_tighter_and_never_scrolls_sideways() {
 /// `font` or `font-size` declaration wins (rem and em as 16px, `max()`/`min()` evaluated). A value
 /// that cannot be shown to be a size, such as `font: inherit`, is None.
 fn font_size_px(css: &str, target: &str, width: f64) -> Option<f64> {
-    let element = web_cascade::subject(target);
     let mut best: Option<((bool, usize, usize), String, String)> = None;
     let mut order = 0;
     for rule in parse(css, None).iter().filter(|r| applies(&r.media, width)) {
-        for selector in rule.selectors.iter().filter(|s| can_match(s, element)) {
+        for selector in rule.selectors.iter().filter(|s| matches_element(s, target)) {
             for (p, v) in rule.declarations.iter().filter(|(p, _)| p == "font" || p == "font-size") {
                 order += 1;
                 let key = (v.contains("!important"), specificity(selector), order);
@@ -152,8 +151,33 @@ fn on_a_phone_text_fields_are_at_least_16px_so_focusing_them_does_not_zoom() {
 fn a_later_more_specific_rule_that_shrinks_a_field_under_16px_is_caught() {
     let shrunk = css() + "\n@media (max-width: 700px) { .search-box input:not([type=checkbox]):not([type=radio]) { font-size: 0.875rem; } }";
     let small = fields_under_16px(&shrunk);
-    // Only the inputs it can reach are reported; select and textarea keep their phone size.
+    // Only the field it reaches is reported; other inputs, select and textarea keep their phone size.
     let reached: Vec<&str> = FIELDS.into_iter().filter(|f| small.iter().any(|s| s.starts_with(&format!("{f} at ")))).collect();
-    assert_eq!(reached, ["input", ".search-box input", ".signin input", ".field input"], "{small:?}");
+    assert_eq!(reached, [".search-box input"], "{small:?}");
     assert!(small.iter().all(|s| s.ends_with("Some(14.0)")), "{small:?}");
+}
+
+#[test]
+fn a_16px_rule_for_one_field_does_not_hide_a_smaller_one_on_another() {
+    let fields = "input:not([type=checkbox]):not([type=radio]), select, textarea { font-size: 16px; }\n\
+        @media (max-width: 700px) {\n\
+          .search-box input:not([type=checkbox]):not([type=radio]) { font-size: 16px !important; }\n\
+          .signin input:not([type=checkbox]):not([type=radio]) { font-size: 0.875rem; }\n\
+        }";
+    let small = fields_under_16px(fields);
+    assert!(small.iter().any(|s| s.starts_with(".signin input at ")), "{small:?}");
+    assert!(small.iter().all(|s| s.starts_with(".signin input at ")), "{small:?}");
+}
+
+#[test]
+fn a_rule_under_one_ancestor_does_not_reach_a_field_under_another() {
+    let sheet = ".search-box input { font-size: 10px; }\n.signin input { font-size: 18px; }\n.content .signin input { font-size: 20px; }";
+    assert_eq!(font_size_px(sheet, ".signin input", 360.0), Some(18.0));
+    assert_eq!(font_size_px(sheet, ".content .signin input", 360.0), Some(20.0));
+    assert_eq!(font_size_px(sheet, ".search-box input", 360.0), Some(10.0));
+    // A bare input sits under neither, and an ancestor named only by its tag is assumed to match.
+    assert_eq!(font_size_px(sheet, "input", 360.0), None);
+    assert_eq!(font_size_px("body input { font-size: 17px; }", "input", 360.0), Some(17.0));
+    // A field is no particular class itself, so a rule naming one does not reach it.
+    assert_eq!(font_size_px("input.tiny { font-size: 10px; }", "input", 360.0), None);
 }
