@@ -892,6 +892,24 @@ fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)])
     Ok(env)
 }
 
+/// Writes what the run's sessions may do without asking, checked against the run's branch as it is
+/// now: a script the run changed since the commit it was last rebased onto (or started from) is no
+/// longer run without asking. Called before each session, so a change made by one is seen by the next.
+/// Writes the session permissions again before a fix session, saying on stderr what was left out:
+/// the fix session runs on what the earlier sessions changed.
+fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) {
+    match write_permissions(store, record, settings, logs) {
+        Ok(notes) => notes.iter().for_each(|note| eprintln!("orq: {note}")),
+        Err(e) => eprintln!("orq: could not check the fix session's allowed commands: {e:?}"),
+    }
+}
+
+fn write_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<Vec<String>, StoreError> {
+    let base = orq_orchestrator::rebased_onto(store, &record.run_id)?.unwrap_or_else(|| record.base_sha.clone());
+    let extra = settings.allowed_tools.as_deref().unwrap_or_default();
+    Ok(orq_orchestrator::write_run_permissions(&record.worktree, extra, logs, &base))
+}
+
 /// What a resumed run takes over from the run it continues; all `None` for a new run.
 #[derive(Clone, Copy)]
 struct Resumed<'a> {
@@ -945,7 +963,7 @@ fn stages(
         let mcpctl = find_program("mcpctl");
         notes.extend(orq_orchestrator::prepare_mcp_servers(worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref()));
         // Nobody may be there to answer a permission prompt, and the exit marker goes into the logs.
-        notes.extend(orq_orchestrator::write_run_permissions(worktree, settings.allowed_tools.as_deref().unwrap_or_default(), logs));
+        notes.extend(write_permissions(store, record, settings, logs)?);
         // Only a session with a terminal has someone to ask.
         if options.interactive {
             match std::env::current_exe() {
@@ -1100,15 +1118,19 @@ fn stages(
         };
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
-            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| FixSessionSpec {
-                program: claude_program.to_string(),
-                args: fix_args.clone(),
-                env: fix_env.clone(),
-                cwd: worktree.to_path_buf(),
-                session_id: None,
-                log: fix_log.clone(),
-                terminal: options.interactive,
-                exit_marker: fix_marker.clone(),
+            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
+                // A script the run has changed since is no longer allowed to the fix session.
+                recheck_permissions(store, record, settings, logs);
+                FixSessionSpec {
+                    program: claude_program.to_string(),
+                    args: fix_args.clone(),
+                    env: fix_env.clone(),
+                    cwd: worktree.to_path_buf(),
+                    session_id: None,
+                    log: fix_log.clone(),
+                    terminal: options.interactive,
+                    exit_marker: fix_marker.clone(),
+                }
             })?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
@@ -1329,6 +1351,7 @@ fn stages(
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
             report: &|head, ci| build_review_report(store, record, options, &steps_of(&gate), head, ci, logs),
+            before_session: &|| recheck_permissions(store, record, settings, logs),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: fix_args,
@@ -1457,6 +1480,8 @@ struct PipelineCiSteps<'a> {
     push_log: PathBuf,
     /// Leaves the review report of a commit the loop just pushed, and again with what its CI said.
     report: &'a dyn Fn(&str, Option<&CiOutcome>),
+    /// Run before each fix session: brings the session's allowed commands up to date with the branch.
+    before_session: &'a dyn Fn(),
     session: FixSessionSpec,
 }
 
@@ -1486,6 +1511,7 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     }
 
     fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> FixSessionSpec {
+        (self.before_session)();
         self.session.clone()
     }
 }

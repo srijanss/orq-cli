@@ -256,12 +256,17 @@ const RUNS_ANYTHING: [&str; 21] = [
 /// Programs with a subcommand that publishes: a rule for one of them must name a subcommand.
 const PUBLISHING_PROGRAMS: [&str; 7] = ["git", "cargo", "npm", "gh", "glab", "pnpm", "yarn"];
 
+/// Whether a rule has `push` or `publish` among its words.
+fn names_publishing(rule: &str) -> bool {
+    let mut words = rule.split(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+    words.any(|word| word == "push" || word == "publish")
+}
+
 /// Whether a permission rule would let the session publish to a remote: it names publishing, or
 /// is broad enough to reach it another way, any command, a shell or wrapper, or a whole program
 /// that can publish without naming its subcommand.
 fn publishes(rule: &str) -> bool {
-    let words = rule.split(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-    if words.into_iter().any(|word| word == "push" || word == "publish") {
+    if names_publishing(rule) {
         return true;
     }
     let rule = rule.trim();
@@ -292,23 +297,97 @@ fn publishes(rule: &str) -> bool {
     false
 }
 
+/// Interpreters that may run a script checked in to the repository, by their family name.
+const SCRIPT_INTERPRETERS: [&str; 6] = ["node", "python", "ruby", "perl", "bun", "deno"];
+
+/// For a rule that runs an interpreter, `Some` with the script it runs when it has the one form
+/// allowed: `Bash(<interpreter> <path>)` or `Bash(<interpreter> <path>:*)`, the interpreter by its
+/// bare name and the path relative, plain and in the worktree. `Some(None)` for any other
+/// interpreter rule, and `None` for a rule that runs no interpreter.
+fn interpreter_script(rule: &str) -> Option<Option<&str>> {
+    let command = rule.trim().strip_prefix("Bash(")?.strip_suffix(')')?;
+    let program = command.split_whitespace().next()?;
+    let name = program.rsplit('/').next().unwrap_or(program);
+    let family = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    if !SCRIPT_INTERPRETERS.contains(&family) {
+        return None;
+    }
+    let command = command.strip_suffix(":*").unwrap_or(command);
+    let script = match command.split(' ').collect::<Vec<_>>().as_slice() {
+        [interpreter, script] if *interpreter == program && !program.contains('/') => *script,
+        _ => return Some(None),
+    };
+    let plain = script.chars().all(|c| c.is_ascii_alphanumeric() || "._-+/".contains(c));
+    let segments_plain = script.split('/').all(|segment| !matches!(segment, "" | "." | ".."));
+    Some((plain && segments_plain && !script.starts_with('-')).then_some(script))
+}
+
+/// Whether `script` is a regular file of the commit `base`, read in `worktree`.
+fn tracked_at(worktree: &Path, base: &str, script: &str) -> bool {
+    if base.is_empty() || !base.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["--literal-pathspecs", "ls-tree", "-z", base, "--", script])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(listed) = listed else { return false };
+    let entry = String::from_utf8_lossy(&listed.stdout);
+    let Some((meta, path)) = entry.trim_end_matches('\0').split_once('\t') else { return false };
+    listed.status.success()
+        && path == script
+        && (meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))
+}
+
+/// Whether `script` in the worktree, committed or not, differs from the commit `base`; a failed
+/// check counts as a change.
+fn changed_since(worktree: &Path, base: &str, script: &str) -> bool {
+    let same = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["--literal-pathspecs", "diff", "--quiet", base, "--", script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    !same.is_ok_and(|status| status.success())
+}
+
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
 /// commands and tools of `ALLOWED` and the project's `extra` (its `allowed_tools`) run without
 /// asking, publishing is refused, and `logs` is writable so the session can leave its exit marker.
-/// Anything else the session is refused. An added rule that would publish is left out. Other keys
-/// and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
-pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> Vec<String> {
+/// Anything else the session is refused. An added rule that would publish is left out; an
+/// interpreter is kept only to run a script the run's `base` commit holds and the run has not
+/// changed since; a rule left out is also taken out of an allow list an earlier call wrote. Other
+/// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
+pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
     let mut notes = Vec::new();
     let logs = logs.to_string_lossy();
     // A path rule beginning with `//` is absolute: the session writes its exit marker there.
     let marker_rule = format!("Edit(/{logs}/**)");
     let mut allowed: Vec<&str> = ALLOWED.to_vec();
     allowed.push(&marker_rule);
+    // A rule left out now goes from the settings too: an earlier session may have been allowed it.
+    let mut withdrawn: Vec<&str> = Vec::new();
     for rule in extra {
-        if publishes(rule) {
-            notes.push(format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead"));
-        } else {
-            allowed.push(rule);
+        let could_publish = || format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead");
+        let left_out = match interpreter_script(rule) {
+            _ if names_publishing(rule) => Some(could_publish()),
+            None => publishes(rule).then(could_publish),
+            Some(Some(script)) if tracked_at(worktree, base, script) => {
+                changed_since(worktree, base, script).then(|| format!("{script} was changed by this run, so allowed_tools rule {rule} was left out"))
+            }
+            Some(_) => Some(format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out")),
+        };
+        match left_out {
+            Some(note) => {
+                notes.push(note);
+                withdrawn.push(rule.as_str());
+            }
+            None => allowed.push(rule),
         }
     }
     let edited = edit_settings(worktree, |root| {
@@ -318,6 +397,9 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path) -> 
         for (key, rules) in [("allow", allowed.as_slice()), ("deny", DENIED.as_slice()), ("additionalDirectories", &[logs.as_ref()][..])] {
             let list = permissions.entry(key).or_insert_with(|| serde_json::json!([]));
             let list = list.as_array_mut().ok_or_else(|| format!("its permissions.{key} is not a JSON array"))?;
+            if key == "allow" {
+                list.retain(|item| !item.as_str().is_some_and(|item| withdrawn.contains(&item)));
+            }
             for rule in rules {
                 if !list.iter().any(|item| item.as_str() == Some(rule)) {
                     list.push(serde_json::json!(rule));

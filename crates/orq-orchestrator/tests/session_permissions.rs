@@ -22,6 +22,54 @@ fn strings(value: &serde_json::Value) -> Vec<String> {
     serde_json::from_value(value.clone()).unwrap()
 }
 
+fn git(worktree: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["-c", "user.name=Orq Test", "-c", "user.email=test@example.invalid"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// The commit the worktree is at: the run's base, until the run commits.
+fn head(worktree: &Path) -> String {
+    git(worktree, &["rev-parse", "HEAD"])
+}
+
+/// Writes `path` in the worktree and commits it.
+fn commit_file(worktree: &Path, path: &str, contents: &str) {
+    let file = worktree.join(path);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, contents).unwrap();
+    git(worktree, &["add", path]);
+    git(worktree, &["commit", "--quiet", "-m", path]);
+}
+
+fn allowed(worktree: &Path) -> Vec<String> {
+    strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"])
+}
+
+/// An interpreter running a fixed script of the repository cannot be told to publish: the script is
+/// what the run's base holds, and the run's own changes to it are seen.
+#[test]
+fn an_interpreter_rule_running_a_checked_in_script_is_kept() {
+    let (_repo, worktree) = checkout("permissions-script");
+    commit_file(&worktree, "a/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let extra = vec!["Bash(node a/build.mjs:*)".to_string(), "Bash(python3 a/build.mjs)".to_string()];
+
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, Vec::<String>::new());
+    let allow = allowed(&worktree);
+    for rule in &extra {
+        assert!(allow.contains(rule), "{rule} not in {allow:?}");
+    }
+}
+
 #[test]
 fn the_permissions_join_the_settings_beside_what_is_already_there_and_are_not_repeated() {
     let (_repo, worktree) = checkout("permissions-merge");
@@ -31,8 +79,8 @@ fn the_permissions_join_the_settings_beside_what_is_already_there_and_are_not_re
     let logs = Path::new("/state/orq/logs/run-1");
 
     let extra = vec!["Bash(make lint:*)".to_string()];
-    assert_eq!(write_run_permissions(&worktree, &extra, logs), Vec::<String>::new());
-    assert_eq!(write_run_permissions(&worktree, &extra, logs), Vec::<String>::new());
+    assert_eq!(write_run_permissions(&worktree, &extra, logs, &head(&worktree)), Vec::<String>::new());
+    assert_eq!(write_run_permissions(&worktree, &extra, logs, &head(&worktree)), Vec::<String>::new());
 
     let settings = read_json(&path);
     assert_eq!(settings["env"]["A"], "1", "other keys stay");
@@ -55,7 +103,7 @@ fn an_added_rule_that_would_publish_to_a_remote_is_left_out_with_a_note() {
     let (_repo, worktree) = checkout("permissions-publish");
     let extra = vec!["Bash(git push origin:*)".to_string(), "Bash(cargo publish)".to_string(), "Bash(make lint:*)".to_string()];
 
-    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"));
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &head(&worktree));
 
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes.iter().all(|note| note.contains("allowed_tools")), "{notes:?}");
@@ -73,7 +121,7 @@ fn an_added_rule_broad_enough_to_publish_another_way_is_left_out() {
     let narrow = ["Bash(make lint:*)", "Bash(cargo nextest:*)", "Bash(git fetch:*)", "WebFetch"];
     let extra: Vec<String> = broad.iter().chain(narrow.iter()).map(|rule| rule.to_string()).collect();
 
-    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"));
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &head(&worktree));
 
     assert_eq!(notes.len(), broad.len(), "{notes:?}");
     let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
@@ -93,13 +141,75 @@ fn a_rule_naming_a_program_by_its_path_or_an_interpreter_is_left_out() {
     let narrow = ["Bash(/usr/bin/make lint:*)", "Bash(/usr/bin/git fetch:*)"];
     let extra: Vec<String> = broad.iter().chain(narrow.iter()).map(|rule| rule.to_string()).collect();
 
-    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"));
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &head(&worktree));
 
     assert_eq!(notes.len(), broad.len(), "{notes:?}");
     let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
     for rule in narrow {
         assert!(allow.iter().any(|allowed| allowed == rule), "{rule} not in {allow:?}");
     }
+}
+
+/// Code given on the command line, flags before the script, a file outside the base commit or a
+/// path that could name another file are not a checked-in script; nor is a shell running one.
+#[test]
+fn an_interpreter_rule_on_anything_but_a_checked_in_script_is_left_out_saying_why() {
+    let (_repo, worktree) = checkout("permissions-not-script");
+    commit_file(&worktree, "a/build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "a/x.sh", "echo hi\n");
+    let base = head(&worktree);
+    fs::write(worktree.join("a/untracked.mjs"), "console.log('new')\n").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", worktree.join("a/link.mjs")).unwrap();
+    git(&worktree, &["add", "a/link.mjs"]);
+    git(&worktree, &["commit", "--quiet", "-m", "link"]);
+    let absolute = format!("Bash(node {}:*)", worktree.join("a/build.mjs").display());
+    let interpreters = [
+        "Bash(node a/untracked.mjs:*)", "Bash(node a/missing.mjs)", absolute.as_str(), "Bash(node ../x.mjs)",
+        "Bash(node a/../a/build.mjs)", "Bash(node a/*.mjs)", "Bash(node a/build.mjs*)", "Bash(node a/build.mjs *)",
+        "Bash(node -e:*)", "Bash(python3 -c:*)", "Bash(node --require x a/build.mjs)", "Bash(node a)",
+        "Bash(/usr/bin/node a/build.mjs)", "Bash(node a/link.mjs)",
+    ];
+    let extra: Vec<String> = interpreters.iter().map(|rule| rule.to_string()).chain(["Bash(bash a/x.sh)".to_string(), "Bash(git push:*)".to_string()]).collect();
+
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base);
+
+    assert_eq!(notes.len(), extra.len(), "{notes:?}");
+    for rule in interpreters {
+        let wanted = format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out");
+        assert!(notes.contains(&wanted), "{wanted} not in {notes:?}");
+    }
+    let allow = allowed(&worktree);
+    for rule in &extra {
+        assert!(!allow.contains(rule), "{rule} in {allow:?}");
+    }
+    let deny = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["deny"]);
+    assert!(deny.iter().any(|rule| rule == "Bash(git push:*)"), "{deny:?}");
+}
+
+/// A session cannot write itself a push script and run it: a script the run changed, in a commit or
+/// still in the worktree, is not run without asking by the next session, even if an earlier one could.
+#[test]
+fn a_checked_in_script_the_run_changed_is_left_out_for_the_next_session() {
+    let (_repo, worktree) = checkout("permissions-changed");
+    commit_file(&worktree, "a/build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "b/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let committed = "Bash(node a/build.mjs:*)".to_string();
+    let edited = "Bash(node b/build.mjs)".to_string();
+    let extra = vec![committed.clone(), edited.clone()];
+    assert_eq!(write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base), Vec::<String>::new());
+
+    commit_file(&worktree, "a/build.mjs", "require('child_process')\n");
+    fs::write(worktree.join("b/build.mjs"), "require('child_process')\n").unwrap();
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [
+        format!("a/build.mjs was changed by this run, so allowed_tools rule {committed} was left out"),
+        format!("b/build.mjs was changed by this run, so allowed_tools rule {edited} was left out"),
+    ]);
+    let allow = allowed(&worktree);
+    assert!(!allow.contains(&committed) && !allow.contains(&edited), "{allow:?}");
+    assert!(allow.iter().any(|rule| rule == "Bash(git status:*)"), "{allow:?}");
 }
 
 #[test]
@@ -109,7 +219,7 @@ fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
     let path = worktree.join(".claude/settings.local.json");
     fs::write(&path, r#"{"permissions":["nonsense"]}"#).unwrap();
 
-    let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"));
+    let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &head(&worktree));
 
     assert!(notes.iter().any(|note| note.contains("settings.local.json")), "{notes:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"permissions":["nonsense"]}"#);
@@ -120,7 +230,7 @@ fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
 fn the_session_may_edit_the_worktree_and_write_into_the_runs_logs() {
     let (_repo, worktree) = checkout("permissions-edits");
 
-    assert_eq!(write_run_permissions(&worktree, &[], Path::new("/state/orq/logs/run-1")), Vec::<String>::new());
+    assert_eq!(write_run_permissions(&worktree, &[], Path::new("/state/orq/logs/run-1"), &head(&worktree)), Vec::<String>::new());
 
     let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
     for wanted in ["Edit(./**)", "Edit(//state/orq/logs/run-1/**)", "Read", "Skill"] {
