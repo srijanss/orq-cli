@@ -1569,6 +1569,67 @@ fn path_marking(w: &World, agent: &FakeAgent, provider: &FakeProvider, after: &[
     path
 }
 
+/// Runs a group of COM-01 and COM-02 whose session first runs the shell line `first(w)` and then
+/// commits COM-01's work, and checks the run failed saying `why`, with nothing pushed and no
+/// review request.
+fn assert_group_session_fails(tag: &str, first: impl Fn(&World) -> String, why: &str) {
+    let w = world(tag);
+    write_ledger(
+        w.repo.root(),
+        &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
+    );
+    let agent = FakeAgent::builder().write_file("one.txt", "1\n").commit("feat: COM-01").build();
+    let provider = github();
+    // Built before the shim is written: building the command lays out a fresh PATH directory.
+    let mut command = run_command(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"]);
+    let path = path_with(&agent, &provider, &w.tag);
+    let bin = std::env::split_paths(&path).next().unwrap();
+    std::fs::write(bin.join("claude"), format!("#!/bin/sh\n{}\nexec '{}' \"$@\"\n", first(&w), agent.path().display())).unwrap();
+
+    let output = command.env("PATH", path).output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let all = format!("{}\n{stdout}", stderr(&output));
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{tag}: {all}");
+    assert!(stdout.contains("state: failed"), "{tag}: {all}");
+    assert!(all.contains(why), "{tag}: {all}");
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "{tag}: nothing was pushed");
+    assert!(
+        !provider.calls().iter().any(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])),
+        "{tag}: no review request"
+    );
+}
+
+/// A shell line that replaces the main ledger of `w` with a copy of `ledger`.
+fn replacing_ledger(w: &World, ledger: &Path) -> String {
+    format!("cp '{}' '{}'", ledger.display(), w.repo.root().join(".tdd-features.json").display())
+}
+
+fn scratch(w: &World, name: &str) -> PathBuf {
+    let dir = w.env.data.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_group_session_that_removes_or_breaks_the_ledger_or_drops_a_member_fails_without_a_push_or_review() {
+    assert_group_session_fails(
+        "groupnoledger",
+        |w| format!("rm '{}'", w.repo.root().join(".tdd-features.json").display()),
+        "cannot tell whether the group's features were completed",
+    );
+    assert_group_session_fails(
+        "groupbadledger",
+        |w| replacing_ledger(w, &orq_test_support::write_ledger_bytes(&scratch(w, "bad"), b"not json\n")),
+        "cannot tell whether the group's features were completed",
+    );
+    assert_group_session_fails(
+        "groupnomember",
+        |w| replacing_ledger(w, &write_ledger(&scratch(w, "only"), &[LedgerEntry::new("COM-02", "completed")])),
+        "the implement session ended before COM-01 was completed",
+    );
+}
+
 #[test]
 fn a_group_session_that_ends_before_every_feature_is_completed_fails_without_a_push_or_review() {
     let w = world("groupunfinished");
