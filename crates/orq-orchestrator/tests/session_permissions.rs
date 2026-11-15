@@ -366,6 +366,26 @@ fn an_allowed_tools_script_rule_is_left_out_when_the_script_it_could_run_elsewhe
     assert!(!allow.contains(&prefix) && !allow.contains(&relative), "{allow:?}");
 }
 
+/// A link to a folder outside the worktree holds files git does not list: a script reached through
+/// it, here web/a/make.mjs, is not the base's, so the rule that could run it is left out.
+#[test]
+fn an_allowed_tools_script_rule_is_left_out_beside_a_link_to_a_folder_outside_the_worktree() {
+    let (repo, worktree) = checkout("permissions-script-linked");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let rule = "Bash(node a/make.mjs)".to_string();
+    let outside = repo.root().join("outside");
+    fs::create_dir_all(outside.join("a")).unwrap();
+    fs::write(outside.join("a/make.mjs"), "require('child_process')\n").unwrap();
+    fs::create_dir_all(worktree.join("web")).unwrap();
+    std::os::unix::fs::symlink(&outside.join("a"), worktree.join("web/a")).unwrap();
+
+    let notes = write_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("web/a is a link to a folder outside the worktree, whose a/make.mjs orq cannot check, so allowed_tools rule {rule} was left out")]);
+    assert!(!allowed(&worktree).contains(&rule));
+}
+
 /// A rule that must go but cannot be taken out of the settings could still be allowed there: the
 /// refresh before a session fails, naming the rule, rather than letting the session start.
 #[test]

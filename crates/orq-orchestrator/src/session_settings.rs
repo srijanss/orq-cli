@@ -354,6 +354,8 @@ enum NamedScripts {
     Absent,
     /// Repositories inside the worktree (submodules or not), whose files the worktree's git does not see.
     Nested(Vec<String>),
+    /// Links to folders outside the worktree, whose files the worktree's git does not see.
+    Linked(Vec<String>),
     /// The files that differ from what `base` holds: changed, added or removed in a commit of the
     /// run or in the worktree, untracked or ignored ones included. Empty when none does.
     Changed(Vec<String>),
@@ -394,9 +396,35 @@ fn named_scripts_checked(worktree: &Path, base: &str, script: &str) -> Option<Na
     if !nested.is_empty() {
         return Some(NamedScripts::Nested(nested));
     }
+    // A link to a folder, untracked, staged or changed since the base: a script reached through it
+    // is not one git lists, unless the folder is the worktree's own.
+    let differing = git(&["diff", "--name-only", "-z", base])?;
+    let links = staged.split('\0').filter(|entry| entry.starts_with("120000 ")).filter_map(|entry| entry.split_once('\t')).map(|(_, path)| path);
+    let mut linked: Vec<String> = others.split('\0').chain(differing.split('\0')).chain(links).filter(|path| !path.is_empty() && links_outside(worktree, path)).map(str::to_string).collect();
+    linked.sort();
+    linked.dedup();
+    if !linked.is_empty() {
+        return Some(NamedScripts::Linked(linked));
+    }
     let changed = git(&["diff", "--name-only", "-z", base, "--", &pattern])?;
     let added = git(&["ls-files", "--others", "-z", "--", &pattern])?;
     Some(NamedScripts::Changed(changed.split('\0').chain(added.split('\0')).filter(|path| !path.is_empty()).map(str::to_string).collect()))
+}
+
+fn linked_what(links: &[String]) -> &'static str {
+    if links.len() == 1 { "is a link to a folder outside the worktree" } else { "are links to folders outside the worktree" }
+}
+
+/// Whether `path` in `worktree` is a link to a folder that is not the worktree's own: outside it, or
+/// in a `.git` folder of it, or one that cannot be told.
+fn links_outside(worktree: &Path, path: &str) -> bool {
+    let at = worktree.join(path);
+    let Ok(meta) = std::fs::symlink_metadata(&at) else { return false };
+    if !meta.file_type().is_symlink() || !std::fs::metadata(&at).is_ok_and(|target| target.is_dir()) {
+        return false;
+    }
+    let (Ok(target), Ok(root)) = (at.canonicalize(), worktree.canonicalize()) else { return true };
+    !target.strip_prefix(&root).is_ok_and(|inside| inside.components().all(|part| part.as_os_str() != ".git"))
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
@@ -404,7 +432,9 @@ fn named_scripts_checked(worktree: &Path, base: &str, script: &str) -> Option<Na
 /// asking, publishing is refused, and `logs` is writable so the session can leave its exit marker.
 /// Anything else the session is refused. An added rule that would publish is left out; an
 /// interpreter is kept only to run a script the run's `base` commit holds and the run has not
-/// changed since, nor any other file its path names when run from another folder; a rule left out is also taken out of an allow list an earlier call wrote. Other
+/// changed since, nor any other file its path names when run from another folder, with no repository
+/// of its own nor link to a folder outside it in the worktree to hide such a file; a rule left out is
+/// also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
     let (mut notes, unrevoked) = apply_run_permissions(worktree, extra, logs, base);
@@ -432,6 +462,10 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
                 notes.push(format!("{} {what}, whose {name} orq cannot check, so the rule {rule} was left out", repositories.join(", ")));
                 withdrawn.push(rule);
             }
+            NamedScripts::Linked(links) => {
+                notes.push(format!("{} {}, whose {name} orq cannot check, so the rule {rule} was left out", links.join(", "), linked_what(&links)));
+                withdrawn.push(rule);
+            }
             NamedScripts::Changed(changed) if changed.is_empty() => allowed.push(rule),
             NamedScripts::Changed(changed) => {
                 notes.push(format!("{} was changed by this run, so the rule {rule} was left out", changed.join(", ")));
@@ -456,6 +490,7 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
                     let what = if repositories.len() == 1 { "is a repository of its own" } else { "are repositories of their own" };
                     Some(format!("{} {what}, whose {script} orq cannot check, so allowed_tools rule {rule} was left out", repositories.join(", ")))
                 }
+                NamedScripts::Linked(links) => Some(format!("{} {}, whose {script} orq cannot check, so allowed_tools rule {rule} was left out", links.join(", "), linked_what(&links))),
                 NamedScripts::Changed(changed) => (!changed.is_empty()).then(|| format!("{} was changed by this run, so allowed_tools rule {rule} was left out", changed.join(", "))),
             },
             Some(_) => Some(not_script()),
