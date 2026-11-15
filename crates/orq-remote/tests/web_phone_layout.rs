@@ -85,3 +85,75 @@ fn on_a_phone_the_content_is_tighter_and_never_scrolls_sideways() {
     // The phone value comes from the breakpoint: a wide screen keeps the roomier padding.
     assert_ne!(effective_at(&css, ".content", "padding", 1200.0), "0.75rem");
 }
+
+/// The font size in pixels an element named by `target` ends up with at `width`, from whichever
+/// `font` or `font-size` declaration wins (rem and em as 16px, `max()`/`min()` evaluated). A value
+/// that cannot be shown to be a size, such as `font: inherit`, is None.
+fn font_size_px(css: &str, target: &str, width: f64) -> Option<f64> {
+    let element = web_cascade::subject(target);
+    let mut best: Option<((bool, usize, usize), String, String)> = None;
+    let mut order = 0;
+    for rule in parse(css, None).iter().filter(|r| applies(&r.media, width)) {
+        for selector in rule.selectors.iter().filter(|s| can_match(s, element)) {
+            for (p, v) in rule.declarations.iter().filter(|(p, _)| p == "font" || p == "font-size") {
+                order += 1;
+                let key = (v.contains("!important"), specificity(selector), order);
+                if best.as_ref().map_or(true, |(k, _, _)| key > *k) {
+                    best = Some((key, p.clone(), v.replace("!important", "").trim().to_string()));
+                }
+            }
+        }
+    }
+    let (_, property, value) = best?;
+    if property == "font-size" {
+        return length_px(&value);
+    }
+    // The `font` shorthand: the size is the first token that is a length, before any `/line-height`.
+    value.split_whitespace().find_map(|token| length_px(token.split('/').next().unwrap_or(token)))
+}
+
+fn length_px(value: &str) -> Option<f64> {
+    let value = value.trim();
+    for (function, pick) in [("max(", f64::max as fn(f64, f64) -> f64), ("min(", f64::min)] {
+        if let Some(args) = value.strip_prefix(function).and_then(|v| v.strip_suffix(')')) {
+            return args.split(',').map(length_px).collect::<Option<Vec<f64>>>()?.into_iter().reduce(pick);
+        }
+    }
+    if let Some(n) = value.strip_suffix("rem").or_else(|| value.strip_suffix("em")) {
+        return n.trim().parse::<f64>().ok().map(|n| n * 16.0);
+    }
+    value.strip_suffix("px")?.trim().parse().ok()
+}
+
+const FIELDS: [&str; 6] = ["input", "select", "textarea", ".search-box input", ".signin input", ".field input"];
+const FIELD_WIDTHS: [f64; 4] = [320.0, 360.0, 390.0, 430.0];
+
+/// Every field that is under 16px at some phone width, as "target at width: size".
+fn fields_under_16px(css: &str) -> Vec<String> {
+    let mut small = Vec::new();
+    for target in FIELDS {
+        for width in FIELD_WIDTHS {
+            let size = font_size_px(css, target, width);
+            if !size.is_some_and(|px| px >= 16.0) {
+                small.push(format!("{target} at {width}px: {size:?}"));
+            }
+        }
+    }
+    small
+}
+
+#[test]
+fn on_a_phone_text_fields_are_at_least_16px_so_focusing_them_does_not_zoom() {
+    let css = css();
+    assert_eq!(fields_under_16px(&css), Vec::<String>::new(), "iOS zooms into a focused field under 16px");
+}
+
+#[test]
+fn a_later_more_specific_rule_that_shrinks_a_field_under_16px_is_caught() {
+    let shrunk = css() + "\n@media (max-width: 700px) { .search-box input:not([type=checkbox]):not([type=radio]) { font-size: 0.875rem; } }";
+    let small = fields_under_16px(&shrunk);
+    // Only the inputs it can reach are reported; select and textarea keep their phone size.
+    let reached: Vec<&str> = FIELDS.into_iter().filter(|f| small.iter().any(|s| s.starts_with(&format!("{f} at ")))).collect();
+    assert_eq!(reached, ["input", ".search-box input", ".signin input", ".field input"], "{small:?}");
+    assert!(small.iter().all(|s| s.ends_with("Some(14.0)")), "{small:?}");
+}
