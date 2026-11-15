@@ -41,16 +41,19 @@ fn closing_as_completed_sets_only_the_named_in_progress_features_completed_with_
 }
 
 #[test]
-fn closing_as_abandoned_sets_the_named_in_progress_and_pending_features_abandoned() {
+fn closing_as_abandoned_sets_the_named_in_progress_pending_and_completed_features_abandoned() {
     let path = dir("abandoned").join(".tdd-features.json");
-    let before = "[\n  {\"featureName\": \"a\", \"status\": \"in_progress\"},\n  {\"featureName\": \"b\", \"status\": \"pending\"},\n  {\"featureName\": \"c\", \"status\": \"completed\"},\n  {\"featureName\": \"d\", \"status\": \"abandoned\"},\n  {\"featureName\": \"e\", \"status\": \"in_progress\"}\n]\n";
+    let before = "[\n  {\"featureName\": \"a\", \"status\": \"in_progress\"},\n  {\"featureName\": \"b\", \"status\": \"pending\"},\n  {\"featureName\": \"c\", \"status\": \"completed\", \"recordedAt\": \"old\"},\n  {\"featureName\": \"d\", \"status\": \"abandoned\"},\n  {\"featureName\": \"e\", \"status\": \"in_progress\"}\n]\n";
     std::fs::write(&path, before).unwrap();
 
     let closed = close_features(&path, &names(&["a", "b", "c", "d"]), FeatureStatus::Abandoned, AT).unwrap();
 
-    assert_eq!(closed, names(&["a", "b"]));
+    assert_eq!(closed, names(&["a", "b", "c"]), "a feature a fix session completed goes with the discarded run's work");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        before.replacen("\"a\", \"status\": \"in_progress\"", "\"a\", \"status\": \"abandoned\"", 1).replacen("\"pending\"", "\"abandoned\"", 1)
+        before
+            .replacen("\"a\", \"status\": \"in_progress\"", "\"a\", \"status\": \"abandoned\"", 1)
+            .replacen("\"pending\"", "\"abandoned\"", 1)
+            .replacen("\"completed\"", "\"abandoned\"", 1)
     );
 }

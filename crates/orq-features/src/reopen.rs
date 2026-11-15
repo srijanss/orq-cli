@@ -45,13 +45,15 @@ pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &
 /// Closes the features a run's fix sessions started, at the run's end. With `to` `completed` (the run
 /// completed) each of `names` the ledger at `path` records as `in_progress` becomes `completed`, with
 /// `recordedAt` set to `recorded_at`; with `to` `abandoned` (the run was discarded) each one still
-/// `in_progress` or `pending` becomes `abandoned`. Any other status, any other `to`, and any name the
+/// `in_progress` or `pending`, or already `completed` (its work goes with the run), becomes `abandoned`. Any other status, any other `to`, and any name the
 /// ledger does not have are left alone, and so is every other byte of the file. Saved as
 /// [`reopen_features`] saves; returns the names that were closed.
 pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded_at: &str) -> Result<Vec<String>, String> {
     let closable = |status: &LedgerStatus, _: &str| match to {
         FeatureStatus::Completed => is(status, FeatureStatus::InProgress),
-        FeatureStatus::Abandoned => is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::Pending),
+        FeatureStatus::Abandoned => {
+            is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::Pending) || is(status, FeatureStatus::Completed)
+        }
         _ => false,
     };
     let stamp = |text: String, name: &str| with_recorded_at(&text, name, recorded_at);

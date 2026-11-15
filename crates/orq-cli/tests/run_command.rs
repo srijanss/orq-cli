@@ -2335,12 +2335,22 @@ fn a_gate_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_t
 /// main ledger and leaves it `in_progress`, then commits `fixed.txt`; OLD-01 was `in_progress` before
 /// the run. Also returns the `PATH` the run had, with the fakes it runs, which run the same sessions again.
 fn run_whose_fix_session_starts_a_feature(w: &World, gate: &str, extra: &[&str]) -> (Output, (std::ffi::OsString, FakeAgent, FakeProvider)) {
+    run_whose_fix_session_leaves_a_feature(w, gate, extra, "in_progress")
+}
+
+/// [`run_whose_fix_session_starts_a_feature`], but the fix session leaves FIX-01 `fix_status`.
+fn run_whose_fix_session_leaves_a_feature(
+    w: &World,
+    gate: &str,
+    extra: &[&str],
+    fix_status: &str,
+) -> (Output, (std::ffi::OsString, FakeAgent, FakeProvider)) {
     std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
     std::fs::write(w.repo.root().join(".orq/run.toml"), format!("gate = [\"sh\", \"-c\", \"{gate}\"]\nexplain_failures = false\n")).unwrap();
     write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("OLD-01", "in_progress")]);
     let after = write_ledger(
         &scratch(w, "fix-ledger"),
-        &[LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("OLD-01", "in_progress"), LedgerEntry::new("FIX-01", "in_progress")],
+        &[LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("OLD-01", "in_progress"), LedgerEntry::new("FIX-01", fix_status)],
     );
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let provider = github();
@@ -2445,4 +2455,26 @@ fn a_feature_a_fix_session_started_in_a_run_that_is_discarded_is_abandoned() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(ledger_status(&w, "FIX-01").0, "abandoned", "the discarded run's fix session started it");
     assert_eq!(ledger_status(&w, "OLD-01").0, "in_progress", "a feature there before the session is not the run's");
+}
+
+/// A fix session that finished its feature with complete_feature leaves it completed; its work goes with
+/// a discarded run all the same, so the discard abandons it.
+#[test]
+fn a_feature_a_fix_session_completed_in_a_run_that_is_discarded_is_abandoned() {
+    let w = world("fix-session-completed-discarded");
+    let never = scratch(&w, "gate").join("never");
+    let (failed, _fakes) =
+        run_whose_fix_session_leaves_a_feature(&w, &format!("test -e {}", never.display()), &["--no-ci-check"], "completed");
+    assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
+    let run_id = printed_run_id(&failed);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "discard", &run_id, "--yes", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_STATE_HOME", &w.env.state)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(ledger_status(&w, "FIX-01").0, "abandoned", "the discarded run's fix session completed it, but its work is gone");
 }
