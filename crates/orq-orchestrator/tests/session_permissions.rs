@@ -633,3 +633,29 @@ fn a_refresh_returns_the_command_rules_the_settings_already_held_unless_denied()
     assert!(!commands.iter().any(|rule| rule.starts_with("Bash(rm")), "{commands:?}");
     assert!(commands.iter().all(|rule| rule.starts_with("Bash(")), "{commands:?}");
 }
+
+/// A deny rule may be written with wildcards: a form it refuses in full is not listed, one it
+/// refuses only in part, or not at all, still is.
+#[test]
+fn a_refresh_leaves_out_the_command_rules_a_wildcard_deny_refuses() {
+    let held = |deny: &str| {
+        let (_repo, worktree) = checkout(&format!("permissions-wildcard-{}", deny.len()));
+        let base = head(&worktree);
+        fs::create_dir_all(worktree.join(".claude")).unwrap();
+        let settings = serde_json::json!({"permissions": {"allow": ["Bash(make docs:*)", "Bash(make)", "Bash(make-docs)", "Bash(docker build:*)"], "deny": [deny]}});
+        fs::write(worktree.join(".claude/settings.local.json"), settings.to_string()).unwrap();
+        refresh_run_permissions(&worktree, &[], Path::new("/logs/r"), &base).unwrap().allowed_commands
+    };
+
+    let commands = held("Bash(make *)");
+    assert!(!commands.iter().any(|rule| rule == "Bash(make docs:*)" || rule == "Bash(make)"), "{commands:?}");
+    assert!(commands.iter().any(|rule| rule == "Bash(make-docs)"), "{commands:?}");
+    assert!(commands.iter().any(|rule| rule == "Bash(git status:*)"), "{commands:?}");
+
+    assert_eq!(held("Bash(*)"), Vec::<String>::new());
+
+    let commands = held("Bash(docker * --push)");
+    assert!(commands.iter().any(|rule| rule == "Bash(docker build:*)"), "refused only in part: {commands:?}");
+    let commands = held("Bash(docker *)");
+    assert!(!commands.iter().any(|rule| rule == "Bash(docker build:*)"), "{commands:?}");
+}

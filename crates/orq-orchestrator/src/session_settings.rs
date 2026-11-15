@@ -594,21 +594,61 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     (notes, Some(unrevoked), Vec::new())
 }
 
-/// Whether the deny rule `deny` refuses every command the allow rule `allow` lets run: a bare
-/// `Bash`, the same rule, or a prefix rule whose prefix the allowed command begins with as a word.
+/// Whether the deny rule `deny` refuses every command the allow rule `allow` lets run. Checked on
+/// commands standing for the allowed ones: the rule's own words, with each `*` empty and with each
+/// filled, and for a prefix rule those followed by more words.
 fn deny_covers(deny: &str, allow: &str) -> bool {
     if deny == "Bash" {
         return true;
     }
     let inner = |rule: &str| rule.strip_prefix("Bash(")?.strip_suffix(')').map(str::to_string);
     let (Some(denied), Some(allowed)) = (inner(deny), inner(allow)) else { return false };
-    match denied.strip_suffix(":*") {
-        Some(prefix) => {
-            let command = allowed.strip_suffix(":*").unwrap_or(&allowed);
-            command == prefix || command.strip_prefix(prefix).is_some_and(|rest| rest.starts_with(' '))
-        }
-        None => denied == allowed,
+    let (words, more) = command_pattern(&allowed);
+    // A character no configured command holds, so a sample matches only through a `*`.
+    let filled = words.replace('*', "\u{1}");
+    let mut samples = vec![words.replace('*', ""), filled.clone()];
+    if more {
+        samples.push(format!("{filled} \u{1}"));
     }
+    samples.iter().all(|command| pattern_matches(&denied, command))
+}
+
+/// A rule's command pattern and whether it lets more words follow: `prefix:*` and `prefix *` do.
+fn command_pattern(rule: &str) -> (&str, bool) {
+    match rule.strip_suffix(":*").or_else(|| rule.strip_suffix(" *")) {
+        Some(words) => (words, true),
+        None => (rule, false),
+    }
+}
+
+/// Whether the command `command` is one the rule pattern `rule` names, where `*` stands for any text.
+fn pattern_matches(rule: &str, command: &str) -> bool {
+    let (words, more) = command_pattern(rule);
+    glob_matches(words, command) || (more && glob_matches(&format!("{words} *"), command))
+}
+
+/// Whether `text` is `pattern` with each `*` in it standing for any text, none included.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let (pattern, text): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut p, mut t) = (0, 0);
+    // The last `*` seen and the text position it was last tried to end at.
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some((at, from)) = star {
+            star = Some((at, from + 1));
+            p = at + 1;
+            t = from + 1;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '*')
 }
 
 /// Like [`write_run_permissions`], for a session that must not start with a rule it was allowed
