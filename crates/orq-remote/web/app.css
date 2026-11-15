@@ -397,7 +397,7 @@ p[role=alert]:empty { display: none; }
   .selecting .feature-mark { display: block; position: absolute; left: 0.75rem; top: 50%; translate: 0 -50%; appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 22px; height: 22px; margin: 0; border: 2px solid var(--border); border-radius: 50%; background: transparent; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
   .selecting .feature-mark:checked { border-color: var(--accent); background: var(--accent); }
   .selecting .feature-mark:checked::after { content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px; border: solid var(--surface); border-width: 0 2px 2px 0; rotate: 45deg; }
-  .selecting .feature-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .selecting .feature-mark:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .selecting .feature-table tr.feature { height: 44px; transition: background-color 120ms ease; }
   .selecting .feature-table :is(th, td):first-child { position: relative; padding-left: calc(0.75rem + 2rem); }
   .selecting .feature-table tr.feature:not(:has(.feature-mark)) { opacity: 0.55; }
