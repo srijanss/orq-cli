@@ -160,7 +160,15 @@ pub fn merge_setting_aside(store: &RunStore, run_id: &str) -> Result<SetAsideOut
     }
     let Some((_, stash)) = stash_entry(&stash_listing(&checkout)?, &message) else { return merged_as_is(store, run_id) };
     let files: Vec<String> = overlapping.iter().map(|path| printable(&path.to_string_lossy())).collect();
-    match merge_into_base(store, run_id)? {
+    let merged = match merge_into_base(store, run_id) {
+        Ok(merged) => merged,
+        Err(error) => {
+            // Never leave the person's changes stashed behind an error that does not say so.
+            let restored = put_back(&checkout, &message, &stash, &record.run_id)?.unwrap_or_else(|| "your changes were put back".to_string());
+            return Err(StoreError::Corrupt(format!("{error}; {restored}")));
+        }
+    };
+    match merged {
         MergeOutcome::Merged { head_sha } => {
             // Staged and unstaged changes go back where they were; when the run's commits leave no
             // room for the staged ones as they were, the changes go back unstaged, with the entry kept.

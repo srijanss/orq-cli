@@ -726,3 +726,36 @@ fn set_aside_changes_restored_after_the_merge_keep_what_was_staged_apart_from_wh
     assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (9, "unstaged"), (10, "staged")]), "and the unstaged one is not");
     assert_eq!(stash_list(&w.repo), "", "no stash entry is left");
 }
+
+/// An executable hook script `name` in `repo`.
+fn hook(repo: &Path, name: &str, script: &str) {
+    let hook = repo.join(".git/hooks").join(name);
+    fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    fs::write(&hook, script).unwrap();
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// Whether a file can be made unreadable here, as it cannot for root.
+fn permissions_hold(w: &World) -> bool {
+    let probe = w.repo.parent().unwrap().join("probe");
+    fs::write(&probe, "").unwrap();
+    made_unreadable(&probe)
+}
+
+#[cfg(unix)]
+#[test]
+fn set_aside_changes_are_put_back_when_the_merge_fails_before_the_fast_forward() {
+    let w = refused_over_lines("set-aside-load-fails", &lines(&[(10, "mine")]));
+    if !permissions_hold(&w) {
+        return;
+    }
+    let run = w.repo.parent().unwrap().join("state/runs/run-1/run.json");
+    // Once the changes are set aside, the run can no longer be read.
+    hook(&w.repo, "post-index-change", &format!("#!/bin/sh\ngit stash list --format=%gs | grep -q 'orq set-aside' && chmod 000 '{}'\nexit 0\n", run.display()));
+
+    let error = merge_setting_aside(&w.store, "run-1").unwrap_err().to_string();
+    assert_eq!(git(&w.repo, &["rev-parse", "main"]), w.base, "main did not move");
+    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(10, "mine")]), "the changes are back");
+    assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
+    assert!(error.contains("your changes were put back"), "{error}");
+}
