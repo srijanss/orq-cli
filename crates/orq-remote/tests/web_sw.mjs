@@ -132,14 +132,19 @@ async function worker() {
 }
 
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
-// had loaded), `fails` (register rejects), `waiting` and `controller` (what the registration holds).
-function fakeWindow({ secure = true, api = true, ready = true, fails = false, waiting = false, controller = true } = {}) {
+// had loaded), `fails` (register rejects), `waiting`, `installing` and `controller` (what the registration holds).
+function fakeWindow({ secure = true, api = true, ready = true, fails = false, waiting = false, installing = false, controller = true } = {}) {
   const log = { registered: [], messages: [], reloads: 0, listeners: {} };
   const on = (bag) => (type, listener) => { (bag[type] ||= []).push(listener); };
   const fire = (bag, type, event = {}) => { for (const listener of bag[type] || []) listener(event); };
   const workerListeners = {};
   const waitingWorker = { state: "installed", postMessage: (message) => log.messages.push(message) };
-  const registration = { waiting: waiting ? waitingWorker : null, installing: null, addEventListener: on(workerListeners) };
+  const newWorker = () => {
+    const next = { state: "installing", postMessage: (message) => log.messages.push(message), listeners: {} };
+    next.addEventListener = on(next.listeners);
+    return next;
+  };
+  const registration = { waiting: waiting ? waitingWorker : null, installing: installing ? newWorker() : null, addEventListener: on(workerListeners) };
   const container = {
     controller: controller ? {} : null,
     register: (url, options) => { log.registered.push({ url, scope: options && options.scope }); return fails ? Promise.reject(new Error("blocked")) : Promise.resolve(registration); },
@@ -154,17 +159,20 @@ function fakeWindow({ secure = true, api = true, ready = true, fails = false, wa
     addEventListener: on(windowListeners),
   };
   // A new worker found later: it installs while this page is open.
-  const install = () => {
-    const next = { state: "installing", postMessage: (message) => log.messages.push(message), listeners: {} };
-    next.addEventListener = on(next.listeners);
-    registration.installing = next;
-    fire(workerListeners, "updatefound");
+  // The worker already installing finishes; `found` says the browser also reported it as found.
+  const finish = ({ found = false } = {}) => {
+    const next = registration.installing;
+    if (found) fire(workerListeners, "updatefound");
     next.state = "installed";
     registration.waiting = next;
     registration.installing = null;
     fire(next.listeners, "statechange");
   };
-  return { win, log, load: () => fire(windowListeners, "load"), controllerChange: () => fire(log.listeners, "controllerchange"), install, waitingWorker };
+  const install = () => {
+    registration.installing = newWorker();
+    finish({ found: true });
+  };
+  return { win, log, load: () => fire(windowListeners, "load"), controllerChange: () => fire(log.listeners, "controllerchange"), install, finish, waitingWorker };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -193,6 +201,8 @@ async function registration() {
     waiting: await run({ waiting: true }),
     firstInstall: await run({ waiting: true, controller: false }),
     foundLater: await run({}, (fake) => fake.install()),
+    installingAtRegister: await run({ installing: true }, (fake) => fake.finish()),
+    installingAndFound: await run({ installing: true }, (fake) => fake.finish({ found: true })),
   };
   // Reload is the person's choice: the waiting worker is told to take over, and the page reloads once it has.
   const fake = fakeWindow({ waiting: true });

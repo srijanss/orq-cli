@@ -120,6 +120,18 @@ fn a_waiting_release_is_offered_and_only_the_persons_reload_applies_it() {
     assert_eq!(reg["apply"]["reloads"], json!(1), "the page reloads once the new worker has taken over, and only once");
 }
 
+#[test]
+fn a_release_already_installing_when_the_page_registers_is_offered_once_it_installs() {
+    let Some(out) = run() else { return };
+    let reg = &out["registration"];
+    assert_eq!(reg["installingAtRegister"]["updates"], json!(1), "a release mid-install when the page registers is still offered");
+    assert_eq!(reg["installingAndFound"]["updates"], json!(1), "a release reported as found as well is offered only once");
+    for case in ["installingAtRegister", "installingAndFound"] {
+        assert_eq!(reg[case]["reloads"], json!(0), "{case}: the page never reloads by itself");
+        assert_eq!(reg[case]["messages"], json!([]), "{case}: nothing is applied before the person asks");
+    }
+}
+
 fn texts(frame: &Value) -> String {
     frame["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(" | ")
 }

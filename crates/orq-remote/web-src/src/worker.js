@@ -7,21 +7,30 @@ export function startWorker(win, onUpdate) {
   if (!win.isSecureContext || !win.navigator || !win.navigator.serviceWorker) return;
   const container = win.navigator.serviceWorker;
   // A worker waiting while no worker controls the page is the first install, not an update.
+  // Each release is offered once, however the browser reports it (waiting, installing or found).
+  const offered = new Set();
   const offer = (worker) => {
-    if (worker && container.controller) onUpdate(worker);
+    if (!worker || !container.controller || offered.has(worker)) return;
+    offered.add(worker);
+    onUpdate(worker);
+  };
+  // A release still installing is offered once it has installed; one already installed at once.
+  const watched = new Set();
+  const watch = (worker) => {
+    if (!worker || watched.has(worker)) return;
+    watched.add(worker);
+    if (worker.state === "installed") offer(worker);
+    else worker.addEventListener("statechange", () => {
+      if (worker.state === "installed") offer(worker);
+    });
   };
   const register = () => {
     Promise.resolve()
       .then(() => container.register("/sw.js", { scope: "/" }))
       .then((registration) => {
         offer(registration.waiting);
-        registration.addEventListener("updatefound", () => {
-          const next = registration.installing;
-          if (!next) return;
-          next.addEventListener("statechange", () => {
-            if (next.state === "installed") offer(next);
-          });
-        });
+        watch(registration.installing);
+        registration.addEventListener("updatefound", () => watch(registration.installing));
       })
       .catch(() => {});
   };
