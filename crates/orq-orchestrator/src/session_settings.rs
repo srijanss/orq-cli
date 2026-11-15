@@ -392,11 +392,13 @@ fn named_scripts_checked(worktree: &Path, base: &str, name: &str) -> Option<Name
     if entries.is_empty() || !entries.iter().all(regular) {
         return None;
     }
-    // A submodule at the base or in the index, or a repository git leaves untracked as a folder.
+    // A submodule at the base or in the index, or a repository left untracked: listed file by file,
+    // the untracked files show such a repository alone as a folder, however deep in an untracked
+    // folder it lies (`--directory` would show only the outermost untracked folder).
     let staged = git(&["ls-files", "-s", "-z"])?;
     let gitlinks = held.split('\0').chain(staged.split('\0')).filter(|entry| entry.starts_with("160000 ")).filter_map(|entry| entry.split_once('\t')).map(|(_, path)| path.to_string());
-    let folders = git(&["ls-files", "--others", "--directory", "-z"])?;
-    let untracked = folders.split('\0').filter_map(|entry| entry.strip_suffix('/')).filter(|folder| worktree.join(folder).join(".git").exists()).map(str::to_string);
+    let others = git(&["ls-files", "--others", "-z"])?;
+    let untracked = others.split('\0').filter_map(|entry| entry.strip_suffix('/')).map(str::to_string);
     let mut nested: Vec<String> = gitlinks.chain(untracked).collect();
     nested.sort();
     nested.dedup();

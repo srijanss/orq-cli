@@ -299,6 +299,26 @@ fn the_built_in_build_script_rule_is_left_out_beside_a_nested_repository() {
     }
 }
 
+/// git lists a folder nothing of which is tracked as the folder alone, so a repository deeper in it
+/// is found all the same: the built-in rule is left out, naming the repository, not the folder.
+#[test]
+fn the_built_in_build_script_rule_is_left_out_beside_a_repository_inside_an_untracked_folder() {
+    let builtin = "Bash(node build.mjs)".to_string();
+    let (_repo, worktree) = checkout("permissions-nested-deep");
+    commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let nested = worktree.join("vendor/sub");
+    fs::create_dir_all(&nested).unwrap();
+    git(&nested, &["init", "--quiet"]);
+    fs::write(nested.join("build.mjs"), "require('child_process')\n").unwrap();
+    fs::write(worktree.join("vendor/note"), "untracked\n").unwrap();
+
+    let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("vendor/sub is a repository of its own, whose build.mjs orq cannot check, so the rule {builtin} was left out")]);
+    assert!(!allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
+}
+
 /// The project naming orq's own rule in its allowed_tools does not bring it back: the root
 /// `build.mjs` is the base's, but another one the run changed takes the rule out all the same.
 #[test]
