@@ -181,3 +181,24 @@ fn a_rule_under_one_ancestor_does_not_reach_a_field_under_another() {
     // A field is no particular class itself, so a rule naming one does not reach it.
     assert_eq!(font_size_px("input.tiny { font-size: 10px; }", "input", 360.0), None);
 }
+
+#[test]
+fn a_sibling_rule_that_could_reach_a_field_fails_rather_than_counting_as_an_ancestor() {
+    let resolve = |sheet: &'static str| std::panic::catch_unwind(move || font_size_px(sheet, ".signin input", 360.0));
+    // `.signin + input` is not an input inside .signin, so its 16px must not hide the 14px one.
+    assert!(resolve(".signin + input { font-size: 16px !important; }\n.signin input { font-size: 14px; }").is_err());
+    assert!(resolve(".signin ~ input { font-size: 16px; }").is_err());
+    // A sibling rule for another element, and `~=` inside an attribute, are not in the way.
+    assert_eq!(resolve(".signin + select { font-size: 10px; }\n.signin input { font-size: 17px; }").unwrap(), Some(17.0));
+    assert_eq!(resolve(".signin input[class~=x] { font-size: 17px; }").unwrap(), Some(17.0));
+}
+
+#[test]
+fn an_element_match_splits_only_on_combinators_outside_attributes_and_refuses_siblings() {
+    assert!(matches_element(".signin input[class~=x]", ".signin input"));
+    assert!(matches_element(".signin > input", ".signin input"));
+    assert!(!matches_element(".signin + select", ".signin input"));
+    for sibling in [".signin + input", ".signin ~ input", ".signin+input"] {
+        assert!(std::panic::catch_unwind(|| matches_element(sibling, ".signin input")).is_err(), "{sibling}");
+    }
+}
