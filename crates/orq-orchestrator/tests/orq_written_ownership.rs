@@ -392,17 +392,21 @@ fn an_edited_orq_file_is_named_as_differing_from_what_orq_last_wrote() {
 }
 
 #[test]
-fn rerecording_the_settings_keeps_the_mcp_json_entry_so_an_edit_to_it_still_keeps_the_worktree() {
+fn rerecording_the_settings_leaves_the_mcp_json_entry_as_recorded() {
     let w = world("other-entry");
     orq_files(&w);
     let base = git(&w.repo, &["rev-parse", "main"]);
     assert!(record_orq_written(&w.worktree).is_empty());
+    let manifest = PathBuf::from(git(&w.worktree, &["rev-parse", "--absolute-git-dir"])).join("orq-written.json");
+    let entries = || serde_json::from_str::<BTreeMap<String, String>>(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    let before = entries();
+    assert!(before.contains_key(".mcp.json"), "{before:?}");
+
     orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
-    fs::write(w.worktree.join(".mcp.json"), "{\"mcpServers\":{\"mine\":{}}}\n").unwrap();
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
-
-    assert!(reason.contains(".mcp.json"), "{reason}");
+    let after = entries();
+    assert_eq!(after.get(".mcp.json"), before.get(".mcp.json"), "{after:?}");
+    assert_ne!(after.get(".claude/settings.local.json"), before.get(".claude/settings.local.json"), "{after:?}");
 }
 
 #[test]
