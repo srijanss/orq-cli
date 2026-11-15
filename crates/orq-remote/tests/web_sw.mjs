@@ -36,9 +36,9 @@ function boot() {
   });
   const caches = {
     open: async (name) => { store(name); return cache(name); },
-    keys: async () => [...stores.keys()],
-    has: async (name) => stores.has(name),
-    delete: async (name) => stores.delete(name),
+    keys: async () => { if (storage.broken) throw new DOMException("storage is unavailable", "UnknownError"); return [...stores.keys()]; },
+    has: async (name) => { if (storage.broken) throw new DOMException("storage is unavailable", "UnknownError"); return stores.has(name); },
+    delete: async (name) => { if (storage.broken) throw new DOMException("storage is unavailable", "UnknownError"); return stores.delete(name); },
     match: async (request, options = {}) => {
       if (storage.broken) throw new DOMException("storage is unavailable", "UnknownError");
       const names = options.cacheName ? [options.cacheName] : [...stores.keys()];
@@ -134,18 +134,29 @@ async function worker() {
   };
 }
 
-// A release whose cache lost entries, then whose storage fails: the network still answers online.
+// A release whose cache is damaged while the server has moved on to a newer one. Each case starts
+// from a fresh install; `lose` deletes cached paths before the page opens, `midPage` after it opened.
 async function damaged() {
-  const sw = boot();
-  await sw.dispatch("install");
-  await sw.dispatch("activate");
-  const shellCache = [...sw.stores.keys()][0];
-  sw.stores.get(shellCache).delete("/");
-  sw.stores.get(shellCache).delete("/app.css");
-  const missing = { navigation: await sw.ask("/projects/p", { mode: "navigate" }), asset: await sw.ask("/app.css") };
-  sw.storage.broken = true;
-  const broken = { navigation: await sw.ask("/projects/p", { mode: "navigate" }), asset: await sw.ask("/app.react.js") };
-  return { missing, broken };
+  const run = async ({ lose = [], midPage = [], broken = false }) => {
+    const sw = boot();
+    await sw.dispatch("install");
+    await sw.dispatch("activate");
+    const shellCache = [...sw.stores.keys()][0];
+    sw.net.phase = "later";
+    for (const path of lose) sw.stores.get(shellCache).delete(path);
+    sw.storage.broken = broken;
+    const page = await sw.ask("/projects/p", { mode: "navigate" });
+    for (const path of midPage) sw.stores.get(shellCache).delete(path);
+    const files = { script: await sw.ask("/app.react.js"), style: await sw.ask("/app.css") };
+    sw.storage.broken = false;
+    return { page: page.text, script: files.script.text, style: files.style.text, cacheKept: sw.stores.has(shellCache) };
+  };
+  return {
+    missingAsset: await run({ lose: ["/app.css"] }),
+    missingPage: await run({ lose: ["/"] }),
+    lostMidPage: await run({ midPage: ["/app.css"] }),
+    broken: await run({ broken: true }),
+  };
 }
 
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document

@@ -38,22 +38,34 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-// Every page opens this release's cached shell, online or offline, so the page, its script and its
-// style always come from one release; the shell then fetches its data and says when it cannot.
+// A page and its files always come from one release. A page opens this release's cached shell,
+// online or offline, when the whole shell is there; a shell missing any file (or cache storage
+// failing) is dropped instead, and the page opens whole from the server.
 async function navigate(request) {
-  return (await cached("/")) || fetch(request);
+  const page = await whole();
+  if (page) return page;
+  await quietly(() => caches.delete(CACHE));
+  return fetch(request);
 }
 
-// A shell file comes from this release's cache, which is never rewritten after install: a newer
-// server's files arrive only with the next release's worker and cache.
+// A shell file comes from this release's cache, which is never rewritten after install. While the
+// cache is there the open page was built from it, so a lost file is an error rather than the newer
+// server's copy; with no cache the page came from the server, and so do its files.
 async function shell(path) {
-  return (await cached(path)) || fetch(path);
+  if (!(await quietly(() => caches.has(CACHE)))) return fetch(path);
+  return (await quietly(() => caches.match(path, { cacheName: CACHE }))) || Response.error();
 }
 
-// A file missing from the cache, or cache storage failing, leaves the answer to the network.
-async function cached(path) {
+// This release's cached page, only when every shell file is cached with it.
+async function whole() {
+  const hits = await quietly(() => Promise.all(SHELL.map((path) => caches.match(path, { cacheName: CACHE }))));
+  return hits && hits.every(Boolean) ? hits[0] : undefined;
+}
+
+// Cache storage can fail; that counts as nothing cached.
+async function quietly(task) {
   try {
-    return await caches.match(path, { cacheName: CACHE });
+    return await task();
   } catch (error) {
     return undefined;
   }

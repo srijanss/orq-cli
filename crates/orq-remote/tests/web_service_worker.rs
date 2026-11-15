@@ -82,13 +82,20 @@ fn a_shell_file_comes_from_the_running_releases_cache_which_a_newer_server_never
 }
 
 #[test]
-fn a_missing_cache_entry_or_failing_storage_never_throws_away_the_networks_answer() {
+fn a_damaged_release_cache_never_mixes_the_running_release_with_a_newer_servers_files() {
     let Some(out) = run() else { return };
     let damaged = &out["damaged"];
-    assert_eq!(damaged["missing"]["navigation"], json!({"handled": true, "text": "install /projects/p"}), "a shell missing from the cache is fetched");
-    assert_eq!(damaged["missing"]["asset"], json!({"handled": true, "text": "install /app.css"}));
-    assert_eq!(damaged["broken"]["navigation"], json!({"handled": true, "text": "install /projects/p"}), "cache storage failing falls back to the network");
-    assert_eq!(damaged["broken"]["asset"], json!({"handled": true, "text": "install /app.react.js"}));
+    // The server has moved on to a newer release; a page and its files must come from one release.
+    let newer = json!({"page": "later /projects/p", "script": "later /app.react.js", "style": "later /app.css", "cacheKept": false});
+    assert_eq!(damaged["missingAsset"], newer, "a shell missing a file is dropped and the page opens whole from the server");
+    assert_eq!(damaged["missingPage"], newer, "a shell missing its page is dropped and the page opens whole from the server");
+    assert_eq!(damaged["broken"]["page"], json!("later /projects/p"), "cache storage failing: the page opens whole from the server");
+    assert_eq!(damaged["broken"]["script"], json!("later /app.react.js"));
+    assert_eq!(damaged["broken"]["style"], json!("later /app.css"));
+    let lost = &damaged["lostMidPage"];
+    assert_eq!(lost["page"], json!("install /"));
+    assert_eq!(lost["script"], json!("install /app.react.js"));
+    assert_eq!(lost["style"], json!("<network error>"), "a file lost under an open cached page is never taken from the newer server");
 }
 
 #[test]
