@@ -586,9 +586,14 @@ fn lines(replaced: &[(usize, &str)]) -> String {
 /// A run that edits line 1 of `lines.txt`, refused because the checkout has its own uncommitted
 /// `edit` of that file.
 fn refused_over_lines(tag: &str, edit: &str) -> World {
+    refused_over_line(tag, 1, edit)
+}
+
+/// [`refused_over_lines`], with the run editing line `at` instead.
+fn refused_over_line(tag: &str, at: usize, edit: &str) -> World {
     let w = world_with(tag, &[("lines.txt", &lines(&[]))]);
-    fs::write(w.worktree.join("lines.txt"), lines(&[(1, "theirs")])).unwrap();
-    git(&w.worktree, &["commit", "-q", "-am", "edit line 1"]);
+    fs::write(w.worktree.join("lines.txt"), lines(&[(at, "theirs")])).unwrap();
+    git(&w.worktree, &["commit", "-q", "-am", &format!("edit line {at}")]);
     fs::write(w.repo.join("lines.txt"), edit).unwrap();
     assert!(matches!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Refused { .. }), "the overlap is refused first");
     w
@@ -777,4 +782,46 @@ fn set_aside_changes_are_put_back_and_the_merge_named_when_it_cannot_be_recorded
     assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "the changes are back over it");
     assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
     assert!(error.contains(&format!("main was fast-forwarded to {head}")) && error.contains("your changes were put back"), "{error}");
+}
+
+#[test]
+fn set_aside_staged_changes_that_cannot_be_staged_again_after_the_merge_go_back_unstaged_with_their_entry_kept() {
+    // Line 7 changes under the staged edit of line 10: it merges into the file, but its patch no
+    // longer applies to the index as it was staged.
+    let w = refused_over_line("set-aside-restaged", 7, &lines(&[(10, "staged")]));
+    git(&w.repo, &["add", "lines.txt"]);
+
+    let SetAsideOutcome::Merged { note: Some(note), .. } = merge_setting_aside(&w.store, "run-1").unwrap() else {
+        panic!("a merge with a note was expected")
+    };
+    let listed = stash_list(&w.repo);
+    assert_eq!(listed.lines().count(), 1, "its entry is kept: {listed}");
+    let stash = listed.split(' ').next().unwrap();
+    assert_eq!(note, format!("your changes to lines.txt were put back but no longer staged; as they were staged they are in stash {stash} (orq set-aside run-1)"));
+    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(7, "theirs"), (10, "staged")]), "the changes are back");
+    assert_eq!(git(&w.repo, &["diff", "--cached", "--name-only"]), "", "but nothing is staged");
+    assert_eq!(git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n", lines(&[(10, "staged")]), "the entry still holds what was staged");
+    let events = w.store.events("run-1").unwrap();
+    let set_aside = events.iter().find(|event| event.kind == "merge.set_aside").expect("a merge.set_aside event");
+    assert_eq!(set_aside.payload["restored"], true);
+    assert_eq!(set_aside.payload["staged"], false);
+    assert_eq!(set_aside.payload["note"], note);
+}
+
+#[test]
+fn set_aside_staged_changes_that_conflict_after_the_merge_are_kept_in_their_entry_and_named() {
+    let w = refused_over_lines("set-aside-staged-conflict", &lines(&[(1, "mine")]));
+    git(&w.repo, &["add", "lines.txt"]);
+
+    let SetAsideOutcome::Merged { note: Some(note), .. } = merge_setting_aside(&w.store, "run-1").unwrap() else {
+        panic!("a merge with a note was expected")
+    };
+    let listed = stash_list(&w.repo);
+    assert_eq!(listed.lines().count(), 1, "its entry is kept: {listed}");
+    let stash = listed.split(' ').next().unwrap();
+    assert_eq!(
+        note,
+        format!("your changes to lines.txt conflicted with this run and are in stash {stash} (orq set-aside run-1); the checkout has conflict markers in lines.txt")
+    );
+    assert_eq!(git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n", lines(&[(1, "mine")]), "the entry still holds what was staged");
 }
