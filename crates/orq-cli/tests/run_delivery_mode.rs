@@ -257,7 +257,9 @@ fn a_merge_local_run_fast_forwards_the_checked_out_base_branch_and_pushes_nothin
 fn a_merge_local_run_into_a_checkout_with_uncommitted_changes_is_blocked_and_keeps_its_work() {
     let w = world("merge-dirty");
     let main_before = rev(w.repo.root(), "refs/heads/main");
-    std::fs::write(w.repo.root().join("README.md"), "edited, not committed\n").unwrap();
+    // The run adds feature.txt; the checkout has its own, staged but not committed.
+    std::fs::write(w.repo.root().join("feature.txt"), "edited, not committed\n").unwrap();
+    git(w.repo.root(), &["add", "feature.txt"]);
     let out = run(&w, &["--delivery", "merge-local"]);
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("uncommitted changes"), "the reason is given: {}", text(&out.stderr));
@@ -266,7 +268,7 @@ fn a_merge_local_run_into_a_checkout_with_uncommitted_changes_is_blocked_and_kee
     let record = store(&w).load(&id).unwrap();
     assert_eq!(ending(&w, &id).as_deref(), Some("blocked"));
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), main_before, "main did not move");
-    assert_eq!(std::fs::read_to_string(w.repo.root().join("README.md")).unwrap(), "edited, not committed\n", "the edit is left alone");
+    assert_eq!(std::fs::read_to_string(w.repo.root().join("feature.txt")).unwrap(), "edited, not committed\n", "the edit is left alone");
     assert!(!rev(w.repo.root(), &format!("refs/heads/{}", record.branch)).is_empty(), "the run's branch is kept");
     assert!(record.worktree.exists(), "the run's worktree is kept");
     assert!(remote_branch(&w, &record.branch).is_none(), "nothing was pushed");
