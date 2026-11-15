@@ -204,17 +204,24 @@ enum Content {
 fn contents(checkout: &Path, paths: BTreeSet<PathBuf>) -> Result<Result<BTreeMap<PathBuf, Content>, String>, StoreError> {
     let mut read: BTreeMap<PathBuf, Content> = BTreeMap::new();
     let mut files = Vec::new();
+    // Gone, or a file where a directory on its path should be: either way nothing is there.
+    let absent = |err: &std::io::Error| matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory);
     for path in paths {
-        match std::fs::symlink_metadata(checkout.join(&path)) {
-            Ok(meta) if meta.is_file() => files.push(path),
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let target = std::fs::read_link(checkout.join(&path)).unwrap_or_default();
-                read.insert(path, Content::Link(target));
+        let content = match std::fs::symlink_metadata(checkout.join(&path)) {
+            Ok(meta) if meta.is_file() => {
+                files.push(path);
+                continue;
             }
-            _ => {
-                read.insert(path, Content::Absent);
-            }
-        }
+            Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(checkout.join(&path)) {
+                Ok(target) => Content::Link(target),
+                Err(err) if absent(&err) => Content::Absent,
+                Err(err) => return Ok(Err(unreadable(checkout, &format!("{}: {err}", path.display())))),
+            },
+            Ok(_) => Content::Absent,
+            Err(err) if absent(&err) => Content::Absent,
+            Err(err) => return Ok(Err(unreadable(checkout, &format!("{}: {err}", path.display())))),
+        };
+        read.insert(path, content);
     }
     // In batches, so a checkout with many changed files stays within the argument limit.
     for batch in files.chunks(500) {
@@ -270,4 +277,39 @@ fn record_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde
         occurred_at: now_rfc3339(),
         payload,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("orq-merge-local-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_dirty_path_that_cannot_be_examined_is_refused() {
+        let checkout = scratch("unexaminable");
+        // `d` points at itself, so looking up `d/f` fails with "too many levels of symbolic links"
+        // rather than "not found", whoever runs the test.
+        std::os::unix::fs::symlink("d", checkout.join("d")).unwrap();
+        let read = contents(&checkout, BTreeSet::from([PathBuf::from("d/f")])).unwrap();
+        let why = read.expect_err("a path that cannot be examined must refuse");
+        assert!(why.starts_with(&format!("cannot read the uncommitted changes at {}: ", checkout.display())), "{why}");
+        assert!(why.contains("d/f"), "{why}");
+        let _ = std::fs::remove_dir_all(&checkout);
+    }
+
+    #[test]
+    fn a_dirty_path_that_is_gone_or_under_a_file_counts_as_absent() {
+        let checkout = scratch("absent");
+        std::fs::write(checkout.join("plain"), "x").unwrap();
+        let read = contents(&checkout, BTreeSet::from([PathBuf::from("gone"), PathBuf::from("plain/f")])).unwrap().unwrap();
+        assert_eq!(read.get(Path::new("gone")), Some(&Content::Absent));
+        assert_eq!(read.get(Path::new("plain/f")), Some(&Content::Absent));
+        let _ = std::fs::remove_dir_all(&checkout);
+    }
 }
