@@ -39,14 +39,15 @@ fn on_install_the_worker_caches_the_shell_under_its_release_and_on_activate_drop
     let Some(out) = run() else { return };
     let worker = &out["worker"];
     let names = worker["names"].as_array().unwrap();
-    assert_eq!(names.len(), 1, "{worker}");
+    assert_eq!(names.len(), 2, "{worker}");
     let name = names[0].as_str().unwrap();
+    assert_eq!(names[1], json!("orq-pages"), "install also opens the record of where each page came from: {worker}");
     let version = name.strip_prefix("orq-shell-").expect("the cache is named orq-shell-<version>");
     assert!(version.len() == 16 && version.chars().all(|c| c.is_ascii_hexdigit()), "the build stamps the shell version: {name}");
     assert_eq!(worker["shellPaths"], json!(SHELL), "the shell is the page, its style and script, the manifest and the icons");
     assert_eq!(worker["skippedOnInstall"], json!(false), "a new release waits; it is never forced onto an open page");
     assert_eq!(worker["claimedBeforeActivate"], json!(false));
-    assert_eq!(worker["afterActivate"], json!([name, "someone-elses-cache"]), "only older orq shells are removed");
+    assert_eq!(worker["afterActivate"], json!(["orq-pages", name, "someone-elses-cache"]), "only older orq shells are removed");
     assert_eq!(worker["claimed"], json!(true), "the active worker takes the open pages");
 }
 
@@ -139,10 +140,19 @@ fn where_an_open_page_came_from_outlives_a_restart_of_the_worker() {
     assert_eq!(restarts["fromServer"], server, "a page from the server never gets the kept cache's older files after a restart: {restarts}");
     let gone = json!({"page": "install /", "before": "install /app.react.js", "script": "<network error>"});
     assert_eq!(restarts["evicted"], gone, "a cached page whose cache is evicted after a restart never gets the newer server's files: {restarts}");
+    assert_eq!(restarts["allEvicted"], gone, "a cached page whose cache and records are evicted together never gets the newer server's files: {restarts}");
     assert_eq!(restarts["broken"], gone, "a cached page whose storage fails after a restart never gets the newer server's files: {restarts}");
     assert_eq!(restarts["unrecorded"], server, "a page the worker cannot record as cached opens whole from the server: {restarts}");
-    let unseen = json!({"page": null, "before": "later /app.react.js", "script": "later /app.react.js"});
-    assert_eq!(restarts["neverOpened"], unseen, "a page the worker never opened gets its files as it would without a worker: {restarts}");
+}
+
+#[test]
+fn a_page_whose_source_is_unknown_gets_no_files_and_a_page_open_before_the_worker_took_over_gets_the_servers() {
+    let Some(out) = run() else { return };
+    let restarts = &out["restarts"];
+    let unknown = json!({"page": null, "before": "<network error>", "script": "<network error>"});
+    assert_eq!(restarts["neverOpened"], unknown, "no record is never taken to mean the server: {restarts}");
+    let first = json!({"page": null, "before": "later /app.react.js", "script": "later /app.react.js"});
+    assert_eq!(restarts["firstVisit"], first, "a page open when the worker took over came from the server: {restarts}");
 }
 
 #[test]
