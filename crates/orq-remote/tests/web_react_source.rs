@@ -80,14 +80,57 @@ fn the_stamp_ties_the_committed_bundle_to_the_sources_without_node() {
     use sha2::{Digest, Sha256};
     let stamp = std::fs::read_to_string(crate_dir().join("web/app.react.js.stamp")).expect("the build writes web/app.react.js.stamp");
     let bundle = hex(&Sha256::digest(std::fs::read(crate_dir().join("web/app.react.js")).unwrap()));
-    let expected = format!("sources {}\nbundle {bundle}\n", source_fingerprint());
-    assert_eq!(stamp, expected, "the sources or the bundle changed without a rebuild: run `node crates/orq-remote/web-src/build.mjs`");
+    let worker = crate_dir().join("web/sw.js");
+    let sw = if worker.exists() { format!("sw {}\n", hex(&Sha256::digest(std::fs::read(&worker).unwrap()))) } else { String::new() };
+    let expected = format!("sources {}\nbundle {bundle}\n{sw}", source_fingerprint());
+    assert_eq!(stamp, expected, "the sources, the bundle or the worker changed without a rebuild: run `node crates/orq-remote/web-src/build.mjs`");
+}
+
+/// SHA-256 over the app shell (every file under web/ but the worker and the stamps), hashed like the sources.
+fn shell_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let root = crate_dir().join("web");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    let mut names: Vec<(String, PathBuf)> = files.into_iter().map(|path| (path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"), path)).filter(|(name, _)| name != "sw.js" && !name.ends_with(".stamp")).collect();
+    names.sort();
+    let mut hasher = Sha256::new();
+    for (name, path) in names {
+        hasher.update(name.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(std::fs::read(path).unwrap());
+        hasher.update([0u8]);
+    }
+    hex(&hasher.finalize())
+}
+
+#[test]
+fn the_committed_worker_names_its_cache_after_the_shell_it_was_built_with() {
+    // A shell file changed without a rebuild would leave the worker serving the old cache to installed apps.
+    let worker = std::fs::read_to_string(crate_dir().join("web/sw.js")).expect("the build writes web/sw.js from web-src/src/sw.js");
+    let version = &shell_fingerprint()[..16];
+    assert!(worker.contains(version), "web/sw.js is stale against web/: run `node crates/orq-remote/web-src/build.mjs`");
 }
 
 #[test]
 fn the_source_never_stores_anything_or_writes_html_from_text() {
     for (path, text) in sources() {
+        // The worker alone keeps the app shell in the Cache API, and worker.js alone registers it.
+        let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
         for banned in ["indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
+            if (banned == "caches." && name == "sw.js") || (banned == "serviceWorker" && name == "worker.js") {
+                continue;
+            }
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
         }
         // Only the theme switch and the Dashboard's pins keep anything on the device: the theme's one choice

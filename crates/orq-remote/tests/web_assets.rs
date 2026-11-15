@@ -220,8 +220,27 @@ fn the_page_head_links_the_manifest_and_icons_and_the_csp_allows_only_those_from
     }
     assert_eq!(
         header(&reply, "content-security-policy").as_deref(),
-        Some("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
+        Some("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
     );
+}
+
+#[test]
+fn the_service_worker_is_served_without_a_token_and_always_revalidated_so_a_release_reaches_installed_apps() {
+    let server = start("worker");
+    let reply = request(server.addr(), "GET", "/sw.js", None);
+    assert_eq!(reply.status, 200, "{}", reply.head);
+    assert_eq!(reply.bytes, std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/web/sw.js")).unwrap(), "the committed build is what is served");
+    assert!(header(&reply, "content-type").unwrap().starts_with("text/javascript"), "{}", reply.head);
+    // no-store would stop the browser comparing it against the installed copy; no-cache makes it ask every time.
+    assert_eq!(header(&reply, "cache-control").as_deref(), Some("no-cache"));
+    assert_eq!(header(&reply, "service-worker-allowed").as_deref(), Some("/"), "the worker controls the whole app");
+    assert_eq!(header(&reply, "x-content-type-options").as_deref(), Some("nosniff"));
+    assert!(header(&reply, "content-security-policy").unwrap().contains("worker-src 'self'"));
+    let head = request(server.addr(), "HEAD", "/sw.js", None);
+    assert_eq!(head.status, 200);
+    assert!(head.body.is_empty());
+    // The page itself, unlike its worker, is never kept by the browser's HTTP cache.
+    assert_eq!(header(&request(server.addr(), "GET", "/", None), "cache-control").as_deref(), Some("no-store"));
 }
 
 #[test]

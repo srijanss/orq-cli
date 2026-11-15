@@ -112,6 +112,27 @@ if (scenario.webauthn) {
     });
   }
 }
+// A scenario may give `service_worker`: {secure, waiting}. `secure` is whether the page counts as a
+// secure context, `waiting` whether the registration holds a new release waiting to take over (the
+// page is already controlled). `worker` in the output lists what was registered and what the page
+// told the waiting worker.
+const worker = { registered: [], messages: [] };
+if (scenario.service_worker) {
+  const spec = scenario.service_worker;
+  Object.defineProperty(window, "isSecureContext", { value: spec.secure === true, configurable: true });
+  const waiting = { state: "installed", postMessage: (message) => worker.messages.push(message) };
+  Object.defineProperty(window.navigator, "serviceWorker", {
+    configurable: true,
+    value: {
+      controller: {},
+      register: (url, options) => {
+        worker.registered.push({ url, scope: options && options.scope });
+        return Promise.resolve({ waiting: spec.waiting ? waiting : null, installing: null, addEventListener: () => {} });
+      },
+      addEventListener: () => {},
+    },
+  });
+}
 window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/auth/")) {
     authRequests.push({ url, method: options.method || "GET", headers: options.headers || {}, body: options.body === undefined ? null : JSON.parse(options.body) });
@@ -318,7 +339,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, authRequests, frames, downloads: saved }));
+  process.stdout.write(JSON.stringify({ requests, authRequests, frames, downloads: saved, worker }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

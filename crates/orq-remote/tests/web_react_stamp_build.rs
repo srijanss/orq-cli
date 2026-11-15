@@ -19,14 +19,16 @@ fn the_build_writes_a_stamp_holding_the_hash_of_the_bundle_it_made() {
     let out = orq_test_support::process_temp_dir().join(format!("orq-react-stamp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap();
-    let built = Command::new("node").arg(crate_dir().join("web-src/build.mjs")).arg("--out").arg(out.join("app.react.js")).output().unwrap();
+    let built = Command::new("node").arg(crate_dir().join("web-src/build.mjs")).arg("--out").arg(out.join("app.react.js")).arg("--sw-out").arg(out.join("sw.js")).output().unwrap();
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let stamp = std::fs::read_to_string(out.join("app.react.js.stamp")).expect("a stamp is written next to the bundle");
     let lines: Vec<&str> = stamp.lines().collect();
-    assert_eq!(lines.len(), 2, "{stamp:?}");
+    assert_eq!(lines.len(), 3, "the stamp holds the sources, the bundle and the worker: {stamp:?}");
     let sources = lines[0].strip_prefix("sources ").expect("first line");
     assert!(sources.len() == 64 && sources.chars().all(|c| c.is_ascii_hexdigit()), "{stamp:?}");
     let bundle: String = Sha256::digest(std::fs::read(out.join("app.react.js")).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(lines[1], format!("bundle {bundle}"));
+    let worker: String = Sha256::digest(std::fs::read(out.join("sw.js")).expect("the worker is built where --sw-out says")).iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(lines[2], format!("sw {worker}"));
     assert!(stamp.ends_with('\n'));
 }

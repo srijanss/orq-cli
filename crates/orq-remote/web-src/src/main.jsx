@@ -10,6 +10,7 @@ import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
 import { readPins, writePins } from "./pins.js";
 import { authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { applyUpdate, startWorker } from "./worker.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
 const API_REVIEWS = "/api/reviews";
@@ -3968,4 +3969,17 @@ function App() {
 
 migrateLegacyHash();
 openRootAtDashboard();
-createRoot(document.getElementById("app")).render(<App />);
+// A new release is offered, never forced: the page reloads into it only when the person asks.
+function UpdateBanner() {
+  const [waiting, setWaiting] = useState(null);
+  useEffect(() => startWorker(window, setWaiting), []);
+  if (waiting === null) return null;
+  return (
+    <p className="update-banner" role="status">
+      Update available{" "}
+      <button type="button" data-update-reload onClick={() => applyUpdate(window, waiting)}>Reload</button>
+    </p>
+  );
+}
+
+createRoot(document.getElementById("app")).render(<><UpdateBanner /><App /></>);

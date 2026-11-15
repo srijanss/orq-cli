@@ -13,7 +13,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use orq_core::remote_inbox::{self, ProjectsProvider, RemoteConfig};
@@ -422,7 +422,7 @@ fn is_application_path(path: &str) -> bool {
 
 /// The whole set of files the page path can ever serve. No request path is
 /// ever joined to a directory, so nothing outside this list can be read.
-const ASSETS: [Asset; 8] = [
+const ASSETS: [Asset; 9] = [
     Asset { path: "/", content_type: "text/html; charset=utf-8", body: include_bytes!("../web/index.html") },
     Asset { path: "/app.css", content_type: "text/css; charset=utf-8", body: include_bytes!("../web/app.css") },
     // Built from web-src by `node crates/orq-remote/web-src/build.mjs`; a test fails when it is stale.
@@ -434,18 +434,29 @@ const ASSETS: [Asset; 8] = [
     Asset { path: "/icons/icon-512.png", content_type: "image/png", body: include_bytes!("../web/icons/icon-512.png") },
     Asset { path: "/icons/icon-maskable-512.png", content_type: "image/png", body: include_bytes!("../web/icons/icon-maskable-512.png") },
     Asset { path: "/icons/apple-touch-icon.png", content_type: "image/png", body: include_bytes!("../web/icons/apple-touch-icon.png") },
+    // The offline shell's service worker, built from web-src/src/sw.js with the page bundle.
+    Asset { path: WORKER_PATH, content_type: "text/javascript; charset=utf-8", body: include_bytes!("../web/sw.js") },
 ];
 
-/// Only same-origin scripts, styles, requests, the app manifest and its icons; no inline code,
+/// The service worker's path. The browser checks it for a new release on every start, so it is
+/// revalidated instead of never stored, and it may control the whole app from "/".
+const WORKER_PATH: &str = "/sw.js";
+
+/// Only same-origin scripts, styles, requests, the app manifest, its icons and the service worker; no inline code,
 /// framing, form posts or base tag.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
 
 fn asset_response(asset: &Asset, head_only: bool) -> Response {
     let body = if head_only { &[][..] } else { asset.body };
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(asset.content_type));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if asset.path == WORKER_PATH {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        headers.insert(HeaderName::from_static("service-worker-allowed"), HeaderValue::from_static("/"));
+    } else {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CONTENT_SECURITY_POLICY));
     response
