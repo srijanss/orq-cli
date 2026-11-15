@@ -165,7 +165,14 @@ pub fn merge_setting_aside(store: &RunStore, run_id: &str) -> Result<SetAsideOut
         Err(error) => {
             // Never leave the person's changes stashed behind an error that does not say so.
             let restored = put_back(&checkout, &message, &stash, &record.run_id)?.unwrap_or_else(|| "your changes were put back".to_string());
-            return Err(StoreError::Corrupt(format!("{error}; {restored}")));
+            // The error may come after the fast-forward, from recording it: say where the branch is.
+            let now = git_raw(&record.worktree, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}^{{commit}}", record.target_branch)])?;
+            let branch = match now.stdout.trim() {
+                sha if sha == head_sha => format!("{} was fast-forwarded to {head_sha}", record.target_branch),
+                sha if sha == base_sha => format!("{} was not moved", record.target_branch),
+                _ => format!("{} has moved on", record.target_branch),
+            };
+            return Err(StoreError::Corrupt(format!("{error}; {branch}; {restored}")));
         }
     };
     match merged {

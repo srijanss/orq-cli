@@ -759,3 +759,22 @@ fn set_aside_changes_are_put_back_when_the_merge_fails_before_the_fast_forward()
     assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
     assert!(error.contains("your changes were put back"), "{error}");
 }
+
+#[cfg(unix)]
+#[test]
+fn set_aside_changes_are_put_back_and_the_merge_named_when_it_cannot_be_recorded() {
+    let w = refused_over_lines("set-aside-record-fails", &lines(&[(10, "mine")]));
+    if !permissions_hold(&w) {
+        return;
+    }
+    let events = w.repo.parent().unwrap().join("state/runs/run-1/events.jsonl");
+    // The fast-forward goes through, and only then can nothing more be recorded.
+    hook(&w.repo, "post-merge", &format!("#!/bin/sh\nexec chmod 444 '{}'\n", events.display()));
+
+    let error = merge_setting_aside(&w.store, "run-1").unwrap_err().to_string();
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(git(&w.repo, &["rev-parse", "main"]), head, "main was fast-forwarded");
+    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "the changes are back over it");
+    assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
+    assert!(error.contains(&format!("main was fast-forwarded to {head}")) && error.contains("your changes were put back"), "{error}");
+}
