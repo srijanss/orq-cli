@@ -481,3 +481,26 @@ fn an_overlap_is_refused_without_reading_the_other_uncommitted_files() {
     let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
     assert_eq!(refused.payload, serde_json::json!({ "reason": "dirty_checkout", "files": ["a.txt"] }));
 }
+
+#[cfg(unix)]
+#[test]
+fn an_uncommitted_file_that_cannot_be_read_refuses_the_merge_with_gits_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("unreadable-dirty-file");
+    fs::write(w.repo.join("secret.txt"), "staged\n").unwrap();
+    git(&w.repo, &["add", "secret.txt"]);
+    let secret = w.repo.join("secret.txt");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let outcome = merge_into_base(&w.store, "run-1").unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+    match outcome {
+        MergeOutcome::Refused { reason } => {
+            let prefix = format!("cannot read the uncommitted changes at {}: ", w.repo.display());
+            assert!(reason.starts_with(&prefix) && reason.contains("secret.txt"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+    assert!(!w.repo.join("mine.txt").exists(), "nothing of the run was checked out");
+}
