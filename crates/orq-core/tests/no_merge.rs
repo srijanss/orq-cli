@@ -98,10 +98,22 @@ const MERGE_CAPABLE: [&str; 10] = [
 /// The whole argument list, closing bracket included, so no argument (`--no-ff`) can be added to it.
 const MERGE_LOCAL_FAST_FORWARD: &str = r#"&["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha]"#;
 
+/// The `orq run merge` subcommand's dispatch arm: it names the subcommand, which resumes a
+/// merge-local run through merge-local's own fast-forward, and invokes no merge itself.
+/// The whole arm, handler included, so the name cannot be reused to dispatch to anything else.
+const RUN_MERGE_DISPATCH: &str = r#"(Some("run"), Some("merge")) => run_merge(&args[2..]),"#;
+
 /// The first merge-capable text in the source `text` of `path`, if any. Only merge-local's one
-/// fast-forward is allowed, once and only in merge_local.rs; any other merge text still counts.
+/// fast-forward is allowed, once and only in merge_local.rs, and the `orq run merge` dispatch arm,
+/// once and only in orq-cli's main.rs; any other merge text still counts.
 fn merge_capable_text(path: &Path, text: &str) -> Option<&'static str> {
-    let text = if path.ends_with("merge_local.rs") { text.replacen(MERGE_LOCAL_FAST_FORWARD, "", 1) } else { text.to_string() };
+    let text = if path.ends_with("merge_local.rs") {
+        text.replacen(MERGE_LOCAL_FAST_FORWARD, "", 1)
+    } else if path.ends_with("orq-cli/src/main.rs") {
+        text.replacen(RUN_MERGE_DISPATCH, "", 1)
+    } else {
+        text.to_string()
+    };
     MERGE_CAPABLE.into_iter().find(|needle| text.contains(needle))
 }
 
@@ -119,6 +131,18 @@ fn only_merge_locals_one_fast_forward_of_the_base_branch_is_allowed() {
     assert_eq!(merge_capable_text(merge_local, &no_ff), Some("\"merge\""), "the fast-forward with an argument appended");
     let pr_merge = format!("{fast_forward}\nlet call = \"gh pr merge\";");
     assert_eq!(merge_capable_text(merge_local, &pr_merge), Some("pr merge"), "other merge-capable text");
+}
+
+#[test]
+fn only_the_run_merge_dispatch_arm_is_allowed_and_only_in_the_cli_main() {
+    let main = Path::new("crates/orq-cli/src/main.rs");
+    let dispatch = r#"        (Some("run"), Some("merge")) => run_merge(&args[2..]),"#;
+    assert_eq!(merge_capable_text(main, dispatch), None, "the dispatch arm in main.rs");
+    assert_eq!(merge_capable_text(Path::new("crates/orq-cli/src/pipeline.rs"), dispatch), Some("\"merge\""), "anywhere else");
+    let twice = format!("{dispatch}\n{dispatch}");
+    assert_eq!(merge_capable_text(main, &twice), Some("\"merge\""), "a second one");
+    let elsewhere = r#"        (Some("run"), Some("merge")) => git_raw(&cwd, &["merge", "--no-ff", &sha]),"#;
+    assert_eq!(merge_capable_text(main, elsewhere), Some("\"merge\""), "the name dispatching to something else");
 }
 
 #[test]
