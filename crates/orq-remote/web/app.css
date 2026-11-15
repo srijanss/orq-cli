@@ -204,8 +204,8 @@
   --switch-off: #6b7280;
   --switch-thumb: #ffffff;
 }
-html, body { overscroll-behavior-y: none; }
-body { font-family: system-ui, Inter, sans-serif; margin: 0; overflow-x: hidden; background: var(--bg); color: var(--text); }
+html { overscroll-behavior-y: none; }
+body { font-family: system-ui, Inter, sans-serif; margin: 0; overflow-x: hidden; overscroll-behavior-y: none; background: var(--bg); color: var(--text); }
 a { color: var(--accent); }
 button { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.75rem; font: inherit; font-size: 0.9375rem; cursor: pointer; }
 input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
