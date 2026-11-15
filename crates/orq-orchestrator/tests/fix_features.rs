@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use orq_orchestrator::{carry_fix_features, fix_features, record_fix_features_added, RunRecord, RunStore};
+use orq_orchestrator::{carry_fix_features, features_no_later_run_took, fix_features, record_fix_features_added, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-fix-features-{}-{tag}", std::process::id()));
@@ -59,4 +59,18 @@ fn a_resumed_run_carries_the_features_of_the_run_it_resumes() {
     carry_fix_features(&store, &record("run-2"), "run-1").unwrap();
 
     assert_eq!(fix_features(&store, "run-2").unwrap(), names(&["a"]));
+}
+
+#[test]
+fn a_feature_a_later_run_carried_on_from_a_fix_session_is_not_free_for_the_earlier_run_to_close() {
+    let store = store("carried-taken");
+    store.start_run(&record("run-1")).unwrap();
+    record_fix_features_added(&store, &record("run-1"), "gate_fix", &names(&["a", "b"])).unwrap();
+    store.finish_run("repo-1", "feat", "run-1").unwrap();
+    store.start_run(&record("run-2")).unwrap();
+    record_fix_features_added(&store, &record("run-2"), "carried", &names(&["a"])).unwrap();
+
+    let free = features_no_later_run_took(&store, "run-1", &names(&["a", "b"])).unwrap();
+
+    assert_eq!(free, names(&["b"]), "run-2 took a on; b is still run-1's alone");
 }

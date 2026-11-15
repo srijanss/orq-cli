@@ -234,7 +234,8 @@ fn branch_commits(repo: &Path, record: &crate::store::RunRecord) -> Result<Delet
     Ok(DeletedBranch { name, commits_ahead, last_commit })
 }
 
-/// Those of `features` that no other run of `run_id`'s project started later. A later run that took a
+/// Those of `features` that no other run of `run_id`'s project started later, as one of its features or
+/// one its fix sessions added or carried on from the run it resumed. A later run that took a
 /// feature is the one its ledger status speaks for, so a `completed` is not this run's to undo. Times
 /// are compared at the second they were recorded, and a run started in the same second, or with no
 /// time at all, counts as later: wrongly keeping `completed` is the mistake that can be seen and
@@ -254,8 +255,9 @@ pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[St
         let events = store.events(&other).map_err(|e| e.to_string())?;
         let earlier = matches!((events.first(), &started), (Some(first), Some(started)) if first.occurred_at < *started);
         if !earlier {
-            let members = members_of(&other_record, &events);
-            free.retain(|feature| !members.contains(feature));
+            let mut taken = members_of(&other_record, &events);
+            taken.extend(crate::fix_features::fix_features(store, &other).map_err(|e| e.to_string())?);
+            free.retain(|feature| !taken.contains(feature));
         }
     }
     Ok(free)

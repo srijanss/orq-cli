@@ -394,3 +394,22 @@ fn reopen_discarding_a_group_keeps_only_the_member_a_later_run_took() {
     assert_eq!(status_of(d.repo.root(), "COM-01"), "pending", "nothing else took it");
     assert_eq!(status_of(d.repo.root(), "COM-02"), "completed", "run-2 finished it after the group");
 }
+
+/// A run that resumed run-1 carried on the feature run-1's fix session started, so it is that run's
+/// to close: discarding run-1 leaves it in progress, as the later run can still complete it.
+#[test]
+fn reopen_discarding_an_old_run_leaves_a_fix_feature_the_run_resuming_it_carried_in_progress() {
+    let d = blocked_run("discard-carried-fix", true);
+    write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "in_progress"), LedgerEntry::new("FIX-01", "in_progress")]);
+    let fix = vec!["FIX-01".to_string()];
+    let run_1 = d.store.load("run-1").unwrap();
+    orq_orchestrator::record_fix_features_added(&d.store, &run_1, "gate_fix", &fix).unwrap();
+    finished_run_of_the_feature(&d, "run-2", "2026-11-02T11:00:00Z");
+    orq_orchestrator::carry_fix_features(&d.store, &d.store.load("run-2").unwrap(), "run-1").unwrap();
+
+    let output = discard(&d, d.repo.root());
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(d.repo.root(), "FIX-01"), "in_progress", "run-2 carried it on from run-1");
+    assert!(!text(&output.stdout).contains("abandoned"), "{}", text(&output.stdout));
+}
