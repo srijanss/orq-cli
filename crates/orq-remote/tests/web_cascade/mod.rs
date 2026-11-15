@@ -107,16 +107,23 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
     if rule_subject.split(['.', ':', '[', '#']).next() != Some(tag.as_str()) {
         return false;
     }
+    // A class or ID on the element itself rules the selector out, whatever else it asks for.
+    if !classes(rule_subject).is_empty() || rule_subject.split(':').next().unwrap_or("").contains('#') {
+        return false;
+    }
     // A representative element has ancestors but no known siblings, so whether this applies is unknown.
     assert!(!has_sibling, "{selector:?} reaches {element:?} through a sibling combinator, which this resolver cannot decide");
-    // Nor does it have known attributes; one inside :not(...) only rules out other elements.
+    // An ancestor class or ID the element does not sit under rules it out too.
+    if !rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !c.contains('#') && classes(c).iter().all(|class| ancestors.contains(class))) {
+        return false;
+    }
+    // Only a selector that could still reach the element is left; it has no known attributes,
+    // and one inside :not(...) only rules out other elements.
     assert!(
         !rule_compounds.iter().any(|c| without_not(c).contains('[')),
         "{selector:?} reaches {element:?} only for some attribute, which this resolver cannot decide"
     );
-    classes(rule_subject).is_empty()
-        && !rule_subject.split(':').next().unwrap_or("").contains('#')
-        && rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !c.contains('#') && classes(c).iter().all(|class| ancestors.contains(class)))
+    true
 }
 
 /// A compound selector with its `:not(...)` arguments taken out.

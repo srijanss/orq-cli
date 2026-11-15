@@ -221,3 +221,12 @@ fn an_element_match_refuses_attributes_outside_not_on_a_compound_that_reaches_th
     assert!(matches_element(".signin input:not([type=checkbox]):not([type=radio])", ".signin input"));
     assert!(!matches_element(".signin select[class~=x]", ".signin input"));
 }
+
+#[test]
+fn an_attribute_rule_that_cannot_reach_a_field_is_not_in_the_way() {
+    // An unrelated ancestor or a class on the element rules these out before their attributes matter.
+    for unrelated in [".other[data-open] input", ".signin input.special[data-x]", "#x[data-x] input", ".signin input#x[data-x]"] {
+        assert!(!matches_element(unrelated, ".signin input"), "{unrelated}");
+    }
+    assert_eq!(font_size_px(".other[data-open] input { font-size: 10px; }\n.signin input { font-size: 17px; }", ".signin input", 360.0), Some(17.0));
+}
