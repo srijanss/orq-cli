@@ -386,6 +386,29 @@ fn an_allowed_tools_script_rule_is_left_out_beside_a_link_to_a_folder_outside_th
     assert!(!allowed(&worktree).contains(&rule));
 }
 
+/// Each script rule is decided on its own script, the worktree read once for all of them: an
+/// unrelated untracked or ignored file leaves every rule as it was.
+#[test]
+fn script_rules_are_each_decided_on_their_own_script_beside_unrelated_untracked_files() {
+    let (_repo, worktree) = checkout("permissions-script-each");
+    commit_file(&worktree, "build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    commit_file(&worktree, "b/run.py", "print('ran')\n");
+    let base = head(&worktree);
+    let kept = "Bash(node a/make.mjs)".to_string();
+    let changed = "Bash(python b/run.py:*)".to_string();
+    fs::create_dir_all(worktree.join("node_modules/x")).unwrap();
+    fs::write(worktree.join("node_modules/x/index.js"), "module.exports = 1\n").unwrap();
+    fs::create_dir_all(worktree.join("web/b")).unwrap();
+    fs::write(worktree.join("web/b/run.py"), "import os\n").unwrap();
+
+    let notes = write_run_permissions(&worktree, &[kept.clone(), changed.clone()], Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("web/b/run.py was changed by this run, so allowed_tools rule {changed} was left out")]);
+    let allow = allowed(&worktree);
+    assert!(allow.contains(&kept) && allow.contains(&"Bash(node build.mjs)".to_string()) && !allow.contains(&changed), "{allow:?}");
+}
+
 /// A rule that must go but cannot be taken out of the settings could still be allowed there: the
 /// refresh before a session fails, naming the rule, rather than letting the session start.
 #[test]

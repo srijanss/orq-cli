@@ -326,29 +326,10 @@ fn interpreter_script(rule: &str) -> Option<Option<&str>> {
     Some((plain && segments_plain && !script.starts_with('-')).then_some(script))
 }
 
-/// Whether `script` is a regular file of the commit `base`, read in `worktree`.
-fn tracked_at(worktree: &Path, base: &str, script: &str) -> bool {
-    if base.is_empty() || !base.chars().all(|c| c.is_ascii_hexdigit()) {
-        return false;
-    }
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(["--literal-pathspecs", "ls-tree", "-z", base, "--", script])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(listed) = listed else { return false };
-    let entry = String::from_utf8_lossy(&listed.stdout);
-    let Some((meta, path)) = entry.trim_end_matches('\0').split_once('\t') else { return false };
-    listed.status.success()
-        && path == script
-        && (meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))
-}
-
 /// What the worktree holds of the files at the relative path `script` below any folder (`script`
 /// itself, `web/script`, ...), each of which a command running it from that folder runs, against
 /// the commit `base`.
+#[derive(Clone)]
 enum NamedScripts {
     /// `base` holds no such file, or one that is not a regular file, or git cannot tell.
     Absent,
@@ -361,54 +342,98 @@ enum NamedScripts {
     Changed(Vec<String>),
 }
 
-fn named_scripts(worktree: &Path, base: &str, script: &str) -> NamedScripts {
-    named_scripts_checked(worktree, base, script).unwrap_or(NamedScripts::Absent)
+/// What the worktree holds against the commit `base`, read once for every script a run's rules
+/// could run, and only what concerns those scripts kept.
+struct Inventory {
+    /// The base's entries for files named like one of the scripts: the path, and whether it is a
+    /// regular file.
+    held: Vec<(String, bool)>,
+    /// What hides files from the worktree's git: repositories of their own, else links to folders
+    /// outside it. `None` when nothing does.
+    hidden: Option<NamedScripts>,
+    /// The files named like one of the scripts that differ from the base's, untracked or ignored
+    /// ones included.
+    differing: Vec<String>,
 }
 
-fn named_scripts_checked(worktree: &Path, base: &str, script: &str) -> Option<NamedScripts> {
-    if !base.chars().all(|c| c.is_ascii_hexdigit()) || base.is_empty() {
-        return None;
+impl Inventory {
+    /// The worktree read for `scripts`, relative paths; `None` when `base` is no commit or git
+    /// cannot tell.
+    fn read(worktree: &Path, base: &str, scripts: &[&str]) -> Option<Self> {
+        if base.is_empty() || !base.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let git = |args: &[&str]| -> Option<String> {
+            let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+            output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let file_name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+        let names: Vec<String> = scripts.iter().map(|script| file_name(script)).collect();
+        let named = |path: &str| names.contains(&file_name(path));
+        let entry = |line: &str| line.split_once('\t').map(|(meta, path)| (meta.to_string(), path.to_string()));
+        // ls-tree takes no glob: the base's files are listed and picked by name here.
+        let tree = git(&["ls-tree", "-r", "-z", base])?;
+        let staged = git(&["ls-files", "-s", "-z"])?;
+        let changed = git(&["diff", "--name-only", "-z", base])?;
+        let held = tree.split('\0').filter_map(entry).filter(|(_, path)| named(path)).map(|(meta, path)| (path, meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))).collect();
+        // A submodule at the base or in the index.
+        let mut nested: Vec<String> = tree.split('\0').chain(staged.split('\0')).filter(|line| line.starts_with("160000 ")).filter_map(entry).map(|(_, path)| path).collect();
+        // A link to a folder, staged or changed since the base (untracked ones are found below): a
+        // script reached through it is not one git lists, unless the folder is the worktree's own.
+        let links = staged.split('\0').filter(|line| line.starts_with("120000 ")).filter_map(entry).map(|(_, path)| path);
+        let mut linked: Vec<String> = links.chain(changed.split('\0').map(str::to_string)).filter(|path| !path.is_empty() && links_outside(worktree, path)).collect();
+        let mut differing: Vec<String> = changed.split('\0').filter(|path| !path.is_empty() && named(path)).map(str::to_string).collect();
+        // Untracked and ignored files, read as git lists them and kept only when they matter: listed
+        // file by file, the untracked files show a repository left untracked alone as a folder,
+        // however deep in an untracked folder it lies (`--directory` would show only the outermost).
+        let mut child = Command::new("git").arg("-C").arg(worktree).args(["ls-files", "--others", "-z"]).stdin(Stdio::null()).stderr(Stdio::null()).stdout(Stdio::piped()).spawn().ok()?;
+        let listed = child.stdout.take().map(|out| {
+            for path in std::io::BufRead::split(std::io::BufReader::new(out), b'\0') {
+                let Ok(path) = path else { return false };
+                let path = String::from_utf8_lossy(&path);
+                if let Some(repository) = path.strip_suffix('/') {
+                    nested.push(repository.to_string());
+                } else if links_outside(worktree, &path) {
+                    linked.push(path.into_owned());
+                } else if named(&path) {
+                    differing.push(path.into_owned());
+                }
+            }
+            true
+        });
+        if !child.wait().is_ok_and(|status| status.success()) || listed != Some(true) {
+            return None;
+        }
+        for found in [&mut nested, &mut linked] {
+            found.sort();
+            found.dedup();
+        }
+        let hidden = match (nested.is_empty(), linked.is_empty()) {
+            (false, _) => Some(NamedScripts::Nested(nested)),
+            (true, false) => Some(NamedScripts::Linked(linked)),
+            (true, true) => None,
+        };
+        Some(Self { held, hidden, differing })
     }
-    let pattern = format!(":(glob)**/{script}");
-    let below = format!("/{script}");
-    let git = |args: &[&str]| -> Option<String> {
-        let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
-    };
-    // ls-tree takes no glob: the base's files are listed and picked by path here.
-    let held = git(&["ls-tree", "-r", "-z", base])?;
-    let named = |entry: &&str| entry.split_once('\t').is_some_and(|(_, path)| path == script || path.ends_with(&below));
-    let entries: Vec<&str> = held.split('\0').filter(named).collect();
-    let regular = |entry: &&str| entry.starts_with("100644 blob ") || entry.starts_with("100755 blob ");
-    if entries.is_empty() || !entries.iter().all(regular) {
-        return None;
+
+    /// Whether `script` is a regular file of the base.
+    fn tracked(&self, script: &str) -> bool {
+        self.held.iter().any(|(path, regular)| path == script && *regular)
     }
-    // A submodule at the base or in the index, or a repository left untracked: listed file by file,
-    // the untracked files show such a repository alone as a folder, however deep in an untracked
-    // folder it lies (`--directory` would show only the outermost untracked folder).
-    let staged = git(&["ls-files", "-s", "-z"])?;
-    let gitlinks = held.split('\0').chain(staged.split('\0')).filter(|entry| entry.starts_with("160000 ")).filter_map(|entry| entry.split_once('\t')).map(|(_, path)| path.to_string());
-    let others = git(&["ls-files", "--others", "-z"])?;
-    let untracked = others.split('\0').filter_map(|entry| entry.strip_suffix('/')).map(str::to_string);
-    let mut nested: Vec<String> = gitlinks.chain(untracked).collect();
-    nested.sort();
-    nested.dedup();
-    if !nested.is_empty() {
-        return Some(NamedScripts::Nested(nested));
+
+    /// What the worktree holds of the files `script` names below any folder.
+    fn named(&self, script: &str) -> NamedScripts {
+        let below = format!("/{script}");
+        let names = |path: &&String| *path == script || path.ends_with(&below);
+        let mut held = self.held.iter().filter(|(path, _)| names(&path)).peekable();
+        if held.peek().is_none() || !held.all(|(_, regular)| *regular) {
+            return NamedScripts::Absent;
+        }
+        if let Some(hidden) = &self.hidden {
+            return hidden.clone();
+        }
+        NamedScripts::Changed(self.differing.iter().filter(names).cloned().collect())
     }
-    // A link to a folder, untracked, staged or changed since the base: a script reached through it
-    // is not one git lists, unless the folder is the worktree's own.
-    let differing = git(&["diff", "--name-only", "-z", base])?;
-    let links = staged.split('\0').filter(|entry| entry.starts_with("120000 ")).filter_map(|entry| entry.split_once('\t')).map(|(_, path)| path);
-    let mut linked: Vec<String> = others.split('\0').chain(differing.split('\0')).chain(links).filter(|path| !path.is_empty() && links_outside(worktree, path)).map(str::to_string).collect();
-    linked.sort();
-    linked.dedup();
-    if !linked.is_empty() {
-        return Some(NamedScripts::Linked(linked));
-    }
-    let changed = git(&["diff", "--name-only", "-z", base, "--", &pattern])?;
-    let added = git(&["ls-files", "--others", "-z", "--", &pattern])?;
-    Some(NamedScripts::Changed(changed.split('\0').chain(added.split('\0')).filter(|path| !path.is_empty()).map(str::to_string).collect()))
 }
 
 fn linked_what(links: &[String]) -> &'static str {
@@ -453,8 +478,12 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     allowed.push(&marker_rule);
     // A rule left out now goes from the settings too: an earlier session may have been allowed it.
     let mut withdrawn: Vec<&str> = Vec::new();
+    let scripts: Vec<&str> = ALLOWED_SCRIPTS.iter().map(|(_, name)| *name).chain(extra.iter().filter_map(|rule| interpreter_script(rule).flatten())).collect();
+    let inventory = Inventory::read(worktree, base, &scripts);
+    let named_scripts = |script: &str| inventory.as_ref().map_or(NamedScripts::Absent, |inventory| inventory.named(script));
+    let tracked_at = |script: &str| inventory.as_ref().is_some_and(|inventory| inventory.tracked(script));
     for (rule, name) in ALLOWED_SCRIPTS {
-        match named_scripts(worktree, base, name) {
+        match named_scripts(name) {
             // A project without the script has no use for the rule: it goes without a note.
             NamedScripts::Absent => withdrawn.push(rule),
             NamedScripts::Nested(repositories) => {
@@ -484,7 +513,7 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
             _ if names_publishing(rule) => Some(could_publish()),
             None => publishes(rule).then(could_publish),
             // Run from another folder, the path names another file: each must be the base's too.
-            Some(Some(script)) if tracked_at(worktree, base, script) => match named_scripts(worktree, base, script) {
+            Some(Some(script)) if tracked_at(script) => match named_scripts(script) {
                 NamedScripts::Absent => Some(not_script()),
                 NamedScripts::Nested(repositories) => {
                     let what = if repositories.len() == 1 { "is a repository of its own" } else { "are repositories of their own" };
