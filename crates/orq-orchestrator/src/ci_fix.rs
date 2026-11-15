@@ -24,8 +24,9 @@ pub trait CiFixSteps {
     fn push(&mut self) -> Result<PushOutcome, StoreError>;
     /// The text of the failure log for these failing checks (fetched from the provider).
     fn failure_log(&mut self, failing: &[String]) -> String;
-    /// The fix session of attempt `attempt` (from 1), given the file holding the failure log.
-    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> FixSessionSpec;
+    /// The fix session of attempt `attempt` (from 1), given the file holding the failure log; an
+    /// error starts no session and stops the loop with it.
+    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError>;
 }
 
 pub struct CiFixConfig<'a> {
@@ -126,7 +127,7 @@ pub fn run_ci_fix_loop(
                 report.display()
             )));
         }
-        let spec = steps.fix_session(fix_attempts, &failure_log);
+        let spec = steps.fix_session(fix_attempts, &failure_log)?;
         let session = ImplementSession {
             program: &spec.program,
             args: &spec.args,

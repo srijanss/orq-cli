@@ -393,6 +393,14 @@ fn named_scripts_changed(worktree: &Path, base: &str, name: &str) -> Option<Vec<
 /// changed since; a rule left out is also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
+    let (mut notes, unrevoked) = apply_run_permissions(worktree, extra, logs, base);
+    notes.extend(unrevoked);
+    notes
+}
+
+/// What [`write_run_permissions`] does: its notes, and why a rule left out is still allowed by
+/// settings that could not be updated.
+fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> (Vec<String>, Option<String>) {
     let mut notes = Vec::new();
     let logs = logs.to_string_lossy();
     // A path rule beginning with `//` is absolute: the session writes its exit marker there.
@@ -448,10 +456,25 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, bas
         }
         Ok(())
     });
-    if let Err(why) = edited {
+    let Err(why) = edited else { return (notes, None) };
+    // Rules a file Claude Code still reads allows; one it cannot parse allows nothing.
+    let held = std::fs::read_to_string(worktree.join(SETTINGS)).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let still: Vec<&str> = withdrawn.into_iter().filter(|rule| held.as_ref().and_then(|held| held["permissions"]["allow"].as_array()).is_some_and(|list| list.iter().any(|item| item.as_str() == Some(rule)))).collect();
+    if still.is_empty() {
         notes.push(format!("{SETTINGS} was not updated: {why}"));
+        return (notes, None);
     }
-    notes
+    let unrevoked = format!("{SETTINGS} was not updated ({why}) and still allows {}, which must be left out", still.join(", "));
+    (notes, Some(unrevoked))
+}
+
+/// Like [`write_run_permissions`], for a session that must not start with a rule it was allowed
+/// before and must lose now: fails, saying which, when the settings still allow such a rule.
+pub fn refresh_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Result<Vec<String>, String> {
+    match apply_run_permissions(worktree, extra, logs, base) {
+        (_, Some(unrevoked)) => Err(unrevoked),
+        (notes, None) => Ok(notes),
+    }
 }
 
 /// Takes out of `entries` the commands `write_needs_input_hook` wrote and nothing beside them: an

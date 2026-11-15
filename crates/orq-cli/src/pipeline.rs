@@ -896,18 +896,18 @@ fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)])
 /// now: a script the run changed since the commit it was last rebased onto (or started from) is no
 /// longer run without asking. Called before each session, so a change made by one is seen by the next.
 /// Writes the session permissions again before a fix session, saying on stderr what was left out:
-/// the fix session runs on what the earlier sessions changed.
-fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) {
-    match write_permissions(store, record, settings, logs) {
-        Ok(notes) => notes.iter().for_each(|note| eprintln!("orq: {note}")),
-        Err(e) => eprintln!("orq: could not check the fix session's allowed commands: {e:?}"),
-    }
+/// the fix session runs on what the earlier sessions changed. A rule that should be left out but that
+/// the settings still allow starts no session: the error says which.
+fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<(), StoreError> {
+    let notes = write_permissions(store, record, settings, logs)?;
+    notes.iter().for_each(|note| eprintln!("orq: {note}"));
+    Ok(())
 }
 
 fn write_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<Vec<String>, StoreError> {
     let base = orq_orchestrator::rebased_onto(store, &record.run_id)?.unwrap_or_else(|| record.base_sha.clone());
     let extra = settings.allowed_tools.as_deref().unwrap_or_default();
-    Ok(orq_orchestrator::write_run_permissions(&record.worktree, extra, logs, &base))
+    orq_orchestrator::refresh_run_permissions(&record.worktree, extra, logs, &base).map_err(StoreError::Corrupt)
 }
 
 /// What a resumed run takes over from the run it continues; all `None` for a new run.
@@ -1120,8 +1120,8 @@ fn stages(
         let gate_outcome =
             run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
                 // A script the run has changed since is no longer allowed to the fix session.
-                recheck_permissions(store, record, settings, logs);
-                FixSessionSpec {
+                recheck_permissions(store, record, settings, logs)?;
+                Ok(FixSessionSpec {
                     program: claude_program.to_string(),
                     args: fix_args.clone(),
                     env: fix_env.clone(),
@@ -1130,7 +1130,7 @@ fn stages(
                     log: fix_log.clone(),
                     terminal: options.interactive,
                     exit_marker: fix_marker.clone(),
-                }
+                })
             })?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
@@ -1481,7 +1481,7 @@ struct PipelineCiSteps<'a> {
     /// Leaves the review report of a commit the loop just pushed, and again with what its CI said.
     report: &'a dyn Fn(&str, Option<&CiOutcome>),
     /// Run before each fix session: brings the session's allowed commands up to date with the branch.
-    before_session: &'a dyn Fn(),
+    before_session: &'a dyn Fn() -> Result<(), StoreError>,
     session: FixSessionSpec,
 }
 
@@ -1510,9 +1510,9 @@ impl CiFixSteps for PipelineCiSteps<'_> {
         ci_failure_text(self.provider_cli, failing)
     }
 
-    fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> FixSessionSpec {
-        (self.before_session)();
-        self.session.clone()
+    fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
+        (self.before_session)()?;
+        Ok(self.session.clone())
     }
 }
 

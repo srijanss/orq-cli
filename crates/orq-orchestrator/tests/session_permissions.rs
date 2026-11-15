@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use orq_orchestrator::write_run_permissions;
+use orq_orchestrator::{refresh_run_permissions, write_run_permissions};
 use orq_test_support::GitFixture;
 
 fn checkout(tag: &str) -> (GitFixture, std::path::PathBuf) {
@@ -240,6 +240,30 @@ fn the_built_in_build_script_rule_is_kept_only_while_every_build_mjs_is_the_base
         assert_eq!(notes, [format!("{path} was changed by this run, so the rule {builtin} was left out")], "{tag}");
         assert!(!allowed(&worktree).contains(&builtin), "{tag}: {:?}", allowed(&worktree));
     }
+}
+
+/// A rule that must go but cannot be taken out of the settings could still be allowed there: the
+/// refresh before a session fails, naming the rule, rather than letting the session start.
+#[test]
+fn a_rule_the_settings_cannot_lose_fails_the_refresh_naming_it() {
+    let (_repo, worktree) = checkout("permissions-unrevoked");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let rule = "Bash(node a/make.mjs)".to_string();
+    assert_eq!(refresh_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base), Ok(Vec::new()));
+
+    fs::write(worktree.join("a/make.mjs"), "require('child_process')\n").unwrap();
+    let path = worktree.join(".claude/settings.local.json");
+    let mut kept = read_json(&path);
+    kept["permissions"]["deny"] = serde_json::json!(1);
+    fs::write(&path, kept.to_string()).unwrap();
+
+    let refreshed = refresh_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base);
+
+    let why = refreshed.expect_err("the rule is still in the settings");
+    assert!(why.contains(&rule) && why.contains("settings.local.json"), "{why}");
+    let unchanged = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+    assert!(unchanged.iter().any(|note| note.contains("settings.local.json")), "nothing to take out is still a note: {unchanged:?}");
 }
 
 #[test]

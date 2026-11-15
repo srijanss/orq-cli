@@ -445,7 +445,7 @@ fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
         &w.gate_log,
         2,
         &env,
-        |_, _| spec(&w, "touch fixed"),
+        |_, _| Ok(spec(&w, "touch fixed")),
     )
     .unwrap();
 
@@ -455,6 +455,21 @@ fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
         seen, "[test_shop]\n[test_shop]\n",
         "both gate runs got the variable"
     );
+}
+
+/// A fix session that cannot be set up safely, such as one whose settings still allow a rule it
+/// must lose, is not started: the loop stops with why.
+#[test]
+fn a_fix_session_that_cannot_be_prepared_is_not_started_and_the_loop_fails_saying_why() {
+    let w = world("unprepared");
+
+    let result = run_gate_with_fixes_env(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, &[], |_, _| {
+        Err(orq_orchestrator::StoreError::Corrupt("the settings still allow Bash(node a.mjs)".to_string()))
+    });
+
+    let why = format!("{:?}", result.expect_err("no session may start"));
+    assert!(why.contains("Bash(node a.mjs)"), "{why}");
+    assert!(!w.worktree.join("fixed").exists(), "a session ran");
 }
 
 #[test]

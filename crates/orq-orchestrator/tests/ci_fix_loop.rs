@@ -102,9 +102,9 @@ impl CiFixSteps for Script {
     fn failure_log(&mut self, failing: &[String]) -> String {
         format!("boom: {}\n", failing.join(", "))
     }
-    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> FixSessionSpec {
+    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
         self.sessions.push(attempt);
-        FixSessionSpec {
+        Ok(FixSessionSpec {
             program: "sh".to_string(),
             args: vec!["-c".to_string(), self.fix.clone()],
             env: vec![(
@@ -116,7 +116,7 @@ impl CiFixSteps for Script {
             log: self.root.join("fix.log"),
             terminal: false,
             exit_marker: None,
-        }
+        })
     }
 }
 

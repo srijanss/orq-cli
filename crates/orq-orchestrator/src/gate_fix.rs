@@ -114,21 +114,13 @@ pub fn run_gate_with_fixes(
     enabled: bool,
     gate_log: &Path,
     max_attempts: u32,
-    fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
+    mut fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
 ) -> Result<GateFixOutcome, StoreError> {
-    run_gate_with_fixes_env(
-        store,
-        run_id,
-        gate,
-        enabled,
-        gate_log,
-        max_attempts,
-        &[],
-        fixer,
-    )
+    run_gate_with_fixes_env(store, run_id, gate, enabled, gate_log, max_attempts, &[], |attempt, log| Ok(fixer(attempt, log)))
 }
 
-/// Like [`run_gate_with_fixes`], with `env` set for every run of the gate.
+/// Like [`run_gate_with_fixes`], with `env` set for every run of the gate. A `fixer` that fails
+/// starts no session: the loop stops with its error.
 #[allow(clippy::too_many_arguments)]
 pub fn run_gate_with_fixes_env(
     store: &RunStore,
@@ -138,7 +130,7 @@ pub fn run_gate_with_fixes_env(
     gate_log: &Path,
     max_attempts: u32,
     env: &[(String, String)],
-    mut fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
+    mut fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
@@ -180,7 +172,7 @@ pub fn run_gate_with_fixes_env(
                         report.display()
                     )));
                 }
-                let spec = fixer(fix_attempts, gate_log);
+                let spec = fixer(fix_attempts, gate_log)?;
                 let session = ImplementSession {
                     program: &spec.program,
                     args: &spec.args,
