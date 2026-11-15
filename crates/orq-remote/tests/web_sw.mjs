@@ -70,9 +70,11 @@ function boot() {
     await Promise.all(waits);
     return { handled: responded !== null, response };
   };
+  // `client` is the page asking for a file; `opens` is the page a navigation opens.
   const request = (path, { method = "GET", mode = "cors", origin = ORIGIN } = {}) => ({ url: origin + path, method, mode, headers: new Headers() });
+  const fetchEvent = (path, options = {}) => ({ request: request(path, options), clientId: options.client || "", resultingClientId: options.opens || "" });
   const ask = async (path, options) => {
-    const { handled, response } = await dispatch("fetch", { request: request(path, options) });
+    const { handled, response } = await dispatch("fetch", fetchEvent(path, options));
     return { handled, text: response ? (response.type === "error" ? "<network error>" : await response.text()) : null };
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
@@ -135,9 +137,10 @@ async function worker() {
 }
 
 // A release whose cache is damaged while the server has moved on to a newer one. Each case starts
-// from a fresh install; `lose` deletes cached paths before the page opens, `midPage` after it opened.
+// from a fresh install; `lose` deletes cached paths before the page opens, `midPage` after it opened;
+// `broken` fails cache storage before the page opens, `breaksMidPage` after; `evictedMidPage` drops the whole cache after.
 async function damaged() {
-  const run = async ({ lose = [], midPage = [], broken = false }) => {
+  const run = async ({ lose = [], midPage = [], broken = false, breaksMidPage = false, evictedMidPage = false }) => {
     const sw = boot();
     await sw.dispatch("install");
     await sw.dispatch("activate");
@@ -145,9 +148,11 @@ async function damaged() {
     sw.net.phase = "later";
     for (const path of lose) sw.stores.get(shellCache).delete(path);
     sw.storage.broken = broken;
-    const page = await sw.ask("/projects/p", { mode: "navigate" });
+    const page = await sw.ask("/projects/p", { mode: "navigate", opens: "tab" });
     for (const path of midPage) sw.stores.get(shellCache).delete(path);
-    const files = { script: await sw.ask("/app.react.js"), style: await sw.ask("/app.css") };
+    if (breaksMidPage) sw.storage.broken = true;
+    if (evictedMidPage) sw.stores.delete(shellCache);
+    const files = { script: await sw.ask("/app.react.js", { client: "tab" }), style: await sw.ask("/app.css", { client: "tab" }) };
     sw.storage.broken = false;
     return { page: page.text, script: files.script.text, style: files.style.text, cacheKept: sw.stores.has(shellCache) };
   };
@@ -156,6 +161,8 @@ async function damaged() {
     missingPage: await run({ lose: ["/"] }),
     lostMidPage: await run({ midPage: ["/app.css"] }),
     broken: await run({ broken: true }),
+    breaksMidPage: await run({ breaksMidPage: true }),
+    evictedMidPage: await run({ evictedMidPage: true }),
   };
 }
 

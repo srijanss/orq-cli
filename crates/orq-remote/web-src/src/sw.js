@@ -41,18 +41,28 @@ self.addEventListener("fetch", (event) => {
 // A page and its files always come from one release. A page opens this release's cached shell,
 // online or offline, when the whole shell is there; a shell missing any file (or cache storage
 // failing) is dropped instead, and the page opens whole from the server.
+// Where the open page came from is remembered, never read back from whether the cache is there now.
+let fromCache = false;
+
 async function navigate(request) {
   const page = await whole();
+  fromCache = Boolean(page);
   if (page) return page;
   await quietly(() => caches.delete(CACHE));
   return fetch(request);
 }
 
-// A shell file comes from this release's cache, which is never rewritten after install. While the
-// cache is there the open page was built from it, so a lost file is an error rather than the newer
-// server's copy; with no cache the page came from the server, and so do its files.
+// A shell file comes from where its page came from. A page opened from this release's cache, which is
+// never rewritten after install, gets its files only from that cache: a file lost, evicted or behind
+// failing storage is an error rather than the newer server's copy. A page from the server gets its
+// files from the server.
 async function shell(path) {
+  if (fromCache) return cachedOrError(path);
   if (!(await quietly(() => caches.has(CACHE)))) return fetch(path);
+  return cachedOrError(path);
+}
+
+async function cachedOrError(path) {
   return (await quietly(() => caches.match(path, { cacheName: CACHE }))) || Response.error();
 }
 

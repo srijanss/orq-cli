@@ -99,6 +99,18 @@ fn a_damaged_release_cache_never_mixes_the_running_release_with_a_newer_servers_
 }
 
 #[test]
+fn a_cache_that_fails_or_is_evicted_under_an_open_cached_page_never_hands_it_the_newer_servers_files() {
+    let Some(out) = run() else { return };
+    let damaged = &out["damaged"];
+    // The page opened from the running release's cache; then cache storage fails, or the whole cache is evicted.
+    let failed_closed = json!({"page": "install /", "script": "<network error>", "style": "<network error>"});
+    for case in ["breaksMidPage", "evictedMidPage"] {
+        let got = &damaged[case];
+        assert_eq!(json!({"page": got["page"], "script": got["script"], "style": got["style"]}), failed_closed, "{case}: {got}");
+    }
+}
+
+#[test]
 fn only_the_pages_skip_waiting_message_lets_a_new_release_take_over() {
     let Some(out) = run() else { return };
     assert_eq!(out["worker"]["skipWaiting"], json!(true));
