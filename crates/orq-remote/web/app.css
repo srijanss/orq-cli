@@ -410,7 +410,7 @@ p[role=alert]:empty { display: none; }
   .selecting .marked-actions .primary-button { justify-content: center; width: 100%; min-height: 44px; border-radius: 0.5rem; }
   .selecting .marked-actions .secondary-button { background: transparent; color: var(--text); border-color: var(--border); }
   .selecting .marked-actions .secondary-button:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
-  .feature-list.selecting { padding-bottom: 5rem; }
+  .feature-list.selecting { padding-bottom: calc(var(--marked-actions-height, 5rem) + 1rem); }
   .selecting .feature-table tr.feature:has(.feature-mark) { cursor: pointer; }
   .feature-table tr.feature:has(.feature-mark) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .feature-table tr.feature.swiped > td:first-child { min-width: 0; max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

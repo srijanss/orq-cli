@@ -2,7 +2,7 @@
 // header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
 // ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
 // Every string from the API is rendered as text.
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
@@ -2384,6 +2384,21 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
   const [asking, setAsking] = useState(null);
   const [selecting, setSelecting] = useState(false);
   const [scopeShown, setScopeShown] = useState(scope);
+  // On a phone the bar is a sheet fixed over the list's end that grows with each project's buttons, Start's
+  // question or a refusal, so the list keeps the sheet's measured height free below its last row.
+  const [sheetHeight, setSheetHeight] = useState(null);
+  const watchSheet = useCallback((bar) => {
+    if (bar === null) return undefined;
+    const measure = () => setSheetHeight(Math.ceil(bar.getBoundingClientRect().height));
+    measure();
+    if (typeof ResizeObserver !== "function") return () => setSheetHeight(null);
+    const watch = new ResizeObserver(measure);
+    watch.observe(bar);
+    return () => {
+      watch.disconnect();
+      setSheetHeight(null);
+    };
+  }, []);
   const touchAt = useRef(null);
   const press = useRef({ timer: null, from: null, fired: false });
   useEffect(() => () => clearTimeout(press.current.timer), []);
@@ -2511,7 +2526,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
     }
   };
   return (
-    <div className={selecting ? "feature-list selecting" : "feature-list"}>
+    <div className={selecting ? "feature-list selecting" : "feature-list"} style={selecting && sheetHeight !== null ? { "--marked-actions-height": sheetHeight + "px" } : undefined}>
       <div className="feature-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
@@ -2529,7 +2544,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
         ) : null}
       </div>
       {groups.length > 0 ? (
-        <div className="marked-actions">
+        <div className="marked-actions" ref={watchSheet}>
           {selecting ? <span className="selected-count" data-selected-count aria-live="polite">{selectedCount + " selected"}</span> : null}
           {groups.map((group) => (
             <div className="marked-group" key={group.projectId}>

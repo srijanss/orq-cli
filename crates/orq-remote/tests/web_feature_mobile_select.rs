@@ -325,3 +325,23 @@ fn the_phone_selection_mode_has_a_round_mark_a_tinted_marked_row_and_a_bottom_sh
     let Some(out) = run(vec![select(), tap("d1"), tap("p1")]) else { return };
     assert_eq!(count(last(&out), SELECTORS[13]), 1, "the project's pair sits in its own group: {out}");
 }
+
+// The sheet is fixed over the list's end and grows with each project's buttons, Start's question or a refusal,
+// so the list keeps the sheet's measured height free below its last row rather than a fixed guess.
+#[test]
+fn the_list_reserves_the_sheets_measured_height_below_its_last_row_while_selecting() {
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let steps = vec![json!({"submit": TOKEN}), select(), tap("d1"), tap("p1"), select()];
+    let scenario = json!({"url": "/projects/alpha/features", "phone": true, "viewport": {"width": 390, "height": 844}, "responses": [ledger(), projects()], "steps": steps, "selectors": SELECTORS, "styles": [".feature-list"], "rects": [{"selector": ".marked-actions", "top": 520, "left": 0, "width": 390, "height": 212}]});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let style = |frame: &Value| frame["settled"]["styles"][".feature-list"].as_str().unwrap_or("").to_string();
+    assert!(style(&out["frames"][4]).contains("--marked-actions-height: 212px"), "the sheet's height is kept free: {out}");
+    assert!(!style(last(&out)).contains("--marked-actions-height"), "Done drops it: {out}");
+    let css = std::fs::read_to_string(format!("{dir}/web/app.css")).unwrap();
+    assert!(css.contains("  .feature-list.selecting { padding-bottom: calc(var(--marked-actions-height, 5rem) + 1rem); }"), "the list's padding follows the measured sheet");
+}
