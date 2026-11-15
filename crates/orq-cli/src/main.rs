@@ -3745,6 +3745,32 @@ mod ledger_backend_tests {
         assert!(super::parse_mcp_catalog("").is_empty());
     }
 
+    /// How many times [`catalog_once_runnable`] tries a listing script that is still busy.
+    const CATALOG_BUSY_ATTEMPTS: usize = 200;
+
+    /// Runs the listing as `mcpctl_catalog_with` does, but a script that cannot be run yet because a
+    /// process forked by another test still holds it open for writing ("text file busy": nothing was
+    /// started) is tried again. Returns the listing's result and how long the call that ran took.
+    fn catalog_once_runnable(shim: &std::path::Path,timeout: std::time::Duration) -> (Result<Vec<String>, String>, std::time::Duration) {
+        catalog_once_runnable_within(shim, timeout, CATALOG_BUSY_ATTEMPTS)
+    }
+
+    fn catalog_once_runnable_within(
+        shim: &std::path::Path,
+        timeout: std::time::Duration,
+        attempts: usize,
+    ) -> (Result<Vec<String>, String>, std::time::Duration) {
+        for _ in 0..attempts {
+            let started = std::time::Instant::now();
+            let result = super::mcpctl_catalog_with(shim, timeout);
+            match &result {
+                Err(message) if message.contains("ExecutableFileBusy") => std::thread::sleep(std::time::Duration::from_millis(5)),
+                _ => return (result, started.elapsed()),
+            }
+        }
+        panic!("{} was still busy (text file busy) after {attempts} attempts", shim.display());
+    }
+
     #[test]
     fn a_catalog_listing_that_hangs_is_given_up_on_and_its_process_is_stopped() {
         use std::os::unix::fs::PermissionsExt;
@@ -3755,10 +3781,9 @@ mod ledger_backend_tests {
         std::fs::write(&shim, format!("#!/bin/sh\nsleep 2\ntouch {}\n", marker.display())).unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let started = std::time::Instant::now();
-        let result = super::mcpctl_catalog_with(&shim, std::time::Duration::from_millis(200));
+        let (result, took) = catalog_once_runnable(&shim, std::time::Duration::from_millis(200));
 
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
         assert_eq!(result, Ok(Vec::new()));
         std::thread::sleep(std::time::Duration::from_millis(2300));
         assert!(!marker.exists(), "the listing process kept running");
@@ -3774,10 +3799,9 @@ mod ledger_backend_tests {
         std::fs::write(&shim, "#!/bin/sh\nsleep 2 &\necho 'one@1.0 (x)'\n").unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let started = std::time::Instant::now();
-        let result = super::mcpctl_catalog_with(&shim, std::time::Duration::from_millis(300));
+        let (result, took) = catalog_once_runnable(&shim, std::time::Duration::from_millis(300));
 
-        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
         assert_eq!(result, Ok(Vec::new()));
     }
 
@@ -3790,7 +3814,47 @@ mod ledger_backend_tests {
         std::fs::write(&shim, "#!/bin/sh\necho 'one@1.0 (x)'\necho '  source: /s'\n").unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert_eq!(super::mcpctl_catalog_with(&shim, std::time::Duration::from_secs(5)), Ok(vec!["one".to_string()]));
+        assert_eq!(catalog_once_runnable(&shim, std::time::Duration::from_secs(5)).0, Ok(vec!["one".to_string()]));
+    }
+
+    /// Writes an executable listing script and returns it still open for writing, so running it fails with
+    /// "text file busy" until the returned file is dropped.
+    fn busy_listing_script(tag: &str) -> (std::path::PathBuf, std::fs::File) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-mcpctl-busy-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("mcpctl");
+        let mut file = std::fs::File::create(&shim).unwrap();
+        file.write_all(b"#!/bin/sh\necho 'one@1.0 (x)'\n").unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (shim, file)
+    }
+
+    #[test]
+    fn a_catalog_listing_whose_script_is_busy_at_first_is_tried_again_once_it_is_released() {
+        let (shim, writer) = busy_listing_script("released");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(writer);
+        });
+
+        let (result, _) = catalog_once_runnable(&shim, std::time::Duration::from_secs(5));
+
+        releaser.join().unwrap();
+        assert_eq!(result, Ok(vec!["one".to_string()]));
+    }
+
+    #[test]
+    fn a_catalog_listing_whose_script_stays_busy_gives_up_naming_the_script() {
+        let (shim, writer) = busy_listing_script("stuck");
+
+        let outcome = std::panic::catch_unwind(|| catalog_once_runnable_within(&shim, std::time::Duration::from_secs(5), 3));
+
+        drop(writer);
+        let payload = outcome.expect_err("a script that never stops being busy must not be waited on for ever");
+        let message = payload.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains(&shim.display().to_string()), "{message}");
     }
 
     #[test]
