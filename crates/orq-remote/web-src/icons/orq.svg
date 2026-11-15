@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- The Orq app icon. The PNGs in web/icons are rendered from these shapes by render.mjs:
+       a rounded square in the sidebar colour, a ring in the accent colour and a dot inside it. -->
+  <rect width="512" height="512" rx="112" fill="#151b23"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#60a5fa" stroke-width="56"/>
+  <circle cx="256" cy="256" r="44" fill="#dbeafe"/>
+</svg>
