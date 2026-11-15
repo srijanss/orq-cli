@@ -203,3 +203,15 @@ fn a_long_press_on_a_wide_screen_does_not_enter_selection_mode() {
     assert_eq!(count(end, SELECTORS[8]), 0, "a wide screen has no selection mode: {out}");
     assert_eq!(end["settled"]["path"], "/projects/alpha/features/p1", "the press is a plain tap that opens the feature: {out}");
 }
+
+// The every-project list puts one Promote and one Start per project in the bar, and Start's question opens
+// in it too: the bar wraps them onto more lines and, past a capped height, scrolls rather than pushing a
+// button off the screen.
+#[test]
+fn the_bar_wraps_its_buttons_and_scrolls_past_a_capped_height() {
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    let phone = &css[css.find("@media (max-width: 700px) {\n  .feature-mark").expect("the selection query")..];
+    let bar = phone.lines().find(|line| line.starts_with("  .selecting .marked-actions {")).expect("a selecting bar rule");
+    assert!(bar.contains("flex-wrap: wrap;") && !bar.contains("nowrap"), "{bar}");
+    assert!(bar.contains("max-height:") && bar.contains("overflow-y: auto"), "{bar}");
+}
