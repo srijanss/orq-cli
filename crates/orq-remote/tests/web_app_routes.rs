@@ -2,11 +2,11 @@
 //! shared address opens the right place; everything else keeps its old answer.
 
 fn page() -> &'static str {
-    orq_remote::page_asset("127.0.0.1".parse().unwrap(), "GET", "/").unwrap().body
+    std::str::from_utf8(orq_remote::page_asset("127.0.0.1".parse().unwrap(), "GET", "/").unwrap().body).unwrap()
 }
 
 fn served(peer: &str, method: &str, path: &str) -> Option<&'static str> {
-    orq_remote::page_asset(peer.parse().unwrap(), method, path).map(|asset| asset.body)
+    orq_remote::page_asset(peer.parse().unwrap(), method, path).map(|asset| std::str::from_utf8(asset.body).unwrap())
 }
 
 #[test]

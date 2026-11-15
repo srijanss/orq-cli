@@ -89,3 +89,12 @@ tailscale serve --bg 7878
 ```
 
 Open `https://box.tail1234.ts.net` on the phone and sign in with the token once to add a passkey. Replace `box.tail1234.ts.net` with your own host name. Add `--no-loopback-token` to make a passkey the only way in. To stop publishing, run `tailscale serve reset`. Without HTTPS, use `orq remote serve --repo . --listen <tailscale-ip>:7878`. Full details, token setup and recovery are in [docs/remote-inbox.md](docs/remote-inbox.md).
+
+### Install it as an app
+
+The page can be installed to the home screen, with its own icon and window:
+
+- Android or desktop Chrome/Edge: open the page, then choose **Install app** from the browser menu.
+- iPhone or iPad Safari: tap **Share**, then **Add to Home Screen**.
+
+On iOS an installed app keeps its own cookies, apart from Safari's, so sign in once inside it. A passkey works there.

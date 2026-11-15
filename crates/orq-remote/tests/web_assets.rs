@@ -21,6 +21,7 @@ struct Reply {
     status: u16,
     head: String,
     body: String,
+    bytes: Vec<u8>,
 }
 
 fn request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>) -> Reply {
@@ -30,10 +31,12 @@ fn request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>) -> R
     write!(stream, "{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{auth}Content-Length: 0\r\n\r\n").unwrap();
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).expect("the response was cut short");
-    let raw = String::from_utf8_lossy(&raw).to_string();
-    let (head, body) = raw.split_once("\r\n\r\n").expect("no header/body separator");
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("no header/body separator");
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let bytes = raw[split + 4..].to_vec();
+    let body = String::from_utf8_lossy(&bytes).to_string();
     let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    Reply { status, head: head.to_string(), body: body.to_string() }
+    Reply { status, head, body, bytes }
 }
 
 fn header(reply: &Reply, name: &str) -> Option<String> {
@@ -43,7 +46,16 @@ fn header(reply: &Reply, name: &str) -> Option<String> {
     })
 }
 
-const ASSETS: [(&str, &str); 3] = [("/", "text/html"), ("/app.react.js", "text/javascript"), ("/app.css", "text/css")];
+const ASSETS: [(&str, &str); 8] = [
+    ("/", "text/html"),
+    ("/app.react.js", "text/javascript"),
+    ("/app.css", "text/css"),
+    ("/manifest.webmanifest", "application/manifest+json"),
+    ("/icons/icon-192.png", "image/png"),
+    ("/icons/icon-512.png", "image/png"),
+    ("/icons/icon-maskable-512.png", "image/png"),
+    ("/icons/apple-touch-icon.png", "image/png"),
+];
 
 #[test]
 fn the_page_and_its_assets_are_served_without_a_token_with_safe_headers() {
@@ -140,5 +152,86 @@ fn nothing_outside_the_compiled_in_set_can_be_read_through_the_page_path() {
             assert!(!reply.body.contains(marker) && !reply.body.contains("pub fn"), "{path}: {}", reply.body);
             assert!(reply.status == 401 || reply.status == 404 || reply.status == 400, "{path}: {}", reply.status);
         }
+    }
+}
+
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// The width and height from a PNG's IHDR chunk, which must come first after the signature.
+fn png_size(bytes: &[u8]) -> (u32, u32) {
+    assert!(bytes.len() > 24, "too short for a PNG");
+    assert_eq!(bytes[..8], PNG_SIGNATURE, "no PNG signature");
+    assert_eq!(&bytes[12..16], b"IHDR", "IHDR is not the first chunk");
+    let word = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    (word(16), word(20))
+}
+
+#[test]
+fn the_manifest_names_the_app_and_every_icon_it_lists_is_served_as_a_png_of_its_size() {
+    let server = start("manifest");
+    let reply = request(server.addr(), "GET", "/manifest.webmanifest", None);
+    assert_eq!(reply.status, 200, "{}", reply.head);
+    assert!(header(&reply, "content-type").unwrap().starts_with("application/manifest+json"), "{}", reply.head);
+    let manifest: serde_json::Value = serde_json::from_str(&reply.body).expect("the manifest is JSON");
+    for (field, value) in [("name", "Orq"), ("short_name", "Orq"), ("id", "/"), ("start_url", "/dashboard"), ("scope", "/"), ("display", "standalone")] {
+        assert_eq!(manifest[field], value, "{field}: {manifest}");
+    }
+    // The splash screen matches the dark sidebar.
+    let css = request(server.addr(), "GET", "/app.css", None).body;
+    let dark = css.split(":root[data-theme=\"dark\"]").nth(1).expect("a dark theme block");
+    let sidebar = dark.split("--sidebar:").nth(1).unwrap().split(';').next().unwrap().trim();
+    assert_eq!(manifest["background_color"], sidebar, "{manifest}");
+    assert_eq!(manifest["theme_color"], sidebar, "{manifest}");
+
+    let icons = manifest["icons"].as_array().expect("icons");
+    let listed: Vec<(String, String, String)> = icons.iter().map(|icon| (icon["src"].as_str().unwrap().to_string(), icon["sizes"].as_str().unwrap().to_string(), icon["purpose"].as_str().unwrap_or("any").to_string())).collect();
+    for (sizes, purpose) in [("192x192", "any"), ("512x512", "any"), ("512x512", "maskable")] {
+        assert!(listed.iter().any(|(_, s, p)| s == sizes && p == purpose), "{sizes} {purpose}: {listed:?}");
+    }
+    let mut paths: Vec<(String, u32)> = icons.iter().map(|icon| {
+        assert_eq!(icon["type"], "image/png", "{icon}");
+        let size: u32 = icon["sizes"].as_str().unwrap().split('x').next().unwrap().parse().unwrap();
+        (icon["src"].as_str().unwrap().to_string(), size)
+    }).collect();
+    paths.push(("/icons/apple-touch-icon.png".to_string(), 180));
+    for (path, size) in paths {
+        let reply = request(server.addr(), "GET", &path, None);
+        assert_eq!(reply.status, 200, "{path}: {}", reply.head);
+        assert_eq!(header(&reply, "content-type").as_deref(), Some("image/png"), "{path}");
+        assert_eq!(png_size(&reply.bytes), (size, size), "{path}");
+        let on_disk = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web").join(path.trim_start_matches('/'))).unwrap();
+        assert_eq!(reply.bytes, on_disk, "{path} is served byte for byte");
+    }
+}
+
+#[test]
+fn the_page_head_links_the_manifest_and_icons_and_the_csp_allows_only_those_from_self() {
+    let server = start("head");
+    let reply = request(server.addr(), "GET", "/", None);
+    let head = reply.body.split("</head>").next().unwrap();
+    for tag in [
+        "<link rel=\"manifest\" href=\"/manifest.webmanifest\">",
+        "<link rel=\"apple-touch-icon\" href=\"/icons/apple-touch-icon.png\">",
+        "<link rel=\"icon\" type=\"image/png\" href=\"/icons/icon-192.png\">",
+        "<meta name=\"apple-mobile-web-app-title\" content=\"Orq\">",
+        "<title>Orq</title>",
+    ] {
+        assert!(head.contains(tag), "{tag} missing from {head}");
+    }
+    assert_eq!(
+        header(&reply, "content-security-policy").as_deref(),
+        Some("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
+    );
+}
+
+#[test]
+fn an_unknown_path_under_icons_is_not_found_and_not_the_page() {
+    let server = start("icons-404");
+    let page = request(server.addr(), "GET", "/", None).body;
+    for path in ["/icons/", "/icons/nope.png", "/icons/icon-192.png/", "/icons/../icons/icon-192.png", "/icons", "/manifest.json"] {
+        assert!(orq_remote::page_asset("127.0.0.1".parse().unwrap(), "GET", path).is_none(), "{path}");
+        let reply = request(server.addr(), "GET", path, Some(TOKEN));
+        assert!(reply.status == 404 || reply.status == 400, "{path}: {}", reply.status);
+        assert_ne!(reply.body, page, "{path}");
     }
 }

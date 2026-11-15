@@ -386,7 +386,7 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
 pub struct Asset {
     pub path: &'static str,
     pub content_type: &'static str,
-    pub body: &'static str,
+    pub body: &'static [u8],
 }
 
 /// The compiled-in file to serve without a token, if there is one: only for
@@ -422,19 +422,26 @@ fn is_application_path(path: &str) -> bool {
 
 /// The whole set of files the page path can ever serve. No request path is
 /// ever joined to a directory, so nothing outside this list can be read.
-const ASSETS: [Asset; 3] = [
-    Asset { path: "/", content_type: "text/html; charset=utf-8", body: include_str!("../web/index.html") },
-    Asset { path: "/app.css", content_type: "text/css; charset=utf-8", body: include_str!("../web/app.css") },
+const ASSETS: [Asset; 8] = [
+    Asset { path: "/", content_type: "text/html; charset=utf-8", body: include_bytes!("../web/index.html") },
+    Asset { path: "/app.css", content_type: "text/css; charset=utf-8", body: include_bytes!("../web/app.css") },
     // Built from web-src by `node crates/orq-remote/web-src/build.mjs`; a test fails when it is stale.
-    Asset { path: "/app.react.js", content_type: "text/javascript; charset=utf-8", body: include_str!("../web/app.react.js") },
+    Asset { path: "/app.react.js", content_type: "text/javascript; charset=utf-8", body: include_bytes!("../web/app.react.js") },
+    // The install prompt and the home-screen icon are fetched before or without a session.
+    Asset { path: "/manifest.webmanifest", content_type: "application/manifest+json", body: include_bytes!("../web/manifest.webmanifest") },
+    // Rendered once from web-src/icons/orq.svg by web-src/icons/render.mjs and checked in.
+    Asset { path: "/icons/icon-192.png", content_type: "image/png", body: include_bytes!("../web/icons/icon-192.png") },
+    Asset { path: "/icons/icon-512.png", content_type: "image/png", body: include_bytes!("../web/icons/icon-512.png") },
+    Asset { path: "/icons/icon-maskable-512.png", content_type: "image/png", body: include_bytes!("../web/icons/icon-maskable-512.png") },
+    Asset { path: "/icons/apple-touch-icon.png", content_type: "image/png", body: include_bytes!("../web/icons/apple-touch-icon.png") },
 ];
 
-/// Only same-origin scripts, styles and requests; no inline code, framing,
-/// form posts or base tag.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
+/// Only same-origin scripts, styles, requests, the app manifest and its icons; no inline code,
+/// framing, form posts or base tag.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
 
 fn asset_response(asset: &Asset, head_only: bool) -> Response {
-    let body = if head_only { String::new() } else { asset.body.to_string() };
+    let body = if head_only { &[][..] } else { asset.body };
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(asset.content_type));
