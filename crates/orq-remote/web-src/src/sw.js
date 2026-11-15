@@ -41,13 +41,20 @@ self.addEventListener("fetch", (event) => {
 // Every page opens this release's cached shell, online or offline, so the page, its script and its
 // style always come from one release; the shell then fetches its data and says when it cannot.
 async function navigate(request) {
-  const cached = await caches.match("/", { cacheName: CACHE });
-  return cached || fetch(request);
+  return (await cached("/")) || fetch(request);
 }
 
 // A shell file comes from this release's cache, which is never rewritten after install: a newer
 // server's files arrive only with the next release's worker and cache.
 async function shell(path) {
-  const cached = await caches.match(path, { cacheName: CACHE });
-  return cached || fetch(path);
+  return (await cached(path)) || fetch(path);
+}
+
+// A file missing from the cache, or cache storage failing, leaves the answer to the network.
+async function cached(path) {
+  try {
+    return await caches.match(path, { cacheName: CACHE });
+  } catch (error) {
+    return undefined;
+  }
 }

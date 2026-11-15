@@ -16,6 +16,7 @@ function boot() {
   const listeners = {};
   const stores = new Map();
   const net = { online: true, phase: "install", fetched: [] };
+  const storage = { broken: false };
   const state = { claimed: false, skipped: false };
   const fetch = async (request) => {
     const path = pathOf(request);
@@ -39,6 +40,7 @@ function boot() {
     has: async (name) => stores.has(name),
     delete: async (name) => stores.delete(name),
     match: async (request, options = {}) => {
+      if (storage.broken) throw new DOMException("storage is unavailable", "UnknownError");
       const names = options.cacheName ? [options.cacheName] : [...stores.keys()];
       for (const name of names) {
         const hit = stores.has(name) ? stores.get(name).get(pathOf(request)) : undefined;
@@ -48,7 +50,7 @@ function boot() {
     },
   };
   const context = {
-    caches, fetch, URL, Response, Request, Headers, Promise, console,
+    caches, fetch, URL, DOMException, Response, Request, Headers, Promise, console,
     location: new URL("/sw.js", ORIGIN),
     clients: { claim: async () => { state.claimed = true; } },
     skipWaiting: async () => { state.skipped = true; },
@@ -63,7 +65,8 @@ function boot() {
     let responded = null;
     const event = { ...fields, waitUntil: (promise) => { waits.push(promise); }, respondWith: (promise) => { responded = Promise.resolve(promise); } };
     for (const listener of listeners[type] || []) listener(event);
-    const response = responded === null ? null : await responded;
+    // A rejected respondWith is a network error to the page, as in a browser.
+    const response = responded === null ? null : await responded.catch(() => Response.error());
     await Promise.all(waits);
     return { handled: responded !== null, response };
   };
@@ -74,7 +77,7 @@ function boot() {
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
   const cachedText = async (name, path) => { const hit = stores.has(name) ? stores.get(name).get(path) : undefined; return hit ? await hit.clone().text() : null; };
-  return { dispatch, ask, stores, net, state, cached, cachedText, caches };
+  return { dispatch, ask, stores, net, state, storage, cached, cachedText, caches };
 }
 
 async function worker() {
@@ -129,6 +132,20 @@ async function worker() {
     names, shellPaths, claimedBeforeActivate, skippedOnInstall, afterActivate, claimed: sw.state.claimed,
     online, cachedAfter, fetchedOnline, offline, skipWaiting: sw.state.skipped, otherMessageSkips: notSkip.state.skipped,
   };
+}
+
+// A release whose cache lost entries, then whose storage fails: the network still answers online.
+async function damaged() {
+  const sw = boot();
+  await sw.dispatch("install");
+  await sw.dispatch("activate");
+  const shellCache = [...sw.stores.keys()][0];
+  sw.stores.get(shellCache).delete("/");
+  sw.stores.get(shellCache).delete("/app.css");
+  const missing = { navigation: await sw.ask("/projects/p", { mode: "navigate" }), asset: await sw.ask("/app.css") };
+  sw.storage.broken = true;
+  const broken = { navigation: await sw.ask("/projects/p", { mode: "navigate" }), asset: await sw.ask("/app.react.js") };
+  return { missing, broken };
 }
 
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
@@ -216,4 +233,4 @@ async function registration() {
   return result;
 }
 
-process.stdout.write(JSON.stringify({ worker: await worker(), registration: await registration() }));
+process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), registration: await registration() }));

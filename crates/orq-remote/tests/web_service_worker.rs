@@ -82,6 +82,16 @@ fn a_shell_file_comes_from_the_running_releases_cache_which_a_newer_server_never
 }
 
 #[test]
+fn a_missing_cache_entry_or_failing_storage_never_throws_away_the_networks_answer() {
+    let Some(out) = run() else { return };
+    let damaged = &out["damaged"];
+    assert_eq!(damaged["missing"]["navigation"], json!({"handled": true, "text": "install /projects/p"}), "a shell missing from the cache is fetched");
+    assert_eq!(damaged["missing"]["asset"], json!({"handled": true, "text": "install /app.css"}));
+    assert_eq!(damaged["broken"]["navigation"], json!({"handled": true, "text": "install /projects/p"}), "cache storage failing falls back to the network");
+    assert_eq!(damaged["broken"]["asset"], json!({"handled": true, "text": "install /app.react.js"}));
+}
+
+#[test]
 fn only_the_pages_skip_waiting_message_lets_a_new_release_take_over() {
     let Some(out) = run() else { return };
     assert_eq!(out["worker"]["skipWaiting"], json!(true));
