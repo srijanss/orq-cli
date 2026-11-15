@@ -537,3 +537,23 @@ fn a_script_in_a_folder_whose_name_is_not_utf8_takes_the_built_in_rule_out() {
 
     assert!(!allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
 }
+
+/// Many checked-in scripts of one name are each looked up once: a changed one is named once, before
+/// the untracked ones, and the unchanged ones not at all.
+#[test]
+fn among_many_checked_in_scripts_of_one_name_each_changed_one_is_named_once() {
+    let builtin = "Bash(node build.mjs)";
+    let (_repo, worktree) = checkout("permissions-many");
+    for folder in ["a", "b", "c", "d"] {
+        commit_file(&worktree, &format!("{folder}/build.mjs"), "console.log('built')\n");
+    }
+    let base = head(&worktree);
+    fs::write(worktree.join("c/build.mjs"), "require('child_process')\n").unwrap();
+    git(&worktree, &["add", "c/build.mjs"]);
+    fs::create_dir_all(worktree.join("e")).unwrap();
+    fs::write(worktree.join("e/build.mjs"), "require('child_process')\n").unwrap();
+
+    let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("c/build.mjs, e/build.mjs was changed by this run, so the rule {builtin} was left out")]);
+}

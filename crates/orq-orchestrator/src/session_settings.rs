@@ -3,6 +3,7 @@
 //! approves, and the one-time `mcpctl` setup. Every problem is a note, never a failed run, and
 //! environment values are never put into a note.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -379,7 +380,7 @@ impl Inventory {
         // A submodule at the base or in the index.
         let mut nested: Vec<String> = tree.split('\0').chain(staged.split('\0')).filter(|line| line.starts_with("160000 ")).filter_map(entry).map(|(_, path)| path).collect();
         let mut differing: Vec<String> = changed.split('\0').filter(|path| !path.is_empty() && named(path)).map(str::to_string).collect();
-        let indexed: Vec<&str> = staged.split('\0').filter_map(|line| line.split_once('\t')).map(|(_, path)| path).filter(|path| named(path)).collect();
+        let indexed: HashSet<&str> = staged.split('\0').filter_map(|line| line.split_once('\t')).map(|(_, path)| path).filter(|path| named(path)).collect();
         let mut linked = Vec::new();
         let mut untracked = Vec::new();
         // Every file in the worktree, tracked, untracked or ignored, read folder by folder: each entry
@@ -417,7 +418,8 @@ impl Inventory {
             }
         }
         untracked.sort();
-        untracked.retain(|path| !differing.contains(path));
+        let listed: HashSet<&String> = differing.iter().collect();
+        untracked.retain(|path| !listed.contains(path));
         differing.extend(untracked);
         for found in [&mut nested, &mut linked] {
             found.sort();
@@ -723,7 +725,7 @@ pub fn setup_mcp_servers(
             "mcpctl is not on PATH; the configured MCP servers were not set up".to_string(),
         ];
     };
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let names: Vec<&str> = servers
         .iter()
         .map(String::as_str)
