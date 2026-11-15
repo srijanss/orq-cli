@@ -215,3 +215,44 @@ fn the_bar_wraps_its_buttons_and_scrolls_past_a_capped_height() {
     assert!(bar.contains("flex-wrap: wrap;") && !bar.contains("nowrap"), "{bar}");
     assert!(bar.contains("max-height:") && bar.contains("overflow-y: auto"), "{bar}");
 }
+
+fn gets(out: &Value, url: &str) -> usize {
+    out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "GET" && r["url"] == url).count()
+}
+
+// A refused start reports the refusal and stays in selection mode with the marks cleared, so the features
+// can be marked again and retried; nothing changed, so the ledger is not fetched again.
+#[test]
+fn a_refused_start_reports_it_and_stays_in_selection_mode_with_the_marks_cleared() {
+    let profiles = json!({"status": 200, "json": {"profiles": ["haiku", "opus", "sonnet"], "implementer": "opus", "reviewer": "sonnet"}});
+    let refused = json!({"status": 409, "json": {"error": "feature p1 already has a run"}});
+    let steps = vec![select(), tap("p1"), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = run_with(vec![ledger(), projects(), profiles, refused], steps) else { return };
+    let end = last(&out);
+    assert_eq!(posts(&out).len(), 1, "{out}");
+    assert!(texts(end).iter().any(|t| t.contains("feature p1 already has a run")), "the refusal shows: {out}");
+    assert_eq!(count(end, SELECTORS[8]), 1, "still selecting: {out}");
+    assert_eq!(count(end, SELECTORS[1]), 1, "the button still says Done: {out}");
+    assert_eq!(count(end, SELECTORS[3]), 0, "the marks are cleared: {out}");
+    assert_eq!(count(end, SELECTORS[4]), 0, "with nothing marked the bar is gone: {out}");
+    assert_eq!(gets(&out, "/api/projects/alpha/features"), 1, "no refresh: {out}");
+}
+
+// A promote of two where one is refused still changed the ledger: it reports both, refreshes the list and
+// leaves selection mode.
+#[test]
+fn a_promote_with_one_refusal_reports_both_refreshes_and_leaves_selection_mode() {
+    let drafts = || ledger_of(vec![feature("d1", "draft"), feature("d2", "draft"), feature("p1", "pending")]);
+    let ok = json!({"status": 200, "json": {"feature": "d1", "status": "pending"}});
+    let refused = json!({"status": 409, "json": {"error": "feature d2: Pending to Pending is not allowed"}});
+    let steps = vec![select(), tap("d1"), tap("d2"), json!({"click": "[data-promote-marked]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = run_with(vec![drafts(), projects(), ok, refused, drafts(), projects()], steps) else { return };
+    let end = last(&out);
+    let sent = posts(&out);
+    let urls: Vec<&str> = sent.iter().map(|r| r["url"].as_str().unwrap()).collect();
+    assert_eq!(urls, ["/api/projects/alpha/features/d1/promote", "/api/projects/alpha/features/d2/promote"], "{out}");
+    assert!(texts(end).iter().any(|t| t.contains("feature d2: Pending to Pending is not allowed")), "the refusal shows: {out}");
+    assert_eq!(count(end, SELECTORS[8]), 0, "selection mode is left: {out}");
+    assert_eq!(count(end, SELECTORS[3]), 0, "{out}");
+    assert_eq!(gets(&out, "/api/projects/alpha/features"), 2, "the list is refreshed: {out}");
+}
