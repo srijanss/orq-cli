@@ -504,3 +504,50 @@ fn an_uncommitted_file_that_cannot_be_read_refuses_the_merge_with_gits_error() {
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
     assert!(!w.repo.join("mine.txt").exists(), "nothing of the run was checked out");
 }
+
+#[cfg(unix)]
+#[test]
+fn file_names_that_are_not_utf8_are_told_apart_by_their_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let w = world("non-utf8-names");
+    fs::write(w.worktree.join(OsStr::from_bytes(b"a\xff.txt")), "theirs\n").unwrap();
+    git(&w.worktree, &["add", "-A"]);
+    git(&w.worktree, &["commit", "-q", "-m", "add a\\xff"]);
+    let head = git(&w.worktree, &["rev-parse", "HEAD"]);
+    // Another name that reads the same once its invalid byte is replaced.
+    fs::write(w.repo.join(OsStr::from_bytes(b"a\xfe.txt")), "mine\n").unwrap();
+    git(&w.repo, &["add", "-A"]);
+
+    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
+    assert_eq!(fs::read_to_string(w.repo.join(OsStr::from_bytes(b"a\xfe.txt"))).unwrap(), "mine\n", "the staged file is kept");
+    let events = w.store.events("run-1").unwrap();
+    let completed = events.iter().find(|e| e.kind == "merge.completed").expect("the merge is recorded");
+    assert_eq!(completed.payload["kept_dirty"], 1, "{:?}", completed.payload);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_overlapping_file_name_that_is_not_utf8_is_refused_and_shown_readably() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let w = world("non-utf8-overlap");
+    let name = OsStr::from_bytes(b"a\xff.txt");
+    fs::write(w.repo.join(name), "base\n").unwrap();
+    git(&w.repo, &["add", "-A"]);
+    git(&w.repo, &["commit", "-q", "-m", "add a\\xff"]);
+    git(&w.worktree, &["rebase", "-q", "main"]);
+    fs::write(w.worktree.join(name), "theirs\n").unwrap();
+    git(&w.worktree, &["commit", "-q", "-am", "edit a\\xff"]);
+    fs::write(w.repo.join(name), "mine\n").unwrap();
+
+    match merge_into_base(&w.store, "run-1").unwrap() {
+        MergeOutcome::Refused { reason } => assert!(reason.contains("files this run changes: a\u{FFFD}.txt;"), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(fs::read(w.repo.join(name)).unwrap(), b"mine\n", "the edit is left alone");
+    let events = w.store.events("run-1").unwrap();
+    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
+    assert_eq!(refused.payload, serde_json::json!({ "reason": "dirty_checkout", "files": ["a\u{FFFD}.txt"] }));
+}

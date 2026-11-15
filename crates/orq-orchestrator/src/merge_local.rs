@@ -2,11 +2,12 @@
 //! repository is fast-forwarded to the run's branch. Never a merge commit, never a push.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::cleanup::printable;
 use crate::implement::{next_event_id, now_rfc3339};
-use crate::outcome::git_raw;
+use crate::outcome::{git_bytes, git_raw};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "merge_local";
@@ -54,7 +55,7 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                 Err(reason) => return Ok(MergeOutcome::Refused { reason }),
             };
             // Escaped, so a file name cannot forge lines or move the cursor where it is shown.
-            let overlapping: Vec<String> = dirty.intersection(&changed).map(|path| printable(path)).collect();
+            let overlapping: Vec<String> = dirty.intersection(&changed).map(|path| printable(&path.to_string_lossy())).collect();
             if !overlapping.is_empty() {
                 let files = named(&overlapping);
                 record_event(store, &record, "merge.refused", serde_json::json!({ "reason": "dirty_checkout", "files": overlapping }))?;
@@ -139,35 +140,55 @@ fn named(paths: &[String]) -> String {
 }
 
 /// The files the commits from `base_sha` to `head_sha` change, or why they could not be read.
-fn changed_paths(worktree: &Path, base_sha: &str, head_sha: &str) -> Result<Result<BTreeSet<String>, String>, StoreError> {
+fn changed_paths(worktree: &Path, base_sha: &str, head_sha: &str) -> Result<Result<BTreeSet<PathBuf>, String>, StoreError> {
     // Without rename detection a renamed file is listed under both its paths.
-    let diff = git_raw(worktree, &["diff", "--name-only", "-z", "--no-renames", base_sha, head_sha])?;
-    if !diff.success {
-        return Ok(Err(format!("cannot read the files this run changes: {}", diff.stderr.trim())));
+    let args = ["diff", "--name-only", "-z", "--no-renames", base_sha, head_sha].map(OsStr::new);
+    let diff = git_bytes(worktree, &args)?;
+    if !diff.status.success() {
+        return Ok(Err(format!("cannot read the files this run changes: {}", String::from_utf8_lossy(&diff.stderr).trim())));
     }
-    Ok(Ok(diff.stdout.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect()))
+    Ok(Ok(diff.stdout.split(|byte| *byte == 0).filter(|path| !path.is_empty()).map(path_of).collect()))
 }
 
 /// The tracked files with uncommitted changes in `checkout`, staged or not, or why they could not
 /// be read.
-fn dirty_paths(checkout: &Path) -> Result<Result<BTreeSet<String>, String>, StoreError> {
-    let status = git_raw(checkout, &["status", "--porcelain=v1", "-z", "--untracked-files=no"])?;
-    if !status.success {
-        return Ok(Err(format!("cannot read the uncommitted changes at {}: {}", checkout.display(), status.stderr.trim())));
+fn dirty_paths(checkout: &Path) -> Result<Result<BTreeSet<PathBuf>, String>, StoreError> {
+    let args = ["status", "--porcelain=v1", "-z", "--untracked-files=no"].map(OsStr::new);
+    let status = git_bytes(checkout, &args)?;
+    if !status.status.success() {
+        return Ok(Err(unreadable(checkout, &String::from_utf8_lossy(&status.stderr))));
     }
     let mut dirty = BTreeSet::new();
-    let mut entries = status.stdout.split('\0').filter(|entry| !entry.is_empty());
+    let mut entries = status.stdout.split(|byte| *byte == 0).filter(|entry| !entry.is_empty());
     while let Some(entry) = entries.next() {
         let (Some(code), Some(path)) = (entry.get(..2), entry.get(3..)) else { continue };
-        dirty.insert(path.to_string());
+        dirty.insert(path_of(path));
         // A rename or copy is followed by the path it came from, as an entry of its own.
-        if code.contains(['R', 'C']) {
+        if code.iter().any(|byte| matches!(byte, b'R' | b'C')) {
             if let Some(from) = entries.next() {
-                dirty.insert(from.to_string());
+                dirty.insert(path_of(from));
             }
         }
     }
     Ok(Ok(dirty))
+}
+
+/// A path as git printed it, byte for byte where the platform allows, so two names that differ
+/// only in bytes that are not UTF-8 stay apart.
+fn path_of(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+fn unreadable(checkout: &Path, why: &str) -> String {
+    format!("cannot read the uncommitted changes at {}: {}", checkout.display(), why.trim())
 }
 
 /// What a dirty path holds in the working tree: a regular file by its blob id, a symbolic link by
@@ -180,8 +201,8 @@ enum Content {
 }
 
 /// `paths` in `checkout` with their contents, or why git could not hash them.
-fn contents(checkout: &Path, paths: BTreeSet<String>) -> Result<Result<BTreeMap<String, Content>, String>, StoreError> {
-    let mut read: BTreeMap<String, Content> = BTreeMap::new();
+fn contents(checkout: &Path, paths: BTreeSet<PathBuf>) -> Result<Result<BTreeMap<PathBuf, Content>, String>, StoreError> {
+    let mut read: BTreeMap<PathBuf, Content> = BTreeMap::new();
     let mut files = Vec::new();
     for path in paths {
         match std::fs::symlink_metadata(checkout.join(&path)) {
@@ -197,15 +218,16 @@ fn contents(checkout: &Path, paths: BTreeSet<String>) -> Result<Result<BTreeMap<
     }
     // In batches, so a checkout with many changed files stays within the argument limit.
     for batch in files.chunks(500) {
-        let mut args = vec!["hash-object", "--"];
-        args.extend(batch.iter().map(String::as_str));
-        let hashed = git_raw(checkout, &args)?;
-        if !hashed.success {
-            return Ok(Err(format!("cannot read the uncommitted changes at {}: {}", checkout.display(), hashed.stderr.trim())));
+        let mut args = vec![OsStr::new("hash-object"), OsStr::new("--")];
+        args.extend(batch.iter().map(|path| path.as_os_str()));
+        let hashed = git_bytes(checkout, &args)?;
+        if !hashed.status.success() {
+            return Ok(Err(unreadable(checkout, &String::from_utf8_lossy(&hashed.stderr))));
         }
-        let ids: Vec<&str> = hashed.stdout.lines().collect();
+        let stdout = String::from_utf8_lossy(&hashed.stdout);
+        let ids: Vec<&str> = stdout.lines().collect();
         if ids.len() != batch.len() {
-            return Ok(Err(format!("cannot read the uncommitted changes at {}: git hashed {} of {} files", checkout.display(), ids.len(), batch.len())));
+            return Ok(Err(unreadable(checkout, &format!("git hashed {} of {} files", ids.len(), batch.len()))));
         }
         read.extend(batch.iter().zip(ids).map(|(path, id)| (path.clone(), Content::File(id.to_string()))));
     }

@@ -2,8 +2,9 @@
 //! uncommitted changes, or one with no commits past the base, blocks the run.
 //! The worktree is never touched, so a person can finish the work by hand.
 
+use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunStore, StoreError};
@@ -99,9 +100,28 @@ pub(crate) fn git_raw(worktree: &Path, args: &[&str]) -> Result<GitOutput, Store
     run_sanitized(command)
 }
 
+/// [`git_raw`] with arguments that need not be UTF-8, such as file names, and its output kept as
+/// the bytes git printed.
+pub(crate) fn git_bytes(worktree: &Path, args: &[&OsStr]) -> Result<Output, StoreError> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(worktree).args(args);
+    run_sanitized_output(command)
+}
+
 /// Run an already built git command with the repository-selection variables removed and
 /// prompts disabled, so the caller's environment cannot pick the repository or its config.
-pub(crate) fn run_sanitized(mut command: Command) -> Result<GitOutput, StoreError> {
+pub(crate) fn run_sanitized(command: Command) -> Result<GitOutput, StoreError> {
+    let out = run_sanitized_output(command)?;
+    Ok(GitOutput {
+        success: out.status.success(),
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+/// [`run_sanitized`], with what git printed left as bytes.
+fn run_sanitized_output(mut command: Command) -> Result<Output, StoreError> {
     // Same list as orq-git: never let the caller's environment pick the repository.
     for name in [
         "GIT_DIR",
@@ -116,11 +136,5 @@ pub(crate) fn run_sanitized(mut command: Command) -> Result<GitOutput, StoreErro
     }
     // Never block on a credential or editor prompt.
     command.envs([("GIT_TERMINAL_PROMPT", "0"), ("GIT_EDITOR", "true")]);
-    let out = command.stdin(Stdio::null()).output()?;
-    Ok(GitOutput {
-        success: out.status.success(),
-        code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    })
+    Ok(command.stdin(Stdio::null()).output()?)
 }
