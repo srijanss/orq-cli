@@ -241,9 +241,13 @@ const ALLOWED: &[&str] = &[
     "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(git ls-files:*)", "Bash(git grep:*)",
     "Bash(git merge-base:*)", "Bash(cargo build:*)", "Bash(cargo test:*)", "Bash(cargo check:*)",
     "Bash(cargo fmt:*)", "Bash(cargo clippy:*)", "Bash(cargo run:*)", "Bash(cargo metadata:*)",
-    "Bash(cargo tree:*)", "Bash(npm ci)", "Bash(node build.mjs)", "Bash(ls:*)", "Bash(cat:*)",
+    "Bash(cargo tree:*)", "Bash(npm ci)", "Bash(ls:*)", "Bash(cat:*)",
     "Bash(head:*)", "Bash(wc:*)", "mcp__outside-in-tdd", "mcp__project-mcp",
 ];
+/// Rules of orq's own that run a project's script from the folder that holds it, with the script's
+/// file name: each is allowed only while every file of that name in the worktree is one the run's
+/// base holds checked in and the run has not changed.
+const ALLOWED_SCRIPTS: [(&str, &str); 1] = [("Bash(node build.mjs)", "build.mjs")];
 /// Publishing to a remote is orq's own step, never the session's, whatever else is allowed.
 const DENIED: [&str; 3] = ["Bash(git push:*)", "Bash(cargo publish:*)", "Bash(npm publish:*)"];
 
@@ -356,6 +360,31 @@ fn changed_since(worktree: &Path, base: &str, script: &str) -> bool {
     !same.is_ok_and(|status| status.success())
 }
 
+/// The files named `name`, in any folder, that differ from what `base` holds: changed, added or
+/// removed in a commit of the run or in the worktree, untracked or ignored ones included. `None`
+/// when `base` holds no such file as a regular file, or git cannot tell.
+fn named_scripts_changed(worktree: &Path, base: &str, name: &str) -> Option<Vec<String>> {
+    if !base.chars().all(|c| c.is_ascii_hexdigit()) || base.is_empty() {
+        return None;
+    }
+    let pattern = format!(":(glob)**/{name}");
+    let git = |args: &[&str]| -> Option<String> {
+        let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    // ls-tree takes no glob: the base's files are listed and picked by name here.
+    let held = git(&["ls-tree", "-r", "-z", base])?;
+    let named = |entry: &&str| entry.split_once('\t').is_some_and(|(_, path)| path.rsplit('/').next() == Some(name));
+    let entries: Vec<&str> = held.split('\0').filter(named).collect();
+    let regular = |entry: &&str| entry.starts_with("100644 blob ") || entry.starts_with("100755 blob ");
+    if entries.is_empty() || !entries.iter().all(regular) {
+        return None;
+    }
+    let changed = git(&["diff", "--name-only", "-z", base, "--", &pattern])?;
+    let added = git(&["ls-files", "--others", "-z", "--", &pattern])?;
+    Some(changed.split('\0').chain(added.split('\0')).filter(|path| !path.is_empty()).map(str::to_string).collect())
+}
+
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
 /// commands and tools of `ALLOWED` and the project's `extra` (its `allowed_tools`) run without
 /// asking, publishing is refused, and `logs` is writable so the session can leave its exit marker.
@@ -372,6 +401,17 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, bas
     allowed.push(&marker_rule);
     // A rule left out now goes from the settings too: an earlier session may have been allowed it.
     let mut withdrawn: Vec<&str> = Vec::new();
+    for (rule, name) in ALLOWED_SCRIPTS {
+        match named_scripts_changed(worktree, base, name) {
+            // A project without the script has no use for the rule: it goes without a note.
+            None => withdrawn.push(rule),
+            Some(changed) if changed.is_empty() => allowed.push(rule),
+            Some(changed) => {
+                notes.push(format!("{} was changed by this run, so the rule {rule} was left out", changed.join(", ")));
+                withdrawn.push(rule);
+            }
+        }
+    }
     for rule in extra {
         let could_publish = || format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead");
         let left_out = match interpreter_script(rule) {

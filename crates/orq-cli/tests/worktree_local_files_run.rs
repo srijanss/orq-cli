@@ -199,7 +199,7 @@ fn the_worktrees_session_settings_let_the_implementer_work_unattended() {
     let permissions = &seen["permissions"];
     assert_eq!(permissions["defaultMode"], "acceptEdits", "{seen}");
     let allow: Vec<String> = serde_json::from_value(permissions["allow"].clone()).unwrap();
-    for wanted in ["Bash(git add:*)", "Bash(git commit:*)", "Bash(cargo test:*)", "Bash(npm ci)", "Bash(node build.mjs)", "mcp__outside-in-tdd", "mcp__project-mcp", "Bash(make lint:*)"] {
+    for wanted in ["Bash(git add:*)", "Bash(git commit:*)", "Bash(cargo test:*)", "Bash(npm ci)", "mcp__outside-in-tdd", "mcp__project-mcp", "Bash(make lint:*)"] {
         assert!(allow.iter().any(|rule| rule == wanted), "{wanted} in {allow:?}");
     }
     assert!(!allow.iter().any(|rule| rule.contains("push") || rule.contains("publish")), "{allow:?}");

@@ -87,7 +87,7 @@ fn the_permissions_join_the_settings_beside_what_is_already_there_and_are_not_re
     let permissions = &settings["permissions"];
     assert_eq!(permissions["defaultMode"], "acceptEdits");
     let allow = strings(&permissions["allow"]);
-    for wanted in ["WebFetch", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(cargo test:*)", "Bash(npm ci)", "Bash(node build.mjs)", "mcp__outside-in-tdd", "mcp__project-mcp", "Bash(make lint:*)"] {
+    for wanted in ["WebFetch", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(cargo test:*)", "Bash(npm ci)", "mcp__outside-in-tdd", "mcp__project-mcp", "Bash(make lint:*)"] {
         assert_eq!(allow.iter().filter(|rule| *rule == wanted).count(), 1, "{wanted} once in {allow:?}");
     }
     let deny = strings(&permissions["deny"]);
@@ -191,25 +191,55 @@ fn an_interpreter_rule_on_anything_but_a_checked_in_script_is_left_out_saying_wh
 #[test]
 fn a_checked_in_script_the_run_changed_is_left_out_for_the_next_session() {
     let (_repo, worktree) = checkout("permissions-changed");
-    commit_file(&worktree, "a/build.mjs", "console.log('built')\n");
-    commit_file(&worktree, "b/build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    commit_file(&worktree, "b/make.mjs", "console.log('built')\n");
     let base = head(&worktree);
-    let committed = "Bash(node a/build.mjs:*)".to_string();
-    let edited = "Bash(node b/build.mjs)".to_string();
+    let committed = "Bash(node a/make.mjs:*)".to_string();
+    let edited = "Bash(node b/make.mjs)".to_string();
     let extra = vec![committed.clone(), edited.clone()];
     assert_eq!(write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base), Vec::<String>::new());
 
-    commit_file(&worktree, "a/build.mjs", "require('child_process')\n");
-    fs::write(worktree.join("b/build.mjs"), "require('child_process')\n").unwrap();
+    commit_file(&worktree, "a/make.mjs", "require('child_process')\n");
+    fs::write(worktree.join("b/make.mjs"), "require('child_process')\n").unwrap();
     let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base);
 
     assert_eq!(notes, [
-        format!("a/build.mjs was changed by this run, so allowed_tools rule {committed} was left out"),
-        format!("b/build.mjs was changed by this run, so allowed_tools rule {edited} was left out"),
+        format!("a/make.mjs was changed by this run, so allowed_tools rule {committed} was left out"),
+        format!("b/make.mjs was changed by this run, so allowed_tools rule {edited} was left out"),
     ]);
     let allow = allowed(&worktree);
     assert!(!allow.contains(&committed) && !allow.contains(&edited), "{allow:?}");
     assert!(allow.iter().any(|rule| rule == "Bash(git status:*)"), "{allow:?}");
+}
+
+/// orq's own `Bash(node build.mjs)` runs whichever `build.mjs` is in the folder it is run from, so it
+/// is kept only while every `build.mjs` in the worktree is one the base holds checked in, unchanged:
+/// one the run changed or added, committed or not, takes the rule out of the settings.
+#[test]
+fn the_built_in_build_script_rule_is_kept_only_while_every_build_mjs_is_the_bases() {
+    let builtin = "Bash(node build.mjs)".to_string();
+    let (_repo, worktree) = checkout("permissions-builtin-none");
+    assert_eq!(write_run_permissions(&worktree, &[], Path::new("/logs/r"), &head(&worktree)), Vec::<String>::new());
+    assert!(!allowed(&worktree).contains(&builtin), "no build.mjs at the base: {:?}", allowed(&worktree));
+
+    for (tag, change, path) in [("changed", "web/build.mjs", "web/build.mjs"), ("added", "other/build.mjs", "other/build.mjs"), ("committed", "x/build.mjs", "x/build.mjs")] {
+        let (_repo, worktree) = checkout(&format!("permissions-builtin-{tag}"));
+        commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+        let base = head(&worktree);
+        assert_eq!(write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base), Vec::<String>::new());
+        assert!(allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
+
+        if tag == "committed" {
+            commit_file(&worktree, change, "require('child_process')\n");
+        } else {
+            fs::create_dir_all(worktree.join(change).parent().unwrap()).unwrap();
+            fs::write(worktree.join(change), "require('child_process')\n").unwrap();
+        }
+        let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+        assert_eq!(notes, [format!("{path} was changed by this run, so the rule {builtin} was left out")], "{tag}");
+        assert!(!allowed(&worktree).contains(&builtin), "{tag}: {:?}", allowed(&worktree));
+    }
 }
 
 #[test]
