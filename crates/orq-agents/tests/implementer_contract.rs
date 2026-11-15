@@ -185,7 +185,22 @@ fn an_unattended_fix_session_is_headless_and_talks_to_nobody() {
         let argv = adapter.fix_argv(&fix_request(harness, model, None, false)).unwrap();
 
         assert_eq!(argv.first().map(String::as_str), Some("-p"), "{harness}: {argv:?}");
-        assert_eq!(argv.last().map(String::as_str), Some("The gate failed. Fix it."), "{harness}: {argv:?}");
+        let prompt = argv.last().unwrap();
+        assert!(prompt.starts_with("The gate failed. Fix it."), "{harness}: {prompt}");
+        assert!(!prompt.contains("A person is watching"), "{harness}: {prompt}");
+    });
+}
+
+/// A feature a fix session starts in the TDD ledger is the run's own: the session finishes it, and the
+/// run marks it completed or abandoned when it ends.
+#[test]
+fn a_fix_session_is_told_to_finish_a_feature_it_starts_in_the_ledger() {
+    for_each_harness(|harness, model| {
+        for attended in [false, true] {
+            let argv = adapter_for(harness).unwrap().fix_argv(&fix_request(harness, model, None, attended)).unwrap();
+            let prompt = argv.last().unwrap();
+            assert!(prompt.contains("finish it with complete_feature"), "{harness}, attended {attended}: {prompt}");
+        }
     });
 }
 

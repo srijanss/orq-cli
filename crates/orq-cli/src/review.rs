@@ -441,7 +441,7 @@ fn refresh(args: &[OsString]) -> ExitCode {
 }
 
 /// The current UTC time as RFC 3339, without a date-time dependency.
-fn utc_now() -> String {
+pub(crate) fn utc_now() -> String {
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let (days, rem) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
     // Civil-from-days (Howard Hinnant's algorithm).

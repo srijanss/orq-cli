@@ -122,12 +122,47 @@ fn reopen_discarded(store: &orq_orchestrator::RunStore, run_id: &str, repo: &Pat
         eprintln!("orq: features marked completed stay completed: cannot read the other runs: {}", printable(&err));
         Vec::new()
     });
-    match orq_features::reopen_discarded_features(&orq_features::ledger_path(&project), members, &completed_too) {
-        Ok(reopened) if reopened.is_empty() => String::new(),
-        Ok(reopened) => format!(" {} {} pending again.", printable(&reopened.join(", ")), if reopened.len() == 1 { "is" } else { "are" }),
+    let ledger = orq_features::ledger_path(&project);
+    let mut note = match orq_features::reopen_discarded_features(&ledger, members, &completed_too) {
+        Ok(reopened) => features_are(&reopened, "pending again"),
         Err(err) => {
             eprintln!("orq: cannot put {} back to pending: {}", printable(&members.join(",")), printable(&err));
             String::new()
         }
+    };
+    note.push_str(&abandon_fix_features(store, run_id, &ledger));
+    note
+}
+
+/// Set the features the discarded run's fix sessions started `abandoned`, but for those a later run
+/// took, and say which were. Their work goes with the run; nobody asked for them as features.
+fn abandon_fix_features(store: &orq_orchestrator::RunStore, run_id: &str, ledger: &Path) -> String {
+    let started = orq_orchestrator::fix_features(store, run_id).unwrap_or_else(|err| {
+        eprintln!("orq: cannot read which features the fix sessions of {} started: {err:?}", printable(run_id));
+        Vec::new()
+    });
+    if started.is_empty() {
+        return String::new();
+    }
+    let free = orq_orchestrator::features_no_later_run_took(store, run_id, &started).unwrap_or_else(|err| {
+        eprintln!("orq: the features the fix sessions started are left as they are: cannot read the other runs: {}", printable(&err));
+        Vec::new()
+    });
+    // An abandoned feature is not stamped with when, so no time is given.
+    match orq_features::close_features(ledger, &free, orq_core::FeatureStatus::Abandoned, "") {
+        Ok(abandoned) => features_are(&abandoned, "abandoned"),
+        Err(err) => {
+            eprintln!("orq: cannot set {} abandoned: {}", printable(&free.join(",")), printable(&err.to_string()));
+            String::new()
+        }
+    }
+}
+
+/// " A, B are {what}." for the features named, or nothing when there are none.
+fn features_are(names: &[String], what: &str) -> String {
+    match names.len() {
+        0 => String::new(),
+        1 => format!(" {} is {what}.", printable(&names[0])),
+        _ => format!(" {} are {what}.", printable(&names.join(", "))),
     }
 }

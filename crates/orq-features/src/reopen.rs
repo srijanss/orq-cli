@@ -42,6 +42,43 @@ pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &
     reopen(path, names, &|status, _| is(status, FeatureStatus::InProgress), FeatureStatus::Pending, before_save)
 }
 
+/// Closes the features a run's fix sessions started, at the run's end. With `to` `completed` (the run
+/// completed) each of `names` the ledger at `path` records as `in_progress` becomes `completed`, with
+/// `recordedAt` set to `recorded_at`; with `to` `abandoned` (the run was discarded) each one still
+/// `in_progress` or `pending` becomes `abandoned`. Any other status, any other `to`, and any name the
+/// ledger does not have are left alone, and so is every other byte of the file. Saved as
+/// [`reopen_features`] saves; returns the names that were closed.
+pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded_at: &str) -> Result<Vec<String>, String> {
+    let closable = |status: &LedgerStatus, _: &str| match to {
+        FeatureStatus::Completed => is(status, FeatureStatus::InProgress),
+        FeatureStatus::Abandoned => is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::Pending),
+        _ => false,
+    };
+    let stamp = |text: String, name: &str| with_recorded_at(&text, name, recorded_at);
+    edit(path, names, &closable, &|text, closed| {
+        let text = set_entry_statuses(text, closed, to).map_err(|e| format!("{e:?}"))?;
+        if to != FeatureStatus::Completed {
+            return Ok(text);
+        }
+        closed.iter().try_fold(text, |text, name| stamp(text, name))
+    }, &mut || {})
+}
+
+/// `text` with the `recordedAt` of the entry `name` set to `at`. A member added to an entry laid out one
+/// member per line goes on a line of its own, indented as the member before it.
+fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> {
+    let value = serde_json::Value::from(at).to_string();
+    let edited = crate::edit::set_entry_fields(text, name, &[("recordedAt", value.clone())]).map_err(|e| format!("{e:?}"))?;
+    let start = text.bytes().zip(edited.bytes()).position(|(a, b)| a != b).unwrap_or(text.len());
+    let inline = format!(",\"recordedAt\":{value}");
+    if !edited[start..].starts_with(&inline) || !text[start..].starts_with('\n') {
+        return Ok(edited);
+    }
+    let line = &text[text[..start].rfind('\n').map_or(0, |i| i + 1)..start];
+    let indent = &line[..line.len() - line.trim_start().len()];
+    Ok(format!("{},\n{indent}\"recordedAt\": {value}{}", &text[..start], &text[start..]))
+}
+
 fn is(status: &LedgerStatus, wanted: FeatureStatus) -> bool {
     *status == LedgerStatus::Known(wanted)
 }
@@ -54,30 +91,42 @@ fn reopen(
     to: FeatureStatus,
     before_save: &mut dyn FnMut(),
 ) -> Result<Vec<String>, String> {
+    edit(path, names, reopenable, &|text, reopened| set_entry_statuses(text, reopened, to).map_err(|e| format!("{e:?}")), before_save)
+}
+
+/// Applies `change` to the ledger text for those of `names` whose entry `editable` accepts (given its
+/// status and name), under the ledger's lock, retrying from a fresh load when another writer won the race.
+fn edit(
+    path: &Path,
+    names: &[String],
+    editable: &dyn Fn(&LedgerStatus, &str) -> bool,
+    change: &dyn Fn(&str, &[String]) -> Result<String, String>,
+    before_save: &mut dyn FnMut(),
+) -> Result<Vec<String>, String> {
     for _ in 0..CONFLICT_RETRIES {
         let loaded = match LoadedLedger::load(path) {
             Ok(loaded) => loaded,
             Err(LedgerError::Missing { .. }) => return Ok(Vec::new()),
             Err(err) => return Err(format!("cannot read {}: {err:?}", path.display())),
         };
-        let reopenable: HashSet<&str> = loaded
+        let accepted: HashSet<&str> = loaded
             .entries()
             .iter()
-            .filter(|e| reopenable(&e.status, &e.feature_name))
+            .filter(|e| editable(&e.status, &e.feature_name))
             .map(|e| e.feature_name.as_str())
             .collect();
-        let reopened: Vec<String> = names.iter().filter(|name| reopenable.contains(name.as_str())).cloned().collect();
-        if reopened.is_empty() {
-            return Ok(reopened);
+        let edited: Vec<String> = names.iter().filter(|name| accepted.contains(name.as_str())).cloned().collect();
+        if edited.is_empty() {
+            return Ok(edited);
         }
         let text = std::str::from_utf8(loaded.bytes()).map_err(|e| format!("{} is not UTF-8: {e}", path.display()))?;
-        let text = set_entry_statuses(text, &reopened, to).map_err(|e| format!("cannot edit {}: {e:?}", path.display()))?;
+        let text = change(text, &edited).map_err(|e| format!("cannot edit {}: {e}", path.display()))?;
         before_save();
         match loaded.save(&text) {
-            Ok(()) => return Ok(reopened),
+            Ok(()) => return Ok(edited),
             Err(SaveError::Conflict) => continue,
             Err(err) => return Err(format!("cannot save {}: {err:?}", path.display())),
         }
     }
-    Err(format!("{} kept changing while its features were being reopened", path.display()))
+    Err(format!("{} kept changing while its features were being edited", path.display()))
 }

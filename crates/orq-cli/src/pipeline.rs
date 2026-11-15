@@ -506,6 +506,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         if let Err(err) = orq_orchestrator::carry_session_references(&store, &record, from) {
             eprintln!("orq: cannot carry the sessions of {from} into {run_id}: {err:?}");
         }
+        // The features its fix sessions started are this run's to close now.
+        if let Err(err) = orq_orchestrator::carry_fix_features(&store, &record, from) {
+            eprintln!("orq: cannot carry the features the fix sessions of {from} started into {run_id}: {err:?}");
+        }
     }
     // A paused run handed its checkout to this run; it no longer holds it.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
@@ -574,6 +578,11 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         }
         Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None, ci_green: None },
     };
+    // The features its fix sessions started are the run's own: delivered, they are finished. Closed while
+    // the run still holds the locks, like the reopening below.
+    if matches!(report.ending, Ending::Merged | Ending::Pushed | Ending::ReviewReady) {
+        close_fix_features(&store, &record, &orq_features::ledger_path(options.project));
+    }
     // Reopened while the run still holds the locks, so a run launched next is never reset.
     if matches!(report.ending, Ending::Blocked | Ending::Failed | Ending::Paused) {
         reopen_undelivered(&store, &record, &report.ending, &orq_features::ledger_path(options.project), options.features);
@@ -663,6 +672,25 @@ fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, led
     };
     if let Err(err) = reopened {
         eprintln!("orq: cannot put {} back to {to}: {err}", features.join(","));
+    }
+}
+
+/// Set the features the run's fix sessions started `completed`, but for those a later run took. One
+/// that is not `in_progress` any more was closed or reopened by someone else and is left as it is.
+fn close_fix_features(store: &RunStore, record: &RunRecord, ledger: &Path) {
+    let started = orq_orchestrator::fix_features(store, &record.run_id).unwrap_or_else(|err| {
+        eprintln!("orq: cannot read which features the fix sessions of {} started: {err:?}", record.run_id);
+        Vec::new()
+    });
+    if started.is_empty() {
+        return;
+    }
+    let free = orq_orchestrator::features_no_later_run_took(store, &record.run_id, &started).unwrap_or_else(|err| {
+        eprintln!("orq: cannot tell whether a later run took {}: {err}", started.join(","));
+        Vec::new()
+    });
+    if let Err(err) = orq_features::close_features(ledger, &free, orq_core::FeatureStatus::Completed, &crate::review::utc_now()) {
+        eprintln!("orq: cannot set {} completed: {err}", free.join(","));
     }
 }
 
@@ -933,6 +961,8 @@ fn stages(
 ) -> Result<Report, StoreError> {
     let Resumed { implement_inherited_from, paused_at, review_again } = *resumed;
     let run_id = record.run_id.as_str();
+    // Settled when the stages end, however they end, so the last fix session's features are recorded too.
+    let fix_features = FixFeatureWatch::new(store, record, orq_features::ledger_path(options.project));
     // A run continued from a pause does not redo what the checkpoint records as done: the push and
     // the review request are outward-facing and must happen once.
     let done = |stage: &str| paused_at.is_some_and(|c| c.completed_stages.iter().any(|d| d == stage));
@@ -1109,6 +1139,7 @@ fn stages(
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
             run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
+                fix_features.before("gate_fix");
                 let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
                 // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
                 let allowed_commands = recheck_permissions(store, record, settings, logs)?;
@@ -1335,6 +1366,7 @@ fn stages(
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
         let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("ci-fix.done"));
         let session_args = || {
+            fix_features.before("ci_fix");
             // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             adapter_for(&options.implementer.harness)
@@ -1475,6 +1507,60 @@ fn build_review_report(
     use std::io::Write;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("review-report.log"));
     let _ = log.and_then(|mut file| writeln!(file, "{note}"));
+}
+
+/// Tells which ledger features each fix session added: the ledger's names are taken before a
+/// session starts and compared with them once it is over, which is when the next session is about
+/// to start or the watch is dropped. The run records the added ones so it closes them when it ends.
+/// A ledger that cannot be read is said and records nothing; it never fails the run.
+struct FixFeatureWatch<'a> {
+    store: &'a RunStore,
+    record: &'a RunRecord,
+    ledger: PathBuf,
+    /// The session running and the names in the ledger before it started.
+    running: std::cell::RefCell<Option<(&'static str, Vec<String>)>>,
+}
+
+impl<'a> FixFeatureWatch<'a> {
+    fn new(store: &'a RunStore, record: &'a RunRecord, ledger: PathBuf) -> Self {
+        Self { store, record, ledger, running: std::cell::RefCell::new(None) }
+    }
+
+    /// A fix session of kind `session` is about to start.
+    fn before(&self, session: &'static str) {
+        self.settle();
+        *self.running.borrow_mut() = self.names().map(|names| (session, names));
+    }
+
+    /// Record what the session that ran added.
+    fn settle(&self) {
+        let Some((session, before)) = self.running.borrow_mut().take() else { return };
+        let Some(after) = self.names() else { return };
+        let added: Vec<String> = after.into_iter().filter(|name| !before.contains(name)).collect();
+        if added.is_empty() {
+            return;
+        }
+        if let Err(err) = orq_orchestrator::record_fix_features_added(self.store, self.record, session, &added) {
+            eprintln!("orq: cannot record the features the {session} session started ({}): {err:?}", added.join(","));
+        }
+    }
+
+    fn names(&self) -> Option<Vec<String>> {
+        match orq_features::load_ledger(&self.ledger) {
+            Ok(entries) => Some(entries.into_iter().map(|entry| entry.feature_name).collect()),
+            Err(orq_features::LedgerError::Missing { .. }) => Some(Vec::new()),
+            Err(err) => {
+                eprintln!("orq: cannot read the feature ledger to tell which features a fix session started: {err:?}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for FixFeatureWatch<'_> {
+    fn drop(&mut self) {
+        self.settle();
+    }
 }
 
 /// How the pipeline talks to CI and the remote while the fix loop runs.

@@ -2329,3 +2329,120 @@ fn a_gate_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_t
     assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
     assert_eq!(git(w.repo.root(), &["worktree", "list"]).lines().count(), 2, "the worktree is kept");
 }
+
+/// A run of COM-01 whose gate (`gate`, run by `sh -c`) fails until its gate-fix session repairs it. That
+/// session, as an agent following the TDD workflow does, starts a feature of its own, FIX-01, in the
+/// main ledger and leaves it `in_progress`, then commits `fixed.txt`; OLD-01 was `in_progress` before
+/// the run. Also returns the `PATH` the run had, with the fakes it runs, which run the same sessions again.
+fn run_whose_fix_session_starts_a_feature(w: &World, gate: &str, extra: &[&str]) -> (Output, (std::ffi::OsString, FakeAgent, FakeProvider)) {
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), format!("gate = [\"sh\", \"-c\", \"{gate}\"]\nexplain_failures = false\n")).unwrap();
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("OLD-01", "in_progress")]);
+    let after = write_ledger(
+        &scratch(w, "fix-ledger"),
+        &[LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("OLD-01", "in_progress"), LedgerEntry::new("FIX-01", "in_progress")],
+    );
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let mut command = run_command(w, &agent, &provider, &["--feature", "COM-01"], extra);
+    let path = path_with(&agent, &provider, &w.tag);
+    let bin = std::env::split_paths(&path).next().unwrap();
+    std::fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*)\n  printf '%s' \"$*\" > '{}'\n  cp '{}' '{}'\n  echo fixed > fixed.txt\n  git add fixed.txt\n  exec git -c user.name=Fixer -c user.email=fixer@example.invalid commit -q -m fix\nesac\nexec '{}' \"$@\"\n",
+            fix_prompt_path(w).display(),
+            after.display(),
+            w.repo.root().join(".tdd-features.json").display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    (command.env("PATH", &path).output().unwrap(), (path, agent, provider))
+}
+
+/// Where the fix session of [`run_whose_fix_session_starts_a_feature`] leaves the prompt it was given.
+fn fix_prompt_path(w: &World) -> std::path::PathBuf {
+    scratch(w, "fix-prompt").join("prompt")
+}
+
+/// `(status, recordedAt)` of `name` in the main ledger of `w`.
+fn ledger_status(w: &World, name: &str) -> (String, Option<String>) {
+    let text = std::fs::read_to_string(w.repo.root().join(".tdd-features.json")).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    let entry = entries.iter().find(|e| e["featureName"] == name).unwrap_or_else(|| panic!("no {name} in {text}"));
+    (entry["status"].as_str().unwrap().to_string(), entry["recordedAt"].as_str().map(str::to_string))
+}
+
+#[test]
+fn a_gate_fix_session_is_told_to_finish_a_feature_it_starts_so_one_a_fix_session_started_is_not_left_open() {
+    let w = world("fix-session-prompt");
+
+    let (output, _) = run_whose_fix_session_starts_a_feature(&w, "test -e fixed.txt", &["--no-ci-check"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let prompt = std::fs::read_to_string(fix_prompt_path(&w)).unwrap();
+    assert!(prompt.contains("finish it with complete_feature"), "{prompt}");
+}
+
+#[test]
+fn a_feature_a_fix_session_started_is_completed_when_the_run_completes_and_one_there_before_is_not() {
+    let w = world("fix-session-completes");
+
+    let (output, _) = run_whose_fix_session_starts_a_feature(&w, "test -e fixed.txt", &["--no-ci-check"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let (status, recorded_at) = ledger_status(&w, "FIX-01");
+    assert_eq!(status, "completed", "the run closed the feature its fix session started");
+    assert!(recorded_at.is_some_and(|at| !at.is_empty()), "it says when");
+    assert_eq!(ledger_status(&w, "OLD-01"), ("in_progress".to_string(), None), "a feature there before the session is not the run's");
+}
+
+/// A run that failed after its fix session started FIX-01 hands it to the run that resumes it, which
+/// completes it when it completes.
+#[test]
+fn a_feature_a_fix_session_started_in_a_run_that_failed_is_completed_by_the_run_that_resumes_it() {
+    let w = world("fix-session-resumed");
+    let ok = scratch(&w, "gate").join("ok");
+    let (failed, (path, _agent, _provider)) = run_whose_fix_session_starts_a_feature(&w, &format!("test -e {}", ok.display()), &["--no-ci-check"]);
+    assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
+    let run_id = printed_run_id(&failed);
+    std::fs::write(&ok, "").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("XDG_DATA_HOME", &w.env.data)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", path)
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(ledger_status(&w, "FIX-01").0, "completed", "the resumed run closed the feature the failed run's fix session started");
+}
+
+/// Discarding a run abandons the feature its fix session started, and only that one.
+#[test]
+fn a_feature_a_fix_session_started_in_a_run_that_is_discarded_is_abandoned() {
+    let w = world("fix-session-discarded");
+    let never = scratch(&w, "gate").join("never");
+    let (failed, _fakes) = run_whose_fix_session_starts_a_feature(&w, &format!("test -e {}", never.display()), &["--no-ci-check"]);
+    assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
+    let run_id = printed_run_id(&failed);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "discard", &run_id, "--yes", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_STATE_HOME", &w.env.state)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(ledger_status(&w, "FIX-01").0, "abandoned", "the discarded run's fix session started it");
+    assert_eq!(ledger_status(&w, "OLD-01").0, "in_progress", "a feature there before the session is not the run's");
+}

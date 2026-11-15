@@ -370,6 +370,7 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
         return Err(AdapterError::InvalidValue { field: "task", value: task.chars().take(40).collect() });
     }
     let mut prompt = task.to_string();
+    prompt.push_str(FINISH_STARTED_FEATURES);
     if request.attended {
         prompt.push_str(&attended_wording(harness));
     } else {
@@ -383,6 +384,10 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
     }
     Ok(prompt)
 }
+
+/// What a fix session is told of a feature it starts in the TDD ledger: the run marks it completed when
+/// it delivers, or abandoned when it is discarded, so the session must not leave it half done.
+const FINISH_STARTED_FEATURES: &str = "\n\nIf you start a feature in the TDD ledger for this fix, finish it with complete_feature before you stop; the run marks it completed when it delivers, or abandoned when it is discarded.";
 
 /// How a session says how it went in its finish marker: the first line decides (see the orchestrator).
 const MARKER_FORMAT: &str = " The first line of that file says how it went: leave it empty, or write OK, when the work is done; any notes go after OK. Write PROBLEM on the first line, and what went wrong after it, only if the work is not done, a required review could not run or did not end done, or tests are failing.";
