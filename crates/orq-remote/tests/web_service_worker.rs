@@ -146,6 +146,17 @@ fn where_an_open_page_came_from_outlives_a_restart_of_the_worker() {
 }
 
 #[test]
+fn a_closed_page_is_forgotten_across_restarts_and_a_page_still_opening_keeps_its_record() {
+    let Some(out) = run() else { return };
+    let pruning = &out["pruning"];
+    assert_eq!(pruning["afterClose"], json!(["b", "c"]), "a closed page's record is dropped: {pruning}");
+    assert_eq!(pruning["closedAsks"], json!("<network error>"), "the worker forgets a closed page in memory too: {pruning}");
+    assert_eq!(pruning["afterRestart"], json!(["c", "d"]), "a page closed while the worker was stopped is dropped after the restart: {pruning}");
+    assert_eq!(pruning["pendingKept"], json!(true), "a page whose navigation is still in flight keeps its record: {pruning}");
+    assert_eq!(pruning["pending"], json!("install /app.react.js"), "and gets its files from its release: {pruning}");
+}
+
+#[test]
 fn a_page_whose_source_is_unknown_gets_no_files_and_a_page_open_before_the_worker_took_over_gets_the_servers() {
     let Some(out) = run() else { return };
     let restarts = &out["restarts"];

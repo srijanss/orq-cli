@@ -37,6 +37,7 @@ self.addEventListener("fetch", (event) => {
   if (under(url.pathname, "/api") || under(url.pathname, "/auth")) return;
   if (request.mode === "navigate") {
     event.respondWith(navigate(request, event.resultingClientId));
+    event.waitUntil(quietly(forget));
   } else if (SHELL.includes(url.pathname)) {
     event.respondWith(shell(url.pathname, event.clientId));
   }
@@ -54,8 +55,15 @@ self.addEventListener("fetch", (event) => {
 // page opens from the server, whose record is written as soon as storage lets it. A page with no
 // record is one whose source is unknown (its record was lost), and it gets no files rather than a
 // guess. `opened` keeps what this worker has learned so far, and which of it is not yet written.
+//
+// Each navigation forgets the pages that have closed, here and in PAGES, so neither grows with every
+// tab ever opened. A page joins the open clients only once its navigation finishes, so a record (or
+// what `opened` holds) younger than GRACE is kept: it may be a page that is still opening.
 const PAGES = "orq-pages";
-const record = (client) => "/orq-page/" + encodeURIComponent(client);
+const ROOT = "/orq-page/";
+const record = (client) => ROOT + encodeURIComponent(client);
+const OPENED = "x-orq-opened";
+const GRACE = 10 * 60 * 1000;
 const opened = new Map();
 const unsaved = new Set();
 
@@ -64,20 +72,20 @@ async function navigate(request, client) {
   const page = await whole();
   if (!client) return page || fetch(request);
   const fromCache = Boolean(page) && (await save(client, CACHE));
-  if (fromCache) opened.set(client, CACHE);
+  if (fromCache) opened.set(client, { source: CACHE, at: Date.now() });
   else await learn(client, "");
   return fromCache ? page : fetch(request);
 }
 
 // Learns where a page came from and writes it to PAGES, keeping it to write later when that fails.
 async function learn(client, source) {
-  opened.set(client, source);
+  opened.set(client, { source, at: Date.now() });
   if (!(await save(client, source))) unsaved.add(client);
 }
 
 async function save(client, source) {
   const written = await quietly(async () => {
-    await (await caches.open(PAGES)).put(record(client), new Response(source));
+    await (await caches.open(PAGES)).put(record(client), new Response(source, { headers: { [OPENED]: String(Date.now()) } }));
     return true;
   });
   if (written) unsaved.delete(client);
@@ -89,6 +97,24 @@ async function adopt() {
   const open = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
   for (const { id } of open) {
     if (!(await caches.match(record(id), { cacheName: PAGES }))) await learn(id, "");
+  }
+}
+
+async function forget() {
+  const open = new Set((await self.clients.matchAll({ includeUncontrolled: true, type: "window" })).map(({ id }) => id));
+  const stale = (client, at) => !open.has(client) && Date.now() - at > GRACE;
+  for (const [client, { at }] of opened) {
+    if (stale(client, at)) {
+      opened.delete(client);
+      unsaved.delete(client);
+    }
+  }
+  const pages = await caches.open(PAGES);
+  for (const key of await pages.keys()) {
+    const client = decodeURIComponent(new URL(key.url).pathname.slice(ROOT.length));
+    if (open.has(client)) continue;
+    const hit = await pages.match(key);
+    if (hit && stale(client, Number(hit.headers.get(OPENED)) || 0)) await pages.delete(key);
   }
 }
 
@@ -105,14 +131,15 @@ async function shell(path, client) {
 // The cache the page was built from, "" for the server, or undefined when that is not known.
 async function sourceOf(client) {
   if (opened.has(client)) {
-    if (unsaved.has(client)) await save(client, opened.get(client));
-    return opened.get(client);
+    const { source } = opened.get(client);
+    if (unsaved.has(client)) await save(client, source);
+    return source;
   }
   try {
     const hit = await caches.match(record(client), { cacheName: PAGES });
     if (!hit) return undefined;
     const source = await hit.text();
-    opened.set(client, source);
+    opened.set(client, { source, at: Number(hit.headers.get(OPENED)) || 0 });
     return source;
   } catch (error) {
     return undefined;

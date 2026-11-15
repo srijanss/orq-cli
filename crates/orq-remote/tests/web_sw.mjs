@@ -15,9 +15,9 @@ const pathOf = (request) => new URL(typeof request === "string" ? request : requ
 // `world` is what outlives the worker: its caches, the network and storage. Passing a running worker's
 // world boots a fresh copy of the worker over it, as when the browser restarts a stopped worker.
 // `live` holds the ids of the pages open now: a navigation's page joins it once it has opened.
-function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set() }) {
+function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set(), clock: { now: 0 } }) {
   const listeners = {};
-  const { stores, net, storage, live } = world;
+  const { stores, net, storage, live, clock } = world;
   const state = { claimed: false, skipped: false };
   const fetch = async (request) => {
     const path = pathOf(request);
@@ -36,6 +36,8 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
     add: async (path) => { store(name).set(pathOf(path), await fetch(path)); },
     put: async (request, response) => { writable(); store(name).set(pathOf(request), response); },
     match: async (request) => { const hit = store(name).get(pathOf(request)); return hit ? hit.clone() : undefined; },
+    keys: async () => [...store(name).keys()].map((path) => new Request(ORIGIN + path)),
+    delete: async (request) => store(name).delete(pathOf(request)),
   });
   const caches = {
     open: async (name) => { store(name); return cache(name); },
@@ -52,7 +54,9 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
       return undefined;
     },
   };
+  // `clock.now` is the worker's Date.now(), in milliseconds.
   const context = {
+    Date: { now: () => clock.now },
     caches, fetch, URL, DOMException, Response, Request, Headers, Promise, console,
     location: new URL("/sw.js", ORIGIN),
     clients: {
@@ -86,7 +90,7 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
   const cachedText = async (name, path) => { const hit = stores.has(name) ? stores.get(name).get(path) : undefined; return hit ? await hit.clone().text() : null; };
-  return { dispatch, ask, stores, net, state, storage, live, cached, cachedText, caches, restart: () => boot(world) };
+  return { dispatch, ask, stores, net, state, storage, live, clock, cached, cachedText, caches, restart: () => boot(world) };
 }
 
 async function worker() {
@@ -246,6 +250,38 @@ async function restarts() {
   };
 }
 
+// The worker forgets pages that have closed. Tabs a and b open from the cache; a closes and, minutes
+// later, tab c opening prunes. The worker restarts, b closes, and d opening prunes again. Then tab p's
+// navigation is still in flight (it is not open yet) while q's prunes, and p asks for its script.
+// `records` lists the pages orq-pages holds after each prune.
+async function pruning() {
+  const sw = boot();
+  await sw.dispatch("install");
+  await sw.dispatch("activate");
+  const minutes = (n) => { sw.clock.now += n * 60 * 1000; };
+  const records = (w) => [...(w.stores.get("orq-pages") || new Map()).keys()].map((key) => decodeURIComponent(key.replace("/orq-page/", ""))).sort();
+  sw.net.phase = "later";
+  await sw.ask("/", { mode: "navigate", opens: "a" });
+  await sw.ask("/", { mode: "navigate", opens: "b" });
+  sw.live.delete("a");
+  minutes(15);
+  await sw.ask("/", { mode: "navigate", opens: "c" });
+  const afterClose = records(sw);
+  const closedAsks = (await sw.ask("/app.react.js", { client: "a" })).text;
+  const again = sw.restart();
+  again.live.delete("b");
+  minutes(15);
+  await again.ask("/", { mode: "navigate", opens: "d" });
+  const afterRestart = records(again);
+  minutes(15);
+  await again.dispatch("fetch", { request: { url: ORIGIN + "/", method: "GET", mode: "navigate", headers: new Headers() }, clientId: "", resultingClientId: "p" });
+  minutes(1);
+  await again.ask("/", { mode: "navigate", opens: "q" });
+  const pendingKept = records(again).includes("p");
+  const pending = (await again.ask("/app.react.js", { client: "p" })).text;
+  return { afterClose, closedAsks, afterRestart, pendingKept, pending };
+}
+
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
 // had loaded), `fails` (register rejects), `waiting`, `installing` and `controller` (what the registration holds).
 function fakeWindow({ secure = true, api = true, ready = true, fails = false, waiting = false, installing = false, controller = true } = {}) {
@@ -331,4 +367,4 @@ async function registration() {
   return result;
 }
 
-process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), restarts: await restarts(), registration: await registration() }));
+process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), restarts: await restarts(), pruning: await pruning(), registration: await registration() }));
