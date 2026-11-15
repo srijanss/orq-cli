@@ -377,32 +377,45 @@ impl Inventory {
         let held = tree.split('\0').filter_map(entry).filter(|(_, path)| named(path)).map(|(meta, path)| (path, meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))).collect();
         // A submodule at the base or in the index.
         let mut nested: Vec<String> = tree.split('\0').chain(staged.split('\0')).filter(|line| line.starts_with("160000 ")).filter_map(entry).map(|(_, path)| path).collect();
-        // A link to a folder, staged or changed since the base (untracked ones are found below): a
-        // script reached through it is not one whose path a check sees, wherever the folder lies.
-        let links = staged.split('\0').filter(|line| line.starts_with("120000 ")).filter_map(entry).map(|(_, path)| path);
-        let mut linked: Vec<String> = links.chain(changed.split('\0').map(str::to_string)).filter(|path| !path.is_empty() && links_to_folder(worktree, path)).collect();
         let mut differing: Vec<String> = changed.split('\0').filter(|path| !path.is_empty() && named(path)).map(str::to_string).collect();
-        // Untracked and ignored files, read as git lists them and kept only when they matter: listed
-        // file by file, the untracked files show a repository left untracked alone as a folder,
-        // however deep in an untracked folder it lies (`--directory` would show only the outermost).
-        let mut child = Command::new("git").arg("-C").arg(worktree).args(["ls-files", "--others", "-z"]).stdin(Stdio::null()).stderr(Stdio::null()).stdout(Stdio::piped()).spawn().ok()?;
-        let listed = child.stdout.take().map(|out| {
-            for path in std::io::BufRead::split(std::io::BufReader::new(out), b'\0') {
-                let Ok(path) = path else { return false };
-                let path = String::from_utf8_lossy(&path);
-                if let Some(repository) = path.strip_suffix('/') {
-                    nested.push(repository.to_string());
-                } else if links_to_folder(worktree, &path) {
-                    linked.push(path.into_owned());
-                } else if named(&path) {
-                    differing.push(path.into_owned());
+        let indexed: Vec<&str> = staged.split('\0').filter_map(|line| line.split_once('\t')).map(|(_, path)| path).filter(|path| named(path)).collect();
+        let mut linked = Vec::new();
+        let mut untracked = Vec::new();
+        // Every file in the worktree, tracked, untracked or ignored, read folder by folder: each entry
+        // comes with its type, so a plain file is passed over with no further look and only a link is
+        // followed, to see whether it leads to a folder. A folder holding `.git` is a repository of its
+        // own, however deep in an untracked or ignored folder it lies, and nothing in it is read; a link
+        // to a folder, inside the worktree or out, gives what is below it a path no check sees.
+        let mut folders = vec![(worktree.to_path_buf(), String::new())];
+        while let Some((folder, relative)) = folders.pop() {
+            let (mut inner, mut files, mut repository) = (Vec::new(), Vec::new(), false);
+            for entry in std::fs::read_dir(&folder).ok()? {
+                let entry = entry.ok()?;
+                let name = entry.file_name();
+                let path = if relative.is_empty() { name.to_string_lossy().into_owned() } else { format!("{relative}/{}", name.to_string_lossy()) };
+                if name == ".git" {
+                    repository = !relative.is_empty();
+                    continue;
+                }
+                let kind = entry.file_type().ok()?;
+                if kind.is_dir() {
+                    inner.push((entry.path(), path));
+                } else if kind.is_symlink() && std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir()) {
+                    linked.push(path);
+                } else if named(&path) && !indexed.contains(&path.as_str()) {
+                    files.push(path);
                 }
             }
-            true
-        });
-        if !child.wait().is_ok_and(|status| status.success()) || listed != Some(true) {
-            return None;
+            if repository {
+                nested.push(relative);
+            } else {
+                folders.extend(inner);
+                untracked.extend(files);
+            }
         }
+        untracked.sort();
+        untracked.retain(|path| !differing.contains(path));
+        differing.extend(untracked);
         for found in [&mut nested, &mut linked] {
             found.sort();
             found.dedup();
@@ -437,13 +450,6 @@ impl Inventory {
 
 fn linked_what(links: &[String]) -> &'static str {
     if links.len() == 1 { "is a link to a folder" } else { "are links to folders" }
-}
-
-/// Whether `path` in `worktree` is a link to a folder: what is below it has a second path there,
-/// one no check of a script's path sees, wherever the folder is.
-fn links_to_folder(worktree: &Path, path: &str) -> bool {
-    let at = worktree.join(path);
-    std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink()) && std::fs::metadata(&at).is_ok_and(|target| target.is_dir())
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the

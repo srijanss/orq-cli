@@ -478,3 +478,40 @@ fn the_session_may_edit_the_worktree_and_write_into_the_runs_logs() {
     }
     assert!(!allow.iter().any(|rule| rule == "Edit"), "no edit anywhere: {allow:?}");
 }
+
+/// What git ignores is checked like what it does not track: an ignored script, repository or link to
+/// a folder, deep in an ignored folder, takes the built-in rule out as an untracked one would.
+#[test]
+fn a_script_repository_or_folder_link_git_ignores_counts_like_an_untracked_one() {
+    let builtin = "Bash(node build.mjs)".to_string();
+    for tag in ["script", "repository", "link"] {
+        let (_repo, worktree) = checkout(&format!("permissions-ignored-{tag}"));
+        commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+        commit_file(&worktree, ".gitignore", "dist/\n");
+        let base = head(&worktree);
+        let deep = worktree.join("dist/deep");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("note"), "ignored\n").unwrap();
+        let expected = match tag {
+            "script" => {
+                fs::write(deep.join("build.mjs"), "require('child_process')\n").unwrap();
+                format!("dist/deep/build.mjs was changed by this run, so the rule {builtin} was left out")
+            }
+            "repository" => {
+                fs::create_dir_all(deep.join("sub")).unwrap();
+                git(&deep.join("sub"), &["init", "--quiet"]);
+                format!("dist/deep/sub is a repository of its own, whose build.mjs orq cannot check, so the rule {builtin} was left out")
+            }
+            _ => {
+                fs::create_dir_all(worktree.join("payload")).unwrap();
+                std::os::unix::fs::symlink("../../payload", deep.join("a")).unwrap();
+                format!("dist/deep/a is a link to a folder, whose build.mjs orq cannot check, so the rule {builtin} was left out")
+            }
+        };
+
+        let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+        assert_eq!(notes, [expected], "{tag}");
+        assert!(!allowed(&worktree).contains(&builtin), "{tag}: {:?}", allowed(&worktree));
+    }
+}
