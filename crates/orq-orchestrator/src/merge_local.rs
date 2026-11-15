@@ -54,7 +54,7 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                 Err(reason) => return Ok(MergeOutcome::Refused { reason }),
             };
             // Escaped, so a file name cannot forge lines or move the cursor where it is shown.
-            let overlapping: Vec<String> = dirty.keys().filter(|path| changed.contains(*path)).map(|path| printable(path)).collect();
+            let overlapping: Vec<String> = dirty.intersection(&changed).map(|path| printable(path)).collect();
             if !overlapping.is_empty() {
                 let files = named(&overlapping);
                 record_event(store, &record, "merge.refused", serde_json::json!({ "reason": "dirty_checkout", "files": overlapping }))?;
@@ -67,6 +67,11 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                 });
             }
             kept_dirty = dirty.len();
+            // Read only now the merge goes ahead: a refusal needs no file's contents.
+            let before = match contents(&checkout, dirty)? {
+                Ok(before) => before,
+                Err(reason) => return Ok(MergeOutcome::Refused { reason }),
+            };
             // A local file in the way, ignored or untracked, makes git stop rather than overwrite it.
             let merged = git_raw(&checkout, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha])?;
             if !merged.success {
@@ -77,10 +82,14 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
                     // The person's own edits are not what it left: only a path dirty now and
                     // not before, or with other content than before, is.
                     let now = match dirty_paths(&checkout)? {
+                        Ok(now) => contents(&checkout, now)?,
+                        Err(reason) => Err(reason),
+                    };
+                    let now = match now {
                         Ok(now) => now,
                         Err(reason) => return Ok(MergeOutcome::Refused { reason }),
                     };
-                    if now.iter().any(|(path, content)| dirty.get(path) != Some(content)) {
+                    if now.iter().any(|(path, content)| before.get(path) != Some(content)) {
                         return Ok(MergeOutcome::Refused {
                             reason: format!(
                                 "{} moved while {} was being fast-forwarded, and the checkout was left with changes; check them, then resume this run",
@@ -139,9 +148,9 @@ fn changed_paths(worktree: &Path, base_sha: &str, head_sha: &str) -> Result<Resu
     Ok(Ok(diff.stdout.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect()))
 }
 
-/// The tracked files with uncommitted changes in `checkout`, staged or not, each with what it holds
-/// now (see [`contents`]), or why they could not be read.
-fn dirty_paths(checkout: &Path) -> Result<Result<BTreeMap<String, Content>, String>, StoreError> {
+/// The tracked files with uncommitted changes in `checkout`, staged or not, or why they could not
+/// be read.
+fn dirty_paths(checkout: &Path) -> Result<Result<BTreeSet<String>, String>, StoreError> {
     let status = git_raw(checkout, &["status", "--porcelain=v1", "-z", "--untracked-files=no"])?;
     if !status.success {
         return Ok(Err(format!("cannot read the uncommitted changes at {}: {}", checkout.display(), status.stderr.trim())));
@@ -158,7 +167,7 @@ fn dirty_paths(checkout: &Path) -> Result<Result<BTreeMap<String, Content>, Stri
             }
         }
     }
-    contents(checkout, dirty)
+    Ok(Ok(dirty))
 }
 
 /// What a dirty path holds in the working tree: a regular file by its blob id, a symbolic link by
