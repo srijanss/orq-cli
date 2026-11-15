@@ -70,6 +70,25 @@ fn on_a_landscape_phone_or_tablet_the_sidebar_and_content_stay_clear_of_the_notc
 }
 
 #[test]
+fn the_sidebar_track_widens_by_the_left_inset_so_its_padding_never_squeezes_the_collapsed_rail() {
+    // The sidebar pads its left side by the inset, so its grid track grows by the same amount, open or collapsed;
+    // otherwise a 44px landscape notch inset would clip the 64px collapsed rail's controls.
+    let css = css();
+    let columns = |selector: &str, width: f64| -> String {
+        parse(&css, None)
+            .iter()
+            .filter(|r| applies(&r.media, width) && r.selectors.iter().any(|s| s == selector))
+            .flat_map(|r| r.declarations.iter().filter(|(p, _)| p == "grid-template-columns").map(|(_, v)| v.clone()))
+            .last()
+            .unwrap_or_else(|| panic!("no grid-template-columns for {selector} at {width}px"))
+    };
+    for width in [740.0, 932.0, 1366.0] {
+        assert_eq!(columns(".shell", width), "calc(240px + env(safe-area-inset-left)) 1fr", "{width}px");
+        assert_eq!(columns(".shell.collapsed", width), "calc(64px + env(safe-area-inset-left)) 1fr", "{width}px");
+    }
+}
+
+#[test]
 fn pulling_past_the_top_does_not_bounce_or_reload_the_installed_app() {
     let css = css();
     assert_eq!(effective(&css, "html", "overscroll-behavior-y"), "none");

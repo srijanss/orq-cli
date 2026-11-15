@@ -271,6 +271,9 @@ a, button { -webkit-tap-highlight-color: transparent; }
 }
 @media (min-width: 701px) {
   /* viewport-fit=cover reaches this layout too (a phone on its side, an iPad), so it pads by the insets as well. */
+  /* The sidebar track grows by the left inset its padding takes, so the collapsed rail keeps its 64px inside. */
+  .shell { grid-template-columns: calc(240px + env(safe-area-inset-left)) 1fr; }
+  .shell.collapsed { grid-template-columns: calc(64px + env(safe-area-inset-left)) 1fr; }
   .sidebar { padding-top: calc(0.75rem + env(safe-area-inset-top)); padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
   .content { padding-top: calc(1rem + env(safe-area-inset-top)); padding-right: calc(1rem + env(safe-area-inset-right)); padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
 }
