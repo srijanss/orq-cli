@@ -130,7 +130,24 @@ pub fn run_gate_with_fixes_env(
     gate_log: &Path,
     max_attempts: u32,
     env: &[(String, String)],
+    fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
+) -> Result<GateFixOutcome, StoreError> {
+    run_gate_with_fixes_then(store, run_id, gate, enabled, gate_log, max_attempts, env, fixer, || {})
+}
+
+/// Like [`run_gate_with_fixes_env`], calling `after_session` as soon as each fix session ends, before
+/// anything else runs, so it sees what the session left and nothing the gate or a later step did.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gate_with_fixes_then(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    max_attempts: u32,
+    env: &[(String, String)],
     mut fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
+    mut after_session: impl FnMut(),
 ) -> Result<GateFixOutcome, StoreError> {
     let mut fix_attempts = 0;
     loop {
@@ -184,7 +201,9 @@ pub fn run_gate_with_fixes_env(
                     exit_marker: spec.exit_marker.as_deref(),
                 };
                 // The session's own result is not trusted: the rerun gate decides.
-                run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
+                let ran = run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts);
+                after_session();
+                ran?;
                 if let Some(summary) = read_report(&report) {
                     return Ok(GateFixOutcome::Unrelated { summary });
                 }

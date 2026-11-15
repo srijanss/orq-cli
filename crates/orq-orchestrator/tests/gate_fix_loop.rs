@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use orq_orchestrator::{
-    run_gate_with_fixes, run_gate_with_fixes_env, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
+    run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
     RunStore,
 };
 
@@ -782,5 +782,41 @@ fn a_report_that_is_a_link_to_another_file_is_not_read() {
     assert!(
         !matches!(outcome, GateFixOutcome::Unrelated { .. }),
         "a linked report was read: {outcome:?}"
+    );
+}
+
+/// What follows a fix session runs as soon as the session ends, before the gate runs again, so what
+/// it sees is the session's doing and nothing the gate or a later step did.
+#[test]
+fn the_after_session_step_runs_once_each_session_ends_before_the_gate_reruns() {
+    let w = world("after-session");
+    let seq = w.root.join("seq");
+    let gate = Gate::Steps {
+        steps: vec![sh(&format!("echo gate >> '{}' && test -f fixed2", seq.display()))],
+        notes: Vec::new(),
+    };
+    let fixes = format!("echo session >> '{}'; if test -f fixed; then touch fixed2; else touch fixed; fi", seq.display());
+
+    let outcome = run_gate_with_fixes_then(
+        &w.store,
+        "run-1",
+        &gate,
+        true,
+        &w.gate_log,
+        3,
+        &[],
+        |_, _| Ok(spec(&w, &fixes)),
+        || {
+            let mut seen = fs::read_to_string(&seq).unwrap_or_default();
+            seen.push_str("after\n");
+            fs::write(&seq, seen).unwrap();
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 2 });
+    assert_eq!(
+        fs::read_to_string(&seq).unwrap(),
+        "gate\nsession\nafter\ngate\nsession\nafter\ngate\n"
     );
 }

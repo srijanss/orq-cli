@@ -10,7 +10,7 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, local_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_env, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_then, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
     CiFixConfig, CiFixOutcome, CiFixSteps, CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
 };
@@ -1138,7 +1138,7 @@ fn stages(
         );
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
-            run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
+            run_gate_with_fixes_then(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
                 fix_features.before("gate_fix");
                 let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
                 // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
@@ -1165,7 +1165,7 @@ fn stages(
                     terminal: options.interactive,
                     exit_marker: fix_marker.clone(),
                 })
-            })?;
+            }, || fix_features.settle())?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
                 return stopped_now(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
@@ -1392,6 +1392,7 @@ fn stages(
             push_log: logs.join("push.log"),
             report: &|head, ci| build_review_report(store, record, options, &steps_of(&gate), head, ci, logs),
             session_args: &session_args,
+            session_ended: &|| fix_features.settle(),
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: Vec::new(),
@@ -1510,8 +1511,9 @@ fn build_review_report(
 }
 
 /// Tells which ledger features each fix session added: the ledger's names are taken before a
-/// session starts and compared with them once it is over, which is when the next session is about
-/// to start or the watch is dropped. The run records the added ones so it closes them when it ends.
+/// session starts and compared with them as soon as it ends, before the gate or anything else of
+/// the run runs, so a feature added after the session is not taken for one it started. The run
+/// records the added ones so it closes them when it ends.
 /// A ledger that cannot be read is said and records nothing; it never fails the run.
 struct FixFeatureWatch<'a> {
     store: &'a RunStore,
@@ -1577,6 +1579,8 @@ struct PipelineCiSteps<'a> {
     /// Run before each fix session: brings the session's allowed commands up to date with the branch
     /// and returns the session's arguments, whose prompt lists them.
     session_args: &'a dyn Fn() -> Result<Vec<String>, StoreError>,
+    /// Run as soon as a fix session ends, before the gate.
+    session_ended: &'a dyn Fn(),
     /// The fix session, but for its arguments.
     session: FixSessionSpec,
 }
@@ -1609,6 +1613,10 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
         let args = (self.session_args)()?;
         Ok(FixSessionSpec { args, ..self.session.clone() })
+    }
+
+    fn fix_session_ended(&mut self) {
+        (self.session_ended)();
     }
 }
 

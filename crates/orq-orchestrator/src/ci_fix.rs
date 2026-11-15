@@ -27,6 +27,9 @@ pub trait CiFixSteps {
     /// The fix session of attempt `attempt` (from 1), given the file holding the failure log; an
     /// error starts no session and stops the loop with it.
     fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError>;
+    /// The fix session just ended, before anything else runs: what it sees is the session's doing
+    /// and nothing the gate or a later step did.
+    fn fix_session_ended(&mut self) {}
 }
 
 pub struct CiFixConfig<'a> {
@@ -139,7 +142,9 @@ pub fn run_ci_fix_loop(
             exit_marker: spec.exit_marker.as_deref(),
         };
         // The session's own result is not trusted: the gate and CI decide.
-        run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts)?;
+        let ran = run_session_stage(store, run_id, &session, FIX_STAGE, fix_attempts);
+        steps.fix_session_ended();
+        ran?;
         if let Some(summary) = read_report(&report) {
             return Ok(CiFixOutcome::Unrelated { fix_attempts, summary });
         }

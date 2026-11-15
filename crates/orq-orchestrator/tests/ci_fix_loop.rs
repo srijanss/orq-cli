@@ -64,6 +64,8 @@ struct Script {
     fail_push: bool,
     /// Make `fix_session` fail, as when the session's permissions cannot be prepared.
     fail_session: Option<String>,
+    /// For each fix session, as it ended: whether it had left `fixed` and whether the gate had run.
+    ended: Vec<(bool, bool)>,
 }
 
 impl Script {
@@ -80,6 +82,7 @@ impl Script {
             fail_wait: false,
             fail_push: false,
             fail_session: None,
+            ended: Vec::new(),
         }
     }
 }
@@ -104,6 +107,9 @@ impl CiFixSteps for Script {
     }
     fn failure_log(&mut self, failing: &[String]) -> String {
         format!("boom: {}\n", failing.join(", "))
+    }
+    fn fix_session_ended(&mut self) {
+        self.ended.push((self.worktree.join("fixed").exists(), self.worktree.join("gated").exists()));
     }
     fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
         self.sessions.push(attempt);
@@ -777,4 +783,21 @@ fn a_report_left_by_an_earlier_session_does_not_stop_a_ci_fix_that_works() {
     let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
     assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
+}
+
+/// What follows a CI fix session runs as soon as the session ends, before the gate, so what it sees
+/// is the session's doing and nothing the gate did.
+#[test]
+fn the_fix_session_ended_step_runs_once_the_session_ends_before_the_gate() {
+    let w = world("session-ended");
+    let gate = Gate::Steps {
+        steps: vec![sh("touch gated && test -f fixed")],
+        notes: Vec::new(),
+    };
+    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "touch fixed");
+
+    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 1), &mut script).unwrap();
+
+    assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
+    assert_eq!(script.ended, vec![(true, false)]);
 }

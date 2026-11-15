@@ -2478,3 +2478,26 @@ fn a_feature_a_fix_session_completed_in_a_run_that_is_discarded_is_abandoned() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(ledger_status(&w, "FIX-01").0, "abandoned", "the discarded run's fix session completed it, but its work is gone");
 }
+
+/// Only what the fix session itself added is the run's: a feature that appears in the ledger after the
+/// session is over, here while the gate runs again, belongs to whoever added it and is left as it is.
+#[test]
+fn a_feature_added_to_the_ledger_after_the_fix_session_ended_is_not_closed_by_the_run() {
+    let w = world("fix-session-later-feature");
+    let later = write_ledger(
+        &scratch(&w, "later-ledger"),
+        &[
+            LedgerEntry::new("COM-01", "completed"),
+            LedgerEntry::new("OLD-01", "in_progress"),
+            LedgerEntry::new("FIX-01", "in_progress"),
+            LedgerEntry::new("LATER-01", "in_progress"),
+        ],
+    );
+    let gate = format!("test -e fixed.txt && cp {} {}", later.display(), w.repo.root().join(".tdd-features.json").display());
+
+    let (output, _) = run_whose_fix_session_starts_a_feature(&w, &gate, &["--no-ci-check"]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(ledger_status(&w, "FIX-01").0, "completed", "the fix session started it");
+    assert_eq!(ledger_status(&w, "LATER-01"), ("in_progress".to_string(), None), "it was added after the fix session ended");
+}
