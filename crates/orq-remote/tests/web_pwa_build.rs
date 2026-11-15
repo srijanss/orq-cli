@@ -275,6 +275,10 @@ impl Workspace {
         copy_dir(&source.join("src"), &web_src.join("src"));
         std::os::unix::fs::symlink(source.join("node_modules"), web_src.join("node_modules")).unwrap();
         copy_dir(&crate_dir().join("web"), &root.join("web"));
+        // The crate ships a built worker and its source; the workspace starts without either, so
+        // a test sees only what its own build writes.
+        let _ = std::fs::remove_file(root.join("web/sw.js"));
+        let _ = std::fs::remove_file(web_src.join("src/sw.js"));
         if with_worker {
             std::fs::write(web_src.join("src/sw.js"), SW_FIXTURE).unwrap();
         }
