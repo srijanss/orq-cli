@@ -13,8 +13,12 @@ fn rule<'a>(block: &'a str, selector: &str) -> &'a str {
 #[test]
 fn the_refresh_icon_stays_top_right_and_the_status_lines_share_one_row_on_a_phone() {
     let css = css();
-    let start = css.rfind("@media (max-width: 700px) {").unwrap();
-    let phone = &css[start..start + css[start..].find("\n}\n").unwrap()];
+    // The phone block that lays out the header; the stylesheet has other phone blocks too.
+    let phone = css
+        .match_indices("@media (max-width: 700px) {")
+        .map(|(start, _)| &css[start..start + css[start..].find("\n}\n").unwrap()])
+        .find(|block| block.contains(".page-header {"))
+        .expect("no phone block lays out the page header");
     let header = rule(phone, ".page-header {");
     assert!(header.contains("display: grid") && header.contains("grid-template-columns: 1fr auto"), "{header}");
     assert!(rule(phone, ".header-status {").contains("display: contents"), "the status children join the header grid");
