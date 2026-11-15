@@ -250,3 +250,19 @@ fn only_a_checkbox_or_radio_exclusion_counts_as_reaching_every_field() {
     let hides = ".signin input:not([type=text]) { font-size: 16px !important; }\n.signin input { font-size: 14px; }";
     assert!(std::panic::catch_unwind(|| font_size_px(hides, ".signin input", 360.0)).is_err());
 }
+
+#[test]
+fn a_dot_or_hash_inside_an_attribute_value_is_not_a_class_or_id() {
+    // These reach `.signin input` for some attribute value, so they fail rather than drop out.
+    for unknown in [
+        ".signin[data-theme=\"a.b\"] input",
+        ".signin[data-target=\"#panel\"] input",
+        ".signin input[data-x=\"a.b\"]",
+        ".signin input[data-x='#p']",
+        ".signin input[data-x=\"a:b.c\"]",
+    ] {
+        assert!(std::panic::catch_unwind(|| matches_element(unknown, ".signin input")).is_err(), "{unknown}");
+    }
+    // A real class beside the attribute still rules the selector out.
+    assert!(!matches_element(".other[data-theme=\"a.signin\"] input", ".signin input"));
+}

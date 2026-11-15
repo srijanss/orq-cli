@@ -97,9 +97,9 @@ pub fn can_match(selector: &str, target: &str) -> bool {
 /// to be there. Classes inside a pseudo-class such as `:not(.x)` are not required.
 pub fn matches_element(selector: &str, element: &str) -> bool {
     let classes = |compound: &str| -> Vec<String> {
-        let before_pseudo = compound.split(':').next().unwrap_or("");
-        before_pseudo.split('.').skip(1).map(|c| c.split(['[', '#']).next().unwrap_or("").to_string()).collect()
+        own_names(compound).split('.').skip(1).map(|c| c.split(['[', '#']).next().unwrap_or("").to_string()).collect()
     };
+    let has_id = |compound: &str| own_names(compound).contains('#');
     let (element_compounds, _) = compounds(element);
     let (rule_compounds, has_sibling) = compounds(selector);
     let (Some(tag), Some(rule_subject)) = (element_compounds.last(), rule_compounds.last()) else { return false };
@@ -108,13 +108,13 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
         return false;
     }
     // A class or ID on the element itself rules the selector out, whatever else it asks for.
-    if !classes(rule_subject).is_empty() || rule_subject.split(':').next().unwrap_or("").contains('#') {
+    if !classes(rule_subject).is_empty() || has_id(rule_subject) {
         return false;
     }
     // A representative element has ancestors but no known siblings, so whether this applies is unknown.
     assert!(!has_sibling, "{selector:?} reaches {element:?} through a sibling combinator, which this resolver cannot decide");
     // An ancestor class or ID the element does not sit under rules it out too.
-    if !rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !c.contains('#') && classes(c).iter().all(|class| ancestors.contains(class))) {
+    if !rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !has_id(c) && classes(c).iter().all(|class| ancestors.contains(class))) {
         return false;
     }
     // Only a selector that could still reach the element is left; it has no known attributes,
@@ -124,6 +124,32 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
         "{selector:?} reaches {element:?} only for some attribute, which this resolver cannot decide"
     );
     true
+}
+
+/// The part of a compound selector that names the element itself: its tag, classes, IDs and
+/// attribute brackets, with what is inside `[...]` and every pseudo-class taken out, so a `.` or
+/// `#` in an attribute value is not read as a class or an ID.
+fn own_names(compound: &str) -> String {
+    let (mut outside_brackets, mut depth) = (String::new(), 0usize);
+    for c in compound.chars() {
+        match c {
+            '[' => {
+                if depth == 0 {
+                    outside_brackets.push(c);
+                }
+                depth += 1;
+            }
+            ']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    outside_brackets.push(c);
+                }
+            }
+            _ if depth == 0 => outside_brackets.push(c),
+            _ => {}
+        }
+    }
+    outside_brackets.split(':').next().unwrap_or("").to_string()
 }
 
 /// A compound selector with its top-level `:not([type=checkbox])` and `:not([type=radio])` taken
