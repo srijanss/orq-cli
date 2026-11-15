@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 9] = [
+const SELECTORS: [&str; 14] = [
     "[data-select-mode]",
     "[data-select-mode][aria-pressed=\"true\"]",
     ".selecting [data-mark]",
@@ -20,6 +20,11 @@ const SELECTORS: [&str; 9] = [
     "tr.feature.swiped",
     "[data-confirm]",
     ".selecting",
+    "tr.feature.marked",
+    "tr.feature.marked:has([data-mark]:checked)",
+    "[data-start-marked].primary-button:not(.secondary-button)",
+    "[data-promote-marked].secondary-button",
+    ".marked-actions > .marked-group",
 ];
 
 fn feature(name: &str, status: &str) -> Value {
@@ -190,7 +195,7 @@ fn the_css_hides_the_marks_outside_selection_and_keeps_the_bar_inside_the_safe_a
     assert!(phone.contains("  .feature-mark, .marked-actions { display: none; }"), "a phone hides the marks unless selecting");
     assert!(css.lines().any(|line| line == ".select-mode { display: none; }"), "a wide screen has no Select button");
     let mark = phone.lines().find(|line| line.starts_with("  .selecting .feature-mark {")).expect("a selecting mark rule");
-    assert!(mark.contains("display: inline-block") && mark.contains("min-width: 44px") && mark.contains("min-height: 44px"), "{mark}");
+    assert!(mark.contains("display: block"), "{mark}");
     let bar = phone.lines().find(|line| line.starts_with("  .selecting .marked-actions {")).expect("a selecting bar rule");
     assert!(bar.contains("position: fixed") && bar.contains("env(safe-area-inset-bottom)") && bar.contains("display: flex"), "{bar}");
     assert!(phone.contains("  .feature-list.selecting { padding-bottom:"), "the list keeps room under its last row");
@@ -255,4 +260,68 @@ fn a_promote_with_one_refusal_reports_both_refreshes_and_leaves_selection_mode()
     assert_eq!(count(end, SELECTORS[8]), 0, "selection mode is left: {out}");
     assert_eq!(count(end, SELECTORS[3]), 0, "{out}");
     assert_eq!(gets(&out, "/api/projects/alpha/features"), 2, "the list is refreshed: {out}");
+}
+
+// A marked row is told apart by a class the CSS fills, not only by its box; in the bar Start is the primary
+// action and Promote the secondary one.
+#[test]
+fn a_marked_row_carries_the_marked_class_and_the_bar_has_start_as_primary_and_promote_as_secondary() {
+    let Some(out) = run(vec![select(), tap("d1"), tap("p1")]) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[2], SELECTORS[9]), 0, "no row marked yet: {out}");
+    let end = last(&out);
+    assert_eq!(count(end, SELECTORS[9]), 2, "only the two marked rows carry the class: {out}");
+    assert_eq!(count(end, SELECTORS[10]), 2, "and they are the checked ones: {out}");
+    assert_eq!(count(end, SELECTORS[11]), 1, "Start is the primary button: {out}");
+    assert_eq!(count(end, SELECTORS[12]), 1, "Promote is the secondary button: {out}");
+}
+
+fn rule<'a>(css: &'a str, start: &str) -> &'a str {
+    css.lines().find(|line| line.starts_with(start)).unwrap_or_else(|| panic!("a rule starting {start:?}"))
+}
+
+// The phone's selection mode looks like the rest of the phone view: a round 22px mark drawn in CSS in a fixed
+// gutter (the whole row, at least 44px tall, is the tap target), a tinted marked row, a text-style Select/Done
+// and a bottom sheet whose Start is primary; colours come only from the theme tokens and nothing moves under
+// reduced motion.
+#[test]
+fn the_phone_selection_mode_has_a_round_mark_a_tinted_marked_row_and_a_bottom_sheet_bar() {
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    let from = css.find("@media (max-width: 700px) {\n  .feature-mark").expect("the selection query");
+    let phone = &css[from..from + css[from..].find("\n}\n").expect("the query's end")];
+
+    let mark = rule(phone, "  .selecting .feature-mark {");
+    assert!(mark.contains("appearance: none") && mark.contains("width: 22px") && mark.contains("height: 22px"), "{mark}");
+    assert!(mark.contains("border-radius: 50%") && mark.contains("border: 2px solid var(--border)") && mark.contains("transition:"), "{mark}");
+    assert!(!mark.contains("min-width") && !mark.contains("min-height") && !mark.contains("44px"), "the box is not the tap target: {mark}");
+    assert!(rule(phone, "  .selecting .feature-mark:checked {").contains("background: var(--accent)"));
+    assert!(rule(phone, "  .selecting .feature-mark:checked::after {").contains("content: \"\""));
+    assert!(rule(phone, "  .selecting .feature-mark:focus-visible {").contains("var(--accent)"));
+
+    assert!(rule(phone, "  .selecting .feature-table tr.feature {").contains("height: 44px"), "a selecting row is at least 44px tall");
+    assert!(rule(phone, "  .selecting .feature-table :is(th, td):first-child {").contains("padding-left: calc(0.75rem + 2rem)"), "a fixed gutter for the mark");
+    assert!(rule(phone, "  .selecting .feature-table tr.feature:not(:has(.feature-mark)) {").contains("opacity: 0.55"), "rows that cannot be marked are dimmed");
+    assert!(rule(phone, "  .selecting .feature-table tr.feature.marked {").contains("background: color-mix(in srgb, var(--accent) 12%, transparent)"));
+
+    let toggle = rule(phone, "  .select-mode {");
+    assert!(toggle.contains("border: 0") && toggle.contains("color: var(--accent)") && toggle.contains("min-height: 44px"), "{toggle}");
+    assert!(rule(phone, "  .select-mode[aria-pressed=\"true\"] {").contains("font-weight: 700"), "Done is bold");
+
+    let bar = rule(phone, "  .selecting .marked-actions {");
+    assert!(bar.contains("border-radius: 0.75rem 0.75rem 0 0") && bar.contains("animation: marked-actions-in 150ms"), "{bar}");
+    assert!(rule(phone, "  .selecting .marked-actions .selected-count {").contains("color: var(--text-muted)"));
+    assert!(rule(phone, "  .selecting .marked-group > .run-action {").contains("flex: 1 1 0"), "two buttons share the row equally");
+    let secondary = rule(phone, "  .selecting .marked-actions .secondary-button {");
+    assert!(secondary.contains("background: transparent") && secondary.contains("border-color: var(--border)"), "{secondary}");
+    assert!(css.contains("@keyframes marked-actions-in"), "the bar slides up");
+
+    let calm = &css[css.find("@media (max-width: 700px) and (prefers-reduced-motion: reduce) {").expect("a reduced-motion rule")..];
+    let calm = &calm[..calm.find("\n}\n").unwrap()];
+    assert!(calm.contains(".selecting .feature-mark") && calm.contains(".selecting .marked-actions") && calm.contains("animation: none") && calm.contains("transition: none"), "{calm}");
+
+    assert!(!phone.contains('#'), "no hard-coded colours outside the tokens: {phone}");
+    assert!(css.lines().any(|line| line == ".marked-group { display: contents; }"), "a wide screen keeps its marked-actions layout");
+
+    let Some(out) = run(vec![select(), tap("d1"), tap("p1")]) else { return };
+    assert_eq!(count(last(&out), SELECTORS[13]), 1, "the project's pair sits in its own group: {out}");
 }

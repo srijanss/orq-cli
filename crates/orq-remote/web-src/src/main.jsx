@@ -1997,7 +1997,7 @@ function PromoteMarked({ names, control, onFinished, place = null }) {
   };
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
+      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
       {phase === "asking" ? (
         <Confirm question={"Promote " + featuresPhrase(names, place) + "?"} answer="Yes, promote" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
@@ -2532,10 +2532,10 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
         <div className="marked-actions">
           {selecting ? <span className="selected-count" data-selected-count aria-live="polite">{selectedCount + " selected"}</span> : null}
           {groups.map((group) => (
-            <Fragment key={group.projectId}>
+            <div className="marked-group" key={group.projectId}>
               {group.promote.length > 0 ? <PromoteMarked names={group.promote} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
               {group.start.length > 0 ? <StartMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
-            </Fragment>
+            </div>
           ))}
         </div>
       ) : null}
@@ -2556,7 +2556,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
             <tbody>
               {visible.map((feature) => (
                 <Fragment key={keyOf(feature)}>
-                <tr className={swiped === keyOf(feature) ? "feature swiped" : "feature"} data-feature-row={feature.name} onClick={tapRow(feature)} onClickCapture={swallowPressClick} {...(markable(feature) && !selecting ? rowTouch(feature) : { onTouchStart: forgetPress })}>
+                <tr className={"feature" + (swiped === keyOf(feature) ? " swiped" : "") + (marked.includes(keyOf(feature)) ? " marked" : "")} data-feature-row={feature.name} onClick={tapRow(feature)} onClickCapture={swallowPressClick} {...(markable(feature) && !selecting ? rowTouch(feature) : { onTouchStart: forgetPress })}>
                   <td>
                     {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(keyOf(feature))} onChange={() => toggle(keyOf(feature))} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (selecting && markable(feature)) return; if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
