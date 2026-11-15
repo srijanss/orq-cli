@@ -15,7 +15,10 @@ const pathOf = (request) => new URL(typeof request === "string" ? request : requ
 // `world` is what outlives the worker: its caches, the network and storage. Passing a running worker's
 // world boots a fresh copy of the worker over it, as when the browser restarts a stopped worker.
 // `live` holds the ids of the pages open now: a navigation's page joins it once it has opened.
-function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set(), clock: { now: 0 } }) {
+// `activated` says the registration has had an active worker. `source` is the worker's code: a newer
+// release is the same code under another shell version.
+const newerRelease = (source) => source.replace(/"[0-9a-f]{16}"/, '"1111111111111111"');
+function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set(), clock: { now: 0 }, activated: false }, source = code) {
   const listeners = {};
   const { stores, net, storage, live, clock } = world;
   const state = { claimed: false, skipped: false };
@@ -59,6 +62,7 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
     Date: { now: () => clock.now },
     caches, fetch, URL, DOMException, Response, Request, Headers, Promise, console,
     location: new URL("/sw.js", ORIGIN),
+    registration: { get active() { return world.activated ? {} : null; } },
     clients: {
       claim: async () => { state.claimed = true; },
       matchAll: async () => [...live].map((id) => ({ id })),
@@ -68,11 +72,12 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
   };
   context.self = context;
   vm.createContext(context);
-  vm.runInContext(code, context);
+  vm.runInContext(source, context);
   // Dispatches an event the way the browser does and waits for everything it asked to wait for.
   const dispatch = async (type, fields = {}) => {
     const waits = [];
     let responded = null;
+    if (type === "activate") world.activated = true;
     const event = { ...fields, waitUntil: (promise) => { waits.push(promise); }, respondWith: (promise) => { responded = Promise.resolve(promise); } };
     for (const listener of listeners[type] || []) listener(event);
     // A rejected respondWith is a network error to the page, as in a browser.
@@ -90,7 +95,7 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
   const cachedText = async (name, path) => { const hit = stores.has(name) ? stores.get(name).get(path) : undefined; return hit ? await hit.clone().text() : null; };
-  return { dispatch, ask, stores, net, state, storage, live, clock, cached, cachedText, caches, restart: () => boot(world) };
+  return { dispatch, ask, stores, net, state, storage, live, clock, cached, cachedText, caches, restart: () => boot(world, source), release: () => boot(world, newerRelease(source)) };
 }
 
 async function worker() {
@@ -218,9 +223,10 @@ async function tabs() {
 // asks for its script. `lose` deletes cached paths before the page opens and `writesFail` keeps storage
 // from writing while it opens; `evicted` drops the named caches and `broken` fails storage after the
 // restart. `opened: false` is a page the worker never opened; `firstVisit` has it open before the
-// worker activated, as on the visit that installs the worker.
+// worker activated, as on the visit that installs the worker. `replaced` has a newer release install
+// and activate (as after the person's Reload) over the open page instead of a plain restart.
 async function restarts() {
-  const run = async ({ lose = [], writesFail = false, evicted = [], broken = false, opened = true, firstVisit = false }) => {
+  const run = async ({ lose = [], writesFail = false, evicted = [], broken = false, opened = true, firstVisit = false, replaced = false }) => {
     const first = boot();
     await first.dispatch("install");
     if (firstVisit) first.live.add("tab");
@@ -232,8 +238,12 @@ async function restarts() {
     const page = opened ? (await first.ask("/projects/p", { mode: "navigate", opens: "tab" })).text : null;
     first.storage.writesFail = false;
     const before = (await first.ask("/app.react.js", { client: "tab" })).text;
-    const sw = first.restart();
+    const sw = replaced ? first.release() : first.restart();
     for (const name of evicted) sw.stores.delete(name === "shell" ? shellCache : name);
+    if (replaced) {
+      await sw.dispatch("install");
+      await sw.dispatch("activate");
+    }
     sw.storage.broken = broken;
     const script = (await sw.ask("/app.react.js", { client: "tab" })).text;
     return { page, before, script };
@@ -247,6 +257,7 @@ async function restarts() {
     unrecorded: await run({ writesFail: true }),
     neverOpened: await run({ opened: false }),
     firstVisit: await run({ opened: false, firstVisit: true }),
+    replaced: await run({ evicted: ["orq-pages"], replaced: true }),
   };
 }
 

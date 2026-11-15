@@ -6,13 +6,18 @@ const PREFIX = "orq-shell-";
 const CACHE = PREFIX + __ORQ_SHELL_VERSION__;
 const SHELL = ["/", "/app.css", "/app.react.js", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/icon-maskable-512.png", "/icons/apple-touch-icon.png"];
 
-// Install also opens PAGES, the record of where each open page came from (see below).
+// Install also opens PAGES, the record of where each open page came from (see below). The first
+// install, with no worker active before it, marks that in PAGES for activation.
 self.addEventListener("install", (event) => {
-  event.waitUntil(Promise.all([caches.open(CACHE).then((cache) => cache.addAll(SHELL)), caches.open(PAGES)]));
+  const first = !self.registration.active;
+  const shell = caches.open(CACHE).then((cache) => cache.addAll(SHELL));
+  const pages = caches.open(PAGES).then((store) => first && quietly(() => store.put(FIRST, new Response(CACHE))));
+  event.waitUntil(Promise.all([shell, pages]));
 });
 
-// Activation records every page already open, which loaded before this worker took over and so came
-// from the server, before claiming them.
+// The first worker's activation records every page already open as the server's before claiming
+// them: no worker came before it, so they loaded from the server. A later release takes no open page
+// for the server's, since one with no record may be a cached page whose record was lost.
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
@@ -63,6 +68,7 @@ const PAGES = "orq-pages";
 const ROOT = "/orq-page/";
 const record = (client) => ROOT + encodeURIComponent(client);
 const OPENED = "x-orq-opened";
+const FIRST = "/orq-first-install";
 const GRACE = 10 * 60 * 1000;
 const opened = new Map();
 const unsaved = new Set();
@@ -92,12 +98,15 @@ async function save(client, source) {
   return Boolean(written);
 }
 
-// Pages open when this worker takes over, with no record yet, loaded from the server.
+// On the first install, pages open when this worker takes over, with no record yet, loaded from the server.
 async function adopt() {
+  const pages = await caches.open(PAGES);
+  if (!(await pages.match(FIRST))) return;
   const open = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
   for (const { id } of open) {
-    if (!(await caches.match(record(id), { cacheName: PAGES }))) await learn(id, "");
+    if (!(await pages.match(record(id)))) await learn(id, "");
   }
+  await pages.delete(FIRST);
 }
 
 async function forget() {
@@ -111,7 +120,9 @@ async function forget() {
   }
   const pages = await caches.open(PAGES);
   for (const key of await pages.keys()) {
-    const client = decodeURIComponent(new URL(key.url).pathname.slice(ROOT.length));
+    const path = new URL(key.url).pathname;
+    if (!path.startsWith(ROOT)) continue;
+    const client = decodeURIComponent(path.slice(ROOT.length));
     if (open.has(client)) continue;
     const hit = await pages.match(key);
     if (hit && stale(client, Number(hit.headers.get(OPENED)) || 0)) await pages.delete(key);

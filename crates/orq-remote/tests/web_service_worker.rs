@@ -157,6 +157,14 @@ fn a_closed_page_is_forgotten_across_restarts_and_a_page_still_opening_keeps_its
 }
 
 #[test]
+fn a_newer_worker_never_takes_an_open_page_without_a_record_for_the_servers() {
+    let Some(out) = run() else { return };
+    let restarts = &out["restarts"];
+    let gone = json!({"page": "install /", "before": "install /app.react.js", "script": "<network error>"});
+    assert_eq!(restarts["replaced"], gone, "only the first worker takes the pages already open for the server's: {restarts}");
+}
+
+#[test]
 fn a_page_whose_source_is_unknown_gets_no_files_and_a_page_open_before_the_worker_took_over_gets_the_servers() {
     let Some(out) = run() else { return };
     let restarts = &out["restarts"];
