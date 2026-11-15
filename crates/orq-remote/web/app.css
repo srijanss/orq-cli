@@ -269,6 +269,11 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .run-filters .sort-toggle { flex: none; }
   .sidebar nav a, .sign-out, .project-switcher, .sidebar .project-list button, .project-picker .project-list button,   .sidebar .theme-toggle { min-height: 44px; min-width: 44px; }
 }
+@media (min-width: 701px) {
+  /* viewport-fit=cover reaches this layout too (a phone on its side, an iPad), so it pads by the insets as well. */
+  .sidebar { padding-top: calc(0.75rem + env(safe-area-inset-top)); padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
+  .content { padding-top: calc(1rem + env(safe-area-inset-top)); padding-right: calc(1rem + env(safe-area-inset-right)); padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+}
 
 .topbar { align-items: center; }
 .theme-toggle { margin-left: auto; }

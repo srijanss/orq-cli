@@ -47,6 +47,29 @@ fn installed_full_screen_the_bars_and_content_stay_clear_of_the_notch_and_home_i
 }
 
 #[test]
+fn on_a_landscape_phone_or_tablet_the_sidebar_and_content_stay_clear_of_the_notch_and_status_bar() {
+    // viewport-fit=cover applies at every width, and a notched phone turned sideways or an iPad is wider
+    // than the phone breakpoint, so the sidebar layout pads by the insets too.
+    let css = css();
+    for width in [740.0, 932.0, 1024.0, 1366.0] {
+        for (selector, sides) in [(".sidebar", ["top", "left", "bottom"]), (".content", ["top", "right", "bottom"])] {
+            for side in sides {
+                let value = effective_at(&css, selector, &format!("padding-{side}"), width);
+                assert!(value.contains(&format!("env(safe-area-inset-{side})")), "{selector} padding-{side} at {width}px: {value}");
+            }
+        }
+    }
+    // On a phone the sticky top bar already clears the status bar, so the content under it does not pad twice.
+    for width in WIDTHS {
+        for rule in parse(&css, None).iter().filter(|r| applies(&r.media, width) && r.selectors.iter().any(|s| can_match(s, ".content"))) {
+            for (property, value) in rule.declarations.iter().filter(|(p, _)| p == "padding" || p == "padding-top") {
+                assert!(!value.contains("safe-area-inset-top"), "{width}px {property}: {value}");
+            }
+        }
+    }
+}
+
+#[test]
 fn pulling_past_the_top_does_not_bounce_or_reload_the_installed_app() {
     let css = css();
     assert_eq!(effective(&css, "html", "overscroll-behavior-y"), "none");
