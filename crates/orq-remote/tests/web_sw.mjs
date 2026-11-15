@@ -15,10 +15,10 @@ const pathOf = (request) => new URL(typeof request === "string" ? request : requ
 // `world` is what outlives the worker: its caches, the network and storage. Passing a running worker's
 // world boots a fresh copy of the worker over it, as when the browser restarts a stopped worker.
 // `live` holds the ids of the pages open now: a navigation's page joins it once it has opened.
-// `activated` says the registration has had an active worker. `source` is the worker's code: a newer
+// `activated` says the registration has had an active worker; `scans` counts listings of orq-pages. `source` is the worker's code: a newer
 // release is the same code under another shell version.
 const newerRelease = (source) => source.replace(/"[0-9a-f]{16}"/, '"1111111111111111"');
-function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set(), clock: { now: 0 }, activated: false }, source = code) {
+function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false }, live: new Set(), clock: { now: 0 }, activated: false, scans: { count: 0 } }, source = code) {
   const listeners = {};
   const { stores, net, storage, live, clock } = world;
   const state = { claimed: false, skipped: false };
@@ -39,7 +39,10 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
     add: async (path) => { store(name).set(pathOf(path), await fetch(path)); },
     put: async (request, response) => { writable(); store(name).set(pathOf(request), response); },
     match: async (request) => { const hit = store(name).get(pathOf(request)); return hit ? hit.clone() : undefined; },
-    keys: async () => [...store(name).keys()].map((path) => new Request(ORIGIN + path)),
+    keys: async () => {
+      if (name === "orq-pages") world.scans.count += 1;
+      return [...store(name).keys()].map((path) => new Request(ORIGIN + path));
+    },
     delete: async (request) => store(name).delete(pathOf(request)),
   });
   const caches = {
@@ -95,7 +98,7 @@ function boot(world = { stores: new Map(), net: { online: true, phase: "install"
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
   const cachedText = async (name, path) => { const hit = stores.has(name) ? stores.get(name).get(path) : undefined; return hit ? await hit.clone().text() : null; };
-  return { dispatch, ask, stores, net, state, storage, live, clock, cached, cachedText, caches, restart: () => boot(world, source), release: () => boot(world, newerRelease(source)) };
+  return { dispatch, ask, stores, net, state, storage, live, clock, cached, cachedText, caches, scans: () => world.scans.count, restart: () => boot(world, source), release: () => boot(world, newerRelease(source)) };
 }
 
 async function worker() {
@@ -293,6 +296,24 @@ async function pruning() {
   return { afterClose, closedAsks, afterRestart, pendingKept, pending };
 }
 
+// Ten tabs open at once, then five more within the next half minute: the worker lists its records
+// once for all of them. Two minutes later another tab opens and it lists them again.
+async function burst() {
+  const sw = boot();
+  await sw.dispatch("install");
+  await sw.dispatch("activate");
+  const scans = () => sw.scans();
+  await Promise.all([...Array(10).keys()].map((n) => sw.ask("/", { mode: "navigate", opens: "t" + n })));
+  for (let n = 10; n < 15; n += 1) {
+    sw.clock.now += 5 * 1000;
+    await sw.ask("/", { mode: "navigate", opens: "t" + n });
+  }
+  const inBurst = scans();
+  sw.clock.now += 2 * 60 * 1000;
+  await sw.ask("/", { mode: "navigate", opens: "later" });
+  return { inBurst, later: scans() };
+}
+
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
 // had loaded), `fails` (register rejects), `waiting`, `installing` and `controller` (what the registration holds).
 function fakeWindow({ secure = true, api = true, ready = true, fails = false, waiting = false, installing = false, controller = true } = {}) {
@@ -378,4 +399,4 @@ async function registration() {
   return result;
 }
 
-process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), restarts: await restarts(), pruning: await pruning(), registration: await registration() }));
+process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), restarts: await restarts(), pruning: await pruning(), burst: await burst(), registration: await registration() }));

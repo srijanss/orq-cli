@@ -61,15 +61,20 @@ self.addEventListener("fetch", (event) => {
 // record is one whose source is unknown (its record was lost), and it gets no files rather than a
 // guess. `opened` keeps what this worker has learned so far, and which of it is not yet written.
 //
-// Each navigation forgets the pages that have closed, here and in PAGES, so neither grows with every
-// tab ever opened. A page joins the open clients only once its navigation finishes, so a record (or
-// what `opened` holds) younger than GRACE is kept: it may be a page that is still opening.
+// Navigations forget the pages that have closed, here and in PAGES, so neither grows with every tab
+// ever opened. A page joins the open clients only once its navigation finishes, so a record (or what
+// `opened` holds) younger than GRACE is kept: it may be a page that is still opening. Navigations
+// share one sweep while it runs and start another at most once every EVERY, so a burst of tabs or
+// reloads lists PAGES once.
 const PAGES = "orq-pages";
 const ROOT = "/orq-page/";
 const record = (client) => ROOT + encodeURIComponent(client);
 const OPENED = "x-orq-opened";
 const FIRST = "/orq-first-install";
 const GRACE = 10 * 60 * 1000;
+const EVERY = 60 * 1000;
+let sweeping = null;
+let swept = -Infinity;
 const opened = new Map();
 const unsaved = new Set();
 
@@ -109,7 +114,16 @@ async function adopt() {
   await pages.delete(FIRST);
 }
 
-async function forget() {
+function forget() {
+  if (sweeping || Date.now() - swept < EVERY) return sweeping;
+  swept = Date.now();
+  sweeping = sweep().finally(() => {
+    sweeping = null;
+  });
+  return sweeping;
+}
+
+async function sweep() {
   const open = new Set((await self.clients.matchAll({ includeUncontrolled: true, type: "window" })).map(({ id }) => id));
   const stale = (client, at) => !open.has(client) && Date.now() - at > GRACE;
   for (const [client, { at }] of opened) {

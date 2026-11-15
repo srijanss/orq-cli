@@ -165,6 +165,14 @@ fn a_newer_worker_never_takes_an_open_page_without_a_record_for_the_servers() {
 }
 
 #[test]
+fn a_burst_of_navigations_scans_the_records_once() {
+    let Some(out) = run() else { return };
+    let burst = &out["burst"];
+    assert_eq!(burst["inBurst"], json!(1), "navigations at once or within a minute share one scan: {burst}");
+    assert_eq!(burst["later"], json!(2), "a navigation a minute or more later scans again: {burst}");
+}
+
+#[test]
 fn a_page_whose_source_is_unknown_gets_no_files_and_a_page_open_before_the_worker_took_over_gets_the_servers() {
     let Some(out) = run() else { return };
     let restarts = &out["restarts"];
