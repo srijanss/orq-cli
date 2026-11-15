@@ -38,6 +38,18 @@ if (scenario.rects) {
     return { top: box.top, left: box.left, width: box.width, height: box.height, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top };
   };
 }
+// A ResizeObserver the scenario drives when it asks for one: a step {resize: rects} moves the boxes and tells every
+// live observer about the elements it watches, and each snapshot counts the elements still watched.
+const watchers = new Set();
+if (scenario.resize_observer === true) {
+  window.ResizeObserver = class {
+    constructor(run) { this.run = run; this.watched = new Set(); watchers.add(this); }
+    observe(el) { this.watched.add(el); }
+    unobserve(el) { this.watched.delete(el); }
+    disconnect() { this.watched.clear(); watchers.delete(this); }
+  };
+}
+const watchedCount = () => [...watchers].reduce((sum, watcher) => sum + watcher.watched.size, 0);
 if (scenario.phone === true) window.matchMedia = (query) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 
 // Intervals are faked so a test can fire them: {id, delay, active, run}. Only setInterval is faked;
@@ -220,7 +232,7 @@ function snapshot() {
   const times = [...page().querySelectorAll("time")].map((el) => ({ label: [...el.parentNode.childNodes].filter((c) => c.nodeType === 3).map((c) => c.data).join("").trim(), text: el.textContent, title: el.getAttribute("title"), datetime: el.getAttribute("datetime") }));
   const doc = window.document;
   const a11y = { mains: doc.querySelectorAll("main").length, banners: [...doc.querySelectorAll("header")].filter((h) => h.closest("main") === null).length, navs: [...doc.querySelectorAll("nav")].map((n) => n.getAttribute("aria-label")), live: [...doc.querySelectorAll("[aria-live], [role=status], [role=log]")].map((el) => ({ live: el.getAttribute("aria-live"), role: el.getAttribute("role"), text: el.textContent })) };
-  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), styles: Object.fromEntries((scenario.styles || []).map((sel) => [sel, root.querySelector(sel) === null ? null : root.querySelector(sel).getAttribute("style")])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search };
+  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), styles: Object.fromEntries((scenario.styles || []).map((sel) => [sel, root.querySelector(sel) === null ? null : root.querySelector(sel).getAttribute("style")])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search, watched: watchedCount() };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -287,6 +299,9 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       if (step.viewport) resize(step.viewport);
       const target = step.on ? root.querySelector(step.on) : window;
       target.dispatchEvent(new window.Event(step.event));
+    } else if (step.resize !== undefined) {
+      scenario.rects = step.resize;
+      for (const watcher of [...watchers]) watcher.run([...watcher.watched].map((target) => ({ target })), watcher);
     } else if (step.fire !== undefined) {
       for (const timer of timeouts.filter((t) => t.active)) { timer.active = false; timer.run(); }
     } else if (step.visibility !== undefined) {

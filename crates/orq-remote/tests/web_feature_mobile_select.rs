@@ -345,3 +345,31 @@ fn the_list_reserves_the_sheets_measured_height_below_its_last_row_while_selecti
     let css = std::fs::read_to_string(format!("{dir}/web/app.css")).unwrap();
     assert!(css.contains("  .feature-list.selecting { padding-bottom: calc(var(--marked-actions-height, 5rem) + 1rem); }"), "the list's padding follows the measured sheet");
 }
+
+fn sheet(height: u64) -> Value {
+    json!([{"selector": ".marked-actions", "top": 844 - 60 - height, "left": 0, "width": 390, "height": height}])
+}
+
+// The sheet grows when Start's question opens in it (or another project's buttons or a refusal join it) and
+// shrinks again; the list's reservation follows each resize, and the watch ends with selection mode.
+#[test]
+fn the_reserved_height_follows_the_sheet_as_it_grows_and_shrinks_and_the_watch_ends_on_done() {
+    if !web_deps::ready() {
+        return;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let profiles = json!({"status": 200, "json": {"profiles": ["haiku", "opus", "sonnet"], "implementer": "opus", "reviewer": "sonnet"}});
+    let steps = vec![json!({"submit": TOKEN}), select(), tap("d1"), tap("p1"), json!({"click": "[data-start-marked]"}), json!({"resize": sheet(300)}), json!({"resize": sheet(120)}), select()];
+    let scenario = json!({"url": "/projects/alpha/features", "phone": true, "resize_observer": true, "viewport": {"width": 390, "height": 844}, "responses": [ledger(), projects(), profiles], "steps": steps, "selectors": SELECTORS, "styles": [".feature-list"], "rects": sheet(160)});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let style = |i: usize| out["frames"][i]["settled"]["styles"][".feature-list"].as_str().unwrap_or("").to_string();
+    assert!(style(4).contains("--marked-actions-height: 160px"), "measured when it appears: {out}");
+    assert_eq!(out["frames"][4]["settled"]["watched"], 1, "the sheet is watched: {out}");
+    assert_eq!(count(&out["frames"][5], SELECTORS[7]), 1, "Start's question is open in the sheet: {out}");
+    assert!(style(6).contains("--marked-actions-height: 300px"), "the reservation grows with the sheet: {out}");
+    assert!(style(7).contains("--marked-actions-height: 120px"), "and shrinks with it: {out}");
+    assert!(!style(8).contains("--marked-actions-height"), "Done drops it: {out}");
+    assert_eq!(out["frames"][8]["settled"]["watched"], 0, "and stops watching the sheet: {out}");
+}
