@@ -42,31 +42,57 @@ self.addEventListener("fetch", (event) => {
 // online or offline, when the whole shell is there; when a shell file is missing (or cache storage
 // fails) the page opens whole from the server instead. The cache is left in place, since another
 // open page may have been built from it and still need its files.
-// Where each open page came from is remembered by its client id, never read back from whether the
-// cache is there now: true for this release's cache, false for the server.
-const fromCache = new Map();
+//
+// Where each open page came from is never read back from whether the cache is there now. A page
+// opened from a release's cache is recorded under its client id in PAGES, which outlives the worker
+// (the browser stops and restarts it while pages stay open) and which activation leaves alone. A page
+// with no record came from the server: one this worker opened from the server, or one that loaded
+// before any worker. So a page opens from the cache only once its record is written; when the record
+// cannot be written the page opens from the server instead. `opened` keeps what this worker has
+// learned so far: the cache name a page was built from, or "" for the server.
+const PAGES = "orq-pages";
+const record = (client) => "/orq-page/" + encodeURIComponent(client);
+const opened = new Map();
 
+// A navigation with no resulting client (one that opens no page) has no files to ask for.
 async function navigate(request, client) {
   const page = await whole();
-  if (client) fromCache.set(client, Boolean(page));
-  return page || fetch(request);
+  if (!client) return page || fetch(request);
+  const fromCache = Boolean(page) && Boolean(await quietly(() => remember(client)));
+  opened.set(client, fromCache ? CACHE : "");
+  return fromCache ? page : fetch(request);
 }
 
-// A shell file comes from where its page came from. A page opened from this release's cache, which is
+async function remember(client) {
+  await (await caches.open(PAGES)).put(record(client), new Response(CACHE));
+  return true;
+}
+
+// A shell file comes from where its page came from. A page built from a release's cache, which is
 // never rewritten after install, gets its files only from that cache: a file lost, evicted or behind
 // failing storage is an error rather than the newer server's copy. A page from the server gets its
-// files from the server. A page this worker did not open (it was restarted since) falls back to the
-// cache being there.
+// files from the server. When the page's record cannot be read, its files are an error too.
 async function shell(path, client) {
-  const cached = fromCache.get(client);
-  if (cached === true) return cachedOrError(path);
-  if (cached === false) return fetch(path);
-  if (!(await quietly(() => caches.has(CACHE)))) return fetch(path);
-  return cachedOrError(path);
+  const source = client ? await sourceOf(client) : "";
+  if (source === undefined) return Response.error();
+  return source ? cachedOrError(path, source) : fetch(path);
 }
 
-async function cachedOrError(path) {
-  return (await quietly(() => caches.match(path, { cacheName: CACHE }))) || Response.error();
+// The cache the page was built from, "" for the server, or undefined when that cannot be read.
+async function sourceOf(client) {
+  if (opened.has(client)) return opened.get(client);
+  try {
+    const hit = await caches.match(record(client), { cacheName: PAGES });
+    const source = hit ? await hit.text() : "";
+    opened.set(client, source);
+    return source;
+  } catch (error) {
+    return undefined;
+  }
+}
+
+async function cachedOrError(path, cacheName) {
+  return (await quietly(() => caches.match(path, { cacheName }))) || Response.error();
 }
 
 // This release's cached page, only when every shell file is cached with it.

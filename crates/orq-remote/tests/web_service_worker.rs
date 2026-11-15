@@ -130,6 +130,22 @@ fn a_page_opening_from_the_server_leaves_the_cache_another_open_page_was_built_f
 }
 
 #[test]
+fn where_an_open_page_came_from_outlives_a_restart_of_the_worker() {
+    let Some(out) = run() else { return };
+    let restarts = &out["restarts"];
+    let cached = json!({"page": "install /", "before": "install /app.react.js", "script": "install /app.react.js"});
+    assert_eq!(restarts["cached"], cached, "a cached page keeps its release's files after a restart: {restarts}");
+    let server = json!({"page": "later /projects/p", "before": "later /app.react.js", "script": "later /app.react.js"});
+    assert_eq!(restarts["fromServer"], server, "a page from the server never gets the kept cache's older files after a restart: {restarts}");
+    let gone = json!({"page": "install /", "before": "install /app.react.js", "script": "<network error>"});
+    assert_eq!(restarts["evicted"], gone, "a cached page whose cache is evicted after a restart never gets the newer server's files: {restarts}");
+    assert_eq!(restarts["broken"], gone, "a cached page whose storage fails after a restart never gets the newer server's files: {restarts}");
+    assert_eq!(restarts["unrecorded"], server, "a page the worker cannot record as cached opens whole from the server: {restarts}");
+    let unseen = json!({"page": null, "before": "later /app.react.js", "script": "later /app.react.js"});
+    assert_eq!(restarts["neverOpened"], unseen, "a page the worker never opened gets its files as it would without a worker: {restarts}");
+}
+
+#[test]
 fn only_the_pages_skip_waiting_message_lets_a_new_release_take_over() {
     let Some(out) = run() else { return };
     assert_eq!(out["worker"]["skipWaiting"], json!(true));

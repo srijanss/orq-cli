@@ -12,11 +12,11 @@ const code = readFileSync(swPath, "utf8");
 const ORIGIN = "https://box.example.ts.net";
 const pathOf = (request) => new URL(typeof request === "string" ? request : request.url, ORIGIN).pathname;
 
-function boot() {
+// `world` is what outlives the worker: its caches, the network and storage. Passing a running worker's
+// world boots a fresh copy of the worker over it, as when the browser restarts a stopped worker.
+function boot(world = { stores: new Map(), net: { online: true, phase: "install", fetched: [] }, storage: { broken: false, writesFail: false } }) {
   const listeners = {};
-  const stores = new Map();
-  const net = { online: true, phase: "install", fetched: [] };
-  const storage = { broken: false };
+  const { stores, net, storage } = world;
   const state = { claimed: false, skipped: false };
   const fetch = async (request) => {
     const path = pathOf(request);
@@ -28,10 +28,12 @@ function boot() {
     if (!stores.has(name)) stores.set(name, new Map());
     return stores.get(name);
   };
+  // `writesFail`: storage reads but cannot write (as when it is full).
+  const writable = () => { if (storage.broken || storage.writesFail) throw new DOMException("storage is unavailable", "QuotaExceededError"); };
   const cache = (name) => ({
     addAll: async (paths) => { for (const path of paths) store(name).set(pathOf(path), await fetch(path)); },
     add: async (path) => { store(name).set(pathOf(path), await fetch(path)); },
-    put: async (request, response) => { store(name).set(pathOf(request), response); },
+    put: async (request, response) => { writable(); store(name).set(pathOf(request), response); },
     match: async (request) => { const hit = store(name).get(pathOf(request)); return hit ? hit.clone() : undefined; },
   });
   const caches = {
@@ -79,7 +81,7 @@ function boot() {
   };
   const cached = (name) => Object.fromEntries([...(stores.get(name) || new Map()).entries()].map(([path, response]) => [path, response]));
   const cachedText = async (name, path) => { const hit = stores.has(name) ? stores.get(name).get(path) : undefined; return hit ? await hit.clone().text() : null; };
-  return { dispatch, ask, stores, net, state, storage, cached, cachedText, caches };
+  return { dispatch, ask, stores, net, state, storage, cached, cachedText, caches, restart: () => boot(world) };
 }
 
 async function worker() {
@@ -110,8 +112,8 @@ async function worker() {
     postNavigation: await sw.ask("/projects/p", { method: "POST", mode: "navigate" }),
     otherOrigin: await sw.ask("/app.css", { origin: "https://elsewhere.example" }),
     worker: await sw.ask("/sw.js"),
-    navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate" }),
-    asset: await sw.ask("/app.css"),
+    navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate", opens: "page" }),
+    asset: await sw.ask("/app.css", { client: "page" }),
   };
   const cachedAfter = await sw.cachedText(shellCache, "/app.css");
   const fetchedOnline = sw.net.fetched.slice(installFetches);
@@ -119,11 +121,11 @@ async function worker() {
   sw.net.online = false;
   sw.net.phase = "never";
   const offline = {
-    navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate" }),
+    navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate", opens: "offline" }),
     root: await sw.ask("/", { mode: "navigate" }),
-    asset: await sw.ask("/app.react.js"),
-    style: await sw.ask("/app.css"),
-    icon: await sw.ask("/icons/icon-192.png"),
+    asset: await sw.ask("/app.react.js", { client: "offline" }),
+    style: await sw.ask("/app.css", { client: "offline" }),
+    icon: await sw.ask("/icons/icon-192.png", { client: "offline" }),
   };
 
   const notSkip = boot();
@@ -200,6 +202,38 @@ async function tabs() {
     };
   };
   return { storageFails: await storageFails(), shellLost: await shellLost() };
+}
+
+// The browser stops and restarts the worker while a page is open; the server has moved on to a newer
+// release. Each case starts from a fresh install; the page opens, the worker restarts, then the page
+// asks for its script. `lose` deletes cached paths before the page opens and `writesFail` keeps storage
+// from writing while it opens; `evicted` drops the whole cache and `broken` fails storage after the restart.
+async function restarts() {
+  const run = async ({ lose = [], writesFail = false, evicted = false, broken = false, opened = true }) => {
+    const first = boot();
+    await first.dispatch("install");
+    await first.dispatch("activate");
+    const shellCache = [...first.stores.keys()][0];
+    first.net.phase = "later";
+    for (const path of lose) first.stores.get(shellCache).delete(path);
+    first.storage.writesFail = writesFail;
+    const page = opened ? (await first.ask("/projects/p", { mode: "navigate", opens: "tab" })).text : null;
+    first.storage.writesFail = false;
+    const before = (await first.ask("/app.react.js", { client: "tab" })).text;
+    const sw = first.restart();
+    if (evicted) sw.stores.delete(shellCache);
+    sw.storage.broken = broken;
+    const script = (await sw.ask("/app.react.js", { client: "tab" })).text;
+    return { page, before, script };
+  };
+  return {
+    cached: await run({}),
+    fromServer: await run({ lose: ["/icons/icon-192.png"] }),
+    evicted: await run({ evicted: true }),
+    broken: await run({ broken: true }),
+    unrecorded: await run({ writesFail: true }),
+    neverOpened: await run({ opened: false }),
+  };
 }
 
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
@@ -287,4 +321,4 @@ async function registration() {
   return result;
 }
 
-process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), registration: await registration() }));
+process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), restarts: await restarts(), registration: await registration() }));
