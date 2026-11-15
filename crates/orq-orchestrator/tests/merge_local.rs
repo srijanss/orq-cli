@@ -458,6 +458,20 @@ fn a_checkout_whose_uncommitted_changes_cannot_be_read_is_refused_with_gits_erro
     assert!(!events.iter().any(|e| e.kind == "merge.completed"));
 }
 
+/// Takes every permission off `file`; false (with the permissions put back) when it can still be
+/// opened, as it can for root, so a test that needs an unreadable file skips instead of failing.
+#[cfg(unix)]
+fn made_unreadable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(file, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(file).is_ok() {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+        eprintln!("skipped: {} is still readable without permissions (running as root?)", file.display());
+        return false;
+    }
+    true
+}
+
 #[cfg(unix)]
 #[test]
 fn an_overlap_is_refused_without_reading_the_other_uncommitted_files() {
@@ -469,7 +483,9 @@ fn an_overlap_is_refused_without_reading_the_other_uncommitted_files() {
     fs::write(w.repo.join("secret.txt"), "staged\n").unwrap();
     git(&w.repo, &["add", "secret.txt"]);
     let secret = w.repo.join("secret.txt");
-    fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+    if !made_unreadable(&secret) {
+        return;
+    }
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
@@ -490,7 +506,9 @@ fn an_uncommitted_file_that_cannot_be_read_refuses_the_merge_with_gits_error() {
     fs::write(w.repo.join("secret.txt"), "staged\n").unwrap();
     git(&w.repo, &["add", "secret.txt"]);
     let secret = w.repo.join("secret.txt");
-    fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+    if !made_unreadable(&secret) {
+        return;
+    }
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
