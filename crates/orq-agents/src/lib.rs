@@ -71,6 +71,9 @@ pub struct ImplementRequest<'a> {
     /// orq's gate runs the full suite after the session: the session is told to run only the tests for
     /// what it changed. `false` keeps the prompt that says nothing about it.
     pub leave_full_suite_to_gate: bool,
+    /// The run's permission rules: an unattended session is told the `Bash(...)` forms it may run, since
+    /// a command in another form is refused with nobody to allow it. Empty says nothing about it.
+    pub allowed_commands: &'a [String],
 }
 
 /// Where a review asked for again starts, and the findings that were open when it escalated.
@@ -94,6 +97,8 @@ pub struct FixRequest<'a> {
     pub exit_marker: Option<&'a str>,
     /// Someone is watching this session in a terminal and can answer it; `false` starts it headless.
     pub attended: bool,
+    /// The run's permission rules, told to a headless session as an implementer is told them.
+    pub allowed_commands: &'a [String],
 }
 
 /// The longest extra context a run accepts, in characters.
@@ -324,6 +329,29 @@ fn attended_wording(harness: &str) -> String {
     format!("\n\nA person is watching this session and can answer you, so this run is not unattended, whatever a skill's wording says. When you need a decision you cannot make yourself, {how} and wait for the answer.")
 }
 
+/// The paragraph that tells an unattended session which command forms its run allows: each
+/// `Bash(...)` rule as the command it matches, a trailing `:*` shown as ` ...`. Other rules are not
+/// commands, and neither is one holding a backtick or a control character; empty when no rule is one.
+fn allowed_commands_wording(rules: &[String]) -> String {
+    let forms: Vec<String> = rules
+        .iter()
+        .filter_map(|rule| rule.strip_prefix("Bash(")?.strip_suffix(')'))
+        // Configuration text: a rule that would leave its code span or the paragraph is not written.
+        .filter(|command| !command.is_empty() && !command.chars().any(|c| c.is_control() || c == '`'))
+        .map(|command| match command.strip_suffix(":*") {
+            Some(prefix) => format!("`{prefix} ...`"),
+            None => format!("`{command}`"),
+        })
+        .collect();
+    if forms.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\nCommands you may run: {}. Run a command in exactly one of these forms. For a script, run it from the folder the form expects (cd there in the same command). A command in another form is refused.",
+        forms.join(", ")
+    )
+}
+
 /// The one prompt argument of a fix session on `harness`, after checking everything the request puts
 /// into its arguments. Every adapter builds its prompt here so they all refuse the same unsafe values.
 fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String, AdapterError> {
@@ -344,6 +372,8 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
     let mut prompt = task.to_string();
     if request.attended {
         prompt.push_str(&attended_wording(harness));
+    } else {
+        prompt.push_str(&allowed_commands_wording(request.allowed_commands));
     }
     if let Some(marker) = request.exit_marker {
         prompt.push_str("\n\nFinal step, only after the fix is committed and nothing is left to do or ask: create the empty file ");
@@ -421,6 +451,8 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     }
     if request.attended {
         prompt.push_str(&attended_wording(harness));
+    } else {
+        prompt.push_str(&allowed_commands_wording(request.allowed_commands));
     }
     if let Some(marker) = request.exit_marker {
         let quoted = marker_for_prompt(marker)?;

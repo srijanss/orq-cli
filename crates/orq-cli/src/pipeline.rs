@@ -898,13 +898,14 @@ fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)])
 /// Writes the session permissions again before a fix session, saying on stderr what was left out:
 /// the fix session runs on what the earlier sessions changed. A rule that should be left out but that
 /// the settings still allow starts no session: the error says which.
-fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<(), StoreError> {
-    let notes = write_permissions(store, record, settings, logs)?;
-    notes.iter().for_each(|note| eprintln!("orq: {note}"));
-    Ok(())
+/// Returns the command rules the written settings allow, for the fix session's prompt.
+fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<Vec<String>, StoreError> {
+    let permissions = write_permissions(store, record, settings, logs)?;
+    permissions.notes.iter().for_each(|note| eprintln!("orq: {note}"));
+    Ok(permissions.allowed_commands)
 }
 
-fn write_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<Vec<String>, StoreError> {
+fn write_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<orq_orchestrator::RunPermissions, StoreError> {
     let base = orq_orchestrator::rebased_onto(store, &record.run_id)?.unwrap_or_else(|| record.base_sha.clone());
     let extra = settings.allowed_tools.as_deref().unwrap_or_default();
     orq_orchestrator::refresh_run_permissions(&record.worktree, extra, logs, &base).map_err(StoreError::Corrupt)
@@ -955,6 +956,8 @@ fn stages(
     let tokens = settings.compact_window.unwrap_or(DEFAULT_COMPACT_WINDOW);
     run_vars.push(("CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(), tokens.to_string()));
     let mut notes = databases.notes.clone();
+    // The command rules the session settings allow, so the session's prompt can list them.
+    let mut allowed_commands: Vec<String> = Vec::new();
     if !options.publish {
         let carried = orq_orchestrator::carry_local_files(&options.project.root, worktree, settings.local_files.as_deref());
         run_vars.extend(carried.env);
@@ -963,7 +966,9 @@ fn stages(
         let mcpctl = find_program("mcpctl");
         notes.extend(orq_orchestrator::prepare_mcp_servers(worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref()));
         // Nobody may be there to answer a permission prompt, and the exit marker goes into the logs.
-        notes.extend(write_permissions(store, record, settings, logs)?);
+        let permissions = write_permissions(store, record, settings, logs)?;
+        notes.extend(permissions.notes);
+        allowed_commands = permissions.allowed_commands;
         // Only a session with a terminal has someone to ask.
         if options.interactive {
             match std::env::current_exe() {
@@ -1031,6 +1036,7 @@ fn stages(
                     // The gate runs the full suite after the session, so the session need not; a project
                     // whose gate is not a full suite opts out.
                     leave_full_suite_to_gate: options.gate && settings.full_suite_in_session != Some(true),
+                    allowed_commands: &allowed_commands,
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
@@ -1093,37 +1099,34 @@ fn stages(
         let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
         let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("gate-fix.done"));
-        let fix_args = if options.publish {
-            Vec::new()
-        } else {
-            let task = format!(
-                "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix. \
-                 If the failure has nothing to do with your changes (a flaky test, a test already broken on the target branch, a broken environment), do not fix it: \
-                 write a line saying what fails and why it is not caused by your changes to {} and stop.",
-                gate_log.display(),
-                unrelated_report.display()
-            );
-            let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
-            adapter_for(&options.implementer.harness)
-                .and_then(|adapter| {
-                    adapter.fix_argv(&FixRequest {
-                        implementer: spec(&implementer),
-                        task: &task,
-                        logs_dir,
-                        exit_marker: fix_marker.as_deref().and_then(Path::to_str),
-                        attended: options.interactive,
-                    })
-                })
-                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
-        };
+        let task = format!(
+            "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix. \
+             If the failure has nothing to do with your changes (a flaky test, a test already broken on the target branch, a broken environment), do not fix it: \
+             write a line saying what fails and why it is not caused by your changes to {} and stop.",
+            gate_log.display(),
+            unrelated_report.display()
+        );
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
             run_gate_with_fixes_env(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
-                // A script the run has changed since is no longer allowed to the fix session.
-                recheck_permissions(store, record, settings, logs)?;
+                let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
+                // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
+                let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+                let args = adapter_for(&options.implementer.harness)
+                    .and_then(|adapter| {
+                        adapter.fix_argv(&FixRequest {
+                            implementer: spec(&implementer),
+                            task: &task,
+                            logs_dir,
+                            exit_marker: fix_marker.as_deref().and_then(Path::to_str),
+                            attended: options.interactive,
+                            allowed_commands: &allowed_commands,
+                        })
+                    })
+                    .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
                 Ok(FixSessionSpec {
                     program: claude_program.to_string(),
-                    args: fix_args.clone(),
+                    args,
                     env: fix_env.clone(),
                     cwd: worktree.to_path_buf(),
                     session_id: None,
@@ -1331,17 +1334,22 @@ fn stages(
         let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
         let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("ci-fix.done"));
-        let fix_args = adapter_for(&options.implementer.harness)
-            .and_then(|adapter| {
-                adapter.fix_argv(&FixRequest {
-                    implementer: spec(&implementer),
-                    task: &task,
-                    logs_dir,
-                    exit_marker: fix_marker.as_deref().and_then(Path::to_str),
-                    attended: options.interactive,
+        let session_args = || {
+            // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
+            let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+            adapter_for(&options.implementer.harness)
+                .and_then(|adapter| {
+                    adapter.fix_argv(&FixRequest {
+                        implementer: spec(&implementer),
+                        task: &task,
+                        logs_dir,
+                        exit_marker: fix_marker.as_deref().and_then(Path::to_str),
+                        attended: options.interactive,
+                        allowed_commands: &allowed_commands,
+                    })
                 })
-            })
-            .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))
+        };
         let mut steps = PipelineCiSteps {
             store,
             run_id,
@@ -1351,16 +1359,16 @@ fn stages(
             ci_log: &ci_log,
             push_log: logs.join("push.log"),
             report: &|head, ci| build_review_report(store, record, options, &steps_of(&gate), head, ci, logs),
-            before_session: &|| recheck_permissions(store, record, settings, logs),
+            session_args: &session_args,
             session: FixSessionSpec {
                 program: claude_program.to_string(),
-                args: fix_args,
+                args: Vec::new(),
                 env: fix_env,
                 cwd: worktree.to_path_buf(),
                 session_id: None,
                 log: logs.join("ci-fix.log"),
                 terminal: options.interactive,
-                exit_marker: fix_marker,
+                exit_marker: fix_marker.clone(),
             },
         };
         let gate_env = gate_env(store, record, database_env)?;
@@ -1480,8 +1488,10 @@ struct PipelineCiSteps<'a> {
     push_log: PathBuf,
     /// Leaves the review report of a commit the loop just pushed, and again with what its CI said.
     report: &'a dyn Fn(&str, Option<&CiOutcome>),
-    /// Run before each fix session: brings the session's allowed commands up to date with the branch.
-    before_session: &'a dyn Fn() -> Result<(), StoreError>,
+    /// Run before each fix session: brings the session's allowed commands up to date with the branch
+    /// and returns the session's arguments, whose prompt lists them.
+    session_args: &'a dyn Fn() -> Result<Vec<String>, StoreError>,
+    /// The fix session, but for its arguments.
     session: FixSessionSpec,
 }
 
@@ -1511,8 +1521,8 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     }
 
     fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
-        (self.before_session)()?;
-        Ok(self.session.clone())
+        let args = (self.session_args)()?;
+        Ok(FixSessionSpec { args, ..self.session.clone() })
     }
 }
 

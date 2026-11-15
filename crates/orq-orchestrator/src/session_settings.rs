@@ -467,14 +467,24 @@ fn linked_what(links: &[String]) -> &'static str {
 /// also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
-    let (mut notes, unrevoked) = apply_run_permissions(worktree, extra, logs, base);
+    let (mut notes, unrevoked, _) = apply_run_permissions(worktree, extra, logs, base);
     notes.extend(unrevoked);
     notes
 }
 
-/// What [`write_run_permissions`] does: its notes, and why a rule left out is still allowed by
-/// settings that could not be updated.
-fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> (Vec<String>, Option<String>) {
+/// What a refresh of a run's permissions wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunPermissions {
+    /// What was left out and why, and settings that could not be updated.
+    pub notes: Vec<String>,
+    /// The `Bash(...)` rules the settings now allow, orq's and the project's, once each in order:
+    /// the command forms an unattended session is told it may run.
+    pub allowed_commands: Vec<String>,
+}
+
+/// What [`write_run_permissions`] does: its notes, why a rule left out is still allowed by
+/// settings that could not be updated, and the command rules the settings were given.
+fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> (Vec<String>, Option<String>, Vec<String>) {
     let mut notes = Vec::new();
     let logs = logs.to_string_lossy();
     // A path rule beginning with `//` is absolute: the session writes its exit marker there.
@@ -559,24 +569,34 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         }
         Ok(())
     });
-    let Err(why) = edited else { return (notes, None) };
+    let Err(why) = edited else {
+        let mut commands: Vec<String> = Vec::new();
+        for rule in allowed.iter().filter(|rule| rule.starts_with("Bash(")) {
+            if !commands.iter().any(|command| command == rule) {
+                commands.push(rule.to_string());
+            }
+        }
+        return (notes, None, commands);
+    };
     // Rules a file Claude Code still reads allows; one it cannot parse allows nothing.
     let held = std::fs::read_to_string(worktree.join(SETTINGS)).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
     let still: Vec<&str> = withdrawn.into_iter().filter(|rule| held.as_ref().and_then(|held| held["permissions"]["allow"].as_array()).is_some_and(|list| list.iter().any(|item| item.as_str() == Some(rule)))).collect();
     if still.is_empty() {
+        // Settings that were not written allow none of the rules: the session is told of none.
         notes.push(format!("{SETTINGS} was not updated: {why}"));
-        return (notes, None);
+        return (notes, None, Vec::new());
     }
     let unrevoked = format!("{SETTINGS} was not updated ({why}) and still allows {}, which must be left out", still.join(", "));
-    (notes, Some(unrevoked))
+    (notes, Some(unrevoked), Vec::new())
 }
 
 /// Like [`write_run_permissions`], for a session that must not start with a rule it was allowed
-/// before and must lose now: fails, saying which, when the settings still allow such a rule.
-pub fn refresh_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Result<Vec<String>, String> {
+/// before and must lose now: fails, saying which, when the settings still allow such a rule. Also
+/// returns the command rules the session is allowed.
+pub fn refresh_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Result<RunPermissions, String> {
     match apply_run_permissions(worktree, extra, logs, base) {
-        (_, Some(unrevoked)) => Err(unrevoked),
-        (notes, None) => Ok(notes),
+        (_, Some(unrevoked), _) => Err(unrevoked),
+        (notes, None, allowed_commands) => Ok(RunPermissions { notes, allowed_commands }),
     }
 }
 

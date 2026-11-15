@@ -19,6 +19,7 @@ fn request<'a>(implementer: &str, review_again: Option<ReviewAgain<'a>>) -> Impl
         handoff: None,
         review_again,
         leave_full_suite_to_gate: false,
+        allowed_commands: &[],
     }
 }
 

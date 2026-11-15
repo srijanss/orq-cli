@@ -436,7 +436,7 @@ fn a_rule_the_settings_cannot_lose_fails_the_refresh_naming_it() {
     commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
     let base = head(&worktree);
     let rule = "Bash(node a/make.mjs)".to_string();
-    assert_eq!(refresh_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base), Ok(Vec::new()));
+    assert_eq!(refresh_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base).map(|p| p.notes), Ok(Vec::new()));
 
     fs::write(worktree.join("a/make.mjs"), "require('child_process')\n").unwrap();
     let path = worktree.join(".claude/settings.local.json");
@@ -569,7 +569,7 @@ fn a_folder_orq_cannot_list_takes_out_script_rules_allowed_before() {
     commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
     let base = head(&worktree);
     let extra = std::slice::from_ref(&rule);
-    assert_eq!(refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base), Ok(vec![]));
+    assert_eq!(refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base).map(|p| p.notes), Ok(vec![]));
     assert!(allowed(&worktree).contains(&builtin) && allowed(&worktree).contains(&rule), "{:?}", allowed(&worktree));
     let locked = worktree.join("locked");
     fs::create_dir_all(&locked).unwrap();
@@ -584,7 +584,30 @@ fn a_folder_orq_cannot_list_takes_out_script_rules_allowed_before() {
     let refreshed = refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base);
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(refreshed, Ok(vec![format!("orq could not read the worktree to check its scripts, so allowed_tools rule {rule} was left out")]));
+    assert_eq!(refreshed.map(|p| p.notes), Ok(vec![format!("orq could not read the worktree to check its scripts, so allowed_tools rule {rule} was left out")]));
     let allow = allowed(&worktree);
     assert!(!allow.contains(&builtin) && !allow.contains(&rule), "{allow:?}");
+}
+
+/// The session is told the commands it may run, so the refresh says which: the Bash rules it allowed,
+/// orq's and the project's, once each and in order, and none it left out.
+#[test]
+fn a_refresh_returns_the_command_rules_it_allowed_and_none_it_left_out() {
+    let (_repo, worktree) = checkout("permissions-commands");
+    commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let extra = vec!["Bash(make lint:*)".to_string(), "Bash(git status:*)".to_string(), "Bash(git push:*)".to_string(), "WebFetch".to_string()];
+
+    let commands = refresh_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base).unwrap().allowed_commands;
+
+    assert!(commands.iter().all(|rule| rule.starts_with("Bash(")), "{commands:?}");
+    for wanted in ["Bash(git status:*)", "Bash(cargo test:*)", "Bash(node build.mjs)", "Bash(make lint:*)"] {
+        assert_eq!(commands.iter().filter(|rule| *rule == wanted).count(), 1, "{wanted} once in {commands:?}");
+    }
+    assert!(!commands.contains(&"Bash(git push:*)".to_string()), "{commands:?}");
+    assert!(commands.iter().position(|r| r == "Bash(git status:*)") < commands.iter().position(|r| r == "Bash(make lint:*)"), "{commands:?}");
+
+    fs::write(worktree.join("web/build.mjs"), "require('child_process')\n").unwrap();
+    let commands = refresh_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base).unwrap().allowed_commands;
+    assert!(!commands.contains(&"Bash(node build.mjs)".to_string()), "{commands:?}");
 }

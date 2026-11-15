@@ -209,3 +209,62 @@ fn the_worktrees_session_settings_let_the_implementer_work_unattended() {
     let logs = w.state.join("orq").join("logs");
     assert!(dirs.iter().any(|dir| dir.parent() == Some(logs.as_path())), "the run's logs directory, under {}: {dirs:?}", logs.display());
 }
+
+/// A session nobody watches is told which command forms its settings allow, so it does not reach
+/// for one that is refused.
+#[test]
+fn the_unattended_implement_prompt_lists_the_command_forms_the_run_allows() {
+    let w = world("prompt-lists-commands");
+    settings(&w, "allowed_tools = [\"Bash(make lint:*)\"]\ngate = [\"true\"]\n");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let prompt = agent.first_run().expect("the implement session ran").args.last().cloned().unwrap();
+    assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
+    assert!(prompt.contains("`make lint ...`"), "{prompt}");
+    assert!(prompt.contains("`git commit ...`"), "{prompt}");
+    assert!(!prompt.contains("git push"), "{prompt}");
+}
+
+/// The gate's fix session is told the command forms too, as its settings allow them when it starts.
+#[test]
+fn the_gate_fix_prompt_lists_the_command_forms_the_run_allows() {
+    let w = world("fix-prompt-lists-commands");
+    settings(&w, "allowed_tools = [\"Bash(make lint:*)\"]\ngate = [\"false\"]\n");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    // The fix session leaves its prompt in `fix_seen` and calls the failure unrelated, ending the run.
+    let fix_seen = w.base.join("fix-seen");
+    let bin = w.base.join("fix-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\nif [ -n \"$ORQ_UNRELATED_FAILURE_FILE\" ]; then for a; do last=$a; done; printf '%s' \"$last\" > '{}'; echo 'flaky' > \"$ORQ_UNRELATED_FAILURE_FILE\"; exit 0; fi\nexec '{}' \"$@\"\n",
+            fix_seen.display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut dirs = vec![bin, github().bin_dir()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "--repo"])
+        .arg(w.repo.root())
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .env("XDG_CONFIG_HOME", &w.config)
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let prompt = std::fs::read_to_string(&fix_seen).unwrap_or_else(|_| panic!("no fix session ran: {}", String::from_utf8_lossy(&out.stderr)));
+    assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
+    assert!(prompt.contains("`make lint ...`"), "{prompt}");
+}
