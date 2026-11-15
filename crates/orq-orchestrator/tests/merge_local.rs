@@ -701,16 +701,14 @@ fn set_aside_stashes_only_the_overlapping_files_and_leaves_an_unrelated_edit_alo
     assert_eq!(set_aside.payload["files"], serde_json::json!(["lines.txt"]), "only the overlap was stashed");
 }
 
+#[cfg(unix)]
 #[test]
 fn set_aside_drops_its_own_entry_when_another_one_was_pushed_on_top_meanwhile() {
     let w = refused_over_lines("set-aside-stacked", &lines(&[(10, "mine")]));
     fs::write(w.repo.join("a.txt"), "someone else's\n").unwrap();
     // Someone else stashes while the fast-forward runs: the hook runs once it is done, before
     // the set-aside entry is applied and dropped.
-    let hook = w.repo.join(".git/hooks/post-merge");
-    fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    fs::write(&hook, "#!/bin/sh\nexec git stash push -q -m \"someone else's\" -- a.txt\n").unwrap();
-    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    hook(&w.repo, "post-merge", "#!/bin/sh\nexec git stash push -q -m \"someone else's\" -- a.txt\n");
 
     assert!(matches!(merge_setting_aside(&w.store, "run-1").unwrap(), SetAsideOutcome::Merged { note: None, .. }));
     assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "its own entry was applied");
@@ -733,6 +731,7 @@ fn set_aside_changes_restored_after_the_merge_keep_what_was_staged_apart_from_wh
 }
 
 /// An executable hook script `name` in `repo`.
+#[cfg(unix)]
 fn hook(repo: &Path, name: &str, script: &str) {
     let hook = repo.join(".git/hooks").join(name);
     fs::create_dir_all(hook.parent().unwrap()).unwrap();
@@ -741,6 +740,7 @@ fn hook(repo: &Path, name: &str, script: &str) {
 }
 
 /// Whether a file can be made unreadable here, as it cannot for root.
+#[cfg(unix)]
 fn permissions_hold(w: &World) -> bool {
     let probe = w.repo.parent().unwrap().join("probe");
     fs::write(&probe, "").unwrap();
