@@ -734,7 +734,11 @@ fn edit_settings(
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         file.write_all((text + "\n").as_bytes())
     };
-    write().map_err(|err| format!("it could not be written ({:?})", err.kind()))
+    write().map_err(|err| format!("it could not be written ({:?})", err.kind()))?;
+    // What orq wrote is orq's, not the session's work: cleanup must still recognise it. A failed
+    // record only keeps the worktree, the safe side.
+    let _ = crate::orq_written::record_orq_written_file(worktree, SETTINGS);
+    Ok(())
 }
 
 /// Sets up the run's MCP servers and then approves them, so what `mcpctl` generates in `.mcp.json`

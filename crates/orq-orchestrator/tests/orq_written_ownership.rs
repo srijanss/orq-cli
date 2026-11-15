@@ -336,3 +336,71 @@ fn the_files_mcpctl_setup_writes_do_not_keep_the_worktree() {
 
     assert_eq!(cleanup(&w), CleanupOutcome::Removed);
 }
+
+#[test]
+fn settings_orq_refreshes_before_a_session_do_not_keep_the_worktree() {
+    let w = world("refreshed");
+    orq_files(&w);
+    let base = git(&w.repo, &["rev-parse", "main"]);
+    assert!(orq_orchestrator::write_run_permissions(&w.worktree, &[], Path::new("/logs/first"), &base).is_empty());
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+
+    assert_eq!(cleanup(&w), CleanupOutcome::Removed);
+}
+
+#[test]
+fn the_needs_input_hook_orq_writes_and_removes_does_not_keep_the_worktree() {
+    let w = world("hooked");
+    orq_files(&w);
+    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-1' --repo '/r'").is_empty());
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-2' --repo '/r'").is_empty());
+    assert!(orq_orchestrator::remove_needs_input_hook(&w.worktree).is_empty());
+
+    assert_eq!(cleanup(&w), CleanupOutcome::Removed);
+}
+
+#[test]
+fn a_hand_edit_after_orqs_refresh_keeps_the_worktree_saying_the_file_differs_from_what_orq_wrote() {
+    let w = world("hand-edited");
+    orq_files(&w);
+    let base = git(&w.repo, &["rev-parse", "main"]);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".claude/settings.local.json"), "{reason}");
+    assert!(!reason.contains("CACHEDIR.TAG"), "{reason}");
+    assert!(reason.contains("differs from what orq last wrote"), "{reason}");
+}
+
+#[test]
+fn an_edited_orq_file_is_named_as_differing_from_what_orq_last_wrote() {
+    let w = world("edited-reason");
+    orq_files(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    fs::write(w.worktree.join(".mcp.json"), "{\"mcpServers\":{\"mine\":{}}}\n").unwrap();
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".mcp.json (it differs from what orq last wrote)"), "{reason}");
+}
+
+#[test]
+fn rerecording_the_settings_keeps_the_mcp_json_entry_so_an_edit_to_it_still_keeps_the_worktree() {
+    let w = world("other-entry");
+    orq_files(&w);
+    let base = git(&w.repo, &["rev-parse", "main"]);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    fs::write(w.worktree.join(".mcp.json"), "{\"mcpServers\":{\"mine\":{}}}\n").unwrap();
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".mcp.json"), "{reason}");
+}

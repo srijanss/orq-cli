@@ -53,15 +53,44 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
         .iter()
         .filter_map(|name| fingerprint(worktree, name).map(|print| (name.to_string(), print)))
         .collect();
-    match serde_json::to_string(&recorded)
-        .map_err(|e| e.to_string())
-        .and_then(|text| std::fs::write(&path, text).map_err(|e| format!("{:?}", e.kind())))
-    {
+    match write_manifest(&path, &recorded) {
         Ok(()) => Vec::new(),
         Err(why) => vec![format!(
             "what orq wrote into the worktree was not recorded: {why}"
         )],
     }
+}
+
+fn write_manifest(path: &Path, recorded: &BTreeMap<String, String>) -> Result<(), String> {
+    let text = serde_json::to_string(recorded).map_err(|e| e.to_string())?;
+    std::fs::write(path, text).map_err(|e| format!("{:?}", e.kind()))
+}
+
+/// Records `name` again after orq rewrote it, keeping every other file's entry as recorded. A file
+/// that is gone loses its entry. Returns a note on a problem.
+pub(crate) fn record_orq_written_file(worktree: &Path, name: &str) -> Vec<String> {
+    let Some(path) = manifest_path(worktree) else {
+        return vec![format!("orq's rewrite of {name} was not recorded: the worktree's git directory could not be found")];
+    };
+    let mut recorded: BTreeMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    match fingerprint(worktree, name) {
+        Some(print) => recorded.insert(name.to_string(), print),
+        None => recorded.remove(name),
+    };
+    match write_manifest(&path, &recorded) {
+        Ok(()) => Vec::new(),
+        Err(why) => vec![format!("orq's rewrite of {name} was not recorded: {why}")],
+    }
+}
+
+/// Whether `name` is one of the files orq writes into a worktree as content, so a copy that no
+/// longer matches the record differs from what orq last wrote. The dotenv file is only ever a link,
+/// and a regular file of that name was never orq's.
+pub(crate) fn is_orq_file_name(name: &str) -> bool {
+    name != DOTENV && CANDIDATES.contains(&name)
 }
 
 /// Whether `name` is something orq recorded writing and is still exactly that.

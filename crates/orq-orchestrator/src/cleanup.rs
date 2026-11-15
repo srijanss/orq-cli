@@ -176,6 +176,10 @@ fn ignored_hint(
     if let Some(Err(missing)) = install {
         return Ok(Some(missing.clone()));
     }
+    // A single file orq writes: a cache tag on its folder could not help, it changed after orq wrote it.
+    if crate::orq_written::is_orq_file_name(path) {
+        return Ok(Some("it differs from what orq last wrote".to_string()));
+    }
     Ok(in_ignored_folder(worktree, path)?
         .then(|| "an ignored folder holding a CACHEDIR.TAG is removed with the worktree".to_string()))
 }
