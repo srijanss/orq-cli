@@ -1,6 +1,7 @@
 //! With remote actions on, a marked pending feature counts toward one "Start N" button, the popup's launch
-//! marked. It opens the launch picker, asks with the picked pair, then sends one start request per marked
-//! feature in dependency order with those profiles, and reports each run started or refused.
+//! marked. It opens the launch picker and asks with the picked pair. One marked feature starts a plain run of
+//! it; two or more start one group run (`orq run --group`), the features in dependency order, through one
+//! start request, and the one run started or the refusal is reported.
 
 mod web_deps;
 
@@ -73,10 +74,8 @@ fn pending_rows_can_be_marked_and_start_counts_only_the_marked_pending_features(
 }
 
 #[test]
-fn a_confirmed_start_marked_posts_the_picked_profiles_once_per_feature_in_dependency_order_and_reports_each() {
+fn a_confirmed_start_of_several_marked_posts_one_group_start_in_dependency_order_and_reports_the_one_run() {
     let started = json!({"status": 202, "json": {"run": "run-1"}});
-    let refused = json!({"status": 409, "json": {"error": "feature c-mid is waiting on a-base"}});
-    let later = json!({"status": 202, "json": {"run": "run-3"}});
     let steps = vec![
         mark("b-top"),
         mark("a-base"),
@@ -85,21 +84,17 @@ fn a_confirmed_start_marked_posts_the_picked_profiles_once_per_feature_in_depend
         json!({"set": "[data-launch-reviewer]", "value": "haiku"}),
         json!({"click": "[data-confirm]"}),
     ];
-    let Some(out) = list(vec![profiles(), started, refused, later, ledger(), projects()], steps) else { return };
-    assert!(texts(&out["frames"][6]).iter().any(|t| t == "Start 3 features: a-base, c-mid, b-top with opus as implementer and haiku as reviewer?"), "{out}");
+    let Some(out) = list(vec![profiles(), started, ledger(), projects()], steps) else { return };
+    assert!(texts(&out["frames"][6]).iter().any(|t| t == "Start 3 features: a-base, c-mid, b-top as one group run with opus as implementer and haiku as reviewer?"), "{out}");
     assert!(texts(&out["frames"][6]).iter().any(|t| t == "Yes, start"), "{out}");
     let sent = posts(&out);
     let urls: Vec<&str> = sent.iter().map(|r| r["url"].as_str().unwrap()).collect();
-    assert_eq!(urls, ["/api/projects/alpha/features/a-base/runs", "/api/projects/alpha/features/c-mid/runs", "/api/projects/alpha/features/b-top/runs"], "dependency order, one each: {out}");
-    for request in &sent {
-        assert_eq!(request["body"], r#"{"implementer":"opus","reviewer":"haiku"}"#);
-        assert_eq!(request["headers"]["Authorization"], format!("Bearer {TOKEN}"));
-    }
+    assert_eq!(urls, ["/api/projects/alpha/features/a-base/runs"], "one start, at the group's first feature: {out}");
+    assert_eq!(sent[0]["body"], r#"{"group":["a-base","c-mid","b-top"],"implementer":"opus","reviewer":"haiku"}"#, "the group in dependency order: {out}");
+    assert_eq!(sent[0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let shown = texts(last(&out));
-    assert!(shown.iter().any(|t| t == "Started run run-1 for a-base."), "{shown:?}");
-    assert!(shown.iter().any(|t| t == "c-mid: feature c-mid is waiting on a-base"), "{shown:?}");
-    assert!(shown.iter().any(|t| t == "Started run run-3 for b-top."), "{shown:?}");
-    assert_eq!(count(last(&out), "[data-marked-result]"), 3, "{out}");
+    assert!(shown.iter().any(|t| t == "Started group run run-1 for a-base, c-mid, b-top."), "{shown:?}");
+    assert_eq!(count(last(&out), "[data-marked-result]"), 1, "one run, one result: {out}");
     assert_eq!(count(last(&out), "[data-start-marked]"), 0, "the marks are cleared: {out}");
 }
 
@@ -120,19 +115,17 @@ fn cancelling_sends_nothing_no_profiles_says_so_and_a_refused_sign_in_stops_the_
 }
 
 /// Start N offers Project default like Start with…: preselected when no profile has the project's
-/// agents, it starts each marked feature with no profiles named.
+/// agents, two marked features start one group run with no profiles named.
 #[test]
-fn start_marked_with_project_default_starts_each_feature_with_no_profiles_named() {
+fn start_marked_with_project_default_starts_one_group_run_with_no_profiles_named() {
     let offer = json!({"status": 200, "json": {"profiles": ["haiku", "opus"], "implementer": null, "reviewer": null, "project_default": true}});
-    let started = |run: &str| json!({"status": 202, "json": {"run": run}});
+    let started = json!({"status": 202, "json": {"run": "run-1"}});
     let steps = vec![mark("a-base"), mark("c-mid"), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
-    let Some(out) = list(vec![offer, started("run-1"), started("run-2"), ledger(), projects()], steps) else { return };
-    assert!(texts(&out["frames"][4]).iter().any(|t| t == "Start 2 features: a-base, c-mid with the project's default agents?"), "{out}");
+    let Some(out) = list(vec![offer, started, ledger(), projects()], steps) else { return };
+    assert!(texts(&out["frames"][4]).iter().any(|t| t == "Start 2 features: a-base, c-mid as one group run with the project's default agents?"), "{out}");
     let sent = posts(&out);
-    assert_eq!(sent.len(), 2, "{out}");
-    for request in &sent {
-        assert_eq!(request["body"], "{}", "{out}");
-    }
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(sent[0]["body"], r#"{"group":["a-base","c-mid"]}"#, "{out}");
 }
 
 /// Start N with no profiles defined still starts with Project default when the server offers it.

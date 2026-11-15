@@ -347,3 +347,33 @@ fn one_launcher_uses_its_program_until_it_is_deleted_then_asks_for_the_fallback_
     assert_eq!(std::fs::read_to_string(other.join("calls.log")).unwrap().lines().count(), 2);
     assert_eq!(std::fs::read_to_string(own.join("calls.log")).unwrap().lines().count(), 2);
 }
+
+/// A group start runs `orq run --group A,B` in place of `--feature`, checked first and then detached in
+/// Herdr as a run of one feature is, with the chosen profiles or none named.
+#[test]
+fn a_group_start_runs_one_orq_run_of_the_group_checked_then_detached() {
+    let dir = scratch("launch-group");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n\n[models.sonnet]\nharness = \"claude\"\nmodel = \"sonnet\"\n").unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config));
+    let group = ["base".to_string(), "top".to_string()];
+
+    assert_eq!(launcher.start_group(&repo, &group, None).unwrap(), "run-42");
+    let chosen = orq_core::remote_inbox::LaunchProfiles { implementer: "sonnet".into(), reviewer: "opus".into() };
+    assert_eq!(launcher.start_group(&repo, &group, Some(&chosen)).unwrap(), "run-42");
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines.len(), 4, "{calls}");
+    assert!(lines[0].contains("--check") && lines[1].contains("--detach --in-herdr"), "{calls}");
+    for line in &lines {
+        assert!(line.contains("--group base,top") && !line.contains("--feature"), "{line}");
+    }
+    assert!(!lines[0].contains("--implementer") && !lines[1].contains("--reviewer"), "{calls}");
+    assert!(lines[2].contains("--implementer sonnet --reviewer opus") && lines[3].contains("--implementer sonnet --reviewer opus"), "{calls}");
+
+    // The run's own refusal of the group is the reason, and nothing starts after it.
+    std::fs::write(dir.join("refuse"), "").unwrap();
+    assert!(matches!(launcher.start_group(&repo, &group, None), Err(LaunchError::Refused(_))));
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 5);
+}

@@ -129,10 +129,11 @@ impl CliLauncher {
 }
 
 impl CliLauncher {
-    /// Checks and then starts a detached `orq run` of `feature`, with the chosen profiles or, without a
-    /// choice, none named, so the run picks its agents as it does on the command line: the project's own,
-    /// else the machine's.
-    fn launch(&self, repo: &Path, feature: &str, chosen: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+    /// Checks and then starts a detached `orq run` of `features`, one feature or a group run of several
+    /// in the order given, with the chosen profiles or, without a choice, none named, so the run picks
+    /// its agents as it does on the command line: the project's own, else the machine's.
+    fn launch(&self, repo: &Path, features: &[String], chosen: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        let feature = features.first().map(String::as_str).unwrap_or_default();
         let refused = |reason: String| LaunchError::Refused(without_paths(&reason));
         let project = orq_git::resolve_project(repo).map_err(|err| LaunchError::Failed(format!("cannot resolve project: {err:?}")))?;
         let request = orq_features::LaunchRequest {
@@ -151,7 +152,14 @@ impl CliLauncher {
             let reviewers = orq_features::load_reviewer_config(&project.root.join(".tdd-config.json")).map_err(|err| LaunchError::Failed(err.to_string()))?;
             request.validate(&profiles, &reviewers).map_err(|err| refused(err.to_string()))?;
         }
-        let args = crate::without_detach_flag(&request.args());
+        let mut args = crate::without_detach_flag(&request.args());
+        if features.len() > 1 {
+            // A group run names its members with `--group`, which the run refuses beside `--feature`.
+            if let Some(at) = args.iter().position(|arg| arg == "--feature") {
+                args[at] = "--group".into();
+                args[at + 1] = features.join(",").into();
+            }
+        }
         let mut check = args.clone();
         check.push("--check".into());
         let (checked, _, check_err) = self.run(&check)?;
@@ -170,11 +178,15 @@ impl CliLauncher {
 
 impl RunLauncher for CliLauncher {
     fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError> {
-        self.launch(repo, feature, None)
+        self.launch(repo, &[feature.to_string()], None)
+    }
+
+    fn start_group(&self, repo: &Path, features: &[String], profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        self.launch(repo, features, profiles)
     }
 
     fn start_with(&self, repo: &Path, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
-        self.launch(repo, feature, Some(profiles))
+        self.launch(repo, &[feature.to_string()], Some(profiles))
     }
 
     fn start_warning(&self, repo: &Path) -> Option<String> {

@@ -232,6 +232,12 @@ pub trait ProjectsProvider {
         Ok(RunStart::Refused("this server cannot choose the profiles".to_string()))
     }
 
+    /// Starts one group run of `features` in project `id`, in that order, with the chosen profiles or the
+    /// launch defaults. A provider that cannot start a group run says so.
+    fn start_group_run(&self, _id: &str, _features: &[String], _profiles: Option<&LaunchProfiles>) -> Result<RunStart, String> {
+        Ok(RunStart::Refused("this server cannot start a group run".to_string()))
+    }
+
     /// Pauses, resumes, stops or accepts run `run` of project `id`. An accept is done once its tests have
     /// started; they finish on their own. A provider that cannot does not know the run.
     fn control_run(&self, _id: &str, _run: &str, _control: RunControl) -> Result<RunControlOutcome, String> {
@@ -712,18 +718,24 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
         audit(Outcome::Refused, None, Some("not a feature name"));
         return error(404, "not found");
     }
-    let chosen = match launch_choice(body) {
-        Ok(chosen) => chosen,
+    let (chosen, group) = match launch_choice(body, feature) {
+        Ok(choice) => choice,
         Err(refusal) => {
             audit(Outcome::Refused, None, Some("bad request body"));
             return refusal;
         }
     };
-    let started = provider.map(|provider| match &chosen {
-        Some(profiles) => provider.start_run_with(id, feature, profiles),
-        None => provider.start_run(id, feature),
+    let started = provider.map(|provider| match (&group, &chosen) {
+        (Some(group), profiles) => provider.start_group_run(id, group, profiles.as_ref()),
+        (None, Some(profiles)) => provider.start_run_with(id, feature, profiles),
+        (None, None) => provider.start_run(id, feature),
     });
-    let named = chosen.as_ref().map(|profiles| format!("implementer {}, reviewer {}", profiles.implementer, profiles.reviewer));
+    let grouped = group.as_ref().map(|group| format!("group {}", group.join(", ")));
+    let profiled = chosen.as_ref().map(|profiles| format!("implementer {}, reviewer {}", profiles.implementer, profiles.reviewer));
+    let named = match (grouped, profiled) {
+        (Some(grouped), Some(profiled)) => Some(format!("{grouped}, {profiled}")),
+        (grouped, profiled) => grouped.or(profiled),
+    };
     match started {
         Some(Ok(RunStart::Started(run))) => {
             audit(Outcome::Allowed, Some(&run), named.as_deref());
@@ -751,20 +763,35 @@ fn start_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: 
     }
 }
 
-/// The profiles a start body chooses: none for an empty body or `{}`, which keep the launch defaults, or both
-/// an implementer and a reviewer, each a non-empty name, and nothing else.
-fn launch_choice(body: &[u8]) -> Result<Option<LaunchProfiles>, Response> {
-    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer"]) {
+/// The profiles and group a start body chooses. Profiles: none for an empty body or `{}`, which keep the launch
+/// defaults, or both an implementer and a reviewer, each a non-empty name. Group: absent for a run of `feature`
+/// alone, or the features of one group run in order, led by `feature`, each a distinct feature name; a group
+/// of only `feature` is a run of it alone. Nothing else may be in the body.
+fn launch_choice(body: &[u8], feature: &str) -> Result<(Option<LaunchProfiles>, Option<Vec<String>>), Response> {
+    let bad = || error(400, "the request body is not one this action takes");
+    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer", "group"]) {
         return Err(refusal);
     }
-    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else { return Ok(None) };
+    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(body) else { return Ok((None, None)) };
+    let group = match fields.remove("group") {
+        None => None,
+        Some(Value::Array(names)) => {
+            let names: Vec<String> = names.iter().map(|name| name.as_str().filter(|name| !name.is_empty() && plain_feature_name(name)).map(str::to_string)).collect::<Option<_>>().ok_or_else(bad)?;
+            let distinct = names.iter().enumerate().all(|(at, name)| !names[..at].contains(name));
+            if names.first().map(String::as_str) != Some(feature) || !distinct {
+                return Err(bad());
+            }
+            (names.len() > 1).then_some(names)
+        }
+        Some(_) => return Err(bad()),
+    };
     if fields.is_empty() {
-        return Ok(None);
+        return Ok((None, group));
     }
     let named = |key: &str| fields.get(key).and_then(Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_string);
     match (named("implementer"), named("reviewer")) {
-        (Some(implementer), Some(reviewer)) => Ok(Some(LaunchProfiles { implementer, reviewer })),
-        _ => Err(error(400, "the request body is not one this action takes")),
+        (Some(implementer), Some(reviewer)) => Ok((Some(LaunchProfiles { implementer, reviewer }), group)),
+        _ => Err(bad()),
     }
 }
 

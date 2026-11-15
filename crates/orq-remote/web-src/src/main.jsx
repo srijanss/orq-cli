@@ -2022,13 +2022,15 @@ function dependencyOrder(features, names) {
   return placed;
 }
 
-// The popup's launch marked: "Start N" reads the launch profiles, asks with the picked pair, then sends
-// one start per marked feature in the order given, and reports each run started or refused.
+// The popup's launch marked: "Start N" reads the launch profiles and asks with the picked pair. One marked
+// feature starts a plain run of it; two or more start one group run, sent as one start at the first feature
+// with the whole group in the order given, and the one run started or refused is reported.
 function StartMarked({ names, control, onFinished, place = null }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const choice = useLaunchChoice();
   const label = "Start " + names.length + placeSuffix(place);
+  const grouped = names.length > 1;
   const ask = async () => {
     setNote("");
     setPhase("checking");
@@ -2047,35 +2049,34 @@ function StartMarked({ names, control, onFinished, place = null }) {
   };
   const send = async () => {
     setPhase("sending");
-    const results = [];
-    for (const name of names) {
-      let text = name + ": the run could not be started.";
-      let ok = false;
-      let started = "";
-      try {
-        const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(name) + "/runs"), control.token, choice.body);
-        if (response.status === 401) {
-          control.onSignedOut();
-          return;
-        }
-        const body = await jsonOrNull(response);
-        ok = response.ok;
-        const run = body !== null && typeof body.run === "string" ? body.run : "";
-        if (ok) {
-          text = withWarning(run === "" ? "Started " + name + "." : "Started run " + run + " for " + name + ".", body);
-          started = run;
-        }
-        else if (response.status === 403) text = name + ": Not allowed.";
-        else if (body !== null && typeof body.error === "string") text = name + ": " + body.error;
-      } catch (unreachable) {
-        text = name + ": The server could not be reached.";
+    const name = names.join(", ");
+    let text = name + ": the run could not be started.";
+    let ok = false;
+    let started = "";
+    try {
+      const body = grouped ? { group: names, ...choice.body } : choice.body;
+      const response = await actionRequest(controlPath(control, "features/" + encodeURIComponent(names[0]) + "/runs"), control.token, body);
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
       }
-      results.push({ name, ok, text, run: started, projectId: control.projectId });
+      const reply = await jsonOrNull(response);
+      ok = response.ok;
+      const run = reply !== null && typeof reply.run === "string" ? reply.run : "";
+      if (ok) {
+        const what = grouped ? "group run" : "run";
+        text = withWarning(run === "" ? "Started " + name + "." : "Started " + what + " " + run + " for " + name + ".", reply);
+        started = run;
+      }
+      else if (response.status === 403) text = name + ": Not allowed.";
+      else if (reply !== null && typeof reply.error === "string") text = name + ": " + reply.error;
+    } catch (unreachable) {
+      text = name + ": The server could not be reached.";
     }
     setPhase("idle");
-    onFinished(results);
+    onFinished([{ name, ok, text, run: started, projectId: control.projectId }]);
   };
-  const asked = "Start " + featuresPhrase(names, place) + " with " + choice.phrase + "?";
+  const asked = "Start " + featuresPhrase(names, place) + (grouped ? " as one group run" : "") + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-start-marked onClick={ask}><Icon name="play" size={16} />{label}</button> : null}

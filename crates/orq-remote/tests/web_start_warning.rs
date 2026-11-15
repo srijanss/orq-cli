@@ -65,11 +65,9 @@ fn start_with_shows_the_servers_warning_with_the_started_run() {
 }
 
 #[test]
-fn start_marked_shows_each_starts_warning() {
+fn start_marked_shows_the_group_runs_warning() {
     let steps = vec![json!({"click": "[data-mark=\"next-one\"]"}), json!({"click": "[data-mark=\"other\"]"}), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
-    let plain = json!({"status": 202, "json": {"run": "run-10"}});
-    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(), profiles(), warned("run-9"), plain], steps) else { return };
+    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(), profiles(), warned("run-9")], steps) else { return };
     let shown = texts(&out);
-    assert!(shown.contains(&format!("Started run run-9 for next-one. Warning: {WARNING}.")), "{shown:?}");
-    assert!(shown.contains(&"Started run run-10 for other.".to_string()), "no warning, none shown: {shown:?}");
+    assert!(shown.iter().any(|t| t.starts_with("Started group run run-9 for ") && t.ends_with(&format!(". Warning: {WARNING}."))), "{shown:?}");
 }

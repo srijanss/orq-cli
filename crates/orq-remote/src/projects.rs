@@ -397,18 +397,26 @@ impl StoreProjects {
     }
 
     /// The model profiles of this machine's config and the `.orq.toml` of the project at `root`.
-    /// Starts a run of `feature` in project `id`, with the chosen profiles or the launch defaults. The CLI's
-    /// eligibility rule comes first; a chosen profile must be one the launch picker lists.
-    fn launch(&self, id: &str, feature: &str, profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<orq_core::remote_inbox::RunStart, String> {
+    /// Starts a run of one feature, or one group run of several, in project `id`, with the chosen profiles or
+    /// the launch defaults. The CLI's eligibility rule comes first, and a group is put in its dependsOn order
+    /// as the CLI's group rule says; a chosen profile must be one the launch picker lists.
+    fn launch(&self, id: &str, target: Launch, profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<orq_core::remote_inbox::RunStart, String> {
         use orq_core::remote_inbox::RunStart;
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(RunStart::Unknown) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
-        match orq_features::check_run_eligibility(&ledger, feature) {
-            Ok(_) => {}
-            Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
-            Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
-        }
+        // A group's members in the order to run them; a run of one feature has none.
+        let ordered: Vec<String> = match target {
+            Launch::One(feature) => match orq_features::check_run_eligibility(&ledger, feature) {
+                Ok(_) => Vec::new(),
+                Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
+                Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
+            },
+            Launch::Group(features) => match orq_features::order_run_group(&ledger, features) {
+                Ok(members) => members.into_iter().map(|member| member.feature_name.clone()).collect(),
+                Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
+            },
+        };
         if let Some(chosen) = profiles {
             let listed = self.model_profiles(&git.root)?;
             for name in [&chosen.implementer, &chosen.reviewer] {
@@ -418,9 +426,10 @@ impl StoreProjects {
             }
         }
         let Some(launcher) = &self.launcher else { return Ok(RunStart::Refused("this server cannot start runs".to_string())) };
-        let started = match profiles {
-            Some(chosen) => launcher.start_with(&project.path, feature, chosen),
-            None => launcher.start(&project.path, feature),
+        let started = match (target, profiles) {
+            (Launch::Group(_), profiles) => launcher.start_group(&project.path, &ordered, profiles),
+            (Launch::One(feature), Some(chosen)) => launcher.start_with(&project.path, feature, chosen),
+            (Launch::One(feature), None) => launcher.start(&project.path, feature),
         };
         match started {
             Ok(run) => Ok(match launcher.start_warning(&project.path) {
@@ -467,6 +476,13 @@ struct AgentOptions {
     found: std::sync::OnceLock<serde_json::Value>,
 }
 
+/// What a launch starts: a run of one feature, or one group run of several.
+#[derive(Clone, Copy)]
+enum Launch<'a> {
+    One(&'a str),
+    Group(&'a [String]),
+}
+
 /// Starts a run the way the CLI does. The server never starts one by itself: whoever builds it supplies this.
 pub trait RunLauncher {
     /// Starts a run of `feature` in the project at `repo` and returns its id.
@@ -475,6 +491,12 @@ pub trait RunLauncher {
     /// Starts a run as `start` does, with the chosen implementer and reviewer instead of the launch defaults.
     fn start_with(&self, _repo: &Path, _feature: &str, _profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot choose the profiles".to_string()))
+    }
+
+    /// Starts one group run of `features` in the project at `repo`, in that order, with the chosen implementer
+    /// and reviewer or the launch defaults, and returns its id.
+    fn start_group(&self, _repo: &Path, _features: &[String], _profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        Err(LaunchError::Refused("this server cannot start a group run".to_string()))
     }
 
     /// What whoever started a run in the project at `repo` should know about it, such as commits only the
@@ -580,11 +602,15 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     }
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {
-        self.launch(id, feature, None)
+        self.launch(id, Launch::One(feature), None)
     }
 
     fn start_run_with(&self, id: &str, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<orq_core::remote_inbox::RunStart, String> {
-        self.launch(id, feature, Some(profiles))
+        self.launch(id, Launch::One(feature), Some(profiles))
+    }
+
+    fn start_group_run(&self, id: &str, features: &[String], profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<orq_core::remote_inbox::RunStart, String> {
+        self.launch(id, Launch::Group(features), profiles)
     }
 
     fn control_run(&self, id: &str, run: &str, control: orq_core::remote_inbox::RunControl) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {

@@ -67,12 +67,20 @@ fn start_with_links_to_the_new_runs_orchestration() {
 }
 
 #[test]
-fn start_marked_links_each_started_run_and_none_for_a_refusal() {
+fn start_marked_links_the_started_group_run() {
+    let steps = vec![json!({"click": "[data-mark=\"next-one\"]"}), json!({"click": "[data-mark=\"other\"]"}), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(), profiles(), started("run-9")], steps) else { return };
+    assert_eq!(last(&out)["settled"]["matches"]["[data-marked-result]"], 1, "{out}");
+    assert_eq!(run_links(last(&out)), [("/projects/alpha/orchestrations/run-9".to_string(), "Open run".to_string())], "{out}");
+}
+
+#[test]
+fn a_refused_group_start_links_no_run() {
     let refused = json!({"status": 409, "json": {"error": "no"}});
     let steps = vec![json!({"click": "[data-mark=\"next-one\"]"}), json!({"click": "[data-mark=\"other\"]"}), json!({"click": "[data-start-marked]"}), json!({"click": "[data-confirm]"})];
-    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(), profiles(), started("run-9"), refused], steps) else { return };
-    assert_eq!(last(&out)["settled"]["matches"]["[data-marked-result]"], 2, "{out}");
-    assert_eq!(run_links(last(&out)), [("/projects/alpha/orchestrations/run-9".to_string(), "Open run".to_string())], "{out}");
+    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(), profiles(), refused], steps) else { return };
+    assert_eq!(last(&out)["settled"]["matches"]["[data-marked-result]"], 1, "{out}");
+    assert!(run_links(last(&out)).is_empty(), "{out}");
 }
 
 /// A run id the page could not route to is reported but not linked.
