@@ -62,6 +62,8 @@ struct Script {
     /// Make `wait` / `push` fail with a store error instead of answering.
     fail_wait: bool,
     fail_push: bool,
+    /// Make `fix_session` fail, as when the session's permissions cannot be prepared.
+    fail_session: Option<String>,
 }
 
 impl Script {
@@ -77,6 +79,7 @@ impl Script {
             pushed: 0,
             fail_wait: false,
             fail_push: false,
+            fail_session: None,
         }
     }
 }
@@ -104,6 +107,9 @@ impl CiFixSteps for Script {
     }
     fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
         self.sessions.push(attempt);
+        if let Some(why) = &self.fail_session {
+            return Err(StoreError::Corrupt(why.clone()));
+        }
         Ok(FixSessionSpec {
             program: "sh".to_string(),
             args: vec!["-c".to_string(), self.fix.clone()],
@@ -185,6 +191,25 @@ fn a_ci_that_is_green_the_first_time_starts_no_fix_session() {
         !w.worktree.join(".orq").exists(),
         "no failure log without a failure"
     );
+}
+
+/// A fix session whose permissions cannot be prepared is not started: the loop stops with the
+/// error, nothing is fixed, gated or pushed, and CI is not asked again.
+#[test]
+fn a_fix_session_that_cannot_be_prepared_is_not_started_and_the_loop_fails_saying_why() {
+    let w = world("unprepared");
+    let gate = gate_needing_fixed();
+    let mut script = Script::new(&w, vec![red(&["build"])], vec![], "touch fixed");
+    script.fail_session = Some("the settings still allow Bash(node a.mjs)".to_string());
+
+    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script);
+
+    let error = format!("{:?}", outcome.unwrap_err());
+    assert!(error.contains("Bash(node a.mjs)"), "{error}");
+    assert!(!w.worktree.join("fixed").exists(), "no session ran");
+    assert_eq!(script.waited, [SHA1]);
+    assert_eq!(script.pushed, 0);
+    assert!(kinds(&w).is_empty(), "no stage was started: {:?}", kinds(&w));
 }
 
 #[test]
