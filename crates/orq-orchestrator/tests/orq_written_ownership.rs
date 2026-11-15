@@ -404,3 +404,30 @@ fn rerecording_the_settings_keeps_the_mcp_json_entry_so_an_edit_to_it_still_keep
 
     assert!(reason.contains(".mcp.json"), "{reason}");
 }
+
+#[test]
+fn a_hand_edit_before_orqs_refresh_is_not_adopted_as_orqs_and_keeps_the_worktree() {
+    let w = world("edited-before");
+    orq_files(&w);
+    let base = git(&w.repo, &["rev-parse", "main"]);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    assert!(orq_orchestrator::remove_needs_input_hook(&w.worktree).is_empty());
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    assert!(reason.contains(".claude/settings.local.json"), "{reason}");
+}
+
+#[test]
+fn a_hook_written_over_a_hand_edited_settings_file_does_not_make_it_orqs() {
+    let w = world("hook-over-edit");
+    orq_files(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+
+    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-2' --repo '/r'").is_empty());
+
+    assert!(matches!(cleanup(&w), CleanupOutcome::Kept { .. }));
+}

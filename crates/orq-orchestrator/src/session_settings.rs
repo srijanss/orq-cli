@@ -717,6 +717,9 @@ fn edit_settings(
     };
     let root = settings.as_object_mut().ok_or("it is not a JSON object")?;
     edit(root)?;
+    // Only a file orq still owns is recorded again: an edit made before this write stays the
+    // session's work, and adopting it would let cleanup remove the worktree that holds it.
+    let orqs = !path.exists() || crate::orq_written::is_unchanged_orq_file(worktree, SETTINGS);
     std::fs::create_dir_all(worktree.join(".claude"))
         .map_err(|err| format!("its directory could not be created ({:?})", err.kind()))?;
     let text = serde_json::to_string_pretty(&settings)
@@ -737,7 +740,9 @@ fn edit_settings(
     write().map_err(|err| format!("it could not be written ({:?})", err.kind()))?;
     // What orq wrote is orq's, not the session's work: cleanup must still recognise it. A failed
     // record only keeps the worktree, the safe side.
-    let _ = crate::orq_written::record_orq_written_file(worktree, SETTINGS);
+    if orqs {
+        let _ = crate::orq_written::record_orq_written_file(worktree, SETTINGS);
+    }
     Ok(())
 }
 
