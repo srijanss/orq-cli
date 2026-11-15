@@ -109,9 +109,30 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
     }
     // A representative element has ancestors but no known siblings, so whether this applies is unknown.
     assert!(!has_sibling, "{selector:?} reaches {element:?} through a sibling combinator, which this resolver cannot decide");
+    // Nor does it have known attributes; one inside :not(...) only rules out other elements.
+    assert!(
+        !rule_compounds.iter().any(|c| without_not(c).contains('[')),
+        "{selector:?} reaches {element:?} only for some attribute, which this resolver cannot decide"
+    );
     classes(rule_subject).is_empty()
         && !rule_subject.split(':').next().unwrap_or("").contains('#')
         && rule_compounds[..rule_compounds.len() - 1].iter().all(|c| !c.contains('#') && classes(c).iter().all(|class| ancestors.contains(class)))
+}
+
+/// A compound selector with its `:not(...)` arguments taken out.
+fn without_not(compound: &str) -> String {
+    let (mut out, mut rest) = (String::new(), compound);
+    while let Some(start) = rest.find(":not(") {
+        out.push_str(&rest[..start]);
+        let mut depth = 0usize;
+        let end = rest[start..].char_indices().find_map(|(i, c)| match c {
+            '(' => { depth += 1; None }
+            ')' => { depth -= 1; (depth == 0).then_some(start + i + 1) }
+            _ => None,
+        });
+        rest = end.map_or("", |e| &rest[e..]);
+    }
+    out + rest
 }
 
 /// A selector's compound selectors, split at the combinators outside `[...]` and `(...)`, and
