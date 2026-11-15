@@ -335,7 +335,7 @@ enum NamedScripts {
     Absent,
     /// Repositories inside the worktree (submodules or not), whose files the worktree's git does not see.
     Nested(Vec<String>),
-    /// Links to folders outside the worktree, whose files the worktree's git does not see.
+    /// Links to folders, whose files a check of the script's path does not see.
     Linked(Vec<String>),
     /// The files that differ from what `base` holds: changed, added or removed in a commit of the
     /// run or in the worktree, untracked or ignored ones included. Empty when none does.
@@ -348,8 +348,7 @@ struct Inventory {
     /// The base's entries for files named like one of the scripts: the path, and whether it is a
     /// regular file.
     held: Vec<(String, bool)>,
-    /// What hides files from the worktree's git: repositories of their own, else links to folders
-    /// outside it. `None` when nothing does.
+    /// What hides files from the check: repositories of their own, else links to folders. `None` when nothing does.
     hidden: Option<NamedScripts>,
     /// The files named like one of the scripts that differ from the base's, untracked or ignored
     /// ones included.
@@ -379,9 +378,9 @@ impl Inventory {
         // A submodule at the base or in the index.
         let mut nested: Vec<String> = tree.split('\0').chain(staged.split('\0')).filter(|line| line.starts_with("160000 ")).filter_map(entry).map(|(_, path)| path).collect();
         // A link to a folder, staged or changed since the base (untracked ones are found below): a
-        // script reached through it is not one git lists, unless the folder is the worktree's own.
+        // script reached through it is not one whose path a check sees, wherever the folder lies.
         let links = staged.split('\0').filter(|line| line.starts_with("120000 ")).filter_map(entry).map(|(_, path)| path);
-        let mut linked: Vec<String> = links.chain(changed.split('\0').map(str::to_string)).filter(|path| !path.is_empty() && links_outside(worktree, path)).collect();
+        let mut linked: Vec<String> = links.chain(changed.split('\0').map(str::to_string)).filter(|path| !path.is_empty() && links_to_folder(worktree, path)).collect();
         let mut differing: Vec<String> = changed.split('\0').filter(|path| !path.is_empty() && named(path)).map(str::to_string).collect();
         // Untracked and ignored files, read as git lists them and kept only when they matter: listed
         // file by file, the untracked files show a repository left untracked alone as a folder,
@@ -393,7 +392,7 @@ impl Inventory {
                 let path = String::from_utf8_lossy(&path);
                 if let Some(repository) = path.strip_suffix('/') {
                     nested.push(repository.to_string());
-                } else if links_outside(worktree, &path) {
+                } else if links_to_folder(worktree, &path) {
                     linked.push(path.into_owned());
                 } else if named(&path) {
                     differing.push(path.into_owned());
@@ -437,19 +436,14 @@ impl Inventory {
 }
 
 fn linked_what(links: &[String]) -> &'static str {
-    if links.len() == 1 { "is a link to a folder outside the worktree" } else { "are links to folders outside the worktree" }
+    if links.len() == 1 { "is a link to a folder" } else { "are links to folders" }
 }
 
-/// Whether `path` in `worktree` is a link to a folder that is not the worktree's own: outside it, or
-/// in a `.git` folder of it, or one that cannot be told.
-fn links_outside(worktree: &Path, path: &str) -> bool {
+/// Whether `path` in `worktree` is a link to a folder: what is below it has a second path there,
+/// one no check of a script's path sees, wherever the folder is.
+fn links_to_folder(worktree: &Path, path: &str) -> bool {
     let at = worktree.join(path);
-    let Ok(meta) = std::fs::symlink_metadata(&at) else { return false };
-    if !meta.file_type().is_symlink() || !std::fs::metadata(&at).is_ok_and(|target| target.is_dir()) {
-        return false;
-    }
-    let (Ok(target), Ok(root)) = (at.canonicalize(), worktree.canonicalize()) else { return true };
-    !target.strip_prefix(&root).is_ok_and(|inside| inside.components().all(|part| part.as_os_str() != ".git"))
+    std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink()) && std::fs::metadata(&at).is_ok_and(|target| target.is_dir())
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
@@ -458,7 +452,7 @@ fn links_outside(worktree: &Path, path: &str) -> bool {
 /// Anything else the session is refused. An added rule that would publish is left out; an
 /// interpreter is kept only to run a script the run's `base` commit holds and the run has not
 /// changed since, nor any other file its path names when run from another folder, with no repository
-/// of its own nor link to a folder outside it in the worktree to hide such a file; a rule left out is
+/// of its own nor link to a folder in the worktree to hide such a file; a rule left out is
 /// also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {

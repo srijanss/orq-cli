@@ -382,7 +382,26 @@ fn an_allowed_tools_script_rule_is_left_out_beside_a_link_to_a_folder_outside_th
 
     let notes = write_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base);
 
-    assert_eq!(notes, [format!("web/a is a link to a folder outside the worktree, whose a/make.mjs orq cannot check, so allowed_tools rule {rule} was left out")]);
+    assert_eq!(notes, [format!("web/a is a link to a folder, whose a/make.mjs orq cannot check, so allowed_tools rule {rule} was left out")]);
+    assert!(!allowed(&worktree).contains(&rule));
+}
+
+/// A link to a folder inside the worktree gives its files a second path: web/a/make.mjs is
+/// payload/make.mjs, which no path ending in a/make.mjs names, so the rule is left out all the same.
+#[test]
+fn an_allowed_tools_script_rule_is_left_out_beside_a_link_to_a_folder_inside_the_worktree() {
+    let (_repo, worktree) = checkout("permissions-script-aliased");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let rule = "Bash(node a/make.mjs)".to_string();
+    fs::create_dir_all(worktree.join("payload")).unwrap();
+    fs::write(worktree.join("payload/make.mjs"), "require('child_process')\n").unwrap();
+    fs::create_dir_all(worktree.join("web")).unwrap();
+    std::os::unix::fs::symlink("../payload", worktree.join("web/a")).unwrap();
+
+    let notes = write_run_permissions(&worktree, std::slice::from_ref(&rule), Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("web/a is a link to a folder, whose a/make.mjs orq cannot check, so allowed_tools rule {rule} was left out")]);
     assert!(!allowed(&worktree).contains(&rule));
 }
 
