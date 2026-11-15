@@ -336,6 +336,36 @@ fn the_built_in_rule_left_out_stays_out_when_allowed_tools_names_it_too() {
     assert!(!allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
 }
 
+/// A script's relative path runs whichever file is at it below the folder the session is in, so an
+/// allowed_tools rule on a script, with arguments or without, is kept only while every file the path
+/// could name is the base's: `build.mjs:*` loses to a changed web/build.mjs, `a/make.mjs` to an added
+/// web/a/make.mjs, though the root's own build.mjs and a/make.mjs are unchanged.
+#[test]
+fn an_allowed_tools_script_rule_is_left_out_when_the_script_it_could_run_elsewhere_was_changed() {
+    let (_repo, worktree) = checkout("permissions-script-anywhere");
+    commit_file(&worktree, "build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "a/make.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let prefix = "Bash(node build.mjs:*)".to_string();
+    let relative = "Bash(node a/make.mjs)".to_string();
+    let extra = vec![prefix.clone(), relative.clone()];
+    assert_eq!(write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base), Vec::<String>::new());
+
+    fs::write(worktree.join("web/build.mjs"), "require('child_process')\n").unwrap();
+    fs::create_dir_all(worktree.join("web/a")).unwrap();
+    fs::write(worktree.join("web/a/make.mjs"), "require('child_process')\n").unwrap();
+    let notes = write_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [
+        "web/build.mjs was changed by this run, so the rule Bash(node build.mjs) was left out".to_string(),
+        format!("web/build.mjs was changed by this run, so allowed_tools rule {prefix} was left out"),
+        format!("web/a/make.mjs was changed by this run, so allowed_tools rule {relative} was left out"),
+    ]);
+    let allow = allowed(&worktree);
+    assert!(!allow.contains(&prefix) && !allow.contains(&relative), "{allow:?}");
+}
+
 /// A rule that must go but cannot be taken out of the settings could still be allowed there: the
 /// refresh before a session fails, naming the rule, rather than letting the session start.
 #[test]

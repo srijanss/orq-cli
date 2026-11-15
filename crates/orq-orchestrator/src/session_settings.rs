@@ -346,23 +346,11 @@ fn tracked_at(worktree: &Path, base: &str, script: &str) -> bool {
         && (meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))
 }
 
-/// Whether `script` in the worktree, committed or not, differs from the commit `base`; a failed
-/// check counts as a change.
-fn changed_since(worktree: &Path, base: &str, script: &str) -> bool {
-    let same = Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(["--literal-pathspecs", "diff", "--quiet", base, "--", script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    !same.is_ok_and(|status| status.success())
-}
-
-/// What the worktree holds of the files named `name`, in any folder, against the commit `base`.
+/// What the worktree holds of the files at the relative path `script` below any folder (`script`
+/// itself, `web/script`, ...), each of which a command running it from that folder runs, against
+/// the commit `base`.
 enum NamedScripts {
-    /// `base` holds no such file as a regular file, or git cannot tell.
+    /// `base` holds no such file, or one that is not a regular file, or git cannot tell.
     Absent,
     /// Repositories inside the worktree (submodules or not), whose files the worktree's git does not see.
     Nested(Vec<String>),
@@ -371,22 +359,23 @@ enum NamedScripts {
     Changed(Vec<String>),
 }
 
-fn named_scripts(worktree: &Path, base: &str, name: &str) -> NamedScripts {
-    named_scripts_checked(worktree, base, name).unwrap_or(NamedScripts::Absent)
+fn named_scripts(worktree: &Path, base: &str, script: &str) -> NamedScripts {
+    named_scripts_checked(worktree, base, script).unwrap_or(NamedScripts::Absent)
 }
 
-fn named_scripts_checked(worktree: &Path, base: &str, name: &str) -> Option<NamedScripts> {
+fn named_scripts_checked(worktree: &Path, base: &str, script: &str) -> Option<NamedScripts> {
     if !base.chars().all(|c| c.is_ascii_hexdigit()) || base.is_empty() {
         return None;
     }
-    let pattern = format!(":(glob)**/{name}");
+    let pattern = format!(":(glob)**/{script}");
+    let below = format!("/{script}");
     let git = |args: &[&str]| -> Option<String> {
         let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
         output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
     };
-    // ls-tree takes no glob: the base's files are listed and picked by name here.
+    // ls-tree takes no glob: the base's files are listed and picked by path here.
     let held = git(&["ls-tree", "-r", "-z", base])?;
-    let named = |entry: &&str| entry.split_once('\t').is_some_and(|(_, path)| path.rsplit('/').next() == Some(name));
+    let named = |entry: &&str| entry.split_once('\t').is_some_and(|(_, path)| path == script || path.ends_with(&below));
     let entries: Vec<&str> = held.split('\0').filter(named).collect();
     let regular = |entry: &&str| entry.starts_with("100644 blob ") || entry.starts_with("100755 blob ");
     if entries.is_empty() || !entries.iter().all(regular) {
@@ -415,7 +404,7 @@ fn named_scripts_checked(worktree: &Path, base: &str, name: &str) -> Option<Name
 /// asking, publishing is refused, and `logs` is writable so the session can leave its exit marker.
 /// Anything else the session is refused. An added rule that would publish is left out; an
 /// interpreter is kept only to run a script the run's `base` commit holds and the run has not
-/// changed since; a rule left out is also taken out of an allow list an earlier call wrote. Other
+/// changed since, nor any other file its path names when run from another folder; a rule left out is also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
 pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
     let (mut notes, unrevoked) = apply_run_permissions(worktree, extra, logs, base);
@@ -451,14 +440,25 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         }
     }
     for rule in extra {
+        // orq's own rule, left out above, already has its note.
+        if withdrawn.contains(&rule.as_str()) {
+            continue;
+        }
+        let not_script = || format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out");
         let could_publish = || format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead");
         let left_out = match interpreter_script(rule) {
             _ if names_publishing(rule) => Some(could_publish()),
             None => publishes(rule).then(could_publish),
-            Some(Some(script)) if tracked_at(worktree, base, script) => {
-                changed_since(worktree, base, script).then(|| format!("{script} was changed by this run, so allowed_tools rule {rule} was left out"))
-            }
-            Some(_) => Some(format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out")),
+            // Run from another folder, the path names another file: each must be the base's too.
+            Some(Some(script)) if tracked_at(worktree, base, script) => match named_scripts(worktree, base, script) {
+                NamedScripts::Absent => Some(not_script()),
+                NamedScripts::Nested(repositories) => {
+                    let what = if repositories.len() == 1 { "is a repository of its own" } else { "are repositories of their own" };
+                    Some(format!("{} {what}, whose {script} orq cannot check, so allowed_tools rule {rule} was left out", repositories.join(", ")))
+                }
+                NamedScripts::Changed(changed) => (!changed.is_empty()).then(|| format!("{} was changed by this run, so allowed_tools rule {rule} was left out", changed.join(", "))),
+            },
+            Some(_) => Some(not_script()),
         };
         match left_out {
             Some(note) => {
