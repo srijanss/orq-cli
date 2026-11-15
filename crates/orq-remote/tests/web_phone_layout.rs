@@ -230,3 +230,23 @@ fn an_attribute_rule_that_cannot_reach_a_field_is_not_in_the_way() {
     }
     assert_eq!(font_size_px(".other[data-open] input { font-size: 10px; }\n.signin input { font-size: 17px; }", ".signin input", 360.0), Some(17.0));
 }
+
+#[test]
+fn only_a_checkbox_or_radio_exclusion_counts_as_reaching_every_field() {
+    // Checkboxes and radios are never phone fields, so leaving them out still reaches every field.
+    for reaches in [".signin input:not([type=checkbox]):not([type=radio])", ".signin input:not([type=\"checkbox\"]):not([type='radio'])"] {
+        assert!(matches_element(reaches, ".signin input"), "{reaches}");
+    }
+    // Any other negated attribute could leave out the field itself, on it or on an ancestor, however nested.
+    for unknown in [
+        ".signin input:not([type=text])",
+        ".signin:not([data-open]) input",
+        ".signin input:not(:not([type=checkbox]))",
+        ".signin input:not([type=checkbox], [data-x])",
+        ".signin input:not(.x, [data-x])",
+    ] {
+        assert!(std::panic::catch_unwind(|| matches_element(unknown, ".signin input")).is_err(), "{unknown}");
+    }
+    let hides = ".signin input:not([type=text]) { font-size: 16px !important; }\n.signin input { font-size: 14px; }";
+    assert!(std::panic::catch_unwind(|| font_size_px(hides, ".signin input", 360.0)).is_err());
+}

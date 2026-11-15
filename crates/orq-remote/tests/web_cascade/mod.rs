@@ -118,28 +118,35 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
         return false;
     }
     // Only a selector that could still reach the element is left; it has no known attributes,
-    // and one inside :not(...) only rules out other elements.
+    // and only a checkbox or radio exclusion is known to rule out other elements alone.
     assert!(
-        !rule_compounds.iter().any(|c| without_not(c).contains('[')),
+        !rule_compounds.iter().any(|c| without_field_exclusions(c).contains('[')),
         "{selector:?} reaches {element:?} only for some attribute, which this resolver cannot decide"
     );
     true
 }
 
-/// A compound selector with its `:not(...)` arguments taken out.
-fn without_not(compound: &str) -> String {
-    let (mut out, mut rest) = (String::new(), compound);
-    while let Some(start) = rest.find(":not(") {
-        out.push_str(&rest[..start]);
-        let mut depth = 0usize;
-        let end = rest[start..].char_indices().find_map(|(i, c)| match c {
-            '(' => { depth += 1; None }
-            ')' => { depth -= 1; (depth == 0).then_some(start + i + 1) }
-            _ => None,
-        });
-        rest = end.map_or("", |e| &rest[e..]);
+/// A compound selector with its top-level `:not([type=checkbox])` and `:not([type=radio])` taken
+/// out: checkboxes and radios are never phone fields, so leaving them out still reaches every
+/// field. Any other negation, or one nested inside another pseudo-class, is kept.
+fn without_field_exclusions(compound: &str) -> String {
+    const EXCLUSIONS: [&str; 2] = [":not([type=checkbox])", ":not([type=radio])"];
+    let compound = compound.replace(['"', '\''], "");
+    let (mut out, mut depth, mut rest) = (String::new(), 0usize, compound.as_str());
+    while let Some(c) = rest.chars().next() {
+        if let Some(exclusion) = EXCLUSIONS.iter().find(|e| depth == 0 && rest.starts_with(**e)) {
+            rest = &rest[exclusion.len()..];
+            continue;
+        }
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
     }
-    out + rest
+    out
 }
 
 /// A selector's compound selectors, split at the combinators outside `[...]` and `(...)`, and
