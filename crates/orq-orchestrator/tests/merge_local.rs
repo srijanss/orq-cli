@@ -714,3 +714,15 @@ fn set_aside_drops_its_own_entry_when_another_one_was_pushed_on_top_meanwhile() 
     assert!(listed.ends_with(": someone else's"), "the other entry is untouched: {listed}");
     assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "a\n", "and its change is still only in it");
 }
+
+#[test]
+fn set_aside_changes_restored_after_the_merge_keep_what_was_staged_apart_from_what_was_not() {
+    let w = refused_over_lines("set-aside-staged", &lines(&[(10, "staged")]));
+    git(&w.repo, &["add", "lines.txt"]);
+    fs::write(w.repo.join("lines.txt"), lines(&[(9, "unstaged"), (10, "staged")])).unwrap();
+
+    assert!(matches!(merge_setting_aside(&w.store, "run-1").unwrap(), SetAsideOutcome::Merged { note: None, .. }));
+    assert_eq!(git(&w.repo, &["show", ":lines.txt"]) + "\n", lines(&[(1, "theirs"), (10, "staged")]), "the staged edit is staged again");
+    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (9, "unstaged"), (10, "staged")]), "and the unstaged one is not");
+    assert_eq!(stash_list(&w.repo), "", "no stash entry is left");
+}

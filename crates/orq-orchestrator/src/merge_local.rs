@@ -162,7 +162,13 @@ pub fn merge_setting_aside(store: &RunStore, run_id: &str) -> Result<SetAsideOut
     let files: Vec<String> = overlapping.iter().map(|path| printable(&path.to_string_lossy())).collect();
     match merge_into_base(store, run_id)? {
         MergeOutcome::Merged { head_sha } => {
-            let applied = git_raw(&checkout, &["stash", "apply", "--quiet", &stash])?;
+            // Staged and unstaged changes go back where they were; when the run's commits leave no
+            // room for the staged ones as they were, the changes go back unstaged, with the entry kept.
+            let mut applied = git_raw(&checkout, &["stash", "apply", "--index", "--quiet", &stash])?;
+            let unstaged = !applied.success && unmerged_paths(&checkout)?.is_empty();
+            if unstaged {
+                applied = git_raw(&checkout, &["stash", "apply", "--quiet", &stash])?;
+            }
             if !applied.success {
                 // Nothing is dropped after a failed apply: the entry is the person's only copy.
                 let conflicted = unmerged_paths(&checkout)?;
@@ -174,6 +180,17 @@ pub fn merge_setting_aside(store: &RunStore, run_id: &str) -> Result<SetAsideOut
                     format!("your changes to {files} conflicted with this run and are in stash {stash} ({label}); the checkout has conflict markers in {files}")
                 };
                 let payload = serde_json::json!({ "stash": stash, "restored": false, "files": files, "conflicted": conflicted, "note": note });
+                record_event(store, &record, "merge.set_aside", payload)?;
+                return Ok(SetAsideOutcome::Merged { head_sha, note: Some(note) });
+            }
+            if unstaged {
+                // The entry is the only copy left of what was staged.
+                let note = format!(
+                    "your changes to {} were put back but no longer staged; as they were staged they are in stash {stash} (orq set-aside {})",
+                    named(&files),
+                    record.run_id
+                );
+                let payload = serde_json::json!({ "stash": stash, "restored": true, "staged": false, "files": files, "note": note });
                 record_event(store, &record, "merge.set_aside", payload)?;
                 return Ok(SetAsideOutcome::Merged { head_sha, note: Some(note) });
             }
