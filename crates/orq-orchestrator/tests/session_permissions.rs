@@ -515,3 +515,25 @@ fn a_script_repository_or_folder_link_git_ignores_counts_like_an_untracked_one()
         assert!(!allowed(&worktree).contains(&builtin), "{tag}: {:?}", allowed(&worktree));
     }
 }
+
+/// A name that is not UTF-8 is read as no name: a folder whose name has a byte UTF-8 does not allow
+/// could be taken for a checked-in folder named with the replacement character, so the worktree
+/// counts as unreadable and the built-in rule is left out.
+#[test]
+fn a_script_in_a_folder_whose_name_is_not_utf8_takes_the_built_in_rule_out() {
+    use std::os::unix::ffi::OsStrExt;
+    let builtin = "Bash(node build.mjs)".to_string();
+    let (_repo, worktree) = checkout("permissions-not-utf8");
+    commit_file(&worktree, "build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "\u{FFFD}/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    assert!(write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base).is_empty());
+    assert!(allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
+    let unchecked = worktree.join(std::ffi::OsStr::from_bytes(b"\xff"));
+    fs::create_dir_all(&unchecked).unwrap();
+    fs::write(unchecked.join("build.mjs"), "require('child_process')\n").unwrap();
+
+    write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+    assert!(!allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
+}

@@ -356,15 +356,16 @@ struct Inventory {
 }
 
 impl Inventory {
-    /// The worktree read for `scripts`, relative paths; `None` when `base` is no commit or git
-    /// cannot tell.
+    /// The worktree read for `scripts`, relative paths; `None` when `base` is no commit, git
+    /// cannot tell, or a path in the worktree or git's listing is not UTF-8.
     fn read(worktree: &Path, base: &str, scripts: &[&str]) -> Option<Self> {
         if base.is_empty() || !base.chars().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
         let git = |args: &[&str]| -> Option<String> {
             let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-            output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+            // A path that is not UTF-8 could read as another one: git's listing must be exact.
+            output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
         };
         let file_name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
         let names: Vec<String> = scripts.iter().map(|script| file_name(script)).collect();
@@ -392,7 +393,9 @@ impl Inventory {
             for entry in std::fs::read_dir(&folder).ok()? {
                 let entry = entry.ok()?;
                 let name = entry.file_name();
-                let path = if relative.is_empty() { name.to_string_lossy().into_owned() } else { format!("{relative}/{}", name.to_string_lossy()) };
+                // A name that is not UTF-8 could be taken for a checked-in one: nothing is told then.
+                let text = name.to_str()?;
+                let path = if relative.is_empty() { text.to_string() } else { format!("{relative}/{text}") };
                 if name == ".git" {
                     repository = !relative.is_empty();
                     continue;
