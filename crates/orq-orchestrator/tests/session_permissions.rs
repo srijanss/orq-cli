@@ -557,3 +557,28 @@ fn among_many_checked_in_scripts_of_one_name_each_changed_one_is_named_once() {
 
     assert_eq!(notes, [format!("c/build.mjs, e/build.mjs was changed by this run, so the rule {builtin} was left out")]);
 }
+
+/// A worktree orq cannot read through is one whose scripts it cannot check: a folder it may not
+/// list takes out the script rules an earlier refresh allowed, saying why.
+#[test]
+fn a_folder_orq_cannot_list_takes_out_script_rules_allowed_before() {
+    use std::os::unix::fs::PermissionsExt;
+    let builtin = "Bash(node build.mjs)".to_string();
+    let rule = "Bash(node web/build.mjs)".to_string();
+    let (_repo, worktree) = checkout("permissions-unreadable");
+    commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let extra = std::slice::from_ref(&rule);
+    assert_eq!(refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base), Ok(vec![]));
+    assert!(allowed(&worktree).contains(&builtin) && allowed(&worktree).contains(&rule), "{:?}", allowed(&worktree));
+    let locked = worktree.join("locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let refreshed = refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base);
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(refreshed, Ok(vec![format!("orq could not read the worktree to check its scripts, so allowed_tools rule {rule} was left out")]));
+    let allow = allowed(&worktree);
+    assert!(!allow.contains(&builtin) && !allow.contains(&rule), "{allow:?}");
+}

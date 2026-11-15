@@ -517,6 +517,8 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         let left_out = match interpreter_script(rule) {
             _ if names_publishing(rule) => Some(could_publish()),
             None => publishes(rule).then(could_publish),
+            // A worktree that could not be read is one whose scripts nothing checked.
+            Some(Some(_)) if inventory.is_none() => Some(format!("orq could not read the worktree to check its scripts, so allowed_tools rule {rule} was left out")),
             // Run from another folder, the path names another file: each must be the base's too.
             Some(Some(script)) if tracked_at(script) => match named_scripts(script) {
                 NamedScripts::Absent => Some(not_script()),
