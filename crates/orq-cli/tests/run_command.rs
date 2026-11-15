@@ -1528,9 +1528,13 @@ fn a_group_of_several_features_runs_once_on_the_first_features_branch_with_one_r
         .commit("feat: COM-02")
         .build();
     let provider = github();
+    let completed = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "completed").depends_on(&["COM-01"])];
 
     // Given out of order: the dependency decides.
-    let output = run_selecting(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"]);
+    let output = run_command(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"])
+        .env("PATH", path_marking(&w, &agent, &provider, &completed))
+        .output()
+        .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
@@ -1544,6 +1548,96 @@ fn a_group_of_several_features_runs_once_on_the_first_features_branch_with_one_r
     assert_eq!(creates.len(), 1, "one review request");
     let title = creates[0].args.iter().skip_while(|a| *a != "--title").nth(1).cloned().expect("a title");
     assert!(title.contains("COM-01") && title.contains("COM-02"), "{title}");
+}
+
+/// A PATH whose `claude` leaves the main ledger as `after`, as the agent's TDD server does when it
+/// completes features, and then runs `agent`.
+fn path_marking(w: &World, agent: &FakeAgent, provider: &FakeProvider, after: &[LedgerEntry]) -> std::ffi::OsString {
+    let path = path_with(agent, provider, &w.tag);
+    let bin = std::env::split_paths(&path).next().unwrap();
+    let marked = write_ledger(&bin, after);
+    std::fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncp '{}' '{}'\nexec '{}' \"$@\"\n",
+            marked.display(),
+            w.repo.root().join(".tdd-features.json").display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn a_group_session_that_ends_before_every_feature_is_completed_fails_without_a_push_or_review() {
+    let w = world("groupunfinished");
+    write_ledger(
+        w.repo.root(),
+        &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
+    );
+    let agent = FakeAgent::builder().write_file("one.txt", "1\n").commit("feat: COM-01").build();
+    let provider = github();
+    let after = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "in_progress").depends_on(&["COM-01"])];
+
+    let output = run_command(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"])
+        .env("PATH", path_marking(&w, &agent, &provider, &after))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let all = format!("{}\n{stdout}", stderr(&output));
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{all}");
+    assert!(stdout.contains("state: failed"), "{all}");
+    assert!(all.contains("the implement session ended before COM-02 was completed"), "{all}");
+    assert!(!git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "nothing was pushed");
+    assert!(
+        !provider.calls().iter().any(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])),
+        "no review request"
+    );
+}
+
+#[test]
+fn a_resumed_group_run_whose_session_ended_early_runs_the_session_again_and_reaches_review() {
+    let w = world("groupresume");
+    write_ledger(
+        w.repo.root(),
+        &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
+    );
+    let provider = github();
+    let first = FakeAgent::builder().write_file("one.txt", "1\n").commit("feat: COM-01").build();
+    let partly = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "in_progress").depends_on(&["COM-01"])];
+    let failed = run_command(&w, &first, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"])
+        .env("PATH", path_marking(&w, &first, &provider, &partly))
+        .output()
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
+    let run_id = printed_run_id(&failed);
+
+    let second = FakeAgent::builder().write_file("two.txt", "2\n").commit("feat: COM-02").build();
+    let completed = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "completed").depends_on(&["COM-01"])];
+    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
+        .arg(w.repo.root())
+        .env("XDG_CONFIG_HOME", &w.env.config)
+        .env("XDG_STATE_HOME", &w.env.state)
+        .env("XDG_DATA_HOME", &w.env.data)
+        .env("ORQ_FORGE", "gh")
+        .env("GIT_SSH_COMMAND", &w.ssh)
+        .env("PATH", path_marking(&w, &second, &provider, &completed))
+        .env_remove("HERDR_ACTIVE_PANE_CWD")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(stdout.contains("state: review_ready"), "{stdout}");
+    let prompt = second.first_run().expect("the resumed run ran the session again").args.last().cloned().unwrap();
+    assert!(prompt.starts_with("/implement-and-review COM-01 COM-02 "), "{prompt}");
+    let pushed = git(&w.remote, &["ls-tree", "-r", "--name-only", "fix--COM-01"]);
+    assert!(pushed.contains("two.txt"), "the second session's work reached the branch: {pushed}");
+    let creates = provider.calls().into_iter().filter(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).count();
+    assert_eq!(creates, 1, "one review request");
 }
 
 #[test]
@@ -2079,8 +2173,13 @@ fn a_group_run_is_announced_once_for_its_one_branch_and_review() {
         &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending").depends_on(&["COM-01"])],
     );
     let agent = FakeAgent::builder().write_file("one.txt", "1\n").commit("feat: COM-01").write_file("two.txt", "2\n").commit("feat: COM-02").build();
+    let provider = github();
+    let completed = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "completed").depends_on(&["COM-01"])];
 
-    let output = run_selecting(&w, &agent, &github(), &["--group", "COM-02,COM-01"], &["--no-ci-check"]);
+    let output = run_command(&w, &agent, &provider, &["--group", "COM-02,COM-01"], &["--no-ci-check"])
+        .env("PATH", path_marking(&w, &agent, &provider, &completed))
+        .output()
+        .unwrap();
 
     assert!(output.status.success(), "{}", stderr(&output));
     let heard = std::fs::read_to_string(&heard).expect("the notifier ran");

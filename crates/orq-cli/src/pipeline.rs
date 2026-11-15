@@ -853,6 +853,23 @@ fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreErr
     Ok(Report { run_id: String::new(), ending, detail: Some(detail.into()), review_url: None, ci_green: None })
 }
 
+/// Why a group's implement session is not done: the first member, in group order, that the ledger
+/// does not show completed. A single feature is not checked.
+fn unfinished_group_member(project: &orq_git::Project, features: &[String]) -> Option<String> {
+    if features.len() < 2 {
+        return None;
+    }
+    let entries = match orq_features::load_ledger(&orq_features::ledger_path(project)) {
+        Ok(entries) => entries,
+        Err(err) => return Some(format!("cannot tell whether the group's features were completed: the feature ledger: {err:?}")),
+    };
+    let completed = |feature: &str| {
+        entries.iter().any(|e| e.feature_name == feature && e.status.known() == Some(orq_core::FeatureStatus::Completed))
+    };
+    let unfinished = features.iter().find(|feature| !completed(feature))?;
+    Some(format!("the implement session ended before {unfinished} was completed"))
+}
+
 /// A group's review request names every feature in its title and lists them in its description.
 fn group_draft(mut draft: orq_orchestrator::ReviewDraft, features: &[String]) -> orq_orchestrator::ReviewDraft {
     if features.len() < 2 {
@@ -1024,6 +1041,11 @@ fn stages(
             }
             if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
                 return stopped(Ending::Blocked, reason);
+            }
+            if let Some(reason) = unfinished_group_member(options.project, options.features) {
+                // Recorded as the session's stage failing, so resuming starts the session again.
+                orq_orchestrator::record_implement_unfinished(store, run_id, &reason)?;
+                return stopped(Ending::Failed, reason);
             }
         }
     }

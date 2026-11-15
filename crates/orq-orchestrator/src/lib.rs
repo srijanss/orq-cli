@@ -75,7 +75,7 @@ pub use notify::{
 };
 pub use orq_written::record_orq_written;
 pub use terminal_session::run_in_terminal;
-pub use outcome::{check_implement_outcome, ImplementCheck};
+pub use outcome::{check_implement_outcome, record_implement_unfinished, ImplementCheck};
 pub use pane::{record_pane, run_pane, PaneRef};
 pub use push_stage::{push_run_branch, push_run_branch_with, PushOutcome, RetryPolicy};
 pub use reap::{

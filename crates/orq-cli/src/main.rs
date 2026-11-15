@@ -345,7 +345,7 @@ fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
 /// [`run`], for the run that resumes `resuming` when given.
 fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     let Some(parsed) = parse_run_args(args) else { return usage_error() };
-    // A group of one is the feature itself; several features wait for grouped runs.
+    // A group of one is the feature itself; several features run as one session on one branch.
     let group = match (parsed.group.as_deref(), parsed.feature.as_deref()) {
         (Some(_), Some(_)) => return group_error("--group and --feature cannot be given together".to_string()),
         (Some(text), None) => match checked_group(text) {

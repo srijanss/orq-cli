@@ -72,6 +72,28 @@ pub fn check_implement_outcome(
     Ok(ImplementCheck::Blocked { reason })
 }
 
+/// The implement session ended with work still to do (`reason` says what): its stage is recorded
+/// failed, so a resumed run starts the session again rather than going on to the gate.
+pub fn record_implement_unfinished(
+    store: &RunStore,
+    run_id: &str,
+    reason: &str,
+) -> Result<(), StoreError> {
+    let record = store.load(run_id)?;
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "stage.failed".to_string(),
+        stage: Some("implement_and_review".to_string()),
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "reason": reason }),
+    })
+}
+
 fn git(worktree: &Path, args: &[&str]) -> Result<String, StoreError> {
     let out = git_raw(worktree, args)?;
     if !out.success {
