@@ -3,7 +3,7 @@
 // When src/sw.js exists it is built too, to web/sw.js (or --sw-out), after the page bundle.
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -79,5 +79,8 @@ if (existsSync(worker)) {
     logLevel: "warning",
   });
   stamp += `sw ${createHash("sha256").update(readFileSync(swOutfile)).digest("hex")}\n`;
+} else {
+  // A worker left from a build before its source was removed would keep caching a shell nothing versions.
+  rmSync(swOutfile, { force: true });
 }
 writeFileSync(outfile + ".stamp", stamp);

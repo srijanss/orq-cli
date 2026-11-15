@@ -355,3 +355,17 @@ fn changing_one_byte_of_a_shell_file_changes_the_worker_version() {
     let after = version_in(&workspace.worker().unwrap());
     assert_ne!(before, after, "the version covers web/app.css");
 }
+
+#[test]
+fn removing_the_worker_source_removes_the_worker_an_earlier_build_wrote() {
+    if !web_deps::ready() {
+        return;
+    }
+    let workspace = Workspace::new("sw-removed", true);
+    workspace.build();
+    assert!(workspace.worker().is_some(), "the first build writes the worker");
+    std::fs::remove_file(workspace.root.join("web-src/src/sw.js")).unwrap();
+    let stamp = workspace.build();
+    assert!(workspace.worker().is_none(), "a build without src/sw.js leaves no stale worker behind");
+    assert_eq!(stamp.lines().count(), 2, "{stamp:?}");
+}
