@@ -321,6 +321,22 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       };
       touch("touchstart", 200);
       touch("touchend", 200 + step.dx);
+    } else if (step.press !== undefined) {
+      // A finger held on an element for ms (moved dy pixels down first when given), then lifted: touchstart,
+      // touchmove, a wait, touchend and, when the finger did not move, the click a browser sends after it.
+      const el = root.querySelector(step.press);
+      const touch = (type, y) => {
+        const event = new window.Event(type, { bubbles: true, cancelable: true });
+        const points = [{ clientX: 200, clientY: y }];
+        Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : points });
+        Object.defineProperty(event, "changedTouches", { value: points });
+        el.dispatchEvent(event);
+      };
+      touch("touchstart", 300);
+      if (step.dy) touch("touchmove", 300 + step.dy);
+      await new Promise((resolve) => setTimeout(resolve, step.ms));
+      touch("touchend", 300 + (step.dy || 0));
+      if (!step.dy) el.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
     } else if (step.select !== undefined) {
       root.querySelector(`[data-project-option="${step.select}"]`).click();
     } else if (step.back) {

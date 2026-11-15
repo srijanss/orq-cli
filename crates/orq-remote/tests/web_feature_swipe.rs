@@ -81,12 +81,12 @@ fn the_revealed_start_asks_then_starts_that_one_feature() {
 }
 
 #[test]
-fn a_phone_hides_the_marks_and_the_swiped_row_stays_in_place_and_a_wide_screen_spaces_the_marked_buttons() {
+fn a_phone_hides_the_marks_unless_selecting_and_the_swiped_row_stays_in_place_and_a_wide_screen_spaces_the_marked_buttons() {
     let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
     assert!(!css.contains("translateX(-7.5rem)"), "the row does not slide away");
     let spaced = css.lines().find(|line| line.starts_with(".marked-actions {")).expect("a .marked-actions rule");
     assert!(spaced.contains("gap:") && spaced.contains("margin"), "{spaced}");
-    assert!(css.contains("  .feature-mark, .marked-actions { display: none; }"), "a phone has no marks");
+    assert!(css.contains("  .feature-mark, .marked-actions { display: none; }"), "a phone hides the marks unless selecting");
     let cell = css.lines().find(|line| line.starts_with(".feature-state-cell {")).expect("a .feature-state-cell rule");
     assert!(cell.contains("display: inline-flex") && cell.contains("gap:"), "{cell}");
     // The name column's 10rem floor would push the revealed button off a phone's screen.

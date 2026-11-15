@@ -2371,7 +2371,10 @@ function FeatureAction({ feature, control, asking = false, onCancel = null }) {
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
 }
 
-function FeatureList({ features, showProject = false, control = null }) {
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
+
+function FeatureList({ features, showProject = false, control = null, scope = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
   const [page, setPage] = useState(0);
@@ -2379,7 +2382,23 @@ function FeatureList({ features, showProject = false, control = null }) {
   const [results, setResults] = useState([]);
   const [swiped, setSwiped] = useState(null);
   const [asking, setAsking] = useState(null);
+  const [selecting, setSelecting] = useState(false);
+  const [scopeShown, setScopeShown] = useState(scope);
   const touchAt = useRef(null);
+  const press = useRef({ timer: null, from: null, fired: false });
+  useEffect(() => () => clearTimeout(press.current.timer), []);
+  // Selection mode is a phone's: a wide screen has no Select button and shows its marks anyway, so a long
+  // press there is a plain tap, and a phone turned wide leaves the mode with its marks kept.
+  const phone = usePhone();
+  if (!phone && selecting) setSelecting(false);
+  // Another project's list leaves selection mode and drops its marks.
+  if (scope !== scopeShown) {
+    setScopeShown(scope);
+    if (selecting) {
+      setSelecting(false);
+      setMarked([]);
+    }
+  }
   const adder = control === null ? null : <FeatureEditor features={features} control={control} />;
   if (features.length === 0) {
     return (
@@ -2413,28 +2432,105 @@ function FeatureList({ features, showProject = false, control = null }) {
     };
   }).filter((group) => group.promote.length > 0 || group.start.length > 0);
   const toggle = (key) => setMarked((now) => (now.includes(key) ? now.filter((entry) => entry !== key) : [...now, key]));
+  // On a phone, selection mode shows the marks and turns a tap on a row into a toggle of its mark.
+  const enterSelecting = () => {
+    setSwiped(null);
+    setAsking(null);
+    setSelecting(true);
+  };
+  const leaveSelecting = () => {
+    setMarked([]);
+    setSelecting(false);
+  };
+  // A change of filter, state or page leaves selection mode, so no mark is left on a row out of sight.
+  const refilter = (change) => {
+    change();
+    if (selecting) leaveSelecting();
+  };
+  const tapRow = (feature) => (event) => {
+    if (!selecting || !markable(feature) || event.target.matches("[data-mark]")) return;
+    event.preventDefault();
+    toggle(keyOf(feature));
+  };
+  // A finger held still on a markable row for LONG_PRESS_MS enters selection mode with that row marked; a move
+  // past LONG_PRESS_SLOP pixels or a lift first is a scroll or a tap. The click the lift sends is swallowed so the
+  // press does not also open the feature.
+  const stopPress = () => {
+    clearTimeout(press.current.timer);
+    press.current.timer = null;
+    press.current.from = null;
+  };
+  const rowTouch = (feature) => {
+    const swipe = swipeHandlers(touchAt, (left) => setSwiped(left ? keyOf(feature) : null));
+    return {
+      onTouchStart: (event) => {
+        swipe.onTouchStart(event);
+        stopPress();
+        press.current.fired = false;
+        const point = event.touches[0];
+        if (!point || !phone) return;
+        press.current.from = { x: point.clientX, y: point.clientY };
+        press.current.timer = setTimeout(() => {
+          press.current.timer = null;
+          press.current.from = null;
+          press.current.fired = true;
+          const key = keyOf(feature);
+          enterSelecting();
+          setMarked((now) => (now.includes(key) ? now : [...now, key]));
+        }, LONG_PRESS_MS);
+      },
+      onTouchMove: (event) => {
+        const from = press.current.from;
+        const point = event.touches[0];
+        if (from && point && Math.hypot(point.clientX - from.x, point.clientY - from.y) > LONG_PRESS_SLOP) stopPress();
+      },
+      onTouchEnd: (event) => {
+        stopPress();
+        swipe.onTouchEnd(event);
+      },
+      onTouchCancel: stopPress,
+    };
+  };
+  // A press whose lift sent no click must not swallow the next tap's.
+  const forgetPress = () => {
+    press.current.fired = false;
+  };
+  const swallowPressClick = (event) => {
+    if (!press.current.fired) return;
+    press.current.fired = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const selectedCount = groups.reduce((sum, group) => sum + group.promote.length + group.start.length, 0);
   const finished = (group) => (done) => {
     setMarked([]);
     setResults(done);
-    if (done.some((result) => result.ok)) group.control.onDone();
+    if (done.some((result) => result.ok)) {
+      setSelecting(false);
+      group.control.onDone();
+    }
   };
   return (
-    <>
+    <div className={selecting ? "feature-list selecting" : "feature-list"}>
       <div className="feature-filters">
         <label className="search-box">
           <Icon name="search" size={18} />
-          <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
+          <input type="search" data-feature-search aria-label="Search features" placeholder="Search features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => refilter(() => { setQuery(event.target.value); setPage(0); })} />
         </label>
-        <select data-feature-status aria-label="State" value={state} onChange={(event) => { setState(event.target.value); setPage(0); }}>
+        <select data-feature-status aria-label="State" value={state} onChange={(event) => refilter(() => { setState(event.target.value); setPage(0); })}>
           <option value="all">State: All</option>
           {states.map((name) => (
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
         {adder}
+        {features.some(markable) ? (
+          <button type="button" className="select-mode" data-select-mode aria-pressed={selecting ? "true" : "false"} onClick={selecting ? leaveSelecting : enterSelecting}>{selecting ? "Done" : "Select"}</button>
+        ) : null}
       </div>
       {groups.length > 0 ? (
         <div className="marked-actions">
+          {selecting ? <span className="selected-count" data-selected-count aria-live="polite">{selectedCount + " selected"}</span> : null}
           {groups.map((group) => (
             <Fragment key={group.projectId}>
               {group.promote.length > 0 ? <PromoteMarked names={group.promote} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
@@ -2460,10 +2556,10 @@ function FeatureList({ features, showProject = false, control = null }) {
             <tbody>
               {visible.map((feature) => (
                 <Fragment key={keyOf(feature)}>
-                <tr className={swiped === keyOf(feature) ? "feature swiped" : "feature"} data-feature-row={feature.name} {...(markable(feature) ? swipeHandlers(touchAt, (left) => setSwiped(left ? keyOf(feature) : null)) : {})}>
+                <tr className={swiped === keyOf(feature) ? "feature swiped" : "feature"} data-feature-row={feature.name} onClick={tapRow(feature)} onClickCapture={swallowPressClick} {...(markable(feature) && !selecting ? rowTouch(feature) : { onTouchStart: forgetPress })}>
                   <td>
                     {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(keyOf(feature))} onChange={() => toggle(keyOf(feature))} /> : null}
-                    <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
+                    <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (selecting && markable(feature)) return; if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
                   </td>
                   <td>
                     <span className="feature-state-cell">
@@ -2483,8 +2579,8 @@ function FeatureList({ features, showProject = false, control = null }) {
           </table>
         </div>
       ) : null}
-      <Pager at={at} pages={pages} onPage={setPage} />
-    </>
+      <Pager at={at} pages={pages} onPage={(next) => refilter(() => setPage(next))} />
+    </div>
   );
 }
 
@@ -2644,7 +2740,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
-        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} />;
+        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} />;
         const feature = data.rows.find((entry) => entry.name === name);
         return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
       }} />
