@@ -574,6 +574,12 @@ fn a_folder_orq_cannot_list_takes_out_script_rules_allowed_before() {
     let locked = worktree.join("locked");
     fs::create_dir_all(&locked).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads a folder whatever its mode: there is nothing unreadable to test then.
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipped: {} stays readable at mode 000", locked.display());
+        return;
+    }
 
     let refreshed = refresh_run_permissions(&worktree, extra, Path::new("/logs/r"), &base);
 
