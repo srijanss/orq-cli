@@ -184,7 +184,22 @@ async function tabs() {
       b: { page: b.text, script: (await sw.ask("/app.react.js", { client: "b" })).text },
     };
   };
-  return { storageFails: await storageFails() };
+  // Tab A opens from the cache; an icon is lost; tab B then finds the shell incomplete and opens from the server.
+  const shellLost = async () => {
+    const sw = boot();
+    await sw.dispatch("install");
+    await sw.dispatch("activate");
+    const shellCache = [...sw.stores.keys()][0];
+    sw.net.phase = "later";
+    const a = await sw.ask("/projects/p", { mode: "navigate", opens: "a" });
+    sw.stores.get(shellCache).delete("/icons/icon-192.png");
+    const b = await sw.ask("/projects/q", { mode: "navigate", opens: "b" });
+    return {
+      a: { page: a.text, script: (await sw.ask("/app.react.js", { client: "a" })).text },
+      b: { page: b.text, script: (await sw.ask("/app.react.js", { client: "b" })).text },
+    };
+  };
+  return { storageFails: await storageFails(), shellLost: await shellLost() };
 }
 
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document

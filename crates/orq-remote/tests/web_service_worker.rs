@@ -86,9 +86,9 @@ fn a_damaged_release_cache_never_mixes_the_running_release_with_a_newer_servers_
     let Some(out) = run() else { return };
     let damaged = &out["damaged"];
     // The server has moved on to a newer release; a page and its files must come from one release.
-    let newer = json!({"page": "later /projects/p", "script": "later /app.react.js", "style": "later /app.css", "cacheKept": false});
-    assert_eq!(damaged["missingAsset"], newer, "a shell missing a file is dropped and the page opens whole from the server");
-    assert_eq!(damaged["missingPage"], newer, "a shell missing its page is dropped and the page opens whole from the server");
+    let newer = json!({"page": "later /projects/p", "script": "later /app.react.js", "style": "later /app.css", "cacheKept": true});
+    assert_eq!(damaged["missingAsset"], newer, "a shell missing a file is left in place and the page opens whole from the server");
+    assert_eq!(damaged["missingPage"], newer, "a shell missing its page is left in place and the page opens whole from the server");
     assert_eq!(damaged["broken"]["page"], json!("later /projects/p"), "cache storage failing: the page opens whole from the server");
     assert_eq!(damaged["broken"]["script"], json!("later /app.react.js"));
     assert_eq!(damaged["broken"]["style"], json!("later /app.css"));
@@ -117,6 +117,15 @@ fn each_open_page_gets_its_files_from_where_that_page_came_from_not_from_whether
     // the newer server; storage has recovered by the time either asks for its script.
     let tabs = &out["tabs"]["storageFails"];
     assert_eq!(tabs["a"], json!({"page": "install /", "script": "install /app.react.js"}), "{tabs}");
+    assert_eq!(tabs["b"], json!({"page": "later /projects/q", "script": "later /app.react.js"}), "{tabs}");
+}
+
+#[test]
+fn a_page_opening_from_the_server_leaves_the_cache_another_open_page_was_built_from() {
+    let Some(out) = run() else { return };
+    // Tab A opened from the running release's cache; an icon was lost, so tab B opened from the newer server.
+    let tabs = &out["tabs"]["shellLost"];
+    assert_eq!(tabs["a"], json!({"page": "install /", "script": "install /app.react.js"}), "tab B's navigation keeps tab A's release: {tabs}");
     assert_eq!(tabs["b"], json!({"page": "later /projects/q", "script": "later /app.react.js"}), "{tabs}");
 }
 

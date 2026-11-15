@@ -39,8 +39,9 @@ self.addEventListener("fetch", (event) => {
 });
 
 // A page and its files always come from one release. A page opens this release's cached shell,
-// online or offline, when the whole shell is there; a shell missing any file (or cache storage
-// failing) is dropped instead, and the page opens whole from the server.
+// online or offline, when the whole shell is there; when a shell file is missing (or cache storage
+// fails) the page opens whole from the server instead. The cache is left in place, since another
+// open page may have been built from it and still need its files.
 // Where each open page came from is remembered by its client id, never read back from whether the
 // cache is there now: true for this release's cache, false for the server.
 const fromCache = new Map();
@@ -48,9 +49,7 @@ const fromCache = new Map();
 async function navigate(request, client) {
   const page = await whole();
   if (client) fromCache.set(client, Boolean(page));
-  if (page) return page;
-  await quietly(() => caches.delete(CACHE));
-  return fetch(request);
+  return page || fetch(request);
 }
 
 // A shell file comes from where its page came from. A page opened from this release's cache, which is
