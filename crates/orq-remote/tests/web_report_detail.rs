@@ -91,6 +91,16 @@ fn only_a_safe_https_link_is_offered_and_it_opens_without_opener_or_referrer() {
 }
 
 #[test]
+fn the_provider_link_opens_outside_the_installed_app_so_the_app_keeps_its_place() {
+    // An installed app has no address bar or back button, so a link that replaced the page would strand the reader.
+    let Some(out) = open_first(detail(false, json!("https://github.com/o/r/pull/7"))) else { return };
+    let links = report_links(&out["frames"][2]);
+    assert_eq!(links.len(), 1, "{out}");
+    assert_eq!(links[0]["target"], "_blank", "{out}");
+    assert_eq!(links[0]["rel"], "noopener noreferrer", "{out}");
+}
+
+#[test]
 fn a_stale_report_shows_the_marker_and_no_link_even_when_the_link_is_safe() {
     let Some(out) = open_first(detail(true, json!("https://github.com/o/r/pull/7"))) else { return };
     assert!(page(&out, 2).contains("STALE"), "{out}");

@@ -434,7 +434,7 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
       {href !== null && (
         <p className="review-provider">
           <span className="muted">Provider:</span>
-          <a href={href} rel="noopener noreferrer" referrerPolicy="no-referrer">
+          <a href={href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">
             {providerName(href)}
             <Icon name="external" size={16} />
           </a>

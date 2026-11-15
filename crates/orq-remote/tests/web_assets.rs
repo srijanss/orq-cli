@@ -225,6 +225,23 @@ fn the_page_head_links_the_manifest_and_icons_and_the_csp_allows_only_those_from
 }
 
 #[test]
+fn installed_the_status_bar_takes_the_top_bar_colour_in_both_themes_and_the_page_runs_full_screen() {
+    let server = start("chrome");
+    let head = request(server.addr(), "GET", "/", None).body.split("</head>").next().unwrap().to_string();
+    for tag in [
+        // The top bar's --sidebar colour in each theme, so the status bar reads as part of it.
+        "<meta name=\"theme-color\" media=\"(prefers-color-scheme: light)\" content=\"#0f172a\">",
+        "<meta name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"#151b23\">",
+        "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">",
+        "<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">",
+    ] {
+        assert!(head.contains(tag), "{tag} missing from {head}");
+    }
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    assert!(css.contains("--sidebar: #0f172a;") && css.contains("--sidebar: #151b23;"), "the theme colours follow the top bar's");
+}
+
+#[test]
 fn an_unknown_path_under_icons_is_not_found_and_not_the_page() {
     let server = start("icons-404");
     let page = request(server.addr(), "GET", "/", None).body;

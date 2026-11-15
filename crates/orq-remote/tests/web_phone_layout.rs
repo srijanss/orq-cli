@@ -36,6 +36,33 @@ fn the_page_scales_to_the_device_width_and_never_blocks_zoom() {
 }
 
 #[test]
+fn installed_full_screen_the_bars_and_content_stay_clear_of_the_notch_and_home_indicator() {
+    let html = read("web/index.html");
+    assert!(html.contains("viewport-fit=cover"), "the page draws under the notch, so it must pad itself: {html}");
+    let css = css();
+    assert!(effective(&css, ".topbar", "padding-top").contains("env(safe-area-inset-top)"), "the top bar clears the status bar");
+    assert!(effective(&css, ".tabbar", "padding-bottom").contains("env(safe-area-inset-bottom)"), "the tab bar clears the home indicator");
+    assert!(effective(&css, ".content", "padding-left").contains("env(safe-area-inset-left)"), "content clears a landscape notch on the left");
+    assert!(effective(&css, ".content", "padding-right").contains("env(safe-area-inset-right)"), "content clears a landscape notch on the right");
+}
+
+#[test]
+fn pulling_past_the_top_does_not_bounce_or_reload_the_installed_app() {
+    let css = css();
+    assert_eq!(effective(&css, "html", "overscroll-behavior-y"), "none");
+    assert_eq!(effective(&css, "body", "overscroll-behavior-y"), "none");
+}
+
+#[test]
+fn a_tap_shows_no_grey_flash_but_keyboard_focus_still_shows_a_ring() {
+    let css = css();
+    for selector in ["button", "a"] {
+        assert_eq!(effective(&css, selector, "-webkit-tap-highlight-color"), "transparent", "{selector}");
+    }
+    assert!(css.contains(":focus-visible"), "focus rings stay");
+}
+
+#[test]
 fn log_lines_wrap_instead_of_running_off_the_screen() {
     let css = css();
     assert_eq!(effective(&css, ".log-lines", "white-space"), "pre-wrap");
