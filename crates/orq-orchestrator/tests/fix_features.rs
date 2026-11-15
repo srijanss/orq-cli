@@ -74,3 +74,21 @@ fn a_feature_a_later_run_carried_on_from_a_fix_session_is_not_free_for_the_earli
 
     assert_eq!(free, names(&["b"]), "run-2 took a on; b is still run-1's alone");
 }
+
+/// The run a run resumed is never a later run of its features, even when both started in the same
+/// second: what the resumed run's fix sessions started is the resuming run's to close.
+#[test]
+fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_carried_features() {
+    let store = store("resumed-same-second");
+    store.start_run(&record("run-1")).unwrap();
+    record_fix_features_added(&store, &record("run-1"), "gate_fix", &names(&["a"])).unwrap();
+    store.finish_run("repo-1", "feat", "run-1").unwrap();
+    store.start_run(&record("run-2")).unwrap();
+    carry_fix_features(&store, &record("run-2"), "run-1").unwrap();
+    let started = |run: &str| store.events(run).unwrap().first().unwrap().occurred_at.clone();
+    assert_eq!(started("run-1"), started("run-2"), "both runs started in the same second");
+
+    let free = features_no_later_run_took(&store, "run-2", &names(&["a"])).unwrap();
+
+    assert_eq!(free, names(&["a"]), "run-1 is the run run-2 resumed, not a later one");
+}

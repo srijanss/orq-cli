@@ -239,13 +239,15 @@ fn branch_commits(repo: &Path, record: &crate::store::RunRecord) -> Result<Delet
 /// feature is the one its ledger status speaks for, so a `completed` is not this run's to undo. Times
 /// are compared at the second they were recorded, and a run started in the same second, or with no
 /// time at all, counts as later: wrongly keeping `completed` is the mistake that can be seen and
-/// corrected, launching finished work again is not.
+/// corrected, launching finished work again is not. A run `run_id` resumed, however close in time, is
+/// never a later one.
 pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[String]) -> Result<Vec<String>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let started = store.events(run_id).map_err(|e| e.to_string())?.first().map(|e| e.occurred_at.clone());
+    let resumed = crate::fix_features::carried_from(store, run_id).map_err(|e| e.to_string())?;
     let mut free = features.to_vec();
     for other in store.run_ids().map_err(|e| e.to_string())? {
-        if other == run_id {
+        if other == run_id || resumed.contains(&other) {
             continue;
         }
         let other_record = store.load(&other).map_err(|e| e.to_string())?;

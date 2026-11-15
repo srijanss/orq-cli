@@ -9,6 +9,10 @@ const ADDED: &str = "fix.features_added";
 /// Record that the fix session `session` (its stage, or `carried` for those a resumed run took
 /// over) added `features` to the ledger.
 pub fn record_fix_features_added(store: &RunStore, record: &RunRecord, session: &str, features: &[String]) -> Result<(), StoreError> {
+    append_added(store, record, serde_json::json!({ "session": session, "features": features }))
+}
+
+fn append_added(store: &RunStore, record: &RunRecord, payload: serde_json::Value) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -19,7 +23,7 @@ pub fn record_fix_features_added(store: &RunStore, record: &RunRecord, session: 
         stage: None,
         attempt: 1,
         occurred_at: now_rfc3339(),
-        payload: serde_json::json!({ "session": session, "features": features }),
+        payload,
     })
 }
 
@@ -44,5 +48,23 @@ pub fn carry_fix_features(store: &RunStore, record: &RunRecord, from_run_id: &st
     if features.is_empty() {
         return Ok(());
     }
-    record_fix_features_added(store, record, "carried", &features)
+    append_added(store, record, serde_json::json!({ "session": "carried", "from": from_run_id, "features": features }))
+}
+
+/// The runs `run_id` carried fix-session features on from: the run it resumed, the run that one
+/// resumed, and so on.
+pub(crate) fn carried_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
+    let mut runs: Vec<String> = Vec::new();
+    let mut next = vec![run_id.to_string()];
+    while let Some(run) = next.pop() {
+        for event in store.events(&run)?.iter().filter(|e| e.kind == ADDED) {
+            if let Some(from) = event.payload.get("from").and_then(|f| f.as_str()) {
+                if from != run_id && !runs.iter().any(|r| r == from) {
+                    runs.push(from.to_string());
+                    next.push(from.to_string());
+                }
+            }
+        }
+    }
+    Ok(runs)
 }
