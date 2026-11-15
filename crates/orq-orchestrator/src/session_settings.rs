@@ -438,6 +438,8 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
             None => allowed.push(rule),
         }
     }
+    // A rule left out for one reason stays out, however else it was allowed.
+    allowed.retain(|rule| !withdrawn.contains(rule));
     let edited = edit_settings(worktree, |root| {
         let permissions = root.entry("permissions").or_insert_with(|| serde_json::json!({}));
         let permissions = permissions.as_object_mut().ok_or("its permissions is not a JSON object")?;

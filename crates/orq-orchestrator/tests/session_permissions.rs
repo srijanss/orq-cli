@@ -272,6 +272,23 @@ fn the_built_in_build_script_rule_is_kept_only_while_every_build_mjs_is_the_base
     }
 }
 
+/// The project naming orq's own rule in its allowed_tools does not bring it back: the root
+/// `build.mjs` is the base's, but another one the run changed takes the rule out all the same.
+#[test]
+fn the_built_in_rule_left_out_stays_out_when_allowed_tools_names_it_too() {
+    let (_repo, worktree) = checkout("permissions-builtin-extra");
+    commit_file(&worktree, "build.mjs", "console.log('built')\n");
+    commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+    let base = head(&worktree);
+    let builtin = "Bash(node build.mjs)".to_string();
+    fs::write(worktree.join("web/build.mjs"), "require('child_process')\n").unwrap();
+
+    let notes = write_run_permissions(&worktree, &[builtin.clone()], Path::new("/logs/r"), &base);
+
+    assert_eq!(notes, [format!("web/build.mjs was changed by this run, so the rule {builtin} was left out")]);
+    assert!(!allowed(&worktree).contains(&builtin), "{:?}", allowed(&worktree));
+}
+
 /// A rule that must go but cannot be taken out of the settings could still be allowed there: the
 /// refresh before a session fails, naming the rule, rather than letting the session start.
 #[test]
