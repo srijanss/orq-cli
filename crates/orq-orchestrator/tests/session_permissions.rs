@@ -611,3 +611,25 @@ fn a_refresh_returns_the_command_rules_it_allowed_and_none_it_left_out() {
     let commands = refresh_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base).unwrap().allowed_commands;
     assert!(!commands.contains(&"Bash(node build.mjs)".to_string()), "{commands:?}");
 }
+
+/// The settings keep the rules they already held: a session is told of those it may still run,
+/// never of one a deny rule refuses.
+#[test]
+fn a_refresh_returns_the_command_rules_the_settings_already_held_unless_denied() {
+    let (_repo, worktree) = checkout("permissions-held-commands");
+    let base = head(&worktree);
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::write(
+        worktree.join(".claude/settings.local.json"),
+        r#"{"permissions":{"allow":["Bash(make docs:*)","Bash(git push --force:*)","Bash(make docs:*)","Read"],"deny":["Bash(rm:*)"]}}"#,
+    )
+    .unwrap();
+    let extra = vec!["Bash(rm -rf target)".to_string()];
+
+    let commands = refresh_run_permissions(&worktree, &extra, Path::new("/logs/r"), &base).unwrap().allowed_commands;
+
+    assert_eq!(commands.iter().filter(|rule| *rule == "Bash(make docs:*)").count(), 1, "{commands:?}");
+    assert!(!commands.iter().any(|rule| rule.starts_with("Bash(git push")), "{commands:?}");
+    assert!(!commands.iter().any(|rule| rule.starts_with("Bash(rm")), "{commands:?}");
+    assert!(commands.iter().all(|rule| rule.starts_with("Bash(")), "{commands:?}");
+}

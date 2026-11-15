@@ -477,8 +477,9 @@ pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, bas
 pub struct RunPermissions {
     /// What was left out and why, and settings that could not be updated.
     pub notes: Vec<String>,
-    /// The `Bash(...)` rules the settings now allow, orq's and the project's, once each in order:
-    /// the command forms an unattended session is told it may run.
+    /// The `Bash(...)` rules the settings now allow, orq's, the project's and those the file already
+    /// held, once each in order and none a deny rule there refuses: the command forms an unattended
+    /// session is told it may run.
     pub allowed_commands: Vec<String>,
 }
 
@@ -551,6 +552,7 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     }
     // A rule left out for one reason stays out, however else it was allowed.
     allowed.retain(|rule| !withdrawn.contains(rule));
+    let mut commands: Vec<String> = Vec::new();
     let edited = edit_settings(worktree, |root| {
         let permissions = root.entry("permissions").or_insert_with(|| serde_json::json!({}));
         let permissions = permissions.as_object_mut().ok_or("its permissions is not a JSON object")?;
@@ -567,15 +569,17 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
                 }
             }
         }
+        // The rules the file now holds, those it already held too, but for any a deny rule refuses.
+        let rules = |key: &str| permissions.get(key).and_then(|list| list.as_array()).into_iter().flatten().filter_map(|item| item.as_str());
+        let denied: Vec<&str> = rules("deny").collect();
+        let mut seen = std::collections::HashSet::new();
+        commands = rules("allow")
+            .filter(|rule| rule.starts_with("Bash(") && !denied.iter().any(|deny| deny_covers(deny, rule)) && seen.insert(*rule))
+            .map(str::to_string)
+            .collect();
         Ok(())
     });
     let Err(why) = edited else {
-        let mut commands: Vec<String> = Vec::new();
-        for rule in allowed.iter().filter(|rule| rule.starts_with("Bash(")) {
-            if !commands.iter().any(|command| command == rule) {
-                commands.push(rule.to_string());
-            }
-        }
         return (notes, None, commands);
     };
     // Rules a file Claude Code still reads allows; one it cannot parse allows nothing.
@@ -588,6 +592,23 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     }
     let unrevoked = format!("{SETTINGS} was not updated ({why}) and still allows {}, which must be left out", still.join(", "));
     (notes, Some(unrevoked), Vec::new())
+}
+
+/// Whether the deny rule `deny` refuses every command the allow rule `allow` lets run: a bare
+/// `Bash`, the same rule, or a prefix rule whose prefix the allowed command begins with as a word.
+fn deny_covers(deny: &str, allow: &str) -> bool {
+    if deny == "Bash" {
+        return true;
+    }
+    let inner = |rule: &str| rule.strip_prefix("Bash(")?.strip_suffix(')').map(str::to_string);
+    let (Some(denied), Some(allowed)) = (inner(deny), inner(allow)) else { return false };
+    match denied.strip_suffix(":*") {
+        Some(prefix) => {
+            let command = allowed.strip_suffix(":*").unwrap_or(&allowed);
+            command == prefix || command.strip_prefix(prefix).is_some_and(|rest| rest.starts_with(' '))
+        }
+        None => denied == allowed,
+    }
 }
 
 /// Like [`write_run_permissions`], for a session that must not start with a rule it was allowed
