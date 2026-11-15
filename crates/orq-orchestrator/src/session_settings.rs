@@ -360,10 +360,22 @@ fn changed_since(worktree: &Path, base: &str, script: &str) -> bool {
     !same.is_ok_and(|status| status.success())
 }
 
-/// The files named `name`, in any folder, that differ from what `base` holds: changed, added or
-/// removed in a commit of the run or in the worktree, untracked or ignored ones included. `None`
-/// when `base` holds no such file as a regular file, or git cannot tell.
-fn named_scripts_changed(worktree: &Path, base: &str, name: &str) -> Option<Vec<String>> {
+/// What the worktree holds of the files named `name`, in any folder, against the commit `base`.
+enum NamedScripts {
+    /// `base` holds no such file as a regular file, or git cannot tell.
+    Absent,
+    /// Repositories inside the worktree (submodules or not), whose files the worktree's git does not see.
+    Nested(Vec<String>),
+    /// The files that differ from what `base` holds: changed, added or removed in a commit of the
+    /// run or in the worktree, untracked or ignored ones included. Empty when none does.
+    Changed(Vec<String>),
+}
+
+fn named_scripts(worktree: &Path, base: &str, name: &str) -> NamedScripts {
+    named_scripts_checked(worktree, base, name).unwrap_or(NamedScripts::Absent)
+}
+
+fn named_scripts_checked(worktree: &Path, base: &str, name: &str) -> Option<NamedScripts> {
     if !base.chars().all(|c| c.is_ascii_hexdigit()) || base.is_empty() {
         return None;
     }
@@ -380,9 +392,20 @@ fn named_scripts_changed(worktree: &Path, base: &str, name: &str) -> Option<Vec<
     if entries.is_empty() || !entries.iter().all(regular) {
         return None;
     }
+    // A submodule at the base or in the index, or a repository git leaves untracked as a folder.
+    let staged = git(&["ls-files", "-s", "-z"])?;
+    let gitlinks = held.split('\0').chain(staged.split('\0')).filter(|entry| entry.starts_with("160000 ")).filter_map(|entry| entry.split_once('\t')).map(|(_, path)| path.to_string());
+    let folders = git(&["ls-files", "--others", "--directory", "-z"])?;
+    let untracked = folders.split('\0').filter_map(|entry| entry.strip_suffix('/')).filter(|folder| worktree.join(folder).join(".git").exists()).map(str::to_string);
+    let mut nested: Vec<String> = gitlinks.chain(untracked).collect();
+    nested.sort();
+    nested.dedup();
+    if !nested.is_empty() {
+        return Some(NamedScripts::Nested(nested));
+    }
     let changed = git(&["diff", "--name-only", "-z", base, "--", &pattern])?;
     let added = git(&["ls-files", "--others", "-z", "--", &pattern])?;
-    Some(changed.split('\0').chain(added.split('\0')).filter(|path| !path.is_empty()).map(str::to_string).collect())
+    Some(NamedScripts::Changed(changed.split('\0').chain(added.split('\0')).filter(|path| !path.is_empty()).map(str::to_string).collect()))
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
@@ -410,11 +433,16 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     // A rule left out now goes from the settings too: an earlier session may have been allowed it.
     let mut withdrawn: Vec<&str> = Vec::new();
     for (rule, name) in ALLOWED_SCRIPTS {
-        match named_scripts_changed(worktree, base, name) {
+        match named_scripts(worktree, base, name) {
             // A project without the script has no use for the rule: it goes without a note.
-            None => withdrawn.push(rule),
-            Some(changed) if changed.is_empty() => allowed.push(rule),
-            Some(changed) => {
+            NamedScripts::Absent => withdrawn.push(rule),
+            NamedScripts::Nested(repositories) => {
+                let what = if repositories.len() == 1 { "is a repository of its own" } else { "are repositories of their own" };
+                notes.push(format!("{} {what}, whose {name} orq cannot check, so the rule {rule} was left out", repositories.join(", ")));
+                withdrawn.push(rule);
+            }
+            NamedScripts::Changed(changed) if changed.is_empty() => allowed.push(rule),
+            NamedScripts::Changed(changed) => {
                 notes.push(format!("{} was changed by this run, so the rule {rule} was left out", changed.join(", ")));
                 withdrawn.push(rule);
             }

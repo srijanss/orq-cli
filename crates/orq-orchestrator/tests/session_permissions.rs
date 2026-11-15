@@ -272,6 +272,33 @@ fn the_built_in_build_script_rule_is_kept_only_while_every_build_mjs_is_the_base
     }
 }
 
+/// A repository inside the worktree, a submodule or not, keeps its files from the worktree's own git,
+/// so a `build.mjs` in it cannot be checked: the built-in rule is left out, naming the repository.
+#[test]
+fn the_built_in_build_script_rule_is_left_out_beside_a_nested_repository() {
+    let builtin = "Bash(node build.mjs)".to_string();
+    for tag in ["untracked", "committed", "at-base"] {
+        let (_repo, worktree) = checkout(&format!("permissions-nested-{tag}"));
+        commit_file(&worktree, "web/build.mjs", "console.log('built')\n");
+        let nested = worktree.join("sub");
+        fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "--quiet"]);
+        commit_file(&nested, "build.mjs", "console.log('built')\n");
+        if tag != "untracked" {
+            git(&worktree, &["add", "sub"]);
+            git(&worktree, &["commit", "--quiet", "-m", "sub"]);
+        }
+        // Committed by the run: the base is the commit before it.
+        let base = git(&worktree, &["rev-parse", if tag == "committed" { "HEAD~1" } else { "HEAD" }]);
+        fs::write(nested.join("build.mjs"), "require('child_process')\n").unwrap();
+
+        let notes = write_run_permissions(&worktree, &[], Path::new("/logs/r"), &base);
+
+        assert_eq!(notes, [format!("sub is a repository of its own, whose build.mjs orq cannot check, so the rule {builtin} was left out")], "{tag}");
+        assert!(!allowed(&worktree).contains(&builtin), "{tag}: {:?}", allowed(&worktree));
+    }
+}
+
 /// The project naming orq's own rule in its allowed_tools does not bring it back: the root
 /// `build.mjs` is the base's, but another one the run changed takes the rule out all the same.
 #[test]
