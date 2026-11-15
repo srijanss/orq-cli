@@ -266,3 +266,17 @@ fn a_dot_or_hash_inside_an_attribute_value_is_not_a_class_or_id() {
     // A real class beside the attribute still rules the selector out.
     assert!(!matches_element(".other[data-theme=\"a.signin\"] input", ".signin input"));
 }
+
+#[test]
+fn a_bracket_inside_a_quoted_attribute_value_does_not_end_the_attribute() {
+    // The quoted `]` is part of the value, so what follows it is still inside the attribute.
+    for unknown in [
+        ".signin input[data-x=\"].b\"]",
+        ".signin input[data-x='].b']",
+        ".signin[data-x=\"]#p\"] input",
+        ".signin input[data-x=\"] .b\"]",
+        ".signin input[data-x=\"\\\"].b\"]",
+    ] {
+        assert!(std::panic::catch_unwind(|| matches_element(unknown, ".signin input")).is_err(), "{unknown}");
+    }
+}

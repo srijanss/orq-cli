@@ -130,26 +130,48 @@ pub fn matches_element(selector: &str, element: &str) -> bool {
 /// attribute brackets, with what is inside `[...]` and every pseudo-class taken out, so a `.` or
 /// `#` in an attribute value is not read as a class or an ID.
 fn own_names(compound: &str) -> String {
-    let (mut outside_brackets, mut depth) = (String::new(), 0usize);
-    for c in compound.chars() {
+    let outside_brackets: String = nesting(compound)
+        .into_iter()
+        .filter(|&(c, depth)| depth == 0 || (depth == 1 && matches!(c, '[' | ']')))
+        .map(|(c, _)| c)
+        .collect();
+    outside_brackets.split(':').next().unwrap_or("").to_string()
+}
+
+/// Each character of a selector with how deep it sits in `[...]` and `(...)`; a bracket or paren
+/// counts as inside itself. A bracket, paren or escaped quote inside a quoted string does not
+/// change the depth.
+fn nesting(selector: &str) -> Vec<(char, usize)> {
+    let (mut out, mut depth, mut quote, mut escaped) = (Vec::new(), 0usize, None::<char>, false);
+    for c in selector.chars() {
+        if let Some(q) = quote {
+            out.push((c, depth));
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
         match c {
-            '[' => {
-                if depth == 0 {
-                    outside_brackets.push(c);
-                }
+            '"' | '\'' => {
+                quote = Some(c);
+                out.push((c, depth));
+            }
+            '[' | '(' => {
                 depth += 1;
+                out.push((c, depth));
             }
-            ']' => {
+            ']' | ')' => {
+                out.push((c, depth));
                 depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    outside_brackets.push(c);
-                }
             }
-            _ if depth == 0 => outside_brackets.push(c),
-            _ => {}
+            _ => out.push((c, depth)),
         }
     }
-    outside_brackets.split(':').next().unwrap_or("").to_string()
+    out
 }
 
 /// A compound selector with its top-level `:not([type=checkbox])` and `:not([type=radio])` taken
@@ -178,13 +200,8 @@ fn without_field_exclusions(compound: &str) -> String {
 /// A selector's compound selectors, split at the combinators outside `[...]` and `(...)`, and
 /// whether any of those combinators is a sibling one (`+` or `~`).
 fn compounds(selector: &str) -> (Vec<String>, bool) {
-    let (mut out, mut current, mut depth, mut sibling) = (Vec::new(), String::new(), 0usize, false);
-    for c in selector.chars() {
-        match c {
-            '[' | '(' => depth += 1,
-            ']' | ')' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
+    let (mut out, mut current, mut sibling) = (Vec::new(), String::new(), false);
+    for (c, depth) in nesting(selector) {
         if depth == 0 && matches!(c, ' ' | '>' | '+' | '~') {
             sibling |= matches!(c, '+' | '~');
             if !current.is_empty() {
