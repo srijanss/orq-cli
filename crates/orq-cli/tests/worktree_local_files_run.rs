@@ -234,7 +234,16 @@ fn the_gate_fix_prompt_lists_the_command_forms_the_run_allows() {
     let w = world("fix-prompt-lists-commands");
     settings(&w, "allowed_tools = [\"Bash(make lint:*)\"]\ngate = [\"false\"]\n");
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
-    // The fix session leaves its prompt in `fix_seen` and calls the failure unrelated, ending the run.
+
+    let prompt = fix_prompt(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
+    assert!(prompt.contains("`make lint ...`"), "{prompt}");
+}
+
+/// Runs the pipeline with a fix session that leaves its prompt behind and calls the failure
+/// unrelated, ending the run; returns that prompt.
+fn fix_prompt(w: &World, agent: &FakeAgent, provider: &FakeProvider, flags: &[&str]) -> String {
     let fix_seen = w.base.join("fix-seen");
     let bin = w.base.join("fix-bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -248,13 +257,14 @@ fn the_gate_fix_prompt_lists_the_command_forms_the_run_allows() {
     )
     .unwrap();
     std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let mut dirs = vec![bin, github().bin_dir()];
+    let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
 
     let out = Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
-        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
+        .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])
+        .args(flags)
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)
         .env("ORQ_FORGE", "gh")
@@ -263,8 +273,53 @@ fn the_gate_fix_prompt_lists_the_command_forms_the_run_allows() {
         .env_remove("HERDR_ACTIVE_PANE_CWD")
         .output()
         .unwrap();
+    std::fs::read_to_string(&fix_seen).unwrap_or_else(|_| panic!("no fix session ran: {}", String::from_utf8_lossy(&out.stderr)))
+}
 
-    let prompt = std::fs::read_to_string(&fix_seen).unwrap_or_else(|_| panic!("no fix session ran: {}", String::from_utf8_lossy(&out.stderr)));
+/// A checked-in `build.mjs` the implement session may run, which that session then changes.
+fn world_with_build_script(tag: &str, gate: &str) -> (World, FakeAgent) {
+    let w = world(tag);
+    std::fs::write(w.repo.root().join("build.mjs"), "console.log('built')\n").unwrap();
+    git(w.repo.root(), &["add", "build.mjs"]);
+    git(w.repo.root(), &["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "add the build script"]);
+    settings(&w, &format!("gate = [\"{gate}\"]\n"));
+    let agent = FakeAgent::builder().write_file("build.mjs", "require('child_process')\n").commit("feat: change the build").build();
+    (w, agent)
+}
+
+fn implement_prompt(agent: &FakeAgent) -> String {
+    agent.first_run().expect("the implement session ran").args.last().cloned().unwrap()
+}
+
+/// The rules are written again before each fix session: a script the run changed after the
+/// implement session started is no longer listed to the gate's fix session.
+#[test]
+fn the_gate_fix_prompt_leaves_out_a_script_the_run_changed() {
+    let (w, agent) = world_with_build_script("fix-prompt-changed-script", "false");
+
+    let prompt = fix_prompt(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert!(implement_prompt(&agent).contains("`node build.mjs`"), "{}", implement_prompt(&agent));
     assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
-    assert!(prompt.contains("`make lint ...`"), "{prompt}");
+    assert!(!prompt.contains("node build.mjs"), "{prompt}");
+}
+
+/// The same holds for a fix session started because CI failed.
+#[test]
+fn the_ci_fix_prompt_leaves_out_a_script_the_run_changed() {
+    let (w, agent) = world_with_build_script("ci-fix-prompt-changed-script", "true");
+    let red = "{\"total_count\":1,\"check_runs\":[{\"name\":\"deploy\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], &format!("{PR_URL}\n"))
+        .reply(&["pr", "view"], &format!("{{\"number\":7,\"url\":\"{PR_URL}\"}}\n"))
+        .reply(&["api"], red)
+        .build();
+
+    let prompt = fix_prompt(&w, &agent, &provider, &[]);
+
+    assert!(implement_prompt(&agent).contains("`node build.mjs`"), "{}", implement_prompt(&agent));
+    assert!(prompt.starts_with("CI failed") || prompt.contains("CI failed"), "{prompt}");
+    assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
+    assert!(!prompt.contains("node build.mjs"), "{prompt}");
 }
