@@ -111,6 +111,16 @@ fn a_cache_that_fails_or_is_evicted_under_an_open_cached_page_never_hands_it_the
 }
 
 #[test]
+fn each_open_page_gets_its_files_from_where_that_page_came_from_not_from_whether_the_cache_is_there_now() {
+    let Some(out) = run() else { return };
+    // Tab A opened from the running release's cache; storage failed while tab B opened, so B came from
+    // the newer server; storage has recovered by the time either asks for its script.
+    let tabs = &out["tabs"]["storageFails"];
+    assert_eq!(tabs["a"], json!({"page": "install /", "script": "install /app.react.js"}), "{tabs}");
+    assert_eq!(tabs["b"], json!({"page": "later /projects/q", "script": "later /app.react.js"}), "{tabs}");
+}
+
+#[test]
 fn only_the_pages_skip_waiting_message_lets_a_new_release_take_over() {
     let Some(out) = run() else { return };
     assert_eq!(out["worker"]["skipWaiting"], json!(true));

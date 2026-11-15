@@ -166,6 +166,27 @@ async function damaged() {
   };
 }
 
+// Two pages open together while the server has moved on to a newer release. Each starts from a fresh
+// install. `storageFails`: tab A opens from the cache, storage fails while tab B opens (so B comes from
+// the server), then storage recovers before either asks for its files.
+async function tabs() {
+  const storageFails = async () => {
+    const sw = boot();
+    await sw.dispatch("install");
+    await sw.dispatch("activate");
+    sw.net.phase = "later";
+    const a = await sw.ask("/projects/p", { mode: "navigate", opens: "a" });
+    sw.storage.broken = true;
+    const b = await sw.ask("/projects/q", { mode: "navigate", opens: "b" });
+    sw.storage.broken = false;
+    return {
+      a: { page: a.text, script: (await sw.ask("/app.react.js", { client: "a" })).text },
+      b: { page: b.text, script: (await sw.ask("/app.react.js", { client: "b" })).text },
+    };
+  };
+  return { storageFails: await storageFails() };
+}
+
 // A fake window for worker.js: `secure`, `api` (navigator.serviceWorker exists), `ready` (the document
 // had loaded), `fails` (register rejects), `waiting`, `installing` and `controller` (what the registration holds).
 function fakeWindow({ secure = true, api = true, ready = true, fails = false, waiting = false, installing = false, controller = true } = {}) {
@@ -251,4 +272,4 @@ async function registration() {
   return result;
 }
 
-process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), registration: await registration() }));
+process.stdout.write(JSON.stringify({ worker: await worker(), damaged: await damaged(), tabs: await tabs(), registration: await registration() }));

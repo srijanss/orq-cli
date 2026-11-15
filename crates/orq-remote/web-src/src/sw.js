@@ -32,21 +32,22 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (under(url.pathname, "/api") || under(url.pathname, "/auth")) return;
   if (request.mode === "navigate") {
-    event.respondWith(navigate(request));
+    event.respondWith(navigate(request, event.resultingClientId));
   } else if (SHELL.includes(url.pathname)) {
-    event.respondWith(shell(url.pathname));
+    event.respondWith(shell(url.pathname, event.clientId));
   }
 });
 
 // A page and its files always come from one release. A page opens this release's cached shell,
 // online or offline, when the whole shell is there; a shell missing any file (or cache storage
 // failing) is dropped instead, and the page opens whole from the server.
-// Where the open page came from is remembered, never read back from whether the cache is there now.
-let fromCache = false;
+// Where each open page came from is remembered by its client id, never read back from whether the
+// cache is there now: true for this release's cache, false for the server.
+const fromCache = new Map();
 
-async function navigate(request) {
+async function navigate(request, client) {
   const page = await whole();
-  fromCache = Boolean(page);
+  if (client) fromCache.set(client, Boolean(page));
   if (page) return page;
   await quietly(() => caches.delete(CACHE));
   return fetch(request);
@@ -55,9 +56,12 @@ async function navigate(request) {
 // A shell file comes from where its page came from. A page opened from this release's cache, which is
 // never rewritten after install, gets its files only from that cache: a file lost, evicted or behind
 // failing storage is an error rather than the newer server's copy. A page from the server gets its
-// files from the server.
-async function shell(path) {
-  if (fromCache) return cachedOrError(path);
+// files from the server. A page this worker did not open (it was restarted since) falls back to the
+// cache being there.
+async function shell(path, client) {
+  const cached = fromCache.get(client);
+  if (cached === true) return cachedOrError(path);
+  if (cached === false) return fetch(path);
   if (!(await quietly(() => caches.has(CACHE)))) return fetch(path);
   return cachedOrError(path);
 }
