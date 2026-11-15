@@ -34,33 +34,20 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(navigate(request));
   } else if (SHELL.includes(url.pathname)) {
-    event.respondWith(shell(event, url.pathname));
+    event.respondWith(shell(url.pathname));
   }
 });
 
-// A page goes to the server first; offline, the cached shell opens and says it cannot reach the server.
+// Every page opens this release's cached shell, online or offline, so the page, its script and its
+// style always come from one release; the shell then fetches its data and says when it cannot.
 async function navigate(request) {
-  try {
-    return await fetch(request);
-  } catch (error) {
-    const cached = await caches.match("/", { cacheName: CACHE });
-    return cached || Response.error();
-  }
+  const cached = await caches.match("/", { cacheName: CACHE });
+  return cached || fetch(request);
 }
 
-// A shell file comes from the cache at once and is refreshed behind it for the next start.
-async function shell(event, path) {
+// A shell file comes from this release's cache, which is never rewritten after install: a newer
+// server's files arrive only with the next release's worker and cache.
+async function shell(path) {
   const cached = await caches.match(path, { cacheName: CACHE });
-  const refresh = fetch(path)
-    .then(async (response) => {
-      if (response.ok && (response.type === "basic" || response.type === "default")) {
-        const cache = await caches.open(CACHE);
-        await cache.put(path, response.clone());
-      }
-      return response;
-    })
-    .catch(() => null);
-  event.waitUntil(refresh);
-  if (cached) return cached;
-  return (await refresh) || Response.error();
+  return cached || fetch(path);
 }

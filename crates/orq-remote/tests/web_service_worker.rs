@@ -60,23 +60,24 @@ fn data_sign_in_posts_and_other_origins_are_never_answered_by_the_worker() {
 }
 
 #[test]
-fn a_navigation_goes_to_the_network_first_and_offline_opens_the_cached_shell() {
+fn a_page_opens_the_running_releases_cached_shell_online_and_offline() {
+    // The page, its script and its style always come from one release, so a newer server never mixes them.
     let Some(out) = run() else { return };
     let worker = &out["worker"];
-    assert_eq!(worker["online"]["navigation"], json!({"handled": true, "text": "later /projects/p/orchestrations/run-1"}), "online, the server answers");
+    assert_eq!(worker["online"]["navigation"], json!({"handled": true, "text": "install /"}), "online, the running release's shell opens");
     assert_eq!(worker["offline"]["navigation"], json!({"handled": true, "text": "install /"}), "offline, any page opens the shell, which then says it cannot reach the server");
     assert_eq!(worker["offline"]["root"], json!({"handled": true, "text": "install /"}));
 }
 
 #[test]
-fn a_shell_asset_comes_from_the_cache_and_is_refreshed_behind_it() {
+fn a_shell_file_comes_from_the_running_releases_cache_which_a_newer_server_never_overwrites() {
     let Some(out) = run() else { return };
     let worker = &out["worker"];
-    assert_eq!(worker["online"]["asset"], json!({"handled": true, "text": "install /app.css"}), "cache first");
-    assert_eq!(worker["refreshedAsset"], json!("later /app.css"), "the cached copy is refreshed from the network");
-    assert!(worker["fetchedBeforeOffline"].as_array().unwrap().contains(&json!("/app.css")));
+    assert_eq!(worker["online"]["asset"], json!({"handled": true, "text": "install /app.css"}));
+    assert_eq!(worker["cachedAfter"], json!("install /app.css"), "a release's cache is never rewritten; the next release brings its own");
+    assert_eq!(worker["fetchedOnline"], json!([]), "a cached shell never reaches for the newer server's files");
     assert_eq!(worker["offline"]["asset"], json!({"handled": true, "text": "install /app.react.js"}));
-    assert_eq!(worker["offline"]["refreshedAsset"], json!({"handled": true, "text": "later /app.css"}));
+    assert_eq!(worker["offline"]["style"], json!({"handled": true, "text": "install /app.css"}));
     assert_eq!(worker["offline"]["icon"], json!({"handled": true, "text": "install /icons/icon-192.png"}));
 }
 

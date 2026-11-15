@@ -92,7 +92,9 @@ async function worker() {
   await sw.dispatch("activate");
   const afterActivate = [...sw.stores.keys()].sort();
 
+  // The server has moved on to a newer release while this one runs.
   sw.net.phase = "later";
+  const installFetches = sw.net.fetched.length;
   const online = {
     api: await sw.ask("/api/projects"),
     apiEvents: await sw.ask("/api/events"),
@@ -106,8 +108,8 @@ async function worker() {
     navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate" }),
     asset: await sw.ask("/app.css"),
   };
-  const refreshedAsset = await sw.cachedText(shellCache, "/app.css");
-  const fetchedBeforeOffline = [...sw.net.fetched];
+  const cachedAfter = await sw.cachedText(shellCache, "/app.css");
+  const fetchedOnline = sw.net.fetched.slice(installFetches);
 
   sw.net.online = false;
   sw.net.phase = "never";
@@ -115,7 +117,7 @@ async function worker() {
     navigation: await sw.ask("/projects/p/orchestrations/run-1", { mode: "navigate" }),
     root: await sw.ask("/", { mode: "navigate" }),
     asset: await sw.ask("/app.react.js"),
-    refreshedAsset: await sw.ask("/app.css"),
+    style: await sw.ask("/app.css"),
     icon: await sw.ask("/icons/icon-192.png"),
   };
 
@@ -125,7 +127,7 @@ async function worker() {
 
   return {
     names, shellPaths, claimedBeforeActivate, skippedOnInstall, afterActivate, claimed: sw.state.claimed,
-    online, refreshedAsset, fetchedBeforeOffline, offline, skipWaiting: sw.state.skipped, otherMessageSkips: notSkip.state.skipped,
+    online, cachedAfter, fetchedOnline, offline, skipWaiting: sw.state.skipped, otherMessageSkips: notSkip.state.skipped,
   };
 }
 
