@@ -875,10 +875,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn kept_worktrees(&self) -> Result<Option<serde_json::Value>, String> {
         let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        // Every project's listing reads the same run records, so they are read once.
+        // A store that cannot be read shows no kept worktrees, as when each project's listing failed.
+        let index = orq_orchestrator::RunIndex::load(&store)
+            .inspect_err(|why| eprintln!("orq serve: the kept worktrees could not be read: {}", orq_core::redact::redact(&why.to_string())))
+            .ok();
+        let projects = if index.is_some() { discover(&self.scan_root) } else { Vec::new() };
         let (mut count, mut bytes) = (0usize, 0u64);
         let mut groups = Vec::new();
-        for project in discover(&self.scan_root) {
-            let kept = match orq_orchestrator::list_kept_worktrees(&store, &project.path) {
+        for (project, index) in projects.iter().zip(index.iter().cycle()) {
+            let kept = match index.list(&store, &project.path) {
                 Ok(kept) => kept,
                 Err(why) => {
                     eprintln!("orq serve: the kept worktrees of {} could not be read: {}", project.name, orq_core::redact::redact(&why.to_string()));
@@ -902,25 +908,29 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     }
 
     fn delete_kept_worktree(&self, id: &str, branch: &str, version: &str, force: bool) -> Result<orq_core::remote_inbox::WorktreeDelete, String> {
-        use orq_core::remote_inbox::WorktreeDelete;
-        use orq_orchestrator::DeleteRefusal;
-        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(WorktreeDelete::Unknown) };
+        self.delete_kept_worktrees(&[(id, branch, version)], force).pop().unwrap_or(Ok(orq_core::remote_inbox::WorktreeDelete::Unknown))
+    }
+
+    fn delete_kept_worktrees(&self, items: &[(&str, &str, &str)], force: bool) -> Vec<Result<orq_core::remote_inbox::WorktreeDelete, String>> {
+        // The projects are found and the run records read once for the batch; each delete still reads the
+        // records of runs started since, and the events of the runs it checks, just before it deletes.
+        let projects = discover(&self.scan_root);
         let store = orq_orchestrator::RunStore::new(&self.roots.state);
-        match orq_orchestrator::delete_kept_worktree(&store, &project.path, branch, version, force) {
-            Ok(Ok(deleted)) => Ok(WorktreeDelete::Deleted(serde_json::json!({
-                "project": project.id,
-                "branch": orq_core::redact::redact(&deleted.branch),
-                "sha": deleted.sha,
-                "run": deleted.run_id,
-            }))),
-            Ok(Err(DeleteRefusal::NotFound)) => Ok(WorktreeDelete::Unknown),
-            Ok(Err(refusal)) => Ok(WorktreeDelete::Refused(orq_core::redact::redact(&refusal.to_string()))),
+        let mut index = match orq_orchestrator::RunIndex::load(&store) {
+            Ok(index) => index,
             Err(why) => {
                 let why = why.to_string();
                 eprintln!("orq serve: a kept worktree could not be deleted: {}", orq_core::redact::redact(&why));
-                Err(why)
+                return items.iter().map(|_| Err(why.clone())).collect();
             }
-        }
+        };
+        items
+            .iter()
+            .map(|(id, branch, version)| {
+                let project = projects.iter().find(|project| project.id == *id);
+                project.map_or(Ok(orq_core::remote_inbox::WorktreeDelete::Unknown), |project| delete_with(&mut index, &store, project, branch, version, force))
+            })
+            .collect()
     }
 
     fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {
@@ -1371,4 +1381,25 @@ fn kept_worktree_json(worktree: &orq_orchestrator::KeptWorktree) -> serde_json::
         "size": worktree.size.map(orq_core::retention::human_bytes),
         "version": worktree.version,
     })
+}
+
+/// Deletes `project`'s kept worktree on `branch` through `index`, as the web is told it went.
+fn delete_with(index: &mut orq_orchestrator::RunIndex, store: &orq_orchestrator::RunStore, project: &Project, branch: &str, version: &str, force: bool) -> Result<orq_core::remote_inbox::WorktreeDelete, String> {
+    use orq_core::remote_inbox::WorktreeDelete;
+    use orq_orchestrator::DeleteRefusal;
+    match index.delete(store, &project.path, branch, version, force) {
+        Ok(Ok(deleted)) => Ok(WorktreeDelete::Deleted(serde_json::json!({
+            "project": project.id,
+            "branch": orq_core::redact::redact(&deleted.branch),
+            "sha": deleted.sha,
+            "run": deleted.run_id,
+        }))),
+        Ok(Err(DeleteRefusal::NotFound)) => Ok(WorktreeDelete::Unknown),
+        Ok(Err(refusal)) => Ok(WorktreeDelete::Refused(orq_core::redact::redact(&refusal.to_string()))),
+        Err(why) => {
+            let why = why.to_string();
+            eprintln!("orq serve: a kept worktree could not be deleted: {}", orq_core::redact::redact(&why));
+            Err(why)
+        }
+    }
 }

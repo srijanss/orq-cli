@@ -327,6 +327,13 @@ pub trait ProjectsProvider {
     fn delete_kept_worktree(&self, _project: &str, _branch: &str, _version: &str, _force: bool) -> Result<WorktreeDelete, String> {
         Ok(WorktreeDelete::Unknown)
     }
+
+    /// Deletes each `(project, branch, version)` in turn as `delete_kept_worktree` would, answering for each
+    /// in order. A provider can look its projects and runs up once for the whole batch, as long as it
+    /// still checks each worktree's active runs just before deleting it.
+    fn delete_kept_worktrees(&self, items: &[(&str, &str, &str)], force: bool) -> Vec<Result<WorktreeDelete, String>> {
+        items.iter().map(|(project, branch, version)| self.delete_kept_worktree(project, branch, version, force)).collect()
+    }
 }
 
 /// How deleting a kept worktree from the web ended.
@@ -1295,9 +1302,15 @@ fn worktree_audit(roots: &StorageRoots, action: &str, project: &str, outcome: cr
 
 /// One delete through the provider, as `(status, body)`, with its audit line.
 fn delete_one(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, project: &str, branch: &str, version: &str, force: bool, action: &str) -> (u16, Value) {
+    let answer = provider.map(|provider| provider.delete_kept_worktree(project, branch, version, force));
+    delete_answer(roots, project, branch, answer, action)
+}
+
+/// What the provider said of one delete, as `(status, body)`, with its audit line.
+fn delete_answer(roots: &StorageRoots, project: &str, branch: &str, answer: Option<Result<WorktreeDelete, String>>, action: &str) -> (u16, Value) {
     use crate::remote_audit::Outcome;
     let failed = "the worktree could not be deleted";
-    match provider.map(|provider| provider.delete_kept_worktree(project, branch, version, force)) {
+    match answer {
         Some(Ok(WorktreeDelete::Deleted(deleted))) => {
             worktree_audit(roots, action, project, Outcome::Allowed, &format!("deleted {branch}"));
             (200, deleted)
@@ -1381,10 +1394,11 @@ fn delete_merged_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsP
         worktree_audit(roots, action, "settings", Outcome::Refused, "bad request body");
         return error(400, "the request body is not one this action takes");
     };
+    let mut answers = provider.map(|provider| provider.delete_kept_worktrees(&items, false)).unwrap_or_default().into_iter();
     let results: Vec<Value> = items
         .into_iter()
-        .map(|(project, branch, version)| {
-            let (status, answer) = delete_one(roots, provider, project, branch, version, false, action);
+        .map(|(project, branch, _)| {
+            let (status, answer) = delete_answer(roots, project, branch, answers.next(), action);
             let mut result = json!({ "project": project, "branch": branch, "deleted": status == 200 });
             if status != 200 {
                 result["error"] = answer["error"].clone();
