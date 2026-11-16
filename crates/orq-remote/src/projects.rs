@@ -38,6 +38,8 @@ struct LogSummary {
     modified: Option<std::time::SystemTime>,
     state: &'static str,
     ending: Option<&'static str>,
+    resumed_as: Option<String>,
+    resumed_from: Option<String>,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -69,8 +71,10 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
         let learned = LogSummary {
             len: stat.map_or(0, |(len, _)| len),
             modified: stat.and_then(|(_, modified)| modified),
-            state: summary.phase.as_str(),
+            state: listed_state(&summary),
             ending: delivered_ending(&events, summary.phase),
+            resumed_as: handed_over_to(&summary),
+            resumed_from: resumed_from(&events),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -100,11 +104,49 @@ fn delivered_ending(events: &[orq_orchestrator::Event], phase: orq_orchestrator:
     }
 }
 
+/// The state a run is listed in: a run a resume took over ended `resumed`, never completed.
+fn listed_state(summary: &orq_orchestrator::RunSummary) -> &'static str {
+    if handed_over_to(summary).is_some() {
+        "resumed"
+    } else {
+        summary.phase.as_str()
+    }
+}
+
+/// The run that continued this one, when a resume took it over and so ended it.
+fn handed_over_to(summary: &orq_orchestrator::RunSummary) -> Option<String> {
+    summary.resumed_as.clone().filter(|_| summary.phase == orq_orchestrator::RunPhase::Completed)
+}
+
+/// The run this one was resumed from, as the sessions or the finished agent session it carried over
+/// from that run name it; `None` for a run that resumed nothing, or whose carry was never written.
+fn resumed_from(events: &[orq_orchestrator::Event]) -> Option<String> {
+    events.iter().find_map(|event| {
+        let key = match event.kind.as_str() {
+            "run.sessions_carried" => "from",
+            "stage.completed" => "resumed_from",
+            _ => return None,
+        };
+        event.payload.get(key)?.as_str().map(str::to_string)
+    })
+}
+
+/// Adds `resumed_as` and `resumed_from` to a run's JSON, each only when the run has one.
+fn add_resume_links(row: &mut serde_json::Value, resumed_as: Option<&String>, resumed_from: Option<&String>) {
+    if let Some(id) = resumed_as {
+        row["resumed_as"] = id.as_str().into();
+    }
+    if let Some(id) = resumed_from {
+        row["resumed_from"] = id.as_str().into();
+    }
+}
+
 type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
 
 fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
-    let row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
+    let mut row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
+    add_resume_links(&mut row, log.resumed_as.as_ref(), log.resumed_from.as_ref());
     (sort_key, record.run_id.clone(), row, record)
 }
 
@@ -1169,8 +1211,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .collect();
         // How many review rounds the whole run has, so live events can carry on counting.
         let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
+        let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
+        add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         Ok(Some(serde_json::json!({
-            "run": {"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, summary.phase.as_str()), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)},
+            "run": shown,
             "events": listed,
             "review_rounds": review_rounds,
             "next_cursor": next_cursor,

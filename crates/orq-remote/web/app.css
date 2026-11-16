@@ -648,6 +648,8 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .feature-state.run-completed, .feature-state.run-merged { color: var(--status-completed); background: var(--status-completed-bg); }
 .feature-state.run-failed, .feature-state.run-blocked { color: var(--status-failed); background: var(--status-failed-bg); }
 .feature-state.run-needs_review, .feature-state.run-pause_requested, .feature-state.run-paused { color: var(--status-waiting); background: var(--status-waiting-bg); }
+/* A run a resume took over is over and needs nothing: muted, never a success or a warning. */
+.feature-state.run-resumed { color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
 .run-table td:first-child { display: flex; flex-direction: column; gap: 0.125rem; }
 .run-table .run-open { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .run-table .run-id { color: var(--text-muted); font-size: 0.8125rem; overflow-wrap: anywhere; }

@@ -3102,7 +3102,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   );
 }
 
-const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused" };
+const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", resumed: "Resumed" };
 
 function isOrchestration(run) {
   const text = (value) => value === null || typeof value === "string";
@@ -3114,7 +3114,7 @@ function parseOrchestrations(data) {
 }
 
 // The states a run is shown in, needs-attention first, as the state filter offers them.
-const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed"];
+const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "resumed"];
 
 // The state a run is shown, filtered and grouped in. A run merged by hand finished like a completed
 // one, so it is Completed; how it was delivered is said beside the pill, never in it.
@@ -3130,7 +3130,7 @@ function byUpdated(runs, order) {
 }
 
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
-const RUN_ICONS = { running: "play", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock" };
+const RUN_ICONS = { running: "play", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock", resumed: "rotate" };
 
 // How a completed run that was delivered without a review was delivered: pushed, or merged into its base.
 const DELIVERED = { pushed: "Pushed", merged: "Merged locally" };
@@ -3151,6 +3151,7 @@ function deliveryOf(run) {
 // not finished or the page does not know how.
 function endingOf(run) {
   if (run.state === "merged") return "merged by hand";
+  if (run.state === "resumed") return typeof run.resumed_as === "string" ? "continued as " + run.resumed_as : null;
   return run.state === "completed" && typeof run.ending === "string" && Object.hasOwn(DELIVERED, run.ending) ? DELIVERED[run.ending].toLowerCase() : null;
 }
 
@@ -3177,6 +3178,20 @@ function inProgressBadge(rows) {
 
 function runHref(projectId, runId) {
   return "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(runId);
+}
+
+// The runs a resume joined this one to: the run that continued it, and the run it continued. Each is a link
+// to that run's page when its id is one, and plain text otherwise; null when the run names neither.
+function ResumeLinks({ run, listPath }) {
+  const linked = (id) => {
+    if (!RUN_ID.test(id)) return id;
+    const href = listPath + "/" + encodeURIComponent(id);
+    return <a href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{id}</a>;
+  };
+  const parts = [];
+  if (run.state === "resumed" && typeof run.resumed_as === "string") parts.push(<span key="as" data-resumed-as>{"Continued as "}{linked(run.resumed_as)}</span>);
+  if (typeof run.resumed_from === "string") parts.push(<span key="from" data-resumed-from>{"Resumed from "}{linked(run.resumed_from)}</span>);
+  return parts.length === 0 ? null : <p className="feature-detail-sub run-detail-sub run-resume-links">{parts}</p>;
 }
 
 // The runs as a table, the server's order (newest first) or grouped by state when asked. Search,
@@ -3621,6 +3636,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
             <RunState state={run.state} />
           </div>
           <RowActions run={run} control={control} />
+          <ResumeLinks run={run} listPath={listPath} />
           {validTime(run.started_at) === null && delivery === null ? null : (
             <p className="feature-detail-sub run-detail-sub">
               {validTime(run.started_at) === null ? null : <span>Started <Moment at={run.started_at} /></span>}
