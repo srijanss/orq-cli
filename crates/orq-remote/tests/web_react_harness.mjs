@@ -100,6 +100,8 @@ window.HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this.i
 const requests = [];
 const held = {};
 const responses = [...scenario.responses];
+const storageReplies = [...(scenario.storage || [])];
+const storageRequests = [];
 
 // The /auth routes are answered apart from the scripted responses, so they never shift them: a
 // scenario may give `auth` (the status answer), otherwise the server has no passkey support (404).
@@ -163,6 +165,14 @@ window.fetch = (url, options = {}) => {
     const reply = String(url) === "/auth/status" ? scenario.auth : (scenario.auth_replies || {})[String(url)];
     const known = reply !== undefined && reply !== null;
     return Promise.resolve({ status: known ? 200 : 404, ok: known, json: () => Promise.resolve(known ? reply : {}) });
+  }
+  // The /api/storage routes are answered from `storage` in order, apart from `responses`, so a page that
+  // reads them never shifts the other replies; with none left they answer 404, as with actions off.
+  if (String(url).startsWith("/api/storage/")) {
+    storageRequests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body });
+    const next = storageReplies.shift() || { status: 404, json: { error: "not found" } };
+    if (next.reject) return Promise.reject(new Error("offline"));
+    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
   }
   const signal = options.signal;
   requests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body, get aborted() { return signal ? signal.aborted : null; } });
@@ -387,7 +397,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, authRequests, frames, downloads: saved, worker }));
+  process.stdout.write(JSON.stringify({ requests, authRequests, storageRequests, frames, downloads: saved, worker }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

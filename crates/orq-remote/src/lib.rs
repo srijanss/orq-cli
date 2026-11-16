@@ -169,7 +169,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let body = if method != "POST" || !path.starts_with("/api/") {
         Vec::new()
     } else {
-        match tokio::time::timeout(ACTION_BODY_DEADLINE, read_action_body(body)).await {
+        match tokio::time::timeout(ACTION_BODY_DEADLINE, read_action_body(body, remote_inbox::action_body_cap(&path))).await {
             Ok(Some(bytes)) => bytes,
             // A body that broke off, or is still arriving at the deadline, is not one any action takes.
             Ok(None) | Err(_) => b"\0".to_vec(),
@@ -189,14 +189,14 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
 
 /// Reads an action's body up to one byte past the cap, so a body over it reaches the handler as too
 /// long; `None` when the body broke off before it ended.
-async fn read_action_body(body: axum::body::Body) -> Option<Vec<u8>> {
+async fn read_action_body(body: axum::body::Body, cap: usize) -> Option<Vec<u8>> {
     use futures_util::StreamExt;
     let mut stream = body.into_data_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         bytes.extend_from_slice(&chunk.ok()?);
-        if bytes.len() > remote_inbox::MAX_ACTION_BODY {
-            bytes.truncate(remote_inbox::MAX_ACTION_BODY + 1);
+        if bytes.len() > cap {
+            bytes.truncate(cap + 1);
             break;
         }
     }

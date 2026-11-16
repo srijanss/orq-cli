@@ -1285,19 +1285,21 @@ function parsePreview(data) {
   return data !== null && typeof data === "object" && isTextList(data.lines) && counts.every((key) => Number.isInteger(data[key])) && typeof data.size === "string" && typeof data.hash === "string" ? data : null;
 }
 
+// A refused reply's reason in the server's words, or `fallback` when it gives none.
+async function reasonOf(response, fallback) {
+  try {
+    const reply = await response.json();
+    return reply !== null && typeof reply.error === "string" ? reply.error : fallback;
+  } catch (unreadable) {
+    return fallback;
+  }
+}
+
 function StorageCleanup({ token, onSignedOut }) {
   const [phase, setPhase] = useState("idle");
   const [preview, setPreview] = useState(null);
   const [lines, setLines] = useState([]);
   const [note, setNote] = useState("");
-  const reasonOf = async (response, fallback) => {
-    try {
-      const reply = await response.json();
-      return reply !== null && typeof reply.error === "string" ? reply.error : fallback;
-    } catch (unreadable) {
-      return fallback;
-    }
-  };
   const look = async () => {
     setPhase("loading");
     setNote("");
@@ -1385,6 +1387,213 @@ function StorageCleanup({ token, onSignedOut }) {
   );
 }
 
+// The Storage card's "Kept worktrees", while remote actions are on: every worktree orq made that a run left
+// behind, grouped by project, read from /api/storage/worktrees when the card opens (a server without the
+// route shows nothing). Delete asks first: a merged worktree holding only ignored files names them, and any
+// other names the work it holds and waits for its branch name typed back, then sends force. "Delete all
+// merged" removes the safe ones together. A refusal, such as a worktree changed since it was read, is shown
+// in the server's words.
+const API_WORKTREES = "/api/storage/worktrees";
+
+function parseKept(data) {
+  if (data === null || typeof data !== "object" || !Array.isArray(data.projects) || !Number.isInteger(data.count) || typeof data.size !== "string") return null;
+  const projects = data.projects.filter((p) => p !== null && typeof p === "object" && typeof p.id === "string" && typeof p.name === "string" && Array.isArray(p.worktrees));
+  return { count: data.count, size: data.size, projects: projects.map((p) => ({ id: p.id, name: p.name, worktrees: p.worktrees.filter((w) => w !== null && typeof w === "object" && typeof w.branch === "string" && typeof w.version === "string") })) };
+}
+
+// A branch as a URL path: each segment encoded, its slashes kept, as the delete route reads it.
+function branchPath(branch) {
+  return branch.split("/").map(encodeURIComponent).join("/");
+}
+
+const plural = (n, one, many) => n + " " + (n === 1 ? one : many);
+const keptFiles = (worktree) => (Array.isArray(worktree.files) ? worktree.files.filter((f) => f !== null && typeof f === "object" && typeof f.path === "string") : []);
+const moreFiles = (worktree) => (Number.isInteger(worktree.more_files) && worktree.more_files > 0 ? worktree.more_files : 0);
+
+function commitsText(worktree) {
+  if (!Number.isInteger(worktree.commits)) return "commits unknown";
+  return worktree.commits === 0 ? "merged" : plural(worktree.commits, "commit", "commits") + " not on " + (worktree.target || "the target");
+}
+
+function deleteQuestion(worktree) {
+  const files = keptFiles(worktree);
+  const more = moreFiles(worktree);
+  if (worktree.safe === true) {
+    const ignored = files.map((f) => f.path).join(", ") + (more > 0 ? " and " + more + " more" : "");
+    return "Delete this worktree and its branch?" + (ignored !== "" ? " Its ignored files (" + ignored + ") are deleted with it." : "");
+  }
+  const parts = [];
+  if (Number.isInteger(worktree.commits) && worktree.commits > 0) parts.push(commitsText(worktree));
+  else if (!Number.isInteger(worktree.commits)) parts.push("commits that could not be counted");
+  const changed = files.filter((f) => f.kind !== "ignored").map((f) => f.path);
+  if (changed.length > 0 || more > 0) parts.push("its changed files (" + changed.join(", ") + (more > 0 ? (changed.length > 0 ? " and " : "") + more + " more" : "") + ")");
+  if (worktree.files_unreadable === true) parts.push("files that could not be read");
+  return "Delete this worktree and its branch" + (parts.length > 0 ? " with " + parts.join(" and ") : "") + "? They are lost for good.";
+}
+
+function KeptWorktree({ projectId, worktree, onDelete }) {
+  const files = keptFiles(worktree);
+  const more = moreFiles(worktree);
+  return (
+    <li className="kept-card" data-kept-worktree>
+      <div className="kept-card-head">
+        <code className="kept-branch">{worktree.branch}</code>
+        <span className="muted">{typeof worktree.size === "string" ? worktree.size : "size unknown"}</span>
+      </div>
+      <div className="kept-facts">
+        {typeof worktree.run === "string" && RUN_ID.test(worktree.run) ? (
+          <a href={runHref(projectId, worktree.run)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(runHref(projectId, worktree.run)); } }}>{worktree.run}</a>
+        ) : null}
+        {typeof worktree.ending === "string" ? <span>{"Run ended: " + worktree.ending}</span> : null}
+        <span className={worktree.merged === true ? "kept-merged" : undefined}>{commitsText(worktree)}</span>
+      </div>
+      {typeof worktree.reason === "string" && worktree.reason !== "" ? <p className="kept-reason muted">{"Kept because " + worktree.reason}</p> : null}
+      {files.length > 0 || more > 0 ? (
+        <ul className="kept-files">
+          {files.map((file) => <li key={file.path} data-kept-file>{file.path + " (" + file.kind + ")"}</li>)}
+          {more > 0 ? <li>{"and " + more + " more"}</li> : null}
+        </ul>
+      ) : null}
+      {worktree.files_unreadable === true ? <p className="muted">The changed files could not be read.</p> : null}
+      <div className="kept-actions">
+        <button type="button" className="danger-button" data-kept-delete onClick={onDelete}><Icon name="trash" size={16} />Delete</button>
+      </div>
+    </li>
+  );
+}
+
+function KeptWorktrees({ token, onSignedOut }) {
+  const [kept, setKept] = useState(null);
+  const [absent, setAbsent] = useState(false);
+  const [asking, setAsking] = useState(null);
+  const [typed, setTyped] = useState("");
+  const [sending, setSending] = useState(false);
+  const [lines, setLines] = useState([]);
+  const [note, setNote] = useState("");
+  const load = async () => {
+    try {
+      const response = await get(API_WORKTREES, token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.status === 404) {
+        setAbsent(true);
+        return;
+      }
+      if (!response.ok) {
+        setNote(await reasonOf(response, "The kept worktrees could not be read."));
+        return;
+      }
+      const found = parseKept(await response.json());
+      if (found === null) setNote("The kept worktrees could not be read.");
+      else setKept(found);
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const post = async (path, body, done) => {
+    setSending(true);
+    setNote("");
+    setLines([]);
+    try {
+      const response = await actionRequest(path, token, body);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        let reply = null;
+        try {
+          reply = await response.json();
+        } catch (unreadable) {
+          reply = null;
+        }
+        setLines(done(reply));
+      } else {
+        setNote(await reasonOf(response, "The worktree could not be deleted."));
+      }
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+    setAsking(null);
+    setTyped("");
+    setSending(false);
+    await load();
+  };
+  if (absent) return null;
+  const safe = kept === null ? [] : kept.projects.flatMap((p) => p.worktrees.filter((w) => w.safe === true).map((w) => ({ project: p.id, branch: w.branch, version: w.version })));
+  const ask = (next) => {
+    setAsking(next);
+    setTyped("");
+    setLines([]);
+    setNote("");
+  };
+  const deleteOne = ({ project, worktree }) => {
+    const body = worktree.safe === true ? { version: worktree.version } : { version: worktree.version, force: true };
+    post(API_WORKTREES + "/" + encodeURIComponent(project) + "/" + branchPath(worktree.branch) + "/delete", body, () => ["Deleted " + worktree.branch + "."]);
+  };
+  const deleteMerged = (batch) => {
+    post(API_WORKTREES + "/delete-merged", { worktrees: batch }, (reply) => {
+      const results = reply !== null && Array.isArray(reply.results) ? reply.results.filter((r) => r !== null && typeof r === "object") : [];
+      const gone = results.filter((r) => r.deleted === true).length;
+      const failed = results.filter((r) => r.deleted !== true).map((r) => String(r.branch) + ": " + (typeof r.error === "string" ? r.error : "not deleted"));
+      return ["Deleted " + gone + " of " + plural(batch.length, "merged worktree.", "merged worktrees."), ...failed];
+    });
+  };
+  const heading = kept === null || kept.count === 0 ? "Kept worktrees" : "Kept worktrees · " + kept.count + " · " + kept.size;
+  return (
+    <div className="kept-worktrees" data-kept-worktrees>
+      <h3 className="settings-subhead">{heading}</h3>
+      <p className="muted">Worktrees orq made that a run left behind, across every project.</p>
+      {kept !== null && kept.count === 0 ? <p className="muted">No kept worktrees</p> : null}
+      {kept !== null
+        ? kept.projects.filter((p) => p.worktrees.length > 0).map((project) => (
+            <section key={project.id} className="kept-project" aria-label={project.name}>
+              <h4>{project.name}</h4>
+              <ul className="kept-list">
+                {project.worktrees.map((worktree) => (
+                  <Fragment key={worktree.branch}>
+                    <KeptWorktree projectId={project.id} worktree={worktree} onDelete={() => ask({ project: project.id, worktree })} />
+                    {asking !== null && asking.worktree === worktree ? (
+                      <li className="kept-confirm">
+                        <Confirm question={deleteQuestion(worktree)} answer="Yes, delete" tone="danger" busy={sending} blocked={worktree.safe !== true && typed !== worktree.branch} onConfirm={() => deleteOne(asking)} onCancel={() => setAsking(null)}>
+                          {worktree.safe !== true ? (
+                            <label>
+                              {"Type " + worktree.branch + " to confirm"}
+                              <input type="text" autoComplete="off" spellCheck="false" data-kept-branch-typed value={typed} onChange={(event) => setTyped(event.target.value)} />
+                            </label>
+                          ) : null}
+                        </Confirm>
+                      </li>
+                    ) : null}
+                  </Fragment>
+                ))}
+              </ul>
+            </section>
+          ))
+        : null}
+      {safe.length >= 2 && asking === null ? (
+        <div className="settings-block settings-actions">
+          <button type="button" className="danger-button" data-kept-delete-merged onClick={() => ask({ merged: safe })}><Icon name="trash" size={16} />Delete all merged</button>
+        </div>
+      ) : null}
+      {asking !== null && asking.merged !== undefined ? (
+        <div className="settings-block">
+          <Confirm question={"Delete " + asking.merged.length + " merged worktrees and their branches?"} answer="Yes, delete all" tone="danger" busy={sending} onConfirm={() => deleteMerged(asking.merged)} onCancel={() => setAsking(null)}>
+            <ul className="kept-files">{asking.merged.map((w) => <li key={w.project + "/" + w.branch}>{w.branch}</li>)}</ul>
+          </Confirm>
+        </div>
+      ) : null}
+      {lines.length > 0 ? <div className="settings-block"><ul role="status" className="storage-result">{lines.map((line, index) => <li key={index}>{line}</li>)}</ul></div> : null}
+      <SettingsNotes sending={sending} sendingText="Deleting…" note={note} conflict={false} />
+    </div>
+  );
+}
+
 function SettingsView({ settings, token, onSignedOut, onChanged }) {
   const on = settings.remote_actions === true;
   return (
@@ -1413,6 +1622,7 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
         <section className="card settings-card">
           <SettingsHead icon="folder">Storage</SettingsHead>
           <StorageCleanup token={token} onSignedOut={onSignedOut} />
+          <KeptWorktrees token={token} onSignedOut={onSignedOut} />
         </section>
       ) : null}
     </>
@@ -1493,13 +1703,14 @@ function toneClass(tone) {
 }
 
 // A question as its own block: any choices, the sentence, then the answer in the action's tone and Cancel beside it.
-function Confirm({ question, detail = null, answer, tone, busy = false, onConfirm, onCancel, children }) {
+// blocked holds back only the answer, such as until a name is typed back, while Cancel stays open.
+function Confirm({ question, detail = null, answer, tone, busy = false, blocked = false, onConfirm, onCancel, children }) {
   return (
     <div className="confirm" role="group" aria-label={question}>
       {children ? <div className="confirm-fields">{children}</div> : null}
       <p className="confirm-question">{question}{detail !== null ? <span className="confirm-detail muted">{detail}</span> : null}</p>
       <div className="confirm-actions">
-        <button type="button" className={toneClass(tone === "danger" ? "danger" : "primary")} data-confirm disabled={busy} onClick={onConfirm}>{answer}</button>
+        <button type="button" className={toneClass(tone === "danger" ? "danger" : "primary")} data-confirm disabled={busy || blocked} onClick={onConfirm}>{answer}</button>
         <button type="button" data-cancel disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>

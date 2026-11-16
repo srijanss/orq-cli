@@ -115,6 +115,30 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
 /// [`uncommitted_work`] from one status scan, but a status git cannot give is git's message, for a
 /// caller that refuses to go on rather than keeping the worktree.
 pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<UncommittedWork>, String>, StoreError> {
+    let scan = match scan_work(worktree, Some(1))? {
+        Err(message) => return Ok(Err(message)),
+        Ok(None) => return Ok(Ok(Some(UncommittedWork::Unreadable))),
+        Ok(Some(scan)) => scan,
+    };
+    let Some(entry) = scan.entries.first() else {
+        return Ok(Ok(None));
+    };
+    // An entry is "XY path": the two status letters, a space, then the path.
+    let path = entry.get(3..).unwrap_or(entry);
+    let hint = if entry.starts_with("!! ") { ignored_hint(worktree, path, &scan.installs)? } else { None };
+    Ok(Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) })))
+}
+
+/// The status entries of a worktree that are work: everything but the ignored files orq, the
+/// tooling or a build left there. Each entry is git's "XY path", the path not yet made printable.
+pub(crate) struct WorkScan {
+    pub(crate) entries: Vec<String>,
+    installs: HashMap<(String, &'static str), Result<(), String>>,
+}
+
+/// Every entry of [`WorkScan`], or the first `limit` of them. `None` when the status names a path
+/// that is not UTF-8, so it cannot be judged; a status git cannot give is git's message.
+pub(crate) fn scan_work(worktree: &Path, limit: Option<usize>) -> Result<Result<Option<WorkScan>, String>, StoreError> {
     let status = git_raw(
         worktree,
         &[
@@ -134,7 +158,7 @@ pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<Unc
     // git_raw reads output lossily: a path that is not UTF-8 comes back as another name, which could
     // be taken for a cache directory of its own. Such a worktree is not judged, but kept.
     if status.stdout.contains(char::REPLACEMENT_CHARACTER) {
-        return Ok(Ok(Some(UncommittedWork::Unreadable)));
+        return Ok(Ok(None));
     }
     // Untracked files are listed one by one, so an ignored directory is never exempt as a whole: each
     // file in it must be one orq recorded writing and still unchanged, or sit in a build cache.
@@ -153,13 +177,22 @@ pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<Unc
                         || is_tooling_folder(path)))
         })
     };
-    let Some(entry) = status.stdout.split('\0').find(|entry| !entry.is_empty() && !own(entry)) else {
-        return Ok(Ok(None));
-    };
-    // An entry is "XY path": the two status letters, a space, then the path.
-    let path = entry.get(3..).unwrap_or(entry);
-    let hint = if entry.starts_with("!! ") { ignored_hint(worktree, path, &installs)? } else { None };
-    Ok(Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) })))
+    // A rename or copy ("R  new", "C  new") is followed by its origin path as an entry of its own.
+    let mut origin_next = false;
+    let entries: Vec<String> = status
+        .stdout
+        .split('\0')
+        .filter(|entry| {
+            if std::mem::take(&mut origin_next) {
+                return false;
+            }
+            origin_next = entry.get(..2).is_some_and(|xy| xy.contains(['R', 'C']));
+            !entry.is_empty() && !own(entry)
+        })
+        .take(limit.unwrap_or(usize::MAX))
+        .map(str::to_string)
+        .collect();
+    Ok(Ok(Some(WorkScan { entries, installs })))
 }
 
 /// What would have let the ignored `path` go with the worktree: what its install folder lacks, or,
@@ -407,7 +440,7 @@ fn keep(
     Ok(CleanupOutcome::Kept { reason })
 }
 
-fn record_event(
+pub(crate) fn record_event(
     store: &RunStore,
     record: &RunRecord,
     kind: &str,

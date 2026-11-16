@@ -744,6 +744,24 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .settings-actions, .settings-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .settings-block .storage-preview, .settings-block .storage-result { margin: 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
 .confirm-detail { display: block; margin-top: 0.25rem; font-size: 0.875rem; }
+/* Kept worktrees: one card per worktree, stacked, so a phone shows each whole without a table to scroll. */
+.kept-worktrees { padding: 0.75rem 1rem; border-top: 1px solid var(--border); }
+.kept-worktrees > .settings-subhead { margin: 0; font-size: 0.9375rem; font-weight: 700; }
+.kept-worktrees > p { margin: 0.25rem 0 0; font-size: 0.875rem; }
+.kept-worktrees .settings-block { padding: 0.75rem 0 0; border-top: 0; }
+.kept-project h4 { margin: 0.75rem 0 0.5rem; font-size: 0.875rem; color: var(--text-muted); }
+.kept-list { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.kept-card { display: grid; gap: 0.375rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
+.kept-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.kept-branch { overflow-wrap: anywhere; font-weight: 600; }
+.kept-facts { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: 0.875rem; }
+.kept-merged { color: var(--status-completed); }
+.kept-reason { margin: 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+.kept-files { margin: 0; padding-left: 1.25rem; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.kept-actions { display: flex; justify-content: flex-end; }
+.kept-actions button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; }
+.kept-confirm label { display: grid; gap: 0.25rem; font-size: 0.875rem; }
+.kept-confirm input { min-height: 44px; font: inherit; }
 .pill-on { color: var(--status-completed); background: var(--status-completed-bg); border: 1px solid var(--status-completed); }
 .pill-off { color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
 .settings-link { display: flex; align-items: center; gap: 0.75rem; min-height: 44px; padding: 0.5rem 1rem; color: var(--text); font-weight: 600; text-decoration: none; }

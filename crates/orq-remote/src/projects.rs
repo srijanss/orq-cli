@@ -873,6 +873,56 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
     }
 
+    fn kept_worktrees(&self) -> Result<Option<serde_json::Value>, String> {
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let (mut count, mut bytes) = (0usize, 0u64);
+        let mut groups = Vec::new();
+        for project in discover(&self.scan_root) {
+            let kept = match orq_orchestrator::list_kept_worktrees(&store, &project.path) {
+                Ok(kept) => kept,
+                Err(why) => {
+                    eprintln!("orq serve: the kept worktrees of {} could not be read: {}", project.name, orq_core::redact::redact(&why.to_string()));
+                    continue;
+                }
+            };
+            if kept.is_empty() {
+                continue;
+            }
+            count += kept.len();
+            bytes += kept.iter().filter_map(|worktree| worktree.size).sum::<u64>();
+            let worktrees: Vec<serde_json::Value> = kept.iter().map(kept_worktree_json).collect();
+            groups.push(serde_json::json!({ "id": project.id, "name": project.name, "worktrees": worktrees }));
+        }
+        Ok(Some(serde_json::json!({
+            "projects": groups,
+            "count": count,
+            "bytes": bytes,
+            "size": orq_core::retention::human_bytes(bytes),
+        })))
+    }
+
+    fn delete_kept_worktree(&self, id: &str, branch: &str, version: &str, force: bool) -> Result<orq_core::remote_inbox::WorktreeDelete, String> {
+        use orq_core::remote_inbox::WorktreeDelete;
+        use orq_orchestrator::DeleteRefusal;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(WorktreeDelete::Unknown) };
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        match orq_orchestrator::delete_kept_worktree(&store, &project.path, branch, version, force) {
+            Ok(Ok(deleted)) => Ok(WorktreeDelete::Deleted(serde_json::json!({
+                "project": project.id,
+                "branch": orq_core::redact::redact(&deleted.branch),
+                "sha": deleted.sha,
+                "run": deleted.run_id,
+            }))),
+            Ok(Err(DeleteRefusal::NotFound)) => Ok(WorktreeDelete::Unknown),
+            Ok(Err(refusal)) => Ok(WorktreeDelete::Refused(orq_core::redact::redact(&refusal.to_string()))),
+            Err(why) => {
+                let why = why.to_string();
+                eprintln!("orq serve: a kept worktree could not be deleted: {}", orq_core::redact::redact(&why));
+                Err(why)
+            }
+        }
+    }
+
     fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {
         use orq_core::remote_inbox::RunDiscard;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunDiscard::Unknown) };
@@ -1287,4 +1337,38 @@ mod merged_cache_tests {
         assert!(!cache.merged(&record("r-1"), &HashMap::new(), || check(true)), "a branch that is gone is not merged");
         assert_eq!(asked, 2);
     }
+}
+
+/// One kept worktree for the web: what it holds and how it ended, with no path on this machine.
+fn kept_worktree_json(worktree: &orq_orchestrator::KeptWorktree) -> serde_json::Value {
+    use orq_orchestrator::ChangeKind;
+    let redact = |text: &str| orq_core::redact::redact(text);
+    let files: Vec<serde_json::Value> = worktree
+        .files
+        .iter()
+        .map(|file| {
+            let kind = match file.kind {
+                ChangeKind::Tracked => "tracked",
+                ChangeKind::Untracked => "untracked",
+                ChangeKind::Ignored => "ignored",
+            };
+            serde_json::json!({ "path": redact(&file.path), "kind": kind })
+        })
+        .collect();
+    serde_json::json!({
+        "branch": redact(&worktree.branch),
+        "run": worktree.run_id,
+        "ending": worktree.ending,
+        "reason": worktree.kept_reason.as_deref().map(redact),
+        "target": redact(&worktree.target),
+        "commits": worktree.commits,
+        "files": files,
+        "more_files": worktree.more_files,
+        "files_unreadable": worktree.files_unreadable,
+        "merged": worktree.merged(),
+        "safe": worktree.safe(),
+        "bytes": worktree.size,
+        "size": worktree.size.map(orq_core::retention::human_bytes),
+        "version": worktree.version,
+    })
 }

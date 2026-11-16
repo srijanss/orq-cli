@@ -346,7 +346,7 @@ impl Retained {
             Retained::Active => "the run is still active",
             Retained::AwaitingReview => "the run is waiting for human review",
             Retained::Pinned => "the run is pinned",
-            Retained::WorktreeInUse => "the run's worktree is still in use",
+            Retained::WorktreeInUse => "the run's worktree is kept; delete it under Kept worktrees in Settings or with orq worktree remove",
             Retained::UnresolvedReview => "its review is still open",
             Retained::RemoteStateUncertain => "the review's remote state is unknown or out of date",
             Retained::UnknownRun => "there is no record of the run",

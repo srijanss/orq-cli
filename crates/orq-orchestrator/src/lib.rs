@@ -41,6 +41,7 @@ mod stop;
 mod session_references;
 mod session_settings;
 mod setup;
+mod kept_worktrees;
 mod store;
 mod terminal_session;
 mod worktree_databases;
@@ -70,6 +71,9 @@ pub use interrupted::{
 };
 pub use child_groups::end_children_with_this_process;
 pub use launch::{record_launch, record_owner};
+pub use kept_worktrees::{
+    delete_kept_worktree, list_kept_worktrees, ChangeKind, ChangedFile, DeleteRefusal, DeletedWorktree, KeptWorktree,
+};
 pub use local_files::{carry_local_files, LocalFiles};
 pub use needs_input::{parse_needs_input, question_was_answered, record_input_given, record_needs_input, NeedsInput};
 pub use notify::{

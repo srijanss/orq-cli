@@ -11,11 +11,12 @@ mod remote_serve;
 mod review;
 mod run_evidence;
 mod storage;
+mod worktree;
 
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq storage status|list|prune [--dry-run]|maintain | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -41,6 +42,7 @@ fn main() -> ExitCode {
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
         (Some("storage"), _) => storage::storage(&args[1..]),
+        (Some("worktree"), _) => worktree::worktree(&args[1..]),
         (Some("run"), Some("pin")) => storage::pin(&args[2..], true),
         (Some("run"), Some("unpin")) => storage::pin(&args[2..], false),
         (Some("run"), Some("pause")) => run_pause(&args[2..]),

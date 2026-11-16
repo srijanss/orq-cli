@@ -315,6 +315,29 @@ pub trait ProjectsProvider {
     fn storage_prune(&self, _hash: &str) -> Result<Option<StoragePrune>, String> {
         Ok(None)
     }
+
+    /// The worktrees orq made and kept, across every project, as `{projects: [{id, name, worktrees}], count,
+    /// bytes, size}`. `None` when this provider has none to show.
+    fn kept_worktrees(&self) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Deletes project `project`'s kept worktree on `branch` and its branch, if it still has `version`; one
+    /// with commits or files that would be lost needs `force`. A provider that cannot does not know it.
+    fn delete_kept_worktree(&self, _project: &str, _branch: &str, _version: &str, _force: bool) -> Result<WorktreeDelete, String> {
+        Ok(WorktreeDelete::Unknown)
+    }
+}
+
+/// How deleting a kept worktree from the web ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorktreeDelete {
+    /// It was deleted; the value says what, and is safe to show.
+    Deleted(Value),
+    /// Why it was not deleted; safe to show.
+    Refused(String),
+    /// No kept worktree of a known project is on that branch.
+    Unknown,
 }
 
 /// How a storage cleanup from the web ended.
@@ -461,9 +484,23 @@ pub fn handle_with_confirm(roots: &StorageRoots, config: &RemoteConfig, project_
     answer(roots, config, project_id, project_name, request, body, Some(provider), confirm)
 }
 
+/// The most bytes an action on `path` takes in its body.
+pub fn action_body_cap(path: &str) -> usize {
+    if path == "/api/storage/worktrees/delete-merged" {
+        MAX_MERGED_BODY
+    } else {
+        MAX_ACTION_BODY
+    }
+}
+
 /// Why an action's body is refused, if it is: it must be empty or a JSON object with only `allowed` fields.
 fn body_refusal(body: &[u8], allowed: &[&str]) -> Option<Response> {
-    if body.len() > MAX_ACTION_BODY {
+    body_refusal_within(body, allowed, MAX_ACTION_BODY)
+}
+
+/// [`body_refusal`] for an action whose body may be up to `max` bytes.
+fn body_refusal_within(body: &[u8], allowed: &[&str], max: usize) -> Option<Response> {
+    if body.len() > max {
         return Some(error(413, "the request body is too large"));
     }
     if body.iter().all(u8::is_ascii_whitespace) {
@@ -1237,6 +1274,127 @@ fn storage_prune(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, 
     }
 }
 
+/// The kept worktrees of every project, for the Storage card. It changes nothing, so it is not audited, but
+/// it is there only while actions are on.
+fn kept_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>) -> Response {
+    action_read(roots, provider, "the kept worktrees could not be read", |provider| provider.kept_worktrees())
+}
+
+/// The project and branch of `/api/storage/worktrees/{project}/{branch}/delete`; the branch may hold `/`.
+fn worktree_target(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/storage/worktrees/")?.strip_suffix("/delete")?;
+    let (project, branch) = rest.split_once('/')?;
+    (!project.is_empty() && !branch.is_empty() && !branch.split('/').any(|part| part.is_empty() || part == "." || part == "..")).then_some((project, branch))
+}
+
+fn worktree_audit(roots: &StorageRoots, action: &str, project: &str, outcome: crate::remote_audit::Outcome, reason: &str) {
+    use crate::remote_audit::{record, Attempt};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let _ = record(roots, &Attempt { identity: "web", action, project, run: None, outcome, reason: Some(reason) }, now);
+}
+
+/// One delete through the provider, as `(status, body)`, with its audit line.
+fn delete_one(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, project: &str, branch: &str, version: &str, force: bool, action: &str) -> (u16, Value) {
+    use crate::remote_audit::Outcome;
+    let failed = "the worktree could not be deleted";
+    match provider.map(|provider| provider.delete_kept_worktree(project, branch, version, force)) {
+        Some(Ok(WorktreeDelete::Deleted(deleted))) => {
+            worktree_audit(roots, action, project, Outcome::Allowed, &format!("deleted {branch}"));
+            (200, deleted)
+        }
+        Some(Ok(WorktreeDelete::Refused(why))) => {
+            worktree_audit(roots, action, project, Outcome::Refused, &why);
+            (409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            worktree_audit(roots, action, project, Outcome::Refused, failed);
+            (500, json!({ "error": failed }))
+        }
+        _ => {
+            worktree_audit(roots, action, project, Outcome::Refused, "no such kept worktree");
+            (404, json!({ "error": "not found" }))
+        }
+    }
+}
+
+/// Deletes one kept worktree for the web, if actions are on, as storage.worktree.delete.
+fn delete_kept_worktree(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, path: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::Outcome;
+    let action = "storage.worktree.delete";
+    if !remote_actions_on(roots) {
+        worktree_audit(roots, action, "settings", Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    let Some((project, branch)) = worktree_target(path) else {
+        worktree_audit(roots, action, "settings", Outcome::Refused, "no such kept worktree");
+        return error(404, "not found");
+    };
+    if let Some(refusal) = body_refusal(body, &["version", "force"]) {
+        worktree_audit(roots, action, project, Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let force = match fields["force"] {
+        Value::Null => Some(false),
+        Value::Bool(force) => Some(force),
+        _ => None,
+    };
+    let (Some(version), Some(force)) = (fields["version"].as_str().filter(|version| !version.is_empty()), force) else {
+        worktree_audit(roots, action, project, Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    let (status, body) = delete_one(roots, provider, project, branch, version, force, action);
+    reply(status, body)
+}
+
+/// The most worktrees one delete-merged takes.
+const MAX_MERGED_DELETES: usize = 200;
+/// The largest delete-merged body: room for that many worktrees' project, branch and version.
+const MAX_MERGED_BODY: usize = 64 * 1024;
+
+/// Deletes each listed kept worktree that is still merged with nothing to lose, never forcing one, and says
+/// how each went, as storage.worktree.delete-merged.
+fn delete_merged_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
+    use crate::remote_audit::Outcome;
+    let action = "storage.worktree.delete-merged";
+    if !remote_actions_on(roots) {
+        worktree_audit(roots, action, "settings", Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal_within(body, &["worktrees"], MAX_MERGED_BODY) {
+        worktree_audit(roots, action, "settings", Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let items: Option<Vec<(&str, &str, &str)>> = fields["worktrees"].as_array().filter(|items| !items.is_empty() && items.len() <= MAX_MERGED_DELETES).and_then(|items| {
+        items
+            .iter()
+            .map(|item| {
+                let field = |name: &str| item[name].as_str().filter(|text| !text.is_empty());
+                let known = item.as_object()?.keys().all(|key| matches!(key.as_str(), "project" | "branch" | "version"));
+                known.then_some((field("project")?, field("branch")?, field("version")?))
+            })
+            .collect()
+    });
+    let Some(items) = items else {
+        worktree_audit(roots, action, "settings", Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    let results: Vec<Value> = items
+        .into_iter()
+        .map(|(project, branch, version)| {
+            let (status, answer) = delete_one(roots, provider, project, branch, version, false, action);
+            let mut result = json!({ "project": project, "branch": branch, "deleted": status == 200 });
+            if status != 200 {
+                result["error"] = answer["error"].clone();
+            }
+            result
+        })
+        .collect();
+    reply(200, json!({ "results": results }))
+}
+
 /// Saves project `id`'s own agents and delivery for its Settings page. The body names the whole
 /// record and the revision it was read at; a null role is reset so runs fall back again.
 fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
@@ -1371,6 +1529,12 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_path(path)).flatten() {
         return save_feature(roots, provider, id, Some(feature), body);
     }
+    if path == "/api/storage/worktrees/delete-merged" && request.method == "POST" {
+        return delete_merged_worktrees(roots, provider, body);
+    }
+    if path.starts_with("/api/storage/worktrees/") && request.method == "POST" {
+        return delete_kept_worktree(roots, provider, path, body);
+    }
     if path == "/api/settings/storage/prune" && request.method == "POST" {
         return storage_prune(roots, provider, body);
     }
@@ -1409,6 +1573,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if path == "/api/settings/storage/preview" {
         return storage_preview(roots, provider);
+    }
+    if path == "/api/storage/worktrees" {
+        return kept_worktrees(roots, provider);
     }
     if path == "/api/projects" {
         return match provider {

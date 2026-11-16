@@ -61,7 +61,7 @@ pub(crate) fn storage(args: &[OsString]) -> ExitCode {
 }
 
 fn status() -> Result<(), String> {
-    let (roots, store, _) = open()?;
+    let (roots, store, runs_store) = open()?;
     let items = inventory(&roots.data).map_err(|e| e.to_string())?;
     let mut by_class: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
     for item in &items {
@@ -80,6 +80,7 @@ fn status() -> Result<(), String> {
     println!("pinned runs: {}", if pinned.is_empty() { "none".to_string() } else { pinned.join(", ") });
     println!("retention: {}", policy_summary(&policy(&roots)?));
     println!("last cleanup: {}", last_cleanup(&roots).map_or("never".to_string(), format_time));
+    println!("{}", crate::worktree::status_line(&runs_store));
     Ok(())
 }
 

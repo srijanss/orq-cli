@@ -54,6 +54,10 @@ fn a_run_whose_worktree_is_in_use_is_kept() {
     let mut f = facts(RunState::Failed, 5000, None);
     f.worktree_in_use = true;
     assert_eq!(retained(&f), Retained::WorktreeInUse);
+    assert_eq!(
+        Retained::WorktreeInUse.describe(),
+        "the run's worktree is kept; delete it under Kept worktrees in Settings or with orq worktree remove"
+    );
 }
 
 #[test]
