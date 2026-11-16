@@ -278,3 +278,15 @@ fn an_init_that_hangs_after_a_locked_install_is_stopped_at_its_own_limit() {
     assert!(report.versions.iter().all(|v| v.source == "machine active"), "{:?}", report.versions);
     assert!(ignored(&w.worktree, ".mcpctl.lock"), "the carried lock is still kept out of git status");
 }
+
+#[test]
+fn a_failure_after_a_flood_of_output_still_names_its_own_last_line() {
+    // Several megabytes of output, then the line that says what went wrong.
+    let setup = "    i=0; while [ $i -lt 40000 ]; do echo \"downloading chunk $i of a rather long and noisy installation log line\"; i=$((i+1)); done\n    echo 'Error: disk full' >&2\n    exit 1";
+    let w = world("flood", setup);
+
+    let report = run_mcp_setup(&request(&w, &servers()));
+
+    assert!(fs::metadata(&w.log).unwrap().len() > 2_000_000, "the log holds the flood");
+    assert!(report.notes.iter().any(|n| n.ends_with("Error: disk full") || n.contains("Error: disk full")), "{:?}", report.notes);
+}

@@ -15,6 +15,8 @@ const MCPCTL_LOCK: &str = ".mcpctl.lock";
 const MCPCTL_SCAFFOLD: &str = ".mcpctl.scaffold.json";
 /// What mcpctl says when `setup` refuses because the project's pins exclude the newest source.
 const PINS_REFUSED: &str = "does not satisfy constraint";
+/// How much of the end of the setup log is read for a failed call's last line.
+const TAIL: u64 = 64 * 1024;
 /// The longest piece of mcpctl's output a note quotes.
 const MAX_LINE: usize = 300;
 
@@ -288,10 +290,21 @@ fn call(request: &McpSetupRequest<'_>, program: &Path, args: &[&str], limit: Dur
 }
 
 /// The last non-empty line written to `log` after `from`, cut to [`MAX_LINE`] characters.
+/// Only the log's last [`TAIL`] bytes are read, however much the call printed.
 fn last_line(log: &Path, from: u64) -> Option<String> {
-    let bytes = std::fs::read(log).ok()?;
-    let written = bytes.get(usize::try_from(from).ok()?..)?;
-    let text = String::from_utf8_lossy(written);
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(log).ok()?;
+    let end = file.metadata().ok()?.len();
+    let start = from.max(end.saturating_sub(TAIL));
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut written = Vec::new();
+    file.take(TAIL).read_to_end(&mut written).ok()?;
+    let text = String::from_utf8_lossy(&written);
+    // A tail that starts mid-line drops that partial line, unless it is all there is.
+    let text = match text.split_once('\n') {
+        Some((_, rest)) if start > from && !rest.trim().is_empty() => rest,
+        _ => &text,
+    };
     let line = text.lines().map(str::trim).filter(|line| !line.is_empty()).last()?;
     Some(line.chars().take(MAX_LINE).collect())
 }
