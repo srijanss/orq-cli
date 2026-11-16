@@ -1462,6 +1462,29 @@ function KeptWorktree({ projectId, worktree, onDelete }) {
   );
 }
 
+// One delete-merged takes at most 200 worktrees and 64 KiB; batches stay at half of each.
+const MERGED_BATCH = 100;
+const MERGED_BATCH_BYTES = 32 * 1024;
+
+function mergedBatches(all) {
+  const encoder = new TextEncoder();
+  const batches = [];
+  let current = [];
+  let bytes = 0;
+  for (const worktree of all) {
+    const size = encoder.encode(JSON.stringify(worktree)).length + 1;
+    if (current.length > 0 && (current.length >= MERGED_BATCH || bytes + size > MERGED_BATCH_BYTES)) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(worktree);
+    bytes += size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
 function KeptWorktrees({ token, onSignedOut }) {
   const [kept, setKept] = useState(null);
   const [absent, setAbsent] = useState(false);
@@ -1536,13 +1559,42 @@ function KeptWorktrees({ token, onSignedOut }) {
     const body = worktree.safe === true ? { version: worktree.version } : { version: worktree.version, force: true };
     post(API_WORKTREES + "/" + encodeURIComponent(project) + "/" + branchPath(worktree.branch) + "/delete", body, () => ["Deleted " + worktree.branch + "."]);
   };
-  const deleteMerged = (batch) => {
-    post(API_WORKTREES + "/delete-merged", { worktrees: batch }, (reply) => {
-      const results = reply !== null && Array.isArray(reply.results) ? reply.results.filter((r) => r !== null && typeof r === "object") : [];
-      const gone = results.filter((r) => r.deleted === true).length;
-      const failed = results.filter((r) => r.deleted !== true).map((r) => String(r.branch) + ": " + (typeof r.error === "string" ? r.error : "not deleted"));
-      return ["Deleted " + gone + " of " + plural(batch.length, "merged worktree.", "merged worktrees."), ...failed];
-    });
+  // Sent a batch at a time, as the server takes only so many in one request; a batch it refuses stops the rest.
+  const deleteMerged = async (all) => {
+    setSending(true);
+    setNote("");
+    setLines([]);
+    let gone = 0;
+    const failed = [];
+    try {
+      for (const batch of mergedBatches(all)) {
+        const response = await actionRequest(API_WORKTREES + "/delete-merged", token, { worktrees: batch });
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        if (!response.ok) {
+          setNote(await reasonOf(response, "The worktrees could not be deleted."));
+          break;
+        }
+        let reply = null;
+        try {
+          reply = await response.json();
+        } catch (unreadable) {
+          reply = null;
+        }
+        const results = reply !== null && Array.isArray(reply.results) ? reply.results.filter((r) => r !== null && typeof r === "object") : [];
+        gone += results.filter((r) => r.deleted === true).length;
+        failed.push(...results.filter((r) => r.deleted !== true).map((r) => String(r.branch) + ": " + (typeof r.error === "string" ? r.error : "not deleted")));
+      }
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+    setLines(["Deleted " + gone + " of " + plural(all.length, "merged worktree.", "merged worktrees."), ...failed]);
+    setAsking(null);
+    setTyped("");
+    setSending(false);
+    await load();
   };
   const heading = kept === null || kept.count === 0 ? "Kept worktrees" : "Kept worktrees · " + kept.count + " · " + kept.size;
   return (

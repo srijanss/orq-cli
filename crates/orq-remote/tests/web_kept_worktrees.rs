@@ -242,3 +242,48 @@ fn a_projects_settings_page_has_no_worktree_section() {
     assert_eq!(count(last(&out), "[data-kept-worktrees]"), 0, "{out}");
     assert!(out["storageRequests"].as_array().unwrap().is_empty(), "{out}");
 }
+
+#[test]
+fn deleting_more_merged_worktrees_than_one_request_takes_sends_them_in_batches_and_adds_up_the_results() {
+    let many: Vec<Value> = (0..250).map(|i| ignored_only(&format!("fix--W{i:03}"), &format!("run-{i}"))).collect();
+    let all = listing(json!([{"id": "alpha", "name": "Alpha", "worktrees": many}]), 250, "175 KB");
+    let reply = |from: usize, to: usize| {
+        let results: Vec<Value> = (from..to)
+            .map(|i| if i == 7 { json!({"project": "alpha", "branch": format!("fix--W{i:03}"), "deleted": false, "error": "it changed"}) } else { json!({"project": "alpha", "branch": format!("fix--W{i:03}"), "deleted": true}) })
+            .collect();
+        json!({"status": 200, "json": {"results": results}})
+    };
+    let steps = vec![json!({"click": "[data-kept-delete-merged]"}), json!({"click": "[data-confirm]"})];
+    let empty = listing(json!([]), 0, "0 B");
+    let Some(out) = on_settings(vec![all, reply(0, 100), reply(100, 200), reply(200, 250), empty], steps, false) else { return };
+    let sent = storage_posts(&out);
+    assert!(sent.len() >= 2, "250 worktrees are more than one request takes: {}", sent.len());
+    let mut branches = Vec::new();
+    for request in &sent {
+        assert_eq!(request["url"], "/api/storage/worktrees/delete-merged");
+        assert!(request["body"].as_str().unwrap().len() < 64 * 1024, "a batch fits the server's body limit");
+        let batch = body(request)["worktrees"].as_array().unwrap().clone();
+        assert!(!batch.is_empty() && batch.len() <= 200, "a batch holds at most 200: {}", batch.len());
+        branches.extend(batch.iter().map(|w| w["branch"].as_str().unwrap().to_string()));
+    }
+    let expected: Vec<String> = (0..250).map(|i| format!("fix--W{i:03}")).collect();
+    assert_eq!(branches, expected, "every merged worktree is sent once, in order");
+    assert_eq!(sent.len(), 3, "batches of 100");
+    let done = last(&out);
+    assert!(has(done, "Deleted 249 of 250 merged worktrees."), "{:?}", shown(done));
+    assert!(has(done, "fix--W007: it changed"), "{:?}", shown(done));
+}
+
+#[test]
+fn a_batch_the_server_refuses_stops_the_rest_and_keeps_what_was_deleted() {
+    let many: Vec<Value> = (0..150).map(|i| ignored_only(&format!("fix--W{i:03}"), &format!("run-{i}"))).collect();
+    let all = listing(json!([{"id": "alpha", "name": "Alpha", "worktrees": many}]), 150, "105 KB");
+    let first: Vec<Value> = (0..100).map(|i| json!({"project": "alpha", "branch": format!("fix--W{i:03}"), "deleted": true})).collect();
+    let refused = json!({"status": 403, "json": {"error": "remote actions are off"}});
+    let steps = vec![json!({"click": "[data-kept-delete-merged]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = on_settings(vec![all, json!({"status": 200, "json": {"results": first}}), refused, listing(json!([]), 0, "0 B")], steps, false) else { return };
+    assert_eq!(storage_posts(&out).len(), 2, "{out}");
+    let done = last(&out);
+    assert!(has(done, "Deleted 100 of 150 merged worktrees."), "{:?}", shown(done));
+    assert!(has(done, "remote actions are off"), "{:?}", shown(done));
+}
