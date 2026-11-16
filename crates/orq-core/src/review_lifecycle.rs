@@ -227,8 +227,11 @@ impl ReviewLifecycle {
         if self.state == ProviderState::Merged {
             return next;
         }
+        // A person's "reviewed" holds while the review stays open on the head they read; a new head, or
+        // a review reopened at the provider, waits for a person again.
+        let still_resolved = self.state == ProviderState::Open && self.gate == Gate::Resolved && seen.head_sha == self.reported_head_sha;
         next.state = seen.state;
-        next.gate = if seen.state == ProviderState::Open { Gate::AwaitingHumanReview } else { Gate::Resolved };
+        next.gate = if seen.state == ProviderState::Open && !still_resolved { Gate::AwaitingHumanReview } else { Gate::Resolved };
         if seen.head_sha == self.reported_head_sha {
             next.stale = false;
             next.observed_head_sha = None;

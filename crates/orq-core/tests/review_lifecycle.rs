@@ -78,3 +78,14 @@ fn a_merge_is_final_even_if_the_provider_later_reports_open() {
     assert_eq!(review.state, ProviderState::Merged);
     assert_eq!(review.gate, Gate::Resolved);
 }
+
+#[test]
+fn a_review_marked_reviewed_stays_resolved_while_the_provider_shows_the_same_open_head() {
+    let resolved = associated().resolved();
+    let refreshed = resolved.apply(seen(ProviderState::Open, HEAD));
+    assert_eq!(refreshed.gate, Gate::Resolved, "a refresh does not undo a person's decision");
+    assert_eq!(refreshed.status(), Some("resolved"));
+
+    let moved = resolved.apply(seen(ProviderState::Open, OTHER));
+    assert_eq!(moved.gate, Gate::AwaitingHumanReview, "a new head waits for a person again");
+}
