@@ -328,9 +328,12 @@ fn reopen_discarding_a_later_run_reopens_a_feature_an_older_run_also_worked_on()
 fn reopen_discarding_leaves_a_completed_feature_when_another_run_cannot_be_read() {
     let d = blocked_run("discard-unreadable-run", true);
     write_ledger(d.repo.root(), &[LedgerEntry::new("COM-01", "completed")]);
-    let unreadable = d.home.join("orq/runs/run-9");
-    std::fs::create_dir_all(&unreadable).unwrap();
-    std::fs::write(unreadable.join("run.json"), "not json").unwrap();
+    // A run of the project on a checkout of its own whose events cannot be read: it never took
+    // run-1's checkout, so the discard goes ahead, but it may be the run that finished COM-01.
+    d.store.finish_run(&d.project_id, "COM-01", "run-1").unwrap();
+    d.store.start_run(&record("run-9", &d.project_id, "orq-run-9", d.home.join("run-9"))).unwrap();
+    d.store.finish_run(&d.project_id, "COM-01", "run-9").unwrap();
+    std::fs::write(d.home.join("orq/runs/run-9/events.jsonl"), "not json\n").unwrap();
 
     let output = discard(&d, d.repo.root());
 
