@@ -327,3 +327,34 @@ fn a_failed_blocked_or_review_waiting_run_resumed_as_another_is_ended_as_resumed
         assert_eq!(summary.resumed_as.as_deref(), Some("run-2"), "{ending}");
     }
 }
+
+#[test]
+fn a_run_whose_handover_was_written_but_not_its_ending_is_still_handed_over_not_running() {
+    for ending in ["failed", "blocked", "needs_review"] {
+        let w = world(&format!("half-superseded-{ending}"), Tamper::None);
+        let from = w.store.load("run-1").unwrap();
+        record_run_completed(&w.store, &from, ending, Some("it stopped")).unwrap();
+        // Only the first of the two handover events made it to disk.
+        w.store
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: "half".into(),
+                run_id: "run-1".into(),
+                project_id: "repo-1".into(),
+                feature_id: "COM-02".into(),
+                kind: "run.resumed".into(),
+                stage: None,
+                attempt: 1,
+                occurred_at: "2026-11-16T10:00:00Z".into(),
+                payload: serde_json::json!({ "resumed_as": "run-2" }),
+            })
+            .unwrap();
+
+        let summary = orq_orchestrator::summarize_run(&w.store.events("run-1").unwrap());
+        assert_eq!(summary.phase, orq_orchestrator::RunPhase::Completed, "{ending}");
+        assert_eq!(summary.resumed_as.as_deref(), Some("run-2"), "{ending}");
+        let listed = orq_orchestrator::list_runs(&w.store, "repo-1").unwrap();
+        assert_eq!(listed[0].resumed_as.as_deref(), Some("run-2"), "{ending}");
+        assert_eq!(listed[0].reason.as_deref(), Some("continued as run-2"), "{ending}");
+    }
+}
