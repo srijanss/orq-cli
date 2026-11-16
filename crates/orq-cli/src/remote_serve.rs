@@ -108,10 +108,9 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
         project_id: crate::pipeline::project_id(&project),
         project_name: project.name.clone(),
     });
-    let started = match auth.clone() {
-        Some(auth) => orq_remote::Server::start_with_auth(listener, state, projects, auth),
-        None => orq_remote::Server::start_with_projects(listener, state, projects),
-    };
+    let reviews = orq_remote::review_refresh::ReviewRefresher::new(state_roots.clone(), std::sync::Arc::new(ProviderLook { roots: state_roots.clone() }));
+    let options = orq_remote::ServerOptions { projects: Some(projects), auth: auth.clone(), reviews: Some(reviews.clone()) };
+    let started = orq_remote::Server::start_with(listener, state, options);
     let server = match started {
         Ok(server) => server,
         Err(err) => return fail(format!("cannot start the server: {:?}", err.kind())),
@@ -126,9 +125,30 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
         println!("read it with: cat -- {}", shell_quote(&token.display().to_string()));
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
+    // Open provider reviews are looked at again while the server runs.
+    let rounds = orq_remote::review_refresh::start_rounds(reviews, orq_remote::review_refresh::ROUND_EVERY);
     wait_for_interrupt();
     drop(server);
+    drop(rounds);
     ExitCode::SUCCESS
+}
+
+/// Looks at a run's review at its provider as `orq review refresh` does. A look that cannot be made is
+/// kept on the review as its last error, so it shows unverified and waits for the next round.
+struct ProviderLook {
+    roots: orq_core::storage::StorageRoots,
+}
+
+impl orq_remote::review_refresh::ReviewObserver for ProviderLook {
+    fn refresh(&self, run_id: &str) {
+        let Err(err) = crate::review::refresh_lifecycle(&self.roots, run_id) else { return };
+        let Ok(store) = orq_core::store::Store::open(&self.roots.database()) else { return };
+        let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
+        if let Some(latest) = latest {
+            let failed = latest.apply(Err(orq_core::review_lifecycle::ObservationError::Unavailable(err)));
+            let _ = store.save_lifecycle(run_id, &failed);
+        }
+    }
 }
 
 /// Single-quotes `text` for a POSIX shell, so a path with spaces or metacharacters pastes safely.

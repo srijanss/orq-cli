@@ -1157,6 +1157,7 @@ dependencies = [
  "orq-orchestrator",
  "orq-test-support",
  "p256",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tokio",

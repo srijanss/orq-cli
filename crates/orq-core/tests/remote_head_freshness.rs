@@ -1,6 +1,7 @@
 //! Every report carries a freshness the server decides: `current` only when the provider head was
 //! checked and equals the reviewed commit, `stale` on a mismatch, `unverified` when the check
-//! failed or never ran. A provider link is allowed for `current` alone.
+//! failed or never ran. A provider link is allowed for a recorded review that is `current` or
+//! `unverified`; a `stale` one, one never recorded, or a run merged locally offers none.
 
 use orq_core::remote_inbox::{handle, RemoteConfig, Request};
 use orq_core::review_lifecycle::{Observation, ObservationError, ProviderState, ReviewLifecycle};
@@ -82,19 +83,29 @@ fn a_verified_mismatch_is_stale_names_both_commits_and_hides_the_link() {
 }
 
 #[test]
-fn a_check_that_failed_or_never_ran_is_unverified_with_no_link() {
+fn a_check_that_never_ran_is_unverified_with_no_link() {
     let never = roots("never", None);
+    let (d, l) = both(&never);
+    for body in [&d, &l] {
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+    }
+    assert_eq!(d["provider_head_sha"], Value::Null, "an unverified head is not shown as a provider head: {d}");
+    assert_eq!(d["reviewed_head_sha"], HEAD, "{d}");
+    assert_eq!(d["checked_at"], Value::Null);
+}
+
+#[test]
+fn a_recorded_review_whose_check_failed_is_unverified_and_keeps_its_link() {
     let failed_first = roots("failed-first", Some(associated(URL).apply(failed())));
     let failed_after_current = roots("failed-after", Some(associated(URL).apply(seen(HEAD)).apply(failed())));
-    for r in [&never, &failed_first, &failed_after_current] {
+    for r in [&failed_first, &failed_after_current] {
         let (d, l) = both(r);
         for body in [&d, &l] {
-            assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+            assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(true), &json!(URL)), "{body}");
         }
         assert_eq!(d["provider_head_sha"], Value::Null, "an unverified head is not shown as a provider head: {d}");
         assert_eq!(d["reviewed_head_sha"], HEAD, "{d}");
     }
-    assert_eq!(get(&never, "/api/reviews/run-1")["checked_at"], Value::Null);
 }
 
 #[test]
@@ -112,11 +123,11 @@ fn a_link_that_is_not_plain_https_is_never_allowed_even_for_a_current_review() {
 }
 
 #[test]
-fn an_association_that_was_never_checked_is_unverified_whatever_it_stores() {
+fn an_association_that_was_never_checked_is_unverified_and_offers_its_recorded_link() {
     let r = roots("association-only", Some(associated(URL)));
     let (d, l) = both(&r);
     for body in [&d, &l] {
-        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(true), &json!(URL)), "{body}");
     }
     assert_eq!(d["provider_head_sha"], Value::Null, "{d}");
 }
@@ -142,7 +153,17 @@ fn a_check_time_that_cannot_be_read_makes_an_observed_matching_review_unverified
     rusqlite::Connection::open(r.database()).unwrap().execute("UPDATE review_lifecycles SET last_checked = 'not a time'", []).unwrap();
     let (d, l) = both(&r);
     for body in [&d, &l] {
-        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(false), &Value::Null), "{body}");
+        assert_eq!((&body["freshness"], &body["link_allowed"], &body["link"]), (&json!("unverified"), &json!(true), &json!(URL)), "{body}");
     }
     assert_eq!((&d["checked_at"], &d["provider_head_sha"]), (&Value::Null, &Value::Null), "{d}");
+}
+
+#[test]
+fn a_run_merged_locally_offers_no_provider_link() {
+    let r = roots("merged-locally", Some(ReviewLifecycle::merged_locally(HEAD, OTHER)));
+    let (d, l) = both(&r);
+    for body in [&d, &l] {
+        assert_eq!((&body["link_allowed"], &body["link"]), (&json!(false), &Value::Null), "{body}");
+        assert_eq!(body["merged_locally"], OTHER, "{body}");
+    }
 }

@@ -76,29 +76,42 @@ fn act(action: orq_core::review_inbox::ReviewAction, args: &[OsString]) -> ExitC
 }
 
 /// `orq review backfill`: resolves the reviews of runs merged locally before a local merge resolved
-/// its review. Running it again changes nothing.
+/// its review, and keeps the PR/MR each run created or adopted before creation recorded it, unverified
+/// until it is looked at. Running it again changes nothing.
 fn backfill() -> ExitCode {
     let Some(state) = pipeline::state_root() else { return fail("no state location: set XDG_STATE_HOME or HOME") };
-    let merges = match orq_orchestrator::local_merges(&orq_orchestrator::RunStore::new(&state)) {
-        Ok(merges) => merges,
-        Err(err) => return fail(format!("cannot read the runs: {err:?}")),
+    let runs = orq_orchestrator::RunStore::new(&state);
+    let (merges, created) = match (orq_orchestrator::local_merges(&runs), orq_orchestrator::created_reviews(&runs)) {
+        (Ok(merges), Ok(created)) => (merges, created),
+        (Err(err), _) | (_, Err(err)) => return fail(format!("cannot read the runs: {err:?}")),
     };
     let store = match review_index() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+    // Local merges first: a run merged here is resolved as such, and its PR/MR is then left alone.
     match orq_core::review_inbox::backfill_local_merges(&store, &merges) {
+        Ok(changed) => println!("{changed} locally merged run(s) resolved"),
+        Err(err) => return fail(format!("cannot resolve the merged runs' reviews: {err}")),
+    }
+    match orq_core::review_inbox::backfill_created_reviews(&store, &created) {
         Ok(changed) => {
-            println!("{changed} locally merged run(s) resolved");
+            println!("{changed} review request(s) recorded");
             ExitCode::SUCCESS
         }
-        Err(err) => fail(format!("cannot resolve the merged runs' reviews: {err}")),
+        Err(err) => fail(format!("cannot record the runs' review requests: {err}")),
     }
 }
 
 /// Resolves the review of a run this repository merged at `head_sha`. Returns how many reports it resolved.
 pub(crate) fn record_local_merge(run_id: &str, head_sha: &str) -> Result<usize, String> {
     orq_core::review_inbox::record_local_merge(&review_index()?, run_id, head_sha)
+}
+
+/// Keeps the PR/MR `run_id` just created or adopted for its pushed `head` as seen open there now.
+pub(crate) fn record_created_review(run_id: &str, provider: &str, review: &orq_orchestrator::ReviewRef, head: &str) -> Result<(), String> {
+    let created = orq_core::review_inbox::CreatedReview { run_id: run_id.into(), provider: provider.into(), review_id: review.id.clone(), url: review.url.clone() };
+    orq_core::review_inbox::record_created_review(&review_index()?, &created, head)
 }
 
 /// The review index in Orq's data directory.
@@ -461,32 +474,41 @@ fn refresh(args: &[OsString]) -> ExitCode {
         Ok(roots) => roots,
         Err(err) => return fail(err),
     };
-    let store = match Store::open(&roots.database()) {
-        Ok(store) => store,
-        Err(err) => return fail(format!("cannot open the review index: {err}")),
+    let (next, failed) = match refresh_lifecycle(&roots, run_id) {
+        Ok(refreshed) => refreshed,
+        Err(err) => return fail(err),
     };
+    print!("{}", describe(&next));
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// Looks at `run_id`'s review on its provider (read-only, within 60 s) and saves what it shows on the
+/// review of the run's latest report, or why it could not be looked at. Returns the saved lifecycle and
+/// whether the look failed. Shared by `orq review refresh` and the server's refresher.
+pub(crate) fn refresh_lifecycle(roots: &orq_core::storage::StorageRoots, run_id: &str) -> Result<(ReviewLifecycle, bool), String> {
+    let store = Store::open(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
     let reported = match store.reviews_for_run(run_id) {
         Ok(records) => records.last().map(|r| r.head_sha.clone()),
-        Err(err) => return fail(format!("cannot read the review index: {err}")),
+        Err(err) => return Err(format!("cannot read the review index: {err}")),
     };
-    let Some(reported) = reported else { return fail(format!("no review report for run {run_id}: build one first with `orq review build`")) };
+    let Some(reported) = reported else { return Err(format!("no review report for run {run_id}: build one first with `orq review build`")) };
 
-    let Some(state_root) = pipeline::state_root() else { return fail("no state location: set XDG_STATE_HOME or HOME") };
+    let Some(state_root) = pipeline::state_root() else { return Err("no state location: set XDG_STATE_HOME or HOME".into()) };
     let runs = orq_orchestrator::RunStore::new(&state_root);
     let record = match runs.load(run_id) {
         Ok(record) => record,
-        Err(err) => return fail(format!("cannot read run {run_id}: {err:?}")),
+        Err(err) => return Err(format!("cannot read run {run_id}: {err:?}")),
     };
     let cli = if record.provider == "gitlab" { "glab" } else { "gh" };
-    let Some(program) = pipeline::find_program(cli) else { return fail(format!("{cli} is not on PATH")) };
+    let Some(program) = pipeline::find_program(cli) else { return Err(format!("{cli} is not on PATH")) };
     let observed = match orq_orchestrator::observe_review(&runs, run_id, &program, std::time::Duration::from_secs(60)) {
         Ok(observed) => observed,
-        Err(err) => return fail(format!("cannot look at the review: {err:?}")),
+        Err(err) => return Err(format!("cannot look at the review: {err:?}")),
     };
 
     let existing = match store.lifecycles_for_run(run_id) {
         Ok(all) => all.into_iter().find(|l| l.reported_head_sha == reported),
-        Err(err) => return fail(format!("cannot read the provider review state: {err}")),
+        Err(err) => return Err(format!("cannot read the provider review state: {err}")),
     };
     let (base, observation) = match observed {
         Ok(seen) => {
@@ -506,7 +528,7 @@ fn refresh(args: &[OsString]) -> ExitCode {
                 Some(l) => l,
                 None => match orq_orchestrator::recorded_review(&runs, run_id) {
                     Ok(Some(r)) => ReviewLifecycle::associate(&record.provider, &r.id, &r.url, &reported),
-                    _ => return fail(format!("the review could not be looked at: {error:?}")),
+                    _ => return Err(format!("the review could not be looked at: {error:?}")),
                 },
             };
             (base, Err(error))
@@ -514,11 +536,8 @@ fn refresh(args: &[OsString]) -> ExitCode {
     };
     let failed = observation.is_err();
     let next = base.apply(observation);
-    if let Err(err) = store.save_lifecycle(run_id, &next) {
-        return fail(format!("cannot store the provider review state: {err}"));
-    }
-    print!("{}", describe(&next));
-    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    store.save_lifecycle(run_id, &next).map_err(|err| format!("cannot store the provider review state: {err}"))?;
+    Ok((next, failed))
 }
 
 /// The current UTC time as RFC 3339, without a date-time dependency.

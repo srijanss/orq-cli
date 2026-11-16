@@ -9,7 +9,7 @@ use orq_core::provider_observation::{classify_failure, list_command, parse_list}
 use orq_core::review_lifecycle::{reconcile, Candidate, Observation, ObservationError};
 
 use crate::review_draft::{run_captured, DraftSession};
-use crate::review_request::{provider_environment, recorded_review, repository_url};
+use crate::review_request::{provider_dir, provider_environment, recorded_review, repository_url};
 use crate::store::{RunStore, StoreError};
 
 /// The review a run tracks, as the provider shows it now.
@@ -51,7 +51,7 @@ pub fn observe_review(
         program: program.to_string_lossy().into_owned(),
         args,
         env: provider_environment(),
-        cwd: record.worktree.clone(),
+        cwd: provider_dir(&record),
     };
     debug_assert!(cli == "gh" || cli == "glab");
     let text = match run_captured(&session, timeout) {

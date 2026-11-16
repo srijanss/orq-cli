@@ -2,6 +2,9 @@
 //! they were merged into their base locally.
 
 use crate::implement::{next_event_id, now_rfc3339};
+use orq_core::review_inbox::CreatedReview;
+
+use crate::review_request::recorded_review;
 use crate::store::{Event, RunStore, StoreError};
 
 /// Record a `kind` event (such as `review.dismissed`) for the review of `head_sha`, taken by `by`.
@@ -33,4 +36,15 @@ pub fn local_merges(store: &RunStore) -> Result<Vec<(String, String)>, StoreErro
         }
     }
     Ok(merges)
+}
+
+/// The PR/MR each run created or adopted last, with the run's provider, as its events record it. A run
+/// whose events cannot be read, or whose event names no id or url, gives none.
+pub fn created_reviews(store: &RunStore) -> Result<Vec<CreatedReview>, StoreError> {
+    let mut found = Vec::new();
+    for run_id in store.run_ids()? {
+        let (Ok(Some(review)), Ok(record)) = (recorded_review(store, &run_id), store.load(&run_id)) else { continue };
+        found.push(CreatedReview { run_id, provider: record.provider, review_id: review.id, url: review.url });
+    }
+    Ok(found)
 }

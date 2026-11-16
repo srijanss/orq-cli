@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::review_lifecycle::{ProviderState, ReviewLifecycle, LOCAL_PROVIDER};
+use crate::review_lifecycle::{Observation, ProviderState, ReviewLifecycle, LOCAL_PROVIDER};
 use crate::storage::{check_run_id, StorageRoots};
 use crate::store::{check_report_path, ReviewRecord, Store};
 
@@ -186,6 +186,48 @@ pub fn backfill_local_merges(store: &Store, merges: &[(String, String)]) -> Resu
         if record_local_merge(store, run_id, merged_sha)? > 0 {
             changed += 1;
         }
+    }
+    Ok(changed)
+}
+
+/// A PR/MR a run created or adopted, as its run's events record it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedReview {
+    pub run_id: String,
+    pub provider: String,
+    pub review_id: String,
+    pub url: String,
+}
+
+/// Records the PR/MR a run just created or adopted for its pushed `head` as seen open there now, so it
+/// reads as current. The same review already kept for that head is updated, keeping a person's
+/// "reviewed" on it; anything else kept for that head is replaced.
+pub fn record_created_review(store: &Store, review: &CreatedReview, head: &str) -> Result<(), String> {
+    let kept = store.lifecycles_for_run(&review.run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+    let base = kept
+        .into_iter()
+        .find(|l| l.reported_head_sha == head && l.provider == review.provider && l.review_id == review.review_id)
+        .unwrap_or_else(|| ReviewLifecycle::associate(&review.provider, &review.review_id, &review.url, head));
+    let seen = base.apply(Ok(Observation { state: ProviderState::Open, head_sha: head.to_string() }));
+    store.save_lifecycle(&review.run_id, &seen).map_err(|err| format!("cannot save the review state: {err}"))
+}
+
+/// Records each run's created or adopted PR/MR, from before creation recorded it, as the provider review
+/// of the run's latest report: unverified until it is looked at. A run without a report, one whose review
+/// is already kept, and a latest report a person already acted on here are left alone, so a repeat
+/// changes nothing. Returns how many runs changed.
+pub fn backfill_created_reviews(store: &Store, created: &[CreatedReview]) -> Result<usize, String> {
+    let mut changed = 0;
+    for review in created {
+        let reports = store.reviews_for_run(&review.run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+        let Some(head) = reports.last().map(|r| r.head_sha.clone()) else { continue };
+        let lifecycles = store.lifecycles_for_run(&review.run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+        if lifecycles.iter().any(|l| l.provider != LOCAL_PROVIDER || l.reported_head_sha == head) {
+            continue;
+        }
+        let lifecycle = ReviewLifecycle::associate(&review.provider, &review.review_id, &review.url, &head);
+        store.save_lifecycle(&review.run_id, &lifecycle).map_err(|err| format!("cannot save the review state: {err}"))?;
+        changed += 1;
     }
     Ok(changed)
 }

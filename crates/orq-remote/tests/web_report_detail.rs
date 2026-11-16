@@ -122,12 +122,28 @@ fn a_stale_report_shows_a_red_banner_with_both_hashes_above_the_summary_and_no_l
 }
 
 #[test]
-fn an_unverified_report_shows_an_amber_banner_and_no_link_and_names_no_provider_head() {
+fn an_unverified_report_shows_an_amber_banner_and_names_no_provider_head() {
     let Some(out) = open_first(detail_with("unverified", false, json!(LINK))) else { return };
     let shown = page(&out, 2);
     assert!(shown.contains("UNVERIFIED") && shown.contains("1111111aaaa"), "{shown}");
     assert!(shown.find("UNVERIFIED").unwrap() < shown.find("adds the thing").unwrap(), "{shown}");
     assert!(!shown.contains("STALE") && !shown.contains("2222222bbbb"), "{shown}");
+    assert!(report_links(&out["frames"][2]).is_empty(), "no link the server does not allow: {out}");
+}
+
+#[test]
+fn an_unverified_review_keeps_the_link_the_server_allows_but_a_stale_or_locally_merged_one_does_not() {
+    let Some(out) = open_first(detail_with("unverified", true, json!(LINK))) else { return };
+    assert!(page(&out, 2).contains("UNVERIFIED"), "{out}");
+    let links = report_links(&out["frames"][2]);
+    assert_eq!(links.len(), 1, "{out}");
+    assert_eq!(links[0]["href"], LINK);
+
+    let Some(out) = open_first(detail_with("stale", true, json!(LINK))) else { return };
+    assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
+    let mut merged = detail_with("unverified", true, json!(LINK));
+    merged["json"]["merged_locally"] = json!("3333333cccc");
+    let Some(out) = open_first(merged) else { return };
     assert!(report_links(&out["frames"][2]).is_empty(), "{out}");
 }
 

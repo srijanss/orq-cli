@@ -327,6 +327,26 @@ impl Store {
             .map_err(db)
     }
 
+    /// The runs whose newest provider review (not one kept only here) is open, each with when the
+    /// provider was last looked at, in seconds since the epoch; `None` when that time cannot be read.
+    /// With `run_id`, only that run.
+    pub fn open_provider_reviews(&self, run_id: Option<&str>) -> Result<Vec<(String, Option<i64>)>> {
+        if let Some(run_id) = run_id {
+            check_run_id(run_id)?;
+        }
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT l.run_id, CASE WHEN typeof(l.last_checked) = 'integer' THEN l.last_checked END FROM review_lifecycles l \
+                 WHERE l.provider != ?1 AND l.state = 'open' AND (?2 IS NULL OR l.run_id = ?2) \
+                 AND l.rowid = (SELECT MAX(n.rowid) FROM review_lifecycles n WHERE n.run_id = l.run_id AND n.provider != ?1) \
+                 ORDER BY l.run_id",
+            )
+            .map_err(db)?;
+        let rows = statement.query_map(params![crate::review_lifecycle::LOCAL_PROVIDER, run_id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(db)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db)
+    }
+
     /// What the provider last showed about the run's review, and when.
     pub fn review_observation(&self, run_id: &str) -> Result<Option<crate::retention::ReviewFacts>> {
         check_run_id(run_id)?;

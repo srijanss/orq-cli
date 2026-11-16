@@ -1978,13 +1978,15 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
     let checked_at = checked.as_ref().ok().copied().flatten().map(utc_text);
     // The newest look decides: a mismatch stays stale whatever came after; a failed look is unverified.
     let freshness = if lifecycle.stale { "stale" } else if lifecycle.last_error.is_some() || !lifecycle.observed || checked_at.is_none() { "unverified" } else { "current" };
-    let link = safe_link(&lifecycle.url).filter(|_| freshness == "current");
     let provider_head = match freshness {
         "current" => Some(head.clone()),
         "stale" => lifecycle.observed_head_sha.clone(),
         _ => None,
     };
     let merged_locally = (lifecycle.provider == LOCAL_PROVIDER && lifecycle.state == ProviderState::Merged).then(|| lifecycle.review_id.clone());
+    // The review orq recorded is offered while it is current or merely unverified (it exists, the last look
+    // just could not confirm it); a review the provider shows on another commit, or a local merge, is not.
+    let link = safe_link(&lifecycle.url).filter(|_| freshness != "stale" && merged_locally.is_none());
     Ok(Some(Facts { merged_locally, observed: lifecycle.observed_head_sha, link, stale: lifecycle.stale, freshness, provider_head, checked_at, project, head }))
 }
 

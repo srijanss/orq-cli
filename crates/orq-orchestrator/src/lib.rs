@@ -61,7 +61,7 @@ pub use conflict_fix::{fix_rebase_conflicts, ConflictFixOutcome};
 pub use discard::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, features_no_later_run_took, DeletedBranch, DiscardOutcome};
 pub use fix_features::{carry_fix_features, fix_features, record_fix_features_added};
 pub use ledger_events::record_ledger_features;
-pub use review_events::{local_merges, record_review_action};
+pub use review_events::{created_reviews, local_merges, record_review_action};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
 pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome};

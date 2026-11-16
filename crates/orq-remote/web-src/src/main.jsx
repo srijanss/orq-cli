@@ -408,7 +408,10 @@ function providerName(href) {
 function Detail({ report, row = null, listPath = "/reviews", actions = null }) {
   const freshness = freshnessOf(report);
   const merged = shortHash(report.merged_locally);
-  const href = merged === "none" && freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
+  // An unverified review keeps the link it was opened with; a stale one, or one merged here, does not.
+  // A report from a server that names no freshness gets none.
+  const linkable = freshness === "current" || (freshness === "unverified" && report.freshness === "unverified");
+  const href = merged === "none" && linkable && report.link_allowed === true ? safeHttpsLink(report.link) : null;
   const commit = shortHash(report.reviewed_head_sha);
   const status = typeof report.status === "string" ? report.status : row !== null ? String(row.status) : "";
   return (

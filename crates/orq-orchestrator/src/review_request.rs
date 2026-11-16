@@ -310,12 +310,39 @@ pub(crate) fn checked_push_url(record: &RunRecord) -> Result<Option<String>, Sto
 /// (made before runs pinned it) is not checked.
 /// Returns the resolved url that was checked, so a caller uses exactly what was validated.
 pub(crate) fn ensure_pinned_remote(record: &RunRecord) -> Result<String, StoreError> {
-    let current = resolve_repository_url(&record.worktree, &record.remote)?;
+    let current = match resolve_repository_url(&provider_dir(record), &record.remote) {
+        Ok(current) => current,
+        // Once delivery removed the worktree, a main repository whose remote cannot be read
+        // leaves the pin, which was normalised and checked when the run started.
+        Err(_) if !record.worktree.is_dir() && !record.repository.is_empty() => {
+            return Ok(record.repository.clone())
+        }
+        Err(error) => return Err(error),
+    };
     if record.repository.is_empty() {
         return Ok(current);
     }
     check_pin(record, &current)?;
     Ok(current)
+}
+
+/// Where the run's provider calls are made: its worktree while it exists, else the main
+/// repository it was made from (a worktree sits in `<repo>/.claude/worktrees`), else a
+/// neutral directory, since the calls name the repository explicitly.
+pub(crate) fn provider_dir(record: &RunRecord) -> std::path::PathBuf {
+    if record.worktree.is_dir() {
+        return record.worktree.clone();
+    }
+    main_repository(&record.worktree)
+        .filter(|main| main.is_dir())
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// The main checkout a worktree under `<repo>/.claude/worktrees` belongs to.
+fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
+    let dir = worktree.parent()?;
+    let dot_claude = dir.parent()?;
+    (dir.file_name()? == "worktrees" && dot_claude.file_name()? == ".claude").then(|| dot_claude.parent().map(Path::to_path_buf)).flatten()
 }
 
 fn check_pin(record: &RunRecord, current: &str) -> Result<(), StoreError> {

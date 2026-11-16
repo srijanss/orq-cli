@@ -70,3 +70,25 @@ fn the_runs_merged_locally_are_found_with_the_commit_they_were_merged_at() {
 
     assert_eq!(local_merges(&store).unwrap(), vec![("run-1".to_string(), "1111111".to_string())]);
 }
+
+#[test]
+fn the_review_each_run_created_or_adopted_last_is_found_with_its_provider() {
+    use orq_core::review_inbox::CreatedReview;
+    let store = store("created");
+    for run in ["run-1", "run-2", "run-3", "run-4"] {
+        let provider = if run == "run-2" { "gitlab" } else { "github" };
+        store.start_run(&RunRecord { feature_id: format!("feat-{run}"), provider: provider.into(), ..record(run) }).unwrap();
+    }
+    store.append_event(&event("run-1", "review.created", serde_json::json!({"id": "6", "url": "https://github.com/o/r/pull/6"}))).unwrap();
+    store.append_event(&Event { event_id: "run-1-again".into(), ..event("run-1", "review.adopted", serde_json::json!({"id": "7", "url": "https://github.com/o/r/pull/7"})) }).unwrap();
+    store.append_event(&event("run-2", "review.adopted", serde_json::json!({"id": "3", "url": "https://gitlab.com/o/r/-/merge_requests/3"}))).unwrap();
+    store.append_event(&event("run-3", "review.created", serde_json::json!({"url": "https://github.com/o/r/pull/9"}))).unwrap();
+
+    let found = orq_orchestrator::created_reviews(&store).unwrap();
+    let review = |run: &str, provider: &str, id: &str, url: &str| CreatedReview { run_id: run.into(), provider: provider.into(), review_id: id.into(), url: url.into() };
+    assert_eq!(
+        found,
+        vec![review("run-1", "github", "7", "https://github.com/o/r/pull/7"), review("run-2", "gitlab", "3", "https://gitlab.com/o/r/-/merge_requests/3")],
+        "an event without an id, and a run without one, give nothing"
+    );
+}

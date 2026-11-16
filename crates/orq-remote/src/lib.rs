@@ -8,6 +8,7 @@
 
 pub mod discard;
 pub mod projects;
+pub mod review_refresh;
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -38,6 +39,19 @@ struct Shared {
     projects: Option<Arc<dyn ProjectsProvider + Send + Sync>>,
     /// Passkey sign-in, when the server was started with a passkey host.
     auth: Option<Arc<orq_core::passkey_routes::PasskeyAuth>>,
+    /// Looks again at a provider review a signed-in page opens, when its last look is old.
+    reviews: Option<Arc<review_refresh::ReviewRefresher>>,
+}
+
+/// What a server is started with besides its state.
+#[derive(Default)]
+pub struct ServerOptions {
+    /// Answers `/api/projects`.
+    pub projects: Option<Arc<dyn ProjectsProvider + Send + Sync>>,
+    /// Serves the `/auth/*` passkey routes; needs `projects`.
+    pub auth: Option<Arc<orq_core::passkey_routes::PasskeyAuth>>,
+    /// Keeps open provider reviews fresh as pages open them.
+    pub reviews: Option<Arc<review_refresh::ReviewRefresher>>,
 }
 
 /// A running server; dropping it stops it.
@@ -50,19 +64,25 @@ pub struct Server {
 impl Server {
     /// Serves on `listener` until the returned value is dropped.
     pub fn start(listener: TcpListener, state: Arc<ServerState>) -> std::io::Result<Server> {
-        Server::serve(listener, Shared { state, projects: None, auth: None })
+        Server::start_with(listener, state, ServerOptions::default())
     }
 
     /// Like `start`, and also answers `/api/projects` from `projects`.
     pub fn start_with_projects(listener: TcpListener, state: Arc<ServerState>, projects: Arc<dyn ProjectsProvider + Send + Sync>) -> std::io::Result<Server> {
-        Server::serve(listener, Shared { state, projects: Some(projects), auth: None })
+        Server::start_with(listener, state, ServerOptions { projects: Some(projects), ..ServerOptions::default() })
     }
 
     /// Like `start_with_projects`, and also serves the `/auth/*` passkey routes: a live session cookie
     /// opens `/api`, and once a passkey exists the bearer token no longer does from anywhere but this
     /// machine's own direct loopback.
     pub fn start_with_auth(listener: TcpListener, state: Arc<ServerState>, projects: Arc<dyn ProjectsProvider + Send + Sync>, auth: Arc<orq_core::passkey_routes::PasskeyAuth>) -> std::io::Result<Server> {
-        Server::serve(listener, Shared { state, projects: Some(projects), auth: Some(auth) })
+        Server::start_with(listener, state, ServerOptions { projects: Some(projects), auth: Some(auth), ..ServerOptions::default() })
+    }
+
+    /// Serves on `listener` with what `options` adds; passkey routes are served only with projects.
+    pub fn start_with(listener: TcpListener, state: Arc<ServerState>, options: ServerOptions) -> std::io::Result<Server> {
+        let auth = options.auth.filter(|_| options.projects.is_some());
+        Server::serve(listener, Shared { state, projects: options.projects, auth, reviews: options.reviews })
     }
 
     fn serve(listener: TcpListener, state: Shared) -> std::io::Result<Server> {
@@ -182,8 +202,14 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         Some(query) if path.starts_with("/api/") => format!("{path}?{query}"),
         _ => path,
     };
+    let opened = (method == "GET").then(|| review_refresh::opened_run(&target).map(str::to_string)).flatten();
+    let refresher = shared.reviews.clone();
     let result = tokio::task::spawn_blocking(move || reply_to(&shared, peer.ip(), &method, &target, authorization.as_deref(), session.as_deref(), &body)).await;
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    // A review a signed-in page opened is looked at again in the background; the page shows it next time.
+    if let (200, Some(run), Some(refresher)) = (reply.0, opened, refresher) {
+        tokio::task::spawn_blocking(move || refresher.opened(&run, review_refresh::now()));
+    }
     json_reply(reply.0, reply.1)
 }
 

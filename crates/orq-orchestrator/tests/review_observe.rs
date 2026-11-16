@@ -307,3 +307,80 @@ fn a_listing_beyond_the_observation_budget_is_unavailable_not_truncated() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A run whose worktree sat under `<main>/.claude/worktrees` and has been removed; the main
+/// repository's `origin` is `main_remote`, or the main repository is gone too when `None`.
+fn world_without_worktree(tag: &str, main_remote: Option<&str>) -> (RunStore, std::path::PathBuf) {
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-review-obs-gone-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let main = root.join("main");
+    let worktree = main.join(".claude").join("worktrees").join("fix--COM-02");
+    if let Some(remote) = main_remote {
+        fs::create_dir_all(&main).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["remote", "add", "origin", remote][..]] {
+            let out = std::process::Command::new("git").arg("-C").arg(&main).args(args).output().unwrap();
+            assert!(out.status.success());
+        }
+    }
+    let store = RunStore::new(&root.join("state"));
+    store
+        .create(&RunRecord {
+            delivery: Default::default(),
+            run_id: "run-1".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "COM-02".to_string(),
+            remote: "origin".to_string(),
+            provider: "github".to_string(),
+            target_branch: "main".to_string(),
+            base_sha: "0".repeat(40),
+            branch: "fix--COM-02".to_string(),
+            worktree,
+            repository: REPO.to_string(),
+            profiles: BTreeMap::new(),
+        })
+        .unwrap();
+    (store, main)
+}
+
+fn repo_arg(args: &[String]) -> Option<&str> {
+    args.iter().position(|a| a == "--repo").map(|i| args[i + 1].as_str())
+}
+
+#[test]
+fn without_its_worktree_a_run_is_observed_through_the_main_repository() {
+    let (store, main) = world_without_worktree("main", Some("git@github.example:o/r.git"));
+    record_created(&store, "7");
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)])).build();
+
+    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap().unwrap();
+    assert_eq!(seen.observation.state, ProviderState::Open);
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(repo_arg(&calls[0].args).map(|r| r.trim_end_matches(".git")), Some(REPO), "{:?}", calls[0].args);
+    assert_eq!(calls[0].cwd.canonicalize().unwrap(), main.canonicalize().unwrap());
+}
+
+#[test]
+fn without_its_worktree_a_main_repository_pointing_elsewhere_is_refused() {
+    let (store, _main) = world_without_worktree("elsewhere", Some("https://evil.example/o/r.git"));
+    record_created(&store, "7");
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)])).build();
+
+    let refused = observe_review(&store, "run-1", &provider.gh(), WAIT);
+    assert!(matches!(refused, Err(StoreError::Corrupt(ref why)) if why.contains("evil.example")), "{refused:?}");
+    assert!(provider.calls().is_empty());
+}
+
+#[test]
+fn without_its_worktree_or_main_repository_the_pinned_repository_is_used() {
+    let (store, _main) = world_without_worktree("nomain", None);
+    record_created(&store, "7");
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "MERGED", OLD)])).build();
+
+    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap().unwrap();
+    assert_eq!(seen.observation.state, ProviderState::Merged);
+    let calls = provider.calls();
+    assert_eq!(repo_arg(&calls[0].args), Some(REPO), "{:?}", calls[0].args);
+    assert!(calls[0].cwd.is_dir(), "{:?}", calls[0].cwd);
+}
