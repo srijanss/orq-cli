@@ -312,7 +312,8 @@ fn last_line(log: &Path, from: u64, env: &[(String, String)]) -> Option<String> 
 
 /// What a line looks like with what could be a secret in it replaced: the values of the run's own
 /// environment, the user part of any URL, everything orq's own redaction recognises (secret-named
-/// values, quoted or in JSON, bearer tokens, known token formats), and an authorization header's value.
+/// values, quoted or in JSON, bearer tokens, known token formats), and the value of an authorization,
+/// `auth` or `pwd` key.
 fn redact(line: &str, env: &[(String, String)]) -> String {
     const HIDDEN: &str = orq_core::redact::REDACTED;
     let mut text = line.to_string();
@@ -338,13 +339,14 @@ fn redact(line: &str, env: &[(String, String)]) -> String {
         }
     }
     out.push_str(rest);
-    redact_authorization(&orq_core::redact::redact(&out), HIDDEN)
+    redact_named_values(&orq_core::redact::redact(&out), HIDDEN)
 }
 
-/// Replaces the value of an `Authorization` header, whatever its scheme (`Basic`, `Bearer`, ...),
-/// keeping the scheme's name.
-fn redact_authorization(text: &str, hidden: &str) -> String {
-    const NAME: &str = "authorization";
+/// Replaces the value given to `authorization`, `auth` or `pwd`, names orq's own redaction does not
+/// know: bare, quoted whole, or in JSON. An authorization's scheme name (`Basic`, `Bearer`, ...) stays.
+fn redact_named_values(text: &str, hidden: &str) -> String {
+    // Longest first, so `authorization` is taken whole rather than as `auth`.
+    const NAMES: [&str; 3] = ["authorization", "auth", "pwd"];
     // ASCII lowercasing keeps every byte where it was, so offsets in it are offsets in `text`.
     let lower = text.to_ascii_lowercase();
     let bytes = text.as_bytes();
@@ -354,27 +356,42 @@ fn redact_authorization(text: &str, hidden: &str) -> String {
         }
         i
     };
+    let word_char = |i: usize| bytes.get(i).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
     let (mut out, mut shown, mut from) = (String::with_capacity(text.len()), 0, 0);
-    while let Some(found) = lower[from..].find(NAME) {
-        let after = skip(from + found + NAME.len(), b"\"' ");
-        from = after;
+    while let Some((found, name)) = NAMES
+        .iter()
+        .filter_map(|name| lower[from..].find(name).map(|at| (from + at, *name)))
+        .min_by_key(|(at, _)| *at)
+    {
+        from = found + 1;
+        // A name inside a longer word (`oauth`, `authors`) is not this key.
+        if found > 0 && word_char(found - 1) {
+            continue;
+        }
+        let after = skip(found + name.len(), b"\"' ");
         if !matches!(bytes.get(after), Some(b':' | b'=')) {
             continue;
         }
-        let mut start = skip(after + 1, b" \"'");
-        let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
-        if scheme > start && bytes.get(scheme) == Some(&b' ') {
-            start = skip(scheme, b" ");
+        let mut start = skip(after + 1, b" ");
+        let quote = bytes.get(start).copied().filter(|b| matches!(b, b'"' | b'\''));
+        start += usize::from(quote.is_some());
+        if name != "pwd" {
+            let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
+            if scheme > start && bytes.get(scheme) == Some(&b' ') {
+                start = skip(scheme, b" ");
+            }
         }
-        let end = text[start..]
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';'))
-            .map_or(text.len(), |end| start + end);
+        let end = match quote {
+            Some(quote) => text[start..].find(char::from(quote)),
+            None => text[start..].find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';')),
+        }
+        .map_or(text.len(), |end| start + end);
         if end > start {
             out.push_str(&text[shown..start]);
             out.push_str(hidden);
             shown = end;
         }
-        from = end.max(start);
+        from = from.max(end);
     }
     out.push_str(&text[shown..]);
     out
