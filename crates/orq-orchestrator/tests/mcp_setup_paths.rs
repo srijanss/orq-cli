@@ -386,3 +386,18 @@ fn pwd_and_auth_values_never_reach_a_note_bare_quoted_or_in_json() {
         assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
     }
 }
+
+#[test]
+fn an_authorization_header_with_tabs_for_spaces_never_reaches_a_note() {
+    let cases = [
+        ("tab-after-colon", "Error: 401 with Authorization:\tBasic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+        ("tab-after-scheme", "Error: 401 with Authorization: Basic\tdXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+        ("tabs-throughout", "Error: 401 with Authorization\t:\tBearer\ttok-tabbed-4321", "tok-tabbed-4321"),
+    ];
+    for (tag, line, secret) in cases {
+        let notes = notes_of_failing_line(tag, line, &[]);
+
+        assert!(notes.contains("Error:"), "{tag}: the line is still there: {notes}");
+        assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
+    }
+}

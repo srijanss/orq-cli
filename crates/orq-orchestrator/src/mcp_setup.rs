@@ -347,6 +347,8 @@ fn redact(line: &str, env: &[(String, String)]) -> String {
 fn redact_named_values(text: &str, hidden: &str) -> String {
     // Longest first, so `authorization` is taken whole rather than as `auth`.
     const NAMES: [&str; 3] = ["authorization", "auth", "pwd"];
+    // Header whitespace: a tab counts as much as a space.
+    const BLANK: &[u8] = b" \t";
     // ASCII lowercasing keeps every byte where it was, so offsets in it are offsets in `text`.
     let lower = text.to_ascii_lowercase();
     let bytes = text.as_bytes();
@@ -368,17 +370,17 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
         if found > 0 && word_char(found - 1) {
             continue;
         }
-        let after = skip(found + name.len(), b"\"' ");
+        let after = skip(found + name.len(), b"\"' \t");
         if !matches!(bytes.get(after), Some(b':' | b'=')) {
             continue;
         }
-        let mut start = skip(after + 1, b" ");
+        let mut start = skip(after + 1, BLANK);
         let quote = bytes.get(start).copied().filter(|b| matches!(b, b'"' | b'\''));
         start += usize::from(quote.is_some());
         if name != "pwd" {
             let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
-            if scheme > start && bytes.get(scheme) == Some(&b' ') {
-                start = skip(scheme, b" ");
+            if scheme > start && bytes.get(scheme).is_some_and(|b| BLANK.contains(b)) {
+                start = skip(scheme, BLANK);
             }
         }
         let end = match quote {
