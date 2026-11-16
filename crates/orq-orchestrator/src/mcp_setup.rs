@@ -286,7 +286,8 @@ fn call(request: &McpSetupRequest<'_>, program: &Path, args: &[&str], limit: Dur
             Err(err) => break format!("{what} could not be waited for ({:?})", err.kind()),
         }
     };
-    Err(Failed { what: why, last_line: last_line(request.log, before) })
+    // The line goes into notes that events, `orq runs` and the run page show: no secret may ride along.
+    Err(Failed { what: why, last_line: last_line(request.log, before).map(|line| redact(&line, request.env)) })
 }
 
 /// The last non-empty line written to `log` after `from`, cut to [`MAX_LINE`] characters.
@@ -307,6 +308,74 @@ fn last_line(log: &Path, from: u64) -> Option<String> {
     };
     let line = text.lines().map(str::trim).filter(|line| !line.is_empty()).last()?;
     Some(line.chars().take(MAX_LINE).collect())
+}
+
+/// What a line looks like with what could be a secret in it replaced: the values of the run's own
+/// environment, the credentials of a URL, and the value after a key that names a secret.
+fn redact(line: &str, env: &[(String, String)]) -> String {
+    const HIDDEN: &str = "[redacted]";
+    let mut text = line.to_string();
+    // Longest first, so a value inside another is not left half shown.
+    let mut values: Vec<&str> = env.iter().map(|(_, value)| value.as_str()).filter(|value| value.len() >= 6).collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    for value in values {
+        text = text.replace(value, HIDDEN);
+    }
+    let ends = |c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '\'' | '<' | '>');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let authority = tail.find(ends).map_or(tail, |end| &tail[..end]);
+        match authority.rfind('@') {
+            Some(user) => {
+                out.push_str(HIDDEN);
+                rest = &tail[user..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    redact_secret_keys(&out, HIDDEN)
+}
+
+/// Replaces the value after `key=`, `key:` or `key: ` when the key names a secret, and the word after
+/// a `Bearer` or `Basic` scheme.
+fn redact_secret_keys(text: &str, hidden: &str) -> String {
+    const SECRET: [&str; 8] = ["token", "secret", "password", "passwd", "pwd", "apikey", "api_key", "api-key"];
+    let key_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let value_end = |c: char| c.is_whitespace() || matches!(c, '&' | ',' | ';' | '"' | '\'' | ')' | ']' | '}');
+    let word = |v: &str| v.find(value_end).unwrap_or(v.len());
+    let spaces = |v: &str| v.len() - v.trim_start_matches(' ').len();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(['=', ':']) {
+        let (head, tail) = rest.split_at(at + 1);
+        out.push_str(head);
+        let key = head[..at].rsplit(|c: char| !key_char(c)).next().unwrap_or_default().to_ascii_lowercase();
+        let named = SECRET.iter().any(|secret| key.contains(secret)) || key == "authorization" || key == "auth";
+        if !named || tail.starts_with("//") {
+            rest = tail;
+            continue;
+        }
+        let gap = spaces(tail);
+        out.push_str(&tail[..gap]);
+        let mut value = &tail[gap..];
+        let first = word(value);
+        if matches!(value[..first].to_ascii_lowercase().as_str(), "bearer" | "basic") {
+            let gap = first + spaces(&value[first..]);
+            out.push_str(&value[..gap]);
+            value = &value[gap..];
+        }
+        let end = word(value);
+        if end > 0 {
+            out.push_str(hidden);
+        }
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Each of `servers`' version in the worktree's lock, marked `source`.

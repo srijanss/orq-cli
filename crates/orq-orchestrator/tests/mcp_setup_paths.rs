@@ -290,3 +290,19 @@ fn a_failure_after_a_flood_of_output_still_names_its_own_last_line() {
     assert!(fs::metadata(&w.log).unwrap().len() > 2_000_000, "the log holds the flood");
     assert!(report.notes.iter().any(|n| n.ends_with("Error: disk full") || n.contains("Error: disk full")), "{:?}", report.notes);
 }
+
+#[test]
+fn a_failures_note_never_carries_credentials_tokens_or_the_runs_own_values() {
+    let setup = "    echo 'Error: GET https://bob:hunter2pass@registry.example/pkg?access_token=tok-abc123 failed, password=pw-zz9 api_key: key-77q, db is run-db-s3cret' >&2\n    exit 1";
+    let w = world("secret", setup);
+    let env = vec![("DB_PASSWORD".to_string(), "run-db-s3cret".to_string())];
+
+    let report = run_mcp_setup(&McpSetupRequest { env: &env, ..request(&w, &servers()) });
+
+    let notes = report.notes.join("\n");
+    assert!(notes.contains("Error: GET https://"), "the line is still there: {notes}");
+    assert!(notes.contains("registry.example"), "{notes}");
+    for secret in ["hunter2pass", "bob:", "tok-abc123", "pw-zz9", "key-77q", "run-db-s3cret"] {
+        assert!(!notes.contains(secret), "{secret} leaked: {notes}");
+    }
+}
