@@ -341,7 +341,8 @@ impl Store {
                 "SELECT l.run_id, CASE WHEN typeof(l.last_checked) = 'integer' THEN l.last_checked END FROM review_lifecycles l \
                  WHERE l.provider != ?1 AND l.state = 'open' AND (?2 IS NULL OR l.run_id = ?2) \
                  AND l.rowid = (SELECT MAX(n.rowid) FROM review_lifecycles n WHERE n.run_id = l.run_id AND n.provider != ?1) \
-                 AND NOT EXISTS (SELECT 1 FROM review_lifecycles m WHERE m.run_id = l.run_id AND m.provider = ?1 AND m.state IN ('merged', 'closed')) \
+                 AND NOT EXISTS (SELECT 1 FROM review_lifecycles m WHERE m.run_id = l.run_id AND m.provider = ?1 AND m.state IN ('merged', 'closed') \
+                 AND m.reported_head_sha = (SELECT r.head_sha FROM reviews r WHERE r.run_id = l.run_id ORDER BY r.recorded_at DESC, r.rowid DESC LIMIT 1)) \
                  ORDER BY l.run_id",
             )
             .map_err(db)?;

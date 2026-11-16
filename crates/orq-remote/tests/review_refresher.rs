@@ -250,3 +250,17 @@ fn a_page_open_queues_its_look_without_waiting_once_per_run_and_only_so_many_at_
     assert_eq!(recorder.asked(), vec!["run-a", "run-b"]);
     assert_eq!(recorder.most_at_once(), 1);
 }
+
+#[test]
+fn an_older_report_set_aside_here_does_not_stop_looks_at_the_newer_open_review() {
+    let roots = roots("older-local");
+    let store = Store::open(&roots.database()).unwrap();
+    store.save_review(&roots.data, "run-1", "p", "F", &head(1), br#"{"status":"current","risks":[]}"#).unwrap();
+    store.save_lifecycle("run-1", &ReviewLifecycle::merged_locally(&head(1), &head(8))).unwrap();
+    review(&roots, "run-1", 2, ProviderState::Open, 3600);
+    let recorder = Recorder::new(&roots, Duration::ZERO, false);
+    let refresher = ReviewRefresher::new(roots.clone(), recorder.clone());
+
+    assert_eq!(refresher.round(now()), 1);
+    assert_eq!(recorder.asked(), vec!["run-1"]);
+}
