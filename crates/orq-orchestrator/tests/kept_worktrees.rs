@@ -269,3 +269,45 @@ fn an_unknown_branch_is_not_found() {
         DeleteRefusal::NotFound
     );
 }
+
+#[test]
+fn a_run_of_another_repository_on_the_same_branch_says_nothing_about_this_worktree() {
+    let w = world("two-repos");
+    w.worktree("run-1", "fix--A");
+    w.kept("run-1", "the worktree has uncommitted changes");
+    let other = w.root.join("other");
+    fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "release"]);
+    fs::write(other.join("a.txt"), "a\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-q", "-m", "base"]);
+    let elsewhere = other.join(".claude/worktrees/fix--A");
+    git(&other, &["worktree", "add", "-q", "-b", "fix--A", elsewhere.to_str().unwrap()]);
+    w.store
+        .create(&RunRecord {
+            delivery: Default::default(),
+            run_id: "run-2".to_string(),
+            project_id: "repo-2".to_string(),
+            feature_id: "B".to_string(),
+            remote: "origin".to_string(),
+            provider: "github".to_string(),
+            target_branch: "release".to_string(),
+            base_sha: git(&other, &["rev-parse", "release"]),
+            branch: "fix--A".to_string(),
+            worktree: elsewhere,
+            repository: String::new(),
+            profiles: BTreeMap::new(),
+        })
+        .unwrap();
+    // run-2 is still running in the other repository.
+    w.event("run-2", "stage.started", serde_json::Value::Null);
+
+    let kept = list_kept_worktrees(&w.store, &w.repo).unwrap();
+
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].run_id.as_deref(), Some("run-1"));
+    assert_eq!(kept[0].target, "main");
+    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &kept[0].version, false).unwrap().unwrap();
+    assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
+    assert!(w.store.events("run-2").unwrap().iter().all(|e| e.kind != "worktree.deleted"));
+}

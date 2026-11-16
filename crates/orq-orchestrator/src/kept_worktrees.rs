@@ -193,7 +193,7 @@ pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWork
         if same_place(&listed.path, repo) || !within_worktrees_dir(repo, &listed.path) {
             continue;
         }
-        let mine = recorded_on(&all, &branch, &listed.path);
+        let mine = recorded_on(&all, repo, &branch, &listed.path);
         if !branch.starts_with(&prefix) && mine.is_empty() {
             continue;
         }
@@ -206,10 +206,23 @@ pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWork
     Ok(kept)
 }
 
-fn recorded_on<'a>(all: &'a [Recorded], branch: &str, path: &Path) -> Vec<&'a Recorded> {
+/// The runs recorded on this worktree: on its path, or on its branch in a worktree of the same
+/// repository. A run of another repository on a branch of the same name says nothing about it.
+fn recorded_on<'a>(all: &'a [Recorded], repo: &Path, branch: &str, path: &Path) -> Vec<&'a Recorded> {
     all.iter()
-        .filter(|run| run.record.branch == branch || same_place(&run.record.worktree, path))
+        .filter(|run| {
+            same_place(&run.record.worktree, path)
+                || (run.record.branch == branch && repository_of(&run.record.worktree).is_some_and(|r| same_place(r, repo)))
+        })
         .collect()
+}
+
+/// The repository a worktree orq made belongs to: the folder holding `.claude/worktrees` above it.
+fn repository_of(worktree: &Path) -> Option<&Path> {
+    worktree.ancestors().find_map(|dir| {
+        let claude = dir.parent()?;
+        (dir.file_name()? == "worktrees" && claude.file_name()? == ".claude").then(|| claude.parent()).flatten()
+    })
 }
 
 /// Why a kept worktree was not deleted. Nothing was deleted in any of these cases.
@@ -269,7 +282,7 @@ pub fn delete_kept_worktree(
     else {
         return Ok(Err(DeleteRefusal::NotFound));
     };
-    let mine = recorded_on(&all, branch, &listed.path);
+    let mine = recorded_on(&all, repo, branch, &listed.path);
     if !branch.starts_with(&prefix) && mine.is_empty() {
         return Ok(Err(DeleteRefusal::NotFound));
     }
