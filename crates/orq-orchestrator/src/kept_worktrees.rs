@@ -598,7 +598,7 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Optio
     if !meta.is_file() {
         return Some(format!("special {:?}", meta.file_type()));
     }
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut file = open_checked(path, meta)?;
     let mut hash = FNV_OFFSET;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -612,6 +612,33 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Optio
         }
     }
     Some(format!("file {} {hash:016x}", meta.len()))
+}
+
+/// The regular file at `path`, opened only if it is still the one `meta` describes: a link put in its
+/// place is not followed and a pipe or device is not waited on, so the version never reads outside the
+/// worktree or hangs on something that was swapped in after it was checked.
+fn open_checked(path: &Path, meta: &std::fs::Metadata) -> Option<std::fs::File> {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(path).ok()?;
+    let opened = file.metadata().ok()?;
+    if !opened.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
+            return None;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    Some(file)
 }
 
 /// What `path` holds; for a directory git lists as one entry (a nested repository, a submodule, an
@@ -681,4 +708,52 @@ fn size_within(root: &Path, budget: Duration) -> Option<u64> {
         }
     }
     Some(total)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn reading() -> Reading {
+        let limits = VersionLimits::default();
+        Reading { deadline: Instant::now() + limits.budget, entries_left: limits.entries }
+    }
+
+    #[test]
+    fn a_file_swapped_for_a_link_after_it_was_checked_is_not_read_through_the_link() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-content-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("work.txt");
+        std::fs::write(&path, "mine").unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "someone else's").unwrap();
+        let meta = path.symlink_metadata().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+
+        let content = content_of(&path, &meta, &reading());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(content, None);
+    }
+
+    #[test]
+    fn a_file_swapped_for_a_pipe_after_it_was_checked_is_not_waited_on() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-content-pipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("work.txt");
+        std::fs::write(&path, "mine").unwrap();
+        let meta = path.symlink_metadata().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = path.clone();
+        std::thread::spawn(move || sender.send(content_of(&reader, &meta, &reading())));
+        let content = receiver.recv_timeout(Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(content, Ok(None));
+    }
 }
