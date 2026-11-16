@@ -343,10 +343,13 @@ fn redact(line: &str, env: &[(String, String)]) -> String {
 }
 
 /// Replaces the value given to `authorization`, `auth` or `pwd`, names orq's own redaction does not
-/// know: bare, quoted whole, or in JSON. An authorization's scheme name (`Basic`, `Bearer`, ...) stays.
+/// know: bare, quoted whole, or in JSON. A known authorization scheme name (`Basic`, `Bearer`, ...)
+/// stays; any other first word is hidden with the rest.
 fn redact_named_values(text: &str, hidden: &str) -> String {
     // Longest first, so `authorization` is taken whole rather than as `auth`.
     const NAMES: [&str; 3] = ["authorization", "auth", "pwd"];
+    // HTTP authentication scheme names, plus `token`, which GitHub-style headers use.
+    const SCHEMES: [&str; 6] = ["basic", "bearer", "digest", "negotiate", "ntlm", "token"];
     // Header whitespace: a tab counts as much as a space.
     const BLANK: &[u8] = b" \t";
     // ASCII lowercasing keeps every byte where it was, so offsets in it are offsets in `text`.
@@ -378,8 +381,10 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
         let quote = bytes.get(start).copied().filter(|b| matches!(b, b'"' | b'\''));
         start += usize::from(quote.is_some());
         if name != "pwd" {
+            // Only a scheme orq knows stays: any other word could itself be the credential.
             let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
-            if scheme > start && bytes.get(scheme).is_some_and(|b| BLANK.contains(b)) {
+            let known = SCHEMES.iter().any(|known| text[start..scheme].eq_ignore_ascii_case(known));
+            if known && bytes.get(scheme).is_some_and(|b| BLANK.contains(b)) {
                 start = skip(scheme, BLANK);
             }
         }

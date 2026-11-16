@@ -401,3 +401,20 @@ fn an_authorization_header_with_tabs_for_spaces_never_reaches_a_note() {
         assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
     }
 }
+
+#[test]
+fn an_auth_value_is_hidden_whole_and_only_a_known_scheme_name_stays() {
+    let cases = [
+        ("auth-word", "Error: auth=hunter rejected", "auth=[REDACTED] rejected", "hunter"),
+        ("auth-quoted-words", r#"Error: login auth="private phrase" failed"#, r#"auth="[REDACTED]" failed"#, "private"),
+        ("auth-json-words", r#"Error: {"auth":"secret words-12"}"#, r#"{"auth":"[REDACTED]"}"#, "secret"),
+        ("auth-known-scheme", "Error: auth=Basic dXNlcjpwYXNz rejected", "auth=Basic [REDACTED] rejected", "dXNlcjpwYXNz"),
+        ("authorization-token", "Error: Authorization: token ghp-opaque-1 denied", "Authorization: token [REDACTED] denied", "ghp-opaque-1"),
+    ];
+    for (tag, line, shown, secret) in cases {
+        let notes = notes_of_failing_line(tag, &line.replace('\'', "'\\''"), &[]);
+
+        assert!(notes.contains(shown), "{tag}: expected {shown} in: {notes}");
+        assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
+    }
+}
