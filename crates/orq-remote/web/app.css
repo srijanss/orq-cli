@@ -314,6 +314,23 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 1rem; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
 .banner p { margin: 0; }
+/* The update prompt floats over the page and takes no place in its layout. */
+.update-scrim { position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(2px); animation: update-in 150ms ease-out; }
+.update-card { position: fixed; z-index: 31; left: 50%; bottom: 1.5rem; transform: translateX(-50%); box-sizing: border-box; width: calc(100% - 32px); max-width: 24rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; padding: 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); color: var(--text); box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent); animation: update-in 150ms ease-out; }
+.update-card > .icon { flex: none; color: var(--accent); }
+.update-text { display: grid; gap: 0.125rem; flex: 1; min-width: 0; }
+.update-buttons { display: flex; justify-content: flex-end; gap: 0.5rem; flex-basis: 100%; }
+.update-later { display: inline-flex; align-items: center; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--border); border-radius: 0.5rem; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.update-fab { position: fixed; z-index: 31; right: 1.5rem; bottom: 1.5rem; display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text); box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent); cursor: pointer; animation: update-in 150ms ease-out; }
+.update-dot { position: absolute; top: 8px; right: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+@keyframes update-in { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 700px) {
+  .update-card { left: calc(16px + env(safe-area-inset-left)); right: calc(16px + env(safe-area-inset-right)); bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem); width: auto; max-width: none; transform: none; }
+  .update-fab { right: calc(16px + env(safe-area-inset-right)); bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-scrim, .update-card, .update-fab { animation: none; }
+}
 .error-banner { color: var(--text); background: var(--status-failed-bg); border-color: var(--status-failed); border-left-width: 4px; }
 .error-banner > .icon { flex: none; color: var(--status-failed); }
 .content p[role=alert]:not(.banner) { margin: 0.5rem 0; color: var(--status-failed); font-size: 0.875rem; }

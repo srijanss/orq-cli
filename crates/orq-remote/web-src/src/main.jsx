@@ -4113,15 +4113,65 @@ function App() {
 migrateLegacyHash();
 openRootAtDashboard();
 // A new release is offered, never forced: the page reloads into it only when the person asks.
+// It floats over the page, taking no place in its layout: a scrim and a modal card holding Reload.
 function UpdateBanner() {
   const [waiting, setWaiting] = useState(null);
+  const [open, setOpen] = useState(true);
+  const reload = useRef(null);
+  const fab = useRef(null);
+  const card = useRef(null);
+  const before = useRef(null);
   useEffect(() => startWorker(window, setWaiting), []);
+  useEffect(() => {
+    if (waiting === null) return;
+    if (open) {
+      const at = document.activeElement;
+      before.current = at !== null && at !== document.body ? at : null;
+      if (reload.current !== null) reload.current.focus();
+      const onKey = (e) => {
+        if (e.key === "Escape") setOpen(false);
+        if (e.key !== "Tab" || card.current === null) return;
+        const buttons = card.current.querySelectorAll("button");
+        const first = buttons[0];
+        const last = buttons[buttons.length - 1];
+        const at = document.activeElement;
+        if (at === (e.shiftKey ? first : last) || !card.current.contains(at)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+      };
+      document.addEventListener("keydown", onKey);
+      return () => document.removeEventListener("keydown", onKey);
+    }
+    const back = before.current;
+    if (back !== null && back.isConnected) back.focus();
+    else if (fab.current !== null) fab.current.focus();
+  }, [waiting, open]);
   if (waiting === null) return null;
+  if (!open) {
+    return (
+      <button type="button" className="update-fab" ref={fab} data-update-fab aria-label="Update available: reload" onClick={() => setOpen(true)}>
+        <Icon name="refresh" />
+        <span className="update-dot" />
+      </button>
+    );
+  }
   return (
-    <p className="update-banner" role="status">
-      Update available{" "}
-      <button type="button" data-update-reload onClick={() => applyUpdate(window, waiting)}>Reload</button>
-    </p>
+    <>
+      <p className="sr-only" aria-live="polite">Update available</p>
+      <div className="update-scrim" onClick={() => setOpen(false)} />
+      <div className="update-card" ref={card} role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <Icon name="refresh" />
+        <div className="update-text">
+          <strong id="update-title">Update available</strong>
+          <span className="muted">A new version of orq is ready.</span>
+        </div>
+        <div className="update-buttons">
+          <button type="button" className="update-later" data-update-later onClick={() => setOpen(false)}>Later</button>
+          <button type="button" className="primary-button" ref={reload} data-update-reload onClick={() => applyUpdate(window, waiting)}>Reload</button>
+        </div>
+      </div>
+    </>
   );
 }
 

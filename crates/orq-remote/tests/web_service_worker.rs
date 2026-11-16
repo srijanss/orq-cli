@@ -257,3 +257,96 @@ fn the_page_shows_an_update_banner_with_a_reload_button_when_a_release_is_waitin
     let Some(out) = page(insecure) else { return };
     assert_eq!(out["worker"]["registered"], json!([]), "plain http never registers");
 }
+
+const PROMPT: [&str; 4] = [".update-scrim", ".update-card[role=\"dialog\"][aria-modal=\"true\"]", "[data-update-reload]", "[data-update-fab]"];
+
+fn prompt(steps: Vec<Value>, waiting: bool) -> Option<Value> {
+    page(json!({"responses": [], "steps": steps, "selectors": PROMPT, "service_worker": {"secure": true, "waiting": waiting}}))
+}
+
+fn shown(frame: &Value, selector: &str) -> u64 {
+    frame["settled"]["matches"][selector].as_u64().unwrap()
+}
+
+// The prompt floats over the page instead of taking a place in its layout: a scrim covers the page and a
+// modal card on it holds Reload, which has the focus.
+#[test]
+fn a_waiting_release_opens_a_modal_card_over_a_scrim_with_the_focus_on_reload() {
+    let Some(out) = prompt(vec![], true) else { return };
+    let start = &out["frames"][0];
+    assert_eq!(shown(start, PROMPT[0]), 1, "the scrim: {out}");
+    assert_eq!(shown(start, PROMPT[1]), 1, "the modal card: {out}");
+    assert_eq!(start["settled"]["focusMatches"][PROMPT[2]], json!(true), "Reload has the focus: {out}");
+    assert_eq!(shown(start, PROMPT[3]), 0, "no floating button while the card is open: {out}");
+    assert!(texts(start).contains("Update available"), "{}", texts(start));
+}
+
+// Later, Escape or a tap on the scrim folds the prompt into a floating button, which opens it again; none of
+// them applies the update.
+#[test]
+fn later_escape_or_the_scrim_fold_the_card_into_a_floating_button_that_opens_it_again() {
+    for close in [json!({"click": "[data-update-later]"}), json!({"keydown": "Escape"}), json!({"click": ".update-scrim"})] {
+        let Some(out) = prompt(vec![close.clone(), json!({"click": "[data-update-fab]"})], true) else { return };
+        let folded = &out["frames"][1];
+        assert_eq!(shown(folded, PROMPT[0]), 0, "{close}: the scrim is gone: {out}");
+        assert_eq!(shown(folded, PROMPT[1]), 0, "{close}: the card is gone: {out}");
+        assert_eq!(shown(folded, "[data-update-fab]"), 1, "{close}: the floating button: {out}");
+        assert_eq!(folded["settled"]["focusMatches"][PROMPT[3]], json!(true), "{close}: focus goes to the floating button: {out}");
+        let reopened = &out["frames"][2];
+        assert_eq!(shown(reopened, PROMPT[1]), 1, "{close}: the button opens the card again: {out}");
+        assert_eq!(shown(reopened, PROMPT[3]), 0, "{close}: {out}");
+        assert_eq!(reopened["settled"]["focusMatches"][PROMPT[2]], json!(true), "{close}: Reload has the focus again: {out}");
+        assert_eq!(out["worker"]["messages"], json!([]), "{close}: nothing is applied: {out}");
+    }
+}
+
+// The card holds the focus: Tab from its last button wraps to its first, Shift+Tab from its first to its last.
+#[test]
+fn tab_and_shift_tab_keep_the_focus_inside_the_update_card() {
+    let steps = vec![json!({"keydown": "Tab"}), json!({"keydown": "Tab", "shift": true})];
+    let Some(out) = page(json!({"responses": [], "steps": steps, "selectors": ["[data-update-reload]", "[data-update-later]"],
+        "service_worker": {"secure": true, "waiting": true}})) else { return };
+    assert_eq!(out["frames"][1]["settled"]["focusMatches"]["[data-update-later]"], json!(true), "Tab wraps to Later: {out}");
+    assert_eq!(out["frames"][2]["settled"]["focusMatches"]["[data-update-reload]"], json!(true), "Shift+Tab wraps to Reload: {out}");
+}
+
+fn css_rule<'a>(css: &'a str, start: &str) -> &'a str {
+    css.lines().find(|line| line.starts_with(start)).unwrap_or_else(|| panic!("a rule starting {start:?}"))
+}
+
+// The prompt floats: a fixed blurred scrim, a fixed card (near the bottom, at most 24rem wide; on a phone above the
+// tab bar inside 16px gutters and the safe area) and a fixed 48px floating button; it fades in, which reduced motion
+// turns off, and its colours are the theme's.
+#[test]
+fn the_update_prompt_floats_over_the_page_in_theme_colours() {
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
+    let scrim = css_rule(&css, ".update-scrim {");
+    for part in ["position: fixed", "inset: 0", "color-mix(in srgb, var(--bg) 55%, transparent)", "backdrop-filter: blur(2px)"] {
+        assert!(scrim.contains(part), "scrim {part}: {scrim}");
+    }
+    let card = css_rule(&css, ".update-card {");
+    for part in ["position: fixed", "background: var(--surface)", "border-radius: 0.75rem", "max-width: 24rem",
+        "box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent)", "animation: update-in 150ms"] {
+        assert!(card.contains(part), "card {part}: {card}");
+    }
+    let phone = css.find("@media (max-width: 700px) {\n  .update-card").map(|at| &css[at..]).expect("the phone card query");
+    let phone_card = css_rule(phone, "  .update-card {");
+    for part in ["bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem)", "left: calc(16px + env(safe-area-inset-left))",
+        "right: calc(16px + env(safe-area-inset-right))"] {
+        assert!(phone_card.contains(part), "phone card {part}: {phone_card}");
+    }
+    let phone_fab = css_rule(phone, "  .update-fab {");
+    assert!(phone_fab.contains("bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem)"), "{phone_fab}");
+    let fab = css_rule(&css, ".update-fab {");
+    for part in ["position: fixed", "width: 48px", "height: 48px", "border-radius: 50%"] {
+        assert!(fab.contains(part), "fab {part}: {fab}");
+    }
+    assert!(css_rule(&css, ".update-dot {").contains("background: var(--accent)"));
+    let later = css_rule(&css, ".update-later {");
+    for part in ["min-height: 44px", "border: 1px solid var(--border)"] {
+        assert!(later.contains(part), "Later {part}: {later}");
+    }
+    assert!(css.contains("@keyframes update-in"), "the fade-in");
+    assert!(css.contains("@media (prefers-reduced-motion: reduce) {\n  .update-scrim, .update-card, .update-fab { animation: none; }"),
+        "no fade under reduced motion");
+}
