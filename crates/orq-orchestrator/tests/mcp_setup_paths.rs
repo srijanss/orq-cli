@@ -306,3 +306,42 @@ fn a_failures_note_never_carries_credentials_tokens_or_the_runs_own_values() {
         assert!(!notes.contains(secret), "{secret} leaked: {notes}");
     }
 }
+
+/// The notes of a setup whose last line is `line`, run with `env` as the run's own environment.
+fn notes_of_failing_line(tag: &str, line: &str, env: &[(String, String)]) -> String {
+    let w = world(tag, &format!("    echo '{line}' >&2\n    exit 1"));
+    run_mcp_setup(&McpSetupRequest { env, ..request(&w, &servers()) }).notes.join("\n")
+}
+
+#[test]
+fn a_run_value_crossing_the_lines_length_limit_is_redacted_whole_not_shown_in_part() {
+    // The value starts at character 295, so a cut at 300 leaves its first five characters.
+    let env = vec![("DB_PASSWORD".to_string(), "run-db-s3cret-value-long".to_string())];
+    let line = format!("{} run-db-s3cret-value-long", "x".repeat(294));
+
+    let notes = notes_of_failing_line("cut-env", &line, &env);
+
+    assert!(!notes.contains("run-d"), "{notes}");
+}
+
+#[test]
+fn a_url_password_crossing_the_lines_length_limit_is_redacted_whole_not_shown_in_part() {
+    // The cut at 300 falls inside the password, before the `@` that marks it as one.
+    let line = format!("{} https://bob:hunter2passw0rd@registry.example/pkg", "y".repeat(282));
+
+    let notes = notes_of_failing_line("cut-url", &line, &[]);
+
+    assert!(!notes.contains("bob"), "{notes}");
+    assert!(!notes.contains("hunt"), "{notes}");
+}
+
+#[test]
+fn a_tail_that_starts_inside_its_only_line_shows_none_of_that_line() {
+    // One line longer than the part of the log that is read, so its start is never seen.
+    let w = world("tail-mid-line", "    head -c 70000 /dev/zero | tr '\\0' z >&2\n    echo >&2\n    exit 1");
+
+    let report = run_mcp_setup(&request(&w, &servers()));
+
+    assert!(!report.notes.is_empty(), "the failure itself is still named");
+    assert!(!report.notes.join("\n").contains("zzzz"), "{:?}", report.notes);
+}

@@ -286,28 +286,28 @@ fn call(request: &McpSetupRequest<'_>, program: &Path, args: &[&str], limit: Dur
             Err(err) => break format!("{what} could not be waited for ({:?})", err.kind()),
         }
     };
-    // The line goes into notes that events, `orq runs` and the run page show: no secret may ride along.
-    Err(Failed { what: why, last_line: last_line(request.log, before).map(|line| redact(&line, request.env)) })
+    Err(Failed { what: why, last_line: last_line(request.log, before, request.env) })
 }
 
-/// The last non-empty line written to `log` after `from`, cut to [`MAX_LINE`] characters.
-/// Only the log's last [`TAIL`] bytes are read, however much the call printed.
-fn last_line(log: &Path, from: u64) -> Option<String> {
+/// The last non-empty line written to `log` after `from`, redacted, then cut to [`MAX_LINE`]
+/// characters. Only the log's last [`TAIL`] bytes are read, however much the call printed.
+fn last_line(log: &Path, from: u64, env: &[(String, String)]) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(log).ok()?;
     let end = file.metadata().ok()?.len();
     let start = from.max(end.saturating_sub(TAIL));
-    file.seek(SeekFrom::Start(start)).ok()?;
+    // One byte before a tail that skipped output, to see whether the tail starts a line.
+    let skipped = start > from;
+    file.seek(SeekFrom::Start(start - u64::from(skipped))).ok()?;
     let mut written = Vec::new();
-    file.take(TAIL).read_to_end(&mut written).ok()?;
+    file.take(TAIL + 1).read_to_end(&mut written).ok()?;
     let text = String::from_utf8_lossy(&written);
-    // A tail that starts mid-line drops that partial line, unless it is all there is.
-    let text = match text.split_once('\n') {
-        Some((_, rest)) if start > from && !rest.trim().is_empty() => rest,
-        _ => &text,
-    };
+    // A line whose start was not read is never shown: what was cut off cannot be checked for secrets.
+    let text = if skipped { text.split_once('\n')?.1 } else { &text };
     let line = text.lines().map(str::trim).filter(|line| !line.is_empty()).last()?;
-    Some(line.chars().take(MAX_LINE).collect())
+    // The line goes into notes that events, `orq runs` and the run page show, so it is redacted
+    // whole before it is cut: a secret the cut crossed would otherwise show in part.
+    Some(redact(line, env).chars().take(MAX_LINE).collect())
 }
 
 /// What a line looks like with what could be a secret in it replaced: the values of the run's own
