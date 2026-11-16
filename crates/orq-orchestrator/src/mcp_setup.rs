@@ -378,8 +378,11 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
             continue;
         }
         let mut start = skip(after + 1, BLANK);
-        let quote = bytes.get(start).copied().filter(|b| matches!(b, b'"' | b'\''));
-        start += usize::from(quote.is_some());
+        // A value quoted with escaped quotes (`pwd=\"...\"`) ends at the next escaped quote.
+        let escaped = bytes.get(start) == Some(&b'\\');
+        let quote = bytes.get(start + usize::from(escaped)).copied().filter(|b| matches!(b, b'"' | b'\''));
+        let escaped = escaped && quote.is_some();
+        start += usize::from(quote.is_some()) + usize::from(escaped);
         if name != "pwd" {
             // Only a scheme orq knows stays: any other word could itself be the credential.
             let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
@@ -389,10 +392,25 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
             }
         }
         let end = match quote {
-            Some(quote) => text[start..].find(char::from(quote)),
-            None => text[start..].find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';')),
+            Some(quote) if escaped => text[start..].find(&format!("\\{}", char::from(quote))).map(|end| start + end),
+            // A backslash escapes the byte after it, so an escaped quote does not close the value;
+            // a value never closed runs to the end of the line.
+            Some(quote) => {
+                let mut i = start;
+                loop {
+                    match bytes.get(i) {
+                        None => break None,
+                        Some(b'\\') => i += 2,
+                        Some(&b) if b == quote => break Some(i),
+                        Some(_) => i += 1,
+                    }
+                }
+            }
+            None => text[start..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';'))
+                .map(|end| start + end),
         }
-        .map_or(text.len(), |end| start + end);
+        .unwrap_or(text.len());
         if end > start {
             out.push_str(&text[shown..start]);
             out.push_str(hidden);

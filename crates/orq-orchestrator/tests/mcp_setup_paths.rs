@@ -418,3 +418,17 @@ fn an_auth_value_is_hidden_whole_and_only_a_known_scheme_name_stays() {
         assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
     }
 }
+
+#[test]
+fn a_quoted_value_with_an_escaped_quote_inside_is_hidden_through_its_real_closing_quote() {
+    let cases = [
+        ("pwd-json-escaped", r#"Error: bad config {"pwd":"prefix\"sensitive-suffix","user":"me"}"#, r#"{"pwd":"[REDACTED]","user":"me"}"#),
+        ("auth-json-escaped", r#"Error: bad config {"auth":"opaque\"tail-secret"}"#, r#"{"auth":"[REDACTED]"}"#),
+        ("pwd-escaped-quotes", r#"Error: login pwd=\"pw-esc q\" rejected"#, r#"pwd=\"[REDACTED]\" rejected"#),
+    ];
+    for (tag, line, shown) in cases {
+        let notes = notes_of_failing_line(tag, &line.replace('\'', "'\\''"), &[]);
+
+        assert!(notes.contains(shown), "{tag}: expected {shown} in: {notes}");
+    }
+}
