@@ -245,3 +245,36 @@ fn a_locked_install_that_reports_a_pin_refusal_is_a_failure_and_never_installs_u
     assert!(report.versions.iter().all(|v| v.source == "machine active"), "{:?}", report.versions);
     assert!(report.notes.iter().any(|n| n.contains("does not satisfy constraint")), "{:?}", report.notes);
 }
+
+#[test]
+fn an_init_that_fails_after_a_locked_install_is_a_note_and_what_it_left_behind_is_kept_out_of_git_status() {
+    // init writes its scaffold record and one file, then fails.
+    let init = "    printf '{\"version\":1,\"files\":{\".agents/guide.md\":{\"mcp\":\"tdd\"}}}' > .mcpctl.scaffold.json\n    echo 'Error: template missing' >&2\n    exit 2";
+    let w = world_with("init-fails", "", "", init);
+    fs::write(w.repo.root().join(".mcpctl.lock"), LOCK).unwrap();
+
+    let report = run_mcp_setup(&request(&w, &servers()));
+
+    assert_eq!(args_only(&w), ["sync --locked", "init"], "nothing runs after the failed init");
+    assert!(report.notes.iter().any(|n| n.contains("mcpctl init") && n.contains("Error: template missing")), "{:?}", report.notes);
+    assert!(report.versions.iter().all(|v| v.source == "machine active" && v.version.is_none()), "{:?}", report.versions);
+    for left in [".agents/guide.md", ".mcpctl.scaffold.json", ".mcpctl.lock"] {
+        assert!(ignored(&w.worktree, left), "{left} is kept out of git status");
+    }
+}
+
+#[test]
+fn an_init_that_hangs_after_a_locked_install_is_stopped_at_its_own_limit() {
+    let w = world_with("init-hangs", "", "", "    sleep 30");
+    fs::write(w.repo.root().join(".mcpctl.lock"), LOCK).unwrap();
+    let started = std::time::Instant::now();
+    let short = McpTimeouts { install: std::time::Duration::from_secs(10), init: std::time::Duration::from_secs(1) };
+
+    let report = run_mcp_setup(&McpSetupRequest { timeouts: short, ..request(&w, &servers()) });
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "stopped at init's limit, not install's");
+    assert_eq!(args_only(&w), ["sync --locked", "init"]);
+    assert!(report.notes.iter().any(|n| n.contains("mcpctl init did not finish within 1s")), "{:?}", report.notes);
+    assert!(report.versions.iter().all(|v| v.source == "machine active"), "{:?}", report.versions);
+    assert!(ignored(&w.worktree, ".mcpctl.lock"), "the carried lock is still kept out of git status");
+}
