@@ -19,7 +19,9 @@ fn dir(label: &str) -> PathBuf {
 fn running(pid: &str) -> bool {
     match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat.rsplit(')').next().map(|rest| !rest.trim_start().starts_with('Z')).unwrap_or(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        // A process that exits while its stat file is being read makes the read fail with
+        // ESRCH ("no such process") instead of NotFound; it has stopped either way.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH) => false,
         Err(e) => panic!("cannot inspect process {pid}: {e}"),
     }
 }
