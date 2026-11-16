@@ -630,28 +630,23 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Optio
 /// The regular file at `path`, opened only if it is still the one `meta` describes: a link put in its
 /// place is not followed and a pipe or device is not waited on, so the version never reads outside the
 /// worktree or hangs on something that was swapped in after it was checked.
+#[cfg(unix)]
 fn open_checked(path: &Path, meta: &std::fs::Metadata) -> Option<std::fs::File> {
-    #[cfg(unix)]
-    let file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?
-    };
-    #[cfg(not(unix))]
-    let file = std::fs::File::open(path).ok()?;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file =
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?;
     let opened = file.metadata().ok()?;
-    if !opened.is_file() {
+    if !opened.is_file() || (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
         return None;
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
-            return None;
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = meta;
     Some(file)
+}
+
+/// Where a file cannot be opened without following a link swapped in after it was checked, none is
+/// opened: the version cannot read what the worktree holds, so a delete it would confirm is refused.
+#[cfg(not(unix))]
+fn open_checked(_path: &Path, _meta: &std::fs::Metadata) -> Option<std::fs::File> {
+    None
 }
 
 /// What `path` holds; for a directory git lists as one entry (a nested repository, a submodule, an
@@ -767,5 +762,26 @@ mod tests {
         let content = receiver.recv_timeout(Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(content, Ok(None));
+    }
+}
+
+/// Where a file cannot be opened without following a link swapped in after it was checked, a version
+/// reads no file at all, so a delete it would confirm is refused instead.
+#[cfg(all(test, not(unix)))]
+mod tests_without_checked_open {
+    use super::*;
+
+    #[test]
+    fn a_file_is_never_read_where_it_cannot_be_opened_without_following_a_link() {
+        let dir = std::env::temp_dir().join(format!("orq-content-unchecked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("work.txt");
+        std::fs::write(&path, "mine").unwrap();
+        let meta = path.symlink_metadata().unwrap();
+
+        let content = content_of(&path, &meta, &Reading::new(VersionLimits::default()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(content, None);
     }
 }
