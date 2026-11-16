@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use orq_core::review_input::{load_review_findings, load_review_input};
 use orq_core::review_intelligence::{apply_intelligence, repository_base, LinkSource};
-use orq_core::review_lifecycle::ReviewLifecycle;
+use orq_core::review_lifecycle::{ProviderState, ReviewLifecycle, LOCAL_PROVIDER};
 use orq_core::review_summary::{apply_model_summary, SummaryConfig};
 use orq_core::review_report::{build_report, load_test_evidence, render_markdown, ReportFile, ReportInputs};
 use orq_core::storage::{check_run_id, save_run_file, write_atomic, RunFile, StorageRoots};
@@ -507,19 +507,23 @@ pub(crate) fn refresh_lifecycle(roots: &orq_core::storage::StorageRoots, run_id:
     };
     let cli = if record.provider == "gitlab" { "glab" } else { "gh" };
     let Some(program) = pipeline::find_program(cli) else { return Err(format!("{cli} is not on PATH")) };
+    // What is kept now; the look is saved only while it still is, so a change made meanwhile (a local
+    // merge, a person's action) is never replaced by what the provider showed.
+    let at_head = |store: &Store| store.lifecycles_for_run(run_id).map(|all| all.into_iter().find(|l| l.reported_head_sha == reported)).map_err(|err| format!("cannot read the provider review state: {err}"));
+    let existing = at_head(&store)?;
+    // Merged or set aside here, the review is final: the provider is not asked about it again.
+    if let Some(done) = existing.as_ref().filter(|l| l.provider == LOCAL_PROVIDER && matches!(l.state, ProviderState::Merged | ProviderState::Closed)) {
+        return Ok((done.clone(), false));
+    }
     let observed = match orq_orchestrator::observe_review(&runs, run_id, &program, std::time::Duration::from_secs(60)) {
         Ok(observed) => observed,
         Err(err) => return Err(format!("cannot look at the review: {err:?}")),
     };
 
-    let existing = match store.lifecycles_for_run(run_id) {
-        Ok(all) => all.into_iter().find(|l| l.reported_head_sha == reported),
-        Err(err) => return Err(format!("cannot read the provider review state: {err}")),
-    };
     let (base, observation) = match observed {
         Ok(seen) => {
             let same_review = existing.as_ref().is_some_and(|l| l.review_id == seen.review.review_id);
-            let base = match existing {
+            let base = match existing.clone() {
                 Some(l) if same_review => l,
                 _ => ReviewLifecycle::associate(&record.provider, &seen.review.review_id, &seen.review.url, &reported),
             };
@@ -530,7 +534,7 @@ pub(crate) fn refresh_lifecycle(roots: &orq_core::storage::StorageRoots, run_id:
             (base, Ok(seen.observation))
         }
         Err(error) => {
-            let base = match existing {
+            let base = match existing.clone() {
                 Some(l) => l,
                 None => match orq_orchestrator::recorded_review(&runs, run_id) {
                     Ok(Some(r)) => ReviewLifecycle::associate(&record.provider, &r.id, &r.url, &reported),
@@ -542,7 +546,10 @@ pub(crate) fn refresh_lifecycle(roots: &orq_core::storage::StorageRoots, run_id:
     };
     let failed = observation.is_err();
     let next = base.apply(observation);
-    store.save_lifecycle(run_id, &next).map_err(|err| format!("cannot store the provider review state: {err}"))?;
+    if !store.replace_lifecycle(run_id, existing.as_ref(), &next).map_err(|err| format!("cannot store the provider review state: {err}"))? {
+        let kept = at_head(&store)?.ok_or_else(|| format!("the review of run {run_id} changed while it was looked at"))?;
+        return Ok((kept, false));
+    }
     Ok((next, failed))
 }
 

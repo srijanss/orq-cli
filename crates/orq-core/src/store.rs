@@ -327,7 +327,8 @@ impl Store {
             .map_err(db)
     }
 
-    /// The runs whose newest provider review (not one kept only here) is open, each with when the
+    /// The runs whose newest provider review (not one kept only here) is open and that were not merged or
+    /// set aside here, each with when the
     /// provider was last looked at, in seconds since the epoch; `None` when that time cannot be read.
     /// With `run_id`, only that run.
     pub fn open_provider_reviews(&self, run_id: Option<&str>) -> Result<Vec<(String, Option<i64>)>> {
@@ -340,6 +341,7 @@ impl Store {
                 "SELECT l.run_id, CASE WHEN typeof(l.last_checked) = 'integer' THEN l.last_checked END FROM review_lifecycles l \
                  WHERE l.provider != ?1 AND l.state = 'open' AND (?2 IS NULL OR l.run_id = ?2) \
                  AND l.rowid = (SELECT MAX(n.rowid) FROM review_lifecycles n WHERE n.run_id = l.run_id AND n.provider != ?1) \
+                 AND NOT EXISTS (SELECT 1 FROM review_lifecycles m WHERE m.run_id = l.run_id AND m.provider = ?1 AND m.state IN ('merged', 'closed')) \
                  ORDER BY l.run_id",
             )
             .map_err(db)?;

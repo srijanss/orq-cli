@@ -409,3 +409,39 @@ fn the_server_looks_again_at_an_open_review_checked_over_ten_minutes_ago_and_kee
     std::thread::sleep(std::time::Duration::from_secs(2));
     assert_eq!(provider.calls().len(), 1, "{:?}", provider.calls());
 }
+
+#[test]
+fn a_local_merge_recorded_while_the_provider_is_asked_is_kept() {
+    let sandbox = Sandbox::new("merge-during-look");
+    let fixture = GitFixture::new();
+    let head = run_with_report(&sandbox, &fixture);
+    let provider = FakeProvider::builder().reply_slowly(&["pr", "list"], &listing("OPEN", &head), 1500).build();
+    let merged = orq_core::review_lifecycle::ReviewLifecycle::merged_locally(&head, &"9".repeat(40));
+
+    let refreshed = std::thread::scope(|scope| {
+        let refresh = scope.spawn(|| sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
+        refresh.join().unwrap()
+    });
+
+    assert_eq!(provider.calls().len(), 1, "the look was under way: {:?}", provider.calls());
+    let kept = orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap();
+    assert_eq!(kept, vec![merged], "{}", text(&refreshed));
+    assert_eq!(sandbox.api("/api/reviews/run-1")["link"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_run_merged_locally_is_not_looked_at_again() {
+    let sandbox = Sandbox::new("merged-here");
+    let fixture = GitFixture::new();
+    let head = run_with_report(&sandbox, &fixture);
+    let merged = orq_core::review_lifecycle::ReviewLifecycle::merged_locally(&head, &"9".repeat(40));
+    orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
+    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("OPEN", &head)).build();
+
+    let refreshed = sandbox.orq(&["review", "refresh", "run-1"], Some(&provider));
+    assert!(refreshed.status.success(), "{}", text(&refreshed));
+    assert!(provider.calls().is_empty(), "{:?}", provider.calls());
+    assert_eq!(orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap(), vec![merged]);
+}

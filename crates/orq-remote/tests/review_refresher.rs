@@ -191,3 +191,18 @@ fn the_server_looks_at_a_review_a_signed_in_page_opens_and_runs_rounds() {
     drop(rounds);
     assert_eq!(recorder.asked(), vec!["run-opened", "run-due"]);
 }
+
+#[test]
+fn a_run_merged_locally_is_not_looked_at_though_an_earlier_report_kept_an_open_review() {
+    let roots = roots("merged-here");
+    review(&roots, "run-1", 1, ProviderState::Open, 3600);
+    let store = Store::open(&roots.database()).unwrap();
+    store.save_review(&roots.data, "run-1", "p", "F", &head(2), br#"{"status":"current","risks":[]}"#).unwrap();
+    store.save_lifecycle("run-1", &ReviewLifecycle::merged_locally(&head(2), &head(9))).unwrap();
+    let recorder = Recorder::new(&roots, Duration::ZERO, false);
+    let refresher = ReviewRefresher::new(roots.clone(), recorder.clone());
+
+    assert_eq!(refresher.round(now() + 3600), 0);
+    assert!(!refresher.opened("run-1", now() + 3600));
+    assert!(recorder.asked().is_empty());
+}
