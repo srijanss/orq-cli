@@ -93,8 +93,13 @@ const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
 /// The text of the last assistant message in the end of a Claude transcript, one JSON object per line.
 fn last_said(transcript: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(transcript).ok()?;
-    let length = file.metadata().ok()?.len();
+    let mut file = open_without_waiting(transcript).ok()?;
+    // A FIFO, a device or a directory is no transcript, and reading one could wait forever.
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let length = metadata.len();
     file.seek(SeekFrom::Start(length.saturating_sub(TRANSCRIPT_TAIL_BYTES))).ok()?;
     let mut tail = Vec::new();
     file.take(TRANSCRIPT_TAIL_BYTES).read_to_end(&mut tail).ok()?;
@@ -114,6 +119,18 @@ fn last_said(transcript: &Path) -> Option<String> {
         let said = texts.join(" ");
         (!said.trim().is_empty()).then_some(said)
     })
+}
+
+/// Opens `path` for reading without blocking on a FIFO that has no writer, as opening one would.
+#[cfg(unix)]
+fn open_without_waiting(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+}
+
+#[cfg(not(unix))]
+fn open_without_waiting(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
 }
 
 /// Whether the JSON a Claude hook is given on stdin says a question has just been answered.

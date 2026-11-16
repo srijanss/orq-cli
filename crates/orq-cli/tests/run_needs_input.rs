@@ -366,6 +366,40 @@ fn a_stop_with_no_last_message_takes_it_from_the_end_of_the_transcript_and_reads
     assert_eq!(needs(&w.store)[0].payload["text"], "the session stopped and is waiting for you");
 }
 
+#[test]
+fn a_transcript_that_is_no_regular_file_is_not_waited_on_and_the_stop_is_still_told() {
+    let w = world("stop-fifo");
+    let transcript = w.sent.with_file_name("transcript.fifo");
+    assert!(Command::new("mkfifo").arg(&transcript).status().unwrap().success());
+    let marker = marker(&w);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orq"))
+        .args(["run", "needs-input", "run-1", "--repo"])
+        .arg(w.repo.root())
+        .args(["--marker", marker.to_str().unwrap()])
+        .env("XDG_STATE_HOME", &w.state)
+        .env("ORQ_NOTIFY_CMD", serde_json::json!(["true"]).to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stop(None, Some(&transcript)).as_bytes()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().ok();
+            child.wait().ok();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(status.and_then(|s| s.code()), Some(0), "the hook waited on a FIFO no one writes");
+    assert_eq!(needs(&w.store)[0].payload["text"], "the session stopped and is waiting for you");
+}
+
 fn prompt_submitted() -> String {
     serde_json::json!({"hook_event_name": "UserPromptSubmit", "prompt": "the secret reply", "session_id": "s"}).to_string()
 }
