@@ -106,3 +106,17 @@ fn a_lifecycle_is_replaced_only_while_it_is_still_the_one_read() {
     assert!(store.replace_lifecycle("run-1", Some(&merged), &resolved).unwrap());
     assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![resolved]);
 }
+
+#[test]
+fn a_lifecycle_is_not_replaced_once_a_newer_report_of_the_run_was_published() {
+    let dir = scratch("published");
+    let store = Store::open(&dir.join("orq.db")).unwrap();
+    let body = br#"{"status":"current","risks":[]}"#;
+    store.save_review(&dir, "run-1", "p-1", "feat-1", HEAD, body).unwrap();
+    let read = ReviewLifecycle::local(HEAD);
+    // The person read HEAD's report; a report for OTHER is published before the decision is stored.
+    store.save_review(&dir, "run-1", "p-1", "feat-1", OTHER, body).unwrap();
+
+    assert!(!store.replace_lifecycle("run-1", None, &read.resolved()).unwrap(), "HEAD is no longer the latest report");
+    assert!(store.lifecycles_for_run("run-1").unwrap().is_empty());
+}

@@ -241,14 +241,15 @@ pub enum ActionOutcome {
 /// applies while that is still the latest report's head, so a person never acts on a report they did not
 /// see. A report with no lifecycle yet gets one kept in this repository.
 pub fn act_on_review(store: &Store, run_id: &str, action: ReviewAction, expected_head: Option<&str>) -> Result<ActionOutcome, String> {
-    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
-    let Some(head) = records.last().map(|r| r.head_sha.clone()) else { return Ok(ActionOutcome::NoReview) };
-    if expected_head.is_some_and(|seen| seen != head) {
-        return Ok(ActionOutcome::StaleHead { latest: head });
-    }
-    // The transition is stored only over the lifecycle it was made from; when another writer (a local
-    // merge, a provider refresh) changed it in between, the action is decided again from what is stored.
+    // The transition is stored only over the lifecycle it was made from, and only while its head is still
+    // the latest report's, under one write lock; when a local merge, a refresh or a newer report came in
+    // between, the action is decided again from what is stored now.
     loop {
+        let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+        let Some(head) = records.last().map(|r| r.head_sha.clone()) else { return Ok(ActionOutcome::NoReview) };
+        if expected_head.is_some_and(|seen| seen != head) {
+            return Ok(ActionOutcome::StaleHead { latest: head });
+        }
         let lifecycles = store.lifecycles_for_run(run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
         let current = lifecycles.into_iter().rev().find(|l| l.reported_head_sha == head);
         let base = current.clone().unwrap_or_else(|| ReviewLifecycle::local(&head));
@@ -261,7 +262,7 @@ pub fn act_on_review(store: &Store, run_id: &str, action: ReviewAction, expected
             Ok(next) => next,
             Err(reason) => return Ok(ActionOutcome::Refused(reason)),
         };
-        if current.as_ref() == Some(&next) || store.replace_lifecycle(run_id, current.as_ref(), &next).map_err(|err| format!("cannot save the review state: {err}"))? {
+        if store.replace_lifecycle(run_id, current.as_ref(), &next).map_err(|err| format!("cannot save the review state: {err}"))? {
             return Ok(ActionOutcome::Done(next));
         }
     }

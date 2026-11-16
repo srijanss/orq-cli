@@ -263,10 +263,14 @@ impl Store {
     }
 
     /// Stores `next` as the lifecycle of `run_id` at its reported head only while the stored one is still
-    /// `expected` (`None`: nothing stored for that head yet), checked and written under one write lock.
-    /// Returns whether it was stored; `false` means someone changed it since it was read.
+    /// `expected` (`None`: nothing stored for that head yet) and that head is still the run's latest
+    /// report, checked and written under one write lock. Returns whether it was stored; `false` means
+    /// someone changed the lifecycle or published a newer report since it was read.
     pub fn replace_lifecycle(&self, run_id: &str, expected: Option<&ReviewLifecycle>, next: &ReviewLifecycle) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(db)?;
+        if self.reviews_for_run(run_id)?.last().is_some_and(|latest| latest.head_sha != next.reported_head_sha) {
+            return Ok(false);
+        }
         let stored = self.lifecycles_for_run(run_id)?.into_iter().rev().find(|l| l.reported_head_sha == next.reported_head_sha);
         if stored.as_ref() != expected {
             return Ok(false);
