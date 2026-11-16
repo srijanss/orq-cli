@@ -103,14 +103,22 @@ const MERGE_LOCAL_FAST_FORWARD: &str = r#"&["merge", "--ff-only", "--no-overwrit
 /// The whole arm, handler included, so the name cannot be reused to dispatch to anything else.
 const RUN_MERGE_DISPATCH: &str = r#"(Some("run"), Some("merge")) => run_merge(&args[2..]),"#;
 
+/// The web's "Set aside my changes and merge": it runs `orq run merge <run> --set-aside`, which
+/// resumes a merge-local run through merge-local's own fast-forward, and invokes no merge itself.
+/// The whole call, so the arguments cannot be changed and nothing but `orq run` is invoked.
+const RUN_MERGE_SET_ASIDE: &str = r#"self.carry_on(run, &["merge", run, "--set-aside"], repo)"#;
+
 /// The first merge-capable text in the source `text` of `path`, if any. Only merge-local's one
-/// fast-forward is allowed, once and only in merge_local.rs, and the `orq run merge` dispatch arm,
-/// once and only in orq-cli's main.rs; any other merge text still counts.
+/// fast-forward is allowed, once and only in merge_local.rs, the `orq run merge` dispatch arm,
+/// once and only in orq-cli's main.rs, and the web's `orq run merge --set-aside` call, once and
+/// only in orq-cli's remote_launch.rs; any other merge text still counts.
 fn merge_capable_text(path: &Path, text: &str) -> Option<&'static str> {
     let text = if path.ends_with("merge_local.rs") {
         text.replacen(MERGE_LOCAL_FAST_FORWARD, "", 1)
     } else if path.ends_with("orq-cli/src/main.rs") {
         text.replacen(RUN_MERGE_DISPATCH, "", 1)
+    } else if path.ends_with("orq-cli/src/remote_launch.rs") {
+        text.replacen(RUN_MERGE_SET_ASIDE, "", 1)
     } else {
         text.to_string()
     };
@@ -146,6 +154,20 @@ fn only_the_run_merge_dispatch_arm_is_allowed_and_only_in_the_cli_main() {
 }
 
 #[test]
+fn only_the_webs_run_merge_set_aside_call_is_allowed_and_only_in_remote_launch() {
+    let launch = Path::new("crates/orq-cli/src/remote_launch.rs");
+    let call = r#"        self.carry_on(run, &["merge", run, "--set-aside"], repo)"#;
+    assert_eq!(merge_capable_text(launch, call), None, "the set-aside call in remote_launch.rs");
+    assert_eq!(merge_capable_text(Path::new("crates/orq-cli/src/pipeline.rs"), call), Some("\"merge\""), "anywhere else");
+    let twice = format!("{call}\n{call}");
+    assert_eq!(merge_capable_text(launch, &twice), Some("\"merge\""), "a second one");
+    let no_ff = r#"        self.carry_on(run, &["merge", run, "--no-ff"], repo)"#;
+    assert_eq!(merge_capable_text(launch, no_ff), Some("\"merge\""), "other arguments");
+    let git = r#"        git_raw(&cwd, &["merge", run, "--set-aside"])"#;
+    assert_eq!(merge_capable_text(launch, git), Some("\"merge\""), "invoked through anything but carry_on");
+}
+
+#[test]
 fn no_production_code_path_can_invoke_a_merge() {
     let mut seen = 0;
     for krate in ["orq-agents", "orq-cli", "orq-core", "orq-features", "orq-git", "orq-herdr", "orq-orchestrator", "orq-tui"] {
@@ -156,6 +178,9 @@ fn no_production_code_path_can_invoke_a_merge() {
             seen += 1;
             if path.ends_with("merge_local.rs") {
                 assert!(text.contains(MERGE_LOCAL_FAST_FORWARD), "merge-local no longer has the fast-forward the allowlist names; drop the allowlist");
+            }
+            if path.ends_with("orq-cli/src/remote_launch.rs") {
+                assert!(text.contains(RUN_MERGE_SET_ASIDE), "remote_launch no longer has the set-aside call the allowlist names; drop the allowlist");
             }
             if let Some(needle) = merge_capable_text(&path, &text) {
                 panic!("{} contains the merge-capable text {needle}", path.display());
