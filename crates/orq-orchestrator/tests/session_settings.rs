@@ -416,3 +416,50 @@ fn only_the_exact_command_orq_writes_counts_as_its_own_hook() {
     let left: Vec<&str> = settings["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap()).collect();
     assert_eq!(left, someone_elses, "someone's compound command stays and ours, however quoted, goes");
 }
+
+#[test]
+fn a_hook_with_a_marker_also_hears_the_session_stop_go_idle_and_be_answered_and_only_then() {
+    let (_repo, worktree) = checkout("needs-input-hook-marker");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::write(
+        worktree.join(".claude/settings.local.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#,
+    )
+    .unwrap();
+    let marked = "'/orq' run needs-input 'r' --repo '/x' --marker '/logs/implement.done'";
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, marked).is_empty());
+    // A later session's marker replaces the earlier one's.
+    let marked = "'/orq' run needs-input 'r' --repo '/x' --marker '/logs/gate-fix.done'";
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, marked).is_empty());
+
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    let commands = |event: &str| -> Vec<(String, String)> {
+        settings["hooks"][event]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| (entry["matcher"].as_str().unwrap_or("").to_string(), entry["hooks"][0]["command"].as_str().unwrap().to_string()))
+            .collect()
+    };
+    assert_eq!(commands("Stop"), [("".to_string(), "mine".to_string()), ("".to_string(), marked.to_string())]);
+    assert_eq!(commands("UserPromptSubmit"), [("".to_string(), marked.to_string())]);
+    assert_eq!(commands("Notification"), [("permission_prompt".to_string(), marked.to_string()), ("idle_prompt".to_string(), marked.to_string())]);
+    assert_eq!(commands("PreToolUse"), [("AskUserQuestion".to_string(), marked.to_string())]);
+    assert!(settings["hooks"]["Stop"][1].get("matcher").is_none(), "Stop takes no matcher: {settings}");
+
+    // A session without a marker cannot say it is finished: it gets no stop, idle or prompt hooks.
+    let unmarked = "'/orq' run needs-input 'r' --repo '/x'";
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, unmarked).is_empty());
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1, "{settings}");
+    assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "mine");
+    assert_eq!(settings["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 0, "{settings}");
+    assert_eq!(settings["hooks"]["Notification"].as_array().unwrap().len(), 1, "{settings}");
+    assert_eq!(settings["hooks"]["Notification"][0]["matcher"], "permission_prompt");
+
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, marked).is_empty());
+    assert!(orq_orchestrator::remove_needs_input_hook(&worktree).is_empty());
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert!(!settings.to_string().contains("needs-input"), "{settings}");
+    assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], "mine", "the user's own hook stays");
+}

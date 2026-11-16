@@ -44,11 +44,17 @@ fn world(tag: &str) -> World {
 
 /// Calls the hook as Claude does, with `input` on stdin, and a notifier that appends its message.
 fn hook(w: &World, run: &str, input: &str, notifier_prefix: &str) -> Output {
+    hook_with(w, run, &[], input, notifier_prefix)
+}
+
+/// As `hook`, with `extra` arguments after `--repo <path>`, as `--marker <path>`.
+fn hook_with(w: &World, run: &str, extra: &[&str], input: &str, notifier_prefix: &str) -> Output {
     let script = format!("{notifier_prefix}printf '%s\\n' \"$NOTIFY_MESSAGE\" >> '{}'", w.sent.display());
     let notifier = serde_json::json!(["sh", "-c", script]).to_string();
     let mut child = Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "needs-input", run, "--repo"])
         .arg(w.repo.root())
+        .args(extra)
         .env("XDG_STATE_HOME", &w.state)
         .env("ORQ_NOTIFY_CMD", notifier)
         .stdin(Stdio::piped())
@@ -277,3 +283,152 @@ fn a_permission_prompt_after_a_question_was_left_unanswered_is_told_about() {
     assert_eq!(sent_lines(&w.sent, 1).len(), 1);
 }
 
+
+/// The marker the session is told to leave when it is finished.
+fn marker(w: &World) -> PathBuf {
+    w.sent.with_file_name("implement.done")
+}
+
+fn stop(message: Option<&str>, transcript: Option<&Path>) -> String {
+    let mut input = serde_json::json!({"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "s"});
+    if let Some(message) = message {
+        input["last_assistant_message"] = message.into();
+    }
+    if let Some(transcript) = transcript {
+        input["transcript_path"] = transcript.display().to_string().into();
+    }
+    input.to_string()
+}
+
+/// Calls the hook with the session's marker, as the hook of a session that has one is called.
+fn stop_hook(w: &World, input: &str) -> Output {
+    let marker = marker(w);
+    hook_with(w, "run-1", &["--marker", marker.to_str().unwrap()], input, "")
+}
+
+#[test]
+fn a_session_that_stops_without_its_marker_is_waiting_for_its_person_and_they_are_told() {
+    let w = world("stop");
+    let out = stop_hook(&w, &stop(Some("Shall I run the gate now, and write gate-fix.done?"), None));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty(), "stdout would be read as the hook's decision");
+
+    let events = needs(&w.store);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["kind"], "waiting");
+    assert_eq!(events[0].payload["text"], "Shall I run the gate now, and write gate-fix.done?");
+    assert_eq!(sent_lines(&w.sent, 1), ["orq: COM-01 is waiting for you: Shall I run the gate now, and write gate-fix.done?"]);
+}
+
+#[test]
+fn a_session_that_stops_after_leaving_its_marker_is_finishing_and_nobody_is_told() {
+    let w = world("stop-finished");
+    std::fs::write(marker(&w), "OK\n").unwrap();
+    let out = stop_hook(&w, &stop(Some("All done."), None));
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty());
+    assert!(needs(&w.store).is_empty());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!w.sent.exists());
+}
+
+fn transcript_line(role: &str, content: serde_json::Value) -> String {
+    serde_json::json!({"type": role, "message": {"role": role, "content": content}}).to_string() + "\n"
+}
+
+#[test]
+fn a_stop_with_no_last_message_takes_it_from_the_end_of_the_transcript_and_reads_no_further_back() {
+    let w = world("stop-transcript");
+    let transcript = w.sent.with_file_name("transcript.jsonl");
+    let mut lines = transcript_line("user", "Fix the gate".into());
+    lines += &transcript_line("assistant", serde_json::json!([{"type": "text", "text": "An older message"}]));
+    lines += &transcript_line("assistant", serde_json::json!([{"type": "text", "text": "Run the gate, then tell me"}, {"type": "text", "text": "whether to finish?"}]));
+    lines += &transcript_line("assistant", serde_json::json!([{"type": "tool_use", "name": "Bash", "input": {}}]));
+    lines += &transcript_line("user", serde_json::json!([{"type": "tool_result", "content": "ok"}]));
+    std::fs::write(&transcript, &lines).unwrap();
+    assert_eq!(stop_hook(&w, &stop(None, Some(&transcript))).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], "Run the gate, then tell me whether to finish?");
+
+    // The only thing it said lies more than 256 KiB from the end, so it is not read.
+    let w = world("stop-transcript-far");
+    let mut lines = transcript_line("assistant", serde_json::json!([{"type": "text", "text": "Too far back"}]));
+    let filler = transcript_line("user", "x".repeat(1000).into());
+    for _ in 0..300 {
+        lines += &filler;
+    }
+    std::fs::write(&transcript, &lines).unwrap();
+    assert_eq!(stop_hook(&w, &stop(None, Some(&transcript))).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], "the session stopped and is waiting for you");
+
+    // Neither a message nor a transcript.
+    let w = world("stop-nothing");
+    assert_eq!(stop_hook(&w, &stop(None, None)).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], "the session stopped and is waiting for you");
+}
+
+fn prompt_submitted() -> String {
+    serde_json::json!({"hook_event_name": "UserPromptSubmit", "prompt": "the secret reply", "session_id": "s"}).to_string()
+}
+
+fn given(store: &RunStore) -> Vec<Event> {
+    store.events("run-1").unwrap().into_iter().filter(|e| e.kind == "run.input_given").collect()
+}
+
+#[test]
+fn a_waiting_session_is_told_about_once_until_its_person_types_and_again_after() {
+    let w = world("stop-again");
+    assert_eq!(stop_hook(&w, &stop(Some("Shall I go on?"), None)).status.code(), Some(0));
+    assert_eq!(stop_hook(&w, &stop(Some("Still there?"), None)).status.code(), Some(0));
+    assert_eq!(needs(&w.store).len(), 1, "a second stop before an answer is no second need");
+
+    let out = stop_hook(&w, &prompt_submitted());
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty(), "stdout would be added to the prompt");
+    let given = given(&w.store);
+    assert_eq!(given.len(), 1);
+    assert!(!given[0].payload.to_string().contains("secret"), "what was typed stays out of the record");
+
+    assert_eq!(stop_hook(&w, &stop(Some("Done that; next?"), None)).status.code(), Some(0));
+    let texts: Vec<String> = needs(&w.store).iter().map(|e| e.payload["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, ["Shall I go on?", "Done that; next?"]);
+    assert_eq!(sent_lines(&w.sent, 2).len(), 2);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(sent_lines(&w.sent, 2).len(), 2, "the stop before the answer told nobody");
+}
+
+fn idle_prompt() -> String {
+    serde_json::json!({"hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "Claude is waiting for your input"}).to_string()
+}
+
+#[test]
+fn an_idle_prompt_is_waiting_like_a_stop_and_is_not_told_twice() {
+    let w = world("idle");
+    assert_eq!(stop_hook(&w, &idle_prompt()).status.code(), Some(0));
+    let events = needs(&w.store);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["kind"], "waiting");
+    assert_eq!(sent_lines(&w.sent, 1).len(), 1);
+
+    let w = world("idle-after-stop");
+    assert_eq!(stop_hook(&w, &stop(Some("Shall I go on?"), None)).status.code(), Some(0));
+    assert_eq!(stop_hook(&w, &idle_prompt()).status.code(), Some(0));
+    assert_eq!(needs(&w.store).len(), 1, "the idle prompt of a stop already told about is the same wait");
+
+    let w = world("idle-finished");
+    std::fs::write(marker(&w), "").unwrap();
+    assert_eq!(stop_hook(&w, &idle_prompt()).status.code(), Some(0));
+    assert!(needs(&w.store).is_empty(), "a session that left its marker is not waiting");
+}
+
+#[test]
+fn what_a_waiting_session_last_said_is_cut_redacted_and_on_one_line() {
+    let w = world("stop-redact");
+    let said = format!("Use token=abc123\nto push?{}", "x".repeat(5000));
+    assert_eq!(stop_hook(&w, &stop(Some(&said), None)).status.code(), Some(0));
+    let recorded = needs(&w.store)[0].payload["text"].as_str().unwrap().to_string();
+    assert!(!recorded.contains("abc123") && !recorded.contains('\n'), "{recorded}");
+    assert!(recorded.contains("to push?"), "{recorded}");
+    assert_eq!(recorded.chars().count(), 1000, "{recorded}");
+    let lines = sent_lines(&w.sent, 1);
+    assert!(!lines[0].contains("abc123"), "{lines:?}");
+}

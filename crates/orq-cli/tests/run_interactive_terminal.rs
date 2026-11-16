@@ -684,3 +684,41 @@ fn a_run_whose_session_reports_a_problem_fails_and_says_what_the_problem_was() {
     assert!(reason.contains("the review could not run"), "{reason:?}");
     assert_ne!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stdout));
 }
+
+/// The command of the hook an event runs, from a copy of the session's settings.
+fn hook_command(settings: &Path, event: &str) -> String {
+    let settings: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(settings).unwrap_or_default()).unwrap_or_default();
+    settings["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string()
+}
+
+#[test]
+fn each_attended_session_hears_itself_stop_against_its_own_marker() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("stop-marker", &agent);
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"sh\", \"-c\", \"test -f fixed\"]\n").unwrap();
+    // Each session copies its settings as it starts; later ones would write over the implement session's.
+    let (implement, fix_settings) = (w.seen.with_file_name("implement-settings"), w.seen.with_file_name("fix-settings"));
+    std::fs::rename(w.bin.join("claude"), w.bin.join("claude-inner")).unwrap();
+    std::fs::write(
+        w.bin.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *'local gate failed'*)\ncp .claude/settings.local.json '{settings}'\ntouch fixed; git add fixed; git -c user.name=t -c user.email=t@example.invalid commit -q -m 'fix: repair the gate'\nmarker=$(printf '%s' \"$*\" | sed -n 's/.*create the empty file \\([^ ]*\\) and then stop.*/\\1/p')\ntouch \"$marker\"\nexit 0;;\nesac\n[ -e '{implement}' ] || cp .claude/settings.local.json '{implement}'\nexec '{inner}' \"$@\"\n",
+            implement = implement.display(),
+            settings = fix_settings.display(),
+            inner = w.bin.join("claude-inner").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(w.bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let (code, drawn) = run_in_pty(&w, &github(), &run_args(&w));
+
+    assert_eq!(code, 0, "{drawn}");
+    let stop = hook_command(&implement, "Stop");
+    assert!(stop.contains(" run needs-input ") && stop.ends_with("/implement.done'"), "{stop}");
+    assert_eq!(hook_command(&implement, "UserPromptSubmit"), stop);
+    let fix_stop = hook_command(&fix_settings, "Stop");
+    assert!(fix_stop.ends_with("/gate-fix.done'"), "{fix_stop}");
+    assert_eq!(hook_command(&fix_settings, "PreToolUse"), fix_stop, "one command for every event of a session");
+}
