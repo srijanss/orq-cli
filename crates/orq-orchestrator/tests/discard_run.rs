@@ -576,3 +576,82 @@ fn discard_installed_node_modules_without_a_committed_lockfile_keep_the_worktree
     assert!(reason.starts_with("the worktree has uncommitted changes: web/node_modules/.bin/esbuild (web/node_modules is removed"), "{reason}");
     assert!(branch_exists(repo.root(), "orq-run-1"));
 }
+
+/// `run_id`, a run of `features` led by the first, on `worktree` and `branch`, that started at `at`.
+fn later_run(store: &RunStore, run_id: &str, features: &[&str], worktree: &Path, branch: &str, at: &str) {
+    let mut later = record(worktree, branch);
+    later.run_id = run_id.into();
+    later.feature_id = features[0].into();
+    store.create(&later).unwrap();
+    for kind in ["run.started", "run.grouped"] {
+        let mut started = event(kind, serde_json::json!({ "features": features }));
+        started.run_id = run_id.into();
+        started.feature_id = features[0].into();
+        started.event_id = format!("{run_id}-{kind}");
+        started.occurred_at = at.into();
+        store.append_event(&started).unwrap();
+    }
+}
+
+#[test]
+fn taken_over_a_blocked_run_a_later_run_continued_is_refused_and_left_whole() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (root, store) = store("taken-over");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
+    later_run(&store, "run-2", &["F"], &worktree, "orq-run-1", "2026-11-02T11:00:00Z");
+
+    let refused = discard_run(&store, "run-1", repo.root()).unwrap_err();
+
+    assert_eq!(refused, "run-1 was continued as run-2; discard or accept that run instead");
+    assert!(store.load("run-1").is_ok());
+    assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(root.join("logs").join("run-1").exists());
+    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+}
+
+#[test]
+fn taken_over_a_run_marked_resumed_is_refused_naming_the_run_it_was_continued_as() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (_, store) = store("resumed");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store.append_event(&event("run.resumed", serde_json::json!({ "resumed_as": "run-9" }))).unwrap();
+    store.append_event(&event("run.completed", serde_json::json!({ "ending": "resumed", "reason": "continued as run-9" }))).unwrap();
+
+    let refused = discard_run(&store, "run-1", repo.root()).unwrap_err();
+
+    assert!(refused.starts_with("run-1 is completed, continued as run-9; only a failed"), "{refused}");
+    assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+}
+
+#[test]
+fn taken_over_a_later_run_of_other_features_only_does_not_block_the_discard() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let elsewhere = repo.add_linked_worktree("orq-run-2");
+    let (_, store) = store("other-features");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    later_run(&store, "run-2", &["G"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
+
+    discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert!(store.load("run-1").is_err() && !worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-2").is_ok() && elsewhere.exists());
+}
+
+#[test]
+fn taken_over_the_preview_of_a_run_a_later_run_continued_gives_the_reason_instead() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let (_, store) = store("taken-over-preview");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    later_run(&store, "run-2", &["F"], &worktree, "orq-run-1", "2026-11-02T11:00:00Z");
+
+    assert_eq!(discard_preview(&store, "run-1", repo.root()), Err("run-1 was continued as run-2; discard or accept that run instead".to_string()));
+}

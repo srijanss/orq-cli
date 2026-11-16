@@ -414,18 +414,29 @@ pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> 
     })
 }
 
+/// The run that took `run_id` over, with the features of `run_id` it took: the newest run of
+/// `run_id`'s feature when that is a later one, as a resume continues it on the same branch and
+/// worktree. `None` when `run_id` is the newest run of its feature.
+pub fn later_run_of(store: &RunStore, run_id: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let Some(later) = newest_run_of(store, &record.project_id, &record.feature_id)?.filter(|newest| newest != run_id) else {
+        return Ok(None);
+    };
+    let theirs = run_members(store, &later)?;
+    let taken = run_members(store, run_id)?.into_iter().filter(|m| theirs.contains(m)).collect();
+    Ok(Some((later, taken)))
+}
+
 /// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
 /// and starts from `run_id`, the reason otherwise. Nothing is launched.
 pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
     let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     let members = run_members(store, run_id)?;
     // A later run named after the same feature took it over, whatever else it was for.
-    if let Some(later) = newest_run_of(store, &record.project_id, &record.feature_id)?.filter(|newest| newest != run_id) {
-        let theirs = run_members(store, &later)?;
-        return Err(if theirs == members {
+    if let Some((later, taken)) = later_run_of(store, run_id)? {
+        return Err(if run_members(store, &later)? == members {
             format!("{later} is a later run of the same features; resume that one")
         } else {
-            let taken: Vec<&str> = members.iter().filter(|m| theirs.contains(m)).map(String::as_str).collect();
             format!("{later} is a later run that took {}; this run can no longer be resumed", taken.join(", "))
         });
     }

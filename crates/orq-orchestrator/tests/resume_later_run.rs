@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{check_group_resume, newest_run_of, record_group, resumable_members, RunRecord, RunStore};
+use orq_orchestrator::{check_group_resume, later_run_of, newest_run_of, record_group, resumable_members, RunRecord, RunStore};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -136,4 +136,20 @@ fn a_run_of_the_project_whose_history_cannot_be_read_stops_the_resume_rather_tha
     let refused = resumable_members(&w.store, "repo-1", &names(&["COM-02"])).unwrap_err();
 
     assert!(refused.contains("run-1700000002-1"), "{refused}");
+}
+
+#[test]
+fn later_run_of_names_the_later_run_of_a_run_s_feature_and_the_features_it_took() {
+    let w = world("later-of");
+    let group = failed_run(&w, "run-1700000001-5", "COM-02", "2026-01-01T00:00:01Z");
+    record_group(&w.store, &group, &["COM-02".to_string(), "COM-03".to_string()]).unwrap();
+    failed_run(&w, "run-1700000099-5", "COM-02", "2026-01-01T00:00:50Z");
+    failed_run(&w, "run-1700000200-5", "COM-09", "2026-01-01T00:01:00Z");
+
+    assert_eq!(
+        later_run_of(&w.store, "run-1700000001-5").unwrap(),
+        Some(("run-1700000099-5".to_string(), vec!["COM-02".to_string()]))
+    );
+    assert_eq!(later_run_of(&w.store, "run-1700000099-5").unwrap(), None);
+    assert_eq!(later_run_of(&w.store, "run-1700000200-5").unwrap(), None);
 }

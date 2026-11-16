@@ -42,6 +42,8 @@ pub fn accept_check(store: &RunStore, run_id: &str) -> Result<(), String> {
 
 fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
+    // A later run works in the same worktree; its tests and its state are that run's.
+    crate::discard::refuse_taken_over(store, run_id)?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
     if !matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) {

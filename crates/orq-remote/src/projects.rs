@@ -951,7 +951,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn discard_warning(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::RunControlOutcome;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
-        Ok(RunControlOutcome::Done(orq_core::redact::redact(&crate::discard::discard_warning(&self.roots.state, run, &project.path))))
+        Ok(match crate::discard::discard_warning_or_refusal(&self.roots.state, run, &project.path) {
+            Ok(warning) => RunControlOutcome::Done(orq_core::redact::redact(&warning)),
+            Err(why) => RunControlOutcome::Refused(orq_core::redact::redact(&why)),
+        })
     }
 
     fn storage_preview(&self) -> Result<Option<serde_json::Value>, String> {

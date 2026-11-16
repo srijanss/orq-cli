@@ -159,3 +159,33 @@ fn the_reply_for_a_kept_worktree_says_which_file_kept_it() {
     assert!(note.contains("Uncommitted work: kept .claude/worktrees/r-env and its branch. Reason: the worktree has uncommitted changes: .env."), "{body}");
     assert!(alpha.join(".claude/worktrees/r-env/.env").exists());
 }
+
+/// `later` continues the run `from` on its branch and worktree, as a resume does, a second after it started.
+fn continue_run(s: &Setup, from: &str, later: &str) {
+    let store = RunStore::new(&s.roots.state);
+    let mut record = store.load(from).unwrap();
+    let feature = record.feature_id.clone();
+    record.run_id = later.into();
+    store.create(&record).unwrap();
+    let event = Event { schema_version: 1, event_id: format!("{later}-0"), run_id: later.into(), project_id: record.project_id.clone(), feature_id: feature, kind: "run.started".into(), stage: None, attempt: 1, occurred_at: "2026-11-01T11:00:00Z".into(), payload: json!({}) };
+    store.append_event(&event).unwrap();
+}
+
+#[test]
+fn a_run_a_later_run_continued_is_refused_with_the_reason_and_the_refusal_is_audited() {
+    let s = setup("run-discard-taken-over");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-old", &["run.started", "run.failed"]);
+    continue_run(&s, "r-old", "r-new");
+    let reason = json!({"error": "r-old was continued as r-new; discard or accept that run instead"});
+
+    assert_eq!(send(&s, "GET", "/api/projects/alpha/runs/r-old/discard-warning"), (409, reason.clone()));
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/runs/r-old/discard"), (409, reason.clone()));
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/runs/r-old/accept"), (409, reason));
+    assert!(!gone(&s, "r-old") && !gone(&s, "r-new"));
+    assert!(alpha.join(".claude/worktrees/r-old").exists());
+
+    let audit = std::fs::read_to_string(s.roots.state.join("remote-actions.jsonl")).unwrap();
+    let refusals: Vec<Value> = audit.lines().map(|line| serde_json::from_str(line).unwrap()).filter(|line: &Value| line["reason"] == json!("r-old was continued as r-new; discard or accept that run instead")).collect();
+    assert_eq!(refusals.len(), 2, "{audit}");
+}

@@ -206,3 +206,28 @@ fn the_check_says_what_accept_would_refuse_without_running_the_tests_or_changing
     let (_repo3, _worktree3, store) = failed_run("check-none", 0);
     assert_eq!(accept_check(&store, "run-1"), Err("run-1 left no committed work to accept".to_string()));
 }
+
+#[test]
+fn taken_over_a_run_a_later_run_continued_is_refused_and_its_tests_are_not_run() {
+    let (_repo, worktree, store) = failed_run("taken-over", 1);
+    let mut later = store.load("run-1").unwrap();
+    later.run_id = "run-2".into();
+    later.worktree = worktree.clone();
+    store.create(&later).unwrap();
+    let mut started = event("run.started", serde_json::json!({}));
+    started.run_id = "run-2".into();
+    started.occurred_at = "2026-11-02T11:00:00Z".into();
+    store.append_event(&started).unwrap();
+    let ran = RefCell::new(false);
+
+    let refused = accept_run(&store, "run-1", &|_: &Path| {
+        *ran.borrow_mut() = true;
+        Ok(())
+    });
+
+    let reason = "run-1 was continued as run-2; discard or accept that run instead".to_string();
+    assert_eq!(refused, Err(reason.clone()));
+    assert_eq!(accept_check(&store, "run-1"), Err(reason));
+    assert!(!ran.into_inner());
+    assert_eq!(phase(&store), RunPhase::Failed);
+}

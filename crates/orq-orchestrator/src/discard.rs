@@ -65,11 +65,14 @@ pub fn discard_run_before_remove(
     before_remove: &mut dyn FnMut(),
 ) -> Result<DiscardOutcome, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
+    refuse_taken_over(store, run_id)?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
-    let phase = summarize_run(&events).phase;
+    let summary = summarize_run(&events);
+    let phase = summary.phase;
     // A run whose pause is only requested is still running until it reaches a safe point.
     if !matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::Paused) {
-        return Err(format!("{run_id} is {}; only a failed, blocked, paused or review-waiting run can be discarded", phase.as_str()));
+        let continued = summary.resumed_as.map(|later| format!(", continued as {later}")).unwrap_or_default();
+        return Err(format!("{run_id} is {}{continued}; only a failed, blocked, paused or review-waiting run can be discarded", phase.as_str()));
     }
     let branch = record.branch.as_str();
     if branch.is_empty() || branch == record.target_branch {
@@ -197,9 +200,11 @@ pub fn discard_run_before_remove(
 }
 
 /// The branch a discard of `run_id` would delete now, with its commits, without changing anything:
-/// `None` when the branch would stay, because the worktree is gone or holds uncommitted work.
+/// `None` when the branch would stay, because the worktree is gone or holds uncommitted work. A run a
+/// later run took over gets the reason a discard would be refused.
 pub fn discard_preview(store: &RunStore, run_id: &str, repo: &Path) -> Result<Option<DeletedBranch>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
+    refuse_taken_over(store, run_id)?;
     if !record.worktree.exists() || uncommitted_work(&record.worktree)?.is_some() {
         return Ok(None);
     }
@@ -282,6 +287,15 @@ fn resumed_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreErro
         }
     }
     Ok(runs)
+}
+
+/// The reason `run_id` must not be discarded or accepted when a later run took it over: that run
+/// works on the same branch and worktree, so it is the one to discard or accept.
+pub fn refuse_taken_over(store: &RunStore, run_id: &str) -> Result<(), String> {
+    match crate::resume::later_run_of(store, run_id)? {
+        Some((later, _)) => Err(format!("{run_id} was continued as {later}; discard or accept that run instead")),
+        None => Ok(()),
+    }
 }
 
 /// What in `worktree` would be lost with it, from one status scan; git's message when it cannot tell.

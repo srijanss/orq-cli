@@ -93,12 +93,19 @@ fn commits_not_on_target(count: Option<usize>) -> String {
 /// What a discard of `run_id` would take with the branch, for a prompt shown before it: empty when no
 /// commit would go, or when that cannot be told.
 pub fn discard_warning(root: &Path, run_id: &str, repo: &Path) -> String {
+    discard_warning_or_refusal(root, run_id, repo).unwrap_or_default()
+}
+
+/// [`discard_warning`], or why the run cannot be discarded at all, worded "<run> ...", when a later
+/// run took it over.
+pub fn discard_warning_or_refusal(root: &Path, run_id: &str, repo: &Path) -> Result<String, String> {
     let store = orq_orchestrator::RunStore::new(root);
     match orq_orchestrator::discard_preview(&store, run_id, repo) {
         Ok(Some(branch)) if branch.commits_ahead != Some(0) => {
-            format!("its branch {} goes with {}", printable(&branch.name), commits_not_on_target(branch.commits_ahead))
+            Ok(format!("its branch {} goes with {}", printable(&branch.name), commits_not_on_target(branch.commits_ahead)))
         }
-        _ => String::new(),
+        Err(why) if why.starts_with(&format!("{run_id} ")) => Err(why),
+        _ => Ok(String::new()),
     }
 }
 
