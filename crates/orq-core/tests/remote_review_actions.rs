@@ -20,6 +20,8 @@ const OTHER: &str = "other-11223344";
 #[derive(Default)]
 struct Fake {
     acted: Mutex<Vec<(String, String, ReviewAction, String)>>,
+    /// Why recording a run event fails, when it does.
+    acted_fails: Option<String>,
 }
 
 impl ProjectsProvider for Fake {
@@ -35,7 +37,7 @@ impl ProjectsProvider for Fake {
     }
     fn review_acted(&self, project: &str, run: &str, action: ReviewAction, head: &str) -> Result<(), String> {
         self.acted.lock().unwrap().push((project.into(), run.into(), action, head.into()));
-        Ok(())
+        self.acted_fails.clone().map_or(Ok(()), Err)
     }
 }
 
@@ -127,4 +129,20 @@ fn a_locally_merged_review_says_where_it_was_merged_and_offers_no_link() {
     assert_eq!(row(&roots, &fake, "run-2")["merged_locally"], Value::Null);
     let (status, detail) = send(&roots, &fake, "GET", "/api/reviews/run-1", "");
     assert_eq!((status, detail["merged_locally"].as_str(), detail["status"].as_str()), (200, Some(HEAD), Some("merged")));
+}
+
+#[test]
+fn a_decision_whose_run_event_cannot_be_written_still_stands_and_the_reason_stays_off_the_wire() {
+    let roots = roots("event-fails");
+    actions_on(&roots);
+    let fake = Fake { acted_fails: Some("cannot write /home/dana/.local/state/orq/runs/run-1/events.jsonl".into()), ..Fake::default() };
+
+    let (status, body) = send(&roots, &fake, "POST", "/api/reviews/run-1/resolve", AT_HEAD);
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "resolved", "{body}");
+    assert!(!body.to_string().contains("events.jsonl") && !body.to_string().contains("/home/"), "an internal error is not sent: {body}");
+    assert_eq!(fake.acted.lock().unwrap().len(), 1, "the event was attempted");
+    assert_eq!(row(&roots, &fake, "run-1")["status"], "resolved", "the decision is committed");
+    assert_eq!(audit(&roots).last().map(|(_, outcome)| outcome.as_str()), Some("allowed"));
 }

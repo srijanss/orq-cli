@@ -227,3 +227,17 @@ fn backfill_resolves_the_reviews_of_runs_merged_locally_before() {
     let again = orq(&w, &["review", "backfill"]);
     assert!(text(&again.stdout).contains("0 "), "{}", text(&again.stdout));
 }
+
+#[test]
+fn a_decision_whose_run_events_cannot_take_it_still_stands_and_says_so() {
+    let w = reported("no-events");
+    let id = orq_git::project_id(&orq_git::resolve_project(w.repo.root()).unwrap());
+    // A report for a run the run store does not know, so its events cannot be written.
+    Store::open(&roots(&w).database()).unwrap().save_review(&roots(&w).data, "run-3", &id, "COM-01", HEAD, br#"{"status":"current","risks":[]}"#).unwrap();
+
+    let resolved = orq(&w, &["review", "resolve", "run-3", "--head", HEAD]);
+
+    assert!(resolved.status.success(), "the decision is made: {}", text(&resolved.stderr));
+    assert!(text(&resolved.stderr).contains("the run's events do not record this"), "{}", text(&resolved.stderr));
+    assert_eq!(state(&w, "run-3").1, "resolved");
+}
