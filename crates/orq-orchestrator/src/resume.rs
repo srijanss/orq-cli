@@ -436,6 +436,14 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
     let shares_checkout = |other: &RunRecord| {
         (!record.branch.is_empty() && other.branch == record.branch) || (!record.worktree.as_os_str().is_empty() && other.worktree == record.worktree)
     };
+    // A run whose record cannot be read may be the one that took this checkout over; failing here
+    // is safer than discarding or accepting what may be another run's work.
+    for other in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
+        match store.load(&other) {
+            Ok(_) | Err(StoreError::NotFound(_)) => {}
+            Err(e) => return Err(format!("cannot tell whether {other} took over {run_id}: its record cannot be read: {e:?}")),
+        }
+    }
     Ok(project_runs(store, &record.project_id)?
         .into_iter()
         .filter(|(order, other, _)| other.run_id != run_id && *order > own && shares_checkout(other))
