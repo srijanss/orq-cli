@@ -264,3 +264,29 @@ fn an_older_report_set_aside_here_does_not_stop_looks_at_the_newer_open_review()
     assert_eq!(refresher.round(now()), 1);
     assert_eq!(recorder.asked(), vec!["run-1"]);
 }
+
+#[test]
+fn stopping_the_rounds_also_stops_the_looks_queued_by_page_opens() {
+    let roots = roots("stop-queued");
+    for (n, run) in ["run-a", "run-b", "run-c"].into_iter().enumerate() {
+        review(&roots, run, n as u8 + 1, ProviderState::Open, 601);
+    }
+    let recorder = Recorder::new(&roots, Duration::from_millis(400), false);
+    let refresher = ReviewRefresher::new(roots.clone(), recorder.clone());
+    for run in ["run-a", "run-b", "run-c"] {
+        assert!(refresher.request(run));
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while recorder.asked().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The round now waits behind the page-open look under way.
+    let rounds = orq_remote::review_refresh::start_rounds(refresher.clone(), Duration::from_secs(60));
+    std::thread::sleep(Duration::from_millis(50));
+
+    let stopping = std::time::Instant::now();
+    drop(rounds);
+    assert!(stopping.elapsed() < Duration::from_millis(700), "{:?}", stopping.elapsed());
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(recorder.asked().len(), 1, "{:?}", recorder.asked());
+}
