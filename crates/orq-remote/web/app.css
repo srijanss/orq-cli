@@ -408,17 +408,17 @@ p[role=alert]:empty { display: none; }
 @keyframes marked-actions-in { from { transform: translateY(100%); } to { transform: none; } }
 @media (max-width: 700px) {
   .feature-mark, .marked-actions { display: none; }
-  /* Selection mode: a text-style Select/Done at the end of the filters row; a round 22px mark drawn in CSS in a fixed 2rem gutter (the whole row, at least 44px tall, is the tap target); a tinted marked row; and a bottom sheet fixed above the tab bar, inside the safe area, that wraps its buttons and scrolls past 60vh. */
+  /* Selection mode: a text-style Select/Done at the end of the filters row; the mark is kept only for assistive technology and the keyboard (the whole row, at least 44px tall, is the tap target); a marked row reads like a quote, with an accent bar down its left edge and a tint, and a markable row shows a faint bar; and a bottom sheet fixed above the tab bar, inside the safe area, that wraps its buttons and scrolls past 60vh. */
   .select-mode { display: inline-flex; align-items: center; min-height: 44px; margin-left: auto; padding: 0 0.5rem; border: 0; background: transparent; color: var(--accent); font-weight: 600; }
   .select-mode[aria-pressed="true"] { font-weight: 700; }
-  .selecting .feature-mark { display: block; position: absolute; left: 0.75rem; top: 50%; translate: 0 -50%; appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 22px; height: 22px; margin: 0; border: 2px solid var(--border); border-radius: 50%; background: transparent; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
-  .selecting .feature-mark:checked { border-color: var(--accent); background: var(--accent); }
-  .selecting .feature-mark:checked::after { content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px; border: solid var(--surface); border-width: 0 2px 2px 0; rotate: 45deg; }
-  .selecting .feature-mark:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .selecting .feature-mark { display: block; position: absolute; width: 1px; height: 1px; min-height: 0; min-width: 0; margin: 0; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
   .selecting .feature-table tr.feature { height: 44px; transition: background-color 120ms ease; }
-  .selecting .feature-table :is(th, td):first-child { position: relative; padding-left: calc(0.75rem + 2rem); }
+  .selecting .feature-table tr.feature:has(.feature-mark) > td:first-child { position: relative; box-shadow: inset 2px 0 0 var(--border); transition: box-shadow 120ms ease; }
+  .selecting .feature-table tr.feature:has(.feature-mark:focus-visible) { outline: 3px solid var(--accent); outline-offset: -3px; }
   .selecting .feature-table tr.feature:not(:has(.feature-mark)) { opacity: 0.55; }
   .selecting .feature-table tr.feature.marked { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .selecting .feature-table tr.feature.marked > td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+  .selecting .feature-table tr.feature.marked .feature-link { color: var(--text); font-weight: 600; }
   .selecting .marked-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; position: fixed; left: 0; right: 0; bottom: calc(3.75rem + env(safe-area-inset-bottom)); z-index: 6; margin: 0; padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); background: var(--surface); border-top: 1px solid var(--border); border-radius: 0.75rem 0.75rem 0 0; box-shadow: 0 -4px 12px color-mix(in srgb, var(--text) 12%, transparent); animation: marked-actions-in 150ms ease-out; }
   .selecting .marked-actions .selected-count { flex-basis: 100%; margin: 0; color: var(--text-muted); font-size: 0.875rem; font-weight: 600; }
   .selecting .marked-group { display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 0.5rem; }
@@ -438,7 +438,7 @@ p[role=alert]:empty { display: none; }
   .feature-filters > .feature-editor .feature-modal-box > * { flex-basis: 100%; order: 10; }
 }
 @media (max-width: 700px) and (prefers-reduced-motion: reduce) {
-  .selecting .feature-mark, .selecting .feature-table tr.feature, .selecting .marked-actions { animation: none; transition: none; }
+  .selecting .feature-table tr.feature, .selecting .feature-table tr.feature > td:first-child, .selecting .marked-actions { animation: none; transition: none; }
 }
 .connection { display: flex; align-items: center; gap: 0.5rem; margin: 0; color: var(--text-muted); }
 .connection.offline .dot { background: var(--status-failed); }

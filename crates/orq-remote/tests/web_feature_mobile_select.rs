@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 14] = [
+const SELECTORS: [&str; 18] = [
     "[data-select-mode]",
     "[data-select-mode][aria-pressed=\"true\"]",
     ".selecting [data-mark]",
@@ -25,6 +25,10 @@ const SELECTORS: [&str; 14] = [
     "[data-start-marked].primary-button:not(.secondary-button)",
     "[data-promote-marked].secondary-button",
     ".marked-actions > .marked-group",
+    "tr.feature[aria-selected=\"true\"]:has([data-mark]:checked)",
+    "tr.feature[aria-selected=\"false\"]:has([data-mark]:not(:checked))",
+    "table.feature-table[aria-multiselectable=\"true\"]",
+    "tr.feature[aria-selected]",
 ];
 
 fn feature(name: &str, status: &str) -> Value {
@@ -120,6 +124,25 @@ fn start_2_from_the_bar_sends_one_group_start_and_a_success_leaves_selection_mod
     assert_eq!(count(end, SELECTORS[8]), 0, "selection mode is left: {out}");
     assert_eq!(count(end, SELECTORS[3]), 0, "no marks remain: {out}");
     assert!(texts(end).iter().any(|t| t == "Select"), "the button says Select again: {out}");
+}
+
+// The marked rows say so to assistive technology too: while selecting, each markable row carries aria-selected
+// (true when marked, false when not), a row that cannot be marked carries none, and the table is
+// multiselectable; Done takes all of it away again.
+#[test]
+fn a_marked_row_is_aria_selected_in_a_multiselectable_table_and_done_removes_it() {
+    let Some(out) = run(vec![select(), tap("d1"), tap("p1"), select()]) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[1], SELECTORS[17]), 0, "nothing is selectable before Select: {out}");
+    assert_eq!(count(&frames[1], SELECTORS[16]), 0, "{out}");
+    assert_eq!(count(&frames[2], SELECTORS[15]), 3, "each markable row is unselected at first: {out}");
+    assert_eq!(count(&frames[2], SELECTORS[16]), 1, "the table is multiselectable while selecting: {out}");
+    assert_eq!(count(&frames[4], SELECTORS[14]), 2, "both tapped rows are selected and checked: {out}");
+    assert_eq!(count(&frames[4], SELECTORS[15]), 1, "the unmarked row says it is not selected: {out}");
+    assert_eq!(count(&frames[4], SELECTORS[17]), 3, "the row that cannot be marked carries no aria-selected: {out}");
+    let end = last(&out);
+    assert_eq!(count(end, SELECTORS[17]), 0, "Done removes aria-selected: {out}");
+    assert_eq!(count(end, SELECTORS[16]), 0, "and the table is no longer multiselectable: {out}");
 }
 
 #[test]
@@ -280,26 +303,40 @@ fn rule<'a>(css: &'a str, start: &str) -> &'a str {
     css.lines().find(|line| line.starts_with(start)).unwrap_or_else(|| panic!("a rule starting {start:?}"))
 }
 
-// The phone's selection mode looks like the rest of the phone view: a round 22px mark drawn in CSS in a fixed
-// gutter (the whole row, at least 44px tall, is the tap target), a tinted marked row, a text-style Select/Done
-// and a bottom sheet whose Start is primary; colours come only from the theme tokens and nothing moves under
-// reduced motion.
+// The phone's selection mode looks like the rest of the phone view: no checkbox and no gutter, the mark stays in
+// the page only for assistive technology and the keyboard, and a marked row reads like a quote: an accent bar
+// down its left edge, a tint and its name in the text colour, while a row that can be marked shows a faint bar
+// (the whole row, at least 44px tall, is the tap target). A text-style Select/Done and a bottom sheet whose
+// Start is primary; colours come only from the theme tokens and nothing moves under reduced motion.
 #[test]
-fn the_phone_selection_mode_has_a_round_mark_a_tinted_marked_row_and_a_bottom_sheet_bar() {
+fn the_phone_selection_mode_marks_a_row_with_a_quote_bar_a_tint_and_a_bottom_sheet_bar() {
     let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
     let from = css.find("@media (max-width: 700px) {\n  .feature-mark").expect("the selection query");
     let phone = &css[from..from + css[from..].find("\n}\n").expect("the query's end")];
 
     let mark = rule(phone, "  .selecting .feature-mark {");
-    assert!(mark.contains("appearance: none") && mark.contains("width: 22px") && mark.contains("height: 22px"), "{mark}");
-    assert!(mark.contains("border-radius: 50%") && mark.contains("border: 2px solid var(--border)") && mark.contains("transition:"), "{mark}");
-    assert!(!mark.contains("min-width") && !mark.contains("min-height") && !mark.contains("44px"), "the box is not the tap target: {mark}");
-    assert!(rule(phone, "  .selecting .feature-mark:checked {").contains("background: var(--accent)"));
-    assert!(rule(phone, "  .selecting .feature-mark:checked::after {").contains("content: \"\""));
-    assert!(rule(phone, "  .selecting .feature-mark:focus-visible {").contains("var(--accent)"));
+    for hidden in ["position: absolute", "width: 1px", "height: 1px", "overflow: hidden", "clip-path: inset(50%)", "white-space: nowrap", "min-height: 0", "min-width: 0", "padding: 0"] {
+        assert!(mark.contains(hidden), "the mark is visually hidden ({hidden}): {mark}");
+    }
+    assert!(!mark.contains("display: none") && !mark.contains("22px") && !mark.contains("border-radius"), "the mark stays focusable and draws nothing: {mark}");
+    for gone in ["  .selecting .feature-mark:checked", "  .selecting .feature-mark:focus-visible {", "  .selecting .feature-table :is(th, td):first-child {"] {
+        assert!(!phone.lines().any(|line| line.starts_with(gone)), "no drawn mark or gutter left ({gone}): {phone}");
+    }
+    assert!(!phone.contains("padding-left: calc(0.75rem + 2rem)"), "no gutter for the mark");
 
-    assert!(rule(phone, "  .selecting .feature-table tr.feature {").contains("height: 44px"), "a selecting row is at least 44px tall");
-    assert!(rule(phone, "  .selecting .feature-table :is(th, td):first-child {").contains("padding-left: calc(0.75rem + 2rem)"), "a fixed gutter for the mark");
+    let focus = rule(phone, "  .selecting .feature-table tr.feature:has(.feature-mark:focus-visible) {");
+    assert!(focus.contains("outline: 3px solid var(--accent)") && focus.contains("outline-offset: -3px"), "the keyboard sees the row it is on: {focus}");
+
+    let row = rule(phone, "  .selecting .feature-table tr.feature {");
+    assert!(row.contains("height: 44px") && row.contains("120ms"), "a selecting row is at least 44px tall: {row}");
+    let faint = rule(phone, "  .selecting .feature-table tr.feature:has(.feature-mark) > td:first-child {");
+    assert!(faint.contains("box-shadow: inset 2px 0 0 var(--border)") && faint.contains("transition: box-shadow 120ms"), "a row that can be marked has a faint bar: {faint}");
+    let bar = rule(phone, "  .selecting .feature-table tr.feature.marked > td:first-child {");
+    assert!(bar.contains("box-shadow: inset 4px 0 0 var(--accent)"), "a marked row has the accent bar: {bar}");
+    let name = rule(phone, "  .selecting .feature-table tr.feature.marked .feature-link {");
+    assert!(name.contains("color: var(--text)") && name.contains("font-weight: 600"), "{name}");
+    let dim = rule(phone, "  .selecting .feature-table tr.feature:not(:has(.feature-mark)) {");
+    assert!(dim.contains("opacity: 0.55") && !dim.contains("box-shadow"), "rows that cannot be marked are dimmed, with no bar: {dim}");
     assert!(rule(phone, "  .selecting .feature-table tr.feature:not(:has(.feature-mark)) {").contains("opacity: 0.55"), "rows that cannot be marked are dimmed");
     assert!(rule(phone, "  .selecting .feature-table tr.feature.marked {").contains("background: color-mix(in srgb, var(--accent) 12%, transparent)"));
 
@@ -317,7 +354,7 @@ fn the_phone_selection_mode_has_a_round_mark_a_tinted_marked_row_and_a_bottom_sh
 
     let calm = &css[css.find("@media (max-width: 700px) and (prefers-reduced-motion: reduce) {").expect("a reduced-motion rule")..];
     let calm = &calm[..calm.find("\n}\n").unwrap()];
-    assert!(calm.contains(".selecting .feature-mark") && calm.contains(".selecting .marked-actions") && calm.contains("animation: none") && calm.contains("transition: none"), "{calm}");
+    assert!(calm.contains(".selecting .feature-table tr.feature > td:first-child") && calm.contains(".selecting .feature-table tr.feature,") && calm.contains(".selecting .marked-actions") && calm.contains("animation: none") && calm.contains("transition: none"), "{calm}");
 
     assert!(!phone.contains('#'), "no hard-coded colours outside the tokens: {phone}");
     assert!(css.lines().any(|line| line == ".marked-group { display: contents; }"), "a wide screen keeps its marked-actions layout");

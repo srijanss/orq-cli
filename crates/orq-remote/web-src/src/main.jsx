@@ -2564,14 +2564,14 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
       {shown.length === 0 ? <p>No features match the filters.</p> : null}
       {shown.length > 0 ? (
         <div className="feature-table-wrap">
-          <table className="feature-table">
+          <table className="feature-table" aria-multiselectable={selecting ? "true" : undefined}>
             <thead>
               <tr><th scope="col">Feature <span className="feature-count" data-feature-count>{shown.length}</span></th><th scope="col">State</th></tr>
             </thead>
             <tbody>
               {visible.map((feature) => (
                 <Fragment key={keyOf(feature)}>
-                <tr className={"feature" + (swiped === keyOf(feature) ? " swiped" : "") + (marked.includes(keyOf(feature)) ? " marked" : "")} data-feature-row={feature.name} onClick={tapRow(feature)} onClickCapture={swallowPressClick} {...(markable(feature) && !selecting ? rowTouch(feature) : { onTouchStart: forgetPress })}>
+                <tr className={"feature" + (swiped === keyOf(feature) ? " swiped" : "") + (marked.includes(keyOf(feature)) ? " marked" : "")} data-feature-row={feature.name} aria-selected={selecting && markable(feature) ? (marked.includes(keyOf(feature)) ? "true" : "false") : undefined} onClick={tapRow(feature)} onClickCapture={swallowPressClick} {...(markable(feature) && !selecting ? rowTouch(feature) : { onTouchStart: forgetPress })}>
                   <td>
                     {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(keyOf(feature))} onChange={() => toggle(keyOf(feature))} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (selecting && markable(feature)) return; if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
