@@ -397,6 +397,10 @@ fn resuming_a_run_whose_feature_has_an_active_run_is_refused_as_a_resume_with_th
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(22), "{stderr}");
     assert!(stderr.contains(&format!("orq: cannot resume {run_id}: feature COM-01 already has an active run: run-active")), "{stderr}");
+    // Refused before a run started, so the stopped run is not handed over to anything.
+    let events = run_events(&w, &run_id);
+    assert!(events.iter().all(|e| e["type"] != "run.resumed"), "{events:?}");
+    assert_eq!(events.last().unwrap()["payload"]["ending"], "failed", "{events:?}");
 }
 
 #[test]
@@ -448,4 +452,38 @@ fn resuming_a_run_whose_models_cannot_be_selected_is_refused_as_a_resume_with_th
     assert_eq!(output.status.code(), Some(21), "{stderr}");
     assert!(stderr.contains(&format!("orq: cannot resume {run_id}: ")), "{stderr}");
     assert!(stderr.contains("nope"), "{stderr}");
+}
+
+fn run_events(w: &World, run_id: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(w.state.join("orq/runs").join(run_id).join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn resuming_a_blocked_run_leaves_it_resumed_and_pointing_at_the_run_that_continues_it() {
+    let w = world("blocked-superseded");
+    let lazy = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
+    assert_eq!(run_with(&w, &lazy, &[]).status.code(), Some(30));
+    let old = only_run_id(&w);
+
+    let diligent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let output = resume_with(&w, &diligent, &old, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout));
+
+    let new = std::fs::read_dir(w.state.join("orq/runs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .find(|id| *id != old)
+        .expect("the resume started a new run");
+    let events = run_events(&w, &old);
+    let resumed: Vec<&serde_json::Value> = events.iter().filter(|e| e["type"] == "run.resumed").collect();
+    assert_eq!(resumed.len(), 1, "{events:?}");
+    assert_eq!(resumed[0]["payload"]["resumed_as"], new.as_str());
+    let last = events.last().unwrap();
+    assert_eq!(last["type"], "run.completed", "{events:?}");
+    assert_eq!(last["payload"]["ending"], "resumed");
+    assert_eq!(last["payload"]["reason"], format!("continued as {new}"));
 }

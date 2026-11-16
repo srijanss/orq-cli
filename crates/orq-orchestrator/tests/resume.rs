@@ -306,3 +306,24 @@ fn a_run_that_never_rebased_has_nothing_to_carry() {
 
     assert_eq!(rebased_onto(&w.store, "run-b").unwrap(), None);
 }
+
+#[test]
+fn a_failed_blocked_or_review_waiting_run_resumed_as_another_is_ended_as_resumed() {
+    for ending in ["failed", "blocked", "needs_review"] {
+        let w = world(&format!("superseded-{ending}"), Tamper::None);
+        let from = w.store.load("run-1").unwrap();
+        record_run_completed(&w.store, &from, ending, Some("it stopped")).unwrap();
+
+        orq_orchestrator::supersede_resumed(&w.store, &from, "run-2").unwrap();
+
+        let events = w.store.events("run-1").unwrap();
+        let last: Vec<&str> = events.iter().rev().take(2).rev().map(|e| e.kind.as_str()).collect();
+        assert_eq!(last, ["run.resumed", "run.completed"], "{ending}");
+        let completed = &events.last().unwrap().payload;
+        assert_eq!(completed["ending"], "resumed", "{ending}");
+        assert_eq!(completed["reason"], "continued as run-2", "{ending}");
+        let summary = orq_orchestrator::summarize_run(&events);
+        assert_eq!(summary.phase, orq_orchestrator::RunPhase::Completed, "{ending}");
+        assert_eq!(summary.resumed_as.as_deref(), Some("run-2"), "{ending}");
+    }
+}

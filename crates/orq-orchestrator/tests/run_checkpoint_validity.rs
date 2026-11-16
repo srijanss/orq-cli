@@ -158,7 +158,7 @@ fn a_paused_run_with_a_valid_checkpoint_can_be_planned_for_resume_and_is_then_su
     let (store, repo, _wt) = paused("plan");
     let plan = orq_orchestrator::plan_group_resume(&store, &repo, "p", &["F".to_string()]).unwrap();
     assert_eq!(plan.from.run_id, "run-1");
-    orq_orchestrator::supersede_paused(&store, &plan.from, "run-2").unwrap();
+    orq_orchestrator::supersede_resumed(&store, &plan.from, "run-2").unwrap();
     let events = store.events("run-1").unwrap();
     assert_eq!(
         orq_orchestrator::summarize_run(&events).phase,

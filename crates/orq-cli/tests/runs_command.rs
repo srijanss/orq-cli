@@ -229,3 +229,36 @@ fn the_state_directory_falls_back_to_home_when_xdg_state_home_is_unset() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("run-a"));
 }
+
+#[test]
+fn a_run_continued_by_a_resume_is_listed_as_resumed_with_the_run_that_continued_it() {
+    let fixture = GitFixture::new();
+    let home = state_home("resumed");
+    let mine = project_id(fixture.root());
+    seed(
+        &home,
+        &mine,
+        "run-a",
+        "COM-01",
+        &[
+            ("run.blocked", Some("implement_and_review"), serde_json::json!({"reason": "no commit"})),
+            ("run.completed", None, serde_json::json!({"ending": "blocked", "reason": "no commit"})),
+            ("run.resumed", None, serde_json::json!({"resumed_as": "run-b"})),
+            ("run.completed", None, serde_json::json!({"ending": "resumed", "reason": "continued as run-b"})),
+        ],
+    );
+
+    let text = runs(&["--repo", fixture.root().to_str().unwrap()], &home);
+    let stdout = String::from_utf8_lossy(&text.stdout).into_owned();
+    let line = stdout.lines().find(|l| l.starts_with("run-a\t")).expect(&stdout);
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields[2], "resumed", "{line}");
+    assert_eq!(fields[5], "continued as run-b", "{line}");
+
+    let json = runs(&["--repo", fixture.root().to_str().unwrap(), "--json"], &home);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let run = &value["runs"][0];
+    assert_eq!(run["phase"], "resumed", "{run}");
+    assert_eq!(run["resumed_as"], "run-b", "{run}");
+    assert_eq!(run["reason"], "continued as run-b", "{run}");
+}
