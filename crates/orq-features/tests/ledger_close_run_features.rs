@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use orq_core::FeatureStatus;
-use orq_features::close_features;
+use orq_features::{close_features, complete_run_features};
 
 fn dir(tag: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-close-run-features-{}-{tag}", std::process::id()));
@@ -55,5 +55,22 @@ fn closing_as_abandoned_sets_the_named_in_progress_pending_and_completed_feature
             .replacen("\"a\", \"status\": \"in_progress\"", "\"a\", \"status\": \"abandoned\"", 1)
             .replacen("\"pending\"", "\"abandoned\"", 1)
             .replacen("\"completed\"", "\"abandoned\"", 1)
+    );
+}
+
+#[test]
+fn completing_a_delivered_runs_features_sets_the_named_pending_and_in_progress_ones_completed_with_when() {
+    let path = dir("delivered").join(".tdd-features.json");
+    let before = "[\n  {\"featureName\": \"a\", \"status\": \"in_progress\"},\n  {\"featureName\": \"b\", \"status\": \"pending\"},\n  {\"featureName\": \"c\", \"status\": \"completed\", \"recordedAt\": \"old\"},\n  {\"featureName\": \"d\", \"status\": \"abandoned\"},\n  {\"featureName\": \"e\", \"status\": \"pending\"}\n]\n";
+    std::fs::write(&path, before).unwrap();
+
+    let completed = complete_run_features(&path, &names(&["a", "b", "c", "d", "missing"]), AT).unwrap();
+
+    assert_eq!(completed, names(&["a", "b"]));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before
+            .replacen("\"a\", \"status\": \"in_progress\"", &format!("\"a\", \"status\": \"completed\",\"recordedAt\":\"{AT}\""), 1)
+            .replacen("\"b\", \"status\": \"pending\"", &format!("\"b\", \"status\": \"completed\",\"recordedAt\":\"{AT}\""), 1)
     );
 }

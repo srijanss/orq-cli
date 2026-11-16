@@ -16,6 +16,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         attended: false,
         remote_control: None,
         handoff: Some("Plan:\n- COM-02 (in_progress)\nRemaining: gate"),
+        continuing: None,
         review_again: None,
         leave_full_suite_to_gate: false,
         allowed_commands: &[],

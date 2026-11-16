@@ -244,7 +244,7 @@ fn branch_commits(repo: &Path, record: &crate::store::RunRecord) -> Result<Delet
 pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[String]) -> Result<Vec<String>, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let started = store.events(run_id).map_err(|e| e.to_string())?.first().map(|e| e.occurred_at.clone());
-    let resumed = crate::fix_features::carried_from(store, run_id).map_err(|e| e.to_string())?;
+    let resumed = resumed_from(store, run_id).map_err(|e| e.to_string())?;
     let mut free = features.to_vec();
     for other in store.run_ids().map_err(|e| e.to_string())? {
         if other == run_id || resumed.contains(&other) {
@@ -263,6 +263,24 @@ pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[St
         }
     }
     Ok(free)
+}
+
+/// The runs `run_id` carried on from, as its fix-session features or its sessions record them: the
+/// run it resumed, the run that one resumed, and so on.
+fn resumed_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
+    let mut runs = crate::fix_features::carried_from(store, run_id)?;
+    let mut next = vec![run_id.to_string()];
+    while let Some(run) = next.pop() {
+        for event in store.events(&run)?.iter().filter(|e| e.kind == "run.sessions_carried") {
+            if let Some(from) = event.payload.get("from").and_then(|f| f.as_str()) {
+                if from != run_id && !runs.iter().any(|r| r == from) {
+                    runs.push(from.to_string());
+                    next.push(from.to_string());
+                }
+            }
+        }
+    }
+    Ok(runs)
 }
 
 /// What in `worktree` would be lost with it, from one status scan; git's message when it cannot tell.

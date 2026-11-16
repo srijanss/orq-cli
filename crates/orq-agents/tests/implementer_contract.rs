@@ -19,6 +19,7 @@ fn request<'a>(harness: &str, model: &str, features: &'a [&'a str]) -> Implement
         attended: false,
         remote_control: None,
         handoff: None,
+        continuing: None,
         review_again: None,
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
@@ -95,6 +96,7 @@ fn every_harness_keeps_context_handoff_and_exit_marker_inside_the_one_prompt_arg
         let full = ImplementRequest {
             context: Some("keep the API stable"),
             handoff: Some("Plan:\n- COM-01 (pending)\nbad\0byte"),
+            continuing: None,
             review_again: None,
             leave_full_suite_to_gate: false,
             exit_marker: Some("/logs/implement.done"),

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use orq_orchestrator::{carry_fix_features, features_no_later_run_took, fix_features, record_fix_features_added, Event, RunRecord, RunStore};
+use orq_orchestrator::{carry_fix_features, carry_session_references, features_no_later_run_took, fix_features, record_fix_features_added, Event, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-fix-features-{}-{tag}", std::process::id()));
@@ -109,4 +109,34 @@ fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_carried_featu
     let free = features_no_later_run_took(&store, "run-2", &names(&["a"])).unwrap();
 
     assert_eq!(free, names(&["a"]), "run-1 is the run run-2 resumed, not a later one");
+}
+
+/// A resumed run whose fix sessions started nothing still carries on from the run it resumed: that
+/// run's own feature is the resuming run's, though both started in the same second.
+#[test]
+fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_feature() {
+    let store = store("resumed-own-feature");
+    // run-1 records no events, so it has no start time and could only count as later.
+    store.start_run(&record("run-1")).unwrap();
+    store.finish_run("repo-1", "feat", "run-1").unwrap();
+    store.start_run(&record("run-2")).unwrap();
+    store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: "run-2-launched".to_string(),
+            run_id: "run-2".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "feat".to_string(),
+            kind: "run.launched".to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            payload: serde_json::json!({}),
+        })
+        .unwrap();
+    carry_session_references(&store, &record("run-2"), "run-1").unwrap();
+
+    let free = features_no_later_run_took(&store, "run-2", &names(&["feat"])).unwrap();
+
+    assert_eq!(free, names(&["feat"]), "run-1 is the run run-2 resumed, not a later one");
 }

@@ -66,6 +66,18 @@ pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded
     }, &mut || {})
 }
 
+/// For a run that delivered: each of `names` the ledger at `path` still records as `pending` or
+/// `in_progress` becomes `completed`, with `recordedAt` set to `recorded_at`. Any other status, and
+/// any name the ledger does not have, is left alone; saved as [`reopen_features`] saves. Returns the
+/// names that were completed.
+pub fn complete_run_features(path: &Path, names: &[String], recorded_at: &str) -> Result<Vec<String>, String> {
+    let open = |status: &LedgerStatus, _: &str| is(status, FeatureStatus::Pending) || is(status, FeatureStatus::InProgress);
+    edit(path, names, &open, &|text, completed| {
+        let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
+        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+    }, &mut || {})
+}
+
 /// `text` with the `recordedAt` of the entry `name` set to `at`. A member added to an entry laid out one
 /// member per line goes on a line of its own, indented as the member before it.
 fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> {

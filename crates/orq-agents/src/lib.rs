@@ -65,6 +65,9 @@ pub struct ImplementRequest<'a> {
     pub remote_control: Option<&'a str>,
     /// Where an earlier session left the work, when this session continues one after a model switch.
     pub handoff: Option<&'a str>,
+    /// The run resumed another whose session started the features and did not finish them: the
+    /// session goes on with them under the same names instead of starting new ones.
+    pub continuing: Option<Continuing<'a>>,
     /// The run's review escalated and a human asked for another: the session reviews and fixes the
     /// commits after the escalated head instead of implementing the features.
     pub review_again: Option<ReviewAgain<'a>>,
@@ -74,6 +77,17 @@ pub struct ImplementRequest<'a> {
     /// The run's permission rules: an unattended session is told the `Bash(...)` forms it may run, since
     /// a command in another form is refused with nobody to allow it. Empty says nothing about it.
     pub allowed_commands: &'a [String],
+}
+
+/// The run a resumed run continues, and the commits its session already made on the branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Continuing<'a> {
+    /// The id of the run that started the features.
+    pub run: &'a str,
+    /// The run's base commit: its commits are `base..HEAD`.
+    pub base: &'a str,
+    /// Those commits, one short line each.
+    pub log: &'a str,
 }
 
 /// Where a review asked for again starts, and the findings that were open when it escalated.
@@ -403,6 +417,25 @@ fn is_commit_name(name: &str) -> bool {
     (7..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The paragraph telling a resumed run's session to carry on with `features` where the run it
+/// resumes left them.
+fn continuing_wording(features: &[&str], continuing: &Continuing<'_>) -> Result<String, AdapterError> {
+    plain("continued run", continuing.run)?;
+    if !is_commit_name(continuing.base) {
+        return Err(AdapterError::InvalidValue { field: "continued base", value: continuing.base.to_string() });
+    }
+    let names = features.join(", ");
+    let quoted: Vec<String> = features.iter().map(|f| format!("\"{f}\"")).collect();
+    let log = continuing.log.trim().replace('\0', " ");
+    let log = if log.is_empty() { String::new() } else { format!("{log}\n") };
+    Ok(format!(
+        "\n\nThis run continues {run}, which started {names} and did not finish it. Its commits are already on this branch ({base}..HEAD):\n{log}Continue {names} under the same featureName: call init_feature with {quoted} and never create a new feature for this work.",
+        run = continuing.run,
+        base = continuing.base,
+        quoted = quoted.join(", "),
+    ))
+}
+
 fn implement_prompt(harness: &'static str, command: &str, request: &ImplementRequest<'_>) -> Result<String, AdapterError> {
     if request.implementer.harness != harness {
         return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
@@ -441,6 +474,9 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str(&again.findings.replace('\0', " "));
     } else if request.features.len() > 1 {
         prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
+    }
+    if let Some(continuing) = &request.continuing {
+        prompt.push_str(&continuing_wording(request.features, continuing)?);
     }
     if request.leave_full_suite_to_gate {
         prompt.push_str("\n\n");

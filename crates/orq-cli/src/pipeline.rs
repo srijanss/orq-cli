@@ -567,7 +567,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // A run that waited for a review decision is resumed as another review of what came after the escalated head.
     let review_again = resumed.as_ref().and_then(|r| r.review_again.clone());
     let logs = root.join("logs").join(&run_id);
-    let resumed_from = Resumed { implement_inherited_from: inherited.map(|r| r.from.run_id.as_str()), paused_at: checkpoint.as_ref(), review_again: review_again.as_ref() };
+    let resumed_from = Resumed {
+        from: resumed.as_ref().map(|r| &r.from),
+        implement_inherited_from: inherited.map(|r| r.from.run_id.as_str()),
+        paused_at: checkpoint.as_ref(), review_again: review_again.as_ref() };
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
         .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, &resumed_from));
@@ -578,10 +581,14 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         }
         Err(err) => Report { run_id, ending: Ending::Failed, detail: Some(format!("{err:?}")), review_url: None, ci_green: None },
     };
+    if let Some(note) = extra_features_note(&store, &report.run_id) {
+        add_note(&mut report, note);
+    }
     // The features its fix sessions started are the run's own: delivered, they are finished. Closed while
     // the run still holds the locks, like the reopening below.
     if matches!(report.ending, Ending::Merged | Ending::Pushed | Ending::ReviewReady) {
         close_fix_features(&store, &record, &orq_features::ledger_path(options.project));
+        complete_delivered_features(&store, &record, &orq_features::ledger_path(options.project), options.features);
     }
     // Reopened while the run still holds the locks, so a run launched next is never reset.
     if matches!(report.ending, Ending::Blocked | Ending::Failed | Ending::Paused) {
@@ -591,11 +598,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // A lock left behind blocks the next run of the feature, so it is never reported as success.
     if let Err(lock) = released {
         report.ending = Ending::Failed;
-        let note = format!("the feature lock was not released: {lock:?}");
-        report.detail = Some(match report.detail.take() {
-            Some(detail) => format!("{detail}; {note}"),
-            None => note,
-        });
+        add_note(&mut report, format!("the feature lock was not released: {lock:?}"));
     }
     // A paused run has not ended: its `run.paused` event is already recorded.
     if report.ending != Ending::Paused {
@@ -655,16 +658,22 @@ fn open_findings_text(review: &orq_orchestrator::EscalatedReview) -> String {
     }
 }
 
+/// Those of `features` no run launched after `record` took, which are still this run's to change. When
+/// that cannot be told it is said, and none are.
+fn features_no_later_run_took(store: &RunStore, record: &RunRecord, features: &[String]) -> Vec<String> {
+    orq_orchestrator::features_no_later_run_took(store, &record.run_id, features).unwrap_or_else(|err| {
+        eprintln!("orq: cannot tell whether a later run took {}: {err}", features.join(","));
+        Vec::new()
+    })
+}
+
 /// Takes the features of a run that ended without delivering out of `completed`, which its agent
 /// may have marked before the run was done; a feature a later run took is left to that run. A
 /// blocked or failed run that built nothing puts its features back to `pending` (an `in_progress`
 /// one too), so they may be launched again; otherwise the run is resumed, so they go back to
 /// `in_progress`. Best effort: a failure is said and changes nothing else about how the run ended.
 fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, ledger: &Path, features: &[String]) {
-    let free = orq_orchestrator::features_no_later_run_took(store, &record.run_id, features).unwrap_or_else(|err| {
-        eprintln!("orq: cannot tell whether a later run took {}: {err}", features.join(","));
-        Vec::new()
-    });
+    let free = features_no_later_run_took(store, record, features);
     let (reopened, to) = if matches!(ending, Ending::Blocked | Ending::Failed) && !has_commits(record) {
         (orq_features::reopen_discarded_features(ledger, features, &free), "pending")
     } else {
@@ -672,6 +681,98 @@ fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, led
     };
     if let Err(err) = reopened {
         eprintln!("orq: cannot put {} back to {to}: {err}", features.join(","));
+    }
+}
+
+/// Before a resumed run's session: each of `features` its agent left `in_progress` goes back to
+/// `pending`, so the session can start it again under the same name; a feature a later run took is
+/// left to that run. Best effort: a failure is said and changes nothing else about the run.
+fn hand_back_features(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String]) {
+    let free = features_no_later_run_took(store, record, features);
+    match orq_features::reopen_features(ledger, &free) {
+        Ok(handed_back) => record_ledger(store, record, "ledger.handed_back", &handed_back),
+        Err(err) => eprintln!("orq: cannot hand {} back to the session: {err}", free.join(",")),
+    }
+}
+
+/// At a delivered ending: each of the run's `features` still `pending` or `in_progress` becomes
+/// `completed`, its work being delivered; a feature a later run took is left to that run. Best effort:
+/// a failure is said and changes nothing else about how the run ended.
+fn complete_delivered_features(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String]) {
+    let free = features_no_later_run_took(store, record, features);
+    match orq_features::complete_run_features(ledger, &free, &crate::review::utc_now()) {
+        Ok(completed) => record_ledger(store, record, "ledger.completed_by_run", &completed),
+        Err(err) => eprintln!("orq: cannot set {} completed: {err}", free.join(",")),
+    }
+}
+
+/// The names in the ledger, none when it is missing; one that cannot be read is said and gives
+/// nothing, so what `session` started is not told.
+fn ledger_names(ledger: &Path, session: &str) -> Option<Vec<String>> {
+    match orq_features::load_ledger(ledger) {
+        Ok(entries) => Some(entries.into_iter().map(|entry| entry.feature_name).collect()),
+        Err(orq_features::LedgerError::Missing { .. }) => Some(Vec::new()),
+        Err(err) => {
+            eprintln!("orq: cannot read the feature ledger to tell which features {session} started: {err:?}");
+            None
+        }
+    }
+}
+
+/// After the implement session: the names it added to the ledger that are not the run's `features`
+/// are recorded as `ledger.extra_features`, and left as they are. Best effort.
+fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, before: Option<Vec<String>>, features: &[String]) {
+    let Some(before) = before else { return };
+    let Some(after) = ledger_names(ledger, "the implement session") else { return };
+    let added: Vec<String> = after.into_iter().filter(|name| !before.contains(name) && !features.contains(name)).collect();
+    record_ledger(store, record, "ledger.extra_features", &added);
+}
+
+/// The commits on the branch since `base`, one short line each, newest first, at most 50; none when
+/// git cannot tell.
+fn short_log(worktree: &Path, base: &str) -> String {
+    match Command::new("git").arg("-C").arg(worktree).args(["log", "--oneline", "--no-decorate", "--max-count=50", &format!("{base}..HEAD")]).output() {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).into_owned(),
+        _ => String::new(),
+    }
+}
+
+/// Add `note` to what the report says about its ending.
+fn add_note(report: &mut Report, note: String) {
+    report.detail = Some(match report.detail.take() {
+        Some(detail) => format!("{detail}; {note}"),
+        None => note,
+    });
+}
+
+/// The ending's note on the features the run's sessions added beside its own, if any were recorded.
+fn extra_features_note(store: &RunStore, run_id: &str) -> Option<String> {
+    let events = match store.events(run_id) {
+        Ok(events) => events,
+        Err(err) => {
+            eprintln!("orq: cannot read which features the session of {run_id} added: {err:?}");
+            return None;
+        }
+    };
+    let mut added: Vec<String> = Vec::new();
+    for event in events.iter().filter(|e| e.kind == "ledger.extra_features") {
+        for name in event.payload["features"].as_array().into_iter().flatten().filter_map(|n| n.as_str()) {
+            if !added.iter().any(|a| a == name) {
+                added.push(name.to_string());
+            }
+        }
+    }
+    (!added.is_empty()).then(|| format!("the session also added: {}", added.join(", ")))
+}
+
+/// Record a `kind` event naming the `features` a ledger step changed; none changed records nothing.
+/// Best effort: a failure is said and changes nothing else about the run.
+fn record_ledger(store: &RunStore, record: &RunRecord, kind: &str, features: &[String]) {
+    if features.is_empty() {
+        return;
+    }
+    if let Err(err) = orq_orchestrator::record_ledger_features(store, record, kind, features) {
+        eprintln!("orq: cannot record {kind} for {}: {err:?}", features.join(","));
     }
 }
 
@@ -685,10 +786,7 @@ fn close_fix_features(store: &RunStore, record: &RunRecord, ledger: &Path) {
     if started.is_empty() {
         return;
     }
-    let free = orq_orchestrator::features_no_later_run_took(store, &record.run_id, &started).unwrap_or_else(|err| {
-        eprintln!("orq: cannot tell whether a later run took {}: {err}", started.join(","));
-        Vec::new()
-    });
+    let free = features_no_later_run_took(store, record, &started);
     if let Err(err) = orq_features::close_features(ledger, &free, orq_core::FeatureStatus::Completed, &crate::review::utc_now()) {
         eprintln!("orq: cannot set {} completed: {err}", free.join(","));
     }
@@ -942,6 +1040,8 @@ fn write_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orches
 /// What a resumed run takes over from the run it continues; all `None` for a new run.
 #[derive(Clone, Copy)]
 struct Resumed<'a> {
+    /// The run this one continues.
+    from: Option<&'a RunRecord>,
     /// That run's agent session finished, so this run does not start one.
     implement_inherited_from: Option<&'a str>,
     /// That run paused here, having done these stages.
@@ -959,7 +1059,7 @@ fn stages(
     logs: &Path,
     resumed: &Resumed<'_>,
 ) -> Result<Report, StoreError> {
-    let Resumed { implement_inherited_from, paused_at, review_again } = *resumed;
+    let Resumed { from: resumed_from, implement_inherited_from, paused_at, review_again } = *resumed;
     let run_id = record.run_id.as_str();
     // Settled when the stages end, however they end, so the last fix session's features are recorded too.
     let fix_features = FixFeatureWatch::new(store, record, orq_features::ledger_path(options.project));
@@ -1034,6 +1134,9 @@ fn stages(
         // A resumed run whose agent session already finished goes on from the next stage; that was
         // recorded when the run began, so it survives a failure anywhere before here.
         if implement_inherited_from.is_none() {
+            if resumed_from.is_some() {
+                hand_back_features(store, record, &orq_features::ledger_path(options.project), options.features);
+            }
             let features: Vec<&str> = options.features.iter().map(String::as_str).collect();
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
@@ -1052,6 +1155,10 @@ fn stages(
                 }
             }
             let open_findings = review_again.map(open_findings_text);
+            // A resumed session carries on with the features the run it resumes started; a review asked
+            // for again reviews instead.
+            let continued_log = resumed_from.filter(|_| review_again.is_none()).map(|_| short_log(worktree, &record.base_sha));
+            let continuing = resumed_from.zip(continued_log.as_deref()).map(|(from, log)| orq_agents::Continuing { run: &from.run_id, base: &record.base_sha, log });
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     features: &features,
@@ -1062,6 +1169,7 @@ fn stages(
                     attended: options.interactive,
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
+                    continuing,
                     review_again: review_again.zip(open_findings.as_deref()).map(|(review, findings)| orq_agents::ReviewAgain { from: &review.reviewed_head, findings }),
                     // The gate runs the full suite after the session, so the session need not; a project
                     // whose gate is not a full suite opts out.
@@ -1079,7 +1187,10 @@ fn stages(
                 terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
+            let ledger = orq_features::ledger_path(options.project);
+            let before = ledger_names(&ledger, "the implement session");
             let outcome = run_implement_stage(store, run_id, &session)?;
+            record_extra_features(store, record, &ledger, before, options.features);
             if !outcome.success {
                 // A session that stopped for its escalated review has done what it could; the
                 // decision is a human's, so the run waits for it instead of failing.
@@ -1548,14 +1659,7 @@ impl<'a> FixFeatureWatch<'a> {
     }
 
     fn names(&self) -> Option<Vec<String>> {
-        match orq_features::load_ledger(&self.ledger) {
-            Ok(entries) => Some(entries.into_iter().map(|entry| entry.feature_name).collect()),
-            Err(orq_features::LedgerError::Missing { .. }) => Some(Vec::new()),
-            Err(err) => {
-                eprintln!("orq: cannot read the feature ledger to tell which features a fix session started: {err:?}");
-                None
-            }
-        }
+        ledger_names(&self.ledger, "a fix session")
     }
 }
 

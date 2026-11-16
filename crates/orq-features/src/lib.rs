@@ -262,7 +262,7 @@ mod promote;
 pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
 
 mod reopen;
-pub use reopen::{close_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features};
+pub use reopen::{close_features, complete_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features};
 
 mod validate;
 pub use validate::{feature_name_problem, validate_entries, ValidationError};

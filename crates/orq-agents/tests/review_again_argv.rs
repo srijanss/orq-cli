@@ -17,6 +17,7 @@ fn request<'a>(implementer: &str, review_again: Option<ReviewAgain<'a>>) -> Impl
         attended: false,
         remote_control: None,
         handoff: None,
+        continuing: None,
         review_again,
         leave_full_suite_to_gate: false,
         allowed_commands: &[],

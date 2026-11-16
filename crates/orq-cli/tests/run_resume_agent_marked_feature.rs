@@ -301,3 +301,121 @@ fn a_paused_run_whose_agent_marked_its_feature_completed_leaves_it_in_progress_a
     assert!(stdout.contains("state: review_ready"), "{stdout}");
     assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
 }
+
+/// A PATH whose `claude` acts like an agent's TDD server: it refuses to start a feature the ledger
+/// already says is `in_progress`, marks it `in_progress` when it starts, runs `agent`, and marks it
+/// `completed` when `agent` succeeds.
+fn path_tdd_like(w: &World, agent: &FakeAgent, tag: &str) -> std::ffi::OsString {
+    let path = path_with(w, agent, "in_progress", tag);
+    let ledger = w.repo.root().join(".tdd-features.json");
+    std::fs::write(
+        w.base.join(format!("bin-{tag}/claude")),
+        format!(
+            "#!/bin/sh\nif grep -q '\"status\": \"in_progress\"' '{ledger}'; then echo 'init_feature: feature is already in progress' >&2; exit 9; fi\n\
+             sed -i -E 's/\"status\": \"[a-z_]+\"/\"status\": \"in_progress\"/' '{ledger}'\n\
+             '{agent}' \"$@\" || exit $?\n\
+             sed -i -E 's/\"status\": \"[a-z_]+\"/\"status\": \"completed\"/' '{ledger}'\n",
+            ledger = ledger.display(),
+            agent = agent.path().display()
+        ),
+    )
+    .unwrap();
+    path
+}
+
+/// How many entries the repository's ledger has for `name`.
+fn entries_named(repo: &Path, name: &str) -> usize {
+    let ledger: serde_json::Value = serde_json::from_slice(&std::fs::read(repo.join(".tdd-features.json")).unwrap()).unwrap();
+    ledger.as_array().unwrap().iter().filter(|e| e["featureName"] == name).count()
+}
+
+#[test]
+fn a_resumed_run_hands_its_in_progress_feature_back_so_the_agent_can_start_it_again() {
+    let w = world("hand-back");
+    let failed = run(&w, &failing_agent(), "in_progress", "first");
+    assert!(text(&failed.stdout).contains("failed"), "{}\n{}", text(&failed.stdout), text(&failed.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress");
+    let run_id = only_run(&w);
+
+    let agent = finishing_agent();
+    let output = orq(&w, path_tdd_like(&w, &agent, "second"), &["run", "resume", &run_id, "--yes", "--no-ci-check"]);
+
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", text(&output.stderr));
+    assert!(stdout.contains("state: review_ready"), "{stdout}\n{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert_eq!(entries_named(w.repo.root(), "COM-01"), 1);
+}
+
+
+/// The payloads of every `kind` event any run recorded.
+fn payloads_of(w: &World, kind: &str) -> Vec<serde_json::Value> {
+    let store = orq_orchestrator::RunStore::new(&w.state.join("orq"));
+    let mut payloads = Vec::new();
+    for run in store.run_ids().unwrap() {
+        payloads.extend(store.events(&run).unwrap().into_iter().filter(|e| e.kind == kind).map(|e| e.payload));
+    }
+    payloads
+}
+
+#[test]
+fn a_resumed_run_records_the_feature_it_handed_back_and_the_one_its_delivery_completed() {
+    let w = world("hand-back-events");
+    run(&w, &failing_agent(), "in_progress", "first");
+    let run_id = only_run(&w);
+
+    let agent = finishing_agent();
+    let output = orq(&w, path_tdd_like(&w, &agent, "second"), &["run", "resume", &run_id, "--yes", "--no-ci-check"]);
+
+    assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(payloads_of(&w, "ledger.handed_back"), vec![serde_json::json!({"features": ["COM-01"]})]);
+    assert_eq!(payloads_of(&w, "ledger.completed_by_run"), vec![serde_json::json!({"features": ["COM-01"]})]);
+}
+
+/// A PATH whose `claude` starts COM-01 and also adds a `pending` COM-02 to the main ledger, as a
+/// session that planned more than it was asked would, and then runs `agent`.
+fn path_adding_com_02(w: &World, agent: &FakeAgent, tag: &str) -> std::ffi::OsString {
+    let path = path_with(w, agent, "in_progress", tag);
+    let ledger = w.repo.root().join(".tdd-features.json");
+    let both = r#"[{"featureName": "COM-01", "dependsOn": [], "status": "in_progress"}, {"featureName": "COM-02", "dependsOn": [], "status": "pending"}]"#;
+    std::fs::write(
+        w.base.join(format!("bin-{tag}/claude")),
+        format!("#!/bin/sh\nprintf '%s\\n' '{both}' > '{ledger}'\nexec '{agent}' \"$@\"\n", ledger = ledger.display(), agent = agent.path().display()),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn a_feature_the_session_added_is_recorded_and_noted_but_left_as_it_is() {
+    let w = world("extra");
+    let agent = finishing_agent();
+
+    let output = orq(&w, path_adding_com_02(&w, &agent, "first"), &["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
+
+    let stderr = text(&output.stderr);
+    assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{stderr}", text(&output.stdout));
+    assert_eq!(payloads_of(&w, "ledger.extra_features"), vec![serde_json::json!({"features": ["COM-02"]})]);
+    assert!(stderr.contains("the session also added: COM-02"), "{stderr}");
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "pending");
+}
+
+#[test]
+fn a_resumed_runs_session_is_told_to_continue_its_feature_under_the_same_name() {
+    let w = world("continue-prompt");
+    let first = failing_agent();
+    run(&w, &first, "in_progress", "first");
+    let run_id = only_run(&w);
+
+    let agent = finishing_agent();
+    let output = orq(&w, path_tdd_like(&w, &agent, "second"), &["run", "resume", &run_id, "--yes", "--no-ci-check"]);
+
+    assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{}", text(&output.stdout), text(&output.stderr));
+    let prompt = agent.first_run().unwrap().args.join(" ");
+    assert!(prompt.contains(&format!("This run continues {run_id}, which started COM-01")), "{prompt}");
+    assert!(prompt.contains("..HEAD") && prompt.contains("wip"), "its commits are named: {prompt}");
+    assert!(prompt.contains("init_feature with \"COM-01\"") && prompt.contains("never create a new feature"), "{prompt}");
+    let fresh = first.first_run().unwrap().args.join(" ");
+    assert!(!fresh.contains("This run continues"), "a fresh run is told nothing of the kind: {fresh}");
+}
