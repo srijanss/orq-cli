@@ -449,3 +449,19 @@ fn a_value_in_escaped_quotes_is_hidden_past_an_encoded_quote_inside_it() {
 
     assert!(notes.contains(r#"login pwd=\"[REDACTED]\" rejected"#), "{notes}");
 }
+
+#[test]
+fn a_quoted_value_unclosed_or_ending_in_backslashes_is_hidden_whole_and_what_follows_it_stays() {
+    let cases = [
+        ("unclosed", r#"Error: login pwd="abc def-unclosed"#, r#"login pwd="[REDACTED]"#, "unclosed"),
+        ("dangling-backslash", r#"Error: login pwd="abc-trailing\"#, r#"login pwd="[REDACTED]"#, "trailing"),
+        ("even-backslashes", r#"Error: login pwd="abc-even\\" rejected"#, r#"login pwd="[REDACTED]" rejected"#, "abc-even"),
+        ("escaped-layer-even", r#"Error: login pwd=\"abc-esc\\\\\" rejected"#, r#"login pwd=\"[REDACTED]\" rejected"#, "abc-esc"),
+    ];
+    for (tag, line, shown, secret) in cases {
+        let notes = notes_of_raw_line(tag, line);
+
+        assert!(notes.contains(shown), "{tag}: expected {shown} in: {notes}");
+        assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
+    }
+}
