@@ -286,12 +286,16 @@ const REVIEW_FILTERS = [
   ["freshness", "Freshness", rowFreshness],
 ];
 
-// Today's reviews or all of them, newest (or oldest) first; the filters only hide rows, so a
-// marker never leaves a row that is shown.
+// Today's reviews or all of them, newest (or oldest) first, ten to a page; the filters only hide
+// rows, so a marker never leaves a row that is shown. A filter, range or sort change starts again
+// on the first page.
+const REVIEWS_PER_PAGE = 10;
+
 function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRows = null, showProject = false }) {
   const [chosen, setChosen] = useState({});
   const [range, setRange] = useState("all");
   const [order, setOrder] = useState("desc");
+  const [page, setPage] = useState(0);
   useEffect(() => {
     if (onRows !== null) onRows(runs);
   }, [runs]);
@@ -305,17 +309,20 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
     .filter((run) => REVIEW_FILTERS.every(([key, , read]) => !chosen[key] || read(run) === chosen[key]))
     .sort((a, b) => (order === "desc" ? reviewTime(b) - reviewTime(a) : reviewTime(a) - reviewTime(b)));
   const flip = order === "desc" ? "asc" : "desc";
+  const pages = Math.max(1, Math.ceil(shown.length / REVIEWS_PER_PAGE));
+  const at = Math.min(page, pages - 1);
+  const visible = shown.slice(at * REVIEWS_PER_PAGE, (at + 1) * REVIEWS_PER_PAGE);
   return (
     <div className="review-list card">
       <div className="review-list-head">
         <div className="review-range" role="group" aria-label="Which reviews">
           {[["today", "Today (" + today.length + ")"], ["all", "All"]].map(([id, label]) => (
-            <button key={id} type="button" aria-pressed={range === id ? "true" : "false"} data-review-range={id} onClick={() => setRange(id)}>
+            <button key={id} type="button" aria-pressed={range === id ? "true" : "false"} data-review-range={id} onClick={() => { setRange(id); setPage(0); }}>
               {label}
             </button>
           ))}
         </div>
-        <button type="button" className="sort-toggle" data-review-sort={order} aria-label={order === "desc" ? "Sort by review time: newest first" : "Sort by review time: oldest first"} title={flip === "asc" ? "Show the oldest first" : "Show the newest first"} onClick={() => setOrder(flip)}>
+        <button type="button" className="sort-toggle" data-review-sort={order} aria-label={order === "desc" ? "Sort by review time: newest first" : "Sort by review time: oldest first"} title={flip === "asc" ? "Show the oldest first" : "Show the newest first"} onClick={() => { setOrder(flip); setPage(0); }}>
           <Icon name={order === "desc" ? "sortDesc" : "sortAsc"} size={18} />
           {order === "desc" ? "Sort: Newest" : "Sort: Oldest"}
         </button>
@@ -324,7 +331,7 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
         {REVIEW_FILTERS.map(([key, label, read, order]) => (
           <label key={key}>
             <span className="sr-only">{label}</span>
-            <select data-filter={key} value={chosen[key] || ""} onChange={(event) => setChosen({ ...chosen, [key]: event.target.value })}>
+            <select data-filter={key} value={chosen[key] || ""} onChange={(event) => { setChosen({ ...chosen, [key]: event.target.value }); setPage(0); }}>
               <option value="">{label + ": All"}</option>
               {[...new Set(runs.map(read).filter((value) => value !== ""))].sort(order).map((value) => (
                 <option key={value} value={value}>{value}</option>
@@ -337,11 +344,12 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
         <p className="review-empty">{range === "today" && today.length === 0 ? "No reviews today." : "No reviews match these filters."}</p>
       ) : (
         <ul className="review-rows">
-          {shown.map((run) => (
+          {visible.map((run) => (
             <ReviewRow key={run.run_id || run.feature} run={run} detailPrefix={detailPrefix} selected={selected !== null && run.run_id === selected} showProject={showProject} />
           ))}
         </ul>
       )}
+      <Pager at={at} pages={pages} onPage={setPage} />
     </div>
   );
 }
