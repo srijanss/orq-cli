@@ -108,6 +108,9 @@ impl ObservationError {
     }
 }
 
+/// The provider of a review that ended in this repository rather than at a forge.
+pub const LOCAL_PROVIDER: &str = "local";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewLifecycle {
     pub provider: String,
@@ -140,6 +143,72 @@ impl ReviewLifecycle {
             last_error: None,
             observed: false,
         }
+    }
+
+    /// A review whose run was merged into its base in this repository at `merged_sha`, with no PR/MR:
+    /// provider `local`, merged and resolved. The merged commit is kept as its review id.
+    pub fn merged_locally(reported_head_sha: &str, merged_sha: &str) -> ReviewLifecycle {
+        ReviewLifecycle {
+            provider: LOCAL_PROVIDER.into(),
+            review_id: merged_sha.into(),
+            state: ProviderState::Merged,
+            gate: Gate::Resolved,
+            observed: true,
+            ..ReviewLifecycle::associate(LOCAL_PROVIDER, merged_sha, "", reported_head_sha)
+        }
+    }
+
+    /// Whether the review still waits for a person: neither merged nor closed, and not resolved.
+    pub fn waiting(&self) -> bool {
+        !matches!(self.state, ProviderState::Merged | ProviderState::Closed) && self.gate != Gate::Resolved
+    }
+
+    /// The status the inbox shows instead of the report's own: the provider state, or `resolved` for an
+    /// open review a person marked reviewed. `None` for a review kept here that waits again, so it shows
+    /// as its report does.
+    pub fn status(&self) -> Option<&'static str> {
+        if self.state == ProviderState::Open && self.gate == Gate::Resolved {
+            Some("resolved")
+        } else if self.provider == LOCAL_PROVIDER && self.waiting() {
+            None
+        } else {
+            Some(self.state.as_str())
+        }
+    }
+
+    /// A review of `reported_head_sha` kept in this repository, before any person acted on it: open and
+    /// waiting, with nothing at a provider to look at.
+    pub fn local(reported_head_sha: &str) -> ReviewLifecycle {
+        ReviewLifecycle { observed: true, ..ReviewLifecycle::associate(LOCAL_PROVIDER, "", "", reported_head_sha) }
+    }
+
+    /// The lifecycle after a person marked the review reviewed. A merged or closed review stays as it is.
+    pub fn resolved(&self) -> ReviewLifecycle {
+        ReviewLifecycle { gate: Gate::Resolved, ..self.clone() }
+    }
+
+    /// The lifecycle after a person dismissed the review. A merged review cannot be dismissed, nor can an
+    /// open pull request: that is closed at its provider.
+    pub fn dismissed(&self) -> Result<ReviewLifecycle, String> {
+        if self.state == ProviderState::Merged {
+            return Err("the review is merged; it cannot be dismissed".into());
+        }
+        if self.provider != LOCAL_PROVIDER && self.state == ProviderState::Open {
+            return Err(format!("the review is open at {}; close it there", plain_line(&self.provider)));
+        }
+        Ok(ReviewLifecycle { state: ProviderState::Closed, gate: Gate::Resolved, ..self.clone() })
+    }
+
+    /// The lifecycle after a person reopened the review: it waits again. A merged review cannot be
+    /// reopened, nor can a review closed at its provider: that is reopened there.
+    pub fn reopened(&self) -> Result<ReviewLifecycle, String> {
+        if self.state == ProviderState::Merged {
+            return Err("the review is merged; it cannot be reopened".into());
+        }
+        if self.provider != LOCAL_PROVIDER && self.state == ProviderState::Closed {
+            return Err(format!("the review is closed at {}; reopen it there", plain_line(&self.provider)));
+        }
+        Ok(ReviewLifecycle { state: ProviderState::Open, gate: Gate::AwaitingHumanReview, ..self.clone() })
     }
 
     /// The lifecycle after one read-only look at the provider.

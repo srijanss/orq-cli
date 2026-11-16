@@ -10,7 +10,8 @@ use std::net::{IpAddr, Ipv6Addr};
 
 use serde_json::{json, Value};
 
-use crate::review_inbox::{self, InboxDetail};
+use crate::review_inbox::{self, ActionOutcome, InboxDetail, ReviewAction};
+use crate::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
 use crate::storage::{check_run_id, StorageRoots};
 use crate::store::Store;
 
@@ -236,6 +237,12 @@ pub trait ProjectsProvider {
     /// launch defaults. A provider that cannot start a group run says so.
     fn start_group_run(&self, _id: &str, _features: &[String], _profiles: Option<&LaunchProfiles>) -> Result<RunStart, String> {
         Ok(RunStart::Refused("this server cannot start a group run".to_string()))
+    }
+
+    /// Records on run `run` (whose reviews belong to the review key `project`) that a person resolved,
+    /// dismissed or reopened its review of `head` from the web. The review itself is already changed.
+    fn review_acted(&self, _project: &str, _run: &str, _action: ReviewAction, _head: &str) -> Result<(), String> {
+        Ok(())
     }
 
     /// Pauses, resumes, stops or accepts run `run` of project `id`. An accept is done once its tests have
@@ -1088,6 +1095,119 @@ fn run_target<'a>(path: &'a str, leaf: &str) -> Option<(&'a str, &'a str)> {
     (runs == "runs" && last == leaf && !id.is_empty() && !run.is_empty() && parts.next().is_none()).then_some((id, run))
 }
 
+/// The project (when scoped), run and action of `/api/reviews/{run}/{action}` or
+/// `/api/projects/{id}/reviews/{run}/{action}`, when the path has that shape and names one of the actions.
+fn review_action_target(path: &str) -> Option<(Option<&str>, &str, ReviewAction)> {
+    let (scope, rest) = match path.strip_prefix("/api/reviews/") {
+        Some(rest) => (None, rest),
+        None => {
+            let (id, rest) = path.strip_prefix("/api/projects/")?.split_once('/')?;
+            (Some(Some(id).filter(|id| !id.is_empty())?), rest.strip_prefix("reviews/")?)
+        }
+    };
+    let (run, action) = rest.split_once('/')?;
+    (!run.is_empty() && !action.contains('/')).then_some(())?;
+    Some((scope, run, ReviewAction::parse(action)?))
+}
+
+/// Resolves, dismisses or reopens the review of a run for the web, if actions are on, and leaves an audit
+/// line for the attempt. A `head` in the body must still be the head of the run's latest report.
+fn review_action(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, scope: Option<&str>, run: &str, action: ReviewAction, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let name = match action {
+        ReviewAction::Resolve => "review.resolve",
+        ReviewAction::Dismiss => "review.dismiss",
+        ReviewAction::Reopen => "review.reopen",
+    };
+    let failed = "the review could not be changed";
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: name, project: scope.unwrap_or(""), run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    if !plain_run_id(run) || check_run_id(run).is_err() {
+        audit(Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &["head"]) {
+        audit(Outcome::Refused, Some(run), Some("bad request body"));
+        return refusal;
+    }
+    let head = match serde_json::from_slice::<Value>(body).ok().map(|body| body["head"].clone()) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(head)) if (7..=64).contains(&head.len()) && head.bytes().all(|b| b.is_ascii_hexdigit()) => Some(head),
+        Some(_) => {
+            audit(Outcome::Refused, Some(run), Some("bad request body"));
+            return error(400, "the head is not a commit");
+        }
+    };
+    let not_found = || {
+        audit(Outcome::Refused, Some(run), Some("no such review"));
+        error(404, "not found")
+    };
+    let owner = match scope {
+        None => None,
+        Some(id) => match provider.map(|provider| provider.review_scope(id)) {
+            Some(Ok(Some(scope))) => Some(scope.review_key),
+            Some(Err(_)) => {
+                audit(Outcome::Refused, Some(run), Some(failed));
+                return error(500, failed);
+            }
+            _ => return not_found(),
+        },
+    };
+    // A missing index is no review; it is never created by a write.
+    if !roots.database().exists() {
+        return not_found();
+    }
+    let store = match Store::open(&roots.database()) {
+        Ok(store) => store,
+        Err(_) => {
+            audit(Outcome::Refused, Some(run), Some(failed));
+            return error(500, failed);
+        }
+    };
+    let project = match store.reviews_for_run(run) {
+        Ok(records) => match records.into_iter().last() {
+            Some(record) if owner.as_ref().is_none_or(|owner| *owner == record.project) => record.project,
+            _ => return not_found(),
+        },
+        Err(_) => {
+            audit(Outcome::Refused, Some(run), Some(failed));
+            return error(500, failed);
+        }
+    };
+    match review_inbox::act_on_review(&store, run, action, head.as_deref()) {
+        Ok(ActionOutcome::Done(lifecycle)) => {
+            let head = lifecycle.reported_head_sha;
+            if let Some(Err(why)) = provider.map(|provider| provider.review_acted(&project, run, action, &head)) {
+                log_line(&launch_failure_line(name, &project, run, &why));
+            }
+            audit(Outcome::Allowed, Some(run), None);
+            let status = review_inbox::inbox_of_project(roots, &project, "").ok().and_then(|rows| rows.into_iter().find(|row| row.run_id == run)).map(|row| row.status);
+            reply(200, json!({ "run": run, "status": status, "head": head }))
+        }
+        Ok(ActionOutcome::StaleHead { latest }) => {
+            let why = "a newer report of this run was written; reload it first";
+            audit(Outcome::Refused, Some(run), Some(why));
+            reply(409, json!({ "error": why, "latest": latest }))
+        }
+        Ok(ActionOutcome::Refused(why)) => {
+            audit(Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        Ok(ActionOutcome::NoReview) => not_found(),
+        Err(why) => {
+            log_line(&launch_failure_line(name, &project, run, &why));
+            audit(Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+    }
+}
+
 /// What a discard would take with the branch, for the web's question before Discard. It changes
 /// nothing, so it is not audited, but it is there only while actions are on.
 fn discard_warning(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str) -> Response {
@@ -1528,6 +1648,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, run, control)) = (request.method == "POST").then(|| run_control_target(path)).flatten() {
         return control_run(roots, provider, id, run, control, body);
     }
+    if let Some((scope, run, action)) = (request.method == "POST").then(|| review_action_target(path)).flatten() {
+        return review_action(roots, provider, scope, run, action, body);
+    }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "discard")).flatten() {
         return discard_run(roots, provider, id, run, body);
     }
@@ -1809,6 +1932,8 @@ struct Facts {
     /// The head the provider showed: the reviewed commit when current, the other one when stale.
     provider_head: Option<String>,
     checked_at: Option<String>,
+    /// The commit the run was merged at when it was merged locally, not through a provider review.
+    merged_locally: Option<String>,
 }
 
 /// Seconds since the epoch as plain UTC text, `2026-11-09T10:00:00Z`.
@@ -1842,7 +1967,7 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
     let Some(record) = records.into_iter().last() else { return Ok(None) };
     let (project, head) = (record.project, record.head_sha);
     // A lifecycle that cannot be read is unknown, never "fresh": it counts as stale and offers no link.
-    let unknown = |project, head| Facts { project, head, observed: None, link: None, stale: true, freshness: "unverified", provider_head: None, checked_at: None };
+    let unknown = |project, head| Facts { project, head, observed: None, link: None, stale: true, freshness: "unverified", provider_head: None, checked_at: None, merged_locally: None };
     let Ok(all) = store.lifecycles_for_run(run_id) else { return Ok(Some(unknown(project, head))) };
     let Some(lifecycle) = all.into_iter().rev().find(|l| l.reported_head_sha == head) else {
         // Never looked at the provider: not current, but not known to be out of date either.
@@ -1859,7 +1984,8 @@ fn read_facts(roots: &StorageRoots, run_id: &str) -> Result<Option<Facts>, Strin
         "stale" => lifecycle.observed_head_sha.clone(),
         _ => None,
     };
-    Ok(Some(Facts { observed: lifecycle.observed_head_sha, link, stale: lifecycle.stale, freshness, provider_head, checked_at, project, head }))
+    let merged_locally = (lifecycle.provider == LOCAL_PROVIDER && lifecycle.state == ProviderState::Merged).then(|| lifecycle.review_id.clone());
+    Ok(Some(Facts { merged_locally, observed: lifecycle.observed_head_sha, link, stale: lifecycle.stale, freshness, provider_head, checked_at, project, head }))
 }
 
 fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_project: bool, query: &str) -> Response {
@@ -1877,13 +2003,14 @@ fn list(roots: &StorageRoots, project_id: &str, project_name: &str, only_this_pr
         .map(|row| {
             let f = facts(roots, &row.run_id);
             let freshness = f.as_ref().map_or("unverified", |f| f.freshness);
+            let merged_locally = f.as_ref().and_then(|f| f.merged_locally.clone());
             let link = f.and_then(|f| f.link);
             let link_allowed = link.is_some();
             json!({
                 "generated_at": row.generated_at,
                 "run_id": row.run_id, "feature": row.feature, "project": row.project, "current": row.current,
                 "status": row.status, "risk": row.risk, "fixed_risk": row.fixed_risk, "stale": row.stale, "link": link,
-                "freshness": freshness, "link_allowed": link_allowed,
+                "freshness": freshness, "link_allowed": link_allowed, "merged_locally": merged_locally,
             })
         })
         .collect();
@@ -1908,6 +2035,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
         Ok(detail) => detail,
         Err(_) => return error(404, "no review report for this run"),
     };
+    let status = review_inbox::inbox_of_project(roots, &f.project, "").ok().and_then(|rows| rows.into_iter().find(|row| row.run_id == run_id)).map(|row| row.status);
     reply(
         200,
         json!({
@@ -1915,6 +2043,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
             "run_id": run_id, "reported_head_sha": f.head, "observed_head_sha": f.observed, "stale": f.stale, "link": f.link,
             "freshness": f.freshness, "link_allowed": f.link.is_some(), "reviewed_head_sha": f.head, "provider_head_sha": f.provider_head, "checked_at": f.checked_at,
             "summary": summary, "risks": risks, "files": files, "tests": tests, "rounds": rounds,
+            "status": status, "merged_locally": f.merged_locally,
         }),
     )
 }

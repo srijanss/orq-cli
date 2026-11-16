@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::review_lifecycle::{ProviderState, ReviewLifecycle, LOCAL_PROVIDER};
 use crate::storage::{check_run_id, StorageRoots};
 use crate::store::{check_report_path, ReviewRecord, Store};
 
@@ -61,20 +62,7 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
         return Ok(Vec::new());
     }
     let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
-    let records = store.all_reviews().map_err(|err| format!("cannot read the review index: {err}"))?;
-    // Later records replace earlier ones for the same run; runs keep the
-    // order they were first seen in.
-    let mut latest: Vec<ReviewRecord> = Vec::new();
-    let mut position: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for record in records {
-        match position.get(&record.run_id) {
-            Some(&at) => latest[at] = record,
-            None => {
-                position.insert(record.run_id.clone(), latest.len());
-                latest.push(record);
-            }
-        }
-    }
+    let mut latest = latest_per_run(store.all_reviews().map_err(|err| format!("cannot read the review index: {err}"))?);
     if only_current {
         latest.retain(|record| record.project == current_project_id);
     }
@@ -92,8 +80,8 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
             Err(_) => ("unreadable".to_string(), ("-".to_string(), None)),
         };
         if report.is_ok() {
-            if let Some(l) = lifecycle {
-                status = l.state.as_str().to_string();
+            if let Some(shown) = lifecycle.and_then(ReviewLifecycle::status) {
+                status = shown.to_string();
             }
         }
         let unknown = lifecycles.is_err();
@@ -113,6 +101,149 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
         });
     }
     Ok(rows)
+}
+
+/// The latest of `records` for each run: later records replace earlier ones for the same run, and runs
+/// keep the order they were first seen in.
+fn latest_per_run(records: Vec<ReviewRecord>) -> Vec<ReviewRecord> {
+    let mut latest: Vec<ReviewRecord> = Vec::new();
+    let mut position: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for record in records {
+        match position.get(&record.run_id) {
+            Some(&at) => latest[at] = record,
+            None => {
+                position.insert(record.run_id.clone(), latest.len());
+                latest.push(record);
+            }
+        }
+    }
+    latest
+}
+
+/// How many runs of `project` have a latest report still waiting on a person: no lifecycle for that
+/// report's head yet, or one that is neither merged, closed nor resolved. A lifecycle that cannot be
+/// read is an error, never a guess.
+pub fn waiting_count(store: &Store, project: &str) -> Result<usize, String> {
+    let mut waiting = 0;
+    let records = store.reviews_for_project(project).map_err(|err| format!("cannot read the review index: {err}"))?;
+    for record in latest_per_run(records) {
+        let lifecycles = store.lifecycles_for_run(&record.run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+        if lifecycles.iter().rev().find(|l| l.reported_head_sha == record.head_sha).is_none_or(ReviewLifecycle::waiting) {
+            waiting += 1;
+        }
+    }
+    Ok(waiting)
+}
+
+/// Records that `run_id` was merged into its base in this repository at `merged_sha`: every report of
+/// the run, the merged head's and any older one it superseded, is resolved as merged locally. A head
+/// that already has a provider's lifecycle, or was merged locally by an earlier pass, keeps it, so a
+/// repeat saves nothing; one a person resolved or dismissed here becomes merged. Returns how many
+/// lifecycles were saved.
+pub fn record_local_merge(store: &Store, run_id: &str, merged_sha: &str) -> Result<usize, String> {
+    let lifecycles = store.lifecycles_for_run(run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+    let mut saved = 0;
+    let mut heads: Vec<String> = Vec::new();
+    for record in store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))? {
+        if !heads.contains(&record.head_sha) {
+            heads.push(record.head_sha);
+        }
+    }
+    for head in heads {
+        if lifecycles.iter().any(|l| l.reported_head_sha == head && (l.provider != LOCAL_PROVIDER || l.state == ProviderState::Merged)) {
+            continue;
+        }
+        store.save_lifecycle(run_id, &ReviewLifecycle::merged_locally(&head, merged_sha)).map_err(|err| format!("cannot save the review state: {err}"))?;
+        saved += 1;
+    }
+    Ok(saved)
+}
+
+/// Records each `(run, merged commit)` of runs merged locally before merges resolved their reviews.
+/// Runs without a report, and reviews already settled, are left alone, so a repeat changes nothing.
+/// Returns how many runs changed.
+pub fn backfill_local_merges(store: &Store, merges: &[(String, String)]) -> Result<usize, String> {
+    let mut changed = 0;
+    for (run_id, merged_sha) in merges {
+        if record_local_merge(store, run_id, merged_sha)? > 0 {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// What a person can do to a review from the inbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewAction {
+    /// Mark it reviewed: it stops waiting.
+    Resolve,
+    /// Set it aside without merging: it is closed and stops waiting.
+    Dismiss,
+    /// Undo either: it waits again.
+    Reopen,
+}
+
+impl ReviewAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReviewAction::Resolve => "resolve",
+            ReviewAction::Dismiss => "dismiss",
+            ReviewAction::Reopen => "reopen",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<ReviewAction> {
+        [ReviewAction::Resolve, ReviewAction::Dismiss, ReviewAction::Reopen].into_iter().find(|a| a.as_str() == name)
+    }
+
+    /// The kind of the run event that records the action.
+    pub fn event_kind(self) -> &'static str {
+        match self {
+            ReviewAction::Resolve => "review.resolved",
+            ReviewAction::Dismiss => "review.dismissed",
+            ReviewAction::Reopen => "review.reopened",
+        }
+    }
+}
+
+/// How an action on a review ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionOutcome {
+    /// The review's lifecycle is now this one.
+    Done(ReviewLifecycle),
+    /// The run has no stored report.
+    NoReview,
+    /// The person acted on an older report than the run's latest, written for `latest`.
+    StaleHead { latest: String },
+    /// The action does not apply to the review as it stands.
+    Refused(String),
+}
+
+/// Apply `action` to the review of `run_id`'s latest report. With `expected_head`, the action only
+/// applies while that is still the latest report's head, so a person never acts on a report they did not
+/// see. A report with no lifecycle yet gets one kept in this repository.
+pub fn act_on_review(store: &Store, run_id: &str, action: ReviewAction, expected_head: Option<&str>) -> Result<ActionOutcome, String> {
+    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+    let Some(head) = records.last().map(|r| r.head_sha.clone()) else { return Ok(ActionOutcome::NoReview) };
+    if expected_head.is_some_and(|seen| seen != head) {
+        return Ok(ActionOutcome::StaleHead { latest: head });
+    }
+    let lifecycles = store.lifecycles_for_run(run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+    let current = lifecycles.into_iter().rev().find(|l| l.reported_head_sha == head);
+    let base = current.clone().unwrap_or_else(|| ReviewLifecycle::local(&head));
+    let next = match action {
+        ReviewAction::Resolve => Ok(base.resolved()),
+        ReviewAction::Dismiss => base.dismissed(),
+        ReviewAction::Reopen => base.reopened(),
+    };
+    let next = match next {
+        Ok(next) => next,
+        Err(reason) => return Ok(ActionOutcome::Refused(reason)),
+    };
+    if current.as_ref() != Some(&next) {
+        store.save_lifecycle(run_id, &next).map_err(|err| format!("cannot save the review state: {err}"))?;
+    }
+    Ok(ActionOutcome::Done(next))
 }
 
 /// The sections of the latest stored report of `run_id`.

@@ -280,6 +280,12 @@ const RISK_ORDER = ["critical", "high", "medium", "low", "resolved"];
 const riskRank = (value) => (RISK_ORDER.includes(value) ? RISK_ORDER.indexOf(value) : RISK_ORDER.length);
 const byRisk = (a, b) => riskRank(a) - riskRank(b) || (a < b ? -1 : a > b ? 1 : 0);
 
+// A review still waits for a person until it is merged, dismissed (closed) or marked reviewed
+// (resolved); the list shows only those until Status: All is chosen.
+const REVIEW_DONE = ["merged", "closed", "resolved"];
+const reviewWaiting = (status) => !REVIEW_DONE.includes(String(status));
+const WAITING = "waiting";
+
 const REVIEW_FILTERS = [
   ["status", "Status", (run) => String(run.status)],
   ["risk", "Risk", (run) => (run.risk === undefined || run.risk === null ? "" : String(run.risk)), byRisk],
@@ -292,7 +298,7 @@ const REVIEW_FILTERS = [
 const REVIEWS_PER_PAGE = 10;
 
 function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRows = null, showProject = false }) {
-  const [chosen, setChosen] = useState({});
+  const [chosen, setChosen] = useState({ status: WAITING });
   const [range, setRange] = useState("all");
   const [order, setOrder] = useState("desc");
   const [page, setPage] = useState(0);
@@ -306,7 +312,7 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
   const today = runs.filter((run) => reviewedToday(run, now));
   const pool = range === "today" ? today : runs;
   const shown = pool
-    .filter((run) => REVIEW_FILTERS.every(([key, , read]) => !chosen[key] || read(run) === chosen[key]))
+    .filter((run) => REVIEW_FILTERS.every(([key, , read]) => !chosen[key] || (key === "status" && chosen[key] === WAITING ? reviewWaiting(run.status) : read(run) === chosen[key])))
     .sort((a, b) => (order === "desc" ? reviewTime(b) - reviewTime(a) : reviewTime(a) - reviewTime(b)));
   const flip = order === "desc" ? "asc" : "desc";
   const pages = Math.max(1, Math.ceil(shown.length / REVIEWS_PER_PAGE));
@@ -332,6 +338,7 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
           <label key={key}>
             <span className="sr-only">{label}</span>
             <select data-filter={key} value={chosen[key] || ""} onChange={(event) => { setChosen({ ...chosen, [key]: event.target.value }); setPage(0); }}>
+              {key === "status" ? <option value={WAITING}>{label + ": Waiting"}</option> : null}
               <option value="">{label + ": All"}</option>
               {[...new Set(runs.map(read).filter((value) => value !== ""))].sort(order).map((value) => (
                 <option key={value} value={value}>{value}</option>
@@ -397,10 +404,13 @@ function providerName(href) {
 
 // The report beside (or, on a phone, instead of) the list. The row it was opened from, when the
 // list has it, gives the feature, status and risk the report itself does not carry.
-function Detail({ report, row = null, listPath = "/reviews" }) {
+// actions: where the report's actions are posted and how they are sent, or null for none.
+function Detail({ report, row = null, listPath = "/reviews", actions = null }) {
   const freshness = freshnessOf(report);
-  const href = freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
+  const merged = shortHash(report.merged_locally);
+  const href = merged === "none" && freshness === "current" && report.link_allowed === true ? safeHttpsLink(report.link) : null;
   const commit = shortHash(report.reviewed_head_sha);
+  const status = typeof report.status === "string" ? report.status : row !== null ? String(row.status) : "";
   return (
     <article className="review-report card">
       <div className="review-report-head">
@@ -420,6 +430,8 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
         <Generated at={report.generated_at} />
       </p>
       <FreshnessBanner report={report} freshness={freshness} />
+      {merged !== "none" ? <p className="review-merged" data-merged-locally={merged}>{"Merged locally at "}<code title={merged}>{merged.slice(0, 7)}</code></p> : null}
+      {actions !== null && status !== "" ? <ReviewActions key={status} status={status} head={report.reported_head_sha} {...actions} /> : null}
       <section className="review-summary">
         <h3>Summary</h3>
         {(report.summary.length === 0 ? ["none recorded"] : report.summary).map((line, index) => (
@@ -450,6 +462,62 @@ function Detail({ report, row = null, listPath = "/reviews" }) {
         </p>
       )}
     </article>
+  );
+}
+
+// What a person can decide about a review without a PR/MR: mark it reviewed or dismiss it while it
+// waits, reopen it once resolved or dismissed; a merged review is settled. Each asks first, and names
+// the head the person read, so a newer report is never decided unseen.
+const REVIEW_ACTIONS = {
+  resolve: ["Mark reviewed", "Mark this review as reviewed?", "primary"],
+  dismiss: ["Dismiss", "Dismiss this review? It stops waiting without a merge.", "danger"],
+  reopen: ["Reopen", "Reopen this review? It waits for a person again.", "primary"],
+};
+
+function ReviewActions({ status, head, path, token, onSignedOut, onDone }) {
+  const [asking, setAsking] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const offered = reviewWaiting(status) ? ["resolve", "dismiss"] : status === "resolved" || status === "closed" ? ["reopen"] : [];
+  if (offered.length === 0) return null;
+  const send = async (action) => {
+    setBusy(true);
+    let text = "The action could not be completed.";
+    try {
+      const response = await actionRequest(path + "/" + action, token, { head: typeof head === "string" ? head : null });
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok) {
+        setAsking(null);
+        setBusy(false);
+        setNote("");
+        onDone();
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setAsking(null);
+    setBusy(false);
+    setNote(text);
+  };
+  return (
+    <div className="review-actions run-action">
+      {asking === null
+        ? offered.map((action) => (
+            <button key={action} type="button" className={toneClass(REVIEW_ACTIONS[action][2])} data-review-action={action} onClick={() => { setNote(""); setAsking(action); }}>
+              {REVIEW_ACTIONS[action][0]}
+            </button>
+          ))
+        : <Confirm question={REVIEW_ACTIONS[asking][1]} answer={"Yes, " + REVIEW_ACTIONS[asking][0].toLowerCase()} tone={REVIEW_ACTIONS[asking][2]} busy={busy} onConfirm={() => send(asking)} onCancel={() => setAsking(null)} />}
+      {busy ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </div>
   );
 }
 
@@ -498,7 +566,7 @@ function ReviewsPage({ token, onSignedOut, reloads, onRefresh, api, listPath, op
         </div>
         {path !== null && (
           <div className="detail-pane">
-            <Loaded key={path} back={listPath} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} row={row} listPath={listPath} />} onSignedOut={onSignedOut} />
+            <Loaded key={path} reloads={reloads} back={listPath} token={token} path={path} loading="Loading the report…" parse={parseDetail} draw={(report) => <Detail report={report} row={row} listPath={listPath} actions={{ path, token, onSignedOut, onDone: onRefresh }} />} onSignedOut={onSignedOut} />
           </div>
         )}
       </div>

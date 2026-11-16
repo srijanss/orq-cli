@@ -1339,6 +1339,12 @@ fn stages(
     // worktree is still there to read, then the worktree goes.
     let delivered = |head_sha: &str, ending: Ending| -> Result<Report, StoreError> {
         build_review_report(store, record, options, &gate_steps(), head_sha, None, logs);
+        if ending == Ending::Merged {
+            // Merged here, so no PR/MR will ever close its review: the merge resolves it.
+            if let Err(err) = crate::review::record_local_merge(&record.run_id, head_sha) {
+                note_review_report(logs, &format!("cannot resolve the review of the merged run: {err}"));
+            }
+        }
         clean_up(true, &CiOutcome::Skipped)?;
         Ok(Report { run_id: String::new(), ending, detail: None, review_url: None, ci_green: None })
     };
@@ -1616,6 +1622,11 @@ fn build_review_report(
         Ok(path) => format!("report for {head_sha}: {}", path.display()),
         Err(err) => format!("no report for {head_sha}: {err}"),
     };
+    note_review_report(logs, &note);
+}
+
+/// Adds a line to the run's review-report log; a log that cannot be written is let go.
+fn note_review_report(logs: &std::path::Path, note: &str) {
     use std::io::Write;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("review-report.log"));
     let _ = log.and_then(|mut file| writeln!(file, "{note}"));

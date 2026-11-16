@@ -21,8 +21,89 @@ pub(crate) fn review(args: &[OsString]) -> ExitCode {
         Some("build") => build(&args[1..]),
         Some("show") => show(&args[1..]),
         Some("refresh") => refresh(&args[1..]),
+        Some("backfill") if args.len() == 1 => backfill(),
+        Some(name) => match orq_core::review_inbox::ReviewAction::parse(name) {
+            Some(action) => act(action, &args[1..]),
+            None => usage_error(),
+        },
         _ => usage_error(),
     }
+}
+
+/// `orq review resolve|dismiss|reopen <run-id> [--head <sha>]`: a person's decision on the run's
+/// latest review, recorded in the review index and in the run's events. `--head` names the report
+/// the person read, so a decision on a report a newer one replaced is refused.
+fn act(action: orq_core::review_inbox::ReviewAction, args: &[OsString]) -> ExitCode {
+    use orq_core::review_inbox::{act_on_review, ActionOutcome};
+    let (run, head) = match args {
+        [run] => (run, None),
+        [run, flag, head] if flag == "--head" => (run, Some(head)),
+        _ => return usage_error(),
+    };
+    let Some(run_id) = run.to_str() else { return usage_error() };
+    if let Err(err) = check_run_id(run_id) {
+        return fail(format!("invalid run id: {err}"));
+    }
+    let head = match head.map(|head| head.to_str().filter(|h| (7..=64).contains(&h.len()) && h.bytes().all(|b| b.is_ascii_hexdigit()))) {
+        None => None,
+        Some(Some(head)) => Some(head),
+        Some(None) => return fail("--head must be a commit sha"),
+    };
+    let store = match review_index() {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+    let lifecycle = match act_on_review(&store, run_id, action, head) {
+        Ok(ActionOutcome::Done(lifecycle)) => lifecycle,
+        Ok(ActionOutcome::NoReview) => return fail(format!("no review report for run {run_id}")),
+        Ok(ActionOutcome::StaleHead { latest }) => return fail(format!("run {run_id} has a newer report, for {latest}; read it before deciding")),
+        Ok(ActionOutcome::Refused(reason)) => return fail(reason),
+        Err(err) => return fail(format!("cannot {} the review: {err}", action.as_str())),
+    };
+    // The decision is made; a run whose events cannot take it is said, not undone.
+    match pipeline::state_root() {
+        Some(state) => {
+            let by = std::env::var("USER").ok().filter(|user| !user.is_empty()).unwrap_or_else(|| "cli".to_string());
+            let runs = orq_orchestrator::RunStore::new(&state);
+            if let Err(err) = orq_orchestrator::record_review_action(&runs, run_id, action.event_kind(), &lifecycle.reported_head_sha, &by) {
+                eprintln!("note: the run's events do not record this: {err:?}");
+            }
+        }
+        None => eprintln!("note: no state location, so the run's events do not record this"),
+    }
+    print!("{}", describe(&lifecycle));
+    ExitCode::SUCCESS
+}
+
+/// `orq review backfill`: resolves the reviews of runs merged locally before a local merge resolved
+/// its review. Running it again changes nothing.
+fn backfill() -> ExitCode {
+    let Some(state) = pipeline::state_root() else { return fail("no state location: set XDG_STATE_HOME or HOME") };
+    let merges = match orq_orchestrator::local_merges(&orq_orchestrator::RunStore::new(&state)) {
+        Ok(merges) => merges,
+        Err(err) => return fail(format!("cannot read the runs: {err:?}")),
+    };
+    let store = match review_index() {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+    match orq_core::review_inbox::backfill_local_merges(&store, &merges) {
+        Ok(changed) => {
+            println!("{changed} locally merged run(s) resolved");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(format!("cannot resolve the merged runs' reviews: {err}")),
+    }
+}
+
+/// Resolves the review of a run this repository merged at `head_sha`. Returns how many reports it resolved.
+pub(crate) fn record_local_merge(run_id: &str, head_sha: &str) -> Result<usize, String> {
+    orq_core::review_inbox::record_local_merge(&review_index()?, run_id, head_sha)
+}
+
+/// The review index in Orq's data directory.
+fn review_index() -> Result<Store, String> {
+    Store::open(&roots()?.database()).map_err(|err| format!("cannot open the review index: {err}"))
 }
 
 /// How long the optional summary session may run before it is dropped.

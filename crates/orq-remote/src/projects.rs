@@ -243,6 +243,7 @@ pub struct StoreProjects {
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
     accept_tests: AcceptTests,
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    backfilled: std::sync::Once,
 }
 
 /// Runs the tests of a run's worktree when it is accepted; the error is what failed.
@@ -271,7 +272,27 @@ impl StoreProjects {
             log_snapshot: Default::default(),
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
             accepting: Default::default(),
+            backfilled: std::sync::Once::new(),
         }
+    }
+
+    /// Resolves the reviews of runs merged locally before local merges resolved them. It runs once
+    /// per server; a failure is only logged, since the next server start tries again.
+    fn backfill_local_merges(&self) {
+        self.backfilled.call_once(|| {
+            if !self.roots.database().exists() {
+                return;
+            }
+            let result = orq_orchestrator::local_merges(&orq_orchestrator::RunStore::new(&self.roots.state))
+                .map_err(|error| format!("{error:?}"))
+                .and_then(|merges| {
+                    let store = orq_core::store::Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
+                    orq_core::review_inbox::backfill_local_merges(&store, &merges)
+                });
+            if let Err(error) = result {
+                eprintln!("orq: cannot backfill the reviews of locally merged runs: {error}");
+            }
+        });
     }
 
     /// Accepting a run runs `tests` in its worktree instead of what its stacks call for.
@@ -571,6 +592,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         Ok(Some(orq_core::remote_inbox::ReviewScope { review_key: orq_git::project_id(&git), name: project.name }))
+    }
+
+    fn review_acted(&self, _project: &str, run: &str, action: orq_core::review_inbox::ReviewAction, head: &str) -> Result<(), String> {
+        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        orq_orchestrator::record_review_action(&runs, run, action.event_kind(), head, "web").map_err(|error| format!("cannot record {} on run {run}: {error:?}", action.as_str()))
     }
 
     fn settings(&self) -> Result<Option<serde_json::Value>, String> {
@@ -1150,6 +1176,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn projects(&self) -> Result<serde_json::Value, String> {
         use serde_json::json;
+        self.backfill_local_merges();
         let reviews = if self.roots.database().exists() {
             Some(orq_core::store::Store::open_read_only(&self.roots.database()).map_err(|error| format!("cannot open the review index: {error}"))?)
         } else {
@@ -1173,35 +1200,10 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &
     let features = ledger_entries(&orq_features::ledger_path(&git))?;
     let runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or_default();
     let reviews_waiting = match reviews {
-        Some(store) => waiting_reviews(store, &key)?,
+        Some(store) => orq_core::review_inbox::waiting_count(store, &key)?,
         None => 0,
     };
     Ok(Counts { features, active_runs: runs.active, failed_runs: runs.failed, reviews_waiting })
-}
-
-/// The runs of `project` whose latest report is still waiting on a human: no lifecycle recorded for
-/// that report's head yet, or one that is neither merged, closed nor resolved. A lifecycle that
-/// cannot be read is an error, never a guess.
-fn waiting_reviews(store: &orq_core::store::Store, project: &str) -> Result<usize, String> {
-    use orq_core::review_lifecycle::{Gate, ProviderState};
-    // Records come oldest first, so a later one for the same run replaces the earlier.
-    let mut latest: std::collections::HashMap<String, orq_core::store::ReviewRecord> = std::collections::HashMap::new();
-    for record in store.reviews_for_project(project).map_err(|error| error.to_string())? {
-        latest.insert(record.run_id.clone(), record);
-    }
-    let mut waiting = 0;
-    for record in latest.values() {
-        let lifecycles = store.lifecycles_for_run(&record.run_id).map_err(|error| error.to_string())?;
-        let finished = lifecycles
-            .iter()
-            .rev()
-            .find(|lifecycle| lifecycle.reported_head_sha == record.head_sha)
-            .is_some_and(|lifecycle| matches!(lifecycle.state, ProviderState::Merged | ProviderState::Closed) || lifecycle.gate == Gate::Resolved);
-        if !finished {
-            waiting += 1;
-        }
-    }
-    Ok(waiting)
 }
 
 /// Active runs per project id, read in one pass over the run store. A record or event log that
