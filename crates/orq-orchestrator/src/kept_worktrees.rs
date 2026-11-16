@@ -434,17 +434,56 @@ fn version_of(head: &str, target: &str, commits: Option<u64>, root: &Path, entri
     match entries {
         None => text.push_str("unreadable\n"),
         Some(entries) => {
+            let deadline = Instant::now() + VERSION_BUDGET;
             for entry in entries {
-                let on_disk = entry.get(3..).and_then(|path| root.join(path.trim_end_matches('/')).symlink_metadata().ok());
-                let stamp = on_disk.map(|meta| {
-                    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                    (meta.len(), modified.map(|d| d.as_nanos()))
-                });
+                let stamp = entry.get(3..).map(|path| stamp_of(&root.join(path.trim_end_matches('/')), deadline));
                 text.push_str(&format!("{entry}\0{stamp:?}\n"));
             }
         }
     }
     format!("{:016x}", fnv1a(text.as_bytes()))
+}
+
+/// How long a version may spend reading the directories git lists as one entry.
+const VERSION_BUDGET: Duration = Duration::from_secs(2);
+
+fn size_and_time(meta: &std::fs::Metadata) -> String {
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+    format!("{} {:?}", meta.len(), modified.map(|d| d.as_nanos()))
+}
+
+/// The size and modification time of `path`; for a directory git lists as one entry (a nested
+/// repository, a submodule, an ignored folder), those of everything under it, symlinks not followed.
+/// A directory too large to read within `deadline` is stamped as such.
+fn stamp_of(path: &Path, deadline: Instant) -> String {
+    let Ok(meta) = path.symlink_metadata() else { return "missing".to_string() };
+    if !meta.is_dir() {
+        return size_and_time(&meta);
+    }
+    let mut text = String::new();
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            text.push_str(&format!("{}\0unreadable\n", dir.strip_prefix(path).unwrap_or(&dir).display()));
+            continue;
+        };
+        let mut children: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        children.sort();
+        for child in children {
+            if Instant::now() > deadline {
+                return "too large to read".to_string();
+            }
+            let Ok(meta) = child.symlink_metadata() else { continue };
+            let relative = child.strip_prefix(path).unwrap_or(&child);
+            if meta.is_dir() {
+                text.push_str(&format!("{}/\n", relative.display()));
+                pending.push(child);
+            } else {
+                text.push_str(&format!("{}\0{}\n", relative.display(), size_and_time(&meta)));
+            }
+        }
+    }
+    format!("dir {:016x}", fnv1a(text.as_bytes()))
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {

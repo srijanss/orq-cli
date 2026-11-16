@@ -399,3 +399,24 @@ fn a_deletion_event_that_cannot_be_written_still_reports_the_deletion() {
     assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
     assert!(!path.exists() && !branch_exists(&w.repo, "fix--A"));
 }
+
+/// Git lists a nested repository as one directory; editing a file inside it still makes the version stale.
+#[test]
+fn editing_a_file_inside_a_nested_repository_makes_the_version_stale() {
+    let w = world("stale-nested");
+    let path = w.worktree("run-1", "fix--A");
+    let sub = path.join("sub");
+    fs::create_dir_all(sub.join("deep")).unwrap();
+    git(&sub, &["init", "-q"]);
+    fs::write(sub.join("deep/x.txt"), "first\n").unwrap();
+    git(&sub, &["add", "."]);
+    git(&sub, &["commit", "-q", "-m", "x"]);
+    w.kept("run-1", "kept");
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    assert!(entry.files.iter().any(|f| f.path.trim_end_matches('/') == "sub"), "{:?}", entry.files);
+
+    fs::write(sub.join("deep/x.txt"), "second, longer\n").unwrap();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    assert_eq!(refused, DeleteRefusal::Changed);
+    assert!(sub.join("deep/x.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}
