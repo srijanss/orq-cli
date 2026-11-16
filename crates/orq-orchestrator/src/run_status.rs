@@ -235,13 +235,16 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "stage.started" | "stage.completed" | "stage.skipped" => RunPhase::Running,
             "run.pause_requested" if summary.phase == RunPhase::Running => RunPhase::PauseRequested,
             "run.paused" if summary.phase == RunPhase::PauseRequested => RunPhase::Paused,
-            // Whatever stopped it, a resumed run is handed over to the run that continues it.
-            "run.resumed" => {
-                if let Some(id) = event.payload.get("resumed_as").and_then(|v| v.as_str()) {
+            // Whatever stopped it, a run resumed as another is handed over to that run: it is over
+            // even if the `run.completed` that should follow was never written.
+            "run.resumed" => match event.payload.get("resumed_as").and_then(|v| v.as_str()) {
+                Some(id) => {
                     summary.resumed_as = Some(id.to_string());
+                    RunPhase::Completed
                 }
-                RunPhase::Running
-            }
+                None if summary.phase == RunPhase::Paused => RunPhase::Running,
+                None => continue,
+            },
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
             "worktree.removed" => RunPhase::Completed,
