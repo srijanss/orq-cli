@@ -362,3 +362,40 @@ fn listing_and_deleting_read_no_events_of_unrelated_runs() {
     }
     assert_eq!(outcome.expect("listing waited on an unrelated run's events"), (1, true));
 }
+
+#[test]
+fn a_branch_git_cannot_delete_after_the_worktree_went_is_an_error_saying_so() {
+    let w = world("branch-locked");
+    let path = w.worktree("run-1", "fix--A");
+    w.kept("run-1", "kept");
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    fs::write(w.repo.join(".git/refs/heads/fix--A.lock"), "").unwrap();
+
+    let err = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false).unwrap_err();
+
+    assert!(err.to_string().contains("the worktree was removed but git could not delete its branch"), "{err}");
+    assert!(!path.exists());
+    assert!(branch_exists(&w.repo, "fix--A"));
+}
+
+/// The worktree and its branch are gone once git says so; a deletion event that cannot be written
+/// does not make that an error.
+#[cfg(unix)]
+#[test]
+fn a_deletion_event_that_cannot_be_written_still_reports_the_deletion() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("event-unwritable");
+    let path = w.worktree("run-1", "fix--A");
+    w.kept("run-1", "kept");
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    let events = w.root.join("state/runs/run-1/events.jsonl");
+    fs::set_permissions(&events, fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new().append(true).open(&events).is_ok() {
+        return; // Running as a user permissions do not stop.
+    }
+
+    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false).unwrap().unwrap();
+
+    assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
+    assert!(!path.exists() && !branch_exists(&w.repo, "fix--A"));
+}

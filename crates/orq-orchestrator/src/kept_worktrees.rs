@@ -314,13 +314,14 @@ pub fn delete_kept_worktree(
     }
     // A failed prune leaves only stale bookkeeping behind; the worktree and branch are gone.
     let _ = git_raw(repo, &["worktree", "prune"])?;
+    // The worktree and branch are gone either way: a history that cannot take the event does not undo that.
     if let Some(run) = run {
-        record_event(
+        let _ = record_event(
             store,
             &run.record,
             "worktree.deleted",
             serde_json::json!({ "worktree": listed.path, "branch": branch, "sha": listed.head }),
-        )?;
+        );
     }
     Ok(Ok(DeletedWorktree {
         branch: branch.to_string(),
