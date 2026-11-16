@@ -334,3 +334,31 @@ fn editing_an_already_changed_file_or_one_past_the_shown_files_makes_the_version
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(path.join("f99.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
+
+/// Listing reads the events only of the runs recorded on a listed worktree: an unrelated run's history,
+/// here a pipe nothing writes to, is never opened.
+#[cfg(unix)]
+#[test]
+fn listing_and_deleting_read_no_events_of_unrelated_runs() {
+    let w = world("unrelated-events");
+    w.worktree("run-1", "fix--A");
+    w.kept("run-1", "kept");
+    w.record("run-9", "fix--elsewhere", &w.root.join("other/.claude/worktrees/fix--elsewhere"));
+    let events = w.root.join("state/runs/run-9/events.jsonl");
+    let _ = fs::remove_file(&events);
+    assert!(Command::new("mkfifo").arg(&events).status().unwrap().success());
+
+    let (store, repo) = (RunStore::new(&w.root.join("state")), w.repo.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let kept = list_kept_worktrees(&store, &repo).unwrap();
+        let deleted = delete_kept_worktree(&store, &repo, "fix--A", &kept[0].version, false).unwrap();
+        let _ = tx.send((kept.len(), deleted.is_ok()));
+    });
+    let outcome = rx.recv_timeout(std::time::Duration::from_secs(20));
+    if outcome.is_err() {
+        // Let a reader blocked on the pipe go.
+        let _ = fs::OpenOptions::new().write(true).open(&events);
+    }
+    assert_eq!(outcome.expect("listing waited on an unrelated run's events"), (1, true));
+}

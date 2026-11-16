@@ -121,21 +121,20 @@ struct Recorded {
     events: Vec<Event>,
 }
 
-fn records(store: &RunStore) -> Result<Vec<Recorded>, StoreError> {
+/// Every run record, without its events: those are read only for the runs a worktree turns out to have.
+fn records(store: &RunStore) -> Result<Vec<RunRecord>, StoreError> {
     let mut found = Vec::new();
     for run_id in store.run_ids()? {
         let Ok(record) = store.load(&run_id) else { continue };
-        // Events that cannot be read say nothing about the run: it counts as still going.
-        let events = store.events(&run_id).ok();
-        found.push((record, events));
+        found.push(record);
     }
-    Ok(found
-        .into_iter()
-        .map(|(record, events)| Recorded {
-            events: events.unwrap_or_else(|| vec![running_marker(&record)]),
-            record,
-        })
-        .collect())
+    Ok(found)
+}
+
+/// `record` with its events. Events that cannot be read say nothing about the run: it counts as still going.
+fn with_events(store: &RunStore, record: &RunRecord) -> Recorded {
+    let events = store.events(&record.run_id).unwrap_or_else(|_| vec![running_marker(record)]);
+    Recorded { record: record.clone(), events }
 }
 
 /// An event that leaves a run running, for a run whose events cannot be read.
@@ -156,14 +155,14 @@ fn running_marker(record: &RunRecord) -> Event {
 
 /// Whether some active run holds the worktree: one recorded on it, or one holding the feature lock of
 /// a run recorded on it.
-fn held(store: &RunStore, all: &[Recorded], mine: &[&Recorded]) -> Result<bool, StoreError> {
+fn held(store: &RunStore, all: &[RunRecord], mine: &[Recorded]) -> Result<bool, StoreError> {
     for run in mine {
         if is_active(summarize_run(&run.events).phase) {
             return Ok(true);
         }
         if let Some(owner) = store.active_run(&run.record.project_id, &run.record.feature_id)? {
-            let owner_active = match all.iter().find(|r| r.record.run_id == owner) {
-                Some(owner) => is_active(summarize_run(&owner.events).phase),
+            let owner_active = match all.iter().find(|r| r.run_id == owner) {
+                Some(owner) => is_active(summarize_run(&with_events(store, owner).events).phase),
                 // A lock whose run has no record: nothing says it is over.
                 None => true,
             };
@@ -193,14 +192,14 @@ pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWork
         if same_place(&listed.path, repo) || !within_worktrees_dir(repo, &listed.path) {
             continue;
         }
-        let mine = recorded_on(&all, repo, &branch, &listed.path);
+        let mine = recorded_on(store, &all, repo, &branch, &listed.path);
         if !branch.starts_with(&prefix) && mine.is_empty() {
             continue;
         }
         if held(store, &all, &mine)? {
             continue;
         }
-        kept.push(describe(repo, &listed, branch, mine.last().copied(), true)?);
+        kept.push(describe(repo, &listed, branch, mine.last(), true)?);
     }
     kept.sort_by(|a, b| a.branch.cmp(&b.branch));
     Ok(kept)
@@ -208,12 +207,13 @@ pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWork
 
 /// The runs recorded on this worktree: on its path, or on its branch in a worktree of the same
 /// repository. A run of another repository on a branch of the same name says nothing about it.
-fn recorded_on<'a>(all: &'a [Recorded], repo: &Path, branch: &str, path: &Path) -> Vec<&'a Recorded> {
+fn recorded_on(store: &RunStore, all: &[RunRecord], repo: &Path, branch: &str, path: &Path) -> Vec<Recorded> {
     all.iter()
         .filter(|run| {
-            same_place(&run.record.worktree, path)
-                || (run.record.branch == branch && repository_of(&run.record.worktree).is_some_and(|r| same_place(r, repo)))
+            same_place(&run.worktree, path)
+                || (run.branch == branch && repository_of(&run.worktree).is_some_and(|r| same_place(r, repo)))
         })
+        .map(|run| with_events(store, run))
         .collect()
 }
 
@@ -282,7 +282,7 @@ pub fn delete_kept_worktree(
     else {
         return Ok(Err(DeleteRefusal::NotFound));
     };
-    let mine = recorded_on(&all, repo, branch, &listed.path);
+    let mine = recorded_on(store, &all, repo, branch, &listed.path);
     if !branch.starts_with(&prefix) && mine.is_empty() {
         return Ok(Err(DeleteRefusal::NotFound));
     }
@@ -292,7 +292,7 @@ pub fn delete_kept_worktree(
     if held(store, &all, &mine)? {
         return Ok(Err(DeleteRefusal::Active));
     }
-    let run = mine.last().copied();
+    let run = mine.last();
     let entry = describe(repo, &listed, branch.to_string(), run, false)?;
     if entry.version != version {
         return Ok(Err(DeleteRefusal::Changed));
