@@ -527,3 +527,21 @@ fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_even_when_it_ma
 
     assert!(reason.contains(".tdd-config.json"), "{reason}");
 }
+
+#[test]
+fn a_tdd_config_the_worktree_had_is_not_orqs_even_when_mcpctl_lists_it_as_scaffolded() {
+    let w = world("own-scaffold-listed-tdd-config");
+    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"my-adapter\"}\n").unwrap();
+    carried_and_scaffolded(&w);
+    fs::write(
+        w.worktree.join(".mcpctl.scaffold.json"),
+        "{\"version\":1,\"files\":{\".tdd-config.json\":{},\".agents/guide.md\":{},\".claude/commands/tdd.md\":{}}}\n",
+    )
+    .unwrap();
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".tdd-config.json"), "{reason}");
+    assert_eq!(fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(), "{\"adapter\":\"my-adapter\"}\n");
+}
