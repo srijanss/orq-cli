@@ -443,9 +443,9 @@ fn carried_and_scaffolded(w: &World) {
     let exclude = w.repo.join(".git/info/exclude");
     let listed = "/.tdd-config.json\n/.mcpctl.lock\n/.mcpctl.scaffold.json\n/.agents/guide.md\n/.claude/commands/tdd.md\n";
     fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + listed).unwrap();
-    // The main checkout's config, which orq carried into the worktree.
+    // The main checkout's config, which orq carries into the worktree.
     fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
-    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    carry_tdd_config(w);
     fs::write(w.worktree.join(".mcpctl.lock"), "version = 1\n").unwrap();
     fs::create_dir_all(w.worktree.join(".agents")).unwrap();
     fs::write(w.worktree.join(".agents/guide.md"), "scaffold\n").unwrap();
@@ -456,6 +456,11 @@ fn carried_and_scaffolded(w: &World) {
         "{\"version\":1,\"files\":{\".agents/guide.md\":{},\".claude/commands/tdd.md\":{},\"../outside\":{}}}\n",
     )
     .unwrap();
+}
+
+/// Carries the main checkout's TDD config into the worktree the way a run does, and nothing else.
+fn carry_tdd_config(w: &World) {
+    orq_orchestrator::carry_local_files(&w.repo, &w.worktree, Some(&[]));
 }
 
 #[test]
@@ -505,4 +510,20 @@ fn a_carried_tdd_config_stays_orqs_when_recorded_again_after_the_main_checkouts_
     assert!(record_orq_written(&w.worktree).is_empty());
 
     assert_eq!(cleanup(&w), CleanupOutcome::Removed);
+}
+
+#[test]
+fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_even_when_it_matches_the_main_checkouts() {
+    let w = world("own-same-tdd-config");
+    orq_files(&w);
+    let exclude = w.repo.join(".git/info/exclude");
+    fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n").unwrap();
+    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    carry_tdd_config(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".tdd-config.json"), "{reason}");
 }

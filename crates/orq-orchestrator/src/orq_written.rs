@@ -51,14 +51,15 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
     let Some(path) = manifest_path(worktree) else {
         return vec!["what orq wrote into the worktree was not recorded: its git directory could not be found".to_string()];
     };
-    // Every file `mcpctl init` lists as scaffolded is orq's too, and so is the TDD config while it is
-    // the copy orq carried in; a config the worktree already had stays the worktree's own.
-    let scaffolded = crate::mcp_setup::scaffolded_files(worktree);
+    // Every file `mcpctl init` lists as scaffolded is orq's too, except the TDD config: that is orq's
+    // only as the copy orq carried in, which carrying recorded when it copied it. A config the
+    // worktree already had stays the worktree's own, whatever it holds or lists it.
+    let scaffolded = crate::mcp_setup::scaffolded_files(worktree).into_iter().filter(|name| name != TDD_CONFIG);
     let names = CANDIDATES.iter().map(|name| name.to_string()).chain(scaffolded);
     let mut recorded: BTreeMap<String, String> = names
         .filter_map(|name| fingerprint(worktree, &name).map(|print| (name, print)))
         .collect();
-    if let Some(print) = carried_tdd_config(worktree, &Recorded::load(worktree)) {
+    if let Some(print) = Recorded::load(worktree).carried_tdd_config(worktree) {
         recorded.insert(TDD_CONFIG.to_string(), print);
     }
     match write_manifest(&path, &recorded) {
@@ -67,23 +68,6 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
             "what orq wrote into the worktree was not recorded: {why}"
         )],
     }
-}
-
-/// The worktree's TDD config's fingerprint when it is the copy orq carried in: it was recorded as
-/// orq's before and is unchanged, or it is the main checkout's config byte for byte.
-fn carried_tdd_config(worktree: &Path, before: &Recorded) -> Option<String> {
-    let print = fingerprint(worktree, TDD_CONFIG)?;
-    if before.0.get(TDD_CONFIG) == Some(&print) {
-        return Some(print);
-    }
-    let common = git_raw(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
-    let main_checkout = PathBuf::from(common.success.then(|| common.stdout.trim().to_string())?).parent()?.to_path_buf();
-    let main_config = main_checkout.join(TDD_CONFIG);
-    if !std::fs::symlink_metadata(&main_config).ok()?.is_file() {
-        return None;
-    }
-    let out = git_raw(worktree, &["hash-object", "--no-filters", "--", main_config.to_str()?]).ok()?;
-    (out.success && format!("blob:{}", out.stdout.trim()) == print).then_some(print)
 }
 
 fn write_manifest(path: &Path, recorded: &BTreeMap<String, String>) -> Result<(), String> {
@@ -132,6 +116,12 @@ impl Recorded {
     pub(crate) fn load(worktree: &Path) -> Self {
         let text = manifest_path(worktree).and_then(|path| std::fs::read_to_string(path).ok());
         Self(text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+    }
+
+    /// The TDD config's fingerprint while it is still the copy orq carried in and recorded.
+    fn carried_tdd_config(&self, worktree: &Path) -> Option<String> {
+        let print = fingerprint(worktree, TDD_CONFIG)?;
+        (self.0.get(TDD_CONFIG) == Some(&print)).then_some(print)
     }
 
     /// For a file orq recorded writing, whether it is still exactly that; `None` for any other file.

@@ -102,7 +102,10 @@ fn carry_tdd_config(main_checkout: &Path, worktree: &Path, tracked_unknown: bool
             "{TDD_CONFIG} could not be carried into the worktree ({:?})",
             err.kind()
         ));
+        return;
     }
+    // Recorded as orq's here, where orq made it: a config the worktree had is never claimed.
+    notes.extend(crate::orq_written::record_orq_written_file(worktree, TDD_CONFIG));
 }
 
 /// The top-level keys whose values differ between two JSON objects, sorted; `None` when either
