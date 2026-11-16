@@ -15,6 +15,8 @@ use orq_core::store::Store;
 pub const ROUND_AGE: i64 = 10 * 60;
 /// How old a review's last look is before opening it on the page looks again.
 pub const OPENED_AGE: i64 = 2 * 60;
+/// How many opened reviews may wait for a look at once; an open past that is not queued.
+pub const PENDING_LIMIT: usize = 16;
 /// How often the server checks which reviews a round should look at.
 pub const ROUND_EVERY: Duration = Duration::from_secs(30);
 
@@ -28,11 +30,21 @@ pub struct ReviewRefresher {
     observer: Arc<dyn ReviewObserver>,
     /// Held for each look, so the provider is asked one thing at a time.
     looking: Mutex<()>,
+    /// Opened reviews waiting for their look, which one worker thread makes in turn.
+    pending: Mutex<Pending>,
+}
+
+#[derive(Default)]
+struct Pending {
+    queue: std::collections::VecDeque<String>,
+    /// The queued runs and the one being looked at, so an open while it waits adds nothing.
+    held: std::collections::HashSet<String>,
+    worker: bool,
 }
 
 impl ReviewRefresher {
     pub fn new(roots: StorageRoots, observer: Arc<dyn ReviewObserver>) -> Arc<ReviewRefresher> {
-        Arc::new(ReviewRefresher { roots, observer, looking: Mutex::new(()) })
+        Arc::new(ReviewRefresher { roots, observer, looking: Mutex::new(()), pending: Mutex::new(Pending::default()) })
     }
 
     /// Looks at each open review last looked at [`ROUND_AGE`] or more before `now` (seconds since the
@@ -51,6 +63,41 @@ impl ReviewRefresher {
     /// more before `now`. Returns whether it did.
     pub fn opened(&self, run_id: &str, now: i64) -> bool {
         matches!(self.due(Some(run_id), now - OPENED_AGE).as_deref(), Ok([_])) && self.look(run_id, now - OPENED_AGE, &AtomicBool::new(false))
+    }
+
+    /// A review opened on the page, queued for [`ReviewRefresher::opened`] on a worker thread so nobody
+    /// waits for it. Returns whether it was queued: not when it already waits, nor when
+    /// [`PENDING_LIMIT`] others do.
+    pub fn request(self: &Arc<Self>, run_id: &str) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.held.contains(run_id) || pending.held.len() >= PENDING_LIMIT {
+            return false;
+        }
+        pending.held.insert(run_id.to_string());
+        pending.queue.push_back(run_id.to_string());
+        if !pending.worker {
+            pending.worker = true;
+            let refresher = self.clone();
+            std::thread::spawn(move || refresher.work());
+        }
+        true
+    }
+
+    /// Looks at the queued opened reviews in turn until none is left.
+    fn work(&self) {
+        loop {
+            let next = {
+                let mut pending = self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let next = pending.queue.pop_front();
+                if next.is_none() {
+                    pending.worker = false;
+                }
+                next
+            };
+            let Some(run_id) = next else { return };
+            self.opened(&run_id, now());
+            self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).held.remove(&run_id);
+        }
     }
 
     /// The open reviews last looked at no later than `before`; a time that cannot be read is due.

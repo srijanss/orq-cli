@@ -208,7 +208,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let Ok(reply) = result else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     // A review a signed-in page opened is looked at again in the background; the page shows it next time.
     if let (200, Some(run), Some(refresher)) = (reply.0, opened, refresher) {
-        tokio::task::spawn_blocking(move || refresher.opened(&run, review_refresh::now()));
+        refresher.request(&run);
     }
     json_reply(reply.0, reply.1)
 }

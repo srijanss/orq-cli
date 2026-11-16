@@ -226,3 +226,27 @@ fn stopping_the_rounds_waits_only_for_the_look_under_way_and_starts_no_other() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(recorder.asked().len(), 1, "{:?}", recorder.asked());
 }
+
+#[test]
+fn a_page_open_queues_its_look_without_waiting_once_per_run_and_only_so_many_at_once() {
+    let roots = roots("queue");
+    review(&roots, "run-a", 1, ProviderState::Open, 300);
+    review(&roots, "run-b", 2, ProviderState::Open, 300);
+    let recorder = Recorder::new(&roots, Duration::from_millis(300), false);
+    let refresher = ReviewRefresher::new(roots.clone(), recorder.clone());
+
+    let asking = std::time::Instant::now();
+    assert!(refresher.request("run-a"));
+    assert!(!refresher.request("run-a"), "already waiting for its look");
+    assert!(refresher.request("run-b"));
+    let queued = (0..2 * orq_remote::review_refresh::PENDING_LIMIT).filter(|n| refresher.request(&format!("run-x{n}"))).count();
+    assert!(asking.elapsed() < Duration::from_millis(200), "nobody waits for a look: {:?}", asking.elapsed());
+    assert!(queued <= orq_remote::review_refresh::PENDING_LIMIT, "{queued}");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while recorder.asked().len() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(recorder.asked(), vec!["run-a", "run-b"]);
+    assert_eq!(recorder.most_at_once(), 1);
+}
