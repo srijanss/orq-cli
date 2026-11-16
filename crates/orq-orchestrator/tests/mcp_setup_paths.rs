@@ -345,3 +345,24 @@ fn a_tail_that_starts_inside_its_only_line_shows_none_of_that_line() {
     assert!(!report.notes.is_empty(), "the failure itself is still named");
     assert!(!report.notes.join("\n").contains("zzzz"), "{:?}", report.notes);
 }
+
+#[test]
+fn quoted_json_spaced_and_header_secrets_never_reach_a_note() {
+    let cases = [
+        ("quoted-value", r#"Error: login failed password="hunter2 q" for registry"#, "hunter2"),
+        ("single-quoted-value", "Error: login failed password='pw-single q' again", "pw-single"),
+        ("escaped-quoted-value", r#"Error: login failed password=\"pw-escaped q\" again"#, "pw-escaped"),
+        ("json", r#"Error: bad response {"token":"abc123xyz","user":"me"}"#, "abc123xyz"),
+        ("json-spaced", r#"Error: bad config {"api_key" : "k-998877"}"#, "k-998877"),
+        ("spaced-equals", "Error: client_secret = cs-445566 rejected", "cs-445566"),
+        ("bearer", "Error: 401 with Authorization: Bearer tok-bearer-1234", "tok-bearer-1234"),
+        ("basic", "Error: 401 with Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+        ("token-only-url", "Error: GET https://ghs-tok-55aa@registry.example/pkg failed", "ghs-tok-55aa"),
+    ];
+    for (tag, line, secret) in cases {
+        let notes = notes_of_failing_line(tag, &line.replace('\'', "'\\''"), &[]);
+
+        assert!(notes.contains("Error:"), "{tag}: the line is still there: {notes}");
+        assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
+    }
+}

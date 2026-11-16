@@ -311,9 +311,10 @@ fn last_line(log: &Path, from: u64, env: &[(String, String)]) -> Option<String> 
 }
 
 /// What a line looks like with what could be a secret in it replaced: the values of the run's own
-/// environment, the credentials of a URL, and the value after a key that names a secret.
+/// environment, the user part of any URL, everything orq's own redaction recognises (secret-named
+/// values, quoted or in JSON, bearer tokens, known token formats), and an authorization header's value.
 fn redact(line: &str, env: &[(String, String)]) -> String {
-    const HIDDEN: &str = "[redacted]";
+    const HIDDEN: &str = orq_core::redact::REDACTED;
     let mut text = line.to_string();
     // Longest first, so a value inside another is not left half shown.
     let mut values: Vec<&str> = env.iter().map(|(_, value)| value.as_str()).filter(|value| value.len() >= 6).collect();
@@ -337,44 +338,45 @@ fn redact(line: &str, env: &[(String, String)]) -> String {
         }
     }
     out.push_str(rest);
-    redact_secret_keys(&out, HIDDEN)
+    redact_authorization(&orq_core::redact::redact(&out), HIDDEN)
 }
 
-/// Replaces the value after `key=`, `key:` or `key: ` when the key names a secret, and the word after
-/// a `Bearer` or `Basic` scheme.
-fn redact_secret_keys(text: &str, hidden: &str) -> String {
-    const SECRET: [&str; 8] = ["token", "secret", "password", "passwd", "pwd", "apikey", "api_key", "api-key"];
-    let key_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
-    let value_end = |c: char| c.is_whitespace() || matches!(c, '&' | ',' | ';' | '"' | '\'' | ')' | ']' | '}');
-    let word = |v: &str| v.find(value_end).unwrap_or(v.len());
-    let spaces = |v: &str| v.len() - v.trim_start_matches(' ').len();
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(['=', ':']) {
-        let (head, tail) = rest.split_at(at + 1);
-        out.push_str(head);
-        let key = head[..at].rsplit(|c: char| !key_char(c)).next().unwrap_or_default().to_ascii_lowercase();
-        let named = SECRET.iter().any(|secret| key.contains(secret)) || key == "authorization" || key == "auth";
-        if !named || tail.starts_with("//") {
-            rest = tail;
+/// Replaces the value of an `Authorization` header, whatever its scheme (`Basic`, `Bearer`, ...),
+/// keeping the scheme's name.
+fn redact_authorization(text: &str, hidden: &str) -> String {
+    const NAME: &str = "authorization";
+    // ASCII lowercasing keeps every byte where it was, so offsets in it are offsets in `text`.
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let skip = |mut i: usize, set: &[u8]| {
+        while bytes.get(i).is_some_and(|b| set.contains(b)) {
+            i += 1;
+        }
+        i
+    };
+    let (mut out, mut shown, mut from) = (String::with_capacity(text.len()), 0, 0);
+    while let Some(found) = lower[from..].find(NAME) {
+        let after = skip(from + found + NAME.len(), b"\"' ");
+        from = after;
+        if !matches!(bytes.get(after), Some(b':' | b'=')) {
             continue;
         }
-        let gap = spaces(tail);
-        out.push_str(&tail[..gap]);
-        let mut value = &tail[gap..];
-        let first = word(value);
-        if matches!(value[..first].to_ascii_lowercase().as_str(), "bearer" | "basic") {
-            let gap = first + spaces(&value[first..]);
-            out.push_str(&value[..gap]);
-            value = &value[gap..];
+        let mut start = skip(after + 1, b" \"'");
+        let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
+        if scheme > start && bytes.get(scheme) == Some(&b' ') {
+            start = skip(scheme, b" ");
         }
-        let end = word(value);
-        if end > 0 {
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';'))
+            .map_or(text.len(), |end| start + end);
+        if end > start {
+            out.push_str(&text[shown..start]);
             out.push_str(hidden);
+            shown = end;
         }
-        rest = &value[end..];
+        from = end.max(start);
     }
-    out.push_str(rest);
+    out.push_str(&text[shown..]);
     out
 }
 
