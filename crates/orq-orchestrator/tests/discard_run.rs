@@ -707,3 +707,26 @@ fn taken_over_unreadable_events_of_a_run_on_its_own_checkout_do_not_block_the_di
     assert!(store.load("run-1").is_err() && !worktree.exists());
     assert!(elsewhere.exists() && branch_exists(repo.root(), "orq-run-2"));
 }
+
+#[test]
+fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and_left_whole() {
+    for (case, same_branch) in [("branch-only", true), ("worktree-only", false)] {
+        let repo = GitFixture::new();
+        let worktree = repo.add_linked_worktree("orq-run-1");
+        let (_, store) = store(case);
+        store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+        store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+        if same_branch {
+            later_run(&store, "run-2", &["G"], &repo.root().join("elsewhere"), "orq-run-1", "2026-11-02T11:00:00Z");
+        } else {
+            later_run(&store, "run-2", &["G"], &worktree, "orq-run-2", "2026-11-02T11:00:00Z");
+        }
+
+        let reason = "run-1 was continued as run-2; discard or accept that run instead".to_string();
+        assert_eq!(discard_run(&store, "run-1", repo.root()).map(|_| ()), Err(reason.clone()), "{case}");
+        assert_eq!(discard_preview(&store, "run-1", repo.root()).map(|_| ()), Err(reason), "{case}");
+
+        assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"), "{case}");
+        assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{case}");
+    }
+}

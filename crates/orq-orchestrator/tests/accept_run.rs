@@ -231,3 +231,34 @@ fn taken_over_a_run_a_later_run_continued_is_refused_and_its_tests_are_not_run()
     assert!(!ran.into_inner());
     assert_eq!(phase(&store), RunPhase::Failed);
 }
+
+#[test]
+fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and_its_tests_are_not_run() {
+    for (case, same_branch) in [("branch-only", true), ("worktree-only", false)] {
+        let (_repo, worktree, store) = failed_run(case, 1);
+        let mut later = store.load("run-1").unwrap();
+        later.run_id = "run-2".into();
+        if same_branch {
+            later.worktree = worktree.with_file_name("elsewhere");
+        } else {
+            later.branch = "orq-run-2".into();
+        }
+        store.create(&later).unwrap();
+        let mut started = event("run.started", serde_json::json!({}));
+        started.run_id = "run-2".into();
+        started.occurred_at = "2026-11-02T11:00:00Z".into();
+        store.append_event(&started).unwrap();
+        let ran = RefCell::new(false);
+
+        let refused = accept_run(&store, "run-1", &|_: &Path| {
+            *ran.borrow_mut() = true;
+            Ok(())
+        });
+
+        let reason = "run-1 was continued as run-2; discard or accept that run instead".to_string();
+        assert_eq!(refused, Err(reason.clone()), "{case}");
+        assert_eq!(accept_check(&store, "run-1"), Err(reason), "{case}");
+        assert!(!ran.into_inner(), "{case}");
+        assert_eq!(phase(&store), RunPhase::Failed, "{case}");
+    }
+}
