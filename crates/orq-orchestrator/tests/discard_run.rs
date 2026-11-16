@@ -690,3 +690,20 @@ fn taken_over_a_later_run_whose_record_or_events_cannot_be_read_stops_the_discar
         assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{unreadable}");
     }
 }
+
+#[test]
+fn taken_over_unreadable_events_of_a_run_on_its_own_checkout_do_not_block_the_discard() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let elsewhere = repo.add_linked_worktree("orq-run-2");
+    let (root, store) = store("unreadable-elsewhere");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    later_run(&store, "run-2", &["G"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
+    std::fs::write(root.join("runs").join("run-2").join("events.jsonl"), "{ not json\n").unwrap();
+
+    discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert!(store.load("run-1").is_err() && !worktree.exists());
+    assert!(elsewhere.exists() && branch_exists(repo.root(), "orq-run-2"));
+}

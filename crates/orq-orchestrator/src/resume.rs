@@ -436,19 +436,28 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
     let shares_checkout = |other: &RunRecord| {
         (!record.branch.is_empty() && other.branch == record.branch) || (!record.worktree.as_os_str().is_empty() && other.worktree == record.worktree)
     };
-    // A run whose record cannot be read may be the one that took this checkout over; failing here
-    // is safer than discarding or accepting what may be another run's work.
+    // One scan: a run whose record cannot be read may be the one that took this checkout over, and
+    // so may a run on it whose events cannot be read; either fails rather than let another run's
+    // work be discarded or accepted. Runs elsewhere are not read further.
+    let mut newest: Option<(RunOrder, String)> = None;
     for other in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
-        match store.load(&other) {
-            Ok(_) | Err(StoreError::NotFound(_)) => {}
+        let candidate = match store.load(&other) {
+            Ok(candidate) => candidate,
+            Err(StoreError::NotFound(_)) => continue,
             Err(e) => return Err(format!("cannot tell whether {other} took over {run_id}: its record cannot be read: {e:?}")),
+        };
+        if other == run_id || candidate.project_id != record.project_id || !shares_checkout(&candidate) {
+            continue;
+        }
+        let events = store
+            .events(&other)
+            .map_err(|e| format!("cannot tell whether {other} took over {run_id}: its events cannot be read: {e:?}"))?;
+        let order = run_order(&other, &events);
+        if order > own && newest.as_ref().is_none_or(|(best, _)| order > *best) {
+            newest = Some((order, other));
         }
     }
-    Ok(project_runs(store, &record.project_id)?
-        .into_iter()
-        .filter(|(order, other, _)| other.run_id != run_id && *order > own && shares_checkout(other))
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, other, _)| other.run_id))
+    Ok(newest.map(|(_, other)| other))
 }
 
 /// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
