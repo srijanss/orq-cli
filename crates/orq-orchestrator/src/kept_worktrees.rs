@@ -507,7 +507,7 @@ fn changed_file(entry: &str) -> ChangedFile {
 }
 
 /// A fingerprint of what deleting the worktree loses: its commit, its target, and every status entry with
-/// what is on disk there, so editing an already changed file counts too. Whether it was all read within
+/// what is on disk there, so editing an already changed file counts too. Whether it was all read, within
 /// `budget`: a version read only in part could miss a change, so it cannot confirm a delete.
 fn version_of(
     head: &str,
@@ -520,7 +520,10 @@ fn version_of(
     let mut text = format!("{head}\n{target}\n{commits:?}\n");
     let mut verified = true;
     match entries {
-        None => text.push_str("unreadable\n"),
+        None => {
+            verified = false;
+            text.push_str("unreadable\n");
+        }
         Some(entries) => {
             let deadline = Instant::now() + budget;
             for entry in entries {
@@ -529,7 +532,7 @@ fn version_of(
                         Some(stamp) => Some(stamp),
                         None => {
                             verified = false;
-                            text.push_str("out of time\n");
+                            text.push_str("not all read\n");
                             break;
                         }
                     },
@@ -546,19 +549,18 @@ fn version_of(
 const VERSION_BUDGET: Duration = Duration::from_secs(2);
 
 /// What is at `path`, not a directory: a symlink's target, or a file's contents read in full,
-/// so a tool that keeps a file's size and modification time still changes it. `None` past `deadline`.
+/// so a tool that keeps a file's size and modification time still changes it. `None` when it could not
+/// be read, or not in full before `deadline`.
 fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Option<String> {
     use std::io::Read;
     if meta.file_type().is_symlink() {
-        return Some(match std::fs::read_link(path) {
-            Ok(target) => format!("link {:016x}", fnv1a(target.as_os_str().as_encoded_bytes())),
-            Err(_) => "link unreadable".to_string(),
-        });
+        let target = std::fs::read_link(path).ok()?;
+        return Some(format!("link {:016x}", fnv1a(target.as_os_str().as_encoded_bytes())));
     }
     if !meta.is_file() {
         return Some(format!("special {:?}", meta.file_type()));
     }
-    let Ok(mut file) = std::fs::File::open(path) else { return Some("unreadable".to_string()) };
+    let mut file = std::fs::File::open(path).ok()?;
     let mut hash = FNV_OFFSET;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -568,7 +570,7 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Optio
         match file.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => hash = fnv1a_from(hash, &buffer[..n]),
-            Err(_) => return Some("unreadable".to_string()),
+            Err(_) => return None,
         }
     }
     Some(format!("file {} {hash:016x}", meta.len()))
@@ -576,26 +578,29 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Optio
 
 /// What `path` holds; for a directory git lists as one entry (a nested repository, a submodule, an
 /// ignored folder), what everything under it holds, symlinks not followed.
-/// `None` when it could not all be read within `deadline`.
+/// `None` when something there could not be read, or not all of it before `deadline`.
 fn stamp_of(path: &Path, deadline: Instant) -> Option<String> {
-    let Ok(meta) = path.symlink_metadata() else { return Some("missing".to_string()) };
+    let meta = match path.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some("missing".to_string()),
+        Err(_) => return None,
+    };
     if !meta.is_dir() {
         return content_of(path, &meta, deadline);
     }
     let mut text = String::new();
     let mut pending = vec![path.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            text.push_str(&format!("{}\0unreadable\n", dir.strip_prefix(path).unwrap_or(&dir).display()));
-            continue;
-        };
-        let mut children: Vec<PathBuf> = read.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        let mut children = Vec::new();
+        for entry in std::fs::read_dir(&dir).ok()? {
+            children.push(entry.ok()?.path());
+        }
         children.sort();
         for child in children {
             if Instant::now() >= deadline {
                 return None;
             }
-            let Ok(meta) = child.symlink_metadata() else { continue };
+            let meta = child.symlink_metadata().ok()?;
             let relative = child.strip_prefix(path).unwrap_or(&child);
             if meta.is_dir() {
                 text.push_str(&format!("{}/\n", relative.display()));

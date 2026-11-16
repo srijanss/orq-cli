@@ -458,6 +458,38 @@ fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
 
 /// A version that ran out of time before reading everything cannot tell a change from none, so a delete
 /// confirmed against it is refused, even forced and even when the listing ran out of time the same way.
+/// A file or folder the version cannot read could change unseen, so it cannot confirm a delete.
+#[cfg(unix)]
+#[test]
+fn a_version_with_something_it_cannot_read_deletes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("version-unreadable");
+    let path = w.worktree("run-1", "fix--A");
+    let sub = path.join("sub");
+    fs::create_dir_all(sub.join("locked")).unwrap();
+    git(&sub, &["init", "-q"]);
+    fs::write(sub.join("secret.txt"), "work\n").unwrap();
+    fs::write(sub.join("locked/inner.txt"), "work\n").unwrap();
+    w.kept("run-1", "kept");
+    let set = |p: &std::path::Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+
+    set(&sub.join("secret.txt"), 0o000);
+    if fs::read(sub.join("secret.txt")).is_ok() {
+        return; // Running as a user permissions do not stop.
+    }
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    set(&sub.join("secret.txt"), 0o644);
+
+    set(&sub.join("locked"), 0o000);
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    set(&sub.join("locked"), 0o755);
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(sub.join("locked/inner.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}
+
 #[test]
 fn a_version_read_only_in_part_before_its_time_ran_out_deletes_nothing() {
     let w = world("version-timeout");
