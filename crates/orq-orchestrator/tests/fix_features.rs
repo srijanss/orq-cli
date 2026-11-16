@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use orq_orchestrator::{carry_fix_features, features_no_later_run_took, fix_features, record_fix_features_added, RunRecord, RunStore};
+use orq_orchestrator::{carry_fix_features, features_no_later_run_took, fix_features, record_fix_features_added, Event, RunRecord, RunStore};
 
 fn store(tag: &str) -> RunStore {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-fix-features-{}-{tag}", std::process::id()));
@@ -77,13 +77,28 @@ fn a_feature_a_later_run_carried_on_from_a_fix_session_is_not_free_for_the_earli
 
 /// The run a run resumed is never a later run of its features, however their starts compare, so
 /// two runs started in the same second are covered too: what the resumed run's fix sessions started
-/// is the resuming run's to close. The resuming run starts first, so the resumed run never started
-/// earlier than it whatever the clock reads.
+/// is the resuming run's to close. The resuming run is launched first, at a fixed time in the past,
+/// so the resumed run never started earlier than it whatever the clock reads: a run's start is its
+/// first event, and `start_run` records none.
 #[test]
 fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_carried_features() {
     let store = store("resumed-not-earlier");
     let resuming = RunRecord { feature_id: "feat-2".to_string(), ..record("run-2") };
     store.start_run(&resuming).unwrap();
+    store
+        .append_event(&Event {
+            schema_version: 1,
+            event_id: "run-2-launched".to_string(),
+            run_id: "run-2".to_string(),
+            project_id: "repo-1".to_string(),
+            feature_id: "feat-2".to_string(),
+            kind: "run.launched".to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            payload: serde_json::json!({}),
+        })
+        .unwrap();
     store.start_run(&record("run-1")).unwrap();
     record_fix_features_added(&store, &record("run-1"), "gate_fix", &names(&["a"])).unwrap();
     store.finish_run("repo-1", "feat", "run-1").unwrap();
