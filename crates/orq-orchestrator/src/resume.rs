@@ -427,6 +427,22 @@ pub fn later_run_of(store: &RunStore, run_id: &str) -> Result<Option<(String, Ve
     Ok(Some((later, taken)))
 }
 
+/// The newest run of `run_id`'s project that started after it on its branch or in its worktree, as
+/// a resume continues a run: that run works in the checkout `run_id` recorded, so what is done to
+/// the checkout is its to do. A run of the same features on a checkout of its own is no such run.
+pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, String> {
+    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let own = run_order(run_id, &store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?);
+    let shares_checkout = |other: &RunRecord| {
+        (!record.branch.is_empty() && other.branch == record.branch) || (!record.worktree.as_os_str().is_empty() && other.worktree == record.worktree)
+    };
+    Ok(project_runs(store, &record.project_id)?
+        .into_iter()
+        .filter(|(order, other, _)| other.run_id != run_id && *order > own && shares_checkout(other))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, other, _)| other.run_id))
+}
+
 /// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
 /// and starts from `run_id`, the reason otherwise. Nothing is launched.
 pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {

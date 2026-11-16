@@ -655,3 +655,19 @@ fn taken_over_the_preview_of_a_run_a_later_run_continued_gives_the_reason_instea
 
     assert_eq!(discard_preview(&store, "run-1", repo.root()), Err("run-1 was continued as run-2; discard or accept that run instead".to_string()));
 }
+
+#[test]
+fn taken_over_a_later_run_of_the_same_feature_on_its_own_checkout_does_not_block_the_discard() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    let elsewhere = repo.add_linked_worktree("orq-run-2");
+    let (_, store) = store("same-feature-elsewhere");
+    store.start_run(&record(&worktree, "orq-run-1")).unwrap();
+    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    later_run(&store, "run-2", &["F"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
+
+    discard_run(&store, "run-1", repo.root()).unwrap();
+
+    assert!(store.load("run-1").is_err() && !worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+    assert!(store.load("run-2").is_ok() && elsewhere.exists() && branch_exists(repo.root(), "orq-run-2"));
+}

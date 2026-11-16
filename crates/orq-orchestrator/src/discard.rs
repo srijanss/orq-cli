@@ -290,10 +290,10 @@ fn resumed_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreErro
 }
 
 /// The reason `run_id` must not be discarded or accepted when a later run took it over: that run
-/// works on the same branch and worktree, so it is the one to discard or accept.
+/// works on the same branch or in the same worktree, so it is the one to discard or accept.
 pub fn refuse_taken_over(store: &RunStore, run_id: &str) -> Result<(), String> {
-    match crate::resume::later_run_of(store, run_id)? {
-        Some((later, _)) => Err(format!("{run_id} was continued as {later}; discard or accept that run instead")),
+    match crate::resume::taken_over_by(store, run_id)? {
+        Some(later) => Err(format!("{run_id} was continued as {later}; discard or accept that run instead")),
         None => Ok(()),
     }
 }
