@@ -40,6 +40,7 @@ struct LogSummary {
     ending: Option<&'static str>,
     resumed_as: Option<String>,
     resumed_from: Option<String>,
+    dirty_files: Option<Vec<String>>,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -75,6 +76,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             ending: delivered_ending(&events, summary.phase),
             resumed_as: handed_over_to(&summary),
             resumed_from: resumed_from(&events),
+            dirty_files: dirty_files(&events, summary.phase),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -141,12 +143,35 @@ fn add_resume_links(row: &mut serde_json::Value, resumed_as: Option<&String>, re
     }
 }
 
+/// The files a blocked run's last merge attempt found with uncommitted changes in the checkout, when that is
+/// what it waits on; `None` for any other run.
+fn dirty_files(events: &[orq_orchestrator::Event], phase: orq_orchestrator::RunPhase) -> Option<Vec<String>> {
+    if phase != orq_orchestrator::RunPhase::Blocked || !orq_orchestrator::waiting_on_dirty_checkout(events) {
+        return None;
+    }
+    let refused = events.iter().rev().find(|event| event.kind == "merge.refused")?;
+    Some(texts(&refused.payload["files"]))
+}
+
+/// The strings of a JSON list, redacted; anything else in it is left out.
+fn texts(list: &serde_json::Value) -> Vec<String> {
+    list.as_array().map(|items| items.iter().filter_map(|item| item.as_str()).map(orq_core::redact::redact).collect()).unwrap_or_default()
+}
+
+/// Adds `dirty_files` to a run's JSON when the run waits on uncommitted changes to them.
+fn add_dirty_files(row: &mut serde_json::Value, files: Option<&[String]>) {
+    if let Some(files) = files {
+        row["dirty_files"] = serde_json::json!(files);
+    }
+}
+
 type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
 
 fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let sort_key = log.updated.as_deref().and_then(orq_orchestrator::parse_rfc3339);
     let mut row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
     add_resume_links(&mut row, log.resumed_as.as_ref(), log.resumed_from.as_ref());
+    add_dirty_files(&mut row, log.dirty_files.as_deref());
     (sort_key, record.run_id.clone(), row, record)
 }
 
@@ -572,6 +597,12 @@ pub trait RunLauncher {
     fn resume(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot resume runs".to_string()))
     }
+
+    /// Merges run `run` of the project at `repo`, blocked by uncommitted changes in the checkout to files it
+    /// changes, with those changes set aside meanwhile, and returns the id of the run that carries on.
+    fn merge_set_aside(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
+        Err(LaunchError::Refused("this server cannot merge runs".to_string()))
+    }
 }
 
 /// Cleans up storage the way the CLI's prune does. The server never prunes by itself: whoever builds it supplies this.
@@ -601,6 +632,17 @@ fn cleanup_hash(plan: &PrunePlan) -> String {
     metadata.sort();
     files.extend(metadata);
     ledger_version(files.concat().as_bytes())
+}
+
+/// What the web is told of a launch that continues a run: the run that carries on, or the launch's own
+/// refusal with this machine's paths left out; any other failure is for this machine's operator.
+fn carried_on(launched: Result<String, LaunchError>, project: &Path) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+    use orq_core::remote_inbox::RunControlOutcome;
+    match launched {
+        Ok(run) => Ok(RunControlOutcome::Done(run)),
+        Err(LaunchError::Refused(why)) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&crate::discard::paths_within_project(&why, project)))),
+        Err(LaunchError::Failed(why)) => Err(why),
+    }
 }
 
 /// Why a launch did not start a run.
@@ -702,13 +744,18 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             },
             RunControl::Resume => {
                 let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
-                match launcher.resume(&project.path, run) {
-                    Ok(carried_on) => Ok(RunControlOutcome::Done(carried_on)),
-                    Err(LaunchError::Refused(why)) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&crate::discard::paths_within_project(&why, &project.path)))),
-                    Err(LaunchError::Failed(why)) => Err(why),
-                }
+                carried_on(launcher.resume(&project.path, run), &project.path)
             }
             RunControl::Accept => self.accept(store, run),
+            RunControl::MergeSetAside => {
+                // Only a run whose last merge was refused over the checkout's changes may set them aside.
+                let events = store.events(run).map_err(|error| format!("run {run} is unreadable: {error:?}"))?;
+                if !orq_orchestrator::waiting_on_dirty_checkout(&events) {
+                    return Ok(RunControlOutcome::Refused("this run is not waiting on uncommitted changes in the checkout".to_string()));
+                }
+                let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot merge runs".to_string())) };
+                carried_on(launcher.merge_set_aside(&project.path, run), &project.path)
+            }
         }
     }
 
@@ -1206,6 +1253,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "mcp.setup" {
                     listed["mcp"] = mcp_setup_shown(&event.payload);
                 }
+                if event.kind == "merge.set_aside" {
+                    listed["set_aside"] = set_aside_shown(&record.run_id, &event.payload);
+                }
                 listed
             })
             .collect();
@@ -1213,6 +1263,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
         let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
+        add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
         Ok(Some(serde_json::json!({
             "run": shown,
             "events": listed,
@@ -1239,6 +1290,24 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .collect::<Vec<_>>();
         Ok(serde_json::Value::Array(list))
     }
+}
+
+/// What the run page shows of a `merge.set_aside` event: the stash commit and the message it is listed
+/// under, whether the changes were put back, the files set aside and those that conflicted, and the note to
+/// the person, all redacted. Anything else the payload holds is left out.
+fn set_aside_shown(run: &str, payload: &serde_json::Value) -> serde_json::Value {
+    let text = |key: &str| payload.get(key).and_then(|value| value.as_str()).map(orq_core::redact::redact);
+    let mut shown = serde_json::json!({
+        "stash": text("stash"),
+        "message": format!("orq set-aside {run}"),
+        "restored": payload.get("restored").and_then(|value| value.as_bool()).unwrap_or(false),
+        "files": texts(&payload["files"]),
+        "conflicted": texts(&payload["conflicted"]),
+    });
+    if let Some(note) = text("note") {
+        shown["note"] = note.into();
+    }
+    shown
 }
 
 /// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the

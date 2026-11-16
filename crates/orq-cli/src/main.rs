@@ -16,7 +16,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq review resolve|dismiss|reopen <run-id> [--head <sha>] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq review resolve|dismiss|reopen <run-id> [--head <sha>] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -5036,12 +5036,16 @@ fn run_merge(args: &[OsString]) -> ExitCode {
     let mut run_id = None;
     let mut set_aside = false;
     let mut no_ci_check = false;
+    let mut detach = false;
+    let mut in_herdr = false;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--set-aside") => set_aside = true,
             Some("--no-ci-check") => no_ci_check = true,
+            Some("--detach") => detach = true,
+            Some("--in-herdr") => in_herdr = true,
             Some("--repo") => match iter.next() {
                 Some(value) => repo = PathBuf::from(value),
                 None => return usage_error(),
@@ -5061,8 +5065,11 @@ fn run_merge(args: &[OsString]) -> ExitCode {
         Err(_) => return fail(format!("cannot merge {}: no such run", printable(&run_id))),
     }
     let mut resume: Vec<OsString> = vec![run_id.into(), "--yes".into(), "--repo".into(), repo.into_os_string()];
-    if no_ci_check {
-        resume.push("--no-ci-check".into());
+    // The merge carries on as the resume it is, detached or in a Herdr pane when asked, as the web does.
+    for (wanted, flag) in [(no_ci_check, "--no-ci-check"), (detach, "--detach"), (in_herdr, "--in-herdr")] {
+        if wanted {
+            resume.push(flag.into());
+        }
     }
     run_resume(&resume, true)
 }

@@ -3272,6 +3272,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                   <td>
                     <RunState state={run.state} />
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
+                    <DirtyCheckout run={run} />
                   </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
                   <td><Moment at={run.updated_at} /></td>
@@ -3297,11 +3298,46 @@ const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
 const DISCARDABLE = [...RESUMABLE, "merged"];
 const ACCEPTABLE = ["failed", "needs_review"];
 
+const SET_ASIDE_QUESTION = "Your changes to these files are stashed, the run is merged, and your changes are put back. If they conflict, they stay in the stash and orq tells you where.";
+const DIRTY_SHOWN = 10;
+
+// The files a blocked run waits on because the checkout has uncommitted changes to them, or null when it
+// waits on nothing of the kind.
+function dirtyFiles(run) {
+  if (run.state !== "blocked" || !Array.isArray(run.dirty_files)) return null;
+  const files = run.dirty_files.filter((file) => typeof file === "string");
+  return files.length === 0 ? null : files;
+}
+
+// "Waiting for you" on a run blocked by uncommitted changes in the checkout: what is in the way and the files,
+// ten at most; its actions (Resume, and Set aside my changes and merge) are the run's own.
+function DirtyCheckout({ run }) {
+  const files = dirtyFiles(run);
+  if (files === null) return null;
+  const target = typeof run.target_branch === "string" && run.target_branch !== "" ? run.target_branch : "main";
+  return (
+    <div className="banner waiting-banner" role="status" data-dirty-checkout>
+      <Icon name="alert" size={18} />
+      <div>
+        <strong>Waiting for you</strong>
+        <p>{target + " has uncommitted changes to files this run changes"}</p>
+        <ul className="dirty-files">
+          {files.slice(0, DIRTY_SHOWN).map((file, at) => (
+            <li key={at}><code>{file}</code></li>
+          ))}
+          {files.length > DIRTY_SHOWN ? <li className="muted">{"and " + (files.length - DIRTY_SHOWN) + " more"}</li> : null}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
 // branch would lose. Accept on a failed or needs_review run asks first; its tests then run on the server, so the
 // result shows as the run's state once they finish. Switch model on a paused run picks a role and a profile.
+// Set aside my changes and merge, on a run blocked by uncommitted changes to its files, asks first.
 // The run's row and its detail header show the same ones. In a row (menu) the first stays in sight, Pause or
 // Resume, and the rest sit behind a ⋯ button; on a phone the CSS shows them all in the row instead.
 function RowActions({ run, control, menu = false }) {
@@ -3312,8 +3348,9 @@ function RowActions({ run, control, menu = false }) {
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" tone="danger" icon="trash" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
   const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
-  if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null) return null;
-  const all = [pause, resume, model, stop, accept, discard].filter((action) => action !== null);
+  const setAside = dirtyFiles(run) === null ? null : <RunAction kind="merge-set-aside" label="Set aside my changes and merge" icon="check" question={SET_ASIDE_QUESTION} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/merge-set-aside")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Merging." : "Merging as run " + next + ".")} />;
+  if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null && setAside === null) return null;
+  const all = [pause, resume, setAside, model, stop, accept, discard].filter((action) => action !== null);
   if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
 }
@@ -3464,7 +3501,47 @@ function EventItem({ event }) {
       <span className="event-meta">{"Attempt " + event.attempt}</span>
       <Moment at={event.occurred_at} />
       {event.mcp ? <McpSetup mcp={event.mcp} /> : null}
+      {event.set_aside ? <SetAside setAside={event.set_aside} /> : null}
     </li>
+  );
+}
+
+// What a set-aside merge did with the checkout's changes: put back, or, when they conflicted, the stash that
+// keeps them, the files in conflict and the run's note, shown like a warning.
+function SetAside({ setAside }) {
+  const texts = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === "string") : []);
+  const conflicted = texts(setAside.conflicted);
+  if (setAside.restored === true && conflicted.length === 0) return <p className="event-meta set-aside" data-set-aside>Your changes were set aside and put back.</p>;
+  const stash = typeof setAside.stash === "string" ? setAside.stash : "";
+  const message = typeof setAside.message === "string" ? setAside.message : "";
+  return (
+    <div className="set-aside set-aside-conflict" role="note" data-set-aside data-set-aside-conflict>
+      <Icon name="alert" size={16} />
+      <div>
+        {stash === "" ? null : <p>{"Your changes are in stash " + stash + (message === "" ? "" : " (" + message + ")")}</p>}
+        {conflicted.length === 0 ? null : (
+          <ul className="dirty-files">
+            {conflicted.map((file, at) => (
+              <li key={at}><code>{file}</code></li>
+            ))}
+          </ul>
+        )}
+        {typeof setAside.note === "string" && setAside.note !== "" ? <p>{setAside.note}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+// The set-aside merges among a run's events, on its timeline: where its changes went.
+function SetAsideNotes({ events }) {
+  const merged = events.filter((event) => event.set_aside && typeof event.set_aside === "object");
+  if (merged.length === 0) return null;
+  return (
+    <div className="set-aside-notes">
+      {merged.map((event) => (
+        <SetAside key={event.event_id} setAside={event.set_aside} />
+      ))}
+    </div>
   );
 }
 
@@ -3622,6 +3699,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
   const panels = (all) => (
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
+        <SetAsideNotes events={all} />
         {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} onLogs={() => choose("logs")} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
@@ -3638,6 +3716,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
             <h2>{run.feature}</h2>
             <RunState state={run.state} />
           </div>
+          <DirtyCheckout run={run} />
           <RowActions run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />
           {validTime(run.started_at) === null && delivery === null ? null : (

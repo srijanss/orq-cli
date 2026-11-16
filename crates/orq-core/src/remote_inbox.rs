@@ -417,6 +417,8 @@ pub enum RunControl {
     Resume,
     Stop,
     Accept,
+    /// Merge a run blocked by uncommitted changes in the checkout, setting those changes aside meanwhile.
+    MergeSetAside,
 }
 
 /// How a request to pause or resume a run ended.
@@ -541,7 +543,8 @@ fn run_start_target(path: &str) -> Option<(&str, &str)> {
     feature_target(path, "runs")
 }
 
-/// The project, run and control of `/api/projects/{id}/runs/{run}/pause`, `.../resume`, `.../stop` or `.../accept`, when the path has that shape.
+/// The project, run and control of `/api/projects/{id}/runs/{run}/pause`, `.../resume`, `.../stop`, `.../accept` or
+/// `.../merge-set-aside`, when the path has that shape.
 fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
     let mut parts = path.strip_prefix("/api/projects/")?.split('/');
     let (id, runs, run, action) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
@@ -553,6 +556,7 @@ fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
         "resume" => Some((id, run, RunControl::Resume)),
         "stop" => Some((id, run, RunControl::Stop)),
         "accept" => Some((id, run, RunControl::Accept)),
+        "merge-set-aside" => Some((id, run, RunControl::MergeSetAside)),
         _ => None,
     }
 }
@@ -1012,7 +1016,7 @@ fn save_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
     }
 }
 
-/// Pauses, resumes, stops or accepts a run for the web, if actions are on, and leaves an audit line for the attempt.
+/// Pauses, resumes, stops, accepts or merges (setting changes aside) a run for the web, if actions are on, and leaves an audit line for the attempt.
 fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, control: RunControl, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
@@ -1021,6 +1025,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         RunControl::Resume => ("run.resume", "the run could not be resumed"),
         RunControl::Stop => ("run.stop", "the run could not be stopped"),
         RunControl::Accept => ("run.accept", "the run could not be accepted"),
+        RunControl::MergeSetAside => ("run.merge_set_aside", "the run could not be merged"),
     };
     let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
         let _ = record(roots, &Attempt { identity: "web", action, project: id, run, outcome, reason }, now);

@@ -196,17 +196,33 @@ impl RunLauncher for CliLauncher {
     }
 
     fn resume(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
+        // While Herdr is running the resumed run goes in a pane of its own, as a started one does.
+        self.carry_on(run, &["resume", run, "--yes"], repo)
+    }
+
+    fn merge_set_aside(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
+        // `orq run merge --set-aside` resumes the run, so it carries on as a resumed run does.
+        self.carry_on(run, &["merge", run, "--set-aside"], repo)
+    }
+}
+
+impl CliLauncher {
+    /// Runs `orq run <command...> --detach --in-herdr --repo <repo>`, which continues `run`, and returns the run that
+    /// carries on. Only the command's own "cannot resume|merge <run>: <why>" is a reason for the web; anything
+    /// else is the operator's.
+    fn carry_on(&self, run: &str, command: &[&str], repo: &Path) -> Result<String, LaunchError> {
         // The command validates the run itself; a run id is never allowed to read as an option.
         if run.is_empty() || run.starts_with('-') {
             return Err(LaunchError::Refused("not a run id".to_string()));
         }
-        // While Herdr is running the resumed run goes in a pane of its own, as a started one does.
-        let args: Vec<std::ffi::OsString> = vec!["run".into(), "resume".into(), run.into(), "--yes".into(), "--detach".into(), "--in-herdr".into(), "--repo".into(), repo.into()];
+        let mut args: Vec<std::ffi::OsString> = vec!["run".into()];
+        args.extend(command.iter().map(Into::into));
+        args.extend(["--detach".into(), "--in-herdr".into(), "--repo".into(), repo.into()]);
         let (ok, out, err) = self.run(&args)?;
         if !ok {
             let reason = crate::launch_outcome(false, "", &err).unwrap_or_else(|reason| reason);
-            // Only the command's own "cannot resume <run>: <why>" is a reason for the web; anything else is the operator's.
-            return Err(if reason.starts_with("cannot resume ") { LaunchError::Refused(without_paths(&reason)) } else { LaunchError::Failed(reason) });
+            let refused = reason.starts_with("cannot resume ") || reason.starts_with("cannot merge ");
+            return Err(if refused { LaunchError::Refused(without_paths(&reason)) } else { LaunchError::Failed(reason) });
         }
         crate::launch_outcome(true, &out, &err).map_err(LaunchError::Failed)
     }

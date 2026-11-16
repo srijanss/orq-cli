@@ -557,3 +557,24 @@ fn a_merge_local_run_that_catches_up_with_a_base_adding_a_stack_reports_the_step
         "the report lists the steps run on the delivered head: {report}"
     );
 }
+
+/// The web launcher runs `orq run merge <run> --set-aside --detach --in-herdr --repo <repo>`: it returns at once
+/// naming the run that carries on, which merges on its own; without Herdr running it is detached as before.
+#[test]
+fn merging_with_set_aside_detached_in_herdr_names_the_run_that_carries_on_and_it_still_merges() {
+    let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside-detached");
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let out = orq(&w, &["run", "merge", &blocked, "--set-aside", "--detach", "--in-herdr", "--repo", &repo]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+
+    let stdout = text(&out.stdout);
+    let merged = stdout.lines().find_map(|line| line.strip_prefix("run: ")).expect("names the run that carries on").to_string();
+    assert_ne!(merged, blocked, "{stdout}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    // The detached runner records the run as it starts, so it may not be there yet.
+    let ended = |run: &str| store(&w).events(run).is_ok_and(|events| events.iter().any(|e| e.kind == "run.completed"));
+    while !ended(&merged) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(ending(&w, &merged).as_deref(), Some("merged"));
+}

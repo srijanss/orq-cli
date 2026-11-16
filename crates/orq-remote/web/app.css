@@ -793,3 +793,11 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 
 /* A project's role while editing: harness, model, effort and the reset on one wrapping row. */
 .project-role-fields { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* A run waiting for the operator because of the checkout, and where a set-aside merge left the changes. */
+.waiting-banner { align-items: flex-start; color: var(--text); background: var(--status-waiting-bg); border-color: var(--status-waiting); border-left-width: 4px; }
+.waiting-banner > .icon, .set-aside-conflict > .icon { flex: none; color: var(--status-waiting); }
+.dirty-files { margin: 0.25rem 0 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
+.set-aside-conflict { display: flex; gap: 0.5rem; padding: 0.5rem 0.75rem; margin: 0.5rem 0; border: 1px solid var(--status-waiting); border-left-width: 4px; border-radius: 0.5rem; color: var(--text); background: var(--status-waiting-bg); overflow-wrap: anywhere; }
+.set-aside-conflict p { margin: 0; }
+.run-row .waiting-banner { margin: 0.375rem 0 0; padding: 0.375rem 0.625rem; font-size: 0.875rem; }

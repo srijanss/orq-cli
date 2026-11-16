@@ -377,3 +377,45 @@ fn a_group_start_runs_one_orq_run_of_the_group_checked_then_detached() {
     assert!(matches!(launcher.start_group(&repo, &group, None), Err(LaunchError::Refused(_))));
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 5);
 }
+
+#[test]
+fn a_set_aside_merge_runs_orq_run_merge_detached_in_herdr_and_its_refusal_is_the_reason() {
+    let dir = scratch("merge-set-aside");
+    let repo = repo(&dir);
+    let exe = dir.join("orq");
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> {log}\nif [ -e {refuse} ]; then echo 'orq: cannot merge r-1: this run is not waiting on a dirty checkout' >&2; exit 1; fi\nif [ -e {resume} ]; then echo 'orq: cannot resume r-1: the checkpoint no longer matches /home/me/wt' >&2; exit 1; fi\nif [ -e {broken} ]; then echo 'orq: cannot read the run: Io(\"/home/me/state\")' >&2; exit 1; fi\necho 'run: run-78'\n",
+        log = dir.join("calls.log").display(),
+        refuse = dir.join("refuse").display(),
+        resume = dir.join("resume").display(),
+        broken = dir.join("broken").display()
+    );
+    std::fs::write(&exe, script).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = CliLauncher::new(exe, None);
+
+    assert_eq!(launcher.merge_set_aside(&repo, "r-1").unwrap(), "run-78");
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    assert_eq!(calls.trim_end(), format!("run merge r-1 --set-aside --detach --in-herdr --repo {}", repo.display()));
+
+    // The merge's own refusal, or the resume's it goes through, is the reason, without the machine's paths.
+    std::fs::write(dir.join("refuse"), "").unwrap();
+    match launcher.merge_set_aside(&repo, "r-1") {
+        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "cannot merge r-1: this run is not waiting on a dirty checkout"),
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_file(dir.join("refuse")).unwrap();
+    std::fs::write(dir.join("resume"), "").unwrap();
+    match launcher.merge_set_aside(&repo, "r-1") {
+        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "cannot resume r-1: the checkpoint no longer matches <path>"),
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_file(dir.join("resume")).unwrap();
+
+    // Any other failure of the command is the operator's.
+    std::fs::write(dir.join("broken"), "").unwrap();
+    assert!(matches!(launcher.merge_set_aside(&repo, "r-1"), Err(LaunchError::Failed(_))));
+    // A run id that could be read as an option never reaches the command.
+    assert!(matches!(launcher.merge_set_aside(&repo, "--yes"), Err(LaunchError::Refused(_))));
+    assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 4);
+}
