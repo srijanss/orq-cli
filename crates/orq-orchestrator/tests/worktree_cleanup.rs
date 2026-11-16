@@ -572,8 +572,8 @@ fn write(w: &World, path: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
-const TDD_STATE_FILES: [&str; 8] = [
-    ".tdd-config.json",
+/// The TDD config is not here: it is exempt only as the copy orq carried in and recorded.
+const TDD_STATE_FILES: [&str; 7] = [
     ".tdd-state.json",
     ".tdd-state.json.lock",
     ".tdd-review-findings.json",

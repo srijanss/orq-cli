@@ -51,18 +51,39 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
     let Some(path) = manifest_path(worktree) else {
         return vec!["what orq wrote into the worktree was not recorded: its git directory could not be found".to_string()];
     };
-    // The carried TDD config, and every file `mcpctl init` lists as scaffolded, are orq's too.
+    // Every file `mcpctl init` lists as scaffolded is orq's too, and so is the TDD config while it is
+    // the copy orq carried in; a config the worktree already had stays the worktree's own.
     let scaffolded = crate::mcp_setup::scaffolded_files(worktree);
-    let names = CANDIDATES.iter().map(|name| name.to_string()).chain([TDD_CONFIG.to_string()]).chain(scaffolded);
-    let recorded: BTreeMap<String, String> = names
+    let names = CANDIDATES.iter().map(|name| name.to_string()).chain(scaffolded);
+    let mut recorded: BTreeMap<String, String> = names
         .filter_map(|name| fingerprint(worktree, &name).map(|print| (name, print)))
         .collect();
+    if let Some(print) = carried_tdd_config(worktree, &Recorded::load(worktree)) {
+        recorded.insert(TDD_CONFIG.to_string(), print);
+    }
     match write_manifest(&path, &recorded) {
         Ok(()) => Vec::new(),
         Err(why) => vec![format!(
             "what orq wrote into the worktree was not recorded: {why}"
         )],
     }
+}
+
+/// The worktree's TDD config's fingerprint when it is the copy orq carried in: it was recorded as
+/// orq's before and is unchanged, or it is the main checkout's config byte for byte.
+fn carried_tdd_config(worktree: &Path, before: &Recorded) -> Option<String> {
+    let print = fingerprint(worktree, TDD_CONFIG)?;
+    if before.0.get(TDD_CONFIG) == Some(&print) {
+        return Some(print);
+    }
+    let common = git_raw(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+    let main_checkout = PathBuf::from(common.success.then(|| common.stdout.trim().to_string())?).parent()?.to_path_buf();
+    let main_config = main_checkout.join(TDD_CONFIG);
+    if !std::fs::symlink_metadata(&main_config).ok()?.is_file() {
+        return None;
+    }
+    let out = git_raw(worktree, &["hash-object", "--no-filters", "--", main_config.to_str()?]).ok()?;
+    (out.success && format!("blob:{}", out.stdout.trim()) == print).then_some(print)
 }
 
 fn write_manifest(path: &Path, recorded: &BTreeMap<String, String>) -> Result<(), String> {

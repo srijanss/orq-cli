@@ -251,10 +251,12 @@ pub(crate) fn printable(name: &str) -> String {
 /// Whether `path` is state the TDD and MCP tooling keeps in the worktree while a run works (`.tdd-*`,
 /// `.project-mcp/`). The tooling rewrites it during the run, so it cannot be fingerprinted at setup; it
 /// is known by name, and losing it loses no work. The files orq itself writes at setup (`.mcp.json`,
-/// `.mcpctl*`) are not here: they are exempt only while unchanged since orq recorded them.
+/// `.mcpctl*`) are not here: they are exempt only while unchanged since orq recorded them. Nor is the
+/// TDD config, which the tooling only reads: it is orq's while it is the copy orq carried in and
+/// recorded, and a config the worktree had of its own is the worktree's.
 fn is_tooling_state(path: &str) -> bool {
     let top = path.split('/').next().unwrap_or(path);
-    let orq_written = top == ".mcp.json" || top.starts_with(".mcpctl");
+    let orq_written = top == ".mcp.json" || top.starts_with(".mcpctl") || top == ".tdd-config.json";
     !orq_written && orq_core::ownership::classify(top) == orq_core::ownership::Ownership::Mcp
 }
 

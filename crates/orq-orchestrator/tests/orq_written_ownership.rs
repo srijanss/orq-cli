@@ -443,6 +443,8 @@ fn carried_and_scaffolded(w: &World) {
     let exclude = w.repo.join(".git/info/exclude");
     let listed = "/.tdd-config.json\n/.mcpctl.lock\n/.mcpctl.scaffold.json\n/.agents/guide.md\n/.claude/commands/tdd.md\n";
     fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + listed).unwrap();
+    // The main checkout's config, which orq carried into the worktree.
+    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
     fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
     fs::write(w.worktree.join(".mcpctl.lock"), "version = 1\n").unwrap();
     fs::create_dir_all(w.worktree.join(".agents")).unwrap();
@@ -475,4 +477,32 @@ fn a_scaffolded_file_the_agent_edited_is_work_and_keeps_the_worktree() {
     let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
 
     assert!(reason.contains(".agents/guide.md (it differs from what orq last wrote)"), "{reason}");
+}
+
+#[test]
+fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_and_keeps_the_worktree() {
+    let w = world("own-tdd-config");
+    orq_files(&w);
+    let exclude = w.repo.join(".git/info/exclude");
+    fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n").unwrap();
+    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    // The worktree's own config, which carrying left alone because it was already there.
+    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"my-adapter\"}\n").unwrap();
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".tdd-config.json"), "{reason}");
+    assert_eq!(fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(), "{\"adapter\":\"my-adapter\"}\n");
+}
+
+#[test]
+fn a_carried_tdd_config_stays_orqs_when_recorded_again_after_the_main_checkouts_changed() {
+    let w = world("carried-tdd-config-again");
+    carried_and_scaffolded(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"newer\"}\n").unwrap();
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    assert_eq!(cleanup(&w), CleanupOutcome::Removed);
 }
