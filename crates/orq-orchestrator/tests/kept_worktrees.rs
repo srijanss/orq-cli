@@ -311,3 +311,26 @@ fn a_run_of_another_repository_on_the_same_branch_says_nothing_about_this_worktr
     assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
     assert!(w.store.events("run-2").unwrap().iter().all(|e| e.kind != "worktree.deleted"));
 }
+
+#[test]
+fn editing_an_already_changed_file_or_one_past_the_shown_files_makes_the_version_stale() {
+    let w = world("stale-content");
+    let path = w.worktree("run-1", "fix--A");
+    for n in 0..25 {
+        fs::write(path.join(format!("f{n:02}.txt")), "first\n").unwrap();
+    }
+    w.kept("run-1", "kept");
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    assert_eq!(entry.files.len(), 20);
+
+    fs::write(path.join("f00.txt"), "second, longer\n").unwrap();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    assert_eq!(refused, DeleteRefusal::Changed);
+
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    fs::remove_file(path.join("f24.txt")).unwrap();
+    fs::write(path.join("f99.txt"), "first\n").unwrap();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    assert_eq!(refused, DeleteRefusal::Changed);
+    assert!(path.join("f99.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}

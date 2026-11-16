@@ -371,16 +371,16 @@ fn describe(
     };
     let counted = git_raw(&listed.path, &["rev-list", "--count", &format!("{target}..HEAD"), "--"])?;
     let commits = counted.success.then(|| counted.stdout.trim().parse::<u64>().ok()).flatten();
-    let (files, more_files, only_ignored, files_unreadable) = match scan_work(&listed.path, None)? {
+    let (files, more_files, only_ignored, files_unreadable, version) = match scan_work(&listed.path, None)? {
         Ok(Some(scan)) => {
             let all: Vec<ChangedFile> = scan.entries.iter().map(|entry| changed_file(entry)).collect();
             let only_ignored = all.iter().all(|file| file.kind == ChangeKind::Ignored);
             let more = all.len().saturating_sub(SHOWN_FILES);
-            (all.into_iter().take(SHOWN_FILES).collect(), more, only_ignored, false)
+            let version = version_of(&listed.head, &target, commits, &listed.path, Some(&scan.entries));
+            (all.into_iter().take(SHOWN_FILES).collect(), more, only_ignored, false, version)
         }
-        _ => (Vec::new(), 0, false, true),
+        _ => (Vec::new(), 0, false, true, version_of(&listed.head, &target, commits, &listed.path, None)),
     };
-    let version = version_of(&listed.head, commits, &files, more_files, files_unreadable);
     Ok(KeptWorktree {
         branch,
         path: listed.path.clone(),
@@ -422,10 +422,22 @@ fn changed_file(entry: &str) -> ChangedFile {
     ChangedFile { path: printable(entry.get(3..).unwrap_or(entry)), kind }
 }
 
-fn version_of(head: &str, commits: Option<u64>, files: &[ChangedFile], more: usize, unreadable: bool) -> String {
-    let mut text = format!("{head}\n{commits:?}\n{more}\n{unreadable}\n");
-    for file in files {
-        text.push_str(&format!("{:?} {}\n", file.kind, file.path));
+/// A fingerprint of what deleting the worktree loses: its commit, its target, and every status entry with
+/// the size and modification time of what is on disk there, so editing an already changed file counts too.
+fn version_of(head: &str, target: &str, commits: Option<u64>, root: &Path, entries: Option<&[String]>) -> String {
+    let mut text = format!("{head}\n{target}\n{commits:?}\n");
+    match entries {
+        None => text.push_str("unreadable\n"),
+        Some(entries) => {
+            for entry in entries {
+                let on_disk = entry.get(3..).and_then(|path| root.join(path.trim_end_matches('/')).symlink_metadata().ok());
+                let stamp = on_disk.map(|meta| {
+                    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                    (meta.len(), modified.map(|d| d.as_nanos()))
+                });
+                text.push_str(&format!("{entry}\0{stamp:?}\n"));
+            }
+        }
     }
     format!("{:016x}", fnv1a(text.as_bytes()))
 }
