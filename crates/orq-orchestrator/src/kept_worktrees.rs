@@ -336,16 +336,20 @@ fn unsafe_path(repo: &Path, path: &Path) -> Option<String> {
     if path.components().any(|part| part == std::path::Component::ParentDir) {
         return Some("the worktree's path goes up a folder".to_string());
     }
-    let mut step = repo.to_path_buf();
+    // Git lists worktrees by absolute path; the repository may be given relative, or through a symlink.
+    let below = [std::path::absolute(repo).ok(), repo.canonicalize().ok()].into_iter().flatten().find_map(|base| {
+        let below = path.strip_prefix(base.join(".claude").join("worktrees")).ok()?.to_path_buf();
+        Some((base, below))
+    });
+    let Some((mut step, below)) = below else {
+        return Some("the worktree is not inside the worktrees folder".to_string());
+    };
     for part in [".claude", "worktrees"] {
         step.push(part);
         if step.symlink_metadata().map_or(true, |meta| meta.file_type().is_symlink()) {
             return Some("the worktrees folder is a symlink or missing".to_string());
         }
     }
-    let Ok(below) = path.strip_prefix(&step) else {
-        return Some("the worktree is not inside the worktrees folder".to_string());
-    };
     for part in below.components() {
         step.push(part);
         if step.symlink_metadata().map_or(true, |meta| meta.file_type().is_symlink()) {

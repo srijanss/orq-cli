@@ -42,7 +42,12 @@ impl Sandbox {
     }
 
     fn orq(&self, args: &[&str], stdin: &str) -> Output {
+        self.orq_in(&self.home, args, stdin)
+    }
+
+    fn orq_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+        command.current_dir(dir);
         command.args(args);
         command.env("HOME", &self.home);
         command.env("XDG_DATA_HOME", self.home.join("data"));
@@ -204,4 +209,17 @@ fn storage_status_counts_the_kept_worktrees() {
     let line = text(&out).lines().find(|l| l.starts_with("kept worktrees:")).map(String::from).expect(&text(&out));
     assert!(line.starts_with("kept worktrees: 2 in 1 project(s)"), "{line}");
     assert!(line.contains("orq worktree list --repo"), "{line}");
+}
+
+#[test]
+fn a_relative_repo_path_lists_and_removes_like_an_absolute_one() {
+    let s = Sandbox::new("relative");
+    let path = s.kept("run-1", "fix--A");
+
+    let listed = s.orq_in(&s.repo, &["worktree", "list", "--repo", "."], "");
+    assert!(text(&listed).contains("fix--A") && text(&listed).contains("safe to delete"), "{}", text(&listed));
+
+    let out = s.orq_in(&s.repo, &["worktree", "remove", "--repo", ".", "fix--A", "--yes"], "");
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!path.exists() && !s.branch_exists("fix--A"));
 }
