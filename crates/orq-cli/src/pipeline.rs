@@ -511,13 +511,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             eprintln!("orq: cannot carry the features the fix sessions of {from} started into {run_id}: {err:?}");
         }
     }
-    // A paused run handed its checkout to this run; it no longer holds it.
+    // The stopped run handed its branch and worktree to this run; it no longer holds them nor offers actions of its own.
     if let Some(from) = resumed.as_ref().map(|r| &r.from) {
-        let was_paused = store.events(&from.run_id).map(|e| orq_orchestrator::summarize_run(&e).phase == orq_orchestrator::RunPhase::Paused).unwrap_or(false);
-        if was_paused {
-            if let Err(err) = orq_orchestrator::supersede_paused(&store, from, &run_id) {
-                eprintln!("orq: cannot mark {} as resumed: {err:?}", from.run_id);
-            }
+        if let Err(err) = orq_orchestrator::supersede_resumed(&store, from, &run_id) {
+            eprintln!("orq: cannot mark {} as resumed: {err:?}", from.run_id);
         }
     }
     // A new harness continues the work from the handoff, so only an implementer on the same harness skips its finished session.

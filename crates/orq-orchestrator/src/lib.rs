@@ -98,7 +98,7 @@ pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, Rebas
 pub use resume::{
     carry_rebase, check_group_resume, newest_run_of, plan_group_resume, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
     record_inherited_implement, resume_check, run_members,
-    supersede_paused, ResumePlan,
+    supersede_resumed, ResumePlan,
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{

@@ -757,7 +757,8 @@ fn runs(args: &[OsString]) -> ExitCode {
         Ok(list) => (list.runs, list.unreadable),
         Err(err) => return fail(err),
     };
-    let phase = |phase: orq_orchestrator::RunPhase| phase.as_str();
+    // A run a resume took over ended as completed, but it is shown as what happened to it.
+    let phase = |run: &orq_orchestrator::RunListing| if run.resumed_as.is_some() { "resumed" } else { run.phase.as_str() };
     if json {
         let list: Vec<serde_json::Value> = listings
             .iter()
@@ -765,13 +766,14 @@ fn runs(args: &[OsString]) -> ExitCode {
                 serde_json::json!({
                     "run_id": run.run_id,
                     "feature_id": run.feature_id,
-                    "phase": phase(run.phase),
+                    "phase": phase(run),
                     "stage": run.stage,
                     "reason": run.reason,
                     "implementer_model": run.implementer_model,
                     "reviewer_model": run.reviewer_model,
                     "review_url": run.review_url,
                     "mcp_notes": run.mcp_notes,
+                    "resumed_as": run.resumed_as,
                 })
             })
             .collect();
@@ -783,7 +785,7 @@ fn runs(args: &[OsString]) -> ExitCode {
                 "{}\t{}\t{}\t{}\t{}/{}\t{}\t{}",
                 printable(&run.run_id),
                 printable(&run.feature_id),
-                phase(run.phase),
+                phase(run),
                 printable(&field(&run.stage)),
                 printable(&field(&run.implementer_model)),
                 printable(&field(&run.reviewer_model)),
@@ -4046,6 +4048,7 @@ mod ledger_backend_tests {
             reviewer_model: None,
             review_url: url.map(str::to_string),
             mcp_notes: Vec::new(),
+            resumed_as: None,
         };
         let runs = [run("run-1", Some("https://example.test/mr/1")), run("run-2", None)];
 
@@ -4079,6 +4082,7 @@ mod ledger_backend_tests {
             reviewer_model: None,
             review_url: Some("https://example.test/mr/1".into()),
             mcp_notes: Vec::new(),
+            resumed_as: None,
         }];
 
         let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], Some(&runs));

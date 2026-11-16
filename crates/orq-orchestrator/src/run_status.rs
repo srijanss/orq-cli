@@ -208,6 +208,8 @@ pub struct RunSummary {
     pub reason: Option<String>,
     /// When the event that last set the phase happened, as that event wrote it.
     pub phase_at: Option<String>,
+    /// The run this one was continued as, once a resume took it over.
+    pub resumed_as: Option<String>,
 }
 
 /// Summarize a run from its events in order. The latest event that says something about the
@@ -219,6 +221,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
         stage: None,
         reason: None,
         phase_at: None,
+        resumed_as: None,
     };
     for event in events {
         let phase = match event.kind.as_str() {
@@ -232,7 +235,13 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             "stage.started" | "stage.completed" | "stage.skipped" => RunPhase::Running,
             "run.pause_requested" if summary.phase == RunPhase::Running => RunPhase::PauseRequested,
             "run.paused" if summary.phase == RunPhase::PauseRequested => RunPhase::Paused,
-            "run.resumed" if summary.phase == RunPhase::Paused => RunPhase::Running,
+            // Whatever stopped it, a resumed run is handed over to the run that continues it.
+            "run.resumed" => {
+                if let Some(id) = event.payload.get("resumed_as").and_then(|v| v.as_str()) {
+                    summary.resumed_as = Some(id.to_string());
+                }
+                RunPhase::Running
+            }
             "stage.failed" | "run.failed" => RunPhase::Failed,
             "run.blocked" => RunPhase::Blocked,
             "worktree.removed" => RunPhase::Completed,

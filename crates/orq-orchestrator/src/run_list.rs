@@ -23,6 +23,8 @@ pub struct RunListing {
     pub review_url: Option<String>,
     /// What did not go as planned when the run's MCP servers were set up.
     pub mcp_notes: Vec<String>,
+    /// The run that took this one over when it was resumed, if one did.
+    pub resumed_as: Option<String>,
 }
 
 /// The runs of a project, and how many run directories could not be read.
@@ -62,6 +64,12 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
             continue;
         };
         let summary = summarize_run(&events);
+        // Only a run that ended handed over is shown as continued; a resumed pause that runs on is not.
+        let resumed_as = summary.resumed_as.filter(|_| summary.phase == RunPhase::Completed);
+        let reason = match &resumed_as {
+            Some(id) => Some(format!("continued as {id}")),
+            None => summary.reason,
+        };
         let review_url = events
             .iter()
             .rev()
@@ -73,11 +81,12 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
             members: members_of(&record, &events),
             phase: summary.phase,
             stage: summary.stage,
-            reason: summary.reason,
+            reason,
             implementer_model: record.profiles.get("implementer").map(|p| p.model.clone()),
             reviewer_model: record.profiles.get("reviewer").map(|p| p.model.clone()),
             review_url,
             mcp_notes: mcp_notes(&events),
+            resumed_as,
         });
     }
     Ok(list)

@@ -70,9 +70,10 @@ pub fn run_members(store: &RunStore, run_id: &str) -> Result<Vec<String>, String
     Ok(members_of(&record, &events))
 }
 
-/// A paused run was continued as `new_run_id`: the paused run is resumed and then ended, so it no
-/// longer holds the checkout it handed over.
-pub fn supersede_paused(
+/// A stopped run (paused, failed, blocked or waiting on a review) was continued as `new_run_id` on
+/// its branch and worktree: it is resumed and then ended, so it no longer holds the checkout it
+/// handed over and offers no action of its own.
+pub fn supersede_resumed(
     store: &RunStore,
     from: &RunRecord,
     new_run_id: &str,
