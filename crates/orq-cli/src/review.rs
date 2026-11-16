@@ -108,10 +108,16 @@ pub(crate) fn record_local_merge(run_id: &str, head_sha: &str) -> Result<usize, 
     orq_core::review_inbox::record_local_merge(&review_index()?, run_id, head_sha)
 }
 
-/// Keeps the PR/MR `run_id` just created or adopted for its pushed `head` as seen open there now.
-pub(crate) fn record_created_review(run_id: &str, provider: &str, review: &orq_orchestrator::ReviewRef, head: &str) -> Result<(), String> {
+/// Keeps the PR/MR `run_id` just created for its pushed `head` as seen open there now, or, when it was
+/// `adopted`, as unverified, since an adopted one may already be merged.
+pub(crate) fn record_created_review(run_id: &str, provider: &str, review: &orq_orchestrator::ReviewRef, head: &str, adopted: bool) -> Result<(), String> {
     let created = orq_core::review_inbox::CreatedReview { run_id: run_id.into(), provider: provider.into(), review_id: review.id.clone(), url: review.url.clone() };
-    orq_core::review_inbox::record_created_review(&review_index()?, &created, head)
+    let store = review_index()?;
+    if adopted {
+        orq_core::review_inbox::record_adopted_review(&store, &created, head)
+    } else {
+        orq_core::review_inbox::record_created_review(&store, &created, head)
+    }
 }
 
 /// The review index in Orq's data directory.

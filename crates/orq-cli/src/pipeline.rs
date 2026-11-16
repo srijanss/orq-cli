@@ -1451,19 +1451,18 @@ fn stages(
                     Ok(people) => people,
                     Err(reason) => return stopped(Ending::Failed, reason),
                 };
-                let created = match create_review_request_with(store, run_id, &provider, &draft, &people, Duration::from_secs(60))? {
-                    ReviewRequestOutcome::Created(review) | ReviewRequestOutcome::Adopted(review) => {
-                        // Kept so the review page links it; a failure is noted and never fails delivery.
-                        if let Err(err) = crate::review::record_created_review(run_id, &record.provider, &review, &head_sha) {
-                            note_review_report(logs, &format!("cannot record the review request: {err}"));
-                        }
-                        review.url
-                    }
+                let (review, adopted) = match create_review_request_with(store, run_id, &provider, &draft, &people, Duration::from_secs(60))? {
+                    ReviewRequestOutcome::Created(review) => (review, false),
+                    ReviewRequestOutcome::Adopted(review) => (review, true),
                     ReviewRequestOutcome::Failed { reason } => {
                         return stopped(Ending::Failed, format!("review request failed: {reason}"))
                     }
                 };
-            created
+                // Kept so the review page links it; a failure is noted and never fails delivery.
+                if let Err(err) = crate::review::record_created_review(run_id, &record.provider, &review, &head_sha, adopted) {
+                    note_review_report(logs, &format!("cannot record the review request: {err}"));
+                }
+                review.url
         }
     };
     build_review_report(store, record, options, &gate_steps(), &head_sha, None, logs);

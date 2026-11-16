@@ -76,3 +76,16 @@ fn a_created_review_is_recorded_as_seen_open_at_the_pushed_head() {
     review_inbox::record_created_review(&store, &created("run-1"), HEAD).unwrap();
     assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![expected.resolved()]);
 }
+
+#[test]
+fn an_adopted_review_is_recorded_unverified_since_it_may_already_be_merged() {
+    let store = store("adopted");
+    review_inbox::record_adopted_review(&store, &created("run-1"), HEAD).unwrap();
+    let expected = ReviewLifecycle::associate("github", "7", URL, HEAD);
+    assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![expected.clone()], "never looked at, so unverified until it is");
+
+    // Adopted again on a resumed run: what is already known about it on that head is kept.
+    store.save_lifecycle("run-1", &expected.resolved()).unwrap();
+    review_inbox::record_adopted_review(&store, &created("run-1"), HEAD).unwrap();
+    assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![expected.resolved()]);
+}

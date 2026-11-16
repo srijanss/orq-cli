@@ -212,6 +212,17 @@ pub fn record_created_review(store: &Store, review: &CreatedReview, head: &str) 
     store.save_lifecycle(&review.run_id, &seen).map_err(|err| format!("cannot save the review state: {err}"))
 }
 
+/// Keeps the PR/MR a run adopted for its pushed `head`. An adopted review can already be merged, so it is
+/// kept unverified until it is looked at; one already kept on that head is left as it is.
+pub fn record_adopted_review(store: &Store, review: &CreatedReview, head: &str) -> Result<(), String> {
+    let kept = store.lifecycles_for_run(&review.run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+    if kept.iter().any(|l| l.reported_head_sha == head && l.provider == review.provider && l.review_id == review.review_id) {
+        return Ok(());
+    }
+    let lifecycle = ReviewLifecycle::associate(&review.provider, &review.review_id, &review.url, head);
+    store.save_lifecycle(&review.run_id, &lifecycle).map_err(|err| format!("cannot save the review state: {err}"))
+}
+
 /// Records each run's created or adopted PR/MR, from before creation recorded it, as the provider review
 /// of the run's latest report: unverified until it is looked at. A run without a report, one whose review
 /// is already kept, and a latest report a person already acted on here are left alone, so a repeat
