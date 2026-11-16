@@ -458,6 +458,32 @@ fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
 
 /// A version that ran out of time before reading everything cannot tell a change from none, so a delete
 /// confirmed against it is refused, even forced and even when the listing ran out of time the same way.
+/// A folder with more entries than a version may read is not read in full, so it cannot confirm a delete,
+/// while one within the limit still can.
+#[test]
+fn a_version_with_more_entries_than_it_may_read_deletes_nothing() {
+    let w = world("version-entries");
+    let path = w.worktree("run-1", "fix--A");
+    let sub = path.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    git(&sub, &["init", "-q"]);
+    for n in 0..50 {
+        fs::write(sub.join(format!("f{n}.txt")), "work\n").unwrap();
+    }
+    w.kept("run-1", "kept");
+
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_entry_limit(10);
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(sub.join("f0.txt").exists() && branch_exists(&w.repo, "fix--A"));
+
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_entry_limit(1_000);
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    assert!(index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().is_ok());
+    assert!(!path.exists());
+}
+
 /// A file or folder the version cannot read could change unseen, so it cannot confirm a delete.
 #[cfg(unix)]
 #[test]

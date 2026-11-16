@@ -127,12 +127,12 @@ struct Recorded {
 pub struct RunIndex {
     records: Vec<RunRecord>,
     seen: std::collections::HashSet<String>,
-    version_budget: Duration,
+    version_limits: VersionLimits,
 }
 
 impl RunIndex {
     pub fn load(store: &RunStore) -> Result<RunIndex, StoreError> {
-        let mut index = RunIndex { records: Vec::new(), seen: Default::default(), version_budget: VERSION_BUDGET };
+        let mut index = RunIndex { records: Vec::new(), seen: Default::default(), version_limits: VersionLimits::default() };
         index.refresh(store)?;
         Ok(index)
     }
@@ -140,7 +140,14 @@ impl RunIndex {
     /// How long a version may spend reading what the worktree holds; a delete whose version could not be
     /// read in full within it is refused.
     pub fn with_version_budget(mut self, budget: Duration) -> RunIndex {
-        self.version_budget = budget;
+        self.version_limits.budget = budget;
+        self
+    }
+
+    /// How many files and folders a version may read inside the folders git lists as one entry; a delete
+    /// whose version would need more is refused.
+    pub fn with_version_entry_limit(mut self, entries: usize) -> RunIndex {
+        self.version_limits.entries = entries;
         self
     }
 
@@ -161,7 +168,7 @@ impl RunIndex {
     /// Every worktree of `repo` that orq made and no active run holds: inside the repository's worktrees
     /// folder, on a branch with the run prefix or a recorded run's branch.
     pub fn list(&self, store: &RunStore, repo: &Path) -> Result<Vec<KeptWorktree>, StoreError> {
-        list_with(store, &self.records, repo, self.version_budget)
+        list_with(store, &self.records, repo, self.version_limits)
     }
 
     /// Delete the kept worktree on `branch` and the branch itself, if it is still what `version` says
@@ -175,7 +182,7 @@ impl RunIndex {
         force: bool,
     ) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
         self.refresh(store)?;
-        delete_with(store, &self.records, repo, branch, version, force, self.version_budget)
+        delete_with(store, &self.records, repo, branch, version, force, self.version_limits)
     }
 }
 
@@ -239,7 +246,7 @@ fn list_with(
     store: &RunStore,
     all: &[RunRecord],
     repo: &Path,
-    budget: Duration,
+    limits: VersionLimits,
 ) -> Result<Vec<KeptWorktree>, StoreError> {
     let prefix = branch_prefix(repo);
     let mut kept = Vec::new();
@@ -255,7 +262,7 @@ fn list_with(
         if held(store, all, &mine)? {
             continue;
         }
-        kept.push(describe(repo, &listed, branch, mine.last(), true, budget)?.0);
+        kept.push(describe(repo, &listed, branch, mine.last(), true, limits)?.0);
     }
     kept.sort_by(|a, b| a.branch.cmp(&b.branch));
     Ok(kept)
@@ -346,7 +353,7 @@ fn delete_with(
     branch: &str,
     version: &str,
     force: bool,
-    budget: Duration,
+    limits: VersionLimits,
 ) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
     let prefix = branch_prefix(repo);
     let Some(listed) = listed_worktrees(repo)?
@@ -367,7 +374,7 @@ fn delete_with(
         return Ok(Err(DeleteRefusal::Active));
     }
     let run = mine.last();
-    let (entry, verified) = describe(repo, &listed, branch.to_string(), run, false, budget)?;
+    let (entry, verified) = describe(repo, &listed, branch.to_string(), run, false, limits)?;
     if !verified {
         return Ok(Err(DeleteRefusal::Unverifiable));
     }
@@ -446,7 +453,7 @@ fn describe(
     branch: String,
     run: Option<&Recorded>,
     measure: bool,
-    budget: Duration,
+    limits: VersionLimits,
 ) -> Result<(KeptWorktree, bool), StoreError> {
     let target = match run {
         Some(run) => run.record.target_branch.clone(),
@@ -459,10 +466,10 @@ fn describe(
             let all: Vec<ChangedFile> = scan.entries.iter().map(|entry| changed_file(entry)).collect();
             let only_ignored = all.iter().all(|file| file.kind == ChangeKind::Ignored);
             let more = all.len().saturating_sub(SHOWN_FILES);
-            let version = version_of(&listed.head, &target, commits, &listed.path, Some(&scan.entries), budget);
+            let version = version_of(&listed.head, &target, commits, &listed.path, Some(&scan.entries), limits);
             (all.into_iter().take(SHOWN_FILES).collect(), more, only_ignored, false, version)
         }
-        _ => (Vec::new(), 0, false, true, version_of(&listed.head, &target, commits, &listed.path, None, budget)),
+        _ => (Vec::new(), 0, false, true, version_of(&listed.head, &target, commits, &listed.path, None, limits)),
     };
     let entry = KeptWorktree {
         branch,
@@ -508,14 +515,14 @@ fn changed_file(entry: &str) -> ChangedFile {
 
 /// A fingerprint of what deleting the worktree loses: its commit, its target, and every status entry with
 /// what is on disk there, so editing an already changed file counts too. Whether it was all read, within
-/// `budget`: a version read only in part could miss a change, so it cannot confirm a delete.
+/// `limits`: a version read only in part could miss a change, so it cannot confirm a delete.
 fn version_of(
     head: &str,
     target: &str,
     commits: Option<u64>,
     root: &Path,
     entries: Option<&[String]>,
-    budget: Duration,
+    limits: VersionLimits,
 ) -> (String, bool) {
     let mut text = format!("{head}\n{target}\n{commits:?}\n");
     let mut verified = true;
@@ -525,10 +532,10 @@ fn version_of(
             text.push_str("unreadable\n");
         }
         Some(entries) => {
-            let deadline = Instant::now() + budget;
+            let mut reading = Reading { deadline: Instant::now() + limits.budget, entries_left: limits.entries };
             for entry in entries {
                 let stamp = match entry.get(3..) {
-                    Some(path) => match stamp_of(&root.join(path.trim_end_matches('/')), deadline) {
+                    Some(path) => match stamp_of(&root.join(path.trim_end_matches('/')), &mut reading) {
                         Some(stamp) => Some(stamp),
                         None => {
                             verified = false;
@@ -545,13 +552,45 @@ fn version_of(
     (format!("{:016x}", fnv1a(text.as_bytes())), verified)
 }
 
-/// How long a version may spend reading the directories git lists as one entry.
-const VERSION_BUDGET: Duration = Duration::from_secs(2);
+/// How much a version may read: for how long, and how many files and folders inside the folders git
+/// lists as one entry.
+#[derive(Debug, Clone, Copy)]
+struct VersionLimits {
+    budget: Duration,
+    entries: usize,
+}
+
+impl Default for VersionLimits {
+    fn default() -> VersionLimits {
+        VersionLimits { budget: Duration::from_secs(2), entries: 100_000 }
+    }
+}
+
+/// What a version has left to read with.
+struct Reading {
+    deadline: Instant,
+    entries_left: usize,
+}
+
+impl Reading {
+    fn out_of_time(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    /// Counts one more entry read; `None` once there is none left to read.
+    fn take_entry(&mut self) -> Option<()> {
+        if self.out_of_time() {
+            return None;
+        }
+        self.entries_left = self.entries_left.checked_sub(1)?;
+        Some(())
+    }
+}
 
 /// What is at `path`, not a directory: a symlink's target, or a file's contents read in full,
 /// so a tool that keeps a file's size and modification time still changes it. `None` when it could not
 /// be read, or not in full before `deadline`.
-fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Option<String> {
+fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Option<String> {
     use std::io::Read;
     if meta.file_type().is_symlink() {
         let target = std::fs::read_link(path).ok()?;
@@ -564,7 +603,7 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Optio
     let mut hash = FNV_OFFSET;
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
-        if Instant::now() >= deadline {
+        if reading.out_of_time() {
             return None;
         }
         match file.read(&mut buffer) {
@@ -577,41 +616,40 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Optio
 }
 
 /// What `path` holds; for a directory git lists as one entry (a nested repository, a submodule, an
-/// ignored folder), what everything under it holds, symlinks not followed.
-/// `None` when something there could not be read, or not all of it before `deadline`.
-fn stamp_of(path: &Path, deadline: Instant) -> Option<String> {
+/// ignored folder), what everything under it holds, symlinks not followed. Entries are read as the folder
+/// gives them and combined in an order-free way, so a large folder is neither held in memory nor sorted.
+/// `None` when something there could not be read, or not all of it within what `reading` has left.
+fn stamp_of(path: &Path, reading: &mut Reading) -> Option<String> {
     let meta = match path.symlink_metadata() {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some("missing".to_string()),
         Err(_) => return None,
     };
     if !meta.is_dir() {
-        return content_of(path, &meta, deadline);
+        return content_of(path, &meta, reading);
     }
-    let mut text = String::new();
+    let (mut sum, mut mixed) = (0u64, 0u64);
     let mut pending = vec![path.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let mut children = Vec::new();
+        reading.take_entry()?;
         for entry in std::fs::read_dir(&dir).ok()? {
-            children.push(entry.ok()?.path());
-        }
-        children.sort();
-        for child in children {
-            if Instant::now() >= deadline {
-                return None;
-            }
+            reading.take_entry()?;
+            let child = entry.ok()?.path();
             let meta = child.symlink_metadata().ok()?;
-            let relative = child.strip_prefix(path).unwrap_or(&child);
-            if meta.is_dir() {
-                text.push_str(&format!("{}/\n", relative.display()));
+            let relative = child.strip_prefix(path).unwrap_or(&child).as_os_str().as_encoded_bytes().to_vec();
+            let content = if meta.is_dir() {
                 pending.push(child);
+                "dir".to_string()
             } else {
-                let content = content_of(&child, &meta, deadline)?;
-                text.push_str(&format!("{}\0{content}\n", relative.display()));
-            }
+                content_of(&child, &meta, reading)?
+            };
+            let line = [relative.as_slice(), b"\0", content.as_bytes()].concat();
+            let hash = fnv1a(&line);
+            sum = sum.wrapping_add(hash);
+            mixed = mixed.wrapping_add(hash.wrapping_mul(hash) | 1);
         }
     }
-    Some(format!("dir {:016x}", fnv1a(text.as_bytes())))
+    Some(format!("dir {sum:016x} {mixed:016x}"))
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
