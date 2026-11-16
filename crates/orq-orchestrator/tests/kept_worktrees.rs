@@ -421,6 +421,40 @@ fn editing_a_file_inside_a_nested_repository_makes_the_version_stale() {
     assert!(sub.join("deep/x.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
 
+/// `path` gets `text`, which is as long as what it held, and its old modification time back.
+fn rewrite_keeping_size_and_time(path: &Path, text: &str) {
+    let before = fs::metadata(path).unwrap();
+    assert_eq!(before.len(), text.len() as u64);
+    fs::write(path, text).unwrap();
+    fs::File::options().write(true).open(path).unwrap().set_modified(before.modified().unwrap()).unwrap();
+    let after = fs::metadata(path).unwrap();
+    assert_eq!((after.len(), after.modified().unwrap()), (before.len(), before.modified().unwrap()));
+}
+
+/// A tool that keeps a file's size and modification time still changes what is in it.
+#[test]
+fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
+    let w = world("stale-same-size");
+    let path = w.worktree("run-1", "fix--A");
+    fs::write(path.join("top.txt"), "first\n").unwrap();
+    let sub = path.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    git(&sub, &["init", "-q"]);
+    fs::write(sub.join("x.txt"), "first\n").unwrap();
+    w.kept("run-1", "kept");
+
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    rewrite_keeping_size_and_time(&path.join("top.txt"), "other\n");
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    assert_eq!(refused, DeleteRefusal::Changed);
+
+    let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
+    rewrite_keeping_size_and_time(&sub.join("x.txt"), "third\n");
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    assert_eq!(refused, DeleteRefusal::Changed);
+    assert!(sub.join("x.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}
+
 #[test]
 fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_started_after_it_was_read() {
     let w = world("index");

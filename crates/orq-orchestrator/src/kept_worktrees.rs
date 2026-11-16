@@ -481,7 +481,7 @@ fn changed_file(entry: &str) -> ChangedFile {
 }
 
 /// A fingerprint of what deleting the worktree loses: its commit, its target, and every status entry with
-/// the size and modification time of what is on disk there, so editing an already changed file counts too.
+/// what is on disk there, so editing an already changed file counts too.
 fn version_of(head: &str, target: &str, commits: Option<u64>, root: &Path, entries: Option<&[String]>) -> String {
     let mut text = format!("{head}\n{target}\n{commits:?}\n");
     match entries {
@@ -500,18 +500,42 @@ fn version_of(head: &str, target: &str, commits: Option<u64>, root: &Path, entri
 /// How long a version may spend reading the directories git lists as one entry.
 const VERSION_BUDGET: Duration = Duration::from_secs(2);
 
-fn size_and_time(meta: &std::fs::Metadata) -> String {
-    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-    format!("{} {:?}", meta.len(), modified.map(|d| d.as_nanos()))
+/// What is at `path`, not a directory: a symlink's target, or a file's contents read in full,
+/// so a tool that keeps a file's size and modification time still changes it. `None` past `deadline`.
+fn content_of(path: &Path, meta: &std::fs::Metadata, deadline: Instant) -> Option<String> {
+    use std::io::Read;
+    if meta.file_type().is_symlink() {
+        return Some(match std::fs::read_link(path) {
+            Ok(target) => format!("link {:016x}", fnv1a(target.as_os_str().as_encoded_bytes())),
+            Err(_) => "link unreadable".to_string(),
+        });
+    }
+    if !meta.is_file() {
+        return Some(format!("special {:?}", meta.file_type()));
+    }
+    let Ok(mut file) = std::fs::File::open(path) else { return Some("unreadable".to_string()) };
+    let mut hash = FNV_OFFSET;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        if Instant::now() > deadline {
+            return None;
+        }
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => hash = fnv1a_from(hash, &buffer[..n]),
+            Err(_) => return Some("unreadable".to_string()),
+        }
+    }
+    Some(format!("file {} {hash:016x}", meta.len()))
 }
 
-/// The size and modification time of `path`; for a directory git lists as one entry (a nested
-/// repository, a submodule, an ignored folder), those of everything under it, symlinks not followed.
+/// What `path` holds; for a directory git lists as one entry (a nested repository, a submodule, an
+/// ignored folder), what everything under it holds, symlinks not followed.
 /// A directory too large to read within `deadline` is stamped as such.
 fn stamp_of(path: &Path, deadline: Instant) -> String {
     let Ok(meta) = path.symlink_metadata() else { return "missing".to_string() };
     if !meta.is_dir() {
-        return size_and_time(&meta);
+        return content_of(path, &meta, deadline).unwrap_or_else(|| "too large to read".to_string());
     }
     let mut text = String::new();
     let mut pending = vec![path.to_path_buf()];
@@ -532,15 +556,22 @@ fn stamp_of(path: &Path, deadline: Instant) -> String {
                 text.push_str(&format!("{}/\n", relative.display()));
                 pending.push(child);
             } else {
-                text.push_str(&format!("{}\0{}\n", relative.display(), size_and_time(&meta)));
+                let Some(content) = content_of(&child, &meta, deadline) else { return "too large to read".to_string() };
+                text.push_str(&format!("{}\0{content}\n", relative.display()));
             }
         }
     }
     format!("dir {:016x}", fnv1a(text.as_bytes()))
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fnv1a_from(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
 fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+    fnv1a_from(FNV_OFFSET, bytes)
 }
 
 /// The bytes of the files under `root`, symlinks not followed; `None` past `budget`.
