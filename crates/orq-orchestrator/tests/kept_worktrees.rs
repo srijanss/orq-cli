@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use orq_orchestrator::{
     delete_kept_worktree, list_kept_worktrees, ChangeKind, DeleteRefusal, Event, RunIndex, RunRecord, RunStore,
@@ -453,6 +454,23 @@ fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
     let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(sub.join("x.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}
+
+/// A version that ran out of time before reading everything cannot tell a change from none, so a delete
+/// confirmed against it is refused, even forced and even when the listing ran out of time the same way.
+#[test]
+fn a_version_read_only_in_part_before_its_time_ran_out_deletes_nothing() {
+    let w = world("version-timeout");
+    let path = w.worktree("run-1", "fix--A");
+    fs::write(path.join("work.txt"), "work\n").unwrap();
+    w.kept("run-1", "kept");
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_budget(Duration::ZERO);
+
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(path.join("work.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
 
 #[test]
