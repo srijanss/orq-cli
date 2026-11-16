@@ -369,21 +369,22 @@ fn quoted_json_spaced_and_header_secrets_never_reach_a_note() {
 
 #[test]
 fn pwd_and_auth_values_never_reach_a_note_bare_quoted_or_in_json() {
+    // Each case names the whole redacted text, so no part of the value, prefix or suffix, can remain.
     let cases = [
-        ("pwd-bare", "Error: login pwd=hunter2pw rejected", "hunter2pw"),
-        ("auth-bare", "Error: login auth=opaque-login-value rejected", "opaque-login-value"),
-        ("pwd-quoted", r#"Error: login pwd="pw quoted-77" rejected"#, "quoted-77"),
-        ("auth-spaced", "Error: login auth : opaque-spaced-1 rejected", "opaque-spaced-1"),
-        ("pwd-json", r#"Error: bad config {"pwd":"pw-json-55","user":"me"}"#, "pw-json-55"),
-        ("auth-json", r#"Error: bad config {"auth" : "auth-json-66"}"#, "auth-json-66"),
-        ("auth-scheme", "Error: auth=Basic dXNlcjpwYXNzd29yZA== rejected", "dXNlcjpwYXNzd29yZA"),
-        ("authorization-quoted", r#"Error: {"Authorization":"Bearer two words-88"}"#, "words-88"),
+        ("pwd-bare", "Error: login pwd=hunter2pw rejected", "login pwd=[REDACTED] rejected"),
+        ("auth-bare", "Error: login auth=opaque-login-value rejected", "login auth=[REDACTED] rejected"),
+        ("pwd-quoted", r#"Error: login pwd="pw quoted-77" rejected"#, r#"login pwd="[REDACTED]" rejected"#),
+        ("auth-quoted-words", r#"Error: login auth="two quoted-words" rejected"#, r#"login auth="[REDACTED]" rejected"#),
+        ("auth-spaced", "Error: login auth : opaque-spaced-1 rejected", "login auth : [REDACTED] rejected"),
+        ("pwd-json", r#"Error: bad config {"pwd":"pw-json-55","user":"me"}"#, r#"{"pwd":"[REDACTED]","user":"me"}"#),
+        ("auth-json", r#"Error: bad config {"auth" : "auth-json-66"}"#, r#"{"auth" : "[REDACTED]"}"#),
+        ("auth-scheme", "Error: auth=Basic dXNlcjpwYXNzd29yZA== rejected", "auth=Basic [REDACTED] rejected"),
+        ("authorization-quoted", r#"Error: {"Authorization":"Bearer two words-88"}"#, r#"{"Authorization":"Bearer [REDACTED]"}"#),
     ];
-    for (tag, line, secret) in cases {
+    for (tag, line, shown) in cases {
         let notes = notes_of_failing_line(tag, &line.replace('\'', "'\\''"), &[]);
 
-        assert!(notes.contains("Error:"), "{tag}: the line is still there: {notes}");
-        assert!(!notes.contains(secret), "{tag}: {secret} leaked: {notes}");
+        assert!(notes.contains(shown), "{tag}: expected {shown} in: {notes}");
     }
 }
 
