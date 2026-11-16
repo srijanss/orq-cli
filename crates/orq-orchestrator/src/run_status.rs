@@ -177,6 +177,28 @@ pub fn record_capability_skipped(
     })
 }
 
+/// How the run's MCP servers were set up: each server's version and where it came from, and the
+/// notes on what did not go as planned. Notes never carry secret values.
+pub fn record_mcp_setup(store: &RunStore, record: &RunRecord, report: &crate::McpSetupReport) -> Result<(), StoreError> {
+    let servers: Vec<serde_json::Value> = report
+        .versions
+        .iter()
+        .map(|s| serde_json::json!({ "name": s.name, "version": s.version, "source": s.source }))
+        .collect();
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: "mcp.setup".to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload: serde_json::json!({ "servers": servers, "notes": report.notes }),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
     pub phase: RunPhase,

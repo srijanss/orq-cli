@@ -435,3 +435,44 @@ fn a_hook_written_over_a_hand_edited_settings_file_does_not_make_it_orqs() {
 
     assert!(matches!(cleanup(&w), CleanupOutcome::Kept { .. }));
 }
+
+/// What carrying the TDD config and `mcpctl init` leave in a worktree: the carried config, the lock,
+/// the scaffold record and the files it lists, each kept out of git status through the local exclude.
+fn carried_and_scaffolded(w: &World) {
+    orq_files(&w);
+    let exclude = w.repo.join(".git/info/exclude");
+    let listed = "/.tdd-config.json\n/.mcpctl.lock\n/.mcpctl.scaffold.json\n/.agents/guide.md\n/.claude/commands/tdd.md\n";
+    fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + listed).unwrap();
+    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    fs::write(w.worktree.join(".mcpctl.lock"), "version = 1\n").unwrap();
+    fs::create_dir_all(w.worktree.join(".agents")).unwrap();
+    fs::write(w.worktree.join(".agents/guide.md"), "scaffold\n").unwrap();
+    fs::create_dir_all(w.worktree.join(".claude/commands")).unwrap();
+    fs::write(w.worktree.join(".claude/commands/tdd.md"), "command\n").unwrap();
+    fs::write(
+        w.worktree.join(".mcpctl.scaffold.json"),
+        "{\"version\":1,\"files\":{\".agents/guide.md\":{},\".claude/commands/tdd.md\":{},\"../outside\":{}}}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_worktree_holding_only_carried_and_scaffolded_files_is_removed() {
+    let w = world("scaffolded");
+    carried_and_scaffolded(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+
+    assert_eq!(cleanup(&w), CleanupOutcome::Removed);
+}
+
+#[test]
+fn a_scaffolded_file_the_agent_edited_is_work_and_keeps_the_worktree() {
+    let w = world("scaffold-edited");
+    carried_and_scaffolded(&w);
+    assert!(record_orq_written(&w.worktree).is_empty());
+    fs::write(w.worktree.join(".agents/guide.md"), "the agent's own guide\n").unwrap();
+
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+
+    assert!(reason.contains(".agents/guide.md (it differs from what orq last wrote)"), "{reason}");
+}

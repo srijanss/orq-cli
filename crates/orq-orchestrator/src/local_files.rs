@@ -13,9 +13,10 @@ const DOTENV: &str = ".env";
 const MCP_JSON: &str = ".mcp.json";
 const MCPCTL_TOML: &str = ".mcpctl.toml";
 const MCPCTL_LOCK: &str = ".mcpctl.lock";
+const TDD_CONFIG: &str = ".tdd-config.json";
 /// The outside-in-tdd server's files, and the variable that points it at each.
 const TDD_FILES: [(&str, &str); 2] = [
-    (".tdd-config.json", "TDD_CONFIG_PATH"),
+    (TDD_CONFIG, "TDD_CONFIG_PATH"),
     (".tdd-features.json", "TDD_FEATURES_PATH"),
 ];
 
@@ -48,21 +49,82 @@ pub fn carry_local_files(
         carry_one(main_checkout, worktree, name, chosen, &mut found);
     }
     for (name, variable) in TDD_FILES {
-        let main = main_checkout.join(name);
-        if worktree.join(name).exists() {
+        // A tracked file is the branch's own, and the branch's choice wins.
+        let tracked = is_tracked(worktree, name);
+        if tracked == Some(true) {
             continue;
         }
-        if main.exists() {
-            found
-                .env
-                .push((variable.to_string(), main.display().to_string()));
-        } else {
+        let main = main_checkout.join(name);
+        if !main.exists() {
             found.notes.push(format!(
                 "{name} does not exist in the main checkout; the TDD server will find none"
             ));
+            continue;
+        }
+        found
+            .env
+            .push((variable.to_string(), main.display().to_string()));
+        if name == TDD_CONFIG {
+            carry_tdd_config(main_checkout, worktree, tracked.is_none(), &mut found.notes);
         }
     }
     found
+}
+
+/// Copies the main checkout's TDD config into a worktree that has none, so MCP setup finds it and
+/// writes no template; a copy of its own that differs is named key by key, never with values.
+fn carry_tdd_config(main_checkout: &Path, worktree: &Path, tracked_unknown: bool, notes: &mut Vec<String>) {
+    let (source, target) = (main_checkout.join(TDD_CONFIG), worktree.join(TDD_CONFIG));
+    if std::fs::symlink_metadata(&target).is_ok() {
+        let keys = differing_keys(&source, &target);
+        if keys.as_ref().is_none_or(|keys| !keys.is_empty()) {
+            let which = keys.map_or("its contents".to_string(), |keys| keys.join(", "));
+            notes.push(format!("the worktree's own {TDD_CONFIG} differs from the main checkout's ({which}); sessions use the main checkout's"));
+        }
+        return;
+    }
+    if std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        notes.push(format!(
+            "{TDD_CONFIG} is a symbolic link in the main checkout; it is not carried into the worktree"
+        ));
+        return;
+    }
+    if tracked_unknown {
+        notes.push(format!("whether {TDD_CONFIG} is tracked by git could not be checked; it is not carried into the worktree"));
+        return;
+    }
+    if let Err(why) = exclude_locally(worktree, TDD_CONFIG) {
+        notes.push(format!("{TDD_CONFIG} is not carried into the worktree: {why}"));
+        return;
+    }
+    if let Err(err) = std::fs::copy(&source, &target) {
+        notes.push(format!(
+            "{TDD_CONFIG} could not be carried into the worktree ({:?})",
+            err.kind()
+        ));
+    }
+}
+
+/// The top-level keys whose values differ between two JSON objects, sorted; `None` when either
+/// cannot be read as one.
+fn differing_keys(a: &Path, b: &Path) -> Option<Vec<String>> {
+    let read = |path: &Path| -> Option<serde_json::Map<String, serde_json::Value>> {
+        let text = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()?
+            .as_object()
+            .cloned()
+    };
+    let (a, b) = (read(a)?, read(b)?);
+    let mut keys: Vec<String> = a
+        .keys()
+        .chain(b.keys())
+        .filter(|key| a.get(*key) != b.get(*key))
+        .cloned()
+        .collect();
+    keys.sort();
+    keys.dedup();
+    Some(keys)
 }
 
 fn carry_one(main: &Path, worktree: &Path, name: &str, chosen: bool, found: &mut LocalFiles) {
@@ -182,7 +244,7 @@ fn is_tracked(worktree: &Path, name: &str) -> Option<bool> {
 }
 
 /// No `..`, no absolute path: only files inside the checkout can be carried.
-fn plain_relative(name: &str) -> bool {
+pub(crate) fn plain_relative(name: &str) -> bool {
     let path = Path::new(name);
     !name.is_empty()
         && !name.contains(['\n', '\r'])
@@ -193,7 +255,7 @@ fn plain_relative(name: &str) -> bool {
 
 /// Adds `name` to the repository's `info/exclude` unless git already ignores it.
 /// `name` as a gitignore pattern that matches only that file.
-fn escape_pattern(name: &str) -> String {
+pub(crate) fn escape_pattern(name: &str) -> String {
     let mut pattern = String::new();
     for c in name.chars() {
         if matches!(c, '\\' | '*' | '?' | '[' | ']') {

@@ -3445,7 +3445,24 @@ function EventItem({ event }) {
       {event.stage ? <span className="event-meta">{"Stage: " + event.stage}</span> : null}
       <span className="event-meta">{"Attempt " + event.attempt}</span>
       <Moment at={event.occurred_at} />
+      {event.mcp ? <McpSetup mcp={event.mcp} /> : null}
     </li>
+  );
+}
+
+// The MCP servers the run set up: each one's version and where it came from, and what went wrong.
+function McpSetup({ mcp }) {
+  const servers = Array.isArray(mcp.servers) ? mcp.servers : [];
+  const notes = Array.isArray(mcp.notes) ? mcp.notes : [];
+  return (
+    <ul className="mcp-setup">
+      {servers.map((server, at) => (
+        <li key={"s" + at} className="event-meta">{server.name + (server.version ? " " + server.version : "") + (server.source ? " (" + server.source + ")" : "")}</li>
+      ))}
+      {notes.map((note, at) => (
+        <li key={"n" + at} className="event-meta mcp-note">{note}</li>
+      ))}
+    </ul>
   );
 }
 

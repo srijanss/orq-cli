@@ -149,3 +149,22 @@ fn review_events_carry_their_run_wide_round_even_on_a_later_page() {
     assert_eq!(rounds, [json!(2), json!(2)], "a later page keeps counting from the whole run: {second}");
     assert_eq!(second["review_rounds"], json!(2), "{second}");
 }
+
+#[test]
+fn an_mcp_setup_event_carries_its_servers_versions_sources_and_notes_and_nothing_else() {
+    let s = setup("timeline-mcp");
+    let alpha = git_repo(&s.scan, "alpha");
+    let project = project_id(&alpha);
+    add_run(&s, "r1", &project, "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+    let store = RunStore::new(&s.roots.state);
+    let payload = json!({"servers": [{"name": "tdd", "version": "0.2.3", "source": "locked", "path": "/secret/path"}], "notes": ["mcpctl sync failed: boom"], "extra": "secret extra"});
+    store.append_event(&Event { schema_version: 1, event_id: "r1-mcp".into(), run_id: "r1".into(), project_id: project, feature_id: "f-r1".into(), kind: "mcp.setup".into(), stage: None, attempt: 1, occurred_at: "2026-11-01T10:01:00Z".into(), payload }).unwrap();
+
+    let (status, body) = get(&s, "/api/projects/alpha/runs/r1");
+
+    assert_eq!(status, 200, "{body}");
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events[1]["mcp"], json!({"servers": [{"name": "tdd", "version": "0.2.3", "source": "locked"}], "notes": ["mcpctl sync failed: boom"]}), "{body}");
+    assert!(events[0].get("mcp").is_none(), "{body}");
+    assert!(!body.to_string().contains("secret"), "{body}");
+}

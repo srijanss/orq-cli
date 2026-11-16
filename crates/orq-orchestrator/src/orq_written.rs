@@ -17,6 +17,8 @@ const CANDIDATES: [&str; 6] = [
     ".claude/settings.local.json",
     DOTENV,
 ];
+/// The project's TDD config, carried in from the main checkout.
+const TDD_CONFIG: &str = ".tdd-config.json";
 const MANIFEST: &str = "orq-written.json";
 
 /// What `path` is now: a link's target, or a regular file's content hash. `None` for anything else.
@@ -49,9 +51,11 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
     let Some(path) = manifest_path(worktree) else {
         return vec!["what orq wrote into the worktree was not recorded: its git directory could not be found".to_string()];
     };
-    let recorded: BTreeMap<String, String> = CANDIDATES
-        .iter()
-        .filter_map(|name| fingerprint(worktree, name).map(|print| (name.to_string(), print)))
+    // The carried TDD config, and every file `mcpctl init` lists as scaffolded, are orq's too.
+    let scaffolded = crate::mcp_setup::scaffolded_files(worktree);
+    let names = CANDIDATES.iter().map(|name| name.to_string()).chain([TDD_CONFIG.to_string()]).chain(scaffolded);
+    let recorded: BTreeMap<String, String> = names
+        .filter_map(|name| fingerprint(worktree, &name).map(|print| (name, print)))
         .collect();
     match write_manifest(&path, &recorded) {
         Ok(()) => Vec::new(),
@@ -95,14 +99,23 @@ pub(crate) fn is_orq_file_name(name: &str) -> bool {
 
 /// Whether `name` is something orq recorded writing and is still exactly that.
 pub(crate) fn is_unchanged_orq_file(worktree: &Path, name: &str) -> bool {
-    let Some(text) = manifest_path(worktree).and_then(|path| std::fs::read_to_string(path).ok())
-    else {
-        return false;
-    };
-    let Ok(recorded) = serde_json::from_str::<BTreeMap<String, String>>(&text) else {
-        return false;
-    };
-    recorded
-        .get(name)
-        .is_some_and(|print| fingerprint(worktree, name).as_ref() == Some(print))
+    Recorded::load(worktree).unchanged(worktree, name) == Some(true)
+}
+
+/// What orq recorded writing into a worktree, read once.
+#[derive(Default)]
+pub(crate) struct Recorded(BTreeMap<String, String>);
+
+impl Recorded {
+    /// The record; empty when it is missing or malformed, so nothing is taken for orq's.
+    pub(crate) fn load(worktree: &Path) -> Self {
+        let text = manifest_path(worktree).and_then(|path| std::fs::read_to_string(path).ok());
+        Self(text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+    }
+
+    /// For a file orq recorded writing, whether it is still exactly that; `None` for any other file.
+    pub(crate) fn unchanged(&self, worktree: &Path, name: &str) -> Option<bool> {
+        let print = self.0.get(name)?;
+        Some(fingerprint(worktree, name).as_ref() == Some(print))
+    }
 }

@@ -771,6 +771,7 @@ fn runs(args: &[OsString]) -> ExitCode {
                     "implementer_model": run.implementer_model,
                     "reviewer_model": run.reviewer_model,
                     "review_url": run.review_url,
+                    "mcp_notes": run.mcp_notes,
                 })
             })
             .collect();
@@ -789,6 +790,10 @@ fn runs(args: &[OsString]) -> ExitCode {
                 printable(&field(&run.reason)),
                 printable(&field(&run.review_url)),
             );
+            // An indented line under its run, so the tab-separated rows stay as they were.
+            for note in &run.mcp_notes {
+                println!("  mcp: {}", printable(note));
+            }
         }
         if unreadable > 0 {
             eprintln!("{unreadable} {} could not be read", if unreadable == 1 { "run" } else { "runs" });
@@ -4040,6 +4045,7 @@ mod ledger_backend_tests {
             implementer_model: None,
             reviewer_model: None,
             review_url: url.map(str::to_string),
+            mcp_notes: Vec::new(),
         };
         let runs = [run("run-1", Some("https://example.test/mr/1")), run("run-2", None)];
 
@@ -4072,6 +4078,7 @@ mod ledger_backend_tests {
             implementer_model: None,
             reviewer_model: None,
             review_url: Some("https://example.test/mr/1".into()),
+            mcp_notes: Vec::new(),
         }];
 
         let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], Some(&runs));

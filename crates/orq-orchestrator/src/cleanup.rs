@@ -165,14 +165,19 @@ pub(crate) fn scan_work(worktree: &Path, limit: Option<usize>) -> Result<Result<
     // Whether each directory holds a cache tag is looked up once: a build cache lists thousands of files.
     let mut tagged: HashMap<PathBuf, bool> = HashMap::new();
     let mut installs: HashMap<(String, &'static str), Result<(), String>> = HashMap::new();
+    let recorded = crate::orq_written::Recorded::load(worktree);
     let mut own = |line: &str| {
         line.strip_prefix("!! ").is_some_and(|path| {
+            // A file orq recorded writing is orq's exactly while it is unchanged, even in a tooling
+            // folder: an edit the agent made to it is work.
+            if let Some(unchanged) = recorded.unchanged(worktree, path) {
+                return unchanged;
+            }
             // A folder git lists whole (a repository nested in it) is exempt only below a tagged cache
             // directory: anywhere else it may hold commits that exist nowhere else.
             in_cache_dir(worktree, path, &mut tagged)
                 || (!path.ends_with('/')
                     && (in_installed_deps(worktree, path, &mut installs)
-                        || crate::orq_written::is_unchanged_orq_file(worktree, path)
                         || is_tooling_state(path)
                         || is_tooling_folder(path)))
         })
@@ -210,7 +215,8 @@ fn ignored_hint(
         return Ok(Some(missing.clone()));
     }
     // A single file orq writes: a cache tag on its folder could not help, it changed after orq wrote it.
-    if crate::orq_written::is_orq_file_name(path) {
+    let recorded = || crate::orq_written::Recorded::load(worktree).unchanged(worktree, path).is_some();
+    if crate::orq_written::is_orq_file_name(path) || recorded() {
         return Ok(Some("it differs from what orq last wrote".to_string()));
     }
     Ok(in_ignored_folder(worktree, path)?

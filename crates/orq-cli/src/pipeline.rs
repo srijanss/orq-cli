@@ -1094,7 +1094,13 @@ fn stages(
         notes.extend(carried.notes);
         notes.extend(orq_orchestrator::exclude_worktrees_dir(&options.project.root));
         let mcpctl = find_program("mcpctl");
-        notes.extend(orq_orchestrator::prepare_mcp_servers(worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref()));
+        let mcp = orq_orchestrator::prepare_project_mcp(&options.project.root, worktree, &run_vars, settings.mcp_servers.as_deref(), mcpctl.as_deref(), &logs.join("mcp-setup.log"));
+        if !mcp.versions.is_empty() || !mcp.notes.is_empty() {
+            if let Err(err) = orq_orchestrator::record_mcp_setup(store, record, &mcp) {
+                notes.push(format!("the run's events do not record how its MCP servers were set up: {err}"));
+            }
+        }
+        notes.extend(mcp.notes);
         // Nobody may be there to answer a permission prompt, and the exit marker goes into the logs.
         let permissions = write_permissions(store, record, settings, logs)?;
         notes.extend(permissions.notes);

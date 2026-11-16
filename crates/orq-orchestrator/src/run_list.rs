@@ -21,6 +21,8 @@ pub struct RunListing {
     pub reviewer_model: Option<String>,
     /// The link of the review request the run created, once it has.
     pub review_url: Option<String>,
+    /// What did not go as planned when the run's MCP servers were set up.
+    pub mcp_notes: Vec<String>,
 }
 
 /// The runs of a project, and how many run directories could not be read.
@@ -75,9 +77,16 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
             implementer_model: record.profiles.get("implementer").map(|p| p.model.clone()),
             reviewer_model: record.profiles.get("reviewer").map(|p| p.model.clone()),
             review_url,
+            mcp_notes: mcp_notes(&events),
         });
     }
     Ok(list)
+}
+
+/// The notes of the run's latest `mcp.setup` event; none when it has no such event.
+fn mcp_notes(events: &[crate::store::Event]) -> Vec<String> {
+    let notes = events.iter().rev().find(|e| e.kind == "mcp.setup").and_then(|e| e.payload.get("notes")?.as_array().cloned());
+    notes.unwrap_or_default().iter().filter_map(|n| n.as_str().map(str::to_string)).collect()
 }
 
 /// Show as [`RunPhase::Merged`] each failed or review-waiting run of `list` whose work is on its

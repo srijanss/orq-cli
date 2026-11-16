@@ -1161,6 +1161,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                     round = advance(round, event);
                     listed["review_round"] = serde_json::json!(round);
                 }
+                if event.kind == "mcp.setup" {
+                    listed["mcp"] = mcp_setup_shown(&event.payload);
+                }
                 listed
             })
             .collect();
@@ -1192,6 +1195,24 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .collect::<Vec<_>>();
         Ok(serde_json::Value::Array(list))
     }
+}
+
+/// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the
+/// notes, all as text. Anything else the payload holds is left out.
+fn mcp_setup_shown(payload: &serde_json::Value) -> serde_json::Value {
+    let text = |value: Option<&serde_json::Value>| value.and_then(|v| v.as_str()).map(str::to_string);
+    let servers: Vec<_> = payload
+        .get("servers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|server| {
+            let name = text(server.get("name"))?;
+            Some(serde_json::json!({"name": name, "version": text(server.get("version")), "source": text(server.get("source"))}))
+        })
+        .collect();
+    let notes: Vec<_> = payload.get("notes").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|note| text(Some(note))).collect();
+    serde_json::json!({"servers": servers, "notes": notes})
 }
 
 fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &Result<std::collections::HashMap<String, RunCounts>, String>) -> Result<Counts, String> {

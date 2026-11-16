@@ -146,3 +146,17 @@ fn live_review_numbering_carries_on_from_the_runs_own_count() {
     let titles: Vec<&str> = attempts(&out).iter().map(|g| g["title"].as_str().unwrap()).collect();
     assert_eq!(titles, ["implement, attempt 1", "Review round 3"], "{out}");
 }
+
+#[test]
+fn the_mcp_setup_step_shows_each_servers_version_and_source_and_its_notes() {
+    let mut setup = json!({"event_id": "e0", "kind": "mcp.setup", "stage": null, "attempt": 1, "occurred_at": "2026-11-02T10:00:00Z"});
+    setup["mcp"] = json!({
+        "servers": [{"name": "tdd", "version": "0.2.3", "source": "locked"}, {"name": "project", "version": null, "source": "machine active"}],
+        "notes": ["mcpctl sync --locked failed: Error: registry unreachable"],
+    });
+    let Some(out) = open(vec![setup, event("e1", "stage.started", "implement", 1, "2026-11-02T10:01:00Z")]) else { return };
+    let all = out["frames"][1]["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(" | ");
+    for shown in ["tdd 0.2.3 (locked)", "project (machine active)", "Error: registry unreachable"] {
+        assert!(all.contains(shown), "{shown}: {all}");
+    }
+}

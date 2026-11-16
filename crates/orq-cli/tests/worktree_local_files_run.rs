@@ -323,3 +323,83 @@ fn the_ci_fix_prompt_leaves_out_a_script_the_run_changed() {
     assert!(prompt.contains("Run a command in exactly one of these forms"), "{prompt}");
     assert!(!prompt.contains("node build.mjs"), "{prompt}");
 }
+
+/// A fake `mcpctl` that acts out the locked path: `sync --locked` installs, `init` generates the
+/// `.mcp.json`; `sync_body` runs first in `sync`.
+fn fake_locked_mcpctl(w: &World, sync_body: &str) {
+    let bin = w.base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("mcpctl");
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  sync)\n{sync_body}\n    echo \"installed from the lock\"\n    ;;\n  init)\n    printf '{{\"mcpServers\":{{\"tdd\":{{\"command\":\"mcpctl\"}}}}}}' > .mcp.json\n    ;;\nesac\nexit 0\n"
+    );
+    std::fs::write(&tool, script).unwrap();
+    std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+fn locked_project(w: &World) {
+    std::fs::write(w.repo.root().join(".mcpctl.toml"), "[[mcp]]\nname = \"tdd\"\nversion = \"^0.2.0\"\n\n[[mcp]]\nname = \"project\"\nversion = \"^1.2.0\"\n").unwrap();
+    std::fs::write(w.repo.root().join(".mcpctl.lock"), "version = 1\n\n[[mcp]]\nname = \"tdd\"\nversion = \"0.2.3\"\n\n[[mcp]]\nname = \"project\"\nversion = \"1.2.1\"\n").unwrap();
+}
+
+fn the_run(w: &World) -> (String, Vec<orq_orchestrator::Event>) {
+    let store = orq_orchestrator::RunStore::new(&w.state.join("orq"));
+    let run_id = store.run_ids().unwrap().remove(0);
+    let events = store.events(&run_id).unwrap();
+    (run_id, events)
+}
+
+fn orq_runs(w: &World, json: bool) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    command.args(["runs", "--repo"]).arg(w.repo.root());
+    if json {
+        command.arg("--json");
+    }
+    let out = command.env("XDG_CONFIG_HOME", &w.config).env("XDG_STATE_HOME", &w.state).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn the_run_records_each_mcp_servers_version_and_where_it_came_from_and_logs_what_mcpctl_printed() {
+    let w = world("mcp-versions");
+    locked_project(&w);
+    fake_locked_mcpctl(&w, "");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let (run_id, events) = the_run(&w);
+    let setup = events.iter().find(|e| e.kind == "mcp.setup").expect("an mcp.setup event");
+    assert_eq!(
+        setup.payload["servers"],
+        serde_json::json!([
+            {"name": "tdd", "version": "0.2.3", "source": "locked"},
+            {"name": "project", "version": "1.2.1", "source": "locked"},
+        ])
+    );
+    assert_eq!(setup.payload["notes"], serde_json::json!([]));
+    let log = std::fs::read_to_string(w.state.join("orq/logs").join(&run_id).join("mcp-setup.log")).unwrap();
+    assert!(log.contains("installed from the lock"), "{log}");
+}
+
+#[test]
+fn a_failed_mcp_setup_is_a_note_on_the_run_that_orq_runs_shows_and_the_run_still_succeeds() {
+    let w = world("mcp-failed");
+    locked_project(&w);
+    fake_locked_mcpctl(&w, "    echo 'Error: registry unreachable' >&2\n    exit 3");
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let out = run(&w, &agent, &w.base.join("agent-seen"));
+
+    assert_eq!(out.status.code(), Some(0), "never fails the run: {}", String::from_utf8_lossy(&out.stderr));
+    let (_, events) = the_run(&w);
+    let setup = events.iter().find(|e| e.kind == "mcp.setup").expect("an mcp.setup event");
+    let notes = setup.payload["notes"].to_string();
+    assert!(notes.contains("Error: registry unreachable"), "mcpctl's last line: {notes}");
+    assert_eq!(setup.payload["servers"][0]["source"], "machine active");
+    let listed: serde_json::Value = serde_json::from_str(&orq_runs(&w, true)).unwrap();
+    assert!(listed["runs"][0]["mcp_notes"].to_string().contains("Error: registry unreachable"), "{listed}");
+    let text = orq_runs(&w, false);
+    assert!(text.contains("Error: registry unreachable"), "{text}");
+}

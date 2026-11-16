@@ -76,7 +76,7 @@ fn a_dotenv_file_the_worktree_already_has_is_left_alone_and_a_missing_one_is_not
 }
 
 #[test]
-fn the_tdd_server_is_pointed_at_the_main_checkouts_files_unless_the_worktree_has_its_own() {
+fn the_tdd_server_is_pointed_at_the_main_checkouts_files_even_when_the_worktree_has_its_own() {
     let (repo, worktree) = checkout("tdd-paths");
     fs::write(repo.root().join(".tdd-config.json"), "{}").unwrap();
     fs::write(repo.root().join(".tdd-features.json"), "{}").unwrap();
@@ -85,10 +85,15 @@ fn the_tdd_server_is_pointed_at_the_main_checkouts_files_unless_the_worktree_has
     let found = carry_local_files(repo.root(), &worktree, None);
 
     let config = repo.root().join(".tdd-config.json").display().to_string();
-    assert_eq!(pairs(&found.env), [("TDD_CONFIG_PATH", config.as_str())]);
-    assert!(
-        !worktree.join(".tdd-config.json").exists(),
-        "the files are pointed at, not copied"
+    let features = repo.root().join(".tdd-features.json").display().to_string();
+    assert_eq!(
+        pairs(&found.env),
+        [("TDD_CONFIG_PATH", config.as_str()), ("TDD_FEATURES_PATH", features.as_str())]
+    );
+    assert_eq!(
+        fs::read_to_string(worktree.join(".tdd-features.json")).unwrap(),
+        "{}",
+        "the features file is pointed at, never copied over the worktree's"
     );
 }
 

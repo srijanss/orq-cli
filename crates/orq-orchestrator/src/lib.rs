@@ -20,6 +20,7 @@ mod implement;
 mod interrupted;
 mod launch;
 mod local_files;
+mod mcp_setup;
 mod merge_local;
 mod needs_input;
 mod notify;
@@ -115,13 +116,14 @@ pub use run_settings::{
 pub use run_activity::{activity_line, newest_log_tail, run_activity, step_lines, test_progress, test_total_line, LogTail, RunActivity, TestProgress};
 pub use review_escalation::{escalated_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
 pub use run_status::{
-    record_capability_skipped, record_model_switched, record_run_completed, request_model_switch,
+    record_capability_skipped, record_mcp_setup, record_model_switched, record_run_completed, request_model_switch,
     request_pause, summarize_run, RunPhase, RunSummary,
 };
 pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,
 };
-pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, refresh_run_permissions, remove_needs_input_hook, RunPermissions, setup_mcp_servers, write_needs_input_hook, write_run_permissions, write_session_settings};
+pub use mcp_setup::{run_mcp_setup, McpServerVersion, McpSetupReport, McpSetupRequest, McpTimeouts};
+pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp, refresh_run_permissions, remove_needs_input_hook, RunPermissions, setup_mcp_servers, write_needs_input_hook, write_run_permissions, write_session_settings};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use stop::{owner_state, owner_state_in, stop_run, terminate_process, OwnerState};
 pub use store::{Claim, Event, RoleProfile, RunRecord, RunStore, StoreError};

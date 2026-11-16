@@ -773,6 +773,45 @@ pub fn prepare_mcp_servers(
     notes
 }
 
+/// Sets the run's MCP servers up in `worktree` through [`run_mcp_setup`](crate::run_mcp_setup),
+/// taking a lock from `main_checkout` and logging mcpctl to `log`, then writes the session
+/// settings. The report holds each server's version and source, and every note; nothing here
+/// fails the run.
+pub fn prepare_project_mcp(
+    main_checkout: &Path,
+    worktree: &Path,
+    env: &[(String, String)],
+    chosen: Option<&[String]>,
+    mcpctl: Option<&Path>,
+    log: &Path,
+) -> crate::McpSetupReport {
+    let mut report = crate::McpSetupReport::default();
+    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML)).is_ok_and(|meta| meta.file_type().is_symlink());
+    if linked {
+        report.notes.push(format!("{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"));
+    } else {
+        let selected = match chosen {
+            Some(names) => names.to_vec(),
+            None => selected_in_mcpctl_toml(worktree, &mut report.notes),
+        };
+        if !selected.is_empty() {
+            let done = crate::run_mcp_setup(&crate::McpSetupRequest {
+                main_checkout,
+                worktree,
+                servers: &selected,
+                env,
+                mcpctl,
+                log,
+                timeouts: crate::McpTimeouts::default(),
+            });
+            report.versions = done.versions;
+            report.notes.extend(done.notes);
+        }
+    }
+    report.notes.extend(write_session_settings(worktree, env, chosen, mcpctl));
+    report
+}
+
 /// The servers the `[[mcp]]` tables of the worktree's `.mcpctl.toml` name. A file that cannot be
 /// read selects none and a name that would read as an option is left out, each with a note; a
 /// missing file is simply no selection.
