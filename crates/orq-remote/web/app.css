@@ -328,9 +328,6 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .update-card { left: calc(16px + env(safe-area-inset-left)); right: calc(16px + env(safe-area-inset-right)); bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem); width: auto; max-width: none; transform: none; }
   .update-fab { right: calc(16px + env(safe-area-inset-right)); bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .update-scrim, .update-card, .update-fab { animation: none; }
-}
 .error-banner { color: var(--text); background: var(--status-failed-bg); border-color: var(--status-failed); border-left-width: 4px; }
 .error-banner > .icon { flex: none; color: var(--status-failed); }
 .content p[role=alert]:not(.banner) { margin: 0.5rem 0; color: var(--status-failed); font-size: 0.875rem; }

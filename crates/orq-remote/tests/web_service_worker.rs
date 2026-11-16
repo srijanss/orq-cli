@@ -347,8 +347,8 @@ fn the_update_prompt_floats_over_the_page_in_theme_colours() {
         assert!(later.contains(part), "Later {part}: {later}");
     }
     assert!(css.contains("@keyframes update-in"), "the fade-in");
-    assert!(css.contains("@media (prefers-reduced-motion: reduce) {\n  .update-scrim, .update-card, .update-fab { animation: none; }"),
-        "no fade under reduced motion");
+    assert!(css.contains("@media (prefers-reduced-motion: reduce) {\n  *, *::before, *::after { animation: none !important;"),
+        "no fade under reduced motion: the page-wide rule stops every animation");
 }
 
 // A release arriving while a page control has the focus: folding the card gives that control the focus back,
