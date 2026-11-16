@@ -287,3 +287,26 @@ fn a_batch_the_server_refuses_stops_the_rest_and_keeps_what_was_deleted() {
     assert!(has(done, "Deleted 100 of 150 merged worktrees."), "{:?}", shown(done));
     assert!(has(done, "remote actions are off"), "{:?}", shown(done));
 }
+
+#[test]
+fn long_multibyte_branch_names_split_delete_merged_by_bytes_before_a_batch_reaches_100() {
+    // Each branch is 300 two-byte letters, so 40 of them are about 50 KB but only about 26 K characters.
+    let name = |i: usize| format!("fix--{i:02}-{}", "ü".repeat(300));
+    let many: Vec<Value> = (0..40).map(|i| ignored_only(&name(i), &format!("run-{i}"))).collect();
+    let all = listing(json!([{"id": "alpha", "name": "Alpha", "worktrees": many}]), 40, "28 KB");
+    let ok = json!({"status": 200, "json": {"results": []}});
+    let steps = vec![json!({"click": "[data-kept-delete-merged]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = on_settings(vec![all, ok.clone(), ok.clone(), ok, listing(json!([]), 0, "0 B")], steps, false) else { return };
+    let sent = storage_posts(&out);
+    assert_eq!(sent.len(), 2, "40 worktrees of about 1.2 KB each are split by their bytes, not their count or characters");
+    let mut branches = Vec::new();
+    for request in &sent {
+        let bytes = request["body"].as_str().unwrap().len();
+        assert!(bytes < 33 * 1024, "a batch stays near half the server's 64 KiB: {bytes}");
+        let batch = body(request)["worktrees"].as_array().unwrap().clone();
+        assert!(batch.len() < 100, "bytes, not the count of 100, split this batch: {}", batch.len());
+        branches.extend(batch.iter().map(|w| w["branch"].as_str().unwrap().to_string()));
+    }
+    let expected: Vec<String> = (0..40).map(name).collect();
+    assert_eq!(branches, expected, "every merged worktree is sent once, in order");
+}
