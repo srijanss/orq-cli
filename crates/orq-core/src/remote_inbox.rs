@@ -1187,7 +1187,7 @@ fn review_action(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, 
                 log_line(&launch_failure_line(name, &project, run, &why));
             }
             audit(Outcome::Allowed, Some(run), None);
-            let status = review_inbox::inbox_of_project(roots, &project, "").ok().and_then(|rows| rows.into_iter().find(|row| row.run_id == run)).map(|row| row.status);
+            let status = review_inbox::status_of_run(roots, run).ok().flatten();
             reply(200, json!({ "run": run, "status": status, "head": head }))
         }
         Ok(ActionOutcome::StaleHead { latest }) => {
@@ -2035,7 +2035,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
         Ok(detail) => detail,
         Err(_) => return error(404, "no review report for this run"),
     };
-    let status = review_inbox::inbox_of_project(roots, &f.project, "").ok().and_then(|rows| rows.into_iter().find(|row| row.run_id == run_id)).map(|row| row.status);
+    let status = review_inbox::status_of_run(roots, run_id).ok().flatten();
     reply(
         200,
         json!({

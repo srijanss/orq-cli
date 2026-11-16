@@ -112,3 +112,17 @@ fn old_local_merges_are_backfilled_once_and_a_run_without_a_report_is_left_alone
     assert_eq!((status(&roots).as_str(), waiting_count(&store, OURS).unwrap()), ("merged", 0));
     assert!(store.lifecycles_for_run("run-7").unwrap().is_empty());
 }
+
+#[test]
+fn one_run_s_status_is_the_one_its_inbox_row_shows() {
+    use orq_core::review_inbox::{ReviewAction, act_on_review};
+    let (roots, store) = reported("one");
+    store.save_review(&roots.data, "run-2", "p-other", "COM-02", HEAD, br#"{"status":"draft","risks":[]}"#).unwrap();
+    assert_eq!(review_inbox::status_of_run(&roots, "run-1").unwrap().as_deref(), Some("ready"));
+    assert_eq!(review_inbox::status_of_run(&roots, "run-2").unwrap().as_deref(), Some("draft"));
+
+    act_on_review(&store, "run-1", ReviewAction::Resolve, Some(HEAD)).unwrap();
+    assert_eq!(review_inbox::status_of_run(&roots, "run-1").unwrap(), Some(status(&roots)));
+    assert_eq!(status(&roots), "resolved");
+    assert_eq!(review_inbox::status_of_run(&roots, "run-9").unwrap(), None, "a run without a report has no status");
+}

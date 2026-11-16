@@ -72,22 +72,12 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
         // A lifecycle that cannot be read is unknown, never treated as "no lifecycle".
         let lifecycles = store.lifecycles_for_run(&record.run_id);
         let lifecycle = lifecycles.as_ref().ok().and_then(|all| all.iter().rev().find(|l| l.reported_head_sha == record.head_sha));
-        let (mut status, (risk, fixed_risk)) = match &report {
-            Ok(report) => (
-                if report["status"] == "current" { "ready" } else { "draft" }.to_string(),
-                open_risk(report),
-            ),
-            Err(_) => ("unreadable".to_string(), ("-".to_string(), None)),
+        let status = row_status(&report, &lifecycles, lifecycle);
+        let (risk, fixed_risk) = match &report {
+            Ok(report) => open_risk(report),
+            Err(_) => ("-".to_string(), None),
         };
-        if report.is_ok() {
-            if let Some(shown) = lifecycle.and_then(ReviewLifecycle::status) {
-                status = shown.to_string();
-            }
-        }
         let unknown = lifecycles.is_err();
-        if unknown && report.is_ok() {
-            status = "unknown".to_string();
-        }
         rows.push(InboxRow {
             run_id: record.run_id,
             feature: record.feature,
@@ -101,6 +91,34 @@ fn rows(roots: &StorageRoots, current_project_id: &str, current_project_name: &s
         });
     }
     Ok(rows)
+}
+
+/// The status a run's inbox row shows: the report's own (`ready`, `draft` or `unreadable`), replaced by
+/// what its lifecycle says, or `unknown` when the lifecycles cannot be read.
+fn row_status<E>(report: &Result<Value, String>, lifecycles: &Result<Vec<ReviewLifecycle>, E>, lifecycle: Option<&ReviewLifecycle>) -> String {
+    let Ok(report) = report else { return "unreadable".to_string() };
+    if lifecycles.is_err() {
+        return "unknown".to_string();
+    }
+    match lifecycle.and_then(ReviewLifecycle::status) {
+        Some(shown) => shown.to_string(),
+        None if report["status"] == "current" => "ready".to_string(),
+        None => "draft".to_string(),
+    }
+}
+
+/// The status the inbox row of `run_id` shows, read from that run alone; `None` when it has no report.
+pub fn status_of_run(roots: &StorageRoots, run_id: &str) -> Result<Option<String>, String> {
+    if !roots.database().exists() {
+        return Ok(None);
+    }
+    let store = Store::open_read_only(&roots.database()).map_err(|err| format!("cannot open the review index: {err}"))?;
+    let records = store.reviews_for_run(run_id).map_err(|err| format!("cannot read the review index: {err}"))?;
+    let Some(record) = records.last() else { return Ok(None) };
+    let report = read_report(&roots.data, record);
+    let lifecycles = store.lifecycles_for_run(run_id);
+    let lifecycle = lifecycles.as_ref().ok().and_then(|all| all.iter().rev().find(|l| l.reported_head_sha == record.head_sha));
+    Ok(Some(row_status(&report, &lifecycles, lifecycle)))
 }
 
 /// The latest of `records` for each run: later records replace earlier ones for the same run, and runs
