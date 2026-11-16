@@ -534,16 +534,15 @@ fn version_of(
         Some(entries) => {
             let mut reading = Reading { deadline: Instant::now() + limits.budget, entries_left: limits.entries };
             for entry in entries {
-                let stamp = match entry.get(3..) {
-                    Some(path) => match stamp_of(&root.join(path.trim_end_matches('/')), &mut reading) {
-                        Some(stamp) => Some(stamp),
-                        None => {
-                            verified = false;
-                            text.push_str("not all read\n");
-                            break;
-                        }
-                    },
-                    None => None,
+                // Every entry, whatever it turns out to be, is read only while time and entries are left.
+                let stamp = reading.take_entry().and_then(|()| match entry.get(3..) {
+                    Some(path) => stamp_of(&root.join(path.trim_end_matches('/')), &mut reading).map(Some),
+                    None => Some(None),
+                });
+                let Some(stamp) = stamp else {
+                    verified = false;
+                    text.push_str("not all read\n");
+                    break;
                 };
                 text.push_str(&format!("{entry}\0{stamp:?}\n"));
             }
@@ -552,8 +551,8 @@ fn version_of(
     (format!("{:016x}", fnv1a(text.as_bytes())), verified)
 }
 
-/// How much a version may read: for how long, and how many files and folders inside the folders git
-/// lists as one entry.
+/// How much a version may read: for how long, and how many status entries and files and folders inside
+/// the folders git lists as one entry.
 #[derive(Debug, Clone, Copy)]
 struct VersionLimits {
     budget: Duration,

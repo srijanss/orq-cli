@@ -458,6 +458,22 @@ fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
 
 /// A version that ran out of time before reading everything cannot tell a change from none, so a delete
 /// confirmed against it is refused, even forced and even when the listing ran out of time the same way.
+/// A version with no time to read anything confirms nothing, even when all it would read is a link
+/// and a file that is gone.
+#[cfg(unix)]
+#[test]
+fn a_version_of_only_links_and_missing_files_with_no_time_deletes_nothing() {
+    let w = world("version-timeout-links");
+    let path = w.worktree("run-1", "fix--A");
+    std::os::unix::fs::symlink("elsewhere", path.join("link")).unwrap();
+    w.kept("run-1", "kept");
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_budget(Duration::ZERO);
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(path.join("link").symlink_metadata().is_ok() && branch_exists(&w.repo, "fix--A"));
+}
+
 /// A folder with more entries than a version may read is not read in full, so it cannot confirm a delete,
 /// while one within the limit still can.
 #[test]
