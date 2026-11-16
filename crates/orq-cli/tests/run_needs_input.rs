@@ -466,3 +466,48 @@ fn what_a_waiting_session_last_said_is_cut_redacted_and_on_one_line() {
     let lines = sent_lines(&w.sent, 1);
     assert!(!lines[0].contains("abc123"), "{lines:?}");
 }
+
+#[test]
+fn a_transcript_that_is_missing_unreadable_or_no_json_leaves_the_stop_told_with_the_generic_message() {
+    let generic = "the session stopped and is waiting for you";
+    let w = world("stop-transcript-missing");
+    let missing = w.sent.with_file_name("no-such-transcript.jsonl");
+    assert_eq!(stop_hook(&w, &stop(None, Some(&missing))).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], generic);
+
+    let w = world("stop-transcript-garbage");
+    let garbage = w.sent.with_file_name("garbage.jsonl");
+    std::fs::write(&garbage, "not json\n{\"type\": \"assistant\", \"message\": \n\u{0}\u{1}binary\n").unwrap();
+    assert_eq!(stop_hook(&w, &stop(None, Some(&garbage))).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], generic);
+
+    let w = world("stop-transcript-unreadable");
+    let unreadable = w.sent.with_file_name("unreadable.jsonl");
+    std::fs::write(&unreadable, transcript_line("assistant", "Hidden".into())).unwrap();
+    std::fs::set_permissions(&unreadable, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let readable_anyway = std::fs::File::open(&unreadable).is_ok(); // as root
+    assert_eq!(stop_hook(&w, &stop(None, Some(&unreadable))).status.code(), Some(0));
+    if !readable_anyway {
+        assert_eq!(needs(&w.store)[0].payload["text"], generic);
+    }
+}
+
+#[test]
+fn a_transcript_tail_that_starts_inside_a_character_still_finds_the_last_message_after_it() {
+    let w = world("stop-transcript-utf8");
+    let transcript = w.sent.with_file_name("transcript.jsonl");
+    let last = transcript_line("assistant", serde_json::json!([{"type": "text", "text": "Shall I push?"}]));
+    let head = "{\"type\":\"user\",\"message\":{\"content\":\"";
+    // Two bytes each, so the 256 KiB tail starts among them.
+    let build = |after: &str| format!("{head}{}{after}\"}}}}\n{last}", "é".repeat(140_000));
+    // A byte after them moves the cut by one when it would fall between two characters.
+    let whole = build("");
+    let whole = if (whole.len() - 256 * 1024 - head.len()) % 2 == 0 { build("x") } else { whole };
+    std::fs::write(&transcript, whole).unwrap();
+    let written = std::fs::read(&transcript).unwrap();
+    let cut = written.len() - 256 * 1024;
+    assert!(std::str::from_utf8(&written[cut..]).is_err(), "the tail must start inside a character");
+
+    assert_eq!(stop_hook(&w, &stop(None, Some(&transcript))).status.code(), Some(0));
+    assert_eq!(needs(&w.store)[0].payload["text"], "Shall I push?");
+}
