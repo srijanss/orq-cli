@@ -350,3 +350,16 @@ fn the_update_prompt_floats_over_the_page_in_theme_colours() {
     assert!(css.contains("@media (prefers-reduced-motion: reduce) {\n  .update-scrim, .update-card, .update-fab { animation: none; }"),
         "no fade under reduced motion");
 }
+
+// A release arriving while a page control has the focus: folding the card gives that control the focus back,
+// or the floating button when the control has gone meanwhile.
+#[test]
+fn folding_the_card_gives_the_focus_back_to_the_control_that_had_it_or_the_floating_button_if_it_is_gone() {
+    let later = |steps: Vec<Value>| page(json!({"responses": [], "steps": steps, "selectors": ["input", "[data-update-fab]", "[data-update-reload]"],
+        "service_worker": {"secure": true, "waiting": "later"}}));
+    let Some(out) = later(vec![json!({"focus": "input"}), json!({"update_found": true}), json!({"keydown": "Escape"})]) else { return };
+    assert_eq!(out["frames"][2]["settled"]["focusMatches"]["[data-update-reload]"], json!(true), "the card takes the focus: {out}");
+    assert_eq!(out["frames"][3]["settled"]["focusMatches"]["input"], json!(true), "the control has it back: {out}");
+    let Some(out) = later(vec![json!({"focus": "input"}), json!({"update_found": true}), json!({"remove": "input"}), json!({"keydown": "Escape"})]) else { return };
+    assert_eq!(out["frames"][4]["settled"]["focusMatches"]["[data-update-fab]"], json!(true), "the control is gone: {out}");
+}

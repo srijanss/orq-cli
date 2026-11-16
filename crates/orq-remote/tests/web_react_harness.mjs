@@ -129,6 +129,7 @@ if (scenario.webauthn) {
 // page is already controlled). `worker` in the output lists what was registered and what the page
 // told the waiting worker.
 const worker = { registered: [], messages: [] };
+Object.defineProperty(worker, "found", { value: [], enumerable: false });
 if (scenario.service_worker) {
   const spec = scenario.service_worker;
   Object.defineProperty(window, "isSecureContext", { value: spec.secure === true, configurable: true });
@@ -139,7 +140,12 @@ if (scenario.service_worker) {
       controller: {},
       register: (url, options) => {
         worker.registered.push({ url, scope: options && options.scope });
-        return Promise.resolve({ waiting: spec.waiting ? waiting : null, installing: null, addEventListener: () => {} });
+        // `waiting: "later"`: no release at first; an `update_found` step installs one.
+        const registration = { waiting: spec.waiting === true ? waiting : null, installing: null };
+        registration.addEventListener = (type, listener) => {
+          if (type === "updatefound") worker.found.push(() => { registration.installing = waiting; listener(); });
+        };
+        return Promise.resolve(registration);
       },
       addEventListener: () => {},
     },
@@ -358,6 +364,13 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       // A key pressed on an element (or wherever focus is): one bubbling keydown, as a browser sends it.
       const el = step.on ? root.querySelector(step.on) : (window.document.activeElement || window.document.body);
       el.dispatchEvent(new window.KeyboardEvent("keydown", { key: step.keydown, shiftKey: step.shift === true, bubbles: true, cancelable: true }));
+    } else if (step.focus !== undefined) {
+      window.document.querySelector(step.focus).focus();
+    } else if (step.remove !== undefined) {
+      window.document.querySelector(step.remove).remove();
+    } else if (step.update_found) {
+      // The release `waiting: "later"` held back installs now, while the page is open.
+      for (const found of worker.found) found();
     } else if (step.back) {
       window.history.back();
     } else {
