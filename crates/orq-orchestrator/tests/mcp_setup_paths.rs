@@ -21,6 +21,11 @@ struct World {
 /// A shim `mcpctl` that records `<dir>|<args>` for each call and acts like the real one: `setup` and
 /// `sync` write a lock, `init` writes a scaffold. `setup_body` replaces what `setup` does.
 fn world(tag: &str, setup_body: &str) -> World {
+    world_with(tag, setup_body, "", "")
+}
+
+/// [`world`], with `sync_body` and `init_body` run first in `sync` and `init`.
+fn world_with(tag: &str, setup_body: &str, sync_body: &str, init_body: &str) -> World {
     let repo = GitFixture::new();
     let worktree = repo.add_linked_worktree(tag);
     let dir = repo.root().parent().unwrap().join(format!("mcp-setup-{tag}-{}", std::process::id()));
@@ -37,6 +42,7 @@ case "$1" in
     echo "locked tdd 0.4.2"
     ;;
   sync)
+{sync_body}
     if [ "$2" != "--locked" ]; then
       printf 'version = 1\n\n[[mcp]]\nname = "tdd"\nversion = "0.2.9"\n\n[[mcp]]\nname = "project"\nversion = "1.2.1"\n' > .mcpctl.lock
     fi
@@ -45,6 +51,7 @@ case "$1" in
   init)
     mkdir -p .agents
     echo "scaffold" > .agents/guide.md
+{init_body}
     [ -e .tdd-config.json ] || echo '{{"adapter":"pytest-adapter"}}' > .tdd-config.json
     printf '{{"version":1,"files":{{".agents/guide.md":{{"mcp":"tdd"}},".tdd-config.json":{{"mcp":"tdd"}},"README.md":{{"mcp":"tdd"}}}}}}' > .mcpctl.scaffold.json
     echo "scaffolded .agents/guide.md"
@@ -224,4 +231,17 @@ fn everything_the_setup_created_stays_out_of_git_status_and_tracked_files_are_le
     assert_eq!(status, "", "the lock, the scaffold record and every scaffolded file are excluded");
     let exclude = fs::read_to_string(w.repo.root().join(".git/info/exclude")).unwrap_or_default();
     assert!(!exclude.contains("README.md"), "a tracked file is the branch's own: {exclude}");
+}
+
+#[test]
+fn a_locked_install_that_reports_a_pin_refusal_is_a_failure_and_never_installs_unlocked() {
+    let w = world_with("locked-refused", "", "    echo 'Error: tdd 0.2.3 does not satisfy constraint ^0.3' >&2\n    exit 1", "");
+    fs::write(w.repo.root().join(".mcpctl.lock"), LOCK).unwrap();
+
+    let report = run_mcp_setup(&request(&w, &servers()));
+
+    assert_eq!(args_only(&w), ["sync --locked"], "no unlocked sync, no init");
+    assert_eq!(fs::read_to_string(w.worktree.join(".mcpctl.lock")).unwrap(), LOCK, "the lock is not replaced");
+    assert!(report.versions.iter().all(|v| v.source == "machine active"), "{:?}", report.versions);
+    assert!(report.notes.iter().any(|n| n.contains("does not satisfy constraint")), "{:?}", report.notes);
 }

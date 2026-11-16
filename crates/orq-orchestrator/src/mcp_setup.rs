@@ -100,14 +100,16 @@ pub fn run_mcp_setup(request: &McpSetupRequest<'_>) -> McpSetupReport {
     }
     carry_lock(request, &mut report.notes);
     let (install, init) = (request.timeouts.install, request.timeouts.init);
-    let done = if request.worktree.join(MCPCTL_LOCK).exists() {
+    let locked = request.worktree.join(MCPCTL_LOCK).exists();
+    let done = if locked {
         calls(request, program, &[(&["sync", "--locked"], install), (&["init"], init)]).map(|()| "locked")
     } else {
         let setup: Vec<&str> = std::iter::once("setup").chain(names.iter().flat_map(|name| ["--mcp", *name])).collect();
         calls(request, program, &[(&setup, install)]).map(|()| "newest")
     };
     let done = match done {
-        Err(refused) if refused.last_line.as_deref().is_some_and(|line| line.contains(PINS_REFUSED)) => {
+        // Only `setup` falls back: a locked install that fails must never be replaced by an unlocked one.
+        Err(refused) if !locked && refused.last_line.as_deref().is_some_and(|line| line.contains(PINS_REFUSED)) => {
             calls(request, program, &[(&["sync"], install), (&["init"], init)]).map(|()| {
                 let versions = locked_versions(request.worktree, &names, "within pins");
                 let used: Vec<String> = versions
