@@ -1,4 +1,4 @@
-//! The page offers exactly eleven run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept and switch model — plus the feature editor and the storage cleanup, each behind a confirmation,
+//! The page offers exactly eleven run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept and switch model — plus the feature editor, the storage cleanup and the kept worktrees' delete, each behind a confirmation,
 //! and no merge, approve, restart or edit control or request.
 
 fn code() -> String {
@@ -57,8 +57,13 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     // The Storage card reads the cleanup preview and posts the prune with its hash; nothing else.
     let storage: Vec<&str> = code.split("function StorageCleanup(").nth(1).expect("StorageCleanup").split("\nfunction ").next().unwrap().split("API_SETTINGS + ").skip(1).map(|tail| tail.split(',').next().unwrap()).collect();
     assert_eq!(storage, ["\"/storage/preview\"", "\"/storage/prune\""]);
+    // The Kept worktrees card reads the kept worktrees and posts a delete of one, or of the merged ones; nothing else.
+    let kept_body = code.split("function KeptWorktrees(").nth(1).expect("KeptWorktrees").split("\nfunction ").next().unwrap();
+    let kept: Vec<&str> = kept_body.split("API_WORKTREES").skip(1).map(|tail| tail.split(',').next().unwrap()).collect();
+    assert_eq!(kept, [""," + \"/\" + encodeURIComponent(project) + \"/\" + branchPath(worktree.branch) + \"/delete\"", " + \"/delete-merged\""]);
+    let rest = code.replacen(kept_body, "", 1);
     assert_eq!(code.matches("controlPath(control, ").count(), 17, "the definition, the seven actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked and the feature editor's read and save are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
-        assert!(!code.contains(&format!("\"/{banned}")) && !code.contains(&format!("/{banned}\"")) && !code.contains(&format!("/{banned}/")), "the page builds a {banned} request");
+        assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
 }
