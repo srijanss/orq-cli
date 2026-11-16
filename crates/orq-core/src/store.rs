@@ -262,6 +262,20 @@ impl Store {
             .map_err(db)
     }
 
+    /// Stores `next` as the lifecycle of `run_id` at its reported head only while the stored one is still
+    /// `expected` (`None`: nothing stored for that head yet), checked and written under one write lock.
+    /// Returns whether it was stored; `false` means someone changed it since it was read.
+    pub fn replace_lifecycle(&self, run_id: &str, expected: Option<&ReviewLifecycle>, next: &ReviewLifecycle) -> Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(db)?;
+        let stored = self.lifecycles_for_run(run_id)?.into_iter().rev().find(|l| l.reported_head_sha == next.reported_head_sha);
+        if stored.as_ref() != expected {
+            return Ok(false);
+        }
+        self.save_lifecycle(run_id, next)?;
+        tx.commit().map_err(db)?;
+        Ok(true)
+    }
+
     pub fn lifecycles_for_run(&self, run_id: &str) -> Result<Vec<ReviewLifecycle>> {
         let mut statement = self
             .conn

@@ -228,22 +228,25 @@ pub fn act_on_review(store: &Store, run_id: &str, action: ReviewAction, expected
     if expected_head.is_some_and(|seen| seen != head) {
         return Ok(ActionOutcome::StaleHead { latest: head });
     }
-    let lifecycles = store.lifecycles_for_run(run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
-    let current = lifecycles.into_iter().rev().find(|l| l.reported_head_sha == head);
-    let base = current.clone().unwrap_or_else(|| ReviewLifecycle::local(&head));
-    let next = match action {
-        ReviewAction::Resolve => Ok(base.resolved()),
-        ReviewAction::Dismiss => base.dismissed(),
-        ReviewAction::Reopen => base.reopened(),
-    };
-    let next = match next {
-        Ok(next) => next,
-        Err(reason) => return Ok(ActionOutcome::Refused(reason)),
-    };
-    if current.as_ref() != Some(&next) {
-        store.save_lifecycle(run_id, &next).map_err(|err| format!("cannot save the review state: {err}"))?;
+    // The transition is stored only over the lifecycle it was made from; when another writer (a local
+    // merge, a provider refresh) changed it in between, the action is decided again from what is stored.
+    loop {
+        let lifecycles = store.lifecycles_for_run(run_id).map_err(|err| format!("cannot read the provider review state: {err}"))?;
+        let current = lifecycles.into_iter().rev().find(|l| l.reported_head_sha == head);
+        let base = current.clone().unwrap_or_else(|| ReviewLifecycle::local(&head));
+        let next = match action {
+            ReviewAction::Resolve => Ok(base.resolved()),
+            ReviewAction::Dismiss => base.dismissed(),
+            ReviewAction::Reopen => base.reopened(),
+        };
+        let next = match next {
+            Ok(next) => next,
+            Err(reason) => return Ok(ActionOutcome::Refused(reason)),
+        };
+        if current.as_ref() == Some(&next) || store.replace_lifecycle(run_id, current.as_ref(), &next).map_err(|err| format!("cannot save the review state: {err}"))? {
+            return Ok(ActionOutcome::Done(next));
+        }
     }
-    Ok(ActionOutcome::Done(next))
 }
 
 /// The sections of the latest stored report of `run_id`.

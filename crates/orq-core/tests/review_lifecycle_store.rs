@@ -86,3 +86,23 @@ fn a_database_from_before_lifecycles_is_upgraded_in_place() {
     assert_eq!(store.reviews_for_run("run-1").unwrap().len(), 1);
     store.save_lifecycle("run-1", &associated()).unwrap();
 }
+
+#[test]
+fn a_lifecycle_is_replaced_only_while_it_is_still_the_one_read() {
+    let db = scratch("swap").join("orq.db");
+    let store = Store::open(&db).unwrap();
+    let read = ReviewLifecycle::local(HEAD);
+    assert!(store.replace_lifecycle("run-1", None, &read).unwrap(), "nothing stored yet: the first write lands");
+    // A local merge lands after the person's action read the open review.
+    let merged = ReviewLifecycle::merged_locally(HEAD, OTHER);
+    store.save_lifecycle("run-1", &merged).unwrap();
+
+    let dismissed = read.dismissed().unwrap();
+    assert!(!store.replace_lifecycle("run-1", Some(&read), &dismissed).unwrap(), "the merge changed it since it was read");
+    assert!(!store.replace_lifecycle("run-1", None, &dismissed).unwrap(), "a lifecycle is stored now");
+    assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![merged.clone()]);
+
+    let resolved = merged.resolved();
+    assert!(store.replace_lifecycle("run-1", Some(&merged), &resolved).unwrap());
+    assert_eq!(store.lifecycles_for_run("run-1").unwrap(), vec![resolved]);
+}
