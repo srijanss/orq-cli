@@ -206,3 +206,23 @@ fn a_run_merged_locally_is_not_looked_at_though_an_earlier_report_kept_an_open_r
     assert!(!refresher.opened("run-1", now() + 3600));
     assert!(recorder.asked().is_empty());
 }
+
+#[test]
+fn stopping_the_rounds_waits_only_for_the_look_under_way_and_starts_no_other() {
+    let roots = roots("stop");
+    for (n, run) in ["run-a", "run-b", "run-c"].into_iter().enumerate() {
+        review(&roots, run, n as u8 + 1, ProviderState::Open, 601);
+    }
+    let recorder = Recorder::new(&roots, Duration::from_millis(400), false);
+    let rounds = orq_remote::review_refresh::start_rounds(ReviewRefresher::new(roots.clone(), recorder.clone()), Duration::from_secs(60));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while recorder.asked().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let stopping = std::time::Instant::now();
+    drop(rounds);
+    assert!(stopping.elapsed() < Duration::from_millis(700), "{:?}", stopping.elapsed());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(recorder.asked().len(), 1, "{:?}", recorder.asked());
+}
