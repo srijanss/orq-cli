@@ -151,6 +151,13 @@ impl RunIndex {
         self
     }
 
+    /// The clock a version measures its time by; for tests that need the time to run out at a chosen point.
+    #[doc(hidden)]
+    pub fn with_version_clock(mut self, clock: fn() -> Instant) -> RunIndex {
+        self.version_limits.clock = clock;
+        self
+    }
+
     /// Reads the records of runs this index has not seen; a record, once written, keeps its worktree and branch.
     fn refresh(&mut self, store: &RunStore) -> Result<(), StoreError> {
         for run_id in store.run_ids()? {
@@ -532,7 +539,7 @@ fn version_of(
             text.push_str("unreadable\n");
         }
         Some(entries) => {
-            let mut reading = Reading { deadline: Instant::now() + limits.budget, entries_left: limits.entries };
+            let mut reading = Reading::new(limits);
             for entry in entries {
                 // Every entry, whatever it turns out to be, is read only while time and entries are left.
                 let stamp = reading.take_entry().and_then(|()| match entry.get(3..) {
@@ -557,11 +564,12 @@ fn version_of(
 struct VersionLimits {
     budget: Duration,
     entries: usize,
+    clock: fn() -> Instant,
 }
 
 impl Default for VersionLimits {
     fn default() -> VersionLimits {
-        VersionLimits { budget: Duration::from_secs(2), entries: 100_000 }
+        VersionLimits { budget: Duration::from_secs(2), entries: 100_000, clock: Instant::now }
     }
 }
 
@@ -569,11 +577,16 @@ impl Default for VersionLimits {
 struct Reading {
     deadline: Instant,
     entries_left: usize,
+    clock: fn() -> Instant,
 }
 
 impl Reading {
+    fn new(limits: VersionLimits) -> Reading {
+        Reading { deadline: (limits.clock)() + limits.budget, entries_left: limits.entries, clock: limits.clock }
+    }
+
     fn out_of_time(&self) -> bool {
-        Instant::now() >= self.deadline
+        (self.clock)() >= self.deadline
     }
 
     /// Counts one more entry read; `None` once there is none left to read.
@@ -715,8 +728,7 @@ mod tests {
     use super::*;
 
     fn reading() -> Reading {
-        let limits = VersionLimits::default();
-        Reading { deadline: Instant::now() + limits.budget, entries_left: limits.entries }
+        Reading::new(VersionLimits::default())
     }
 
     #[test]

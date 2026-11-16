@@ -547,6 +547,73 @@ fn a_version_read_only_in_part_before_its_time_ran_out_deletes_nothing() {
     assert!(path.join("work.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
 
+thread_local! {
+    /// How many more times this test's version clock tells the real time; after that it says the time ran out.
+    static CLOCK_READS_LEFT: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+fn running_out_clock() -> std::time::Instant {
+    let now = std::time::Instant::now();
+    match CLOCK_READS_LEFT.get().checked_sub(1) {
+        Some(left) => {
+            CLOCK_READS_LEFT.set(left);
+            now
+        }
+        None => now + Duration::from_secs(3600),
+    }
+}
+
+#[test]
+fn a_version_whose_time_runs_out_partway_through_a_file_deletes_nothing() {
+    let w = world("version-timeout-midfile");
+    let path = w.worktree("run-1", "fix--A");
+    // Sixteen chunks: the version reads the first and is out of time before the second.
+    fs::write(path.join("big.bin"), vec![7u8; 1024 * 1024]).unwrap();
+    w.kept("run-1", "kept");
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_clock(running_out_clock);
+
+    CLOCK_READS_LEFT.set(u64::MAX);
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    // One read sets the deadline, one checks before the entry, one before the first chunk.
+    CLOCK_READS_LEFT.set(3);
+    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(path.join("big.bin").exists() && branch_exists(&w.repo, "fix--A"));
+
+    // The same delete with time for every chunk goes through: what ran out was the time inside the file.
+    CLOCK_READS_LEFT.set(u64::MAX);
+    let deleted = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    assert!(deleted.is_ok() && !path.exists());
+}
+
+#[test]
+fn a_version_whose_time_runs_out_partway_through_a_folder_deletes_nothing() {
+    let w = world("version-timeout-midfolder");
+    let path = w.worktree("run-1", "fix--A");
+    let sub = path.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    git(&sub, &["init", "-q"]);
+    for n in 0..50 {
+        fs::write(sub.join(format!("f{n}.txt")), "work\n").unwrap();
+    }
+    w.kept("run-1", "kept");
+    let mut index = RunIndex::load(&w.store).unwrap().with_version_clock(running_out_clock);
+
+    CLOCK_READS_LEFT.set(u64::MAX);
+    let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
+    // The deadline, the status entry and the folder take three reads; the rest run out a few entries in.
+    CLOCK_READS_LEFT.set(10);
+    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+
+    assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
+    assert!(sub.join("f0.txt").exists() && branch_exists(&w.repo, "fix--A"));
+
+    CLOCK_READS_LEFT.set(u64::MAX);
+    let deleted = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    assert!(deleted.is_ok() && !path.exists());
+}
+
 #[test]
 fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_started_after_it_was_read() {
     let w = world("index");
