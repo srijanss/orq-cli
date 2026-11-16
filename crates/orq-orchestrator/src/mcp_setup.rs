@@ -378,7 +378,7 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
             continue;
         }
         let mut start = skip(after + 1, BLANK);
-        // A value quoted with escaped quotes (`pwd=\"...\"`) ends at the next escaped quote.
+        // A value quoted with escaped quotes (`pwd=\"...\"`) sits inside another string.
         let escaped = bytes.get(start) == Some(&b'\\');
         let quote = bytes.get(start + usize::from(escaped)).copied().filter(|b| matches!(b, b'"' | b'\''));
         let escaped = escaped && quote.is_some();
@@ -392,20 +392,7 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
             }
         }
         let end = match quote {
-            Some(quote) if escaped => text[start..].find(&format!("\\{}", char::from(quote))).map(|end| start + end),
-            // A backslash escapes the byte after it, so an escaped quote does not close the value;
-            // a value never closed runs to the end of the line.
-            Some(quote) => {
-                let mut i = start;
-                loop {
-                    match bytes.get(i) {
-                        None => break None,
-                        Some(b'\\') => i += 2,
-                        Some(&b) if b == quote => break Some(i),
-                        Some(_) => i += 1,
-                    }
-                }
-            }
+            Some(quote) => closing_quote(bytes, start, quote, escaped),
             None => text[start..]
                 .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';'))
                 .map(|end| start + end),
@@ -420,6 +407,32 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
     }
     out.push_str(&text[shown..]);
     out
+}
+
+/// Where a value quoted with `quote`, starting at `start`, closes: inside it a backslash escapes the
+/// character after it. When the quotes are themselves escaped (`escaped`), the value sits inside
+/// another string, so that string's escapes are decoded first (`\\` is one backslash, `\"` one
+/// quote) and the value closes at a decoded quote no decoded backslash escapes, or where the
+/// outer string ends. `None` when it never closes, so the value runs to the end of the line.
+fn closing_quote(bytes: &[u8], start: usize, quote: u8, escaped: bool) -> Option<usize> {
+    let (mut i, mut inner_escape) = (start, false);
+    loop {
+        let (c, next) = match bytes.get(i) {
+            None => return None,
+            Some(b'\\') if escaped => (*bytes.get(i + 1)?, i + 2),
+            // An unescaped quote ends the outer string, and the value with it.
+            Some(&b) if escaped && b == quote => return Some(i),
+            Some(&b) => (b, i + 1),
+        };
+        if inner_escape {
+            inner_escape = false;
+        } else if c == b'\\' {
+            inner_escape = true;
+        } else if c == quote {
+            return Some(i);
+        }
+        i = next;
+    }
 }
 
 /// Each of `servers`' version in the worktree's lock, marked `source`.

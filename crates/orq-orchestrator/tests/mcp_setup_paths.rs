@@ -313,6 +313,13 @@ fn notes_of_failing_line(tag: &str, line: &str, env: &[(String, String)]) -> Str
     run_mcp_setup(&McpSetupRequest { env, ..request(&w, &servers()) }).notes.join("\n")
 }
 
+/// [`notes_of_failing_line`] for a line whose backslashes must reach the log as written: `sh`'s
+/// `echo` would read `\\` as one backslash, `printf '%s'` does not.
+fn notes_of_raw_line(tag: &str, line: &str) -> String {
+    let w = world(tag, &format!("    printf '%s\\n' '{}' >&2\n    exit 1", line.replace('\'', "'\\''")));
+    run_mcp_setup(&request(&w, &servers())).notes.join("\n")
+}
+
 #[test]
 fn a_run_value_crossing_the_lines_length_limit_is_redacted_whole_not_shown_in_part() {
     // The value starts at character 295, so a cut at 300 leaves its first five characters.
@@ -432,4 +439,13 @@ fn a_quoted_value_with_an_escaped_quote_inside_is_hidden_through_its_real_closin
 
         assert!(notes.contains(shown), "{tag}: expected {shown} in: {notes}");
     }
+}
+
+#[test]
+fn a_value_in_escaped_quotes_is_hidden_past_an_encoded_quote_inside_it() {
+    let line = r#"Error: login pwd=\"prefix\\\"sensitive-suffix\" rejected"#;
+
+    let notes = notes_of_raw_line("escaped-layer", line);
+
+    assert!(notes.contains(r#"login pwd=\"[REDACTED]\" rejected"#), "{notes}");
 }
