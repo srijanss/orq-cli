@@ -115,15 +115,17 @@ fn reopen_a_run_that_ends_blocked_without_a_commit_puts_its_feature_back_to_pend
     assert_eq!(status_of(w.repo.root(), "COM-02"), "in_progress", "a feature outside the run is left alone");
 }
 
+/// A run that delivers its commits completes the feature its agent left `in_progress`.
 #[test]
-fn reopen_a_run_that_committed_leaves_its_feature_as_the_agent_left_it() {
+fn reopen_a_run_that_delivered_its_commit_completes_its_feature() {
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let w = world("committed", &agent);
 
     let output = run(&w, &github());
 
     assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{}", text(&output.stdout), text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress");
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "in_progress", "a feature outside the run is left alone");
 }
 
 /// A failing run with `explain_failures` off, so no explainer session starts after it.
