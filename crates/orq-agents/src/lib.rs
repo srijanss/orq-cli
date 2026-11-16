@@ -385,13 +385,14 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
     }
     let mut prompt = task.to_string();
     prompt.push_str(FINISH_STARTED_FEATURES);
+    prompt.push_str(GATE_RUNS_AGAIN);
     if request.attended {
         prompt.push_str(&attended_wording(harness));
     } else {
         prompt.push_str(&allowed_commands_wording(request.allowed_commands));
     }
     if let Some(marker) = request.exit_marker {
-        prompt.push_str("\n\nFinal step, only after the fix is committed and nothing is left to do or ask: create the empty file ");
+        prompt.push_str("\n\nFinal step, once the fix is committed and nothing is left to do or ask, without waiting for a gate run: create the empty file ");
         prompt.push_str(&marker_for_prompt(marker)?);
         prompt.push_str(" and then stop.");
         prompt.push_str(MARKER_FORMAT);
@@ -402,6 +403,11 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
 /// What a fix session is told of a feature it starts in the TDD ledger: the run marks it completed when
 /// it delivers, or abandoned when it is discarded, so the session must not leave it half done.
 const FINISH_STARTED_FEATURES: &str = "\n\nIf you start a feature in the TDD ledger for this fix, finish it with complete_feature before you stop; the run marks it completed when it delivers, or abandoned when it is discarded.";
+
+/// What a fix session is told happens once it ends, so it does not try to prove the gate green itself
+/// or wait on someone to run it, and what its unrelated-failure note does to the run (orq reads it
+/// once the session ends and stops there).
+const GATE_RUNS_AGAIN: &str = "\n\norq runs the whole gate again itself as soon as this session ends, as many times as its fix attempts allow. You do not need to run the whole gate, or the full suite, to finish: run the failing tests, or the tests for what you changed, the way you can (run_tests or your allowed commands). If you cannot run them, say so in your notes and finish anyway. Never wait for the user, or ask them, to run the gate. Writing the unrelated-failure note ends the run as blocked, with no further gate run. If you go on to bring the fix in (for example by merging the target branch), delete the note before you finish, and orq then runs the gate again as usual.";
 
 /// How a session says how it went in its finish marker: the first line decides (see the orchestrator).
 const MARKER_FORMAT: &str = " The first line of that file says how it went: leave it empty, or write OK, when the work is done; any notes go after OK. Write PROBLEM on the first line, and what went wrong after it, only if the work is not done, a required review could not run or did not end done, or tests are failing.";

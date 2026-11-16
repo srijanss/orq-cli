@@ -175,7 +175,7 @@ fn an_attended_fix_session_is_interactive_says_someone_is_watching_and_how_to_en
         assert!(prompt.starts_with("The gate failed. Fix it."), "{harness}: {prompt}");
         assert!(prompt.contains("A person is watching this session"), "{harness}: {prompt}");
         assert!(prompt.contains("create the empty file /state/logs/run-1/gate-fix.done and then stop."), "{harness}: {prompt}");
-        assert!(prompt.contains("only after the fix is committed"), "{harness}: {prompt}");
+        assert!(prompt.contains("once the fix is committed and nothing is left to do or ask, without waiting for a gate run"), "{harness}: {prompt}");
     });
 }
 
