@@ -122,13 +122,53 @@ struct Recorded {
 }
 
 /// Every run record, without its events: those are read only for the runs a worktree turns out to have.
-fn records(store: &RunStore) -> Result<Vec<RunRecord>, StoreError> {
-    let mut found = Vec::new();
-    for run_id in store.run_ids()? {
-        let Ok(record) = store.load(&run_id) else { continue };
-        found.push(record);
+/// One index serves several listings and deletes, so a page or a batch reads the records once; before each
+/// delete it reads the records of runs started since, so a run that began meanwhile still holds its worktree.
+pub struct RunIndex {
+    records: Vec<RunRecord>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl RunIndex {
+    pub fn load(store: &RunStore) -> Result<RunIndex, StoreError> {
+        let mut index = RunIndex { records: Vec::new(), seen: Default::default() };
+        index.refresh(store)?;
+        Ok(index)
     }
-    Ok(found)
+
+    /// Reads the records of runs this index has not seen; a record, once written, keeps its worktree and branch.
+    fn refresh(&mut self, store: &RunStore) -> Result<(), StoreError> {
+        for run_id in store.run_ids()? {
+            if self.seen.contains(&run_id) {
+                continue;
+            }
+            // A record that cannot be read yet, say one still being written, is tried again next time.
+            let Ok(record) = store.load(&run_id) else { continue };
+            self.seen.insert(run_id);
+            self.records.push(record);
+        }
+        Ok(())
+    }
+
+    /// Every worktree of `repo` that orq made and no active run holds: inside the repository's worktrees
+    /// folder, on a branch with the run prefix or a recorded run's branch.
+    pub fn list(&self, store: &RunStore, repo: &Path) -> Result<Vec<KeptWorktree>, StoreError> {
+        list_with(store, &self.records, repo)
+    }
+
+    /// Delete the kept worktree on `branch` and the branch itself, if it is still what `version` says
+    /// and, unless `force`, holds nothing but ignored files and commits on its target.
+    pub fn delete(
+        &mut self,
+        store: &RunStore,
+        repo: &Path,
+        branch: &str,
+        version: &str,
+        force: bool,
+    ) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
+        self.refresh(store)?;
+        delete_with(store, &self.records, repo, branch, version, force)
+    }
 }
 
 /// `record` with its events. Events that cannot be read say nothing about the run: it counts as still going.
@@ -184,7 +224,10 @@ fn same_place(a: &Path, b: &Path) -> bool {
 /// Every worktree of `repo` that orq made and no active run holds: inside the repository's worktrees
 /// folder, on a branch with the run prefix or a recorded run's branch.
 pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWorktree>, StoreError> {
-    let all = records(store)?;
+    RunIndex::load(store)?.list(store, repo)
+}
+
+fn list_with(store: &RunStore, all: &[RunRecord], repo: &Path) -> Result<Vec<KeptWorktree>, StoreError> {
     let prefix = branch_prefix(repo);
     let mut kept = Vec::new();
     for listed in listed_worktrees(repo)?.into_iter().skip(1) {
@@ -192,11 +235,11 @@ pub fn list_kept_worktrees(store: &RunStore, repo: &Path) -> Result<Vec<KeptWork
         if same_place(&listed.path, repo) || !within_worktrees_dir(repo, &listed.path) {
             continue;
         }
-        let mine = recorded_on(store, &all, repo, &branch, &listed.path);
+        let mine = recorded_on(store, all, repo, &branch, &listed.path);
         if !branch.starts_with(&prefix) && mine.is_empty() {
             continue;
         }
-        if held(store, &all, &mine)? {
+        if held(store, all, &mine)? {
             continue;
         }
         kept.push(describe(repo, &listed, branch, mine.last(), true)?);
@@ -273,7 +316,17 @@ pub fn delete_kept_worktree(
     version: &str,
     force: bool,
 ) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
-    let all = records(store)?;
+    RunIndex::load(store)?.delete(store, repo, branch, version, force)
+}
+
+fn delete_with(
+    store: &RunStore,
+    all: &[RunRecord],
+    repo: &Path,
+    branch: &str,
+    version: &str,
+    force: bool,
+) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
     let prefix = branch_prefix(repo);
     let Some(listed) = listed_worktrees(repo)?
         .into_iter()
@@ -282,14 +335,14 @@ pub fn delete_kept_worktree(
     else {
         return Ok(Err(DeleteRefusal::NotFound));
     };
-    let mine = recorded_on(store, &all, repo, branch, &listed.path);
+    let mine = recorded_on(store, all, repo, branch, &listed.path);
     if !branch.starts_with(&prefix) && mine.is_empty() {
         return Ok(Err(DeleteRefusal::NotFound));
     }
     if let Some(why) = unsafe_path(repo, &listed.path) {
         return Ok(Err(DeleteRefusal::Unsafe(why)));
     }
-    if held(store, &all, &mine)? {
+    if held(store, all, &mine)? {
         return Ok(Err(DeleteRefusal::Active));
     }
     let run = mine.last();

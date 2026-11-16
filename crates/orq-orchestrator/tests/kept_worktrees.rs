@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use orq_orchestrator::{
-    delete_kept_worktree, list_kept_worktrees, ChangeKind, DeleteRefusal, Event, RunRecord, RunStore,
+    delete_kept_worktree, list_kept_worktrees, ChangeKind, DeleteRefusal, Event, RunIndex, RunRecord, RunStore,
 };
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -419,4 +419,29 @@ fn editing_a_file_inside_a_nested_repository_makes_the_version_stale() {
     let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(sub.join("deep/x.txt").exists() && branch_exists(&w.repo, "fix--A"));
+}
+
+#[test]
+fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_started_after_it_was_read() {
+    let w = world("index");
+    let a = w.worktree("run-1", "fix--A");
+    w.kept("run-1", "kept");
+    let b = w.worktree("run-2", "fix--B");
+    w.kept("run-2", "kept");
+    let mut index = RunIndex::load(&w.store).unwrap();
+
+    let listed = index.list(&w.store, &w.repo).unwrap();
+    assert_eq!(listed.iter().map(|k| k.branch.as_str()).collect::<Vec<_>>(), ["fix--A", "fix--B"]);
+    let version = |branch: &str| listed.iter().find(|k| k.branch == branch).unwrap().version.clone();
+
+    // A run that starts on fix--B after the index was read still holds it.
+    w.record("run-3", "fix--B", &b);
+    w.event("run-3", "stage.started", serde_json::json!({}));
+
+    let deleted = index.delete(&w.store, &w.repo, "fix--A", &version("fix--A"), false).unwrap();
+    assert!(deleted.is_ok(), "{deleted:?}");
+    assert!(!a.exists());
+    let refused = index.delete(&w.store, &w.repo, "fix--B", &version("fix--B"), false).unwrap();
+    assert_eq!(refused, Err(DeleteRefusal::Active));
+    assert!(b.exists());
 }
