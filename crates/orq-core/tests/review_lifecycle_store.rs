@@ -120,3 +120,15 @@ fn a_lifecycle_is_not_replaced_once_a_newer_report_of_the_run_was_published() {
     assert!(!store.replace_lifecycle("run-1", None, &read.resolved()).unwrap(), "HEAD is no longer the latest report");
     assert!(store.lifecycles_for_run("run-1").unwrap().is_empty());
 }
+
+#[test]
+fn an_unchanged_lifecycle_is_not_rewritten_once_a_newer_report_of_the_run_was_published() {
+    let dir = scratch("published-unchanged");
+    let store = Store::open(&dir.join("orq.db")).unwrap();
+    let body = br#"{"status":"current","risks":[]}"#;
+    store.save_review(&dir, "run-1", "p-1", "feat-1", HEAD, body).unwrap();
+    let resolved = ReviewLifecycle::local(HEAD).resolved();
+    assert!(store.replace_lifecycle("run-1", None, &resolved).unwrap());
+    store.save_review(&dir, "run-1", "p-1", "feat-1", OTHER, body).unwrap();
+    assert!(!store.replace_lifecycle("run-1", Some(&resolved), &resolved).unwrap(), "resolving HEAD again is no success once OTHER is the latest report");
+}
