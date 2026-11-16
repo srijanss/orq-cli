@@ -2330,6 +2330,39 @@ fn a_gate_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_t
     assert_eq!(git(w.repo.root(), &["worktree", "list"]).lines().count(), 2, "the worktree is kept");
 }
 
+/// A fix session that first calls the failure unrelated, then brings the fix in after all and deletes its
+/// note before it finishes, gets the gate run again, not a blocked run: orq reads the note only once the
+/// session has ended.
+#[test]
+fn a_gate_fix_session_that_deletes_its_unrelated_failure_note_before_finishing_gets_another_gate_run() {
+    let w = world("unrelated-then-fixed");
+    std::fs::create_dir_all(w.repo.root().join(".orq")).unwrap();
+    std::fs::write(w.repo.root().join(".orq/run.toml"), "gate = [\"sh\", \"-c\", \"test -e fixed.txt\"]\nexplain_failures = false\n").unwrap();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let mut command = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &["--no-ci-check"]);
+    let path = path_with(&agent, &provider, &w.tag);
+    let bin = std::env::split_paths(&path).next().unwrap();
+    let wrote_note = scratch(&w, "note").join("written");
+    std::fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\nif [ -n \"$ORQ_UNRELATED_FAILURE_FILE\" ]; then\n  echo 'billing clock test is flaky' > \"$ORQ_UNRELATED_FAILURE_FILE\"\n  cp \"$ORQ_UNRELATED_FAILURE_FILE\" '{}'\n  rm \"$ORQ_UNRELATED_FAILURE_FILE\"\n  echo fixed > fixed.txt\n  git add fixed.txt\n  exec git -c user.name=Fixer -c user.email=fixer@example.invalid commit -q -m fix\nfi\nexec '{}' \"$@\"\n",
+            wrote_note.display(),
+            agent.path().display()
+        ),
+    )
+    .unwrap();
+
+    let output = command.env("PATH", &path).output().unwrap();
+
+    assert!(wrote_note.exists(), "the fix session wrote its note before deleting it");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
+    assert!(!stdout.contains("state: blocked"), "{stdout}");
+    assert!(!stderr(&output).contains("unrelated"), "{}", stderr(&output));
+}
+
 /// A run of COM-01 whose gate (`gate`, run by `sh -c`) fails until its gate-fix session repairs it. That
 /// session, as an agent following the TDD workflow does, starts a feature of its own, FIX-01, in the
 /// main ledger and leaves it `in_progress`, then commits `fixed.txt`; OLD-01 was `in_progress` before
