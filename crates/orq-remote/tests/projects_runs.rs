@@ -225,3 +225,52 @@ fn a_run_lists_and_details_its_delivery_and_how_a_delivered_run_ended() {
         assert_eq!((&detail["run"]["delivery"], &detail["run"]["ending"]), (&json!(delivery), &ending), "{id}: {detail}");
     }
 }
+
+#[test]
+fn a_run_a_resume_took_over_is_resumed_and_names_the_run_that_continues_it_which_names_it_back() {
+    let s = setup("runs-resumed");
+    let alpha = git_repo(&s.scan, "alpha");
+    let a = project_id(&alpha);
+    add_run(&s, "old", &a, "main", &[("run.started", None, "2026-11-01T10:00:00Z"), ("run.blocked", Some("rebase"), "2026-11-01T10:30:00Z")]);
+    add_run(&s, "new", &a, "main", &[("run.started", None, "2026-11-01T11:00:00Z")]);
+    add_run(&s, "alone", &a, "main", &[("run.started", None, "2026-11-01T09:00:00Z"), ("run.completed", None, "2026-11-01T09:30:00Z")]);
+    let store = RunStore::new(&s.roots.state);
+    let (old, new) = (store.load("old").unwrap(), store.load("new").unwrap());
+    orq_orchestrator::carry_session_references(&store, &new, "old").unwrap();
+    orq_orchestrator::supersede_resumed(&store, &old, "new").unwrap();
+
+    let (status, body) = get(&s, "/api/projects/alpha/runs");
+    assert_eq!(status, 200, "{body}");
+    let row = |id: &str| body["runs"].as_array().unwrap().iter().find(|r| r["run_id"] == id).cloned().unwrap_or_else(|| panic!("{id}: {body}"));
+    assert_eq!((&row("old")["state"], &row("old")["resumed_as"]), (&json!("resumed"), &json!("new")), "{body}");
+    assert_eq!(row("new")["resumed_from"], json!("old"), "{body}");
+    assert_eq!(row("new")["state"], json!("running"), "{body}");
+    assert!(row("alone").get("resumed_as").is_none() && row("alone").get("resumed_from").is_none(), "{body}");
+
+    let (status, detail) = get(&s, "/api/projects/alpha/runs/old");
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!((&detail["run"]["state"], &detail["run"]["resumed_as"]), (&json!("resumed"), &json!("new")), "{detail}");
+    let (_, detail) = get(&s, "/api/projects/alpha/runs/new");
+    assert_eq!(detail["run"]["resumed_from"], json!("old"), "{detail}");
+    let (_, filtered) = get(&s, "/api/projects/alpha/runs?state=resumed");
+    let ids: Vec<&Value> = filtered["runs"].as_array().unwrap().iter().map(|r| &r["run_id"]).collect();
+    assert_eq!(ids, [&json!("old")], "{filtered}");
+}
+
+#[test]
+fn a_run_resumed_while_the_list_is_polled_turns_resumed_on_the_next_read_and_stays_so_from_the_cache() {
+    let s = setup("runs-resumed-poll");
+    let alpha = git_repo(&s.scan, "alpha");
+    let a = project_id(&alpha);
+    add_run(&s, "old", &a, "main", &[("run.started", None, "2026-11-01T10:00:00Z"), ("run.failed", Some("gate"), "2026-11-01T10:30:00Z")]);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    let state = |body: &Value| (body["runs"][0]["state"].clone(), body["runs"][0].get("resumed_as").cloned());
+    let (_, before) = ask_with(&provider, &s, "GET", "/api/projects/alpha/runs", Some("Bearer tok"));
+    assert_eq!(state(&before), (json!("failed"), None), "{before}");
+    let store = RunStore::new(&s.roots.state);
+    orq_orchestrator::supersede_resumed(&store, &store.load("old").unwrap(), "run-2").unwrap();
+    for _ in 0..2 {
+        let (_, after) = ask_with(&provider, &s, "GET", "/api/projects/alpha/runs", Some("Bearer tok"));
+        assert_eq!(state(&after), (json!("resumed"), Some(json!("run-2"))), "{after}");
+    }
+}
