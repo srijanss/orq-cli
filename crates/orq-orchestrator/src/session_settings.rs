@@ -184,25 +184,36 @@ fn merge_settings(
 }
 
 /// When a session needs its person, and when a question has been answered and no longer does.
-const NEEDS_INPUT_EVENTS: [(&str, &str); 3] =
-    [("PreToolUse", "AskUserQuestion"), ("Notification", "permission_prompt"), ("PostToolUse", "AskUserQuestion")];
+const NEEDS_INPUT_EVENTS: [(&str, Option<&str>); 3] =
+    [("PreToolUse", Some("AskUserQuestion")), ("Notification", Some("permission_prompt")), ("PostToolUse", Some("AskUserQuestion"))];
+/// For a session that leaves a marker when it is finished: when it has ended its turn or sits idle
+/// without one, so waits for its person, and when that person types into it.
+const WAITING_EVENTS: [(&str, Option<&str>); 3] = [("Stop", None), ("Notification", Some("idle_prompt")), ("UserPromptSubmit", None)];
 
 /// Tells the worktree's Claude session to run `command` when it asks its person a question or waits
-/// for a permission, and nothing else about the settings changes. An earlier copy of the hook goes,
-/// so a resumed run or a moved `orq` binary does not call it twice. The hook is held to a short
-/// timeout: Claude waits for it before it shows the question.
+/// for a permission, and nothing else about the settings changes. A command that names the session's
+/// marker (`--marker '<path>'`) is also run when the session stops or sits idle, and when its person
+/// types into it. An earlier copy of the hook goes, so a resumed run, a later session with another
+/// marker or a moved `orq` binary does not call it twice. The hook is held to a short timeout:
+/// Claude waits for it before it shows the question.
 pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
+    let waits = needs_input_marker(command).is_some_and(|marker| !marker.is_empty());
     let edited = edit_settings(worktree, |root| {
         let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
         let hooks = hooks.as_object_mut().ok_or("its hooks is not a JSON object")?;
-        for (event, matcher) in NEEDS_INPUT_EVENTS {
-            let entries = hooks.entry(event).or_insert_with(|| serde_json::json!([]));
+        // Every earlier copy goes before any is added: one event can hold more than one of ours.
+        remove_own_hooks_from(hooks)?;
+        let wanted = NEEDS_INPUT_EVENTS.iter().chain(WAITING_EVENTS.iter().filter(|_| waits));
+        for (event, matcher) in wanted {
+            let entries = hooks.entry(*event).or_insert_with(|| serde_json::json!([]));
             let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
-            remove_own_hooks(entries);
-            entries.push(serde_json::json!({
-                "matcher": matcher,
+            let mut entry = serde_json::json!({
                 "hooks": [{"type": "command", "command": command, "timeout": NEEDS_INPUT_TIMEOUT_SECS}],
-            }));
+            });
+            if let Some(matcher) = matcher {
+                entry["matcher"] = serde_json::Value::from(*matcher);
+            }
+            entries.push(entry);
         }
         Ok(())
     });
@@ -210,6 +221,17 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
         Ok(()) => Vec::new(),
         Err(why) => vec![format!("{SETTINGS} was not updated: {why}")],
     }
+}
+
+/// Takes every copy of the hook out of the settings' `hooks`, whichever events hold one.
+fn remove_own_hooks_from(hooks: &mut serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    for (event, _) in NEEDS_INPUT_EVENTS.iter().chain(WAITING_EVENTS.iter()) {
+        if let Some(entries) = hooks.get_mut(*event) {
+            let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
+            remove_own_hooks(entries);
+        }
+    }
+    Ok(())
 }
 
 /// Takes the hook `write_needs_input_hook` wrote back out of a worktree an attended session has used,
@@ -220,12 +242,7 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
     }
     let edited = edit_settings(worktree, |root| {
         let Some(hooks) = root.get_mut("hooks").and_then(|hooks| hooks.as_object_mut()) else { return Ok(()) };
-        for (event, _) in NEEDS_INPUT_EVENTS {
-            if let Some(entries) = hooks.get_mut(event).and_then(|entries| entries.as_array_mut()) {
-                remove_own_hooks(entries);
-            }
-        }
-        Ok(())
+        remove_own_hooks_from(hooks)
     });
     match edited {
         Ok(()) => Vec::new(),
@@ -672,15 +689,24 @@ fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {
     });
 }
 
-/// Whether `command` is exactly what Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`, one
-/// quoted word in each place: someone's own command, compound or merely with these words in it, stays.
+/// Whether `command` is exactly what Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`,
+/// with or without ` --marker '<path>'`, one quoted word in each place: someone's own command,
+/// compound or merely with these words in it, stays.
 fn is_needs_input_command(command: &str) -> bool {
-    let whole = || {
-        let rest = after_quoted_word(command)?.strip_prefix(NEEDS_INPUT_COMMAND)?;
-        let rest = after_quoted_word(rest)?.strip_prefix(" --repo ")?;
-        after_quoted_word(rest)
-    };
-    whole().is_some_and(str::is_empty)
+    needs_input_marker(command).is_some()
+}
+
+/// For a command `is_needs_input_command` takes for Orq's, its quoted ` --marker '<path>'`, or ""
+/// when it names none; `None` for any other command.
+fn needs_input_marker(command: &str) -> Option<&str> {
+    let rest = after_quoted_word(command)?.strip_prefix(NEEDS_INPUT_COMMAND)?;
+    let rest = after_quoted_word(rest)?.strip_prefix(" --repo ")?;
+    let rest = after_quoted_word(rest)?;
+    if rest.is_empty() {
+        return Some(rest);
+    }
+    let marker = rest.strip_prefix(" --marker ")?;
+    after_quoted_word(marker)?.is_empty().then_some(marker)
 }
 
 /// What follows the single-quoted shell word `text` starts with, where `'\''` puts a quote inside it.

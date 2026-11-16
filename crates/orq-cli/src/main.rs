@@ -4890,10 +4890,13 @@ fn record_and_send_need(args: &[OsString]) -> Result<(), String> {
     use std::process::{Command, Stdio};
     const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 
-    let [run_id, flag, repo] = args else { return Err("usage: orq run needs-input <run> --repo <path>".to_string()) };
-    let (Some(run_id), Some("--repo")) = (run_id.to_str(), flag.to_str()) else {
-        return Err("usage: orq run needs-input <run> --repo <path>".to_string());
+    const USAGE: &str = "usage: orq run needs-input <run> --repo <path> [--marker <path>]";
+    let (run_id, flag, repo, marker) = match args {
+        [run_id, flag, repo] => (run_id, flag, repo, None),
+        [run_id, flag, repo, marker_flag, marker] if marker_flag == "--marker" => (run_id, flag, repo, Some(Path::new(marker))),
+        _ => return Err(USAGE.to_string()),
     };
+    let (Some(run_id), Some("--repo")) = (run_id.to_str(), flag.to_str()) else { return Err(USAGE.to_string()) };
     let mut input = String::new();
     std::io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut input).map_err(|err| format!("cannot read the hook's input: {err}"))?;
     let root = pipeline::state_root().ok_or("cannot locate the Orq state directory")?;
@@ -4901,7 +4904,12 @@ fn record_and_send_need(args: &[OsString]) -> Result<(), String> {
     if orq_orchestrator::question_was_answered(&input) {
         return orq_orchestrator::record_input_given(&store, run_id).map_err(|err| format!("cannot record the answer on {run_id}: {err}"));
     }
-    let Some(need) = orq_orchestrator::parse_needs_input(&input) else { return Ok(()) };
+    if orq_orchestrator::prompt_was_submitted(&input) {
+        return orq_orchestrator::record_prompt_submitted(&store, run_id).map_err(|err| format!("cannot record the answer on {run_id}: {err}"));
+    }
+    // Only a session with a marker can say it is finished, so only its stopping can be waiting.
+    let need = orq_orchestrator::parse_needs_input(&input).or_else(|| orq_orchestrator::parse_waiting(&input, marker?));
+    let Some(need) = need else { return Ok(()) };
     let recorded = orq_orchestrator::record_needs_input(&store, run_id, &need).map_err(|err| format!("cannot record that {run_id} needs input: {err}"))?;
     let Some(features) = recorded else { return Ok(()) };
     let exe = std::env::current_exe().map_err(|err| format!("cannot find orq's own path: {err}"))?;

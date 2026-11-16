@@ -1022,6 +1022,25 @@ fn gate_env(store: &RunStore, record: &RunRecord, run_vars: &[(String, String)])
 /// the fix session runs on what the earlier sessions changed. A rule that should be left out but that
 /// the settings still allow starts no session: the error says which.
 /// Returns the command rules the written settings allow, for the fix session's prompt.
+/// Points the worktree's needs-input hook at the attended session about to start: one that leaves
+/// `marker` when it is finished is also heard stopping without it. Returns notes.
+fn hook_needs_input(worktree: &Path, run_id: &str, root: &Path, marker: Option<&Path>) -> Vec<String> {
+    let orq = match std::env::current_exe() {
+        Ok(orq) => orq,
+        Err(err) => return vec![format!("the session will not say when it needs an answer: orq's own path is unknown ({:?})", err.kind())],
+    };
+    let mut command = format!(
+        "{} run needs-input {} --repo {}",
+        crate::sh_quote(&orq.to_string_lossy()),
+        crate::sh_quote(run_id),
+        crate::sh_quote(&root.to_string_lossy())
+    );
+    if let Some(marker) = marker {
+        command += &format!(" --marker {}", crate::sh_quote(&marker.to_string_lossy()));
+    }
+    orq_orchestrator::write_needs_input_hook(worktree, &command)
+}
+
 fn recheck_permissions(store: &RunStore, record: &RunRecord, settings: &orq_orchestrator::RunSettings, logs: &Path) -> Result<Vec<String>, StoreError> {
     let permissions = write_permissions(store, record, settings, logs)?;
     permissions.notes.iter().for_each(|note| eprintln!("orq: {note}"));
@@ -1104,18 +1123,8 @@ fn stages(
         allowed_commands = permissions.allowed_commands;
         // Only a session with a terminal has someone to ask.
         if options.interactive {
-            match std::env::current_exe() {
-                Ok(orq) => {
-                    let command = format!(
-                        "{} run needs-input {} --repo {}",
-                        crate::sh_quote(&orq.to_string_lossy()),
-                        crate::sh_quote(&run_id),
-                        crate::sh_quote(&options.project.root.to_string_lossy())
-                    );
-                    notes.extend(orq_orchestrator::write_needs_input_hook(worktree, &command));
-                }
-                Err(err) => notes.push(format!("the session will not say when it needs an answer: orq's own path is unknown ({:?})", err.kind())),
-            }
+            let marker = (settings.auto_exit != Some(false)).then(|| logs.join("implement.done"));
+            notes.extend(hook_needs_input(worktree, run_id, &options.project.root, marker.as_deref()));
         } else {
             notes.extend(orq_orchestrator::remove_needs_input_hook(worktree));
         }
@@ -1257,6 +1266,9 @@ fn stages(
                 let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
                 // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
                 let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+                if options.interactive {
+                    hook_needs_input(worktree, run_id, &options.project.root, fix_marker.as_deref()).iter().for_each(|note| eprintln!("orq: {note}"));
+                }
                 let args = adapter_for(&options.implementer.harness)
                     .and_then(|adapter| {
                         adapter.fix_argv(&FixRequest {
@@ -1489,6 +1501,9 @@ fn stages(
             fix_features.before("ci_fix");
             // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+            if options.interactive && !options.publish {
+                hook_needs_input(worktree, run_id, &options.project.root, fix_marker.as_deref()).iter().for_each(|note| eprintln!("orq: {note}"));
+            }
             adapter_for(&options.implementer.harness)
                 .and_then(|adapter| {
                     adapter.fix_argv(&FixRequest {

@@ -81,7 +81,7 @@ pub use kept_worktrees::{
     RunIndex,
 };
 pub use local_files::{carry_local_files, LocalFiles};
-pub use needs_input::{parse_needs_input, question_was_answered, record_input_given, record_needs_input, NeedsInput};
+pub use needs_input::{parse_needs_input, parse_waiting, prompt_was_submitted, question_was_answered, record_input_given, record_needs_input, record_prompt_submitted, NeedsInput};
 pub use notify::{
     notification_message, review_ready_message, send_notification, send_notification_with, wants_notification,
 };
