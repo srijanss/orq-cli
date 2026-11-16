@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 18] = [
+const SELECTORS: [&str; 17] = [
     "[data-select-mode]",
     "[data-select-mode][aria-pressed=\"true\"]",
     ".selecting [data-mark]",
@@ -25,9 +25,8 @@ const SELECTORS: [&str; 18] = [
     "[data-start-marked].primary-button:not(.secondary-button)",
     "[data-promote-marked].secondary-button",
     ".marked-actions > .marked-group",
-    "tr.feature[aria-selected=\"true\"]:has([data-mark]:checked)",
-    "tr.feature[aria-selected=\"false\"]:has([data-mark]:not(:checked))",
-    "table.feature-table[aria-multiselectable=\"true\"]",
+    "tr.feature.marked [data-mark][aria-label^=\"Mark \"]:checked",
+    ".feature-table[aria-multiselectable]",
     "tr.feature[aria-selected]",
 ];
 
@@ -126,23 +125,19 @@ fn start_2_from_the_bar_sends_one_group_start_and_a_success_leaves_selection_mod
     assert!(texts(end).iter().any(|t| t == "Select"), "the button says Select again: {out}");
 }
 
-// The marked rows say so to assistive technology too: while selecting, each markable row carries aria-selected
-// (true when marked, false when not), a row that cannot be marked carries none, and the table is
-// multiselectable; Done takes all of it away again.
+// The marked rows say so to assistive technology through their labelled checkboxes, which stay in the page
+// though hidden: the feature table is a native table, where aria-multiselectable and aria-selected mean
+// nothing, so neither is set, while selecting or after Done.
 #[test]
-fn a_marked_row_is_aria_selected_in_a_multiselectable_table_and_done_removes_it() {
+fn a_marked_row_is_announced_by_its_checked_mark_and_the_table_has_no_selection_aria() {
     let Some(out) = run(vec![select(), tap("d1"), tap("p1"), select()]) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!(count(&frames[1], SELECTORS[17]), 0, "nothing is selectable before Select: {out}");
-    assert_eq!(count(&frames[1], SELECTORS[16]), 0, "{out}");
-    assert_eq!(count(&frames[2], SELECTORS[15]), 3, "each markable row is unselected at first: {out}");
-    assert_eq!(count(&frames[2], SELECTORS[16]), 1, "the table is multiselectable while selecting: {out}");
-    assert_eq!(count(&frames[4], SELECTORS[14]), 2, "both tapped rows are selected and checked: {out}");
-    assert_eq!(count(&frames[4], SELECTORS[15]), 1, "the unmarked row says it is not selected: {out}");
-    assert_eq!(count(&frames[4], SELECTORS[17]), 3, "the row that cannot be marked carries no aria-selected: {out}");
-    let end = last(&out);
-    assert_eq!(count(end, SELECTORS[17]), 0, "Done removes aria-selected: {out}");
-    assert_eq!(count(end, SELECTORS[16]), 0, "and the table is no longer multiselectable: {out}");
+    assert_eq!(count(&frames[4], SELECTORS[14]), 2, "both tapped rows have a checked, labelled mark: {out}");
+    for frame in frames {
+        assert_eq!(count(frame, SELECTORS[15]), 0, "no aria-multiselectable on a native table: {out}");
+        assert_eq!(count(frame, SELECTORS[16]), 0, "no aria-selected on a native table's rows: {out}");
+    }
+    assert_eq!(count(last(&out), SELECTORS[3]), 0, "Done clears the marks: {out}");
 }
 
 #[test]
