@@ -266,12 +266,13 @@ pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[St
 }
 
 /// The runs `run_id` carried on from, as its fix-session features or its sessions record them: the
-/// run it resumed, the run that one resumed, and so on.
+/// run it resumed, the run that one resumed, and so on, whichever record each run left.
 fn resumed_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
-    let mut runs = crate::fix_features::carried_from(store, run_id)?;
+    let carries = |kind: &str| kind == crate::fix_features::ADDED || kind == "run.sessions_carried";
+    let mut runs: Vec<String> = Vec::new();
     let mut next = vec![run_id.to_string()];
     while let Some(run) = next.pop() {
-        for event in store.events(&run)?.iter().filter(|e| e.kind == "run.sessions_carried") {
+        for event in store.events(&run)?.iter().filter(|e| carries(&e.kind)) {
             if let Some(from) = event.payload.get("from").and_then(|f| f.as_str()) {
                 if from != run_id && !runs.iter().any(|r| r == from) {
                     runs.push(from.to_string());

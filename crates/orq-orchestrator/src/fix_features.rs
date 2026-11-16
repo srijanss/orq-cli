@@ -4,7 +4,7 @@
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
-const ADDED: &str = "fix.features_added";
+pub(crate) const ADDED: &str = "fix.features_added";
 
 /// Record that the fix session `session` (its stage, or `carried` for those a resumed run took
 /// over) added `features` to the ledger.
@@ -49,22 +49,4 @@ pub fn carry_fix_features(store: &RunStore, record: &RunRecord, from_run_id: &st
         return Ok(());
     }
     append_added(store, record, serde_json::json!({ "session": "carried", "from": from_run_id, "features": features }))
-}
-
-/// The runs `run_id` carried fix-session features on from: the run it resumed, the run that one
-/// resumed, and so on.
-pub(crate) fn carried_from(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
-    let mut runs: Vec<String> = Vec::new();
-    let mut next = vec![run_id.to_string()];
-    while let Some(run) = next.pop() {
-        for event in store.events(&run)?.iter().filter(|e| e.kind == ADDED) {
-            if let Some(from) = event.payload.get("from").and_then(|f| f.as_str()) {
-                if from != run_id && !runs.iter().any(|r| r == from) {
-                    runs.push(from.to_string());
-                    next.push(from.to_string());
-                }
-            }
-        }
-    }
-    Ok(runs)
 }

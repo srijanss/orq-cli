@@ -140,3 +140,25 @@ fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_feature() {
 
     assert_eq!(free, names(&["feat"]), "run-1 is the run run-2 resumed, not a later one");
 }
+
+/// A run resumed a run that had resumed another: run-2 resumed run-1 before its fix sessions started
+/// anything, and run-3 carried run-2's fix features and sessions on. run-1 is an ancestor of run-3
+/// whichever way run-3 reached run-2, so it is never a later run that took run-3's feature.
+#[test]
+fn a_run_resumed_by_the_run_a_run_carried_fix_features_from_is_an_ancestor_too() {
+    let store = store("mixed-ancestry");
+    // run-1 records no events, so it has no start time and could only count as later.
+    store.start_run(&record("run-1")).unwrap();
+    store.finish_run("repo-1", "feat", "run-1").unwrap();
+    store.start_run(&record("run-2")).unwrap();
+    carry_session_references(&store, &record("run-2"), "run-1").unwrap();
+    record_fix_features_added(&store, &record("run-2"), "gate_fix", &names(&["x"])).unwrap();
+    store.finish_run("repo-1", "feat", "run-2").unwrap();
+    store.start_run(&record("run-3")).unwrap();
+    carry_fix_features(&store, &record("run-3"), "run-2").unwrap();
+    carry_session_references(&store, &record("run-3"), "run-2").unwrap();
+
+    let free = features_no_later_run_took(&store, "run-3", &names(&["feat", "x"])).unwrap();
+
+    assert_eq!(free, names(&["feat", "x"]), "run-1 and run-2 are the runs run-3 resumed, not later ones");
+}
