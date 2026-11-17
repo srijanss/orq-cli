@@ -1,4 +1,5 @@
-//! `orq remote serve`: the refusals, and a started server.
+//! `orq serve` started with and without `--repo`, whatever `remote_control` says, and the removed
+//! `orq remote serve`, which only points to it.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -7,7 +8,7 @@ use std::process::{Command, Output};
 
 const TOKEN: &str = "serve-token-0123456789abcdef0123456789";
 
-/// A repository with remote control on and a good token file, under a fresh root.
+/// A repository with `remote_control` set as given and a good token file, under a fresh root.
 fn setup(tag: &str, remote_control: bool) -> (PathBuf, PathBuf) {
     let root = orq_test_support::process_temp_dir().join(format!("orq-serve-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -23,17 +24,34 @@ fn setup(tag: &str, remote_control: bool) -> (PathBuf, PathBuf) {
     (root, repo)
 }
 
-fn command(root: &Path, repo: &Path, extra: &[&str]) -> Command {
+/// How a server is started: `--repo <repo>`, or from inside the repository with no `--repo`.
+#[derive(Clone, Copy)]
+enum Repo {
+    Flag,
+    CurrentDir,
+}
+
+fn orq(root: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
-    command.args(["remote", "serve", "--repo"]).arg(repo).args(extra);
     for (name, dir) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"), ("HOME", "home")] {
         command.env(name, root.join(dir));
     }
     command
 }
 
+fn command(root: &Path, repo: &Path, how: Repo, extra: &[&str]) -> Command {
+    let mut command = orq(root);
+    command.arg("serve");
+    match how {
+        Repo::Flag => command.arg("--repo").arg(repo),
+        Repo::CurrentDir => command.current_dir(repo),
+    };
+    command.args(extra);
+    command
+}
+
 fn serve(root: &Path, repo: &Path, extra: &[&str]) -> Output {
-    command(root, repo, extra).output().unwrap()
+    command(root, repo, Repo::Flag, extra).output().unwrap()
 }
 
 /// A refusal: non-zero exit, one line on stderr, nothing on stdout, no token anywhere.
@@ -43,29 +61,6 @@ fn assert_refused(out: &Output, mentions: &str) {
     assert_eq!(stderr.trim_end().lines().count(), 1, "one line: {stderr:?}");
     assert!(stderr.to_lowercase().contains(mentions), "{stderr:?} should mention {mentions}");
     assert!(!stdout.contains(TOKEN) && !stderr.contains(TOKEN));
-}
-
-#[test]
-fn it_refuses_to_start_when_remote_control_is_off() {
-    let (root, repo) = setup("off", false);
-    assert_refused(&serve(&root, &repo, &["--listen", "127.0.0.1:0"]), "remote control");
-}
-
-#[test]
-fn it_refuses_a_token_file_that_is_missing_too_short_or_too_open() {
-    let (root, repo) = setup("token", true);
-    let token = root.join("config/orq/remote-token");
-    let listen = ["--listen", "127.0.0.1:0"];
-
-    fs::set_permissions(&token, fs::Permissions::from_mode(0o644)).unwrap();
-    assert_refused(&serve(&root, &repo, &listen), "token");
-
-    fs::write(&token, "short").unwrap();
-    fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_refused(&serve(&root, &repo, &listen), "token");
-
-    fs::remove_file(&token).unwrap();
-    assert_refused(&serve(&root, &repo, &listen), "token");
 }
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -99,9 +94,9 @@ fn collect(stream: impl std::io::Read + Send + 'static, into: std::sync::Arc<std
 }
 
 /// Starts the server and waits, bounded, for its listening line.
-fn start(root: &Path, repo: &Path) -> Running {
+fn start(root: &Path, repo: &Path, how: Repo) -> Running {
     use std::process::Stdio;
-    let mut child = command(root, repo, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = command(root, repo, how, &["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     // The guard exists before anything below can fail.
     let mut running = Running { child, addr: String::new(), out: Default::default(), err: Default::default(), readers: Vec::new() };
@@ -158,12 +153,56 @@ fn get(addr: &str, token: Option<&str>) -> String {
 
 #[test]
 fn a_started_server_answers_401_without_the_token_and_200_with_it_and_stops_on_interrupt() {
-    let (root, repo) = setup("run", true);
-    let mut server = start(&root, &repo);
-    assert!(get(&server.addr, None).starts_with("HTTP/1.1 401"));
+    for (tag, how) in [("run-flag", Repo::Flag), ("run-cwd", Repo::CurrentDir)] {
+        let (root, repo) = setup(tag, true);
+        let mut server = start(&root, &repo, how);
+        assert!(get(&server.addr, None).starts_with("HTTP/1.1 401"));
+        assert!(get(&server.addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
+        server.stop_with("-INT");
+        assert!(!server.output().contains(TOKEN), "the token reached the output");
+    }
+}
+
+#[test]
+fn remote_control_off_does_not_stop_the_server() {
+    // `remote_control` is Claude Remote Control for sessions; serving the web never reads it.
+    let (root, repo) = setup("off", false);
+    let mut server = start(&root, &repo, Repo::Flag);
     assert!(get(&server.addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
     server.stop_with("-INT");
-    assert!(!server.output().contains(TOKEN), "the token reached the output");
+}
+
+#[test]
+fn the_removed_remote_serve_points_to_orq_serve_and_binds_nothing() {
+    let (root, repo) = setup("removed", true);
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = free.local_addr().unwrap().to_string();
+    drop(free);
+    let repo_arg = repo.to_str().unwrap();
+    let cases: [&[&str]; 3] = [&["--repo", repo_arg, "--listen", &address], &[], &["--repo", "."]];
+    for extra in cases {
+        let mut child = orq(&root)
+            .args(["remote", "serve"])
+            .args(extra)
+            .current_dir(&repo)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + WAIT;
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("`orq remote serve {extra:?}` started instead of pointing to `orq serve`");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim_end(), "orq: use `orq serve` (same flags)");
+        assert!(std::net::TcpListener::bind(&address).is_ok(), "nothing listens on {address}");
+    }
 }
 
 #[test]
@@ -171,7 +210,7 @@ fn a_signal_sent_the_moment_the_address_is_announced_still_stops_it_cleanly() {
     for signal in ["-INT", "-TERM"] {
         for round in 0..10 {
             let (root, repo) = setup(&format!("signal-{round}"), true);
-            start(&root, &repo).stop_with(signal);
+            start(&root, &repo, Repo::Flag).stop_with(signal);
         }
     }
 }

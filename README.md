@@ -68,9 +68,9 @@ GIT_SSH_COMMAND=$PWD/ssh ORQ_FORGE=gh orq run --repo . --feature <name> --remote
 
 The run stops at the review request, since no forge answers.
 
-## Reading reviews from a phone
+## The web: `orq serve`
 
-`orq remote serve` starts a read-only page for the review inbox. See [docs/remote-inbox.md](docs/remote-inbox.md).
+`orq serve` starts Orq's web: your projects, their features, runs and logs, the Reviews page, settings and storage. It only shows until you turn **Remote actions** on in Settings (your passkey confirms it); then it can also start, pause and resume runs, resolve, dismiss and reopen reviews, and clean up storage. Sign in with the token it creates and prints the location of, or with a passkey over HTTPS. See [docs/remote-inbox.md](docs/remote-inbox.md).
 
 ### Start the server with `tailscale serve` (HTTPS, passkey sign-in)
 
@@ -88,7 +88,7 @@ orq serve --repo . --listen 127.0.0.1:7878 --passkey-host box.tail1234.ts.net
 tailscale serve --bg 7878
 ```
 
-Open `https://box.tail1234.ts.net` on the phone and sign in with the token once to add a passkey. Replace `box.tail1234.ts.net` with your own host name. Add `--no-loopback-token` to make a passkey the only way in. To stop publishing, run `tailscale serve reset`. Without HTTPS, use `orq remote serve --repo . --listen <tailscale-ip>:7878`. Full details, token setup and recovery are in [docs/remote-inbox.md](docs/remote-inbox.md).
+Open `https://box.tail1234.ts.net` on the phone and sign in with the token once to add a passkey. Replace `box.tail1234.ts.net` with your own host name. Add `--no-loopback-token` to make a passkey the only way in. To stop publishing, run `tailscale serve reset`. Without HTTPS, use `orq serve --repo . --listen <tailscale-ip>:7878` and sign in with the token. Full details, token setup and recovery are in [docs/remote-inbox.md](docs/remote-inbox.md).
 
 ### Install it as an app
 

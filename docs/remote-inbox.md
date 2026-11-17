@@ -1,20 +1,26 @@
-# Reading the review inbox from a phone
+# Orq's web: `orq serve`
 
-`orq remote serve` starts a small read-only web page that lists the review inbox, so you can check a run's report from a phone. Nothing on it can change a run: it only shows what Orq already stored. Merging happens at the provider, after following the link in a report.
+`orq serve` starts Orq's web for this machine: every project, its features, its runs with their logs, the Reviews page, settings and storage. Open it on the machine or, over Tailscale, from a phone.
 
-## 1. Turn remote control on
+By default the web only shows. With **Remote actions** turned on (Settings, confirmed with your passkey), it can also act: Start, Pause, Resume and the other run actions, resolving, dismissing and reopening reviews, and cleaning up storage. While it runs, `orq serve` also looks at open reviews at their provider again every 30 seconds, so the Reviews page stays current.
 
-Set `remote_control` in `.orq/run.toml` (checked in) or `<git-dir>/orq/run.toml` (private):
+You sign in with a token on a plain connection, or with a passkey over HTTPS (section 7).
 
-```toml
-remote_control = true
+## 1. Start it
+
+From inside a repository:
+
+```sh
+orq serve --repo .
 ```
 
-or set `ORQ_REMOTE_CONTROL=1` in the environment. With it off, the command refuses to start.
+`--repo` defaults to the current directory. The server listens on `127.0.0.1:7878` unless told otherwise with `--listen`. It prints `listening on http://127.0.0.1:7878`, where the token is stored and the command that reads it, then runs until Ctrl-C. If there is no token yet, it creates one, private to you. It refuses to start, with one line and a non-zero exit, when the token file is too short, too open or a link, or the address cannot be bound.
 
-## 2. Create the token file
+`remote_control` (in `.orq/run.toml`, or `ORQ_REMOTE_CONTROL=1`) is Claude Remote Control for a run's sessions. `orq serve` does not read it: running the command is the opt-in.
 
-The page is protected by one shared token, kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads. The new token goes into a fresh file (mode 600, made by the command below) that is then renamed over `remote-token`, so a token file that already exists, with loose permissions or as a symlink, is replaced and never written through. A symlink is removed first (`mv` would otherwise move the file into a linked directory), each generation step is run on its own so a failure in any of them stops the commands, a directory at that path is refused, and the old token is kept untouched if generating a new one fails:
+## 2. Choose your own token
+
+The token is kept in `remote-token` in Orq's config directory (`$XDG_CONFIG_HOME/orq/`, else `~/.config/orq/`). `orq serve` makes one for you, but you can also write your own. It must be a regular file you own, at least 32 characters with no spaces, and readable by you alone. Create it private from the first byte, in the directory the server reads. The new token goes into a fresh file (mode 600, made by the command below) that is then renamed over `remote-token`, so a token file that already exists, with loose permissions or as a symlink, is replaced and never written through. A symlink is removed first (`mv` would otherwise move the file into a linked directory), each generation step is run on its own so a failure in any of them stops the commands, a directory at that path is refused, and the old token is kept untouched if generating a new one fails:
 
 ```sh
 (
@@ -43,22 +49,22 @@ The command never prints the token. Copy it to your phone from the file.
 A server listening on `127.0.0.1` (the default) cannot be reached from a phone, so name the machine's Tailscale address. Find it with `tailscale ip -4`, then:
 
 ```sh
-orq remote serve --repo . --listen 100.64.0.1:7878
+orq serve --repo . --listen 100.64.0.1:7878
 ```
 
-Use your own address in place of `100.64.0.1`. It prints `listening on http://100.64.0.1:7878` and runs until Ctrl-C. It refuses to start, with one line and a non-zero exit, when remote control is off, the token file is missing, too short or too open, or the address cannot be bound.
+Use your own address in place of `100.64.0.1`. It prints `listening on http://100.64.0.1:7878` and runs until Ctrl-C.
 
 ## 4. Reach it over Tailscale
 
-Install Tailscale on the machine and the phone, then open the printed address in the phone's browser. The server answers only loopback and Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48); every other address is refused. It is plain HTTP, so keep it on the tailnet and never expose it to the internet.
+Install Tailscale on the machine and the phone, then open the printed address in the phone's browser. The server answers only loopback and Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48); every other address is refused. It is plain HTTP, so keep it on the tailnet and never expose it to the internet. For daily use, prefer HTTPS with a passkey (section 7).
 
-## 5. What the page shows
+## 5. Signing in with the token
 
-Enter the token (it is held in memory only, so reloading asks again). The page lists each run with its feature, status and risk. Tap a run for its summary, risks, files, tests and review rounds. A report that no longer matches the provider's head is marked "stale, may be out of date" and carries no link. The page is read-only: it makes only GET requests and has no button that approves, merges or changes anything.
+Enter the token (it is held in memory only, so reloading asks again). The web lists your projects; open one for its features, runs and logs, or open the Reviews page for each run's summary, risks, files, tests and review rounds. A report that no longer matches the provider's head is marked "stale, may be out of date" and carries no link. Turning remote actions on needs a passkey sign-in.
 
 ## 6. How to rotate the token
 
-Write a new token to the same file with mode 600, then stop the server with Ctrl-C and start it again. The old token stops working at once, and the page asks for the new one.
+Write a new token to the same file with mode 600 (section 2), then stop the server with Ctrl-C and start it again. The old token stops working at once, and the page asks for the new one.
 
 ## 7. Sign in with a passkey over HTTPS
 

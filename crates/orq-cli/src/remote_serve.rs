@@ -1,4 +1,5 @@
-//! `orq remote serve`: starts the review inbox server for one repository.
+//! `orq serve`: starts Orq's web server. `orq remote serve`, its older form, was removed and only
+//! points here.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -13,14 +14,13 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 /// command itself is the opt-in, so the run settings need not enable remote control, a missing
 /// token is created, and the repository defaults to the current directory.
 pub fn serve_plain(args: &[OsString]) -> ExitCode {
-    run(args, false)
+    run(args)
 }
 
-pub fn serve(args: &[OsString]) -> ExitCode {
-    run(args, true)
-}
+/// What `orq remote serve`, which was removed, says instead of starting anything.
+pub const REMOTE_SERVE_REMOVED: &str = "use `orq serve` (same flags)";
 
-fn run(args: &[OsString], strict: bool) -> ExitCode {
+fn run(args: &[OsString]) -> ExitCode {
     let mut repo = None;
     let mut listen = String::from(DEFAULT_LISTEN);
     let mut passkey_host = None;
@@ -54,25 +54,21 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     };
     let repo = match repo {
         Some(repo) => repo,
-        None if !strict => match std::env::current_dir() {
+        None => match std::env::current_dir() {
             Ok(dir) => dir,
             Err(err) => return fail(format!("cannot read the current directory: {:?}", err.kind())),
         },
-        None => return usage_error(),
     };
-    let settings = match orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok()) {
-        Ok(settings) => settings,
-        Err(err) => return fail(format!("cannot read the run settings: {err}")),
-    };
-    if strict && settings.remote_control != Some(true) {
-        return fail("remote control is off; set remote_control = true to serve the review inbox");
+    // The run settings are still read, so a broken one is reported here as before; `remote_control`
+    // is Claude Remote Control for sessions and has no say over serving the web.
+    if let Err(err) = orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok()) {
+        return fail(format!("cannot read the run settings: {err}"));
     }
     let roots = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
         Ok(roots) => roots,
         Err(err) => return fail(format!("cannot locate the Orq directories: {err}")),
     };
-    let loaded = if strict { orq_core::remote_inbox::RemoteConfig::load(&roots) } else { orq_core::remote_inbox::RemoteConfig::load_or_create(&roots) };
-    let config = match loaded {
+    let config = match orq_core::remote_inbox::RemoteConfig::load_or_create(&roots) {
         Ok(config) => config,
         Err(reason) => return fail(reason),
     };
@@ -119,11 +115,9 @@ fn run(args: &[OsString], strict: bool) -> ExitCode {
     if let Some(auth) = &auth {
         println!("passkeys: sign in at {} (serve it over HTTPS, for example `tailscale serve --bg {}`)", auth.host().origin(), server.addr().port());
     }
-    if !strict {
-        let token = orq_core::remote_inbox::RemoteConfig::token_path(&state_roots);
-        println!("sign in with the token stored in {}", token.display());
-        println!("read it with: cat -- {}", shell_quote(&token.display().to_string()));
-    }
+    let token = orq_core::remote_inbox::RemoteConfig::token_path(&state_roots);
+    println!("sign in with the token stored in {}", token.display());
+    println!("read it with: cat -- {}", shell_quote(&token.display().to_string()));
     let _ = std::io::Write::flush(&mut std::io::stdout());
     // Open provider reviews are looked at again while the server runs.
     let rounds = orq_remote::review_refresh::start_rounds(reviews, orq_remote::review_refresh::ROUND_EVERY);

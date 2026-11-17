@@ -24,17 +24,36 @@ fn the_guide_is_linked_from_the_readme() {
 }
 
 #[test]
+fn the_readme_and_the_guide_name_orq_serve_and_not_the_removed_remote_serve_or_a_read_only_page() {
+    let readme = std::fs::read_to_string(root().join("README.md")).unwrap();
+    for (name, text) in [("README.md", readme), ("docs/remote-inbox.md", guide())] {
+        assert!(text.contains("orq serve"), "{name} names `orq serve`");
+        assert!(!text.contains("orq remote serve"), "{name} still names the removed `orq remote serve`");
+        assert!(!text.to_lowercase().contains("read-only"), "{name} still calls the web read-only");
+    }
+}
+
+#[test]
+fn the_guide_covers_what_the_web_does_and_both_sign_ins() {
+    let guide = guide();
+    for topic in ["Remote actions", "passkey", "token", "Reviews"] {
+        assert!(guide.contains(topic), "the guide covers {topic}");
+    }
+}
+
+#[test]
 fn every_flag_on_a_documented_serve_command_is_one_the_command_accepts() {
     let guide = guide();
     let usage = usage();
-    let commands: Vec<&str> = guide.lines().map(str::trim).filter(|line| line.starts_with("orq remote serve")).collect();
+    let commands: Vec<&str> = guide.lines().map(str::trim).filter(|line| line.starts_with("orq serve")).collect();
     assert!(!commands.is_empty(), "the guide shows the serve command");
-    let serve_usage = usage.split(" | ").find(|part| part.contains("orq remote serve")).expect("usage lists remote serve");
+    assert!(!usage.contains("orq remote serve"), "the usage no longer lists the removed `orq remote serve`: {usage}");
+    let serve_usage = usage.split(" | ").find(|part| part.starts_with("orq serve")).expect("usage lists orq serve");
     for command in commands {
         let flags: BTreeSet<&str> = command.split_whitespace().filter(|word| word.starts_with("--")).collect();
         assert!(flags.contains("--repo"), "{command}");
         for flag in flags {
-            assert!(serve_usage.contains(flag), "{flag} is not accepted by `orq remote serve`: {serve_usage}");
+            assert!(serve_usage.contains(flag), "{flag} is not accepted by `orq serve`: {serve_usage}");
         }
     }
 }
@@ -49,7 +68,7 @@ fn the_documented_settings_and_files_exist() {
     }
     let inbox = std::fs::read_to_string(root().join("crates/orq-core/src/remote_inbox.rs")).unwrap();
     assert!(inbox.contains("\"remote-token\"") && guide.contains("remote-token"));
-    for topic in ["chmod 600", "Tailscale", "rotate", "read-only"] {
+    for topic in ["chmod 600", "Tailscale", "rotate"] {
         assert!(guide.contains(topic), "the guide covers {topic}");
     }
 }
@@ -68,7 +87,7 @@ fn the_token_is_created_private_from_the_start_in_the_directory_the_server_reads
 fn the_phone_sequence_listens_on_the_tailscale_address() {
     let guide = guide();
     assert!(guide.contains("tailscale ip -4"), "the guide shows how to find the address");
-    let listening = guide.lines().map(str::trim).any(|line| line.starts_with("orq remote serve") && line.contains("--listen") && !line.contains("127.0.0.1"));
+    let listening = guide.lines().map(str::trim).any(|line| line.starts_with("orq serve") && line.contains("--listen") && !line.contains("127.0.0.1"));
     assert!(listening, "a documented serve command listens on a non-loopback address");
 }
 
