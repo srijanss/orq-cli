@@ -297,3 +297,17 @@ fn a_browser_path_that_is_missing_or_not_executable_is_reported_as_not_started()
         assert!(error.contains("could not be started"), "{}: {}", browser.display(), out.result);
     }
 }
+
+#[test]
+fn once_the_deadline_passes_the_output_is_let_go_so_a_helper_still_writing_to_it_stops() {
+    let browser = browser_leaving_a_helper("while :; do echo still-writing; sleep 0.05; done");
+    let out = web_chromium::measure_within(&browser, 390, "/dashboard", &[], json!([]), "", std::time::Duration::from_secs(1));
+    let helper = EscapedHelper::from_marker(&browser.with_file_name("left"));
+    assert!(out.result["error"].as_str().unwrap_or_default().ends_with(web_chromium::OUTPUT_LEFT_OPEN), "{}", out.result);
+    // With nobody left reading, the helper's next write fails with a broken pipe and ends it.
+    let waited = std::time::Instant::now();
+    while helper.alive() && waited.elapsed() < std::time::Duration::from_secs(3) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!helper.alive(), "the output is still being read after run_until returned");
+}

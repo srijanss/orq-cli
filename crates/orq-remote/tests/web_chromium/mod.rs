@@ -159,12 +159,28 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
     measure_within(chromium, width, path, replies, steps, init, std::time::Duration::from_secs(60))
 }
 
+/// A child's output pipe: readable, with a descriptor to poll.
+trait ReadFd: std::io::Read {
+    fn fd(&self) -> std::os::fd::RawFd;
+}
+
+impl<T: std::io::Read + std::os::fd::AsRawFd> ReadFd for T {
+    fn fd(&self) -> std::os::fd::RawFd {
+        self.as_raw_fd()
+    }
+}
+
+/// The browser's helpers share its process group; stop them all, so their output ends too.
+fn stop_group(child: &std::process::Child) {
+    // SAFETY: killpg only sends a signal; the group id is the child's own pid (process_group(0)).
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+}
+
 /// How a run reads when the browser exited but a helper that left its group kept the output open.
 pub const OUTPUT_LEFT_OPEN: &str = "exited, but its output was still open at the deadline";
 
 /// Output of a browser run that ended, and whose output closed, before the deadline; otherwise why not.
 fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std::process::Output, String> {
-    use std::io::Read;
     use std::os::unix::process::CommandExt;
     let started = std::time::Instant::now();
     command.process_group(0).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
@@ -181,45 +197,58 @@ fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std:
             Ok(child) => break child,
         }
     };
-    let (sender, received) = std::sync::mpsc::channel();
-    let pipes: [Option<Box<dyn Read + Send>>; 2] = [child.stdout.take().map(|o| Box::new(o) as _), child.stderr.take().map(|e| Box::new(e) as _)];
-    for (index, pipe) in pipes.into_iter().enumerate() {
-        let sender = sender.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            let _ = sender.send((index, bytes));
-        });
+    // Both pipes are read here, without threads, so when this returns they are closed and nothing
+    // keeps reading for a helper that outlived the browser.
+    let mut pipes: Vec<Box<dyn ReadFd>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
+    for pipe in &pipes {
+        // SAFETY: fcntl on a descriptor this function owns; only adds O_NONBLOCK.
+        unsafe { libc::fcntl(pipe.fd(), libc::F_SETFL, libc::fcntl(pipe.fd(), libc::F_GETFL) | libc::O_NONBLOCK) };
     }
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
+    let mut outputs = [Vec::new(), Vec::new()];
+    let mut open = [true, true];
+    let mut status = None;
+    while status.is_none() || open.iter().any(|o| *o) {
         if started.elapsed() >= deadline {
-            break None;
+            break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    // The browser's helpers share its process group; stop them all so the pipes close.
-    // SAFETY: killpg only sends a signal; the group id is the child's own pid (process_group(0)).
-    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+        if status.is_none() {
+            status = child.try_wait().unwrap();
+            if status.is_some() {
+                stop_group(&child);
+            }
+        }
+        let mut polled: Vec<libc::pollfd> = pipes.iter().map(|pipe| libc::pollfd { fd: pipe.fd(), events: libc::POLLIN, revents: 0 }).collect();
+        // SAFETY: `polled` is a live array of pollfd of the given length.
+        unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, 20) };
+        for (index, pipe) in pipes.iter_mut().enumerate() {
+            if !open[index] {
+                continue;
+            }
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => {
+                        open[index] = false;
+                        break;
+                    }
+                    Ok(read) => outputs[index].extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    drop(pipes);
+    stop_group(&child);
     let _ = child.kill();
     let _ = child.wait();
     let Some(status) = status else {
         return Err(format!("timed out after {deadline:?} and was stopped"));
     };
-    // A helper that left the group can still hold the output open; wait for it only until the deadline.
-    let mut outputs = [None, None];
-    let ends = std::time::Instant::now().max(started + deadline);
-    while outputs.iter().any(Option::is_none) {
-        match received.recv_timeout(ends.saturating_duration_since(std::time::Instant::now())) {
-            Ok((index, bytes)) => outputs[index] = Some(bytes),
-            Err(_) => return Err(OUTPUT_LEFT_OPEN.to_string()),
-        }
+    if open.iter().any(|o| *o) {
+        return Err(OUTPUT_LEFT_OPEN.to_string());
     }
-    let [stdout, stderr] = outputs.map(Option::unwrap_or_default);
+    let [stdout, stderr] = outputs;
     Ok(std::process::Output { status, stdout, stderr })
 }
 
