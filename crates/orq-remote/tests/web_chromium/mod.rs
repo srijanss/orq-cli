@@ -174,7 +174,8 @@ fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std:
                 tries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            spawned => break spawned.unwrap(),
+            Err(error) => return Err(format!("could not be started: {error}")),
+            Ok(child) => break child,
         }
     };
     let (sender, received) = std::sync::mpsc::channel();

@@ -252,3 +252,15 @@ fn a_helper_that_leaves_the_browser_group_and_keeps_the_output_open_does_not_hol
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
     assert!(out.result.get("error").is_some(), "the output never ended, so nothing counts as measured: {}", out.result);
 }
+
+#[test]
+fn a_browser_path_that_is_missing_or_not_executable_is_reported_as_not_started() {
+    let missing = orq_test_support::process_temp_dir().join("orq-no-such-browser");
+    let plain = fake_browser("exit 0").with_file_name("not-executable");
+    std::fs::write(&plain, "#!/bin/sh\nexit 0\n").unwrap();
+    for browser in [missing, plain] {
+        let out = measure(&browser, 390, "/dashboard", &[], json!([]));
+        let error = out.result["error"].as_str().unwrap_or_default();
+        assert!(error.contains("could not be started"), "{}: {}", browser.display(), out.result);
+    }
+}
