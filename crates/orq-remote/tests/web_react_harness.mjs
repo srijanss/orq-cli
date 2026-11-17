@@ -159,10 +159,11 @@ window.fetch = (url, options = {}) => {
     // `auth_failures` maps an /auth path to an HTTP status it answers with, to {status, json} for a
     // refusal with a body, or to "reject" for no answer at all.
     // `auth_sequence` answers /auth/status in turn, one entry per request, before falling back to the rest:
-    // "reject", an HTTP status, or the JSON a 200 answers with.
+    // "reject", "badjson" (a 200 whose body is not JSON), an HTTP status, or the JSON a 200 answers with.
     if (String(url) === "/auth/status" && Array.isArray(scenario.auth_sequence) && scenario.auth_sequence.length > 0) {
       const turn = scenario.auth_sequence.shift();
       if (turn === "reject") return Promise.reject(new Error("offline"));
+      if (turn === "badjson") return Promise.resolve({ status: 200, ok: true, json: () => Promise.reject(new SyntaxError("bad json")) });
       if (typeof turn === "number") return Promise.resolve({ status: turn, ok: turn >= 200 && turn < 300, json: () => Promise.resolve({}) });
       return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(turn) });
     }

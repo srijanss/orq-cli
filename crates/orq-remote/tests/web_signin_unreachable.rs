@@ -112,3 +112,12 @@ fn the_token_form_button_says_sign_in() {
     assert!(buttons(start).iter().any(|b| b == "Sign in"), "{:?}", buttons(start));
     assert!(!buttons(start).iter().any(|b| b.contains("Open the inbox")), "{:?}", buttons(start));
 }
+
+#[test]
+fn a_status_reply_that_is_not_json_counts_as_no_passkey_support_and_offers_the_token() {
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": ["badjson"]})) else { return };
+    let start = &out["frames"][0];
+    assert!(!shown(start).contains(UNREACHABLE), "{}", shown(start));
+    assert_eq!(inputs(start), 1, "the token field: {out}");
+    assert_eq!(start["settled"]["activeIntervals"], json!([]), "no retrying: {out}");
+}
