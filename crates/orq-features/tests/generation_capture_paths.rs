@@ -91,7 +91,8 @@ fn the_stdout_head_is_bounded() {
 #[test]
 fn an_overflowing_agent_is_stopped_and_keeps_its_head_and_stderr() {
     let big = "z".repeat(5 * 1024 * 1024);
-    let agent = FakeAgent::builder().stdout(&big).stderr("overflow note\n").build();
+    // The note goes out before the output that overflows: stderr written after it would race the kill.
+    let agent = FakeAgent::builder().stdout(&big).stderr("overflow note\n").stderr_first().build();
 
     let started = Instant::now();
     let (result, diagnostics) = run(&agent, "overflow", Duration::from_secs(30), &AtomicBool::new(false));

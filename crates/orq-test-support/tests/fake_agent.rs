@@ -23,6 +23,21 @@ fn records_argv_and_cwd_prints_output_and_exits_with_configured_code() {
     );
 }
 
+/// What the agent writes, with stderr sent into the same pipe as stdout, so the text is in arrival order.
+fn interleaved(agent: &FakeAgent) -> String {
+    let output = Command::new("sh").args(["-c", "exec \"$0\" 2>&1"]).arg(agent.path()).output().unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn stderr_first_writes_stderr_before_stdout_and_the_default_keeps_stdout_first() {
+    let first = FakeAgent::builder().stdout("out\n").stderr("err\n").stderr_first().build();
+    assert_eq!(interleaved(&first), "err\nout\n");
+
+    let default = FakeAgent::builder().stdout("out\n").stderr("err\n").build();
+    assert_eq!(interleaved(&default), "out\nerr\n");
+}
+
 #[test]
 fn a_hanging_agent_keeps_running_until_it_is_killed() {
     let agent = FakeAgent::builder().hang().build();

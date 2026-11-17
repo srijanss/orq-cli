@@ -20,6 +20,7 @@ pub struct FakeAgentBuilder {
     stderr: String,
     exit_code: i32,
     hang: bool,
+    stderr_first: bool,
     session_id: Option<String>,
     steps: Vec<Step>,
 }
@@ -37,6 +38,7 @@ impl FakeAgent {
             stderr: String::new(),
             exit_code: 0,
             hang: false,
+            stderr_first: false,
             session_id: None,
             steps: Vec::new(),
         }
@@ -81,6 +83,13 @@ impl FakeAgentBuilder {
     /// Text written to standard error before the agent finishes.
     pub fn stderr(mut self, text: &str) -> Self {
         self.stderr = text.to_string();
+        self
+    }
+
+    /// Write standard error before standard output, instead of after it. Use it when the test kills
+    /// the agent because of its output, so the stderr is already in the pipe when the kill comes.
+    pub fn stderr_first(mut self) -> Self {
+        self.stderr_first = true;
         self
     }
 
@@ -163,10 +172,12 @@ impl FakeAgentBuilder {
             Some(id) => format!("printf '%s\\n' '{{\"session_id\":\"{id}\"}}'\n"),
             None => String::new(),
         };
+        let stderr = "cat \"$dir/stderr\" >&2\n";
+        let (before, after) = if self.stderr_first { (stderr, "") } else { ("", stderr) };
         // The script locates its own directory via $0, so no path is embedded
         // in shell source and nothing needs quoting.
         let body = format!(
-            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\n[ -e \"$dir/first\" ] || cp \"$dir/record\" \"$dir/first\"\n{STEP_FUNCTIONS}{steps}{session}cat \"$dir/stdout\"\ncat \"$dir/stderr\" >&2\n{finish}\n",
+            "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\n[ -e \"$dir/first\" ] || cp \"$dir/record\" \"$dir/first\"\n{STEP_FUNCTIONS}{steps}{before}{session}cat \"$dir/stdout\"\n{after}{finish}\n",
         );
         fs::write(&script, body).expect("write fake agent script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake agent");
