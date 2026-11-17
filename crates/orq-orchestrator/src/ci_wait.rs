@@ -274,26 +274,7 @@ fn poll_once(
 /// The read-only API calls that list the checks of one commit. Everything that ends up in the
 /// request path is checked first, since it comes from a remote url and a recorded sha.
 fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>> {
-    let sha_ok =
-        (40..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| c.is_ascii_hexdigit());
-    let (_, rest) = repo.split_once("://")?;
-    let (host, path) = rest.split_once('/')?;
-    let path = path.trim_end_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let safe = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'))
-    };
-    if !sha_ok
-        || !safe(host)
-        || !safe(path)
-        || path
-            .split('/')
-            .any(|s| s.is_empty() || s == "." || s == "..")
-    {
-        return None;
-    }
+    let (host, path) = address(repo, head_sha)?;
     let strings = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match kind {
         Kind::GitHub => vec![
@@ -325,6 +306,133 @@ fn poll_calls(kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<Vec<String>>
             ])]
         }
     })
+}
+
+/// The host and project path of `repo`, once they and `head_sha` are checked safe to put in a request.
+fn address<'a>(repo: &'a str, head_sha: &str) -> Option<(&'a str, &'a str)> {
+    let sha_ok =
+        (40..=64).contains(&head_sha.len()) && head_sha.chars().all(|c| c.is_ascii_hexdigit());
+    let (_, rest) = repo.split_once("://")?;
+    let (host, path) = rest.split_once('/')?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let safe = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'))
+    };
+    if !sha_ok
+        || !safe(host)
+        || !safe(path)
+        || path
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+    {
+        return None;
+    }
+    Some((host, path))
+}
+
+/// Start the failed CI of `head_sha` again, with no change: on GitHub each failed workflow run of
+/// the commit reruns its failed jobs; on GitLab the commit's latest pipeline, if it failed, is
+/// retried. An error says why nothing (or not everything) could be started.
+pub fn retry_ci(
+    store: &RunStore,
+    run_id: &str,
+    program: &Path,
+    head_sha: &str,
+    config: &CiWaitConfig,
+) -> Result<(), String> {
+    let record = store.load(run_id).map_err(|e| format!("{e:?}"))?;
+    let repo = repository_url(&record).map_err(|e| format!("{e:?}"))?;
+    let (host, path) = address(&repo, head_sha)
+        .ok_or_else(|| "the repository or commit cannot be addressed safely".to_string())?;
+    let call = |args: &[&str]| {
+        let session = DraftSession {
+            program: program.to_string_lossy().into_owned(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: provider_environment(),
+            cwd: record.worktree.clone(),
+        };
+        run_drafter(&session, config.command_timeout)
+    };
+    match record.provider.as_str() {
+        "github" => {
+            let repo = format!("{host}/{path}");
+            let listed = call(&["run", "list", "-R", &repo, "--commit", head_sha, "--json", "databaseId,conclusion", "--limit", "100"])?;
+            for id in github_failed_runs(&listed)? {
+                call(&["run", "rerun", &id.to_string(), "--failed", "-R", &repo])?;
+            }
+        }
+        "gitlab" => {
+            let project = path.replace('/', "%2F");
+            let listed = call(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}")])?;
+            let id = gitlab_failed_pipeline(&listed, head_sha)?;
+            call(&["api", "--hostname", host, "--method", "POST", &format!("projects/{project}/pipelines/{id}/retry")])?;
+        }
+        other => return Err(format!("the provider {other} has no CI to re-run")),
+    }
+    Ok(())
+}
+
+/// The ids of the failed workflow runs in a `gh run list --json databaseId,conclusion` answer.
+fn github_failed_runs(text: &str) -> Result<Vec<u64>, String> {
+    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return Err("the workflow run listing is not a json array".to_string());
+    };
+    let mut failed = Vec::new();
+    for row in &rows {
+        let conclusion = row.get("conclusion").and_then(|c| c.as_str());
+        if matches!(conclusion, Some("failure" | "timed_out" | "cancelled" | "startup_failure")) {
+            let id = row.get("databaseId").and_then(|i| i.as_u64());
+            failed.push(id.ok_or_else(|| "a failed workflow run has no readable id".to_string())?);
+        }
+    }
+    if failed.is_empty() {
+        return Err("no failed workflow run of the commit to re-run".to_string());
+    }
+    Ok(failed)
+}
+
+/// The id of the commit's latest pipeline, when it failed.
+fn gitlab_failed_pipeline(text: &str, head_sha: &str) -> Result<u64, String> {
+    match latest_pipeline(text, head_sha)? {
+        Some((id, "failed" | "canceled")) => Ok(id),
+        Some((id, status)) => Err(format!("the latest pipeline {id} of the commit is {status}, not failed")),
+        None => Err("no pipeline of the commit to retry".to_string()),
+    }
+}
+
+/// The newest pipeline for exactly `head_sha` in a pipeline listing, with its status.
+/// Every row for it must be well formed: a row that cannot be read might be the newest.
+fn latest_pipeline(text: &str, head_sha: &str) -> Result<Option<(u64, &'static str)>, String> {
+    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim())
+    else {
+        return Err("not a json array".to_string());
+    };
+    if rows.len() >= GITLAB_PAGE {
+        return Err("more pipelines than one page holds".to_string());
+    }
+    let mut matching = Vec::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha))
+    {
+        let (Some(id), Some(status)) = (
+            row.get("id").and_then(|i| i.as_u64()),
+            row.get("status").and_then(|s| s.as_str()),
+        ) else {
+            return Err("a pipeline for the commit has no readable id or status".to_string());
+        };
+        matching.push((id, known_status(status)));
+    }
+    Ok(matching.into_iter().max_by_key(|(id, _)| *id))
+}
+
+/// A pipeline status as one of the names the verdict knows, or "unknown".
+fn known_status(status: &str) -> &'static str {
+    const KNOWN: [&str; 9] = ["success", "failed", "canceled", "created", "waiting_for_resource", "preparing", "pending", "running", "scheduled"];
+    KNOWN.iter().find(|known| **known == status).copied().unwrap_or("unknown")
 }
 
 fn github_verdict(text: &str) -> Verdict {
@@ -419,31 +527,10 @@ fn github_status_verdict(text: &str) -> Verdict {
 }
 
 fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
-    let unusable =
-        |why: &str| Verdict::Unusable(format!("the pipeline listing is unusable: {why}"));
-    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim())
-    else {
-        return unusable("not a json array");
+    let latest = match latest_pipeline(text, head_sha) {
+        Ok(latest) => latest,
+        Err(why) => return Verdict::Unusable(format!("the pipeline listing is unusable: {why}")),
     };
-    if rows.len() >= GITLAB_PAGE {
-        return unusable("more pipelines than one page holds");
-    }
-    // The newest pipeline for exactly this commit is the one that counts.
-    // Every row for it must be well formed: a row that cannot be read might be the newest.
-    let mut matching = Vec::new();
-    for row in rows
-        .iter()
-        .filter(|row| row.get("sha").and_then(|s| s.as_str()) == Some(head_sha))
-    {
-        let (Some(id), Some(status)) = (
-            row.get("id").and_then(|i| i.as_u64()),
-            row.get("status").and_then(|s| s.as_str()),
-        ) else {
-            return unusable("a pipeline for the commit has no readable id or status");
-        };
-        matching.push((id, status));
-    }
-    let latest = matching.into_iter().max_by_key(|(id, _)| *id);
     match latest {
         None => Verdict::Empty,
         Some((_, "success")) => Verdict::Passed,
@@ -452,7 +539,7 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
             _,
             "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled",
         )) => Verdict::Pending,
-        Some(_) => unusable("a pipeline has an unrecognised state"),
+        Some(_) => Verdict::Unusable("the pipeline listing is unusable: a pipeline has an unrecognised state".to_string()),
     }
 }
 
@@ -497,6 +584,23 @@ fn record_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_github_retry_reruns_each_failed_workflow_run_of_the_commit_and_nothing_else() {
+        let listed = r#"[{"databaseId":42,"conclusion":"failure"},{"databaseId":41,"conclusion":"success"},{"databaseId":43,"conclusion":"timed_out"},{"databaseId":44,"conclusion":"cancelled"},{"databaseId":45,"conclusion":""}]"#;
+        assert_eq!(github_failed_runs(listed), Ok(vec![42, 43, 44]));
+        assert!(github_failed_runs(r#"[{"databaseId":41,"conclusion":"success"}]"#).unwrap_err().contains("no failed workflow run"));
+        assert!(github_failed_runs("not json").is_err());
+        assert!(github_failed_runs(r#"[{"conclusion":"failure"}]"#).is_err(), "a failed run without an id is unusable");
+    }
+
+    #[test]
+    fn a_gitlab_retry_retries_the_latest_pipeline_of_the_commit_only_when_it_failed() {
+        let text = pipelines(&[(7, SHA, "failed"), (9, SHA, "failed"), (12, "b".repeat(40).as_str(), "failed")]);
+        assert_eq!(gitlab_failed_pipeline(&text, SHA), Ok(9));
+        assert!(gitlab_failed_pipeline(&pipelines(&[(7, SHA, "failed"), (9, SHA, "success")]), SHA).is_err());
+        assert!(gitlab_failed_pipeline("[]", SHA).is_err());
+    }
 
     fn runs(rows: &str, total: usize) -> String {
         format!("{{\"total_count\":{total},\"check_runs\":[{rows}]}}")

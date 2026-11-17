@@ -3677,6 +3677,15 @@ function cleanupNote(step) {
   return said.length === 0 ? null : WORKTREE_OUTCOMES[said[said.length - 1].kind];
 }
 
+// What became of a step's re-run after its failure was reported unrelated, or null when it had none.
+function flakyNote(step) {
+  const said = step.events.filter((event) => event.flaky && typeof event.flaky === "object");
+  if (said.length === 0) return null;
+  const { summary, passed } = said[said.length - 1].flaky;
+  const what = typeof summary === "string" && summary !== "" ? ": " + summary : "";
+  return passed === true ? "passed on a re-run; the first failure was reported unrelated" + what : "the re-run failed too; the failure was reported unrelated" + what;
+}
+
 // A step's mark: failed, finished, or still open (in progress or not finished).
 function StepIcon({ state }) {
   const kind = state === "failed" || state === "done" ? state : "open";
@@ -3739,6 +3748,7 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
         const last = at === steps.length - 1;
         const kind = stepState(step, { last, ended, running });
         const note = cleanupNote(step);
+        const flaky = flakyNote(step);
         const took = stepDuration(step.events);
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         return (
@@ -3748,6 +3758,7 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
+            {flaky === null ? null : <p className="run-flaky-note field-hint muted">{flaky}</p>}
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />

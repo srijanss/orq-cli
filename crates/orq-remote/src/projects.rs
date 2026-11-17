@@ -1259,6 +1259,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "merge.set_aside" {
                     listed["set_aside"] = set_aside_shown(&record.run_id, &event.payload);
                 }
+                if let Some(flaky) = flaky_shown(event) {
+                    listed["flaky"] = flaky;
+                }
                 listed
             })
             .collect();
@@ -1298,6 +1301,18 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 /// What the run page shows of a `merge.set_aside` event: the stash commit and the message it is listed
 /// under, whether the changes were put back, the files set aside and those that conflicted, and the note to
 /// the person, all redacted. Anything else the payload holds is left out.
+/// What a re-run after a failure reported unrelated shows: the report, redacted, and whether the re-run
+/// passed. Any other event shows none.
+fn flaky_shown(event: &orq_orchestrator::Event) -> Option<serde_json::Value> {
+    let passed = match event.kind.as_str() {
+        "gate.flaky" | "ci.flaky" => true,
+        "gate.rerun_failed" | "ci.rerun_failed" => false,
+        _ => return None,
+    };
+    let summary = event.payload.get("summary").and_then(|value| value.as_str()).map(orq_core::redact::redact);
+    Some(serde_json::json!({"summary": summary, "passed": passed}))
+}
+
 fn set_aside_shown(run: &str, payload: &serde_json::Value) -> serde_json::Value {
     let text = |key: &str| payload.get(key).and_then(|value| value.as_str()).map(orq_core::redact::redact);
     let mut shown = serde_json::json!({

@@ -54,7 +54,7 @@ pub use checkpoint::{
     latest_checkpoint, pause_at_boundary, record_checkpoint, validate_checkpoint, Checkpoint,
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
-pub use ci_wait::{wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
+pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
 pub use accept::{accept_check, accept_run, run_steps, run_worktree_tests};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use merge_local::{merge_into_base, merge_setting_aside, waiting_on_dirty_checkout, MergeOutcome, SetAsideOutcome};
@@ -64,7 +64,7 @@ pub use fix_features::{carry_fix_features, fix_features, record_fix_features_add
 pub use ledger_events::record_ledger_features;
 pub use review_events::{created_reviews, local_merges, record_review_action};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
-pub use gate_fix::{run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE};
+pub use gate_fix::{rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE};
 pub use gate_stage::{run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome};
 pub use handoff::{
     handoff_prompt, read_handoff, write_handoff, DiffFile, GateResult, Handoff, HandoffDiff,

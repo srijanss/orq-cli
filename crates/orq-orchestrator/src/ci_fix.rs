@@ -14,6 +14,7 @@ use crate::push_stage::PushOutcome;
 use crate::store::{Event, RunStore, StoreError};
 
 const FIX_STAGE: &str = "ci_fix";
+const CI_STAGE: &str = "ci";
 
 /// What the loop needs from the outside world. The orchestrator owns the order of events;
 /// the caller owns talking to the CI provider, pushing, and describing failures.
@@ -30,6 +31,12 @@ pub trait CiFixSteps {
     /// The fix session just ended, before anything else runs: what it sees is the session's doing
     /// and nothing the gate or a later step did.
     fn fix_session_ended(&mut self) {}
+    /// Start the failed CI of `head_sha` again, with no change, as the provider's retry does. An error
+    /// says why it could not start.
+    fn retry(&mut self, head_sha: &str) -> Result<(), String> {
+        let _ = head_sha;
+        Err("this provider's CI cannot be re-run".to_string())
+    }
 }
 
 pub struct CiFixConfig<'a> {
@@ -67,8 +74,13 @@ pub enum CiFixOutcome {
     /// A fix could not be pushed; the run has failed.
     PushFailed { fix_attempts: u32, reason: String },
     /// The fix session reported that the failure is not caused by this run's changes and left it
-    /// alone; `summary` is what it wrote, for the person to decide on. The run has not failed.
-    Unrelated { fix_attempts: u32, summary: String },
+    /// alone; `summary` is what it wrote, for the person to decide on. CI was retried once without
+    /// a change and did not pass; `rerun` says how that went. The run has not failed.
+    Unrelated {
+        fix_attempts: u32,
+        summary: String,
+        rerun: String,
+    },
 }
 
 /// Wait on CI for `head_sha`; while it is red and fewer than `config.max_attempts` fixes
@@ -146,7 +158,7 @@ pub fn run_ci_fix_loop(
         steps.fix_session_ended();
         ran?;
         if let Some(summary) = read_report(&report) {
-            return Ok(CiFixOutcome::Unrelated { fix_attempts, summary });
+            return retry_unrelated(store, run_id, &head, fix_attempts, summary, &failing, steps);
         }
 
         match run_gate_attempt(
@@ -194,6 +206,59 @@ pub fn run_ci_fix_loop(
             }
         }
     }
+}
+
+/// CI reported unrelated is mostly a flaky test: retry it once, with no change and no fix session.
+/// A pass is a pass, noted as a flake; anything red blocks on the report as before.
+fn retry_unrelated(
+    store: &RunStore,
+    run_id: &str,
+    head: &str,
+    fix_attempts: u32,
+    summary: String,
+    failing: &[String],
+    steps: &mut impl CiFixSteps,
+) -> Result<CiFixOutcome, StoreError> {
+    let rerun = match steps.retry(head) {
+        Err(reason) => format!("the re-run could not be started: {reason}"),
+        Ok(()) => match steps.wait(head)? {
+            CiOutcome::Passed => {
+                let payload = serde_json::json!({ "summary": summary, "failing": failing });
+                record_ci_event(store, run_id, "ci.flaky", fix_attempts, payload)?;
+                return Ok(CiFixOutcome::Passed { fix_attempts });
+            }
+            CiOutcome::Skipped => return Ok(CiFixOutcome::Skipped),
+            CiOutcome::TimedOut => return Ok(CiFixOutcome::TimedOut { fix_attempts }),
+            CiOutcome::Errored { reason } => return Ok(CiFixOutcome::Errored { fix_attempts, reason }),
+            CiOutcome::Failed { .. } => "the re-run failed too".to_string(),
+        },
+    };
+    let payload = serde_json::json!({ "summary": summary, "failing": failing, "rerun": rerun });
+    record_ci_event(store, run_id, "ci.rerun_failed", fix_attempts, payload)?;
+    Ok(CiFixOutcome::Unrelated { fix_attempts, summary, rerun })
+}
+
+/// An event under the CI stage, where the Timeline shows what became of CI.
+fn record_ci_event(
+    store: &RunStore,
+    run_id: &str,
+    kind: &str,
+    attempt: u32,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
+    let record = store.load(run_id)?;
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(&record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: kind.to_string(),
+        stage: Some(CI_STAGE.to_string()),
+        attempt,
+        occurred_at: now_rfc3339(),
+        payload,
+    })
 }
 
 /// Write one attempt's failure log and return the path it got. The log directory may sit

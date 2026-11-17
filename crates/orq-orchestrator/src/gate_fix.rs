@@ -42,8 +42,13 @@ pub enum GateFixOutcome {
         exit_code: Option<i32>,
     },
     /// The fix session reported that the failure is not caused by this run's changes and left it
-    /// alone; `summary` is what it wrote, for the person to decide on.
-    Unrelated { summary: String },
+    /// alone; `summary` is what it wrote, for the person to decide on. `step` is the gate step that
+    /// failed, after `fix_attempts` fix sessions (the last one being the session that reported).
+    Unrelated {
+        fix_attempts: u32,
+        step: usize,
+        summary: String,
+    },
 }
 
 /// The file, next to the gate log, in which a fix session says the failure is not this run's.
@@ -205,9 +210,42 @@ pub fn run_gate_with_fixes_then(
                 after_session();
                 ran?;
                 if let Some(summary) = read_report(&report) {
-                    return Ok(GateFixOutcome::Unrelated { summary });
+                    return Ok(GateFixOutcome::Unrelated { fix_attempts, step, summary });
                 }
             }
+        }
+    }
+}
+
+/// Run the gate once more, with no change and no fix session, after the fix session of attempt
+/// `fix_attempts` reported the failure at `step` unrelated: such failures are mostly flaky tests.
+/// A pass (or a gate that is skipped) records `gate.flaky`; another failure records
+/// `gate.rerun_failed`. Either way the run is not failed here: the caller decides. Returns whether the
+/// re-run passed.
+#[allow(clippy::too_many_arguments)]
+pub fn rerun_gate(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    env: &[(String, String)],
+    fix_attempts: u32,
+    step: usize,
+    summary: &str,
+) -> Result<bool, StoreError> {
+    let attempt = fix_attempts + 1;
+    let outcome = run_gate_attempt(store, run_id, gate, enabled, gate_log, attempt, env)?;
+    let record = store.load(run_id)?;
+    match outcome {
+        GateOutcome::Passed | GateOutcome::Skipped { .. } => {
+            record_event(store, &record, "gate.flaky", attempt, serde_json::json!({ "summary": summary, "step": step }))?;
+            Ok(true)
+        }
+        GateOutcome::Failed { step: again, exit_code } => {
+            let payload = serde_json::json!({ "summary": summary, "step": step, "rerun_step": again, "exit_code": exit_code });
+            record_event(store, &record, "gate.rerun_failed", attempt, payload)?;
+            Ok(false)
         }
     }
 }

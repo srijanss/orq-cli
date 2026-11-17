@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use orq_orchestrator::{
-    run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
+    rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
     RunStore,
 };
 
@@ -545,6 +545,8 @@ fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing
     assert_eq!(
         outcome,
         GateFixOutcome::Unrelated {
+            fix_attempts: 1,
+            step: 0,
             summary: "billing clock test is flaky".to_string()
         }
     );
@@ -607,7 +609,7 @@ fn a_report_that_is_not_text_is_still_reported_without_failing() {
     .unwrap();
 
     match outcome {
-        GateFixOutcome::Unrelated { summary } => assert!(summary.starts_with("flaky"), "{summary}"),
+        GateFixOutcome::Unrelated { summary, .. } => assert!(summary.starts_with("flaky"), "{summary}"),
         other => panic!("expected Unrelated, got {other:?}"),
     }
 }
@@ -753,7 +755,7 @@ fn a_huge_report_is_cut_to_one_short_line() {
     .unwrap();
 
     match outcome {
-        GateFixOutcome::Unrelated { summary } => {
+        GateFixOutcome::Unrelated { summary, .. } => {
             assert!(summary.chars().count() <= 500, "{} chars", summary.len());
             assert!(!summary.contains('\n') && !summary.contains("second line"), "{summary}");
         }
@@ -819,4 +821,27 @@ fn the_after_session_step_runs_once_each_session_ends_before_the_gate_reruns() {
         fs::read_to_string(&seq).unwrap(),
         "gate\nsession\nafter\ngate\nsession\nafter\ngate\n"
     );
+}
+
+/// After a fix session reports the failure unrelated, the gate runs once more with no change, as
+/// the next attempt: a pass is recorded as a flake, a second failure as a failed re-run.
+#[test]
+fn a_re_run_after_an_unrelated_report_records_a_flake_when_it_passes_and_a_failed_re_run_when_not() {
+    for (tag, gate, passed, kind) in [("rerun-green", "true", true, "gate.flaky"), ("rerun-red", "false", false, "gate.rerun_failed")] {
+        let w = world(tag);
+        let gate = Gate::Steps { steps: vec![sh("true"), sh(gate)], notes: Vec::new() };
+
+        let outcome = rerun_gate(&w.store, "run-1", &gate, true, &w.gate_log, &[], 1, 1, "billing clock test is flaky").unwrap();
+
+        assert_eq!(outcome, passed, "{tag}");
+        let events = w.store.events("run-1").unwrap();
+        let noted: Vec<_> = events.iter().filter(|e| e.kind == kind).collect();
+        assert_eq!(noted.len(), 1, "{tag}: {:?}", kinds(&w));
+        assert_eq!(noted[0].stage.as_deref(), Some("verify"), "{tag}");
+        assert_eq!(noted[0].attempt, 2, "{tag}: the re-run is the attempt after the fix session's");
+        assert_eq!(noted[0].payload["summary"], "billing clock test is flaky", "{tag}");
+        assert_eq!(noted[0].payload["step"], 1, "{tag}: the step that failed first");
+        assert!(!events.iter().any(|e| e.kind == "run.failed"), "{tag}: the re-run alone does not fail the run");
+        assert!(events.iter().any(|e| e.kind == "stage.started" && e.attempt == 2), "{tag}: the gate ran again");
+    }
 }

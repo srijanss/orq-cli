@@ -582,6 +582,11 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if let Some(note) = extra_features_note(&store, &report.run_id) {
         add_note(&mut report, note);
     }
+    if matches!(report.ending, Ending::Merged | Ending::ReviewReady) {
+        if let Some(note) = flaky_note(&store, &report.run_id) {
+            add_note(&mut report, note);
+        }
+    }
     // The features its fix sessions started are the run's own: delivered, they are finished. Closed while
     // the run still holds the locks, like the reopening below.
     if matches!(report.ending, Ending::Merged | Ending::ReviewReady) {
@@ -781,6 +786,23 @@ fn extra_features_note(store: &RunStore, run_id: &str) -> Option<String> {
         }
     }
     (!added.is_empty()).then(|| format!("the session also added: {}", added.join(", ")))
+}
+
+/// The ending's note on failures reported unrelated that passed on a re-run, so a delivered run still
+/// says what was flaky. Each summary is told once.
+fn flaky_note(store: &RunStore, run_id: &str) -> Option<String> {
+    let events = store.events(run_id).ok()?;
+    let mut flaky: Vec<&str> = Vec::new();
+    for summary in events
+        .iter()
+        .filter(|e| matches!(e.kind.as_str(), "gate.flaky" | "ci.flaky"))
+        .filter_map(|e| e.payload["summary"].as_str())
+    {
+        if !flaky.contains(&summary) {
+            flaky.push(summary);
+        }
+    }
+    (!flaky.is_empty()).then(|| format!("Flaky: {}", flaky.join("; ")))
 }
 
 /// Record a `kind` event naming the `features` a ledger step changed; none changed records nothing.
@@ -1349,11 +1371,17 @@ fn stages(
                 return stopped_now(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
             }
             // Left alone on purpose: the person decides whether it is fixed first, in its own change.
-            GateFixOutcome::Unrelated { summary } => {
-                return stopped_now(
-                    Ending::Blocked,
-                    format!("the gate fails for a reason unrelated to this run: {summary}. Get that fixed separately and merged into the target branch, then resume this run"),
-                );
+            // Mostly a flaky test: the gate runs once more, unchanged. A pass carries the run on, noted as a flake.
+            GateFixOutcome::Unrelated { fix_attempts, step, summary } => {
+                if !orq_orchestrator::rerun_gate(store, run_id, &gate, options.gate, &gate_log, &gate_env, fix_attempts, step, &summary)? {
+                    return stopped_now(
+                        Ending::Blocked,
+                        format!("the gate fails for a reason unrelated to this run: {summary}; the re-run failed too. Get that fixed separately and merged into the target branch, then resume this run"),
+                    );
+                }
+                if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+                    return stopped_now(Ending::Blocked, reason);
+                }
             }
             // A repair that was not committed would leave the pushed commit unfixed.
             GateFixOutcome::Passed { fix_attempts } if fix_attempts > 0 => {
@@ -1613,10 +1641,10 @@ fn stages(
         };
         match run_ci_fix_loop(store, run_id, &head_sha, &config, &mut steps)? {
             // Left alone on purpose: the person decides whether it is fixed first, in its own change.
-            CiFixOutcome::Unrelated { summary, .. } => {
+            CiFixOutcome::Unrelated { summary, rerun, .. } => {
                 return stopped(
                     Ending::Blocked,
-                    format!("CI fails for a reason unrelated to this run: {summary}. Get that fixed separately and merged into the target branch, then resume this run"),
+                    format!("CI fails for a reason unrelated to this run: {summary}; {rerun}. Get that fixed separately and merged into the target branch, then resume this run"),
                 );
             }
             outcome => ci_verdict(outcome),
@@ -1815,7 +1843,17 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     fn fix_session_ended(&mut self) {
         (self.session_ended)();
     }
+
+    fn retry(&mut self, head_sha: &str) -> Result<(), String> {
+        orq_orchestrator::retry_ci(self.store, self.run_id, self.provider, head_sha, self.config)?;
+        // The provider takes a moment to show the restarted checks; read too soon, the old failure answers.
+        std::thread::sleep(self.config.poll_interval.min(RETRY_SETTLE));
+        Ok(())
+    }
 }
+
+/// The longest wait after a CI retry before its checks are read.
+const RETRY_SETTLE: Duration = Duration::from_secs(5);
 
 /// What a fix session starts from: orq knows the names of the failing checks, and the session
 /// fetches their logs with the provider's own CLI.
