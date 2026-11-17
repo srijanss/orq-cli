@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use orq_orchestrator::{exclude_worktrees_dir, prepare_mcp_servers, setup_mcp_servers, write_session_settings};
-use orq_test_support::GitFixture;
+use orq_test_support::{write_executable, GitFixture};
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -28,6 +28,14 @@ fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+}
+
+/// The fake mcpctl's log, read only after the notes show it could be run: a script that could not
+/// be started fails here on the note naming why, not later on a missing log file.
+fn read_mcpctl_log(seen: &Path, notes: &[String]) -> String {
+    let unrunnable: Vec<&String> = notes.iter().filter(|note| note.contains("could not be started")).collect();
+    assert!(unrunnable.is_empty(), "the fake mcpctl did not run: {unrunnable:?}");
+    fs::read_to_string(seen).unwrap_or_else(|err| panic!("read the fake mcpctl's log {}: {err}", seen.display()))
 }
 
 fn read_json(path: &Path) -> serde_json::Value {
@@ -131,15 +139,13 @@ fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_to
         .parent()
         .unwrap()
         .join(format!("fake-mcpctl-{}", std::process::id()));
-    fs::write(
+    write_executable(
         &tool,
-        format!(
+        &format!(
             "#!/bin/sh\necho \"$PWD $* $DB_NAME\" >> '{}'\ncase \"$*\" in *bad*) exit 3;; esac\nexit 0\n",
             seen.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    );
     let servers = vec!["tdd".to_string(), "project".to_string()];
 
     let notes = setup_mcp_servers(
@@ -149,7 +155,8 @@ fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_to
         Some(&tool),
     );
 
-    let log = fs::read_to_string(&seen).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let log = read_mcpctl_log(&seen, &notes);
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 1, "{log}");
     assert!(lines[0].ends_with("setup --mcp tdd --mcp project run1"), "{log}");
@@ -157,15 +164,14 @@ fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_to
         lines[0].starts_with(&worktree.display().to_string()),
         "run inside the worktree: {log}"
     );
-    assert!(notes.is_empty(), "{notes:?}");
 
     let failing = vec!["tdd".to_string(), "bad".to_string()];
     let notes = setup_mcp_servers(&worktree, &failing, &[], Some(&tool));
     assert!(notes.iter().any(|n| n.contains("tdd") && n.contains("bad")), "{notes:?}");
 
     let again = vec!["tdd".to_string(), "tdd".to_string()];
-    setup_mcp_servers(&worktree, &again, &[], Some(&tool));
-    let log = fs::read_to_string(&seen).unwrap();
+    let notes = setup_mcp_servers(&worktree, &again, &[], Some(&tool));
+    let log = read_mcpctl_log(&seen, &notes);
     assert!(
         log.lines().last().unwrap().ends_with("setup --mcp tdd "),
         "a repeated name is set up once: {log}"
@@ -180,19 +186,32 @@ fn mcpctl_sets_up_all_configured_servers_in_one_call_and_a_missing_or_failing_to
 }
 
 #[test]
+#[should_panic(expected = "could not be started")]
+fn a_fake_mcpctl_that_could_not_be_run_fails_on_the_note_naming_why_not_on_a_missing_log() {
+    let (repo, worktree) = checkout("mcpctl-unrunnable");
+    let dir = repo.root().parent().unwrap();
+    let seen = dir.join(format!("mcpctl-unrunnable-seen-{}", std::process::id()));
+    let tool = dir.join(format!("fake-mcpctl-unrunnable-{}", std::process::id()));
+    write_executable(&tool, &format!("#!/bin/sh\necho \"$*\" >> '{}'\n", seen.display()));
+    fs::remove_file(&tool).unwrap();
+
+    let notes = setup_mcp_servers(&worktree, &["tdd".to_string()], &[], Some(&tool));
+
+    read_mcpctl_log(&seen, &notes);
+}
+
+#[test]
 fn prepared_servers_come_from_the_setting_or_else_the_worktrees_mcpctl_toml_and_are_approved_after_setup() {
     let (repo, worktree) = checkout("mcpctl-prepare");
     let seen = repo.root().parent().unwrap().join(format!("mcpctl-prepare-seen-{}", std::process::id()));
     let tool = repo.root().parent().unwrap().join(format!("fake-mcpctl-prepare-{}", std::process::id()));
-    fs::write(
+    write_executable(
         &tool,
-        format!(
+        &format!(
             "#!/bin/sh\necho \"$*\" >> '{}'\necho '{{\"mcpServers\":{{\"tdd\":{{\"command\":\"c\"}}}}}}' > .mcp.json\n",
             seen.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    );
     let log = || fs::read_to_string(&seen).unwrap_or_default();
 
     // Nothing selected anywhere: no setup.
@@ -203,15 +222,15 @@ fn prepared_servers_come_from_the_setting_or_else_the_worktrees_mcpctl_toml_and_
     let toml = worktree.join(".mcpctl.toml");
     fs::write(&toml, "[[mcp]]\nname = \"tdd\"\n\n[[mcp]]\nname = \"--evil\"\n\n[[mcp]]\nname = \"project\"\n").unwrap();
     let notes = prepare_mcp_servers(&worktree, &[], None, Some(&tool));
-    assert_eq!(log(), "setup --mcp tdd --mcp project\n");
+    assert_eq!(read_mcpctl_log(&seen, &notes), "setup --mcp tdd --mcp project\n");
     assert!(notes.iter().any(|n| n.contains(".mcpctl.toml")), "{notes:?}");
     let approved = read_json(&worktree.join(".claude/settings.local.json"));
     assert_eq!(approved["enabledMcpjsonServers"], serde_json::json!(["tdd"]), "what setup generated is approved");
 
     // The setting wins over the file.
     let chosen = vec!["tdd".to_string()];
-    prepare_mcp_servers(&worktree, &[], Some(&chosen), Some(&tool));
-    assert_eq!(log().lines().last(), Some("setup --mcp tdd"));
+    let notes = prepare_mcp_servers(&worktree, &[], Some(&chosen), Some(&tool));
+    assert_eq!(read_mcpctl_log(&seen, &notes).lines().last(), Some("setup --mcp tdd"));
 
     // An unreadable selection is a note and no setup.
     let before = log();
@@ -227,8 +246,7 @@ fn a_symlinked_mcpctl_toml_is_neither_read_nor_set_up_whatever_the_setting() {
     let dir = repo.root().parent().unwrap();
     let seen = dir.join(format!("mcpctl-symlink-seen-{}", std::process::id()));
     let tool = dir.join(format!("fake-mcpctl-symlink-{}", std::process::id()));
-    fs::write(&tool, format!("#!/bin/sh\necho \"$*\" >> '{}'\n", seen.display())).unwrap();
-    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    write_executable(&tool, &format!("#!/bin/sh\necho \"$*\" >> '{}'\n", seen.display()));
     let outside = dir.join(format!("outside-mcpctl-{}.toml", std::process::id()));
     fs::write(&outside, "[[mcp]]\nname = \"from-outside\"\n").unwrap();
     std::os::unix::fs::symlink(&outside, worktree.join(".mcpctl.toml")).unwrap();
@@ -252,8 +270,7 @@ fn a_symlinked_mcpctl_toml_is_neither_read_nor_set_up_whatever_the_setting() {
 fn a_setup_that_fails_is_a_note_and_the_session_gets_the_environment_and_what_setup_left_behind() {
     let (repo, worktree) = checkout("mcpctl-prepare-fails");
     let tool = repo.root().parent().unwrap().join(format!("fake-mcpctl-fails-{}", std::process::id()));
-    fs::write(&tool, "#!/bin/sh\necho '{\"mcpServers\":{\"tdd\":{\"command\":\"c\"}}}' > .mcp.json\nexit 1\n").unwrap();
-    fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    write_executable(&tool, "#!/bin/sh\necho '{\"mcpServers\":{\"tdd\":{\"command\":\"c\"}}}' > .mcp.json\nexit 1\n");
     fs::write(worktree.join(".mcpctl.toml"), "[[mcp]]\nname = \"tdd\"\n").unwrap();
     let env = vars(&[("KEEP", "1")]);
 

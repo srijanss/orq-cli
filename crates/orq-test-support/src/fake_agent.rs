@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// What a [`FakeAgent`] observed on its most recent invocation.
@@ -179,9 +178,7 @@ impl FakeAgentBuilder {
         let body = format!(
             "#!/bin/sh\n[ -n \"$FAKE_AGENT_PROBE\" ] && exit 0\ndir=${{0%/*}}\nprintf '%s\\0' \"$PWD\" \"$@\" > \"$dir/record\"\n[ -e \"$dir/first\" ] || cp \"$dir/record\" \"$dir/first\"\n{STEP_FUNCTIONS}{steps}{before}{session}cat \"$dir/stdout\"\n{after}{finish}\n",
         );
-        fs::write(&script, body).expect("write fake agent script");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake agent");
-        wait_until_executable(&script);
+        crate::write_executable(&script, &body);
 
         FakeAgent { dir, script }
     }
@@ -196,22 +193,6 @@ const STEP_FUNCTIONS: &str = concat!(
     "-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -q --cleanup=verbatim -F \"$dir/step$1.msg\" >/dev/null 2>&1 ",
     "|| { echo 'fake agent: commit failed' >&2; exit 70; }; }\n",
 );
-
-/// Another test thread may fork while the script is still open for writing,
-/// leaving the file briefly "busy" (ETXTBSY) to exec. Probe until it is free.
-pub(crate) fn wait_until_executable(script: &Path) {
-    for _ in 0..200 {
-        let probe = std::process::Command::new(script)
-            .env("FAKE_AGENT_PROBE", "1")
-            .output();
-        match probe {
-            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            _ => return,
-        }
-    }
-}
 
 impl Drop for FakeAgent {
     fn drop(&mut self) {

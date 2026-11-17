@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 /// One recorded invocation of the fake `gh` or `glab`.
@@ -199,9 +198,7 @@ impl FakeProviderBuilder {
             exit 64\n";
         for name in ["gh", "glab"] {
             let script = bin.join(name);
-            fs::write(&script, body).expect("write fake provider script");
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake provider");
-            crate::fake_agent::wait_until_executable(&script);
+            crate::write_executable(&script, body);
         }
 
         FakeProvider { root }

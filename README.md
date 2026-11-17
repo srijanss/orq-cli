@@ -68,6 +68,10 @@ GIT_SSH_COMMAND=$PWD/ssh ORQ_FORGE=gh orq run --repo . --feature <name> --remote
 
 The run stops at the review request, since no forge answers.
 
+## Writing tests that run scripts
+
+A test that writes a shell script and runs it writes it with `orq_test_support::write_executable(path, body)`, not `fs::write` and a `0o755` chmod. Tests in one binary run as threads, and a thread that forks while another still has its script open for writing makes running that script fail with ETXTBSY ("text file busy"); `write_executable` returns only once the script can be run. Move a test file to it when you next touch it.
+
 ## The web: `orq serve`
 
 `orq serve` starts Orq's web: your projects, their features, runs and logs, the Reviews page, settings and storage. It only shows until you turn **Remote actions** on in Settings (your passkey confirms it); then it can also start, pause and resume runs, resolve, dismiss and reopen reviews, and clean up storage. Sign in with the token it creates and prints the location of, or with a passkey over HTTPS. See [docs/remote-inbox.md](docs/remote-inbox.md).

@@ -3,7 +3,10 @@ mod fake_agent;
 pub use fake_agent::{FakeAgent, FakeAgentBuilder, Run};
 
 mod fake_provider;
+mod script;
 mod sweep;
+
+pub use script::write_executable;
 
 pub use fake_provider::{FakeProvider, FakeProviderBuilder, ProviderCall};
 

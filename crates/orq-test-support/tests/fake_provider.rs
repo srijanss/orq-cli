@@ -263,3 +263,16 @@ fn a_call_whose_record_cannot_be_written_fails_with_a_diagnostic_instead_of_answ
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot record call"), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(output.stdout.is_empty(), "no scripted reply is given for a call that was not recorded");
 }
+
+#[test]
+fn a_probe_run_with_either_probe_variable_records_no_call() {
+    let provider = FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    for variable in ["ORQ_TEST_EXEC_PROBE", "FAKE_AGENT_PROBE"] {
+        for program in [provider.gh(), provider.glab()] {
+            let output = Command::new(&program).args(["pr", "list"]).env(variable, "1").output().unwrap();
+            assert_eq!(output.status.code(), Some(0), "{variable}");
+            assert!(output.stdout.is_empty(), "{variable}: {:?}", String::from_utf8_lossy(&output.stdout));
+        }
+    }
+    assert!(provider.calls().is_empty(), "{:?}", provider.calls());
+}

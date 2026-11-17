@@ -51,3 +51,14 @@ fn a_hanging_agent_keeps_running_until_it_is_killed() {
     assert!(!status.success());
     assert!(agent.last_run().is_some(), "argv/cwd recorded before hanging");
 }
+
+#[test]
+fn a_probe_run_with_either_probe_variable_records_and_prints_nothing() {
+    let agent = FakeAgent::builder().stdout("hello from fake\n").exit_code(3).build();
+    for variable in ["ORQ_TEST_EXEC_PROBE", "FAKE_AGENT_PROBE"] {
+        let output = Command::new(agent.path()).env(variable, "1").output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{variable}");
+        assert!(output.stdout.is_empty(), "{variable}: {:?}", String::from_utf8_lossy(&output.stdout));
+        assert_eq!(agent.last_run(), None, "{variable}");
+    }
+}
