@@ -124,6 +124,9 @@ fn looking_up_a_project_s_agents_never_writes_the_database() {
     let roots = roots(&home);
     let database = roots.database();
     let current = schema_version(&database);
+    // Schema version 6 added project_settings; later versions keep it.
+    let before_settings = 5;
+    assert!(current > before_settings);
 
     set_mode(&database, 0o400);
     set_mode(&roots.data, 0o500);
@@ -138,11 +141,11 @@ fn looking_up_a_project_s_agents_never_writes_the_database() {
     // A database from before project settings existed has none, and is left at its version.
     let conn = rusqlite::Connection::open(&database).unwrap();
     conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old;").unwrap();
-    conn.pragma_update(None, "user_version", current - 1).unwrap();
+    conn.pragma_update(None, "user_version", before_settings).unwrap();
     drop(conn);
     let older = models(repo.root(), &home);
     assert_eq!(older["defaults"]["implementer"]["model"], "opus", "{older}");
-    assert_eq!(schema_version(&database), current - 1, "not migrated by a lookup");
+    assert_eq!(schema_version(&database), before_settings, "not migrated by a lookup");
 }
 
 #[test]
