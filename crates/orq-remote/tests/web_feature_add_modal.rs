@@ -116,3 +116,81 @@ fn the_name_box_says_live_which_character_is_refused_and_save_waits_until_it_is_
     assert_eq!(count(pressed, SAVE_OFF), 1, "{out}");
     assert!(out["requests"].as_array().unwrap().iter().all(|r| r["method"] != "POST"), "nothing sent: {out}");
 }
+
+fn ledger_with(names: &[&str]) -> Value {
+    let features: Vec<Value> = names.iter().map(|name| json!({"name": name, "description": null, "status": "pending", "depends_on": [], "recorded_at": null})).collect();
+    json!({"status": 200, "json": {"features": features, "remote_actions": true}})
+}
+
+/// Opens Add feature, types `typed` into the name, and (when `confirm`) presses Add and confirms.
+fn typed_name(typed: &str, confirm: bool) -> Option<Value> {
+    if !web_deps::ready() {
+        return None;
+    }
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let mut steps = vec![json!({"submit": TOKEN}), json!({"click": "[data-feature-add]"}), json!({"set": "[data-field-name]", "value": typed})];
+    if confirm {
+        steps.push(json!({"click": "[data-feature-save]"}));
+        steps.push(json!({"click": "[data-confirm]"}));
+    }
+    let added = json!({"status": 200, "json": {"feature": "added"}});
+    let scenario = json!({"url": "/projects/alpha/features", "responses": [ledger_with(&["f1", "done-one"]), projects(), added, ledger_with(&["f1", "done-one"])], "steps": steps, "selectors": [PROBLEM, SAVE_OFF, "[data-saved-as]", ".confirm-question"]});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    Some(serde_json::from_slice(&output.stdout).unwrap())
+}
+
+fn saved_as(frame: &Value) -> Option<String> {
+    frame["settled"]["a11y"]["live"].as_array().unwrap().iter().find(|l| l["live"] == "polite" && l["text"].as_str().unwrap().starts_with("Saved as")).map(|l| l["text"].as_str().unwrap().to_string())
+}
+
+fn posted_name(out: &Value) -> Option<Value> {
+    out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").map(|r| {
+        let body: Value = serde_json::from_str(r["body"].as_str().unwrap()).unwrap();
+        body["fields"]["name"].clone()
+    })
+}
+
+#[test]
+fn a_name_typed_with_spaces_is_shown_checked_and_sent_with_hyphens() {
+    let Some(out) = typed_name("reviews show mr link", true) else { return };
+    let typed = &out["frames"][3];
+    assert_eq!(saved_as(typed).as_deref(), Some("Saved as reviews-show-mr-link"), "{out}");
+    assert_eq!((count(typed, PROBLEM), count(typed, SAVE_OFF)), (0, 0), "no problem, Add enabled: {out}");
+    let asked = &out["frames"][4];
+    assert!(asked["settled"]["texts"].as_array().unwrap().iter().any(|t| t.as_str().unwrap().contains("Add reviews-show-mr-link?")), "{out}");
+    assert_eq!(posted_name(&out), Some(json!("reviews-show-mr-link")), "{out}");
+}
+
+#[test]
+fn spaces_at_the_ends_runs_of_spaces_tabs_and_non_breaking_spaces_become_one_hyphen() {
+    for (typed, saved) in [("  a   b  ", "a-b"), ("a - b", "a-b"), ("a\tb", "a-b"), ("a\u{00a0}b", "a-b")] {
+        let Some(out) = typed_name(typed, true) else { return };
+        assert_eq!(saved_as(&out["frames"][3]).as_deref(), Some(format!("Saved as {saved}").as_str()), "{typed:?}: {out}");
+        assert_eq!(posted_name(&out), Some(json!(saved)), "{typed:?}: {out}");
+    }
+}
+
+#[test]
+fn a_typed_name_that_converts_to_an_existing_feature_is_refused_as_a_duplicate() {
+    let Some(out) = typed_name("done one", false) else { return };
+    let typed = &out["frames"][3];
+    assert_eq!(count(typed, SAVE_OFF), 1, "{out}");
+    assert_eq!(problem_text(typed).as_deref(), Some("\"done-one\" is already a feature name in this project; choose another"), "{out}");
+}
+
+#[test]
+fn a_character_the_rule_refuses_still_shows_its_problem_after_the_spaces_are_converted() {
+    let Some(out) = typed_name("my feature!", false) else { return };
+    let typed = &out["frames"][3];
+    assert_eq!(count(typed, SAVE_OFF), 1, "{out}");
+    assert!(problem_text(typed).unwrap_or_default().starts_with("\"!\" (U+0021) at position 11"), "{out}");
+}
+
+#[test]
+fn a_name_typed_with_hyphens_shows_no_saved_as_hint_and_is_sent_unchanged() {
+    let Some(out) = typed_name("already-hyphenated", true) else { return };
+    assert_eq!(saved_as(&out["frames"][3]), None, "{out}");
+    assert_eq!(count(&out["frames"][3], "[data-saved-as]"), 0, "{out}");
+    assert_eq!(posted_name(&out), Some(json!("already-hyphenated")), "{out}");
+}

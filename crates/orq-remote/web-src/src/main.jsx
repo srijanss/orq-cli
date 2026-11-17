@@ -2467,7 +2467,17 @@ function featureDraft(fields) {
 // The ledger's rule for a feature name, as orq_features::feature_name_problem says it: letters, digits, '-', '_'
 // and '.', not starting with '.'. The first refused character is named with its position (in characters from 1);
 // a space or an invisible character only by its code point, so a hidden one can be found.
-const WHITE_SPACE = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$/u;
+const SPACING = "\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const WHITE_SPACE = new RegExp("^[" + SPACING + "]$", "u");
+const EDGE_SPACES = new RegExp("^[" + SPACING + "]+|[" + SPACING + "]+$", "gu");
+// A run of spaces, with any hyphens beside it: "a - b" is one word break, not three.
+const SPACE_RUN = new RegExp("-*[" + SPACING + "][-" + SPACING + "]*", "gu");
+
+// The name Add feature saves for what was typed: spaces at the ends dropped, and each run of spaces
+// inside (tabs and non-breaking spaces too) one '-'. Letter case and hyphens typed together are kept.
+function nameFromTyped(typed) {
+  return typed.replace(EDGE_SPACES, "").replace(SPACE_RUN, "-");
+}
 const INVISIBLE = /^[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]$/u;
 const DASHES = ["\u2014", "\u2013", "\u2010", "\u2011", "\u2212"];
 
@@ -2485,11 +2495,18 @@ function featureNameProblem(name) {
   return shown + " at position " + (index + 1) + " is not allowed in a feature name; use letters, digits, '-', '_' or '.'" + hint;
 }
 
+// What keeps a new feature's name from being added: the name rule, or a feature already called that.
+function addedNameProblem(name, features) {
+  const problem = featureNameProblem(name);
+  if (problem !== null) return problem;
+  return features.some((feature) => feature.name === name) ? '"' + name + '" is already a feature name in this project; choose another' : null;
+}
+
 function featureFields(draft, features, empty = null) {
   const blank = (value) => (value.trim() === "" ? empty : value);
   return {
-    // Sent as typed: a name the rule allows has nothing to trim, and one it refuses is never rewritten.
-    name: draft.name,
+    // Spaces become hyphens (see nameFromTyped); nothing else is rewritten, so a name the rule refuses is refused as typed.
+    name: nameFromTyped(draft.name),
     description: blank(draft.description),
     depends_on: features.map((feature) => feature.name).filter((name) => draft.depends_on.includes(name)),
     parallelizable: draft.parallelizable === "yes" ? true : draft.parallelizable === "no" ? false : null,
@@ -2601,7 +2618,9 @@ function FeatureEditor({ name = null, features, control }) {
   };
   const fields = draft === null ? null : featureFields(draft, features);
   const shownName = adding ? (fields === null ? "" : fields.name) : name;
-  const nameProblem = adding && draft !== null && (draft.name !== "" || pressed) ? featureNameProblem(draft.name) : null;
+  const nameProblem = adding && draft !== null && (draft.name !== "" || pressed) ? addedNameProblem(fields.name, features) : null;
+  // Said when spaces were turned into hyphens, so the name shown in the question is no surprise.
+  const savedAs = adding && draft !== null && nameProblem === null && fields.name !== draft.name ? "Saved as " + fields.name : null;
   const send = async () => {
     setPhase("sending");
     let text = "The feature could not be saved.";
@@ -2642,8 +2661,9 @@ function FeatureEditor({ name = null, features, control }) {
           {adding ? (
             <label className="field">
               <span className="field-label">Name</span>
-              <input type="text" data-field-name value={draft.name} autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off" inputMode="text" aria-invalid={nameProblem !== null} aria-describedby="feature-name-problem" onChange={set("name")} />
+              <input type="text" data-field-name value={draft.name} autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off" inputMode="text" aria-invalid={nameProblem !== null} aria-describedby={adding ? "feature-name-problem feature-name-saved-as" : "feature-name-problem"} onChange={set("name")} />
               <span id="feature-name-problem" className="field-hint error-text" data-name-problem={nameProblem === null ? undefined : ""} aria-live="polite">{nameProblem}</span>
+              {adding ? <span id="feature-name-saved-as" className="field-hint muted" data-saved-as={savedAs === null ? undefined : ""} aria-live="polite">{savedAs}</span> : null}
             </label>
           ) : null}
           <label className="field field-wide"><span className="field-label">Description</span><input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
@@ -2652,7 +2672,7 @@ function FeatureEditor({ name = null, features, control }) {
           <label className="field"><span className="field-label">Parallelizable</span><select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
           {others.length > 0 ? <DependsPicker others={others} chosen={draft.depends_on} onToggle={toggle} /> : null}
           <div className="feature-editor-actions">
-            <button type="button" className="primary-button" data-feature-save disabled={nameProblem !== null} onClick={() => { setNote(""); setConflict(false); if (adding && featureNameProblem(draft.name) !== null) { setPressed(true); return; } setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
+            <button type="button" className="primary-button" data-feature-save disabled={nameProblem !== null} onClick={() => { setNote(""); setConflict(false); if (adding && addedNameProblem(fields.name, features) !== null) { setPressed(true); return; } setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
             <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
           </div>
         </div>
