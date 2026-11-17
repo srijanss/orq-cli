@@ -755,18 +755,23 @@ fn the_gates_notes_open_its_log_so_a_fallback_to_cargo_test_is_said_first() {
     assert!(log.contains("ran"), "{log}");
 }
 
+/// What the fake `cargo nextest run` prints: a test that passed on its second try (shown twice, as
+/// with and without the counter column), one that passed on its third, after a long unbroken line.
+const NEXTEST_WITH_FLAKY: &str = r#"case "$1" in nextest)
+printf '    Starting 2 tests across 1 binary\n        PASS [   0.002s] (1/2) orq-core a_steady_one\n'
+head -c 300000 /dev/zero | tr '\0' x; echo
+printf '       FLAKY 2/3 [   0.004s] (2/2) orq-cli::pipeline two_runs_in_one_second\n'
+printf '       FLAKY 2/3 [   0.004s] orq-cli::pipeline two_runs_in_one_second\n'
+printf '       FLAKY 3/3 [   0.009s] orq-core::store a_slow_lock\n' ;;
+esac"#;
+
 #[test]
 fn a_test_nextest_passed_only_on_a_retry_is_recorded_as_flaky_before_the_stage_ends() {
     let w = world("flaky");
-    // Spelled so the argv echoed to the log holds no FLAKY line of its own.
-    let gate = steps(vec![sh(
-        "printf '    Starting 2 tests across 1 binary\\n        PASS [   0.002s] (1/2) orq-core a_steady_one\\n'; \
-         printf '       FL''AKY 2/3 [   0.004s] (2/2) orq-cli::pipeline two_runs_in_one_second\\n'; \
-         printf '       FL''AKY 2/3 [   0.004s] orq-cli::pipeline two_runs_in_one_second\\n'; \
-         printf '       FL''AKY 3/3 [   0.009s] orq-core::store a_slow_lock\\n'",
-    )]);
+    let env = fake_cargo(&w, NEXTEST_WITH_FLAKY);
+    let gate = steps(vec![cargo_step(&["nextest", "run", "--workspace"])]);
 
-    assert_eq!(run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap(), GateOutcome::Passed);
+    assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
 
     assert_eq!(kinds(&w), [verify("stage.started"), verify("gate.flaky_tests"), verify("stage.completed")]);
     let flaky = &w.store.events("run-1").unwrap()[1];
@@ -777,6 +782,19 @@ fn a_test_nextest_passed_only_on_a_retry_is_recorded_as_flaky_before_the_stage_e
             { "name": "orq-core::store a_slow_lock", "retry": 2 },
         ])
     );
+}
+
+#[test]
+fn flaky_lines_from_a_step_that_is_not_nextest_are_not_looked_for() {
+    let w = world("flaky-elsewhere");
+    let env = fake_cargo(&w, NEXTEST_WITH_FLAKY);
+    // The same output from a step that is not itself `cargo nextest ...`: only nextest's steps are scanned.
+    let gate = steps(vec![sh("cargo nextest run")]);
+
+    assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
+
+    assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.completed")]);
+    assert!(fs::read_to_string(&w.log).unwrap().contains("FLAKY 3/3"), "the step did print them");
 }
 
 #[test]

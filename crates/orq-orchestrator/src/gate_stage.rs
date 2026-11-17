@@ -141,8 +141,8 @@ fn run_gate_attempt_limited(
             writeln!(log, "{}", test_total_line(Some(total)))?;
         }
         let (exit_code, failure) = run_step(&record, argv, &log, &log, env, limit)?;
-        if let Some(output) = read_log_since(&log, log_path, step_start) {
-            note_flaky(&output, &mut flaky);
+        if is_nextest(argv) {
+            note_flaky_since(&log, log_path, step_start, &mut flaky);
         }
         if !flaky.is_empty() && (failure.is_some() || index + 1 == steps.len()) {
             let tests: Vec<serde_json::Value> = flaky
@@ -508,11 +508,53 @@ pub(crate) fn record_event(
     })
 }
 
-/// The tests nextest's `FLAKY` lines in `output` name, each once, with the retry it passed on.
-fn note_flaky(output: &str, flaky: &mut Vec<(String, u64)>) {
-    for line in output.lines() {
-        let plain = printable(line);
-        if let Some((retry, name)) = nextest_flaky(&plain) {
+/// Whether a gate step is `cargo nextest ...`, the only step whose output can say a test was flaky.
+fn is_nextest(argv: &[String]) -> bool {
+    argv.len() >= 2 && argv[0] == "cargo" && argv[1] == "nextest"
+}
+
+/// Longest gate-log line looked at for a `FLAKY` result; the rest of a longer line is skipped unread.
+const FLAKY_LINE_LIMIT: usize = 4096;
+
+/// Add the tests that `FLAKY` lines written to the gate log from byte `start` on name, each once,
+/// with the retry it passed on. The log is read line by line through the path, only when the path
+/// still names the file `log` holds open: a path swapped meanwhile is not read.
+#[cfg(unix)]
+fn note_flaky_since(log: &fs::File, path: &Path, start: u64, flaky: &mut Vec<(String, u64)>) {
+    use std::io::BufRead;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let Ok(mut file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return;
+    };
+    let (Ok(opened), Ok(held)) = (file.metadata(), log.metadata()) else {
+        return;
+    };
+    if !opened.is_file() || opened.dev() != held.dev() || opened.ino() != held.ino() {
+        return;
+    }
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::with_capacity(256);
+    loop {
+        line.clear();
+        // Keep at most FLAKY_LINE_LIMIT bytes of a line, then skip to its end.
+        let Ok(read) = (&mut reader).take(FLAKY_LINE_LIMIT as u64).read_until(b'\n', &mut line) else {
+            return;
+        };
+        if read == 0 {
+            return;
+        }
+        if line.last() != Some(&b'\n') && line.len() == FLAKY_LINE_LIMIT && !skip_line(&mut reader) {
+            return;
+        }
+        let plain = printable(&String::from_utf8_lossy(&line));
+        if let Some((retry, name)) = nextest_flaky(plain.trim_end()) {
             if !flaky.iter().any(|(seen, _)| seen == name) {
                 flaky.push((name.to_string(), retry));
             }
@@ -520,27 +562,24 @@ fn note_flaky(output: &str, flaky: &mut Vec<(String, u64)>) {
     }
 }
 
-/// What was written to the gate log from byte `start` on, read through the path only when it still
-/// names the file `log` holds open: a path swapped meanwhile is not read.
+/// Read past the rest of the current line without keeping it; false at an error.
 #[cfg(unix)]
-fn read_log_since(log: &fs::File, path: &Path, start: u64) -> Option<String> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .ok()?;
-    let (opened, held) = (file.metadata().ok()?, log.metadata().ok()?);
-    if !opened.is_file() || opened.dev() != held.dev() || opened.ino() != held.ino() {
-        return None;
+fn skip_line(reader: &mut impl std::io::BufRead) -> bool {
+    loop {
+        let Ok(buf) = reader.fill_buf() else {
+            return false;
+        };
+        if buf.is_empty() {
+            return true;
+        }
+        if let Some(at) = buf.iter().position(|&b| b == b'\n') {
+            reader.consume(at + 1);
+            return true;
+        }
+        let len = buf.len();
+        reader.consume(len);
     }
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(not(unix))]
-fn read_log_since(_log: &fs::File, _path: &Path, _start: u64) -> Option<String> {
-    None
-}
+fn note_flaky_since(_log: &fs::File, _path: &Path, _start: u64, _flaky: &mut Vec<(String, u64)>) {}
