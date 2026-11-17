@@ -137,13 +137,15 @@ fn a_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_se
     assert_eq!((read.settings, read.revision), (chosen, 1));
 
     let version = |db: &Path| -> u32 { rusqlite::Connection::open(db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
+    // Schema version 6 added project_settings; later versions keep it.
+    let before_settings = 5;
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old;").unwrap();
-    conn.pragma_update(None, "user_version", Store::LATEST_VERSION - 1).unwrap();
+    conn.pragma_update(None, "user_version", before_settings).unwrap();
     drop(conn);
     let older = Store::read_project_settings(&db, Path::new("/work/alpha")).unwrap();
     assert_eq!((older.settings, older.revision), (ProjectSettings::default(), 0));
-    assert_eq!(version(&db), Store::LATEST_VERSION - 1, "left as it was");
+    assert_eq!(version(&db), before_settings, "left as it was");
 
     rusqlite::Connection::open(&db).unwrap().pragma_update(None, "user_version", Store::LATEST_VERSION + 1).unwrap();
     assert!(Store::read_project_settings(&db, Path::new("/work/alpha")).is_err(), "a newer schema is not guessed at");
