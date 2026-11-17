@@ -165,12 +165,87 @@ pub fn validate_checkpoint(
     if String::from_utf8_lossy(&head.stdout).trim() != checkpoint.head_sha {
         return Err("HEAD moved since the run was paused".to_string());
     }
-    for marker in ["rebase-merge", "rebase-apply"] {
-        let path = git(&["rev-parse", "--path-format=absolute", "--git-path", marker])
-            .map_err(|e| format!("cannot run git: {e}"))?;
-        if std::path::Path::new(String::from_utf8_lossy(&path.stdout).trim()).exists() {
-            return Err("a rebase is in progress in the worktree".to_string());
-        }
+    if rebase_in_progress(&checkpoint.worktree)? {
+        return Err("a rebase is in progress in the worktree".to_string());
     }
     Ok(checkpoint)
+}
+
+/// Whether a rebase stopped part way in `worktree`.
+pub fn rebase_in_progress(worktree: &std::path::Path) -> Result<bool, String> {
+    for marker in ["rebase-merge", "rebase-apply"] {
+        let path = std::process::Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "--path-format=absolute", "--git-path", marker])
+            .output()
+            .map_err(|e| format!("cannot run git: {e}"))?;
+        if std::path::Path::new(String::from_utf8_lossy(&path.stdout).trim()).exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Why a run blocked on a rebase conflict cannot resume while that rebase is still in progress,
+/// with the two ways on.
+pub fn mid_rebase_refusal(run_id: &str, worktree: &std::path::Path) -> String {
+    format!(
+        "{run_id}: its rebase stopped on a conflict and is still in progress in {}; resolve the conflict there and \
+         finish with `git rebase --continue`, then resume it again, or let a session resolve it with \
+         `orq run resume {run_id} --fix-conflicts`",
+        worktree.display()
+    )
+}
+
+/// The commit a run's rebase was replaying onto when it stopped on a conflict, if the run then
+/// blocked on it: its last rebase event is `rebase.conflict`, followed by `run.blocked`.
+pub fn blocked_on_conflict(events: &[Event]) -> Option<String> {
+    let last = events.iter().rposition(|e| e.kind.starts_with("rebase."))?;
+    if events[last].kind != "rebase.conflict" || !events[last + 1..].iter().any(|e| e.kind == "run.blocked") {
+        return None;
+    }
+    events[last].payload["onto"].as_str().map(str::to_string)
+}
+
+/// Whether `worktree`'s HEAD contains `onto`, a full commit id: anything else, an option or a
+/// name, never reaches git and counts as not contained.
+pub fn head_contains(worktree: &std::path::Path, onto: &str) -> Result<bool, String> {
+    let full_id = matches!(onto.len(), 40 | 64) && onto.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !full_id {
+        return Ok(false);
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["merge-base", "--is-ancestor", onto, "HEAD"])
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    Ok(out.status.success())
+}
+
+/// A person finished the rebase a run blocked on, onto `onto`: recorded on `record`'s run, which
+/// resumes it, as that run's branch now sits on it.
+pub fn record_rebase_finished_by_hand(store: &RunStore, record: &crate::store::RunRecord, onto: &str) -> Result<(), StoreError> {
+    crate::rebase::record_event(store, record, "rebase.completed", serde_json::json!({ "resolved_by": "person", "target_sha": onto }))
+}
+
+/// Why a run's worktree, stopped part way through a rebase, cannot have that rebase finished for
+/// the run: it is not one of `repo`'s worktrees, or the rebase is not of the run's `branch`.
+pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch: &str) -> Result<Option<String>, String> {
+    if let Some(problem) = crate::reap::repository_problem(repo, worktree).map_err(|e| format!("cannot inspect the worktree: {e:?}"))? {
+        return Ok(Some(problem));
+    }
+    for marker in ["rebase-merge/head-name", "rebase-apply/head-name"] {
+        let path = std::process::Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "--path-format=absolute", "--git-path", marker])
+            .output()
+            .map_err(|e| format!("cannot run git: {e}"))?;
+        if let Ok(name) = std::fs::read_to_string(String::from_utf8_lossy(&path.stdout).trim()) {
+            return Ok((name.trim() != format!("refs/heads/{branch}")).then(|| "the rebase in the worktree is not of the branch of the run".to_string()));
+        }
+    }
+    Ok(Some("the worktree is not on the branch of the run".to_string()))
 }

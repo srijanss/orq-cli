@@ -214,6 +214,9 @@ struct RunArgs {
     /// Set by `orq run merge --set-aside`: a merge-local delivery blocked by uncommitted changes to the
     /// run's files sets those changes aside, merges, and puts them back.
     set_aside: bool,
+    /// Set by `orq run resume --fix-conflicts`: a session of the implementer resolves the rebase the
+    /// run blocked on.
+    fix_conflicts: bool,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
 }
@@ -252,6 +255,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--in-herdr" => parsed.in_herdr = true,
             "--check" => parsed.check = true,
             "--set-aside" => parsed.set_aside = true,
+            "--fix-conflicts" => parsed.fix_conflicts = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
                 match name {
@@ -481,6 +485,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         delivery,
         delivery_named: named_delivery.is_some(),
         set_aside: parsed.set_aside,
+        fix_conflicts: parsed.fix_conflicts,
         // A detached runner has no terminal, so it stays headless.
         interactive: {
             use std::io::IsTerminal;
@@ -5028,7 +5033,9 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str, re
 
 /// `orq run resume <run-id> [--yes] [--repo <path>]`: continue a paused run from its checkpoint as a
 /// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
-/// not paused, or when the checkpoint no longer matches the checkout.
+/// not paused, or when the checkpoint no longer matches the checkout. A run blocked on a rebase
+/// conflict resumes from the gate once a person finished the rebase; with `--fix-conflicts`, while
+/// the rebase is still stopped, a session of its implementer resolves it first.
 /// `orq run merge <run-id> --set-aside`: resumes a merge-local run blocked by uncommitted changes in
 /// the checkout, setting aside the changes that overlap the run's files while it is merged.
 fn run_merge(args: &[OsString]) -> ExitCode {
@@ -5079,11 +5086,13 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     let mut no_ci_check = false;
     let mut detach = false;
     let mut in_herdr = false;
+    let mut fix_conflicts = false;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
+            Some("--fix-conflicts") => fix_conflicts = true,
             Some("--detach") => detach = true,
             Some("--in-herdr") => in_herdr = true,
             Some("--no-ci-check") => no_ci_check = true,
@@ -5145,7 +5154,7 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
         (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
         (_, Err(reason)) => return fail(reason),
     };
-    if let Err(reason) = orq_orchestrator::check_group_resume(&store, &repo, &run_id) {
+    if let Err(reason) = orq_orchestrator::check_group_resume_fixing(&store, &repo, &run_id, fix_conflicts) {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
     }
     // A run waiting for a review decision kept its features; reviewing again starts them anew.
@@ -5199,6 +5208,9 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     }
     if set_aside {
         forwarded.push("--set-aside".into());
+    }
+    if fix_conflicts {
+        forwarded.push("--fix-conflicts".into());
     }
     run_as(&forwarded, Some(&run_id))
 }

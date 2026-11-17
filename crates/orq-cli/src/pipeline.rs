@@ -62,6 +62,8 @@ pub struct Options<'a> {
     /// A merge-local delivery blocked by uncommitted changes to the run's files sets them aside while
     /// it merges, then puts them back (`orq run merge --set-aside`).
     pub set_aside: bool,
+    /// On resume of a run blocked mid-rebase on a conflict: a session of the implementer resolves it.
+    pub fix_conflicts: bool,
 }
 
 /// A run id no other run has: `run-<seconds>-<pid>-<sequence>`, the sequence telling apart the
@@ -344,7 +346,7 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     }
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-        Some(orq_orchestrator::plan_group_resume(store, repo, &project_id(options.project), &members).map_err(other)?)
+        Some(orq_orchestrator::plan_group_resume_fixing(store, repo, &project_id(options.project), &members, options.fix_conflicts).map_err(other)?)
     } else {
         None
     };
@@ -456,8 +458,14 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // told otherwise would judge the wrong changes. Without it the resume stops before it does
     // anything. Its run is removed, not failed: a resume continues a feature's newest run, and that
     // has to stay the one it could not continue.
-    if let Some(from) = resumed.as_ref().map(|r| r.from.run_id.as_str()) {
-        if let Err(err) = orq_orchestrator::carry_rebase(&store, &record, from) {
+    // A rebase a person finished after the run blocked on its conflict is the resumed run's to record.
+    if let Some(resumed) = resumed.as_ref() {
+        let from = resumed.from.run_id.as_str();
+        let carried = orq_orchestrator::carry_rebase(&store, &record, from).and_then(|()| match &resumed.finished_by_hand {
+            Some(onto) => orq_orchestrator::record_rebase_finished_by_hand(&store, &record, onto),
+            None => Ok(()),
+        });
+        if let Err(err) = carried {
             let mut message = format!("cannot carry the rebase of {from} into the resumed run: {err:?}; {from} was left as it was, resume it again");
             if let Err(lock) = finish(&store) {
                 message.push_str(&format!("; the feature locks were not released: {lock:?}"));
@@ -1440,6 +1448,12 @@ fn stages(
     if !done("gate") {
         if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
             return paused("rebase");
+        }
+        // A run resumed to have its stopped rebase resolved first finishes that one.
+        if options.fix_conflicts {
+            if let Some(stop) = resolve_conflict(format!("{run_id}: the rebase stopped on a conflict"))? {
+                return Ok(stop);
+            }
         }
         if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
             if let Some(stop) = resolve_conflict(reason)? {

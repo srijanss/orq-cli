@@ -23,6 +23,9 @@ pub struct ResumePlan {
     pub checkpoint: Option<crate::checkpoint::Checkpoint>,
     /// For a run waiting on a review decision: the review that escalated, to review again from.
     pub review_again: Option<crate::review_escalation::EscalatedReview>,
+    /// For a run blocked on a rebase conflict that a person since finished: the commit that
+    /// rebase replayed the branch onto, which the branch now contains.
+    pub finished_by_hand: Option<String>,
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -125,6 +128,18 @@ pub fn plan_group_resume(
     plan_group_resume_with(store, repo, project_id, members, &crate::interrupted::process_is_alive)
 }
 
+/// [`plan_group_resume`]; with `fix_conflicts`, only for a run blocked on a rebase conflict that is
+/// still in progress, which the resumed run then has a session resolve.
+pub fn plan_group_resume_fixing(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+    members: &[String],
+    fix_conflicts: bool,
+) -> Result<ResumePlan, String> {
+    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, fix_conflicts)
+}
+
 /// The run of `project_id` named after `feature_id` (a single feature's run, or a group's that it
 /// leads) that started last: the one a resume of that feature continues. `None` when it never ran.
 /// Nothing is reconciled or changed.
@@ -207,6 +222,17 @@ pub fn plan_group_resume_with(
     project_id: &str,
     members: &[String],
     alive: &dyn Fn(u32, Option<u64>) -> bool,
+) -> Result<ResumePlan, String> {
+    plan(store, repo, project_id, members, alive, false)
+}
+
+fn plan(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+    members: &[String],
+    alive: &dyn Fn(u32, Option<u64>) -> bool,
+    fix_conflicts: bool,
 ) -> Result<ResumePlan, String> {
     let feature_id = members
         .first()
@@ -300,8 +326,28 @@ pub fn plan_group_resume_with(
             from.worktree.display()
         ));
     }
-    if let Some(problem) = checkout_problem(repo, &from.worktree, &from.branch)
-        .map_err(|e| format!("cannot inspect the worktree: {e:?}"))?
+    let conflict_onto = match phase {
+        RunPhase::Blocked => crate::checkpoint::blocked_on_conflict(&events),
+        _ => None,
+    };
+    let mid_rebase = conflict_onto.is_some() && crate::checkpoint::rebase_in_progress(&from.worktree)?;
+    if fix_conflicts && !mid_rebase {
+        return Err(format!(
+            "{}: --fix-conflicts resumes only a run blocked on a rebase conflict that is still in progress; \
+             resume it without the flag",
+            from.run_id
+        ));
+    }
+    if mid_rebase && !fix_conflicts {
+        return Err(crate::checkpoint::mid_rebase_refusal(&from.run_id, &from.worktree));
+    }
+    // A stopped rebase has HEAD detached; the branch it is rebasing has to be the run's.
+    let checkout = if mid_rebase {
+        crate::checkpoint::rebase_problem(repo, &from.worktree, &from.branch)
+    } else {
+        checkout_problem(repo, &from.worktree, &from.branch).map_err(|e| format!("cannot inspect the worktree: {e:?}"))
+    };
+    if let Some(problem) = checkout?
     {
         return Err(format!(
             "{}: {problem}; finish or abort a stopped rebase, or start a new run",
@@ -323,12 +369,32 @@ pub fn plan_group_resume_with(
         ),
         _ => None,
     };
+    // A rebase that stopped on a conflict counts as finished by hand only once the branch has what
+    // it was replayed onto.
+    let finished_by_hand = match conflict_onto {
+        Some(_) if mid_rebase => None,
+        Some(onto) => {
+            if !crate::checkpoint::head_contains(&from.worktree, &onto)? {
+                return Err(format!(
+                    "{}: the rebase onto {} was not finished: the branch {} does not contain {onto}; rebase it in {} \
+                     and finish with `git rebase --continue`, or start a new run",
+                    from.run_id,
+                    from.target_branch,
+                    from.branch,
+                    from.worktree.display()
+                ));
+            }
+            Some(onto)
+        }
+        _ => None,
+    };
     let skip_implement = implement_finished(&events);
     Ok(ResumePlan {
         from,
         skip_implement,
         checkpoint,
         review_again,
+        finished_by_hand,
     })
 }
 
@@ -463,6 +529,12 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
 /// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid
 /// and starts from `run_id`, the reason otherwise. Nothing is launched.
 pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
+    check_group_resume_fixing(store, repo, run_id, false)
+}
+
+/// [`check_group_resume`] for a resume that, with `fix_conflicts`, has a session resolve the rebase
+/// the run blocked on.
+pub fn check_group_resume_fixing(store: &RunStore, repo: &Path, run_id: &str, fix_conflicts: bool) -> Result<(), String> {
     let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     let members = run_members(store, run_id)?;
     // A later run named after the same feature took it over, whatever else it was for.
@@ -473,7 +545,7 @@ pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result
             format!("{later} is a later run that took {}; this run can no longer be resumed", taken.join(", "))
         });
     }
-    plan_group_resume(store, repo, &record.project_id, &members).map(|_| ())
+    plan_group_resume_fixing(store, repo, &record.project_id, &members, fix_conflicts).map(|_| ())
 }
 
 /// Where run `run_id` would continue if resumed now: the next stage of a paused run's checkpoint,

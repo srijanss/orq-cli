@@ -167,6 +167,20 @@ pub(crate) fn checkout_problem(
     worktree: &Path,
     branch: &str,
 ) -> Result<Option<String>, StoreError> {
+    if let Some(problem) = repository_problem(repo, worktree)? {
+        return Ok(Some(problem));
+    }
+    let head = git_raw(worktree, &["symbolic-ref", "--quiet", "HEAD"])?;
+    if !head.success || head.stdout.trim() != format!("refs/heads/{branch}") {
+        return Ok(Some(
+            "the worktree is not on the branch of the run".to_string(),
+        ));
+    }
+    Ok(None)
+}
+
+/// Why `worktree` is not one of `repo`'s worktrees, if it is not.
+pub(crate) fn repository_problem(repo: &Path, worktree: &Path) -> Result<Option<String>, StoreError> {
     let common = |dir: &Path| -> Result<Option<PathBuf>, StoreError> {
         let out = git_raw(
             dir,
@@ -184,12 +198,6 @@ pub(crate) fn checkout_problem(
                 "the worktree does not belong to this repository".to_string(),
             ))
         }
-    }
-    let head = git_raw(worktree, &["symbolic-ref", "--quiet", "HEAD"])?;
-    if !head.success || head.stdout.trim() != format!("refs/heads/{branch}") {
-        return Ok(Some(
-            "the worktree is not on the branch of the run".to_string(),
-        ));
     }
     Ok(None)
 }

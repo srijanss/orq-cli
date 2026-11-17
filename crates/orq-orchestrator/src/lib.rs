@@ -51,7 +51,7 @@ mod terminal_session;
 mod worktree_databases;
 
 pub use checkpoint::{
-    latest_checkpoint, pause_at_boundary, record_checkpoint, validate_checkpoint, Checkpoint,
+    latest_checkpoint, pause_at_boundary, record_checkpoint, record_rebase_finished_by_hand, validate_checkpoint, Checkpoint,
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
@@ -98,7 +98,7 @@ pub use reap::{
 };
 pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, RebaseOutcome};
 pub use resume::{
-    carry_rebase, check_group_resume, later_run_of, newest_run_of, plan_group_resume, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
+    carry_rebase, check_group_resume, check_group_resume_fixing, later_run_of, newest_run_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
     record_inherited_implement, resume_check, run_members,
     supersede_resumed, ResumePlan,
 };
