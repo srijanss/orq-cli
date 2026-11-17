@@ -77,19 +77,21 @@ fn a_busy_script_is_waited_for_and_runs_once_the_other_handle_closes() {
     let dir = TempDir::new("orq-write-executable");
     let script = dir.join("briefly-busy-tool");
     // A second writable handle, as a forked child holds until it execs, closed after 50 ms. The
-    // closer says when it closed it, so the check compares against that moment, not a timer of its own.
+    // closer reports the moment just before it closes the handle: the script cannot be run any
+    // earlier, so a correct write_executable always returns after it.
     let held = fs::OpenOptions::new().create(true).truncate(true).write(true).open(&script).unwrap();
     let closer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(50));
+        let closing = Instant::now();
         drop(held);
-        Instant::now()
+        closing
     });
 
     write_executable(&script, "#!/bin/sh\nexit 0\n");
     let returned = Instant::now();
-    let closed = closer.join().unwrap();
+    let closing = closer.join().unwrap();
 
-    assert!(returned >= closed, "returned {:?} before the other handle closed", closed - returned);
+    assert!(returned > closing, "returned {:?} before the other handle was closed", closing - returned);
     assert!(Command::new(&script).status().expect("run the written script").success());
 }
 
