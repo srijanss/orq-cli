@@ -722,3 +722,20 @@ fn a_vitest_listing_never_fetches_vitest_when_it_is_not_installed() {
         assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{tag}: {log}");
     }
 }
+
+#[test]
+fn a_vitest_script_with_a_bracket_glob_is_not_listed_since_its_shell_would_expand_it() {
+    for (tag, script) in [("class", "vitest run src/[ab].test.ts"), ("closing", "vitest run src/a].test.ts")] {
+        let w = world(&format!("vitest-bracket-{tag}"));
+        for file in ["a.test.ts", "b.test.ts"] {
+            fs::create_dir_all(w.worktree.join("src")).unwrap();
+            fs::write(w.worktree.join("src").join(file), "").unwrap();
+        }
+        fs::write(w.worktree.join("package.json"), format!(r#"{{"scripts":{{"test":"{script}"}}}}"#)).unwrap();
+        let env = fake_tool(&w, "vitest", VITEST);
+        fake_tool(&w, "npm", RUNNER);
+        assert_eq!(run_with(&w, &steps(vec![argv(&["npm", "test"])]), &env), GateOutcome::Passed, "{tag}");
+        assert!(tool_calls(&w, "vitest").iter().all(|call| !call.starts_with("list")), "{tag}");
+        assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"), "{tag}");
+    }
+}

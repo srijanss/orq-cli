@@ -258,9 +258,11 @@ fn read_package_json(worktree: &Path) -> Option<Vec<u8>> {
 }
 
 /// The arguments of a script that is just `vitest ...`, with nothing a shell would read
-/// differently from plain words.
+/// differently from plain words: only letters, digits, spaces and punctuation no shell expands or
+/// splits on are allowed, so a glob, quote, variable or operator of any kind is never guessed at.
 fn vitest_script_words(script: &str) -> Option<Vec<String>> {
-    if script.chars().any(|c| ";&|<>$`'\"\\(){}*?~#!\n".contains(c)) {
+    let plain = |c: char| c.is_alphanumeric() || " \t-_./:=@%+,".contains(c);
+    if !script.chars().all(plain) {
         return None;
     }
     let mut words = script.split_whitespace();
