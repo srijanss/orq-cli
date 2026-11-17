@@ -2,7 +2,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 /// The line put right after the shebang: a probe run exits before the body does anything.
@@ -43,8 +43,10 @@ pub fn write_executable(path: &Path, body: &str) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        match probe {
-            Err(err) if err.kind() == ErrorKind::ExecutableFileBusy => {
+        match probe_verdict(path, probe) {
+            Probe::Ready => return,
+            Probe::Failed(message) => panic!("{message}"),
+            Probe::Busy => {
                 if started.elapsed() >= BUSY_LIMIT {
                     panic!(
                         "test script {} was still busy (ETXTBSY, text file busy) after {BUSY_LIMIT:?}: \
@@ -54,7 +56,37 @@ pub fn write_executable(path: &Path, body: &str) {
                 }
                 std::thread::sleep(BUSY_RETRY);
             }
-            _ => return,
         }
     }
 }
+
+/// What one probe run says about the script.
+#[derive(Debug, PartialEq, Eq)]
+enum Probe {
+    /// It ran, and the probe line exited 0.
+    Ready,
+    /// ETXTBSY: something still holds it open for writing; try again.
+    Busy,
+    /// It cannot be run (a noexec filesystem, a missing interpreter): the message says why.
+    Failed(String),
+}
+
+fn probe_verdict(path: &Path, probe: std::io::Result<ExitStatus>) -> Probe {
+    match probe {
+        Ok(status) if status.success() => Probe::Ready,
+        Ok(status) => Probe::Failed(format!(
+            "test script {} cannot be run: its probe run exited with {status}",
+            path.display()
+        )),
+        Err(err) if err.kind() == ErrorKind::ExecutableFileBusy => Probe::Busy,
+        Err(err) => Probe::Failed(format!(
+            "test script {} cannot be run: {:?} ({err})",
+            path.display(),
+            err.kind()
+        )),
+    }
+}
+
+#[cfg(test)]
+#[path = "script_tests.rs"]
+mod tests;
