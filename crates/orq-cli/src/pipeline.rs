@@ -704,11 +704,11 @@ fn complete_delivered_features(store: &RunStore, record: &RunRecord, ledger: &Pa
     }
 }
 
-/// The names in the ledger, none when it is missing; one that cannot be read is said and gives
-/// nothing, so what `session` started is not told.
-fn ledger_names(ledger: &Path, session: &str) -> Option<Vec<String>> {
+/// The names in the ledger with their statuses, none when it is missing; one that cannot be read is
+/// said and gives nothing, so what `session` started is not told.
+fn ledger_statuses(ledger: &Path, session: &str) -> Option<Vec<(String, orq_features::LedgerStatus)>> {
     match orq_features::load_ledger(ledger) {
-        Ok(entries) => Some(entries.into_iter().map(|entry| entry.feature_name).collect()),
+        Ok(entries) => Some(entries.into_iter().map(|entry| (entry.feature_name, entry.status)).collect()),
         Err(orq_features::LedgerError::Missing { .. }) => Some(Vec::new()),
         Err(err) => {
             eprintln!("orq: cannot read the feature ledger to tell which features {session} started: {err:?}");
@@ -719,11 +719,31 @@ fn ledger_names(ledger: &Path, session: &str) -> Option<Vec<String>> {
 
 /// After the implement session: the names it added to the ledger that are not the run's `features`
 /// are recorded as `ledger.extra_features`, and left as they are. Best effort.
-fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, before: Option<Vec<String>>, features: &[String]) {
+fn record_extra_features(
+    store: &RunStore,
+    record: &RunRecord,
+    ledger: &Path,
+    before: Option<Vec<(String, orq_features::LedgerStatus)>>,
+    features: &[String],
+) {
     let Some(before) = before else { return };
-    let Some(after) = ledger_names(ledger, "the implement session") else { return };
-    let added: Vec<String> = after.into_iter().filter(|name| !before.contains(name) && !features.contains(name)).collect();
+    let Some(after) = ledger_statuses(ledger, "the implement session") else { return };
+    let added: Vec<String> = started_by_session(&before, after).into_iter().filter(|name| !features.contains(name)).collect();
     record_ledger(store, record, "ledger.extra_features", &added);
+}
+
+/// The features a session started: the names in `after` that were not in `before` and that the
+/// session's TDD workflow left `in_progress` or `completed`. A new `draft`, `pending` or `abandoned`
+/// entry is someone else's, added to the shared ledger while the session ran.
+fn started_by_session(before: &[(String, orq_features::LedgerStatus)], after: Vec<(String, orq_features::LedgerStatus)>) -> Vec<String> {
+    use orq_core::FeatureStatus::{Completed, InProgress};
+    after
+        .into_iter()
+        .filter(|(name, status)| {
+            matches!(status.known(), Some(InProgress | Completed)) && !before.iter().any(|(old, _)| old == name)
+        })
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// The commits on the branch since `base`, one short line each, newest first, at most 50; none when
@@ -1225,7 +1245,7 @@ fn stages(
                 exit_marker: marker.map(std::path::Path::new),
             };
             let ledger = orq_features::ledger_path(options.project);
-            let before = ledger_names(&ledger, "the implement session");
+            let before = ledger_statuses(&ledger, "the implement session");
             let outcome = run_implement_stage(store, run_id, &session)?;
             record_extra_features(store, record, &ledger, before, options.features);
             if !outcome.success {
@@ -1703,7 +1723,7 @@ struct FixFeatureWatch<'a> {
     record: &'a RunRecord,
     ledger: PathBuf,
     /// The session running and the names in the ledger before it started.
-    running: std::cell::RefCell<Option<(&'static str, Vec<String>)>>,
+    running: std::cell::RefCell<Option<(&'static str, Vec<(String, orq_features::LedgerStatus)>)>>,
 }
 
 impl<'a> FixFeatureWatch<'a> {
@@ -1721,7 +1741,7 @@ impl<'a> FixFeatureWatch<'a> {
     fn settle(&self) {
         let Some((session, before)) = self.running.borrow_mut().take() else { return };
         let Some(after) = self.names() else { return };
-        let added: Vec<String> = after.into_iter().filter(|name| !before.contains(name)).collect();
+        let added = started_by_session(&before, after);
         if added.is_empty() {
             return;
         }
@@ -1730,8 +1750,8 @@ impl<'a> FixFeatureWatch<'a> {
         }
     }
 
-    fn names(&self) -> Option<Vec<String>> {
-        ledger_names(&self.ledger, "a fix session")
+    fn names(&self) -> Option<Vec<(String, orq_features::LedgerStatus)>> {
+        ledger_statuses(&self.ledger, "a fix session")
     }
 }
 

@@ -372,12 +372,12 @@ fn a_resumed_run_records_the_feature_it_handed_back_and_the_one_its_delivery_com
     assert_eq!(payloads_of(&w, "ledger.completed_by_run"), vec![serde_json::json!({"features": ["COM-01"]})]);
 }
 
-/// A PATH whose `claude` starts COM-01 and also adds a `pending` COM-02 to the main ledger, as a
-/// session that planned more than it was asked would, and then runs `agent`.
+/// A PATH whose `claude` starts COM-01 and also starts and finishes a COM-02 of its own in the main
+/// ledger, as a session that did more than it was asked would, and then runs `agent`.
 fn path_adding_com_02(w: &World, agent: &FakeAgent, tag: &str) -> std::ffi::OsString {
     let path = path_with(w, agent, "in_progress", tag);
     let ledger = w.repo.root().join(".tdd-features.json");
-    let both = r#"[{"featureName": "COM-01", "dependsOn": [], "status": "in_progress"}, {"featureName": "COM-02", "dependsOn": [], "status": "pending"}]"#;
+    let both = r#"[{"featureName": "COM-01", "dependsOn": [], "status": "in_progress"}, {"featureName": "COM-02", "dependsOn": [], "status": "completed"}]"#;
     std::fs::write(
         w.base.join(format!("bin-{tag}/claude")),
         format!("#!/bin/sh\nprintf '%s\\n' '{both}' > '{ledger}'\nexec '{agent}' \"$@\"\n", ledger = ledger.display(), agent = agent.path().display()),
@@ -398,7 +398,7 @@ fn a_feature_the_session_added_is_recorded_and_noted_but_left_as_it_is() {
     assert_eq!(payloads_of(&w, "ledger.extra_features"), vec![serde_json::json!({"features": ["COM-02"]})]);
     assert!(stderr.contains("the session also added: COM-02"), "{stderr}");
     assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
-    assert_eq!(status_of(w.repo.root(), "COM-02"), "pending");
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "completed");
 }
 
 #[test]
