@@ -47,11 +47,11 @@ export async function authStatus() {
     const response = await fetch("/auth/status", { cache: "no-store", referrerPolicy: "no-referrer", signal: controller === null ? undefined : controller.signal });
     if (response.status === 502 || response.status === 503 || response.status === 504) return UNREACHABLE;
     if (!response.ok) return null;
-    // A body that is not JSON came from something that answered, not from orq's status route; only a
-    // body cut off by the timeout means the server is out of reach.
+    // A body that is not JSON came from something that answered, not from orq's status route. A body cut
+    // off (the connection dropped, or the timeout aborted it) means the server is out of reach.
     const data = await response.json().catch((unreadable) => {
-      if (unreadable !== null && typeof unreadable === "object" && unreadable.name === "AbortError") throw unreadable;
-      return null;
+      if (unreadable !== null && typeof unreadable === "object" && unreadable.name === "SyntaxError") return null;
+      throw unreadable;
     });
     return data !== null && typeof data === "object" && typeof data.passkeys === "boolean" ? data : null;
   } catch (unavailable) {

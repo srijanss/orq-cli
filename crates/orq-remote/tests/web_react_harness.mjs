@@ -172,13 +172,15 @@ window.fetch = (url, options = {}) => {
     // refusal with a body, or to "reject" for no answer at all.
     // `auth_sequence` answers /auth/status in turn, one entry per request, before falling back to the rest:
     // "reject", "badjson" (a 200 whose body is not JSON), "hold" (no answer until the request is aborted),
-    // "hold_body" (a 200 whose body never arrives until aborted), an HTTP status, or the JSON a 200 answers with.
+    // "hold_body" (a 200 whose body never arrives until aborted), "body_drops" (a 200 whose connection drops
+    // while the body is read), an HTTP status, or the JSON a 200 answers with.
     if (String(url) === "/auth/status" && Array.isArray(scenario.auth_sequence) && scenario.auth_sequence.length > 0) {
       const turn = scenario.auth_sequence.shift();
       if (turn === "reject") return Promise.reject(new Error("offline"));
       const aborted = (reject) => { if (options.signal) options.signal.addEventListener("abort", () => reject(new window.DOMException("aborted", "AbortError"))); };
       if (turn === "hold") return new Promise((resolve, reject) => aborted(reject));
       if (turn === "hold_body") return Promise.resolve({ status: 200, ok: true, json: () => new Promise((resolve, reject) => aborted(reject)) });
+      if (turn === "body_drops") return Promise.resolve({ status: 200, ok: true, json: () => Promise.reject(new TypeError("network error")) });
       if (turn === "badjson") return Promise.resolve({ status: 200, ok: true, json: () => Promise.reject(new SyntaxError("bad json")) });
       if (typeof turn === "number") return Promise.resolve({ status: turn, ok: turn >= 200 && turn < 300, json: () => Promise.resolve({}) });
       return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(turn) });

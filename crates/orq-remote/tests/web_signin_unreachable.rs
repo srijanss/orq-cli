@@ -156,3 +156,11 @@ fn an_older_status_request_that_ends_late_does_not_undo_a_newer_answer() {
     assert!(!shown(last).contains(UNREACHABLE), "the late timeout is ignored: {}", shown(last));
     assert!(buttons(last).iter().any(|b| b == "Sign in with a passkey"), "{:?}", buttons(last));
 }
+
+#[test]
+fn a_status_body_whose_connection_drops_counts_as_unreachable() {
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": ["body_drops"]})) else { return };
+    let start = &out["frames"][0];
+    assert!(shown(start).contains(UNREACHABLE), "{}", shown(start));
+    assert_eq!(inputs(start), 0, "{out}");
+}
