@@ -5,6 +5,7 @@
 use crate::implement::{next_event_id, now_rfc3339};
 use crate::outcome::git_raw;
 use crate::store::{Event, RunRecord, RunStore, StoreError};
+use orq_core::project_settings::Delivery;
 
 const STAGE: &str = "rebase";
 
@@ -28,8 +29,33 @@ pub fn rebase_onto_target(
         record_event(store, &record, "rebase.skipped", serde_json::json!({}))?;
         return Ok(RebaseOutcome::Skipped);
     }
-    let worktree = record.worktree.as_path();
     on_run_branch(&record)?;
+    let (target_sha, source) = match record.delivery {
+        Delivery::MergeLocal => (local_target(&record)?, "local"),
+        Delivery::Review | Delivery::Push => (fetched_target(&record)?, "remote"),
+    };
+    rebase_record_onto(store, &record, target_sha, "before_gate", source)
+}
+
+/// The commit the local target branch is on now: a merge-local run lands there, not on the
+/// remote's copy, which nothing pushes until a person does.
+fn local_target(record: &RunRecord) -> Result<String, StoreError> {
+    let local = git_raw(
+        &record.worktree,
+        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}^{{commit}}", record.target_branch)],
+    )?;
+    if !local.success {
+        return Err(StoreError::Corrupt(format!(
+            "the local target branch {} does not exist",
+            record.target_branch
+        )));
+    }
+    Ok(local.stdout.trim().to_string())
+}
+
+/// The commit the remote's target branch is on, fetched into a ref of this run.
+fn fetched_target(record: &RunRecord) -> Result<String, StoreError> {
+    let worktree = record.worktree.as_path();
     // Fetch into a ref of this run instead of the FETCH_HEAD that every worktree
     // of the repository shares, so a concurrent fetch cannot swap the commit.
     let private_ref = private_ref_name(&record.run_id);
@@ -66,9 +92,7 @@ pub fn rebase_onto_target(
             "the fetched target branch has no commit".to_string(),
         ));
     }
-    let target_sha = target_sha.stdout.trim().to_string();
-
-    rebase_record_onto(store, &record, target_sha, "before_gate")
+    Ok(target_sha.stdout.trim().to_string())
 }
 
 /// Rebase `run_id`'s branch onto `target_sha`, a commit the repository already has, without
@@ -82,7 +106,7 @@ pub fn rebase_onto_commit(store: &RunStore, run_id: &str, target_sha: &str) -> R
         return Err(StoreError::Corrupt(format!("{target_sha:?} is not the id of a commit to rebase onto")));
     }
     on_run_branch(&record)?;
-    rebase_record_onto(store, &record, target_sha.to_string(), "at_merge")
+    rebase_record_onto(store, &record, target_sha.to_string(), "at_merge", "local")
 }
 
 /// Only ever rewrite the run's own branch: a switched or detached HEAD is left alone.
@@ -100,7 +124,7 @@ fn on_run_branch(record: &RunRecord) -> Result<(), StoreError> {
 /// Rebase the run's branch onto `target_sha`: recorded when done. A conflict is recorded with its
 /// files, the commit being replayed onto and `place` (`before_gate` or `at_merge`); it is not a
 /// block yet, as a session may still resolve it.
-fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, place: &str) -> Result<RebaseOutcome, StoreError> {
+fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, place: &str, source: &str) -> Result<RebaseOutcome, StoreError> {
     let worktree = record.worktree.as_path();
     let rebased = git_raw(worktree, &["rebase", &target_sha])?;
     if rebased.success {
@@ -108,7 +132,7 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
             store,
             record,
             "rebase.completed",
-            serde_json::json!({ "target_sha": target_sha }),
+            serde_json::json!({ "target_sha": target_sha, "source": source }),
         )?;
         return Ok(RebaseOutcome::Rebased { target_sha });
     }
@@ -127,7 +151,7 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
         store,
         record,
         "rebase.conflict",
-        serde_json::json!({ "files": files, "onto": target_sha, "where": place }),
+        serde_json::json!({ "files": files, "onto": target_sha, "where": place, "source": source }),
     )?;
     Ok(RebaseOutcome::Conflict { reason })
 }

@@ -462,15 +462,27 @@ fn gate_that_records_its_base(w: &World, tag: &str, script: &str) -> PathBuf {
     seen
 }
 
+/// Gate script that, on its first run only, commits `file` to the local main in the project root and
+/// passes: the run's first gate is green, then the merge finds main moved and catches up with it.
+fn main_moves_at_first_gate(w: &World, file: &str, contents: &str, then: &str) -> String {
+    let root = w.repo.root().display();
+    let done = w.home.join("moved-at-gate");
+    format!(
+        "[ -f '{done}' ] || {{ touch '{done}'; printf '%s' '{contents}' > '{root}/{file}'; git -C '{root}' add '{file}'; git -C '{root}' -c user.name=Someone -c user.email=someone@example.invalid commit --quiet -m 'local: {file}'; exit 0; }}; {then}",
+        done = done.display(),
+        contents = contents.trim_end(),
+    )
+}
+
 fn gate_bases(seen: &Path) -> Vec<String> {
     std::fs::read_to_string(seen).unwrap_or_default().lines().map(str::to_string).collect()
 }
 
 #[test]
-fn a_merge_local_run_whose_base_moved_is_rebased_onto_it_checked_again_and_then_fast_forwarded() {
+fn a_merge_local_run_whose_base_moved_before_its_gate_runs_the_gate_once_on_it_and_fast_forwards() {
     let w = world("merge-moved");
     let remote_main = rev(&w.remote, "refs/heads/main");
-    // Local main moves on while the run works, so it is no longer behind the run's branch.
+    // Local main moves on while the run works; the remote's main does not.
     local_main_moves_while_implementing(&w, "local.txt", "local\n");
     let seen = gate_that_records_its_base(&w, "moved", "true");
 
@@ -485,7 +497,12 @@ fn a_merge_local_run_whose_base_moved_is_rebased_onto_it_checked_again_and_then_
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), head, "main was fast-forwarded to the run's branch");
     assert_eq!(rev(w.repo.root(), &format!("{head}~1")), local_main, "the run's work sits on the local main it found");
     assert!(w.repo.root().join("local.txt").exists() && w.repo.root().join("feature.txt").exists(), "the checkout has both");
-    assert_eq!(gate_bases(&seen), vec![remote_main.clone(), local_main], "the gate ran again on the rebased branch, told its new base");
+    assert_eq!(gate_bases(&seen), vec![local_main.clone()], "one gate, on the branch rebased onto the local main before it");
+    let events = store(&w).events(&id).unwrap();
+    let rebased: Vec<_> = events.iter().filter(|e| e.kind == "rebase.completed").collect();
+    assert_eq!(rebased.len(), 1, "no catch-up round at the merge");
+    assert_eq!(rebased[0].payload["target_sha"], local_main.as_str());
+    assert_eq!(rebased[0].payload["source"], "local");
     assert_eq!(rev(&w.remote, "refs/heads/main"), remote_main, "nothing was pushed");
     assert_eq!(ending(&w, &id).as_deref(), Some("merged"));
 }
@@ -506,9 +523,10 @@ fn a_merge_local_run_whose_rebase_conflict_its_session_leaves_unresolved_is_bloc
     let record = store(&w).load(&id).unwrap();
     assert_eq!(ending(&w, &id).as_deref(), Some("blocked"));
     let conflict = store(&w).events(&id).unwrap().into_iter().find(|e| e.kind == "rebase.conflict").expect("the conflict is recorded");
-    assert_eq!(conflict.payload["where"], "at_merge");
+    assert_eq!(conflict.payload["where"], "before_gate", "the conflict with the local main is found before the gate");
+    assert_eq!(conflict.payload["onto"], local_main.as_str());
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
-    assert_eq!(gate_bases(&seen).len(), 1, "the gate is not run on a branch mid-rebase");
+    assert!(gate_bases(&seen).is_empty(), "the gate is not run on a branch mid-rebase");
     assert!(record.worktree.exists(), "the run's worktree is kept");
 }
 
@@ -555,11 +573,12 @@ fn a_merge_local_run_with_rebasing_off_is_blocked_when_its_base_moved_without_ca
 #[test]
 fn a_merge_local_run_whose_gate_fails_after_catching_up_fails_with_main_left_alone() {
     let w = world("merge-moved-red");
-    let local_main = commit_on_local_main(&w, "local.txt", "local\n");
     // Green on the branch the run started from, red once local.txt is in it.
-    let seen = gate_that_records_its_base(&w, "moved-red", "test ! -e local.txt");
+    let script = main_moves_at_first_gate(&w, "local.txt", "local\n", "test ! -e local.txt");
+    let seen = gate_that_records_its_base(&w, "moved-red", &script);
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(31), "failed: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("the gate failed"), "the reason is given: {}", text(&out.stderr));
@@ -579,19 +598,19 @@ fn fixer(w: &World, script: &str) {
 
 /// A merge-local run whose gate is green until it catches up with a local main that adds
 /// local.txt, and green again once a fix leaves fixed.txt in the worktree.
-fn red_after_catching_up(w: &World, tag: &str) -> String {
-    let local_main = commit_on_local_main(w, "local.txt", "local\n");
-    gate_that_records_its_base(w, tag, "test -e fixed.txt || test ! -e local.txt");
-    local_main
+fn red_after_catching_up(w: &World, tag: &str) {
+    let script = main_moves_at_first_gate(w, "local.txt", "local\n", "test -e fixed.txt || test ! -e local.txt");
+    gate_that_records_its_base(w, tag, &script);
 }
 
 #[test]
 fn a_merge_local_run_whose_gate_is_repaired_after_catching_up_fast_forwards_main_to_the_repair() {
     let w = world("merge-moved-fixed");
-    let local_main = red_after_catching_up(&w, "moved-fixed");
+    red_after_catching_up(&w, "moved-fixed");
     fixer(&w, "echo fixed > fixed.txt && git add fixed.txt && git -c user.name=Fixer -c user.email=fixer@example.invalid commit --quiet -m fix");
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
     let id = store(&w).run_ids().unwrap().remove(0);
@@ -606,10 +625,11 @@ fn a_merge_local_run_whose_gate_is_repaired_after_catching_up_fast_forwards_main
 #[test]
 fn a_merge_local_run_whose_gate_fails_for_an_unrelated_reason_after_catching_up_is_blocked_with_main_left_alone() {
     let w = world("merge-moved-unrelated");
-    let local_main = red_after_catching_up(&w, "moved-unrelated");
+    red_after_catching_up(&w, "moved-unrelated");
     fixer(&w, "echo 'local.txt breaks the gate on main already' > \"$ORQ_UNRELATED_FAILURE_FILE\"");
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("unrelated to this run"), "the reason is given: {}", text(&out.stderr));
@@ -623,10 +643,11 @@ fn a_merge_local_run_whose_gate_fails_for_an_unrelated_reason_after_catching_up_
 #[test]
 fn a_merge_local_run_whose_repair_after_catching_up_is_not_committed_is_blocked_with_main_left_alone() {
     let w = world("merge-moved-uncommitted");
-    let local_main = red_after_catching_up(&w, "moved-uncommitted");
+    red_after_catching_up(&w, "moved-uncommitted");
     fixer(&w, "echo fixed > fixed.txt");
 
     let out = run(&w, &["--delivery", "merge-local"]);
+    let local_main = moved_main(&w, "local.txt");
 
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
     assert!(text(&out.stderr).contains("uncommitted changes"), "the reason is given: {}", text(&out.stderr));

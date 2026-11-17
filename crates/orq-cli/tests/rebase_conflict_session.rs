@@ -89,6 +89,17 @@ fn remote_main_takes_feature(w: &World) -> String {
     )
 }
 
+/// Shell that, once, commits feature.txt with other contents on the repository's local main, as
+/// another run's local merge does while this one works.
+fn local_main_takes_feature(w: &World) -> String {
+    let done = w.home.join("moved");
+    let root = w.repo.root().display().to_string();
+    format!(
+        "[ -f '{done}' ] || {{ touch '{done}'; printf 'theirs\\n' > '{root}/feature.txt' && git -C '{root}' add feature.txt && git -C '{root}' -c user.name=Someone -c user.email=someone@example.invalid commit -q -m 'other: feature.txt'; }}",
+        done = done.display(),
+    )
+}
+
 fn orq(w: &World, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_orq"))
         .args(args)
@@ -132,7 +143,7 @@ fn events(w: &World, id: &str) -> Vec<orq_orchestrator::Event> {
 #[test]
 fn a_conflict_before_the_gate_is_resolved_by_a_session_and_the_run_goes_on_to_the_gate_and_merges() {
     let w = world("before-gate");
-    harness(&w, &remote_main_takes_feature(&w), RESOLVE);
+    harness(&w, &local_main_takes_feature(&w), RESOLVE);
 
     let out = run(&w, &[]);
 
@@ -143,8 +154,8 @@ fn a_conflict_before_the_gate_is_resolved_by_a_session_and_the_run_goes_on_to_th
     let conflict = events.iter().find(|e| e.kind == "rebase.conflict").expect("a rebase.conflict event");
     assert_eq!(conflict.payload["where"], "before_gate");
     assert_eq!(conflict.payload["files"], serde_json::json!(["feature.txt"]));
-    let remote_main = git(&w.remote, &["rev-parse", "main"]);
-    assert_eq!(conflict.payload["onto"], remote_main.as_str());
+    let local_main = git(w.repo.root(), &["rev-parse", ":/other: feature.txt"]);
+    assert_eq!(conflict.payload["onto"], local_main.as_str(), "the conflict is with the local main, found before the gate");
     let at = |pred: &dyn Fn(&orq_orchestrator::Event) -> bool| events.iter().position(|e| pred(e)).unwrap_or(usize::MAX);
     let conflict_at = at(&|e| e.kind == "rebase.conflict");
     let fix_at = at(&|e| e.kind == "stage.started" && e.stage.as_deref() == Some("rebase_fix"));
@@ -153,7 +164,7 @@ fn a_conflict_before_the_gate_is_resolved_by_a_session_and_the_run_goes_on_to_th
     assert!(conflict_at < fix_at && fix_at < resolved_at && resolved_at < gate_at, "{:?}", events.iter().map(|e| (&e.kind, &e.stage)).collect::<Vec<_>>());
     let main = git(w.repo.root(), &["rev-parse", "refs/heads/main"]);
     assert_eq!(git(w.repo.root(), &["show", &format!("{main}:feature.txt")]), "merged", "main has the resolved work");
-    assert_eq!(git(w.repo.root(), &["rev-parse", &format!("{main}~1")]), remote_main, "the run's work sits on the moved base");
+    assert_eq!(git(w.repo.root(), &["rev-parse", &format!("{main}~1")]), local_main, "the run's work sits on the moved base");
 }
 
 /// Makes the gate, once, commit feature.txt with other contents on the repository's main, so the
@@ -200,7 +211,7 @@ fn a_conflict_at_the_merge_is_resolved_by_a_session_and_the_gate_runs_again_befo
 #[test]
 fn a_session_that_aborts_the_rebase_leaves_the_run_blocked_before_the_gate_with_the_task_it_was_given() {
     let w = world("aborted");
-    harness(&w, &remote_main_takes_feature(&w), "git rebase --abort");
+    harness(&w, &local_main_takes_feature(&w), "git rebase --abort");
     std::fs::write(
         w.repo.root().join(".orq/run.toml"),
         "gate = [\"true\"]\n[rebase]\ngenerated = [\"web/app.js\"]\nrebuild = [\"node\", \"build.mjs\"]\n",
@@ -224,7 +235,7 @@ fn a_session_that_aborts_the_rebase_leaves_the_run_blocked_before_the_gate_with_
 #[test]
 fn a_run_with_rebasing_off_never_starts_a_conflict_session() {
     let w = world("rebase-off");
-    harness(&w, &remote_main_takes_feature(&w), RESOLVE);
+    harness(&w, &local_main_takes_feature(&w), RESOLVE);
 
     let out = run(&w, &["--no-rebase"]);
 
