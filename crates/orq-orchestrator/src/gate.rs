@@ -421,35 +421,114 @@ const NEXTEST_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Whether `cargo nextest --version` succeeds in `dir`, with the environment a gate step gets.
 fn nextest_available(dir: &Path) -> bool {
+    run_bounded("cargo".as_ref(), &["nextest", "--version"], dir, NEXTEST_PROBE_LIMIT).is_some()
+}
+
+/// What `program args` prints in `dir`, when it starts and exits 0 within `limit`; `None` otherwise.
+/// It gets only the environment a gate step gets, and runs in its own process group: at the limit the
+/// whole group is killed, and output a stray descendant still holds is not waited for.
+fn run_bounded(program: &std::ffi::OsStr, args: &[&str], dir: &Path, limit: std::time::Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    let mut command = Command::new("cargo");
+    let mut command = Command::new(program);
     command
-        .args(["nextest", "--version"])
+        .args(args)
         .current_dir(dir)
         .env_clear()
+        .process_group(0)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for name in ["PATH", "HOME", "TERM"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
     }
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-    let deadline = std::time::Instant::now() + NEXTEST_PROBE_LIMIT;
+    let mut child = command.spawn().ok()?;
+    // Read on the side, so output larger than a pipe holds cannot stall the tool.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        stdout.read_to_end(&mut out).map(|_| out)
+    });
+    let deadline = std::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20))
-            }
+            Ok(Some(status)) if status.success() => return reader.join().ok()?.ok(),
+            Ok(Some(_)) => return None,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
             _ => {
+                // SAFETY: kill(2) on the group this child leads; it takes no memory of ours.
+                unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_bounded;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-gate-probe-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn script(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("tool");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn a_tool_that_succeeds_gives_its_output_from_the_folder_it_ran_in() {
+        let dir = scratch("ok");
+        let tool = script(&dir, "pwd; echo \"$1 $2\"");
+        let out = run_bounded(tool.as_os_str(), &["nextest", "--version"], &dir, LIMIT).expect("it succeeded");
+        let text = String::from_utf8(out).unwrap();
+        let here = std::fs::canonicalize(&dir).unwrap();
+        assert_eq!(text, format!("{}\nnextest --version\n", here.display()));
+    }
+
+    #[test]
+    fn a_tool_that_exits_non_zero_or_cannot_start_gives_nothing() {
+        let dir = scratch("fail");
+        let tool = script(&dir, "echo partial; exit 101");
+        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, LIMIT), None, "non-zero exit");
+        let missing = dir.join("no-such-tool");
+        assert_eq!(run_bounded(missing.as_os_str(), &[], &dir, LIMIT), None, "missing program");
+    }
+
+    #[test]
+    fn a_tool_that_hangs_is_stopped_at_the_limit_and_left_dead() {
+        let dir = scratch("hang");
+        let pid_file = dir.join("pid");
+        let tool = script(&dir, &format!("echo $$ > {}; exec sleep 30", pid_file.display()));
+        let started = Instant::now();
+        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_millis(300)), None);
+        assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
+        assert!(!alive, "the hung tool {pid} was killed");
+    }
+
+    #[test]
+    fn a_tool_with_more_output_than_a_pipe_holds_still_finishes() {
+        let dir = scratch("big");
+        let tool = script(&dir, "head -c 300000 /dev/zero | tr '\\0' x");
+        let out = run_bounded(tool.as_os_str(), &[], &dir, LIMIT).expect("it finished");
+        assert_eq!(out.len(), 300_000);
     }
 }
