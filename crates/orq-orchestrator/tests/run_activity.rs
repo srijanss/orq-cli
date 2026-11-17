@@ -515,3 +515,35 @@ fn quiet_rows_with_no_known_total_count_in_hundredths() {
     assert_eq!(test_progress("..F. [ 21%]\n.... [ 43%]\n"), Some(TestProgress { done: 43, total: 100, current: None }));
     assert_eq!(test_progress("..F. [ 21%]\ncollected 3 items\n").map(|t| (t.done, t.total)), Some((0, 3)), "a later collection starts again");
 }
+
+/// What vitest's default reporter prints off a terminal for two finished test files.
+const VITEST_FILES: &str = " ✓ src/cart/total.test.ts (12 tests | 1 skipped) 34ms\n ❯ src/cart/coupon.test.ts (5 tests | 2 failed) 12ms\n";
+
+#[test]
+fn vitest_file_lines_after_a_total_add_their_test_counts() {
+    use orq_orchestrator::{test_progress, test_total_line, TestProgress};
+    let log = format!("{}\n RUN  v5.0.0 /w\n\n{VITEST_FILES}", test_total_line(Some(17)));
+    assert_eq!(test_progress(&log), Some(TestProgress { done: 17, total: 17, current: Some("src/cart/coupon.test.ts".to_string()) }));
+    let one = format!("{}\n{}", test_total_line(Some(17)), VITEST_FILES.lines().next().unwrap());
+    assert_eq!(test_progress(&one).map(|t| (t.done, t.total, t.current)), Some((12, 17, Some("src/cart/total.test.ts".to_string()))));
+}
+
+#[test]
+fn a_vitest_summary_sets_done_to_the_total_and_coloured_lines_count_the_same() {
+    use orq_orchestrator::{test_progress, test_total_line};
+    let coloured = " \u{1b}[32m✓\u{1b}[39m src/cart/total.test.ts \u{1b}[2m(\u{1b}[22m\u{1b}[2m12 tests\u{1b}[22m\u{1b}[2m | \u{1b}[22m\u{1b}[33m1 skipped\u{1b}[39m\u{1b}[2m)\u{1b}[22m\u{1b}[32m 34\u{1b}[2mms\u{1b}[22m\u{1b}[39m";
+    let log = format!("{}\n{coloured}\n", test_total_line(Some(17)));
+    assert_eq!(test_progress(&log).map(|t| (t.done, t.current)), Some((12, Some("src/cart/total.test.ts".to_string()))));
+    let files = format!("{log}\u{1b}[2m Test Files \u{1b}[22m \u{1b}[1m\u{1b}[31m1 failed\u{1b}[39m\u{1b}[22m\u{1b}[2m | \u{1b}[22m\u{1b}[1m\u{1b}[32m1 passed\u{1b}[39m\u{1b}[22m\u{1b}[90m (2)\u{1b}[39m\n");
+    assert_eq!(test_progress(&files).map(|t| t.done), Some(12), "the files summary is not the tests one");
+    let summary = format!("{files}\u{1b}[2m      Tests \u{1b}[22m \u{1b}[1m\u{1b}[31m2 failed\u{1b}[39m\u{1b}[22m\u{1b}[2m | \u{1b}[22m\u{1b}[1m\u{1b}[32m14 passed\u{1b}[39m\u{1b}[22m\u{1b}[90m (17)\u{1b}[39m\n");
+    assert_eq!(test_progress(&summary).map(|t| (t.done, t.total)), Some((17, 17)));
+}
+
+#[test]
+fn vitest_lines_count_only_against_a_listed_total_not_a_pytest_count() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    // A compound `bash -c` gate: pytest's own count, then a vitest run nobody listed.
+    let log = format!("collected 10 items\na.py::t1 PASSED [ 10%]\n{VITEST_FILES}      Tests  2 failed | 14 passed | 1 skipped (17)\n");
+    assert_eq!(test_progress(&log), Some(TestProgress { done: 1, total: 10, current: Some("a.py::t1".to_string()) }));
+}

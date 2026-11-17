@@ -539,3 +539,164 @@ fn a_step_aimed_at_another_manifest_is_not_counted() {
     assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
     assert_eq!(cargo_calls(&w), ["test --manifest-path other/Cargo.toml", "test --manifest-path=other/Cargo.toml"]);
 }
+
+/// A `name` on the PATH given to the gate that notes its arguments in `<name>-calls` and then runs `script`.
+fn fake_tool(w: &World, name: &str, script: &str) -> Vec<(String, String)> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = w.root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = w.root.join(format!("{name}-calls"));
+    let tool = bin.join(name);
+    fs::write(&tool, format!("#!/bin/sh\necho \"$*\" >> '{}'\n{script}\n", calls.display())).unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    vec![("PATH".to_string(), path)]
+}
+
+fn tool_calls(w: &World, name: &str) -> Vec<String> {
+    fs::read_to_string(w.root.join(format!("{name}-calls"))).unwrap_or_default().lines().map(str::to_string).collect()
+}
+
+fn argv(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| word.to_string()).collect()
+}
+
+/// A vitest that lists 3 tests as JSON when asked, and otherwise runs them, one file line each.
+const VITEST: &str = r#"case "$*" in
+*list*) echo '[{"name":"total > adds","file":"/w/src/a.test.ts"},{"name":"total > rounds","file":"/w/src/a.test.ts"},{"name":"coupon > applies","file":"/w/src/b.test.ts"}]' ;;
+*) echo ' ✓ src/a.test.ts (2 tests) 3ms'; echo ' ✓ src/b.test.ts (1 test) 2ms' ;;
+esac"#;
+
+#[test]
+fn a_js_run_step_is_counted_by_listing_its_tests_before_it_runs() {
+    let w = world("js-run");
+    let env = fake_tool(&w, "vitest", VITEST);
+    let outcome = run_with(&w, &steps(vec![argv(&["vitest", "run", "src/"])]), &env);
+    assert_eq!(outcome, GateOutcome::Passed);
+    assert_eq!(tool_calls(&w, "vitest"), ["list --json src/", "run src/"]);
+    let log = fs::read_to_string(&w.log).unwrap();
+    let total = orq_orchestrator::test_total_line(Some(3));
+    let at = log.find(&total).unwrap_or_else(|| panic!("{log}"));
+    assert!(at < log.find("src/a.test.ts").unwrap(), "{log}");
+    assert!(!log.contains("coupon > applies"), "the listing is not test output: {log}");
+    let progress = orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total, t.current));
+    assert_eq!(progress, Some((3, 3, Some("src/b.test.ts".to_string()))), "{log}");
+}
+
+#[test]
+fn a_vitest_run_step_writes_its_listed_total_before_it_runs() {
+    let w = world("vitest-total");
+    let env = fake_tool(&w, "vitest", VITEST);
+    let outcome = run_with(&w, &steps(vec![argv(&["vitest", "run", "--reporter=default", "src/"])]), &env);
+    assert_eq!(outcome, GateOutcome::Passed);
+    assert_eq!(tool_calls(&w, "vitest"), ["list --json --reporter=default src/", "run --reporter=default src/"]);
+    let log = fs::read_to_string(&w.log).unwrap();
+    let at = log.find(&orq_orchestrator::test_total_line(Some(3))).unwrap_or_else(|| panic!("{log}"));
+    assert!(at < log.find("src/a.test.ts").unwrap(), "{log}");
+    assert!(!log.contains("coupon > applies"), "the listing is not test output: {log}");
+}
+
+/// An npm, pnpm or yarn that runs a package's `vitest` for `exec` and bin forms, and the `vitest run`
+/// a script would be for `run <script>` or `test`.
+const RUNNER: &str = r#"case "$1" in
+exec) shift; [ "$1" = -- ] && shift; exec "$@" ;;
+vitest) exec "$@" ;;
+run|test) exec vitest run ;;
+esac"#;
+
+#[test]
+fn a_vitest_run_through_a_package_runner_or_its_script_is_listed_through_the_same_runner() {
+    let cases: [(&str, &[&str], &str); 11] = [
+        ("npx", &["npx", "vitest", "run", "src/"], "list --json src/"),
+        ("pnpm-exec", &["pnpm", "exec", "vitest", "run"], "list --json"),
+        ("pnpm-bin", &["pnpm", "vitest", "run"], "list --json"),
+        ("yarn-bin", &["yarn", "vitest"], "list --json"),
+        ("npm-run", &["npm", "run", "test"], "list --json"),
+        ("npm-run-args", &["npm", "run", "test", "--", "src/"], "list --json src/"),
+        ("npm-test", &["npm", "test"], "list --json"),
+        ("pnpm-test", &["pnpm", "test"], "list --json"),
+        ("pnpm-run", &["pnpm", "run", "unit"], "list --json --project unit"),
+        ("yarn-test", &["yarn", "test"], "list --json"),
+        ("yarn-run", &["yarn", "run", "unit", "src/"], "list --json --project unit src/"),
+    ];
+    for (tag, step, listed) in cases {
+        let w = world(&format!("runner-{tag}"));
+        fs::write(w.worktree.join("package.json"), r#"{"scripts":{"test":"vitest run","unit":"vitest --project unit"}}"#).unwrap();
+        let env = fake_tool(&w, "vitest", VITEST);
+        fake_tool(&w, step[0], RUNNER);
+        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
+        let calls = tool_calls(&w, "vitest");
+        assert_eq!(calls.first().map(String::as_str), Some(listed), "{tag}: {calls:?}");
+        assert_eq!(calls.len(), 2, "{tag}: {calls:?}");
+        let log = fs::read_to_string(&w.log).unwrap();
+        assert!(log.contains(&orq_orchestrator::test_total_line(Some(3))), "{tag}: {log}");
+    }
+}
+
+#[test]
+fn a_vitest_listing_that_fails_leaves_the_total_unknown_and_the_tests_still_decide() {
+    for (tag, listing) in [
+        ("vitest-list-fails", r#"echo '[{"name":"a","file":"a.test.ts"}]'; exit 1"#),
+        ("vitest-list-garbled", "echo 'no tests here'"),
+        ("vitest-list-not-tests", "echo '[1, 2, 3]'"),
+        ("vitest-list-object", r#"echo '{"name":"a","file":"a.test.ts"}'"#),
+        ("vitest-list-empty", "echo '[]'"),
+    ] {
+        let w = world(tag);
+        let env = fake_tool(&w, "vitest", &format!("case \"$1\" in list) {listing} ;; *) echo the-tests-ran; exit 4 ;; esac"));
+        let outcome = run_with(&w, &steps(vec![argv(&["vitest", "run"])]), &env);
+        assert_eq!(outcome, GateOutcome::Failed { step: 0, exit_code: Some(4) }, "{tag}");
+        assert_eq!(tool_calls(&w, "vitest").len(), 2, "{tag}");
+        let log = fs::read_to_string(&w.log).unwrap();
+        assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{tag}: {log}");
+        assert_eq!(orq_orchestrator::test_progress(&log), None, "{tag}: {log}");
+    }
+}
+
+#[test]
+fn a_step_that_is_not_a_plain_vitest_run_gets_no_vitest_listing() {
+    let scripts = r#"{"scripts":{"test":"vitest run","jest":"jest","chained":"vitest run && eslint .","env":"CI=1 vitest run","quoted":"vitest run 'src/a b'","list":"vitest list"}}"#;
+    let cases: [(&str, &[&str]); 10] = [
+        ("other-script", &["npm", "run", "jest"]),
+        ("chained-script", &["npm", "run", "chained"]),
+        ("env-script", &["pnpm", "env"]),
+        ("quoted-script", &["yarn", "quoted"]),
+        ("list-script", &["npm", "run", "list"]),
+        ("missing-script", &["npm", "run", "nothing"]),
+        ("npm-args-without-dashes", &["npm", "run", "test", "src/"]),
+        ("pnpm-args-after-dashes", &["pnpm", "test", "--", "src/"]),
+        ("compound-shell", &["bash", "-c", "vitest run; echo done"]),
+        ("vitest-watch", &["vitest", "watch"]),
+    ];
+    for (tag, step) in cases {
+        let w = world(&format!("not-vitest-{tag}"));
+        fs::write(w.worktree.join("package.json"), scripts).unwrap();
+        let env = fake_tool(&w, "vitest", VITEST);
+        fake_tool(&w, step[0], "exit 0");
+        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
+        assert!(tool_calls(&w, "vitest").iter().all(|call| !call.starts_with("list")), "{tag}");
+        assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"), "{tag}");
+    }
+}
+
+#[test]
+fn a_vitest_script_package_json_that_is_not_a_plain_file_is_not_read_and_the_step_still_runs() {
+    use std::sync::mpsc;
+    let w = world("package-fifo");
+    let fifo = w.worktree.join("package.json");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let env = fake_tool(&w, "npm", "echo the-tests-ran");
+    let (sent, received) = mpsc::channel();
+    let (store, log) = (RunStore::new(&w.root.join("state")), w.log.clone());
+    std::thread::spawn(move || {
+        let outcome = orq_orchestrator::run_gate_stage_with_env(&store, "run-1", &steps(vec![argv(&["npm", "test"])]), true, &log, &env);
+        let _ = sent.send(outcome.unwrap());
+    });
+    let outcome = received.recv_timeout(std::time::Duration::from_secs(20));
+    if outcome.is_err() {
+        // Let the stuck reader go, so the test process can end.
+        let _ = fs::OpenOptions::new().write(true).open(&fifo);
+    }
+    assert_eq!(outcome, Ok(GateOutcome::Passed), "the gate waited on the package.json");
+    assert!(fs::read_to_string(&w.log).unwrap().contains("the-tests-ran"));
+}

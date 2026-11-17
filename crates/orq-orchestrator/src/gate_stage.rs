@@ -123,14 +123,15 @@ fn run_gate_attempt_limited(
         serde_json::json!({ "log": log_name, "steps": steps.len() }),
     )?;
 
-    let counts_tests = steps.iter().any(|argv| listing_argv(argv).is_some());
-    for (index, argv) in steps.iter().enumerate() {
+    let listings: Vec<Option<Listing>> = steps.iter().map(|argv| step_listing(argv, &record.worktree)).collect();
+    let counts_tests = listings.iter().any(Option::is_some);
+    for (index, (argv, listing)) in steps.iter().zip(&listings).enumerate() {
         writeln!(log, "$ {}", argv.join(" "))?;
         if counts_tests {
             // The log is kept across rounds: an earlier step's total says nothing about this one.
             writeln!(log, "{}", test_total_line(None))?;
         }
-        if let Some(total) = listing_argv(argv).and_then(|listing| count_tests(&record, &listing, log_path, &log, env, limit)) {
+        if let Some(total) = listing.as_ref().and_then(|listing| count_listed(&record, listing, log_path, &log, env, limit)) {
             writeln!(log, "{}", test_total_line(Some(total)))?;
         }
         let (exit_code, failure) = run_step(&record, argv, &log, &log, env, limit)?;
@@ -161,6 +162,135 @@ fn run_gate_attempt_limited(
         serde_json::json!({ "exit_code": 0, "log": log_name }),
     )?;
     Ok(GateOutcome::Passed)
+}
+
+/// What lists a step's tests beforehand, with the same selection.
+enum Listing {
+    /// `cargo test ... -- --list`, its binaries' summaries summed.
+    Cargo(Vec<String>),
+    /// `vitest list --json ...`, its entries counted.
+    Vitest(Vec<String>),
+}
+
+/// How the tests of `argv`, run in `worktree`, are listed, when it is a test run orq knows how to count.
+fn step_listing(argv: &[String], worktree: &Path) -> Option<Listing> {
+    listing_argv(argv).map(Listing::Cargo).or_else(|| vitest_listing(argv, worktree).map(Listing::Vitest))
+}
+
+/// What lists the tests of a vitest step, through the same package runner and with the same
+/// arguments: `vitest [run] ...`, `npx vitest`, `pnpm [exec] vitest`, `yarn vitest`, or an
+/// npm, pnpm or yarn script of the worktree's `package.json` that is a vitest run.
+fn vitest_listing(argv: &[String], worktree: &Path) -> Option<Vec<String>> {
+    let (program, rest) = argv.split_first()?;
+    let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+    let (runner, args) = match (program.as_str(), rest) {
+        ("vitest", args) => (Vec::new(), args),
+        ("npx", [bin, args @ ..]) if bin == "vitest" => (words(&["npx"]), args),
+        ("pnpm", [exec, bin, args @ ..]) if exec == "exec" && bin == "vitest" => (words(&["pnpm", "exec"]), args),
+        ("pnpm" | "yarn", [bin, args @ ..]) if bin == "vitest" => (vec![program.clone()], args),
+        ("npm" | "pnpm" | "yarn", args) => return script_listing(program, args, worktree),
+        _ => return None,
+    };
+    vitest_args_listing(runner, args)
+}
+
+/// `runner` followed by `vitest list --json` and the arguments of a vitest run, without its `run`;
+/// `None` for any other vitest command.
+fn vitest_args_listing(mut listing: Vec<String>, args: &[String]) -> Option<Vec<String>> {
+    let args = match args.first().map(String::as_str) {
+        Some("run") => &args[1..],
+        Some("list" | "bench" | "init" | "watch" | "dev" | "related" | "typecheck") => return None,
+        _ => args,
+    };
+    listing.extend(["vitest", "list", "--json"].map(String::from));
+    listing.extend_from_slice(args);
+    Some(listing)
+}
+
+/// The listing of `<manager> [run] <script> [args]` when that script, in the worktree's
+/// `package.json`, is a plain vitest run. Arguments whose passing differs between package
+/// managers' versions are not guessed at.
+fn script_listing(manager: &str, args: &[String], worktree: &Path) -> Option<Vec<String>> {
+    let (script, extra) = match args {
+        [run, script, extra @ ..] if run == "run" => (script, extra),
+        [test, extra @ ..] if test == "test" => (test, extra),
+        [script, extra @ ..] if manager != "npm" && !script.starts_with('-') => (script, extra),
+        _ => return None,
+    };
+    let extra = match (manager, extra) {
+        (_, []) => extra,
+        ("npm", [dashes, extra @ ..]) if dashes == "--" => extra,
+        ("npm", _) => return None,
+        (_, extra) if extra.iter().any(|arg| arg == "--") => return None,
+        (_, extra) => extra,
+    };
+    let package: serde_json::Value = serde_json::from_slice(&read_package_json(worktree)?).ok()?;
+    let mut words = vitest_script_words(package.get("scripts")?.get(script)?.as_str()?)?;
+    words.extend_from_slice(extra);
+    let runner: &[&str] = match manager {
+        "npm" => &["npm", "exec", "--"],
+        "pnpm" => &["pnpm", "exec"],
+        _ => &["yarn"],
+    };
+    vitest_args_listing(runner.iter().map(|word| word.to_string()).collect(), &words)
+}
+
+/// The largest `package.json` read for its scripts.
+const PACKAGE_JSON_LIMIT: u64 = 1024 * 1024;
+
+/// The worktree's own `package.json`, when it is a plain file of a sensible size: a link, a pipe
+/// or a device is not read, so looking for a script can never wait or wander out of the worktree.
+fn read_package_json(worktree: &Path) -> Option<Vec<u8>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(worktree.join("package.json"))
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > PACKAGE_JSON_LIMIT {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(PACKAGE_JSON_LIMIT).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// The arguments of a script that is just `vitest ...`, with nothing a shell would read
+/// differently from plain words.
+fn vitest_script_words(script: &str) -> Option<Vec<String>> {
+    if script.chars().any(|c| ";&|<>$`'\"\\(){}*?~#!\n".contains(c)) {
+        return None;
+    }
+    let mut words = script.split_whitespace();
+    (words.next()? == "vitest").then(|| words.map(str::to_string).collect())
+}
+
+/// How many tests a step's listing says there are, if it could be told.
+fn count_listed(
+    record: &RunRecord,
+    listing: &Listing,
+    log_path: &Path,
+    log: &fs::File,
+    env: &[(String, String)],
+    limit: std::time::Duration,
+) -> Option<u64> {
+    match listing {
+        Listing::Cargo(argv) => count_tests(record, argv, log_path, log, env, limit),
+        Listing::Vitest(argv) => vitest_listed_total(&captured_stdout(record, argv, log_path, log, env, limit)?),
+    }
+}
+
+/// The number of tests in `vitest list --json`'s output: an array with one `{name, file}` entry
+/// per test. Anything else is not counted.
+fn vitest_listed_total(json: &[u8]) -> Option<u64> {
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(json).ok()?;
+    let is_test = |entry: &serde_json::Value| entry.get("name").is_some_and(serde_json::Value::is_string);
+    if !entries.iter().all(is_test) {
+        return None;
+    }
+    let total = entries.len() as u64;
+    (total > 0).then_some(total)
 }
 
 /// What lists the tests of a `cargo test` step, with the same selection; `None` for any other step.

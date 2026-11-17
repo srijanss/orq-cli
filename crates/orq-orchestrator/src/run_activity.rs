@@ -52,7 +52,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     }
 }
 
-/// How far a test run has come, read from `cargo test` or pytest output.
+/// How far a test run has come, read from `cargo test`, pytest or vitest output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestProgress {
     pub done: u64,
@@ -78,23 +78,32 @@ pub fn test_total_line(total: Option<u64>) -> String {
 /// A run with no known total has none: one binary's `running N tests` says nothing about the suite.
 /// pytest needs no total line: its own collection line (or xdist's workers line) starts a count,
 /// read from its verbose, xdist or quiet result lines. `pytest -q` prints no collection line: its
-/// quiet rows' own percentage is then the progress, as hundredths.
+/// quiet rows' own percentage is then the progress, as hundredths. vitest prints no total: after a
+/// listed one, each finished file adds its tests and the closing `Tests ... (N)` line completes it.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
+    // Whether the count was started by a listed total: vitest prints none of its own, so its lines
+    // say nothing about a count pytest started.
+    let mut listed = false;
     for line in text.lines() {
         if let Some(total) = line.strip_prefix(TEST_TOTAL_PREFIX) {
             progress = total.parse::<u64>().ok().and_then(starting_count);
+            listed = true;
             continue;
         }
         // pytest colours its lines with `--color=yes` or `FORCE_COLOR`: they are read without it.
         let plain = if line.contains('\u{1b}') { Cow::Owned(printable(line)) } else { Cow::Borrowed(line) };
         if let Some(total) = pytest_total(&plain) {
             progress = starting_count(total);
+            listed = false;
             continue;
         }
         if let Some(percent) = pytest_quiet_percent(&plain) {
             // `pytest -q` prints no collection line: its own percentage is then counted in hundredths.
-            let p = progress.get_or_insert(TestProgress { done: 0, total: 100, current: None });
+            let p = progress.get_or_insert_with(|| {
+                listed = false;
+                TestProgress { done: 0, total: 100, current: None }
+            });
             p.done = (p.total * percent / 100).min(p.total);
             p.current = None;
             continue;
@@ -104,6 +113,17 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             p.done = (p.done + 1).min(p.total);
             p.current = Some(name.to_string());
             continue;
+        }
+        if listed {
+            if let Some((file, count)) = vitest_file(&plain) {
+                p.done = p.done.saturating_add(count).min(p.total);
+                p.current = Some(file.to_string());
+                continue;
+            }
+            if vitest_summary(&plain) {
+                p.done = p.total;
+                continue;
+            }
         }
         let Some(result) = line.trim().strip_prefix("test ") else { continue };
         let Some((name, outcome)) = result.rsplit_once(" ... ") else { continue };
@@ -198,6 +218,39 @@ fn pytest_percent(text: &str) -> Option<u64> {
 fn finished_test<'a>(name: &'a str, outcome: &str) -> Option<&'a str> {
     let name = name.trim();
     PYTEST_OUTCOMES.contains(&outcome).then_some(name).filter(|name| !name.is_empty())
+}
+
+/// The file and test count of what vitest's default reporter prints as a test file finishes:
+/// `<✓|❯|×|↓> <file> (<n> test[s][ | ...])[ <duration>...]`.
+fn vitest_file(line: &str) -> Option<(&str, u64)> {
+    let rest = line.trim().strip_prefix(['✓', '❯', '×', '↓'])?.strip_prefix(' ')?;
+    let (file, rest) = rest.rsplit_once(" (")?;
+    let (counts, after) = rest.split_once(')')?;
+    let tests = counts.split(" | ").next()?;
+    let count = tests.strip_suffix(" tests").or_else(|| tests.strip_suffix(" test"))?.parse::<u64>().ok()?;
+    let after = after.trim();
+    let file = file.trim();
+    (!file.is_empty() && (after.is_empty() || after.split(' ').next().is_some_and(is_duration))).then_some((file, count))
+}
+
+/// Whether `line` is vitest's closing count of tests, `Tests  2 failed | 14 passed (16)`: the run
+/// is over, so every listed test is done.
+fn vitest_summary(line: &str) -> bool {
+    let summary = || {
+        let rest = line.trim().strip_prefix("Tests ")?;
+        let (counts, total) = rest.strip_suffix(')')?.rsplit_once(" (")?;
+        total.parse::<u64>().ok()?;
+        let counted = |part: &str| part.split_once(' ').is_some_and(|(n, word)| n.parse::<u64>().is_ok() && !word.is_empty());
+        counts.trim().split(" | ").all(counted).then_some(())
+    };
+    summary().is_some()
+}
+
+/// Whether `word` is a duration as vitest prints one: `34ms`, `1.20s`.
+fn is_duration(word: &str) -> bool {
+    word.strip_suffix("ms")
+        .or_else(|| word.strip_suffix('s'))
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
 /// How much of the end of a log is looked at, and the longest line shown.
