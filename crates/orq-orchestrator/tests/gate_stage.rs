@@ -739,3 +739,52 @@ fn a_vitest_script_with_a_bracket_glob_is_not_listed_since_its_shell_would_expan
         assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"), "{tag}");
     }
 }
+
+#[test]
+fn the_gates_notes_open_its_log_so_a_fallback_to_cargo_test_is_said_first() {
+    let w = world("notes");
+    let gate = Gate::Steps {
+        steps: vec![sh("echo ran")],
+        notes: vec!["cargo-nextest not found: running cargo test".to_string()],
+    };
+
+    assert_eq!(run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap(), GateOutcome::Passed);
+
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert_eq!(log.lines().next(), Some("orq: cargo-nextest not found: running cargo test"), "{log}");
+    assert!(log.contains("ran"), "{log}");
+}
+
+#[test]
+fn a_test_nextest_passed_only_on_a_retry_is_recorded_as_flaky_before_the_stage_ends() {
+    let w = world("flaky");
+    // Spelled so the argv echoed to the log holds no FLAKY line of its own.
+    let gate = steps(vec![sh(
+        "printf '    Starting 2 tests across 1 binary\\n        PASS [   0.002s] (1/2) orq-core a_steady_one\\n'; \
+         printf '       FL''AKY 2/3 [   0.004s] (2/2) orq-cli::pipeline two_runs_in_one_second\\n'; \
+         printf '       FL''AKY 2/3 [   0.004s] orq-cli::pipeline two_runs_in_one_second\\n'; \
+         printf '       FL''AKY 3/3 [   0.009s] orq-core::store a_slow_lock\\n'",
+    )]);
+
+    assert_eq!(run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap(), GateOutcome::Passed);
+
+    assert_eq!(kinds(&w), [verify("stage.started"), verify("gate.flaky_tests"), verify("stage.completed")]);
+    let flaky = &w.store.events("run-1").unwrap()[1];
+    assert_eq!(
+        flaky.payload["tests"],
+        serde_json::json!([
+            { "name": "orq-cli::pipeline two_runs_in_one_second", "retry": 1 },
+            { "name": "orq-core::store a_slow_lock", "retry": 2 },
+        ])
+    );
+}
+
+#[test]
+fn a_gate_with_no_flaky_line_records_no_flaky_event_even_when_a_step_fails() {
+    let w = world("steady");
+    let gate = steps(vec![sh("echo '        PASS [   0.002s] orq-core a_steady_one'; exit 4")]);
+
+    run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
+
+    assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.failed")]);
+}

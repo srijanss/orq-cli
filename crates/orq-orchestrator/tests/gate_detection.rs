@@ -32,6 +32,20 @@ fn run(list: &[&[&str]]) -> Gate {
     }
 }
 
+/// The gate detected in `dir`, with cargo-nextest there or not.
+fn detected(dir: &Path, nextest: bool) -> Result<Gate, GateError> {
+    choose_gate_with(
+        dir,
+        None,
+        &GateOptions {
+            nextest: Some(nextest),
+            ..GateOptions::default()
+        },
+    )
+}
+
+const NEXTEST: &[&str] = &["cargo", "nextest", "run", "--workspace", "--no-fail-fast"];
+
 const PACKAGE: &str =
     r#"{"scripts": {"typecheck": "tsc --noEmit", "test": "vitest run", "lint": "eslint ."}}"#;
 
@@ -67,12 +81,62 @@ fn a_configured_gate_needs_a_program_to_run() {
 }
 
 #[test]
-fn a_rust_workspace_runs_cargo_test() {
+fn without_nextest_a_rust_workspace_runs_cargo_test_and_says_why() {
     let dir = worktree("rust");
     touch(&dir, "Cargo.toml", "[workspace]\n");
     assert_eq!(
-        choose_gate(&dir, None),
-        Ok(run(&[&["cargo", "test", "--workspace"]]))
+        detected(&dir, false),
+        Ok(Gate::Steps {
+            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            notes: vec!["cargo-nextest not found: running cargo test".to_string()],
+        })
+    );
+}
+
+#[test]
+fn a_rust_workspace_runs_nextest_when_it_is_there() {
+    let dir = worktree("rust-nextest");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])));
+}
+
+#[test]
+fn left_unset_nextest_is_looked_for_by_asking_cargo_in_the_worktree() {
+    let dir = worktree("rust-probe");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    let there = std::process::Command::new("cargo")
+        .args(["nextest", "--version"])
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    assert_eq!(choose_gate(&dir, None), detected(&dir, there), "nextest there: {there}");
+}
+
+#[test]
+fn a_library_with_a_doc_test_adds_the_doc_test_step_since_nextest_runs_none() {
+    const DOC: &[&str] = &["cargo", "test", "--workspace", "--doc"];
+    let dir = worktree("rust-doc");
+    touch(&dir, "Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n");
+    touch(&dir, "crates/plain/Cargo.toml", "[package]\nname = \"plain\"\n");
+    touch(&dir, "crates/plain/src/lib.rs", "//! Words only.\n/// ```text\n/// not rust\n/// ```\npub fn f() {}\n");
+    // A binary's doc comments are never run as tests, and nothing under target/ is the project's.
+    touch(&dir, "crates/tool/Cargo.toml", "[package]\nname = \"tool\"\n");
+    touch(&dir, "crates/tool/src/main.rs", "/// ```\n/// assert!(true);\n/// ```\nfn main() {}\n");
+    touch(&dir, "target/package/x/Cargo.toml", "[package]\nname = \"x\"\n");
+    touch(&dir, "target/package/x/src/lib.rs", "/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n");
+    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])), "no doc test yet");
+
+    touch(&dir, "crates/plain/src/deep/more.rs", "    //! ```rust,no_run\n    //! let x = 1;\n    //! ```\n");
+    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST, DOC])));
+    assert_eq!(
+        detected(&dir, false),
+        Ok(Gate::Steps {
+            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            notes: vec!["cargo-nextest not found: running cargo test".to_string()],
+        }),
+        "cargo test runs the doc tests itself"
     );
 }
 
@@ -187,9 +251,9 @@ fn node_without_installed_dependencies_is_skipped_with_a_recorded_note() {
     touch(&dir, "Cargo.toml", "[workspace]\n");
 
     assert_eq!(
-        choose_gate(&dir, None),
+        detected(&dir, true),
         Ok(Gate::Steps {
-            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            steps: steps(&[NEXTEST]),
             notes: vec![
                 "package.json found but node_modules is missing; install the dependencies to run the Node checks"
                     .to_string()
@@ -200,11 +264,11 @@ fn node_without_installed_dependencies_is_skipped_with_a_recorded_note() {
     touch(&dir, ".pnp.cjs", "");
     touch(&dir, "yarn.lock", "");
     assert_eq!(
-        choose_gate(&dir, None),
+        detected(&dir, true),
         Ok(run(&[
             &["yarn", "run", "typecheck"],
             &["yarn", "run", "test"],
-            &["cargo", "test", "--workspace"]
+            NEXTEST
         ]))
     );
 }
@@ -217,9 +281,9 @@ fn a_malformed_package_json_is_a_note_not_a_failure() {
     fs::create_dir_all(dir.join("node_modules")).unwrap();
 
     assert_eq!(
-        choose_gate(&dir, None),
+        detected(&dir, true),
         Ok(Gate::Steps {
-            steps: steps(&[&["cargo", "test", "--workspace"]]),
+            steps: steps(&[NEXTEST]),
             notes: vec!["package.json is not valid JSON; the Node checks were skipped".to_string()],
         })
     );
@@ -299,11 +363,11 @@ fn a_django_project_checks_migrations_and_then_runs_pytest() {
     touch(&dir, "Cargo.toml", "[workspace]\n");
 
     assert_eq!(
-        choose_gate(&dir, None),
+        detected(&dir, true),
         Ok(run(&[
             MIGRATIONS,
             &["uv", "run", "pytest"],
-            &["cargo", "test", "--workspace"]
+            NEXTEST
         ]))
     );
 }
@@ -374,11 +438,11 @@ fn stacks_run_in_the_order_python_node_rust() {
     touch(&dir, "pytest.ini", "");
 
     assert_eq!(
-        choose_gate(&dir, None),
+        detected(&dir, true),
         Ok(run(&[
             &["uv", "run", "pytest"],
             &["npm", "run", "test"],
-            &["cargo", "test", "--workspace"]
+            NEXTEST
         ]))
     );
 }
@@ -754,6 +818,7 @@ fn lint_adds_cargo_fmt_check_and_clippy_before_the_tests() {
     let linted = GateOptions {
         lint: true,
         build: true,
+        nextest: Some(true),
         ..GateOptions::default()
     };
     assert_eq!(
@@ -769,7 +834,7 @@ fn lint_adds_cargo_fmt_check_and_clippy_before_the_tests() {
                 "-D",
                 "warnings"
             ],
-            &["cargo", "test", "--workspace"]
+            NEXTEST
         ])
     );
 }

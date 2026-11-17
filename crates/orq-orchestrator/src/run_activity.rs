@@ -52,7 +52,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     }
 }
 
-/// How far a test run has come, read from `cargo test`, pytest or vitest output.
+/// How far a test run has come, read from `cargo test`, cargo-nextest, pytest or vitest output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestProgress {
     pub done: u64,
@@ -80,6 +80,8 @@ pub fn test_total_line(total: Option<u64>) -> String {
 /// read from its verbose, xdist or quiet result lines. `pytest -q` prints no collection line: its
 /// quiet rows' own percentage is then the progress, as hundredths. vitest prints no total: after a
 /// listed one, each finished file adds its tests and the closing `Tests ... (N)` line completes it.
+/// cargo-nextest's `Starting N tests across M binaries` starts a count of its finished-test lines,
+/// and its `Summary` line completes it.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
     // Whether the count was started by a listed total: vitest prints none of its own, so its lines
@@ -98,6 +100,11 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             listed = false;
             continue;
         }
+        if let Some(total) = nextest_total(&plain) {
+            progress = starting_count(total);
+            listed = false;
+            continue;
+        }
         if let Some(percent) = pytest_quiet_percent(&plain) {
             // `pytest -q` prints no collection line: its own percentage is then counted in hundredths.
             let p = progress.get_or_insert_with(|| {
@@ -109,6 +116,15 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             continue;
         }
         let Some(p) = progress.as_mut() else { continue };
+        if let Some(name) = nextest_result(&plain) {
+            p.done = (p.done + 1).min(p.total);
+            p.current = Some(name.to_string());
+            continue;
+        }
+        if nextest_summary(&plain) {
+            p.done = p.total;
+            continue;
+        }
         if let Some(name) = pytest_result(&plain) {
             p.done = (p.done + 1).min(p.total);
             p.current = Some(name.to_string());
@@ -157,6 +173,79 @@ fn pytest_total(line: &str) -> Option<u64> {
     let collected = count.parse::<u64>().ok()?;
     let selected = parts.find_map(|part| part.strip_suffix(" selected")?.parse::<u64>().ok());
     Some(selected.unwrap_or(collected))
+}
+
+/// The number of tests cargo-nextest says it will run: `Starting N tests across M binaries`, with
+/// whatever it adds after (`(K tests skipped)`); skipped tests are not in N.
+fn nextest_total(line: &str) -> Option<u64> {
+    let rest = line.trim().strip_prefix("Starting ")?;
+    let mut words = rest.split(' ');
+    let total = words.next()?.parse::<u64>().ok()?;
+    let unit = words.next()?;
+    (matches!(unit, "tests" | "test") && words.next()? == "across").then_some(total)
+}
+
+/// The test named by a line cargo-nextest prints when a test has finished:
+/// `<STATUS>[ <try>/<tries>] [ <secs>s] [(  <n>/<total>) ]<binary> <test>`. A finished status is PASS,
+/// FAIL, FLAKY (with its try), TIMEOUT, LEAK, LEAK-FAIL or a signal (SIGSEGV, SIGABRT, ...); SKIP, SLOW and
+/// a retried try (`TRY 1 FAIL`) are not one.
+fn nextest_result(line: &str) -> Option<&str> {
+    nextest_finished(line).map(|(_, name)| name)
+}
+
+/// A test cargo-nextest passed only on a retry: from `FLAKY <try>/<tries> ...`, the retry it passed on
+/// (its first retry is 1) and its name.
+pub(crate) fn nextest_flaky(line: &str) -> Option<(u64, &str)> {
+    match nextest_finished(line)? {
+        (Some((attempt, _)), name) => Some((attempt.saturating_sub(1), name)),
+        (None, _) => None,
+    }
+}
+
+/// A finished-test line of cargo-nextest (see [`nextest_result`]): FLAKY's `<try>/<tries>`, and the name.
+fn nextest_finished(line: &str) -> Option<(Option<(u64, u64)>, &str)> {
+    let (status, rest) = line.trim().split_once(' ')?;
+    let signal = status.strip_prefix("SIG").is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase()));
+    if !(signal || matches!(status, "PASS" | "FAIL" | "FLAKY" | "TIMEOUT" | "LEAK" | "LEAK-FAIL")) {
+        return None;
+    }
+    let mut rest = rest.trim_start();
+    let mut tries = None;
+    if status == "FLAKY" {
+        let (fraction_text, after) = rest.split_once(' ')?;
+        tries = Some(fraction(fraction_text)?);
+        rest = after.trim_start();
+    }
+    let (time, after) = rest.strip_prefix('[')?.split_once(']')?;
+    time.trim().strip_suffix('s')?.parse::<f64>().ok()?;
+    let mut rest = after.trim_start();
+    if let Some(counter) = rest.strip_prefix('(') {
+        let (count, after) = counter.split_once(')')?;
+        fraction(count.trim())?;
+        rest = after.trim_start();
+    }
+    let name = rest.trim_end();
+    (!name.is_empty()).then_some((tries, name))
+}
+
+/// Whether `line` is cargo-nextest's closing `Summary [ <secs>s] N tests run: ...`: the run is over.
+fn nextest_summary(line: &str) -> bool {
+    let summary = || {
+        let rest = line.trim().strip_prefix("Summary [")?;
+        let (time, rest) = rest.split_once(']')?;
+        time.trim().strip_suffix('s')?.parse::<f64>().ok()?;
+        let mut words = rest.split_whitespace();
+        words.next()?.parse::<u64>().ok()?;
+        matches!(words.next()?, "tests" | "test").then_some(())?;
+        (words.next()? == "run:").then_some(())
+    };
+    summary().is_some()
+}
+
+/// The two numbers of `n/m`.
+fn fraction(text: &str) -> Option<(u64, u64)> {
+    let (n, m) = text.split_once('/')?;
+    Some((n.trim().parse().ok()?, m.trim().parse().ok()?))
 }
 
 /// The item count of xdist's `N workers [M items]` (or `1 worker [1 item]`) line.
@@ -367,7 +456,7 @@ pub fn step_lines(current: &RunActivity) -> Option<Vec<String>> {
 
 /// Text safe to write to a terminal: escape sequences (colour, cursor, title, clipboard, links) and
 /// every other control character are removed, so output can never redraw or rewrite the screen.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

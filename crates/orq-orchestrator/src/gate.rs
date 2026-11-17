@@ -59,6 +59,8 @@ pub struct GateOptions<'a> {
     pub lint: bool,
     /// The package.json `build` script.
     pub build: bool,
+    /// Whether cargo-nextest runs in the worktree; `None` asks `cargo nextest --version` there.
+    pub nextest: Option<bool>,
 }
 
 /// Like [`choose_gate`], with a scope for Django projects.
@@ -96,7 +98,7 @@ pub fn choose_gate_with(
     let mut notes = Vec::new();
     python_steps(worktree, options, &mut steps, &mut notes);
     node_steps(worktree, options, &mut steps, &mut notes);
-    rust_steps(worktree, options, &mut steps);
+    rust_steps(worktree, options, &mut steps, &mut notes);
     if steps.is_empty() {
         let reason = if notes.is_empty() {
             NOTHING_DETECTED.to_string()
@@ -304,7 +306,12 @@ fn is_npm_placeholder_test(command: &str) -> bool {
     command.trim() == r#"echo "Error: no test specified" && exit 1"#
 }
 
-fn rust_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>) {
+fn rust_steps(
+    dir: &Path,
+    options: &GateOptions,
+    steps: &mut Vec<Vec<String>>,
+    notes: &mut Vec<String>,
+) {
     if dir.join("Cargo.toml").is_file() {
         if options.lint {
             steps.push(argv(&["cargo", "fmt", "--check"]));
@@ -318,6 +325,130 @@ fn rust_steps(dir: &Path, options: &GateOptions, steps: &mut Vec<Vec<String>>) {
                 "warnings",
             ]));
         }
-        steps.push(argv(&["cargo", "test", "--workspace"]));
+        // Asked once per detection, so one gate run never mixes the two.
+        if options.nextest.unwrap_or_else(|| nextest_available(dir)) {
+            steps.push(argv(&["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]));
+            // nextest runs no doc tests: cargo test runs them, only when there are some.
+            if has_doc_tests(dir) {
+                steps.push(argv(&["cargo", "test", "--workspace", "--doc"]));
+            }
+        } else {
+            notes.push("cargo-nextest not found: running cargo test".to_string());
+            steps.push(argv(&["cargo", "test", "--workspace"]));
+        }
+    }
+}
+
+/// Whether a library under `dir` (a folder with a `Cargo.toml` and a `src/lib.rs`) has a Rust code
+/// block in a doc comment of its sources. Build output, dependencies, hidden folders and links are not
+/// looked in.
+fn has_doc_tests(dir: &Path) -> bool {
+    let skipped = |name: &str| name.starts_with('.') || name == "target" || name == "node_modules";
+    let is_library = dir.join("Cargo.toml").is_file() && dir.join("src/lib.rs").is_file();
+    if is_library && rust_sources_have_doc_tests(&dir.join("src")) {
+        return true;
+    }
+    subdirectories(dir)
+        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| !skipped(name)))
+        .any(|path| has_doc_tests(&path))
+}
+
+/// The folders directly in `dir`, without following links.
+fn subdirectories(dir: &Path) -> impl Iterator<Item = std::path::PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+}
+
+/// Whether a `.rs` file anywhere under `src` has a doc test.
+fn rust_sources_have_doc_tests(src: &Path) -> bool {
+    let files = fs::read_dir(src).into_iter().flatten().flatten().filter(|entry| {
+        entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry.path().extension().is_some_and(|ext| ext == "rs")
+    });
+    for file in files {
+        if fs::read_to_string(file.path()).is_ok_and(|text| has_doc_test_block(&text)) {
+            return true;
+        }
+    }
+    subdirectories(src).any(|path| rust_sources_have_doc_tests(&path))
+}
+
+/// Whether a `///` or `//!` comment in `text` opens a fenced code block rustdoc runs: one with no
+/// language, or only Rust's own attributes (`rust`, `no_run`, `should_panic`, ...).
+fn has_doc_test_block(text: &str) -> bool {
+    let mut open = false;
+    for line in text.lines().map(str::trim_start) {
+        if line.starts_with("////") {
+            continue;
+        }
+        let Some(doc) = line.strip_prefix("///").or_else(|| line.strip_prefix("//!")) else {
+            continue;
+        };
+        let Some(info) = doc.trim().strip_prefix("```") else {
+            continue;
+        };
+        if open {
+            open = false;
+            continue;
+        }
+        open = true;
+        if is_rust_fence(info) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a code fence's info string leaves its block a Rust doc test.
+fn is_rust_fence(info: &str) -> bool {
+    info.split([',', ' ', '\t'])
+        .filter(|word| !word.is_empty())
+        .all(|word| {
+            matches!(
+                word,
+                "rust" | "ignore" | "should_panic" | "no_run" | "compile_fail" | "test_harness" | "standalone_crate"
+            ) || word.starts_with("edition")
+        })
+}
+
+/// How long `cargo nextest --version` may take before nextest counts as missing.
+const NEXTEST_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether `cargo nextest --version` succeeds in `dir`, with the environment a gate step gets.
+fn nextest_available(dir: &Path) -> bool {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("cargo");
+    command
+        .args(["nextest", "--version"])
+        .current_dir(dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for name in ["PATH", "HOME", "TERM"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + NEXTEST_PROBE_LIMIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
     }
 }

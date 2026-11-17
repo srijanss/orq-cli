@@ -1262,6 +1262,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if let Some(flaky) = flaky_shown(event) {
                     listed["flaky"] = flaky;
                 }
+                if event.kind == "gate.flaky_tests" {
+                    listed["flaky_tests"] = flaky_tests_shown(&event.payload);
+                }
                 listed
             })
             .collect();
@@ -1331,6 +1334,22 @@ fn set_aside_shown(run: &str, payload: &serde_json::Value) -> serde_json::Value 
         shown["note"] = note.into();
     }
     shown
+}
+
+/// What the run page shows of a `gate.flaky_tests` event: each test that passed only on a retry, by name
+/// (redacted), and the retry it passed on. Anything else the payload holds is left out.
+fn flaky_tests_shown(payload: &serde_json::Value) -> serde_json::Value {
+    let tests: Vec<_> = payload
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|test| {
+            let name = orq_core::redact::redact(test.get("name")?.as_str()?);
+            Some(serde_json::json!({"name": name, "retry": test.get("retry").and_then(|v| v.as_u64())}))
+        })
+        .collect();
+    serde_json::Value::Array(tests)
 }
 
 /// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the

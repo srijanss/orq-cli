@@ -547,3 +547,41 @@ fn vitest_lines_count_only_against_a_listed_total_not_a_pytest_count() {
     let log = format!("collected 10 items\na.py::t1 PASSED [ 10%]\n{VITEST_FILES}      Tests  2 failed | 14 passed | 1 skipped (17)\n");
     assert_eq!(test_progress(&log), Some(TestProgress { done: 1, total: 10, current: Some("a.py::t1".to_string()) }));
 }
+
+// cargo-nextest 0.9.152's lines, written from its documented output format rather than captured from a
+// live run: its first real run in a gate is to be checked against them.
+const NEXTEST_RUN: &str = "\
+    Starting 9 tests across 3 binaries (1 test skipped)
+        PASS [   0.002s] orq-core redact::tests::a_token_is_redacted
+        PASS [   0.004s] (  2/9) orq-core::store opens_a_store
+        FAIL [   0.015s] (  3/9) orq-orchestrator::gate_stage a_red_step_fails_the_gate
+       FLAKY 2/3 [   0.004s] (  4/9) orq-cli::pipeline two_runs_in_one_second
+     TIMEOUT [ 180.002s] (  5/9) orq-cli::mvp2_acceptance a_hung_agent
+     SIGSEGV [   0.011s] orq-core::ffi reads_past_the_end
+     SIGABRT [   0.012s] (  7/9) orq-core::ffi aborts
+        LEAK [   0.104s] (  8/9) orq-features::generation leaves_a_handle_open
+        SKIP [         ] orq-cli::slow an_ignored_test
+        SLOW [>  60.000s] orq-cli::mvp2_acceptance a_slow_one
+  TRY 1 FAIL [   0.003s] orq-cli::pipeline a_retried_one
+";
+
+#[test]
+fn nextest_result_lines_after_its_starting_line_count_with_or_without_the_counter_but_skips_do_not() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    assert_eq!(
+        test_progress(NEXTEST_RUN),
+        Some(TestProgress { done: 8, total: 9, current: Some("orq-features::generation leaves_a_handle_open".to_string()) })
+    );
+    let first = NEXTEST_RUN.lines().take(2).collect::<Vec<_>>().join("\n");
+    assert_eq!(test_progress(&first).map(|t| (t.done, t.total, t.current)), Some((1, 9, Some("orq-core redact::tests::a_token_is_redacted".to_string()))));
+    assert_eq!(test_progress("    Starting 1 test across 1 binary\n").map(|t| (t.done, t.total)), Some((0, 1)));
+}
+
+#[test]
+fn nextests_summary_completes_the_count_and_coloured_lines_count_the_same() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let summary = format!("{NEXTEST_RUN}------------\n     Summary [ 180.321s] 9 tests run: 6 passed (1 flaky), 3 failed, 1 skipped\n");
+    assert_eq!(test_progress(&summary).map(|t| (t.done, t.total)), Some((9, 9)));
+    let coloured = "\u{1b}[1;32m    Starting\u{1b}[0m \u{1b}[1m2\u{1b}[0m tests across \u{1b}[1m1\u{1b}[0m binary\n\u{1b}[1;32m        PASS\u{1b}[0m [   0.002s] (\u{1b}[1m1\u{1b}[0m/\u{1b}[1m2\u{1b}[0m) \u{1b}[35morq-core\u{1b}[0m \u{1b}[36mredact::\u{1b}[0m\u{1b}[1;34ma_token\u{1b}[0m\n";
+    assert_eq!(test_progress(coloured), Some(TestProgress { done: 1, total: 2, current: Some("orq-core redact::a_token".to_string()) }));
+}

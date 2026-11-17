@@ -3741,6 +3741,14 @@ const STEP_STATES = { done: "Done", failed: "Failed", current: "In progress", op
 
 // The run's stages as one line of steps: each finished, failed, or still going, with how long it took.
 // Each step's state comes from stepState, so it matches the Events tab.
+// The tests a step's gate passed only on a retry, from its gate.flaky_tests events: each with a name.
+function flakyTests(events) {
+  return events
+    .filter((event) => event.kind === "gate.flaky_tests" && Array.isArray(event.flaky_tests))
+    .flatMap((event) => event.flaky_tests)
+    .filter((test) => test && typeof test.name === "string" && test.name !== "");
+}
+
 function RunSteps({ events, rounds, running, ended = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   return (
@@ -3760,6 +3768,9 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
             {flaky === null ? null : <p className="run-flaky-note field-hint muted">{flaky}</p>}
+            {flakyTests(step.events).map((test, n) => (
+              <p key={"flaky" + n} className="run-step-flaky field-hint muted" data-step-flaky>{"Flaky: " + test.name + (Number.isInteger(test.retry) ? " (passed on retry " + test.retry + ")" : " (passed on a retry)")}</p>
+            ))}
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />

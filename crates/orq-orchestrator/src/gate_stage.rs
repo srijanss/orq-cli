@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::gate::Gate;
 use crate::implement::{next_event_id, now_rfc3339, open_log};
-use crate::run_activity::test_total_line;
+use crate::run_activity::{nextest_flaky, printable, test_total_line};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 const STAGE: &str = "verify";
@@ -109,11 +109,15 @@ fn run_gate_attempt_limited(
         )?;
         return Ok(GateOutcome::Skipped { reason });
     }
-    let Gate::Steps { steps, .. } = gate else {
+    let Gate::Steps { steps, notes } = gate else {
         return Ok(GateOutcome::Passed);
     };
 
     let mut log = open_log(log_path)?;
+    // What detection had to settle for (cargo test without nextest) is said before any step runs.
+    for note in notes {
+        writeln!(log, "orq: {note}")?;
+    }
     let log_name = log_path.to_string_lossy().into_owned();
     record_event(
         store,
@@ -125,7 +129,9 @@ fn run_gate_attempt_limited(
 
     let listings: Vec<Option<Listing>> = steps.iter().map(|argv| step_listing(argv, &record.worktree)).collect();
     let counts_tests = listings.iter().any(Option::is_some);
+    let mut flaky: Vec<(String, u64)> = Vec::new();
     for (index, (argv, listing)) in steps.iter().zip(&listings).enumerate() {
+        let step_start = log.metadata()?.len();
         writeln!(log, "$ {}", argv.join(" "))?;
         if counts_tests {
             // The log is kept across rounds: an earlier step's total says nothing about this one.
@@ -135,6 +141,16 @@ fn run_gate_attempt_limited(
             writeln!(log, "{}", test_total_line(Some(total)))?;
         }
         let (exit_code, failure) = run_step(&record, argv, &log, &log, env, limit)?;
+        if let Some(output) = read_log_since(&log, log_path, step_start) {
+            note_flaky(&output, &mut flaky);
+        }
+        if !flaky.is_empty() && (failure.is_some() || index + 1 == steps.len()) {
+            let tests: Vec<serde_json::Value> = flaky
+                .iter()
+                .map(|(name, retry)| serde_json::json!({ "name": name, "retry": retry }))
+                .collect();
+            record_event(store, &record, "gate.flaky_tests", attempt, serde_json::json!({ "tests": tests }))?;
+        }
         if let Some(failure) = failure {
             let reason = format!(
                 "gate step {} ({}) {failure}",
@@ -490,4 +506,41 @@ pub(crate) fn record_event(
         occurred_at: now_rfc3339(),
         payload,
     })
+}
+
+/// The tests nextest's `FLAKY` lines in `output` name, each once, with the retry it passed on.
+fn note_flaky(output: &str, flaky: &mut Vec<(String, u64)>) {
+    for line in output.lines() {
+        let plain = printable(line);
+        if let Some((retry, name)) = nextest_flaky(&plain) {
+            if !flaky.iter().any(|(seen, _)| seen == name) {
+                flaky.push((name.to_string(), retry));
+            }
+        }
+    }
+}
+
+/// What was written to the gate log from byte `start` on, read through the path only when it still
+/// names the file `log` holds open: a path swapped meanwhile is not read.
+#[cfg(unix)]
+fn read_log_since(log: &fs::File, path: &Path, start: u64) -> Option<String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let (opened, held) = (file.metadata().ok()?, log.metadata().ok()?);
+    if !opened.is_file() || opened.dev() != held.dev() || opened.ino() != held.ino() {
+        return None;
+    }
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(not(unix))]
+fn read_log_since(_log: &fs::File, _path: &Path, _start: u64) -> Option<String> {
+    None
 }
