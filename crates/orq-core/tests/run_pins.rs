@@ -18,10 +18,13 @@ fn has_pins_table(db: &std::path::Path) -> bool {
     conn.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_pins')", [], |row| row.get(0)).unwrap()
 }
 
-/// Puts the database back at version 6, as an Orq from before pins were removed left it.
+/// Puts the database back at version 6, as an Orq from before pins were removed left it (without
+/// the run limit columns version 8 added).
 fn back_to_version_six(db: &std::path::Path, pins: &[&str]) {
     let conn = rusqlite::Connection::open(db).unwrap();
-    conn.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); PRAGMA user_version = 6;").unwrap();
+    conn.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); \
+         ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
+         PRAGMA user_version = 6;").unwrap();
     for pin in pins {
         conn.execute("INSERT INTO run_pins (run_id, pinned_at) VALUES (?1, 1)", [pin]).unwrap();
     }
