@@ -885,3 +885,60 @@ fn a_retry_whose_restart_never_shows_waits_no_longer_than_the_ci_timeout() {
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
     assert!(matches!(outcome, CiOutcome::Failed { .. }), "{outcome:?}");
 }
+
+const GLAB_POST: [&str; 5] = ["api", "--hostname", "gitlab.example", "--method", "POST"];
+
+/// Pipelines of the commit, as (id, status), plus one of another commit that failed later.
+fn gitlab_pipelines(rows: &[(u64, &str)]) -> String {
+    let mut listed: Vec<String> = rows.iter().map(|(id, status)| format!("{{\"id\":{id},\"sha\":\"{SHA}\",\"status\":\"{status}\"}}")).collect();
+    listed.push(format!("{{\"id\":99,\"sha\":\"{}\",\"status\":\"failed\"}}", "f".repeat(40)));
+    format!("[{}]\n", listed.join(","))
+}
+
+fn gitlab_args(provider: &FakeProvider) -> Vec<Vec<String>> {
+    provider.calls().into_iter().map(|c| c.args).collect()
+}
+
+#[test]
+fn a_gitlab_retry_posts_a_retry_of_the_latest_failed_pipeline_of_a_nested_project_and_nothing_else() {
+    let w = world("glab-retry", "gitlab", "https://gitlab.example/group/sub/r.git");
+    let provider = FakeProvider::builder()
+        .reply_once(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "failed")]))
+        .reply(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "running")]))
+        .reply(&GLAB_POST, "{}\n")
+        .build();
+
+    retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap();
+
+    let calls = gitlab_args(&provider);
+    assert_eq!(calls[0], ["api", "--hostname", "gitlab.example", &format!("projects/group%2Fsub%2Fr/pipelines?sha={SHA}&per_page=30")], "{calls:?}");
+    let posts: Vec<_> = calls.iter().filter(|a| a.len() > 4 && a[..5] == GLAB_POST).collect();
+    assert_eq!(posts.len(), 1, "one pipeline is retried: {calls:?}");
+    assert_eq!(posts[0][5], "projects/group%2Fsub%2Fr/pipelines/9/retry", "{calls:?}");
+}
+
+#[test]
+fn a_gitlab_commit_whose_latest_pipeline_did_not_fail_is_not_retried() {
+    let w = world("glab-retry-green", "gitlab", "https://gitlab.example/group/sub/r.git");
+    let provider = FakeProvider::builder().reply(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "success")])).reply(&GLAB_POST, "{}\n").build();
+
+    let refused = retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap_err();
+
+    assert!(refused.contains("pipeline 9") && refused.contains("success"), "{refused}");
+    assert!(gitlab_args(&provider).iter().all(|a| !a.contains(&"POST".to_string())), "an older failed pipeline is never retried");
+}
+
+#[test]
+fn a_gitlab_listing_or_retry_request_that_fails_is_an_error_never_a_started_retry() {
+    let w = world("glab-retry-list-fails", "gitlab", "https://gitlab.example/group/sub/r.git");
+    let provider = FakeProvider::builder().fail(&["api"], 1, "HTTP 500").build();
+    assert!(retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).is_err(), "a listing that fails");
+    assert!(gitlab_args(&provider).iter().all(|a| !a.contains(&"POST".to_string())), "nothing is posted without a listing");
+
+    let w = world("glab-retry-post-fails", "gitlab", "https://gitlab.example/group/sub/r.git");
+    let provider = FakeProvider::builder().reply(&["api"], &gitlab_pipelines(&[(9, "failed")])).fail(&GLAB_POST, 1, "HTTP 403 Forbidden").build();
+    let refused = retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap_err();
+    assert!(!refused.is_empty(), "a refused retry says why");
+    let calls = gitlab_args(&provider);
+    assert_eq!(calls.last().unwrap()[..5], GLAB_POST, "CI is not read again after a refused retry: {calls:?}");
+}
