@@ -447,21 +447,41 @@ mod tests {
         dir
     }
 
-    fn script(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
+    /// Run `body` as a shell script in `dir` through the bounded runner, with `args` as `$1`, `$2`, ...
+    /// It is handed to `sh` rather than exec'd itself: a file just written can fail to exec with
+    /// ETXTBSY while another test thread's fork still holds it open for writing.
+    fn run_script(dir: &Path, body: &str, args: &[&str], limit: Duration) -> Option<Vec<u8>> {
         let path = dir.join("tool");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        std::fs::write(&path, format!("{body}\n")).unwrap();
+        let path = path.to_str().unwrap();
+        let argv: Vec<&str> = std::iter::once(path).chain(args.iter().copied()).collect();
+        run_bounded("sh".as_ref(), &argv, dir, limit)
     }
 
     const LIMIT: Duration = Duration::from_secs(10);
 
+    /// Whether process `pid` stops running within a few seconds: it no longer exists, or it is a
+    /// zombie no one has reaped yet. SIGKILL lands a moment after it is sent, and an orphan's zombie
+    /// lingers until its adopter reaps it, so neither an instant check nor `kill -0` will do.
+    fn gone(pid: &str) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let ended = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                // The state follows the command name, which is in parentheses and may hold spaces.
+                Ok(stat) => stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next()) == Some("Z"),
+                Err(_) => true,
+            };
+            if ended || Instant::now() >= deadline {
+                return ended;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn a_tool_that_succeeds_gives_its_output_from_the_folder_it_ran_in() {
         let dir = scratch("ok");
-        let tool = script(&dir, "pwd; echo \"$1 $2\"");
-        let out = run_bounded(tool.as_os_str(), &["nextest", "--version"], &dir, LIMIT).expect("it succeeded");
+        let out = run_script(&dir, "pwd; echo \"$1 $2\"", &["nextest", "--version"], LIMIT).expect("it succeeded");
         let text = String::from_utf8(out).unwrap();
         let here = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(text, format!("{}\nnextest --version\n", here.display()));
@@ -470,8 +490,7 @@ mod tests {
     #[test]
     fn a_tool_that_exits_non_zero_or_cannot_start_gives_nothing() {
         let dir = scratch("fail");
-        let tool = script(&dir, "echo partial; exit 101");
-        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, LIMIT), None, "non-zero exit");
+        assert_eq!(run_script(&dir, "echo partial; exit 101", &[], LIMIT), None, "non-zero exit");
         let missing = dir.join("no-such-tool");
         assert_eq!(run_bounded(missing.as_os_str(), &[], &dir, LIMIT), None, "missing program");
     }
@@ -480,33 +499,42 @@ mod tests {
     fn a_tool_that_hangs_is_stopped_at_the_limit_and_left_dead() {
         let dir = scratch("hang");
         let pid_file = dir.join("pid");
-        let tool = script(&dir, &format!("echo $$ > {}; exec sleep 30", pid_file.display()));
         let started = Instant::now();
-        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_secs(2)), None);
+        let body = format!("echo $$ > {}; exec sleep 30", pid_file.display());
+        assert_eq!(run_script(&dir, &body, &[], Duration::from_secs(2)), None);
         assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
         let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
-        assert!(!alive, "the hung tool {pid} was killed");
+        assert!(gone(pid.trim()), "the hung tool {pid} was killed");
     }
 
     #[test]
     fn a_tool_that_exits_while_a_descendant_holds_its_output_open_is_stopped_at_the_limit() {
         let dir = scratch("stray");
         let pid_file = dir.join("pid");
-        let tool = script(&dir, &format!("sleep 30 & echo $! > {}; echo done; exit 0", pid_file.display()));
         let started = Instant::now();
-        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_secs(2)), None, "its output never ended");
+        let body = format!("sleep 30 & echo $! > {}; echo done; exit 0", pid_file.display());
+        assert_eq!(run_script(&dir, &body, &[], Duration::from_secs(2)), None, "its output never ended");
         assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
         let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
-        assert!(!alive, "the descendant {pid} was killed");
+        assert!(gone(pid.trim()), "the descendant {pid} was killed");
+    }
+
+    #[test]
+    fn a_process_that_ended_but_was_never_reaped_counts_as_gone() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        // Left unreaped, it stays a zombie that kill -0 still finds.
+        assert!(gone(&child.id().to_string()), "a zombie is not running");
+        let _ = child.wait();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        assert!(!gone(&child.id().to_string()), "a sleeping process is running");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
     fn a_tool_with_more_output_than_a_pipe_holds_still_finishes() {
         let dir = scratch("big");
-        let tool = script(&dir, "head -c 300000 /dev/zero | tr '\\0' x");
-        let out = run_bounded(tool.as_os_str(), &[], &dir, LIMIT).expect("it finished");
+        let out = run_script(&dir, "head -c 300000 /dev/zero | tr '\\0' x", &[], LIMIT).expect("it finished");
         assert_eq!(out.len(), 300_000);
     }
 }
