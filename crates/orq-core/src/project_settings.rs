@@ -10,11 +10,15 @@ pub enum Delivery {
     /// Push, open the PR/MR and wait for CI.
     #[default]
     Review,
-    /// Push the branch and stop.
+    /// Pushed the branch and stopped. Removed: no run or setting may choose it, and it is kept only
+    /// so a run record that names it still reads.
     Push,
     /// Fast-forward the base branch locally; nothing is pushed.
     MergeLocal,
 }
+
+/// Why a run, a flag or a setting may not name [`Delivery::Push`].
+pub const PUSH_REMOVED: &str = "the push delivery was removed: use review (pushes and opens a review) or merge-local";
 
 impl Delivery {
     pub fn as_str(self) -> &'static str {
@@ -66,8 +70,12 @@ pub enum SaveOutcome {
     Conflict,
 }
 
-/// Every value is a single non-empty line with no surrounding blanks.
+/// Every value is a single non-empty line with no surrounding blanks, and the delivery is one that
+/// may still be chosen.
 pub(crate) fn check(settings: &ProjectSettings) -> Result<()> {
+    if settings.delivery == Delivery::Push {
+        return Err(Error::new(ErrorKind::InvalidInput, PUSH_REMOVED));
+    }
     for (role, agent) in [("implementer", &settings.implementer), ("reviewer", &settings.reviewer)] {
         let Some(agent) = agent else { continue };
         check_value(role, "harness", &agent.harness)?;

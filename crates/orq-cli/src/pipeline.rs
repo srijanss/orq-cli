@@ -151,8 +151,6 @@ pub enum Ending {
     NeedsReview,
     /// Stopped at a stage boundary because a pause was requested; the run can be resumed.
     Paused,
-    /// The run's delivery is push: its branch was pushed and nothing else was asked for.
-    Pushed,
     /// The run's delivery is merge-local: its base branch was fast-forwarded to it, nothing pushed.
     Merged,
 }
@@ -165,7 +163,6 @@ impl Ending {
             Ending::Failed => "failed",
             Ending::NeedsReview => "needs_review",
             Ending::Paused => "paused",
-            Ending::Pushed => "pushed",
             Ending::Merged => "merged",
         }
     }
@@ -351,6 +348,10 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     } else {
         None
     };
+    // A run started before push was removed carries on only once another delivery is named.
+    if resumed.as_ref().is_some_and(|r| !options.delivery_named && r.from.delivery == orq_core::project_settings::Delivery::Push) {
+        return Err(other(orq_core::project_settings::PUSH_REMOVED));
+    }
     // A resumed or published run names nothing new, so it must not need a free name either.
     let naming = if options.publish || resumed.is_some() {
         None
@@ -583,7 +584,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     }
     // The features its fix sessions started are the run's own: delivered, they are finished. Closed while
     // the run still holds the locks, like the reopening below.
-    if matches!(report.ending, Ending::Merged | Ending::Pushed | Ending::ReviewReady) {
+    if matches!(report.ending, Ending::Merged | Ending::ReviewReady) {
         close_fix_features(&store, &record, &orq_features::ledger_path(options.project));
         complete_delivered_features(&store, &record, &orq_features::ledger_path(options.project), options.features);
     }
@@ -1416,10 +1417,6 @@ fn stages(
             PushOutcome::Failed { reason } => return stopped(Ending::Failed, format!("push failed: {reason}")),
         },
     };
-    if record.delivery == orq_core::project_settings::Delivery::Push {
-        return delivered(&head_sha, Ending::Pushed);
-    }
-
     let Some(provider) = find_program(provider_cli) else {
         return stopped(Ending::Failed, format!("{provider_cli} is not on PATH"));
     };

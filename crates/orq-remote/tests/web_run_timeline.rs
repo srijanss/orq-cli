@@ -110,7 +110,7 @@ fn a_run_page_shows_its_delivery_mode_and_a_delivered_runs_ending() {
         ("push", "completed", json!("pushed"), "Pushed", "Completed"),
         ("merge_local", "completed", json!("merged"), "Merged locally", "Completed"),
         ("merge_local", "running", Value::Null, "Merge locally", "Running"),
-        ("push", "failed", Value::Null, "Push only", "Failed"),
+        ("push", "failed", Value::Null, "Push only (removed)", "Failed"),
         ("merge_local", "completed", json!("teleported"), "Merge locally", "Completed"),
         ("review", "merged", Value::Null, "Merged by hand", "Completed"),
     ] {

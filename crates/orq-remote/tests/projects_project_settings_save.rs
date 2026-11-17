@@ -84,11 +84,11 @@ fn a_reset_role_falls_back_again_a_stale_save_changes_nothing_and_a_linked_workt
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let chosen = json!({"harness": "pi", "model": "kimi", "effort": "low"});
 
-    let (status, body) = save(&s, "alpha-wt", json!({"implementer": null, "reviewer": chosen, "delivery": "push", "revision": 0}));
+    let (status, body) = save(&s, "alpha-wt", json!({"implementer": null, "reviewer": chosen, "delivery": "merge_local", "revision": 0}));
     assert_eq!(status, 200, "{body}");
     assert_eq!(send(&s, "GET", "/api/projects/alpha/settings", b"").1, body, "the worktree saved its main checkout's record");
 
-    let (status, body) = save(&s, "alpha", json!({"implementer": null, "reviewer": null, "delivery": "push", "revision": 1}));
+    let (status, body) = save(&s, "alpha", json!({"implementer": null, "reviewer": null, "delivery": "merge_local", "revision": 1}));
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["settings"]["reviewer"]["project"], Value::Null);
     assert_eq!(body["settings"]["reviewer"]["fallback"]["source"], json!("built_in"), "{body}");
@@ -96,5 +96,5 @@ fn a_reset_role_falls_back_again_a_stale_save_changes_nothing_and_a_linked_workt
     let stale = json!({"implementer": null, "reviewer": chosen, "delivery": "review", "revision": 1});
     assert_eq!(save(&s, "alpha", stale), (409, json!({"error": "The project's settings changed since they were read"})));
     assert_eq!(send(&s, "GET", "/api/projects/alpha/settings", b"").1, body, "nothing was written");
-    assert_eq!(save(&s, "nope", json!({"implementer": null, "reviewer": null, "delivery": "push", "revision": 0})).0, 404);
+    assert_eq!(save(&s, "nope", json!({"implementer": null, "reviewer": null, "delivery": "merge_local", "revision": 0})).0, 404);
 }

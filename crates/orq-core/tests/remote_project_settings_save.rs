@@ -61,7 +61,7 @@ fn audit(roots: &StorageRoots) -> Vec<(Value, Value, Value)> {
 }
 
 fn whole() -> Value {
-    json!({"implementer": {"harness": "claude", "model": "sonnet", "effort": "high"}, "reviewer": null, "delivery": "push", "revision": 4})
+    json!({"implementer": {"harness": "claude", "model": "sonnet", "effort": "high"}, "reviewer": null, "delivery": "merge_local", "revision": 4})
 }
 
 #[test]
@@ -70,8 +70,22 @@ fn a_whole_record_at_the_current_revision_is_saved_and_answered_with_the_setting
     let fake = fake();
     assert_eq!(save(&roots, &fake, "alpha", whole()), (200, json!({"settings": {"revision": 5}})));
     let implementer = ProjectAgent { harness: "claude".into(), model: "sonnet".into(), effort: Some("high".into()) };
-    assert_eq!(fake.saved.into_inner(), vec![("alpha".to_string(), 4, ProjectSettings { implementer: Some(implementer), reviewer: None, delivery: Delivery::Push })]);
+    assert_eq!(fake.saved.into_inner(), vec![("alpha".to_string(), 4, ProjectSettings { implementer: Some(implementer), reviewer: None, delivery: Delivery::MergeLocal })]);
     assert_eq!(audit(&roots), vec![(json!("project.settings"), json!("alpha"), json!("allowed"))]);
+}
+
+#[test]
+fn the_removed_push_delivery_is_not_saved_and_the_refusal_says_what_to_choose_instead() {
+    let roots = roots("push", true);
+    let fake = fake();
+    let mut body = whole();
+    body["delivery"] = json!("push");
+    assert_eq!(
+        save(&roots, &fake, "alpha", body),
+        (422, json!({"error": "the push delivery was removed: use review (pushes and opens a review) or merge-local"}))
+    );
+    assert!(fake.saved.into_inner().is_empty(), "nothing was saved");
+    assert_eq!(audit(&roots), vec![(json!("project.settings"), json!("alpha"), json!("refused"))]);
 }
 
 #[test]

@@ -16,7 +16,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq review resolve|dismiss|reopen <run-id> [--head <sha>] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|push|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review refresh <run-id> | orq review resolve|dismiss|reopen <run-id> [--head <sha>] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq run pin|unpin <run-id> | orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq remote serve --repo <path> [--listen <addr:port>] | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -196,7 +196,7 @@ struct RunArgs {
     issue: Option<String>,
     mr_assignee: Option<String>,
     mr_reviewer: Option<String>,
-    /// `--delivery review|push|merge-local`: what the run does once its work is ready.
+    /// `--delivery review|merge-local`: what the run does once its work is ready.
     delivery: Option<String>,
     no_rebase: bool,
     no_gate: bool,
@@ -414,6 +414,11 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         Err(message) => return fail(message),
     };
     let delivery = named_delivery.unwrap_or(project_settings.delivery);
+    // A record saved before push was removed still names it: the run waits for another choice
+    // rather than be delivered some other way. A resumed run keeps the delivery it started with.
+    if delivery == orq_core::project_settings::Delivery::Push && !parsed.resume {
+        return group_error(orq_core::project_settings::PUSH_REMOVED.to_string());
+    }
     let project_agents = agents_of(project_settings);
     let selection = orq_features::RunSelection {
         implementer: parsed.implementer.as_deref(),
@@ -544,7 +549,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
                 eprintln!("orq: {}", printable(detail));
             }
             ExitCode::from(match report.ending {
-                pipeline::Ending::ReviewReady | pipeline::Ending::Paused | pipeline::Ending::Pushed | pipeline::Ending::Merged => 0,
+                pipeline::Ending::ReviewReady | pipeline::Ending::Paused | pipeline::Ending::Merged => 0,
                 pipeline::Ending::Blocked | pipeline::Ending::NeedsReview => EXIT_BLOCKED,
                 pipeline::Ending::Failed => EXIT_FAILED,
             })
@@ -560,9 +565,9 @@ fn delivery_flag(text: &str) -> Result<orq_core::project_settings::Delivery, Str
     use orq_core::project_settings::Delivery;
     match text {
         "review" => Ok(Delivery::Review),
-        "push" => Ok(Delivery::Push),
         "merge-local" => Ok(Delivery::MergeLocal),
-        _ => Err(format!("--delivery: {} is not one of review, push, merge-local", printable(text))),
+        "push" => Err(orq_core::project_settings::PUSH_REMOVED.to_string()),
+        _ => Err(format!("--delivery: {} is not one of review, merge-local", printable(text))),
     }
 }
 

@@ -118,13 +118,13 @@ fn a_fallback_that_cannot_be_worked_out_is_null_and_the_saved_settings_are_still
     // A half-filled machine [implementer] that a run with the project's own implementer never reads.
     let s = setup("project-settings-broken-fallback", Some("[implementer]\nharness = \"claude\"\n"));
     let alpha = git_repo(&s.scan, "alpha");
-    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::Push });
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal });
 
     let (status, body) = send(&s, "/api/projects/alpha/settings");
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["settings"]["implementer"], json!({"project": {"harness": "claude", "model": "sonnet", "effort": null}, "fallback": null}));
     assert_eq!(body["settings"]["reviewer"]["fallback"]["source"], json!("built_in"), "{body}");
-    assert_eq!((&body["settings"]["delivery"], &body["settings"]["revision"]), (&json!("push"), &json!(revision)));
+    assert_eq!((&body["settings"]["delivery"], &body["settings"]["revision"]), (&json!("merge_local"), &json!(revision)));
 
     // Profiles that cannot be read leave both fallbacks unknown, not the page.
     std::fs::write(alpha.join(".orq.toml"), "[models.broken]\nharness = 1\n").unwrap();

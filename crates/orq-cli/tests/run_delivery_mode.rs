@@ -1,4 +1,4 @@
-//! A run records what it does when it finishes, its delivery: `--delivery review|push|merge-local`,
+//! A run records what it does when it finishes, its delivery: `--delivery review|merge-local`,
 //! else the delivery its project saved in this machine's orq.db, else review. It is read once, when
 //! the run starts, so a later change to the project's settings never alters a run in flight, and a
 //! resumed run keeps the delivery it started with.
@@ -98,6 +98,13 @@ fn save_delivery(w: &World, delivery: Delivery) {
     assert!(matches!(store.save_project_settings(&root, revision, &settings).unwrap(), SaveOutcome::Saved { .. }));
 }
 
+/// The project's record names the removed push delivery, as one saved before it was removed does.
+fn save_removed_push(w: &World) {
+    save_delivery(w, Delivery::Review);
+    let db = rusqlite::Connection::open(w.home.join("data/orq/orq.db")).unwrap();
+    assert_eq!(db.execute("UPDATE project_settings SET delivery = 'push'", []).unwrap(), 1);
+}
+
 fn run(w: &World, extra: &[&str]) -> Output {
     let repo = w.repo.root().to_str().unwrap().to_string();
     let mut args = vec!["run", "--repo", &repo, "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"];
@@ -122,12 +129,12 @@ fn a_run_records_the_flag_s_delivery_else_the_project_s_else_review() {
     assert_eq!(only_run_delivery(&world("default"), &[]), Delivery::Review, "no record: review");
 
     let saved = world("saved");
-    save_delivery(&saved, Delivery::Push);
-    assert_eq!(only_run_delivery(&saved, &[]), Delivery::Push, "the project's delivery");
+    save_delivery(&saved, Delivery::MergeLocal);
+    assert_eq!(only_run_delivery(&saved, &[]), Delivery::MergeLocal, "the project's delivery");
 
     let flagged = world("flagged");
-    save_delivery(&flagged, Delivery::Push);
-    assert_eq!(only_run_delivery(&flagged, &["--delivery", "merge-local"]), Delivery::MergeLocal, "the flag wins");
+    save_delivery(&flagged, Delivery::MergeLocal);
+    assert_eq!(only_run_delivery(&flagged, &["--delivery", "review"]), Delivery::Review, "the flag wins");
 }
 
 #[test]
@@ -137,6 +144,19 @@ fn a_delivery_flag_that_names_no_mode_is_refused_before_anything_starts() {
         let out = run(&w, &["--delivery", bad, "--check"]);
         assert_eq!(out.status.code(), Some(2), "{bad:?}: {}", text(&out.stderr));
         assert!(text(&out.stderr).contains("--delivery"), "{bad:?}: {}", text(&out.stderr));
+    }
+    assert!(store(&w).run_ids().unwrap_or_default().is_empty(), "nothing was recorded");
+}
+
+const PUSH_REMOVED: &str = "the push delivery was removed: use review (pushes and opens a review) or merge-local";
+
+#[test]
+fn the_removed_push_delivery_flag_is_refused_with_what_to_use_instead() {
+    let w = world("push-flag");
+    for extra in [&["--delivery", "push", "--check"][..], &["--delivery", "push"][..]] {
+        let out = run(&w, extra);
+        assert_eq!(out.status.code(), Some(2), "{extra:?}: {}", text(&out.stderr));
+        assert!(text(&out.stderr).contains(PUSH_REMOVED), "{extra:?}: {}", text(&out.stderr));
     }
     assert!(store(&w).run_ids().unwrap_or_default().is_empty(), "nothing was recorded");
 }
@@ -162,7 +182,7 @@ fn pausing_gate(w: &World) {
 fn a_resumed_run_keeps_the_delivery_it_started_with() {
     let w = world("resume");
     pausing_gate(&w);
-    save_delivery(&w, Delivery::Push);
+    save_delivery(&w, Delivery::Review);
     let first = run(&w, &[]);
     assert!(text(&first.stdout).contains("state: paused"), "{}\n{}", text(&first.stdout), text(&first.stderr));
     let paused = store(&w).run_ids().unwrap().remove(0);
@@ -183,7 +203,52 @@ fn a_resumed_run_keeps_the_delivery_it_started_with() {
     let resumed = orq(&w, &["run", "resume", &paused, "--yes", "--no-ci-check", "--repo", &repo]);
     assert_eq!(resumed.status.code(), Some(0), "{}\n{}", text(&resumed.stdout), text(&resumed.stderr));
     let new_id = store(&w).run_ids().unwrap().into_iter().find(|id| *id != paused).expect("a resumed run");
-    assert_eq!(store(&w).load(&new_id).unwrap().delivery, Delivery::Push, "kept from the paused run");
+    assert_eq!(store(&w).load(&new_id).unwrap().delivery, Delivery::Review, "kept from the paused run");
+}
+
+/// Rewrites a run's record to name the removed push delivery, as one started before it was removed does.
+fn record_removed_push(w: &World, run_id: &str) {
+    let path = w.home.join("state/orq/runs").join(run_id).join("run.json");
+    let mut record: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["delivery"] = serde_json::Value::from("push");
+    std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+}
+
+#[test]
+fn a_run_recorded_with_the_removed_push_delivery_still_lists_but_is_not_resumed_with_it() {
+    let w = world("push-record");
+    pausing_gate(&w);
+    let first = run(&w, &[]);
+    assert!(text(&first.stdout).contains("state: paused"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let paused = store(&w).run_ids().unwrap().remove(0);
+    record_removed_push(&w, &paused);
+    assert_eq!(store(&w).load(&paused).unwrap().delivery, Delivery::Push, "the record still reads");
+
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let listed = orq(&w, &["runs", "--repo", &repo]);
+    assert_eq!(listed.status.code(), Some(0), "{}", text(&listed.stderr));
+    assert!(text(&listed.stdout).contains(&paused), "{}", text(&listed.stdout));
+
+    let resumed = orq(&w, &["run", "resume", &paused, "--yes", "--no-ci-check", "--repo", &repo]);
+    assert_ne!(resumed.status.code(), Some(0), "{}", text(&resumed.stdout));
+    assert!(text(&resumed.stderr).contains(PUSH_REMOVED), "{}", text(&resumed.stderr));
+    assert_eq!(store(&w).run_ids().unwrap(), vec![paused.clone()], "no run was started");
+}
+
+#[test]
+fn a_paused_run_resumes_with_its_own_delivery_when_its_project_now_names_the_removed_push() {
+    let w = world("resume-push-saved");
+    pausing_gate(&w);
+    let first = run(&w, &[]);
+    assert!(text(&first.stdout).contains("state: paused"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let paused = store(&w).run_ids().unwrap().remove(0);
+    save_removed_push(&w);
+
+    let repo = w.repo.root().to_str().unwrap().to_string();
+    let resumed = orq(&w, &["run", "resume", &paused, "--yes", "--no-ci-check", "--repo", &repo]);
+    assert_eq!(resumed.status.code(), Some(0), "{}\n{}", text(&resumed.stdout), text(&resumed.stderr));
+    let new_id = store(&w).run_ids().unwrap().into_iter().find(|id| *id != paused).expect("a resumed run");
+    assert_eq!(store(&w).load(&new_id).unwrap().delivery, Delivery::Review, "kept from the paused run");
 }
 
 fn ending(w: &World, run_id: &str) -> Option<String> {
@@ -196,34 +261,30 @@ fn remote_branch(w: &World, branch: &str) -> Option<String> {
 }
 
 #[test]
-fn a_push_only_run_pushes_its_branch_and_stops_without_opening_a_review() {
-    let w = world("push");
-    save_delivery(&w, Delivery::Push);
-    let out = run(&w, &[]);
-    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
-    assert!(text(&out.stdout).contains("state: pushed"), "{}", text(&out.stdout));
-    assert!(!text(&out.stdout).contains("review:"), "no review was opened: {}", text(&out.stdout));
+fn a_project_whose_saved_delivery_is_the_removed_push_refuses_to_start_a_run_until_another_is_chosen() {
+    let w = world("push-saved");
+    save_removed_push(&w);
+    for extra in [&["--check"][..], &[][..]] {
+        let out = run(&w, extra);
+        assert_eq!(out.status.code(), Some(2), "{extra:?}: {}\n{}", text(&out.stdout), text(&out.stderr));
+        assert!(text(&out.stderr).contains(PUSH_REMOVED), "{extra:?}: {}", text(&out.stderr));
+    }
+    assert!(store(&w).run_ids().unwrap_or_default().is_empty(), "nothing was recorded");
+    assert!(w.provider.calls().is_empty(), "nothing was asked of the provider");
 
-    let id = store(&w).run_ids().unwrap().remove(0);
-    let record = store(&w).load(&id).unwrap();
-    assert!(remote_branch(&w, &record.branch).is_some(), "the branch {} was pushed", record.branch);
-    assert!(!record.worktree.exists(), "a delivered run's worktree is cleaned up: {}", record.worktree.display());
-    let opened: Vec<_> = w.provider.calls().into_iter().filter(|c| c.args.first().map(String::as_str) == Some("pr") && c.args.get(1).map(String::as_str) == Some("create")).collect();
-    assert!(opened.is_empty(), "no PR/MR was opened: {opened:?}");
-    assert_eq!(ending(&w, &id).as_deref(), Some("pushed"));
-    let summary = orq_orchestrator::summarize_run(&store(&w).events(&id).unwrap());
-    assert_eq!(summary.phase.as_str(), "completed", "a pushed run has ended");
+    // Naming a delivery on the command line is a choice, so the run starts with it.
+    assert_eq!(only_run_delivery(&w, &["--delivery", "merge-local"]), Delivery::MergeLocal);
 }
 
 #[test]
-fn a_push_only_run_still_leaves_its_local_review_report() {
-    let w = world("push-report");
-    let out = run(&w, &["--delivery", "push"]);
+fn a_merge_local_run_still_leaves_its_local_review_report() {
+    let w = world("merge-report");
+    let out = run(&w, &["--delivery", "merge-local"]);
     assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
     let id = store(&w).run_ids().unwrap().remove(0);
 
     let shown = orq(&w, &["review", "show", &id, "--json"]);
-    assert!(shown.status.success(), "the Reviews tab has the pushed head's report: {}", text(&shown.stderr));
+    assert!(shown.status.success(), "the Reviews tab has the merged head's report: {}", text(&shown.stderr));
 }
 
 fn rev(dir: &Path, rev: &str) -> String {

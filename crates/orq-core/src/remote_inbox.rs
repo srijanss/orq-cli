@@ -1574,6 +1574,10 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
     };
+    if delivery == Delivery::Push {
+        audit(Outcome::Refused, Some("the push delivery was removed"));
+        return error(422, crate::project_settings::PUSH_REMOVED);
+    }
     let chosen: Vec<&ProjectAgent> = implementer.iter().chain(reviewer.iter()).collect();
     // Resetting both roles names no agent, so it needs nothing offered.
     if !chosen.is_empty() {

@@ -46,14 +46,14 @@ fn a_project_s_settings_are_saved_per_project_and_a_stale_save_is_refused() {
     assert_eq!((read.settings.clone(), read.revision), (chosen.clone(), 1), "kept across reopening");
     assert_eq!(store.project_settings(beta).unwrap().revision, 0, "another project is untouched");
 
-    let other = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    let other = ProjectSettings::default();
     assert_eq!(store.save_project_settings(alpha, 0, &other).unwrap(), SaveOutcome::Conflict, "based on revision 0, but it is at 1");
     assert_eq!(store.project_settings(alpha).unwrap().settings, chosen, "a refused save writes nothing");
 
     assert_eq!(store.save_project_settings(alpha, 1, &other).unwrap(), SaveOutcome::Saved { revision: 2 });
     let cleared = store.project_settings(alpha).unwrap();
     assert_eq!(cleared.settings.implementer, None, "a role saved as unset falls back again");
-    assert_eq!(cleared.settings.delivery, Delivery::Push);
+    assert_eq!(cleared.settings.delivery, Delivery::Review);
 }
 
 #[test]
@@ -71,13 +71,27 @@ fn a_blank_or_multi_line_value_is_refused_and_nothing_is_written() {
 }
 
 #[test]
+fn the_removed_push_delivery_is_never_saved_but_a_record_that_names_it_still_reads() {
+    let (mut store, db) = open("push");
+    let root = Path::new("/work/alpha");
+    let push = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    let refused = store.save_project_settings(root, 0, &push).unwrap_err();
+    assert_eq!(refused.to_string(), orq_core::project_settings::PUSH_REMOVED);
+    assert_eq!(store.project_settings(root).unwrap().revision, 0, "nothing was written");
+
+    store.save_project_settings(root, 0, &ProjectSettings::default()).unwrap();
+    rusqlite::Connection::open(&db).unwrap().execute("UPDATE project_settings SET delivery = 'push'", []).unwrap();
+    assert_eq!(store.project_settings(root).unwrap().settings.delivery, Delivery::Push, "saved before push was removed");
+}
+
+#[test]
 fn the_same_checkout_spelled_differently_shares_one_record() {
     let (mut store, _) = open("aliases");
-    let chosen = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    let chosen = ProjectSettings { delivery: Delivery::MergeLocal, ..ProjectSettings::default() };
     assert_eq!(store.save_project_settings(Path::new("/work/alpha/."), 0, &chosen).unwrap(), SaveOutcome::Saved { revision: 1 });
     for spelling in ["/work/alpha", "/work/alpha/", "/work//alpha/./"] {
         let read = store.project_settings(Path::new(spelling)).unwrap();
-        assert_eq!((read.settings.delivery, read.revision), (Delivery::Push, 1), "{spelling}");
+        assert_eq!((read.settings.delivery, read.revision), (Delivery::MergeLocal, 1), "{spelling}");
     }
     assert_eq!(store.save_project_settings(Path::new("/work/alpha/"), 0, &chosen).unwrap(), SaveOutcome::Conflict, "one revision history");
     assert!(store.project_settings(Path::new("/work/beta/../alpha")).is_err(), "a parent step could name another checkout, so it is refused");
@@ -115,7 +129,7 @@ fn editors_racing_from_the_same_read_save_once_and_the_rest_conflict() {
 #[test]
 fn a_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_settings() {
     let (mut store, db) = open("read-only");
-    let chosen = ProjectSettings { delivery: Delivery::Push, ..ProjectSettings::default() };
+    let chosen = ProjectSettings { delivery: Delivery::MergeLocal, ..ProjectSettings::default() };
     store.save_project_settings(Path::new("/work/alpha"), 0, &chosen).unwrap();
     drop(store);
 

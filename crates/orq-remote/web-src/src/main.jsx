@@ -3138,8 +3138,9 @@ const RUN_ICONS = { running: "play", completed: "check", failed: "close", blocke
 // How a completed run that was delivered without a review was delivered: pushed, or merged into its base.
 const DELIVERED = { pushed: "Pushed", merged: "Merged locally" };
 
-// How a run delivers its work when it finishes, as its project's settings name it.
-const RUN_DELIVERIES = { review: "Open review", push: "Push only", merge_local: "Merge locally" };
+// How a run delivers its work when it finishes, as its project's settings name it. Push is no longer
+// offered; a run recorded with it still says what it was.
+const RUN_DELIVERIES = { review: "Open review", push: "Push only (removed)", merge_local: "Merge locally" };
 
 // The delivery a run's page shows: how a finished run was delivered, else the mode its project
 // delivers by, or null when the run has none the page knows. An ending the page does not know
@@ -4063,7 +4064,10 @@ function LogPage({ page, filters: { text, setText, level, setLevel }, follow, on
 
 // A project's own settings as the server gives them: each role the project's choice (or null) with what a
 // run uses instead (or null), the delivery and the revision a save names.
-const DELIVERIES = [["review", "Open review"], ["push", "Push only"], ["merge_local", "Merge locally"]];
+const DELIVERIES = [["review", "Open review"], ["merge_local", "Merge locally"]];
+
+// A record saved before push was removed still names it: the page says so and chooses nothing for it.
+const PUSH_REMOVED = "the push delivery was removed: use review (pushes and opens a review) or merge-local";
 
 function isPicked(agent) {
   return agent !== null && typeof agent === "object" && typeof agent.harness === "string" && typeof agent.model === "string" && (agent.effort === null || agent.effort === undefined || typeof agent.effort === "string");
@@ -4072,7 +4076,7 @@ function isPicked(agent) {
 function parseProjectSettings(data) {
   const settings = data && data.settings;
   const role = (entry) => entry !== null && typeof entry === "object" && (entry.project === null || isPicked(entry.project)) && (entry.fallback === null || isPicked(entry.fallback));
-  const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && DELIVERIES.some(([value]) => value === settings.delivery) && Number.isInteger(settings.revision) && settings.revision >= 0;
+  const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && (settings.delivery === "push" || DELIVERIES.some(([value]) => value === settings.delivery)) && Number.isInteger(settings.revision) && settings.revision >= 0;
   return ok ? settings : null;
 }
 
@@ -4088,7 +4092,12 @@ function roleLine(entry) {
 }
 
 function deliveryLabel(delivery) {
-  return DELIVERIES.find(([value]) => value === delivery)[1];
+  const offered = DELIVERIES.find(([value]) => value === delivery);
+  return offered === undefined ? PUSH_REMOVED : offered[1];
+}
+
+function isOfferedDelivery(delivery) {
+  return DELIVERIES.some(([value]) => value === delivery);
 }
 
 // What a role's editor starts on: the project's own agent as it is, even one this machine no longer offers,
@@ -4170,7 +4179,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: settings.delivery, revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -4221,6 +4230,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         <div className="settings-block">
           {editing ? (
             <select data-delivery aria-label="When a run finishes" value={draft.delivery} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, delivery: event.target.value })}>
+              {isOfferedDelivery(draft.delivery) ? null : <option value="" disabled>Choose one</option>}
               {DELIVERIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           ) : (
@@ -4230,7 +4240,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
       </section>
       {phase === "editing" ? (
         <div className="settings-block settings-actions">
-          <button type="button" className="primary-button" data-project-settings-save onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
+          <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery)} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
           <button type="button" data-cancel onClick={() => { setPhase("idle"); setNote(""); setConflict(false); }}>Cancel</button>
         </div>
       ) : null}

@@ -60,7 +60,7 @@ Reviewer:
 ## What a run does when it finishes
 
 `delivery` is read when the run starts and recorded on the run, so a later change never alters a
-run in flight. `orq run --delivery review|push|merge-local` overrides it for one run.
+run in flight. `orq run --delivery review|merge-local` overrides it for one run.
 
 - `review` (today): push, open the PR/MR, wait for CI. Ends `review_ready`.
 - `push`: push the branch and stop. Ends `pushed`.
@@ -76,7 +76,7 @@ stays.
 ## Web
 
 - Each project gets a Settings page with implementer and reviewer (harness, model, effort), and
-  "When a run finishes" (Open review / Push only / Merge locally). A role left unset shows "Machine
+  "When a run finishes" (Open review / Merge locally). A role left unset shows "Machine
   default (…)" and can be reset to it. Saving uses the same version check as Settings and needs
   remote actions on.
 - The Settings page's agents section is titled "Machine defaults" and says projects can override it.

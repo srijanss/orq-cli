@@ -1,8 +1,8 @@
 //! A project's Settings page, at /projects/{id}/settings: its implementer and reviewer (harness, model,
 //! effort), each "Machine default (...)" while the project leaves it unset, and "When a run finishes"
-//! (Open review / Push only / Merge locally). Edit, while remote actions are on, offers the machine's
-//! options with a reset to the machine default per role, and Save asks, then sends the whole record
-//! with the revision it was read at; a stale revision shows the server's reason and offers Reload.
+//! (Open review / Merge locally; a record saved before push was removed says so, with nothing chosen).
+//! Edit, while remote actions are on, offers the machine's options with a reset to the machine default
+//! per role, and Save asks, then sends the whole record with the revision it was read at; a stale revision shows the server's reason and offers Reload.
 
 mod web_deps;
 
@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const URL: &str = "/projects/alpha/settings";
-const SELECTORS: [&str; 9] = [
+const SELECTORS: [&str; 12] = [
     "[data-project-settings-edit]",
     "[data-role-harness]",
     "[data-role-model]",
@@ -21,6 +21,9 @@ const SELECTORS: [&str; 9] = [
     "[data-confirm]",
     "[data-settings-reload]",
     "[data-cancel]",
+    "[data-delivery] option:not([value=\"\"])",
+    "[data-delivery] option[value=\"\"]:checked",
+    "[data-project-settings-save][disabled]",
 ];
 
 fn run(responses: Value, steps: Value) -> Option<Value> {
@@ -104,11 +107,11 @@ fn edit_resets_a_role_to_the_machine_default_picks_another_and_save_asks_then_se
         {"click": "[data-project-settings-edit]"},
         {"click": "[data-role-reset=\"implementer\"]"},
         {"set": "[data-role-harness=\"reviewer\"]", "value": "pi"},
-        {"set": "[data-delivery]", "value": "push"},
+        {"set": "[data-delivery]", "value": "review"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
     ]);
-    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), ok, project_settings("push", 4)]);
+    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), ok, project_settings("review", 4)]);
     let Some(out) = run(responses, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[1], "[data-project-settings-edit]"), 1, "{out}");
@@ -121,11 +124,11 @@ fn edit_resets_a_role_to_the_machine_default_picks_another_and_save_asks_then_se
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(sent[0]["url"], "/api/projects/alpha/settings");
     assert_eq!(sent[0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
-    assert_eq!(body(&sent[0]), json!({"implementer": null, "reviewer": {"harness": "pi", "model": "kimi", "effort": null}, "delivery": "push", "revision": 3}));
+    assert_eq!(body(&sent[0]), json!({"implementer": null, "reviewer": {"harness": "pi", "model": "kimi", "effort": null}, "delivery": "review", "revision": 3}));
     let reads = out["requests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/projects/alpha/settings" && r["method"] == "GET").count();
     assert_eq!(reads, 2, "the settings are read again after a save: {out}");
     let frame = last(&out);
-    assert!(shown(frame).iter().any(|t| t == "Push only"), "{out}");
+    assert!(shown(frame).iter().any(|t| t == "Open review"), "{out}");
     assert_eq!(count(frame, "[data-role-harness]"), 0, "the editor closes: {out}");
 }
 
@@ -139,7 +142,7 @@ fn a_stale_revision_shows_the_servers_reason_and_reload_reads_the_settings_again
         {"click": "[data-confirm]"},
         {"click": "[data-settings-reload]"},
     ]);
-    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), stale, project_settings("push", 5)]);
+    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), stale, project_settings("review", 5)]);
     let Some(out) = run(responses, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     let refused = &frames[frames.len() - 2];
@@ -147,7 +150,7 @@ fn a_stale_revision_shows_the_servers_reason_and_reload_reads_the_settings_again
     assert_eq!(count(refused, "[data-settings-reload]"), 1, "{out}");
     assert_eq!(count(refused, "[data-delivery]"), 1, "the edit is kept: {out}");
     let frame = last(&out);
-    assert!(shown(frame).iter().any(|t| t == "Push only"), "Reload shows the settings as they are now: {out}");
+    assert!(shown(frame).iter().any(|t| t == "Open review"), "Reload shows the settings as they are now: {out}");
     assert_eq!(count(frame, "[data-settings-reload]"), 0, "{out}");
     assert_eq!(count(frame, "[data-delivery]"), 0, "{out}");
 }
@@ -188,18 +191,18 @@ fn edit_keeps_a_project_agent_whose_harness_or_model_is_not_offered_so_saving_th
     let ok = json!({"status": 200, "json": {"settings": {}}});
     let steps = json!([
         {"click": "[data-project-settings-edit]"},
-        {"set": "[data-delivery]", "value": "push"},
+        {"set": "[data-delivery]", "value": "merge_local"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
     ]);
-    let Some(out) = run(json!([unoffered, projects(), machine_settings(true), options(), ok, project_settings("push", 4)]), steps) else { return };
+    let Some(out) = run(json!([unoffered, projects(), machine_settings(true), options(), ok, project_settings("merge_local", 4)]), steps) else { return };
     let editing = &out["frames"].as_array().unwrap()[2];
     assert_eq!(count(editing, "[data-role-model]"), 2, "both roles keep their own agent: {out}");
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(
         body(&sent[0]),
-        json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "push", "revision": 3})
+        json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "merge_local", "revision": 3})
     );
 }
 
@@ -208,12 +211,12 @@ fn a_background_refresh_keeps_the_open_editor_and_its_draft_and_save_names_the_r
     let stale = json!({"status": 409, "json": {"error": "The project's settings changed since they were read"}});
     let steps = json!([
         {"click": "[data-project-settings-edit]"},
-        {"set": "[data-delivery]", "value": "push"},
+        {"set": "[data-delivery]", "value": "review"},
         {"tick": 30000},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
     ]);
-    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), project_settings("review", 4), stale]);
+    let responses = json!([project_settings("merge_local", 3), projects(), machine_settings(true), options(), project_settings("merge_local", 4), stale]);
     let until_refresh = json!(steps.as_array().unwrap()[..3]);
     let Some(refreshed) = run(responses.clone(), until_refresh) else { return };
     let refreshed = last(&refreshed);
@@ -221,7 +224,7 @@ fn a_background_refresh_keeps_the_open_editor_and_its_draft_and_save_names_the_r
     let Some(out) = run(responses, steps) else { return };
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "the draft is still there to save: {:?}", out["requests"]);
-    assert_eq!(body(&sent[0])["delivery"], "push");
+    assert_eq!(body(&sent[0])["delivery"], "review");
     assert_eq!(body(&sent[0])["revision"], 3, "the revision the editor was opened at");
     assert!(shown(last(&out)).iter().any(|t| t == "The project's settings changed since they were read"));
 }
@@ -259,13 +262,13 @@ fn a_failed_save_shows_the_reason_and_keeps_the_draft_so_save_can_be_tried_again
     let ok = json!({"status": 200, "json": {"settings": {}}});
     let steps = json!([
         {"click": "[data-project-settings-edit]"},
-        {"set": "[data-delivery]", "value": "push"},
+        {"set": "[data-delivery]", "value": "merge_local"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
     ]);
-    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), failed, ok, project_settings("push", 2)]);
+    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), failed, ok, project_settings("merge_local", 2)]);
     let Some(out) = run(responses, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     let refused = &frames[5];
@@ -275,8 +278,8 @@ fn a_failed_save_shows_the_reason_and_keeps_the_draft_so_save_can_be_tried_again
     let sent = posts(&out);
     assert_eq!(sent.len(), 2, "{:?}", out["requests"]);
     assert_eq!(body(&sent[1]), body(&sent[0]), "the retry sends the same draft");
-    assert_eq!(body(&sent[1])["delivery"], "push");
-    assert!(shown(last(&out)).iter().any(|t| t == "Push only"));
+    assert_eq!(body(&sent[1])["delivery"], "merge_local");
+    assert!(shown(last(&out)).iter().any(|t| t == "Merge locally"));
 }
 
 #[test]
@@ -319,13 +322,13 @@ fn an_unreachable_server_on_save_says_so_and_keeps_the_draft_for_a_retry_that_su
     let ok = json!({"status": 200, "json": {"settings": {}}});
     let steps = json!([
         {"click": "[data-project-settings-edit]"},
-        {"set": "[data-delivery]", "value": "push"},
+        {"set": "[data-delivery]", "value": "merge_local"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
         {"click": "[data-project-settings-save]"},
         {"click": "[data-confirm]"},
     ]);
-    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), {"reject": true}, ok, project_settings("push", 2)]);
+    let responses = json!([project_settings("review", 1), projects(), machine_settings(true), options(), {"reject": true}, ok, project_settings("merge_local", 2)]);
     let Some(out) = run(responses, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     let refused = &frames[5];
@@ -333,8 +336,39 @@ fn an_unreachable_server_on_save_says_so_and_keeps_the_draft_for_a_retry_that_su
     assert_eq!(count(refused, "[data-project-settings-save]"), 1, "Save can be tried again");
     let sent = posts(&out);
     assert_eq!(sent.len(), 2, "{:?}", out["requests"]);
-    assert_eq!(body(&sent[1])["delivery"], "push", "the retry sends the same draft");
+    assert_eq!(body(&sent[1])["delivery"], "merge_local", "the retry sends the same draft");
     let frame = last(&out);
-    assert!(shown(frame).iter().any(|t| t == "Push only"));
+    assert!(shown(frame).iter().any(|t| t == "Merge locally"));
     assert!(!shown(frame).iter().any(|t| t == "The server could not be reached."));
+}
+
+const PUSH_REMOVED: &str = "the push delivery was removed: use review (pushes and opens a review) or merge-local";
+
+#[test]
+fn a_stored_push_delivery_says_it_was_removed_and_edit_offers_only_review_or_merge_with_none_chosen_until_one_is() {
+    let ok = json!({"status": 200, "json": {"settings": {}}});
+    let steps = json!([
+        {"click": "[data-project-settings-edit]"},
+        {"set": "[data-delivery]", "value": "merge_local"},
+        {"click": "[data-project-settings-save]"},
+        {"click": "[data-confirm]"},
+    ]);
+    let responses = json!([project_settings("push", 3), projects(), machine_settings(true), options(), ok, project_settings("merge_local", 4)]);
+    let Some(out) = run(responses, steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(shown(&frames[1]).iter().any(|t| t == PUSH_REMOVED), "{:?}", shown(&frames[1]));
+    let editing = &frames[2];
+    assert_eq!(count(editing, "[data-delivery] option:not([value=\"\"])"), 2, "{:?}", shown(editing));
+    for offered in ["Open review", "Merge locally"] {
+        assert!(shown(editing).iter().any(|t| t == offered), "{offered}: {:?}", shown(editing));
+    }
+    assert!(!out.to_string().contains("Push only"), "push is not offered: {out}");
+    assert_eq!(count(editing, "[data-delivery] option[value=\"\"]:checked"), 1, "no delivery is chosen: {out}");
+    assert_eq!(count(editing, "[data-project-settings-save][disabled]"), 1, "nothing to save until one is: {out}");
+    assert_eq!(count(&frames[3], "[data-project-settings-save][disabled]"), 0, "{out}");
+    let sent = posts(&out);
+    assert_eq!(sent.len(), 1, "{out}");
+    assert_eq!(body(&sent[0])["delivery"], "merge_local");
+    assert_eq!(body(&sent[0])["revision"], 3);
+    assert!(shown(last(&out)).iter().any(|t| t == "Merge locally"), "{out}");
 }
