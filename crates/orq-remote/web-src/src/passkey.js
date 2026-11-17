@@ -33,15 +33,26 @@ function post(path, body, token) {
   return fetch(path, { method: "POST", headers, body: JSON.stringify(body ?? {}), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
-// What the server says about sign-in; null when it has no passkey support.
+// Returned by authStatus when the server could not be reached at all: the request failed, took
+// longer than STATUS_TIMEOUT_MS, or a proxy in front of it answered 502, 503 or 504.
+export const UNREACHABLE = "unreachable";
+const STATUS_TIMEOUT_MS = 8000;
+
+// What the server says about sign-in: its status, null when it has no passkey support (a 404 or a
+// reply without the expected shape), or UNREACHABLE when there was no server to ask.
 export async function authStatus() {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller === null ? null : setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
   try {
-    const response = await fetch("/auth/status", { cache: "no-store", referrerPolicy: "no-referrer" });
+    const response = await fetch("/auth/status", { cache: "no-store", referrerPolicy: "no-referrer", signal: controller === null ? undefined : controller.signal });
+    if (response.status === 502 || response.status === 503 || response.status === 504) return UNREACHABLE;
     if (!response.ok) return null;
     const data = await response.json();
     return data !== null && typeof data === "object" && typeof data.passkeys === "boolean" ? data : null;
   } catch (unavailable) {
-    return null;
+    return UNREACHABLE;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 

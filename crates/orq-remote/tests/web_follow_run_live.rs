@@ -101,7 +101,7 @@ fn an_empty_run_follows_from_the_start_and_a_page_with_more_pages_does_not_follo
 fn a_refused_stream_signs_out_a_missing_one_stops_and_leaving_the_page_closes_it() {
     let base = |tail: Value| json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), tail]);
     let Some(out) = run(RUN, base(json!({"status": 401, "json": {}})), json!([{"submit": TOKEN}])) else { return };
-    assert!(texts(&out["frames"][1]).iter().any(|t| t == "Open the inbox"), "{:?}", texts(&out["frames"][1]));
+    assert!(texts(&out["frames"][1]).iter().any(|t| t == "Sign in"), "{:?}", texts(&out["frames"][1]));
 
     // The run is gone: the resume is refused, so is the reopening from the start, and that is the end.
     let gone = json!([timeline(vec![event("e0", "zero")], Value::Null), projects(), {"status": 404, "json": {}}, {"status": 404, "json": {}}]);

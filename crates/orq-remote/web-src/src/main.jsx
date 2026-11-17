@@ -9,7 +9,7 @@ import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
 import { readPins, writePins } from "./pins.js";
-import { authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { UNREACHABLE, authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
 import { applyUpdate, startWorker } from "./worker.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
@@ -160,7 +160,7 @@ function PasskeyButton({ onSignedIn, enrolled = true, onAskToken }) {
   );
 }
 
-function TokenPrompt({ message, onToken, passkeys = false, known = false, onPasskey, blocker = null }) {
+function TokenPrompt({ message, onToken, passkeys = false, known = false, onPasskey, blocker = null, unreachable = false, onRetry }) {
   const field = useRef(null);
   const [asking, setAsking] = useState(false);
   const usable = known && blocker === null && passkeysAvailable();
@@ -179,6 +179,16 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
         Orq
       </span>
       <div className="signin-divider" role="separator" />
+      {unreachable ? (
+        <>
+          <p role="alert">Can't reach orq. Check that this device is connected to Tailscale, then try again.</p>
+          <button type="button" className="primary" onClick={onRetry}>
+            Retry
+          </button>
+          <ThemeToggle />
+        </>
+      ) : (
+      <>
       {usable && !asking && <PasskeyButton onSignedIn={onPasskey} enrolled={passkeys} onAskToken={() => setAsking(true)} />}
       {blocker !== null && <p role="status">{blocker}</p>}
       {(!usable || asking) && (
@@ -189,13 +199,15 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
             <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
           </label>
           <button type="button" className="primary" onClick={submit}>
-            Open the inbox
-              </button>
+            Sign in
+          </button>
         </>
       )}
       <p role="alert">{message}</p>
       <div className="alternatives" />
       <ThemeToggle />
+      </>
+      )}
     </div>
     </div>
   );
@@ -4534,6 +4546,9 @@ function EnrolPasskey({ token, onDone, another = false }) {
   );
 }
 
+// How often the sign-in page asks again while the server cannot be reached.
+const RETRY_MS = 15000;
+
 function App() {
   const [token, setTokenState] = useState(keptToken);
   const [status, setStatus] = useState(null);
@@ -4546,10 +4561,28 @@ function App() {
   useEffect(() => {
     refresh();
   }, []);
-  const session = status !== null && status.signed_in === true;
+  // While nobody is signed in and the server cannot be reached, try again once the device is back online,
+  // when the page is shown again, and every RETRY_MS while it stays visible.
+  const waiting = status === UNREACHABLE && token === null;
+  useEffect(() => {
+    if (!waiting) return undefined;
+    const visible = () => document.visibilityState === "visible";
+    const shown = () => visible() && refresh();
+    const timer = setInterval(shown, RETRY_MS);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", shown);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", shown);
+    };
+  }, [waiting]);
+  // The server's answer when it gave one; null while unknown, without passkey support, or unreachable.
+  const reply = status !== null && typeof status === "object" ? status : null;
+  const session = reply !== null && reply.signed_in === true;
   const active = session && token === null ? SESSION : token;
   if (active === null) {
-    return <main><TokenPrompt message={message} onToken={setToken} passkeys={status !== null && status.passkeys} known={status !== null} onPasskey={refresh} blocker={status !== null ? passkeyBlocker() : null} /></main>;
+    return <main><TokenPrompt message={message} onToken={setToken} passkeys={reply !== null && reply.passkeys} known={reply !== null} onPasskey={refresh} blocker={reply !== null ? passkeyBlocker() : null} unreachable={status === UNREACHABLE} onRetry={refresh} /></main>;
   }
   const signedOut = () => {
     reportConnection(null);
@@ -4563,8 +4596,8 @@ function App() {
     setToken(null);
     if (session) signOutOfSession().then(refresh);
   };
-  const first = typeof active === "string" && status !== null && status.passkeys === false && passkeysAvailable();
-  const blocker = status !== null ? passkeyBlocker() : null;
+  const first = typeof active === "string" && reply !== null && reply.passkeys === false && passkeysAvailable();
+  const blocker = reply !== null ? passkeyBlocker() : null;
   return (
     <>
       {first && <EnrolPasskey token={active} onDone={refresh} />}
