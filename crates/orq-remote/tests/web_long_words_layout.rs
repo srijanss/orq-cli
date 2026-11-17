@@ -204,3 +204,24 @@ fn on_a_desktop_nothing_scrolls_sideways_and_ordinary_words_stay_on_one_line() {
     let out = measure(&chromium, 1280, &feature_url(), &short, json!([{"wait": ".feature-panel p"}, {"lines": ".feature-panel p", "text": "Three plain words"}]));
     assert_eq!(out.result["lines"][".feature-panel p"], 1, "{}", out.result);
 }
+
+/// A stand-in browser: a shell script with `body`, in a fresh private directory.
+fn fake_browser(body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-fake-browser-{}-{}", std::process::id(), body.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("browser");
+    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[test]
+fn the_browser_is_started_headless_and_a_launch_that_fails_is_reported() {
+    let browser = fake_browser("printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\necho 'cannot open display' >&2\nexit 1");
+    let out = measure(&browser, 390, "/dashboard", &[], json!([]));
+    let args = std::fs::read_to_string(browser.with_file_name("args")).unwrap();
+    assert!(args.lines().any(|arg| arg == "--headless"), "{args}");
+    let error = out.result["error"].as_str().unwrap_or_default();
+    assert!(error.contains("exit") && error.contains("cannot open display"), "{}", out.result);
+}

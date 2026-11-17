@@ -179,7 +179,7 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
     };
     let profile = orq_test_support::process_temp_dir().join(format!("orq-chromium-{port}"));
     let output = Command::new(chromium)
-        .args(["--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--disable-dev-shm-usage"])
+        .args(["--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--disable-dev-shm-usage"])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--window-size={width},800"))
         .arg("--virtual-time-budget=8000")
@@ -190,6 +190,11 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = server.join();
     let _ = std::fs::remove_dir_all(&profile);
+    let unanswered = served.unanswered.lock().unwrap().clone();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Measured { result: json!({"error": format!("{} did not start: {} exit, {}", chromium.display(), output.status, stderr.trim())}), unanswered };
+    }
     let dom = String::from_utf8_lossy(&output.stdout);
     let text = dom
         .split("<pre id=\"result\">")
@@ -201,7 +206,6 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
         .replace("&gt;", ">")
         .replace("&amp;", "&");
     let result = serde_json::from_str(&text).unwrap_or_else(|_| json!({"error": "no result", "stderr": String::from_utf8_lossy(&output.stderr).lines().rev().take(5).collect::<Vec<_>>()}));
-    let unanswered = served.unanswered.lock().unwrap().clone();
     Measured { result, unanswered }
 }
 
