@@ -425,12 +425,15 @@ impl Store {
 
     /// How many runs were pinned before pins were removed, counted once: the `run_pins` table the
     /// upgrade kept for them is dropped, so a later call finds none.
+    /// One immediate transaction, so two callers at once serialize and only the first counts them.
     pub fn take_removed_pins(&self) -> Result<u64> {
-        if !pins_table_exists(&self.conn)? {
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(db)?;
+        if !pins_table_exists(&tx)? {
             return Ok(0);
         }
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM run_pins", [], |row| row.get(0)).map_err(db)?;
-        drop_pins_table(&self.conn)?;
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM run_pins", [], |row| row.get(0)).map_err(db)?;
+        drop_pins_table(&tx)?;
+        tx.commit().map_err(db)?;
         Ok(count.max(0) as u64)
     }
 

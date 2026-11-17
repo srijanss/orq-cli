@@ -59,6 +59,25 @@ fn a_pins_table_with_pins_is_kept_on_upgrade_until_they_are_counted_once() {
 }
 
 #[test]
+fn pins_another_process_is_already_taking_are_not_counted_again() {
+    let (store, db, _) = open("race");
+    drop(store);
+    back_to_version_six(&db, &["run-a", "run-b"]);
+    let store = Store::open(&db).unwrap();
+    // Another `storage status` has counted the pins and dropped the table, and not yet committed.
+    let other = rusqlite::Connection::open(&db).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE; DROP TABLE run_pins;").unwrap();
+    let committer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    let taken = store.take_removed_pins();
+    committer.join().unwrap();
+    assert_eq!(taken.unwrap(), 0, "the other process already told about these pins");
+    assert!(!has_pins_table(&db));
+}
+
+#[test]
 fn a_version_two_database_is_upgraded_keeping_its_reviews_and_no_pins_table() {
     let (store, db, roots) = open("upgrade");
     store.save_review(&roots.data, "run-1", "p-0a1b2c3d", "F", &"a".repeat(40), br#"{"status":"current","risks":[]}"#).unwrap();
