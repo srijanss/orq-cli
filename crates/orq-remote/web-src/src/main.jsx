@@ -3651,9 +3651,35 @@ function groupEvents(events, seed = 0) {
   return items;
 }
 
-// A step's mark: failed, finished, or still open.
-function StepIcon({ failed, done }) {
-  const kind = failed ? "failed" : done ? "done" : "open";
+// The run states in which a run that sent run.completed finished its work rather than stopping short.
+const ENDED_STATES = ["completed", "merged", "needs_review"];
+// The cleanup step's events: it has no .completed event, so one of these says it finished.
+const WORKTREE_OUTCOMES = { "worktree.removed": null, "worktree.kept": "Worktree kept", "worktree.deleted": "Worktree deleted" };
+
+// Whether the run ended without failing: run.completed is among its events and its state says so.
+function runEnded(state, events) {
+  return ENDED_STATES.includes(state) && events.some((event) => event.kind === "run.completed");
+}
+
+// One step's state, the same in the Timeline and the Events tab: failed; done when it completed, when the
+// run moved on from it, or when it is the last step of a run that ended; else in progress or not finished.
+function stepState(step, { last, ended, running }) {
+  if (step.failed) return "failed";
+  const completed = step.events.some((event) => event.kind.endsWith(".completed") || (step.stage === "cleanup" && event.kind in WORKTREE_OUTCOMES));
+  if (completed || !last || ended) return "done";
+  return running ? "current" : "open";
+}
+
+// What became of the worktree, from the cleanup step's latest word on it, or null when there is nothing to say.
+function cleanupNote(step) {
+  if (step.stage !== "cleanup") return null;
+  const said = step.events.filter((event) => event.kind in WORKTREE_OUTCOMES);
+  return said.length === 0 ? null : WORKTREE_OUTCOMES[said[said.length - 1].kind];
+}
+
+// A step's mark: failed, finished, or still open (in progress or not finished).
+function StepIcon({ state }) {
+  const kind = state === "failed" || state === "done" ? state : "open";
   return <span className={"step-icon step-" + kind} aria-hidden="true"><Icon name={{ failed: "close", done: "check", open: "clock" }[kind]} size={16} /></span>;
 }
 
@@ -3673,16 +3699,18 @@ function StepTime({ events }) {
 }
 
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
-function EventTimeline({ events, rounds = 0 }) {
+function EventTimeline({ events, rounds = 0, ended = false, running = false }) {
+  const items = groupEvents(events, rounds);
+  const lastStep = items.reduce((found, item, at) => (item.events === undefined ? found : at), -1);
   return (
     <ol className="run-events">
-      {groupEvents(events, rounds).map((item) =>
-        item.events === undefined ? (
-          <EventItem key={item.event.event_id} event={item.event} />
-        ) : (
-          <li key={item.events[0].event_id} className="attempt" data-failed={item.failed ? "true" : undefined}>
+      {items.map((item, at) => {
+        if (item.events === undefined) return <EventItem key={item.event.event_id} event={item.event} />;
+        const state = stepState(item, { last: at === lastStep, ended, running });
+        return (
+          <li key={item.events[0].event_id} className="attempt" data-failed={item.failed ? "true" : undefined} data-step={state}>
             <div className="attempt-head">
-              <StepIcon failed={item.failed} done={item.events.some((event) => event.kind.endsWith(".completed"))} />
+              <StepIcon state={state} />
               <h3 className="attempt-title">{item.title}</h3>
               <StepTime events={item.events} />
             </div>
@@ -3693,8 +3721,8 @@ function EventTimeline({ events, rounds = 0 }) {
               ))}
             </ol>
           </li>
-        )
-      )}
+        );
+      })}
     </ol>
   );
 }
@@ -3702,14 +3730,15 @@ function EventTimeline({ events, rounds = 0 }) {
 const STEP_STATES = { done: "Done", failed: "Failed", current: "In progress", open: "Not finished" };
 
 // The run's stages as one line of steps: each finished, failed, or still going, with how long it took.
-// A stage passed is done even without its own completion event, since the run moved on from it.
-function RunSteps({ events, rounds, running, onLogs }) {
+// Each step's state comes from stepState, so it matches the Events tab.
+function RunSteps({ events, rounds, running, ended = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   return (
     <ol className="run-steps">
       {steps.map((step, at) => {
         const last = at === steps.length - 1;
-        const kind = step.failed ? "failed" : !last || step.events.some((event) => event.kind.endsWith(".completed")) ? "done" : running ? "current" : "open";
+        const kind = stepState(step, { last, ended, running });
+        const note = cleanupNote(step);
         const took = stepDuration(step.events);
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         return (
@@ -3718,6 +3747,7 @@ function RunSteps({ events, rounds, running, onLogs }) {
             <span className="run-step-name">{name}</span>
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
+            {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />
@@ -3752,10 +3782,10 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
-        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} onLogs={() => choose("logs")} />}
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={() => choose("logs")} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
-        {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} />}
+        {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} />}
       </div>
     </>
   );
