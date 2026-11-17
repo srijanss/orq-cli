@@ -99,9 +99,9 @@ pub fn conflict_fix_task(
         (false, Some(command)) => format!(
             "This project's generated files are {}; rebuild them with `{}`, then add them.",
             listed(generated),
-            command.join(" ")
+            shell_words(command)
         ),
-        (true, Some(command)) => format!("This project rebuilds its generated files with `{}`; run it, then add them.", command.join(" ")),
+        (true, Some(command)) => format!("This project rebuilds its generated files with `{}`; run it, then add them.", shell_words(command)),
         (false, None) => format!("This project's generated files are {}; work out from the repository how they are rebuilt.", listed(generated)),
         (true, None) => "Work out from the repository which of the conflicting files are generated and how they are rebuilt.".to_string(),
     };
@@ -121,6 +121,17 @@ pub fn conflict_fix_task(
         branch_name = record.branch,
         files = files.iter().map(|file| format!("- {file}")).collect::<Vec<_>>().join("\n"),
     ))
+}
+
+/// `words` as a shell command line: each word that is not plain is single-quoted, so it stays one
+/// argument and nothing in it is read as shell syntax.
+fn shell_words(words: &[String]) -> String {
+    let plain = |word: &str| !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b));
+    words
+        .iter()
+        .map(|word| if plain(word) { word.clone() } else { format!("'{}'", word.replace('\'', "'\\''")) })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The rebase really finished: the run branch is checked out, no entry is

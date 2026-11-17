@@ -517,3 +517,13 @@ fn a_conflicting_file_with_spaces_unicode_and_glob_characters_is_named_as_it_is_
     assert!(task.contains("target a") && task.contains("edit a"), "both sides' commits: {task}");
     assert!(!task.contains("target decoy"), "a glob of the name matches no other file: {task}");
 }
+
+#[test]
+fn the_rebuild_command_is_given_shell_quoted_so_each_word_stays_one_argument() {
+    let w = world("task-quoted", true);
+    let rebuild: Vec<String> = ["sh", "-c", "echo $HOME; make it's", "two words", "plain-word_1.js"].iter().map(|w| w.to_string()).collect();
+
+    let task = conflict_fix_task(&w.store, "run-1", &[], Some(&rebuild)).unwrap();
+
+    assert!(task.contains(r#"`sh -c 'echo $HOME; make it'\''s' 'two words' plain-word_1.js`"#), "{task}");
+}
