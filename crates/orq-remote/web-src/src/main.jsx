@@ -4557,7 +4557,16 @@ function App() {
     setTokenState(next);
   };
   const [message, setMessage] = useState("");
-  const refresh = () => authStatus().then(setStatus);
+  // Only the answer to the latest request counts: an older one that ends late (a timeout after a newer
+  // request already got through) would otherwise undo it.
+  const latest = useRef(0);
+  const refresh = () => {
+    latest.current += 1;
+    const mine = latest.current;
+    return authStatus().then((next) => {
+      if (mine === latest.current) setStatus(next);
+    });
+  };
   useEffect(() => {
     refresh();
   }, []);

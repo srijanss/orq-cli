@@ -146,3 +146,13 @@ fn a_status_answered_in_time_leaves_no_deadline_behind() {
     assert!(buttons(start).iter().any(|b| b == "Sign in with a passkey"), "{:?}", buttons(start));
     assert_eq!(start["settled"]["deadlines"], 0, "{out}");
 }
+
+#[test]
+fn an_older_status_request_that_ends_late_does_not_undo_a_newer_answer() {
+    let answered = json!({"passkeys": true, "signed_in": false});
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": ["reject", "hold", answered], "steps": [{"click": "button"}, {"online": true}, {"expire": 8000}]})) else { return };
+    assert!(buttons(&out["frames"][2]).iter().any(|b| b == "Sign in with a passkey"), "{:?}", buttons(&out["frames"][2]));
+    let last = &out["frames"][3];
+    assert!(!shown(last).contains(UNREACHABLE), "the late timeout is ignored: {}", shown(last));
+    assert!(buttons(last).iter().any(|b| b == "Sign in with a passkey"), "{:?}", buttons(last));
+}
