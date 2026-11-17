@@ -344,8 +344,8 @@ fn plan(
         return Err(crate::checkpoint::mid_rebase_refusal(&from.run_id, &from.worktree));
     }
     // A stopped rebase has HEAD detached; the branch it is rebasing has to be the run's.
-    let checkout = if mid_rebase {
-        crate::checkpoint::rebase_problem(repo, &from.worktree, &from.branch)
+    let checkout = if let Some(onto) = conflict_onto.as_deref().filter(|_| mid_rebase) {
+        crate::checkpoint::rebase_problem(repo, &from.worktree, &from.branch, onto)
     } else {
         checkout_problem(repo, &from.worktree, &from.branch).map_err(|e| format!("cannot inspect the worktree: {e:?}"))
     };

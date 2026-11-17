@@ -249,21 +249,33 @@ pub fn record_rebase_finished_by_hand(store: &RunStore, record: &crate::store::R
 }
 
 /// Why a run's worktree, stopped part way through a rebase, cannot have that rebase finished for
-/// the run: it is not one of `repo`'s worktrees, or the rebase is not of the run's `branch`.
-pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch: &str) -> Result<Option<String>, String> {
+/// the run: it is not one of `repo`'s worktrees, or the rebase is not the one the run blocked on,
+/// of the run's `branch` onto `onto`.
+pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch: &str, onto: &str) -> Result<Option<String>, String> {
     if let Some(problem) = crate::reap::repository_problem(repo, worktree).map_err(|e| format!("cannot inspect the worktree: {e:?}"))? {
         return Ok(Some(problem));
     }
-    for marker in ["rebase-merge/head-name", "rebase-apply/head-name"] {
+    for dir in ["rebase-merge", "rebase-apply"] {
         let path = std::process::Command::new("git")
             .arg("-C")
             .arg(worktree)
-            .args(["rev-parse", "--path-format=absolute", "--git-path", marker])
+            .args(["rev-parse", "--path-format=absolute", "--git-path", dir])
             .output()
             .map_err(|e| format!("cannot run git: {e}"))?;
-        if let Ok(name) = std::fs::read_to_string(String::from_utf8_lossy(&path.stdout).trim()) {
-            return Ok((name.trim() != format!("refs/heads/{branch}")).then(|| "the rebase in the worktree is not of the branch of the run".to_string()));
+        let dir = std::path::PathBuf::from(String::from_utf8_lossy(&path.stdout).trim());
+        let Ok(name) = std::fs::read_to_string(dir.join("head-name")) else {
+            continue;
+        };
+        if name.trim() != format!("refs/heads/{branch}") {
+            return Ok(Some("the rebase in the worktree is not of the branch of the run".to_string()));
         }
+        let replaying_onto = std::fs::read_to_string(dir.join("onto")).unwrap_or_default();
+        if replaying_onto.trim() != onto {
+            return Ok(Some(format!(
+                "the rebase in the worktree is not the one the run blocked on, onto {onto}; abort it and finish that one"
+            )));
+        }
+        return Ok(None);
     }
     Ok(Some("the worktree is not on the branch of the run".to_string()))
 }

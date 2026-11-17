@@ -295,3 +295,29 @@ fn a_resume_whose_fix_session_left_the_rebase_unresolved_resumes_once_a_person_f
     let by_hand = events(&w, &third).into_iter().find(|e| e.kind == "rebase.completed" && e.payload["resolved_by"] == "person");
     assert_eq!(by_hand.expect("the person's rebase is recorded").payload["target_sha"], onto);
 }
+
+#[test]
+fn fix_conflicts_on_a_different_rebase_than_the_one_the_run_blocked_on_is_refused() {
+    let w = world("fix-replaced-rebase");
+    let id = blocked_mid_rebase(&w);
+    let branch = store(&w).load(&id).unwrap().branch;
+    let onto = conflict_onto(&w, &id);
+    let onto = onto.as_str().unwrap();
+    // The rebase the run blocked on is aborted, and the branch rebased onto another commit instead.
+    let replaced = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "set -e; g='git -c user.name=t -c user.email=t@example.invalid'; $g rebase --abort; $g switch -q -c elsewhere {onto}; \
+             printf 'other\\n' > feature.txt; $g commit -q -am elsewhere; $g switch -q '{branch}'; ! $g rebase elsewhere"
+        ))
+        .current_dir(worktree(&w, &id))
+        .status()
+        .unwrap();
+    assert!(replaced.success());
+
+    let out = resume(&w, &id, &["--fix-conflicts"]);
+
+    assert_ne!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stderr).contains(onto), "{}", text(&out.stderr));
+    assert_eq!(store(&w).run_ids().unwrap(), vec![id], "no run was started");
+}
