@@ -2469,14 +2469,33 @@ function featureDraft(fields) {
 // a space or an invisible character only by its code point, so a hidden one can be found.
 const SPACING = "\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 const WHITE_SPACE = new RegExp("^[" + SPACING + "]$", "u");
-const EDGE_SPACES = new RegExp("^[" + SPACING + "]+|[" + SPACING + "]+$", "gu");
-// A run of spaces, with any hyphens beside it: "a - b" is one word break, not three.
-const SPACE_RUN = new RegExp("-*[" + SPACING + "][-" + SPACING + "]*", "gu");
 
-// The name Add feature saves for what was typed: spaces at the ends dropped, and each run of spaces
-// inside (tabs and non-breaking spaces too) one '-'. Letter case and hyphens typed together are kept.
+// The name Add feature saves for what was typed: spaces at the ends dropped, and each run of spaces inside
+// (tabs and non-breaking spaces too), with any hyphens beside it, one '-', so "a - b" is one word break.
+// Letter case and hyphens typed together are kept. One pass, so a long paste costs no more than its length.
 function nameFromTyped(typed) {
-  return typed.replace(EDGE_SPACES, "").replace(SPACE_RUN, "-");
+  let out = "";
+  let run = [];
+  const close = (first, last) => {
+    // At the start or the end, the spaces on the outer side are dropped first.
+    let from = 0;
+    let to = run.length;
+    if (first) while (from < to && run[from] !== "-") from += 1;
+    if (last) while (to > from && run[to - 1] !== "-") to -= 1;
+    const kept = run.slice(from, to);
+    out += kept.every((c) => c === "-") ? kept.join("") : "-";
+    run = [];
+  };
+  for (const c of typed) {
+    if (c === "-" || WHITE_SPACE.test(c)) {
+      run.push(c);
+    } else {
+      close(out === "", false);
+      out += c;
+    }
+  }
+  close(out === "", true);
+  return out;
 }
 const INVISIBLE = /^[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]$/u;
 const DASHES = ["\u2014", "\u2013", "\u2010", "\u2011", "\u2212"];

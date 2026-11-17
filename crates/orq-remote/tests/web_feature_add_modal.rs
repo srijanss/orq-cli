@@ -194,3 +194,16 @@ fn a_name_typed_with_hyphens_shows_no_saved_as_hint_and_is_sent_unchanged() {
     assert_eq!(count(&out["frames"][3], "[data-saved-as]"), 0, "{out}");
     assert_eq!(posted_name(&out), Some(json!("already-hyphenated")), "{out}");
 }
+
+#[test]
+fn a_long_run_of_hyphens_is_converted_without_freezing_the_page() {
+    // Each render converts the name, so a conversion that slows with the square of the length would hold
+    // the page for seconds here (about five seconds per render at this length).
+    let typed = format!("a{}b", "-".repeat(60_000));
+    let started = std::time::Instant::now();
+    let Some(out) = typed_name(&typed, false) else { return };
+    let took = started.elapsed();
+    assert_eq!(saved_as(&out["frames"][3]), None, "nothing to convert");
+    assert_eq!(count(&out["frames"][3], SAVE_OFF), 0, "a valid name");
+    assert!(took < std::time::Duration::from_secs(4), "took {took:?}");
+}
