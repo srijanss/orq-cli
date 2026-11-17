@@ -185,7 +185,8 @@ fn vitest_listing(argv: &[String], worktree: &Path) -> Option<Vec<String>> {
     let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
     let (runner, args) = match (program.as_str(), rest) {
         ("vitest", args) => (Vec::new(), args),
-        ("npx", [bin, args @ ..]) if bin == "vitest" => (words(&["npx"]), args),
+        // `--no`: a listing never fetches a vitest that is not installed.
+        ("npx", [bin, args @ ..]) if bin == "vitest" => (words(&["npx", "--no"]), args),
         ("pnpm", [exec, bin, args @ ..]) if exec == "exec" && bin == "vitest" => (words(&["pnpm", "exec"]), args),
         ("pnpm" | "yarn", [bin, args @ ..]) if bin == "vitest" => (vec![program.clone()], args),
         ("npm" | "pnpm" | "yarn", args) => return script_listing(program, args, worktree),
@@ -228,7 +229,7 @@ fn script_listing(manager: &str, args: &[String], worktree: &Path) -> Option<Vec
     let mut words = vitest_script_words(package.get("scripts")?.get(script)?.as_str()?)?;
     words.extend_from_slice(extra);
     let runner: &[&str] = match manager {
-        "npm" => &["npm", "exec", "--"],
+        "npm" => &["npm", "exec", "--no", "--"],
         "pnpm" => &["pnpm", "exec"],
         _ => &["yarn"],
     };

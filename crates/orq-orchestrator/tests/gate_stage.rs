@@ -599,7 +599,8 @@ fn a_vitest_run_step_writes_its_listed_total_before_it_runs() {
 /// An npm, pnpm or yarn that runs a package's `vitest` for `exec` and bin forms, and the `vitest run`
 /// a script would be for `run <script>` or `test`.
 const RUNNER: &str = r#"case "$1" in
-exec) shift; [ "$1" = -- ] && shift; exec "$@" ;;
+exec) shift; [ "$1" = --no ] && shift; [ "$1" = -- ] && shift; exec "$@" ;;
+--no) shift; exec "$@" ;;
 vitest) exec "$@" ;;
 run|test) exec vitest run ;;
 esac"#;
@@ -699,4 +700,25 @@ fn a_vitest_script_package_json_that_is_not_a_plain_file_is_not_read_and_the_ste
     }
     assert_eq!(outcome, Ok(GateOutcome::Passed), "the gate waited on the package.json");
     assert!(fs::read_to_string(&w.log).unwrap().contains("the-tests-ran"));
+}
+
+/// An npm or npx with no vitest installed, that would fetch one from the registry for a listing
+/// unless told not to install.
+const FETCHING_RUNNER: &str = r#"case " $* " in
+*" --no "*) echo 'npm error could not determine executable to run' >&2; exit 1 ;;
+*" list "*) touch fetched; echo '[{"name":"a","file":"a.test.ts"}]' ;;
+*) echo the-tests-ran ;;
+esac"#;
+
+#[test]
+fn a_vitest_listing_never_fetches_vitest_when_it_is_not_installed() {
+    for (tag, step) in [("npm", &["npm", "test"][..]), ("npx", &["npx", "vitest", "run"][..])] {
+        let w = world(&format!("vitest-no-fetch-{tag}"));
+        fs::write(w.worktree.join("package.json"), r#"{"scripts":{"test":"vitest run"}}"#).unwrap();
+        let env = fake_tool(&w, step[0], FETCHING_RUNNER);
+        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
+        assert!(!w.worktree.join("fetched").exists(), "{tag}: the listing fetched a package: {:?}", tool_calls(&w, step[0]));
+        let log = fs::read_to_string(&w.log).unwrap();
+        assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{tag}: {log}");
+    }
 }
