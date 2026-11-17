@@ -1301,16 +1301,21 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 /// What the run page shows of a `merge.set_aside` event: the stash commit and the message it is listed
 /// under, whether the changes were put back, the files set aside and those that conflicted, and the note to
 /// the person, all redacted. Anything else the payload holds is left out.
-/// What a re-run after a failure reported unrelated shows: the report, redacted, and whether the re-run
-/// passed. Any other event shows none.
+/// What a re-run after a failure reported unrelated shows: the report, redacted, whether the re-run
+/// passed, and why it never started when it could not. Any other event shows none.
 fn flaky_shown(event: &orq_orchestrator::Event) -> Option<serde_json::Value> {
     let passed = match event.kind.as_str() {
         "gate.flaky" | "ci.flaky" => true,
         "gate.rerun_failed" | "ci.rerun_failed" => false,
         _ => return None,
     };
-    let summary = event.payload.get("summary").and_then(|value| value.as_str()).map(orq_core::redact::redact);
-    Some(serde_json::json!({"summary": summary, "passed": passed}))
+    let text = |key: &str| event.payload.get(key).and_then(|value| value.as_str()).map(orq_core::redact::redact);
+    let mut shown = serde_json::json!({"summary": text("summary"), "passed": passed});
+    // A retry the provider refused never ran: say why, not that it failed again.
+    if !passed && event.payload.get("started").and_then(|value| value.as_bool()) == Some(false) {
+        shown["not_started"] = text("reason").unwrap_or_else(|| "no reason given".to_string()).into();
+    }
+    Some(shown)
 }
 
 fn set_aside_shown(run: &str, payload: &serde_json::Value) -> serde_json::Value {

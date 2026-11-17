@@ -219,8 +219,8 @@ fn retry_unrelated(
     failing: &[String],
     steps: &mut impl CiFixSteps,
 ) -> Result<CiFixOutcome, StoreError> {
-    let rerun = match steps.retry(head) {
-        Err(reason) => format!("the re-run could not be started: {reason}"),
+    let (rerun, started, refusal) = match steps.retry(head) {
+        Err(reason) => (format!("the re-run could not be started: {reason}"), false, Some(reason)),
         Ok(()) => match steps.wait(head)? {
             CiOutcome::Passed => {
                 let payload = serde_json::json!({ "summary": summary, "failing": failing });
@@ -230,10 +230,14 @@ fn retry_unrelated(
             CiOutcome::Skipped => return Ok(CiFixOutcome::Skipped),
             CiOutcome::TimedOut => return Ok(CiFixOutcome::TimedOut { fix_attempts }),
             CiOutcome::Errored { reason } => return Ok(CiFixOutcome::Errored { fix_attempts, reason }),
-            CiOutcome::Failed { .. } => "the re-run failed too".to_string(),
+            CiOutcome::Failed { .. } => ("the re-run failed too".to_string(), true, None),
         },
     };
-    let payload = serde_json::json!({ "summary": summary, "failing": failing, "rerun": rerun });
+    // `started` tells a retry the provider refused, which never ran, from one that failed again.
+    let mut payload = serde_json::json!({ "summary": summary, "failing": failing, "rerun": rerun, "started": started });
+    if let Some(reason) = refusal {
+        payload["reason"] = reason.into();
+    }
     record_ci_event(store, run_id, "ci.rerun_failed", fix_attempts, payload)?;
     Ok(CiFixOutcome::Unrelated { fix_attempts, summary, rerun })
 }

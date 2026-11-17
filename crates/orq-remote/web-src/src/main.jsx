@@ -3681,8 +3681,9 @@ function cleanupNote(step) {
 function flakyNote(step) {
   const said = step.events.filter((event) => event.flaky && typeof event.flaky === "object");
   if (said.length === 0) return null;
-  const { summary, passed } = said[said.length - 1].flaky;
+  const { summary, passed, not_started: notStarted } = said[said.length - 1].flaky;
   const what = typeof summary === "string" && summary !== "" ? ": " + summary : "";
+  if (passed !== true && typeof notStarted === "string") return "the re-run could not be started (" + notStarted + "); the failure was reported unrelated" + what;
   return passed === true ? "passed on a re-run; the first failure was reported unrelated" + what : "the re-run failed too; the failure was reported unrelated" + what;
 }
 

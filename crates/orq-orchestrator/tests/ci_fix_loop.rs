@@ -784,7 +784,7 @@ fn a_fix_session_that_reports_an_unrelated_failure_gets_ci_retried_once_and_a_fa
     assert_eq!(script.sessions, vec![1], "the retry starts no fix session");
     assert_eq!(
         payloads(&w, "ci.rerun_failed"),
-        vec![("ci".to_string(), 1, serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"], "rerun": "the re-run failed too"}))]
+        vec![("ci".to_string(), 1, serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"], "rerun": "the re-run failed too", "started": true}))]
     );
     assert!(!kinds(&w).iter().any(|(_, kind)| kind == "run.failed"), "{:?}", kinds(&w));
 }
@@ -818,7 +818,10 @@ fn a_ci_retry_that_cannot_start_stops_the_loop_saying_why() {
     let rerun = "the re-run could not be started: no failed workflow run to re-run".to_string();
     assert_eq!(outcome, CiFixOutcome::Unrelated { fix_attempts: 1, summary: "deploy check is flaky".to_string(), rerun: rerun.clone() });
     assert_eq!(script.waited, vec![SHA1], "nothing to wait on");
-    assert_eq!(payloads(&w, "ci.rerun_failed")[0].2["rerun"], rerun.as_str());
+    let payload = payloads(&w, "ci.rerun_failed")[0].2.clone();
+    assert_eq!(payload["rerun"], rerun.as_str());
+    assert_eq!(payload["started"], false, "the Timeline tells a refused retry from a failed one: {payload}");
+    assert_eq!(payload["reason"], "no failed workflow run to re-run", "{payload}");
 }
 
 #[test]

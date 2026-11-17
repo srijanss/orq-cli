@@ -141,3 +141,40 @@ fn a_step_with_no_re_run_has_no_flaky_note() {
     let Some(frame) = open_run(events) else { return };
     assert_eq!(frame["settled"]["matches"][".run-flaky-note"], json!(0), "{frame}");
 }
+
+#[test]
+fn a_retry_that_could_not_start_shows_why_instead_of_a_failed_re_run() {
+    let s = setup("flaky-not-started");
+    let alpha = git_repo(&s.scan, "alpha");
+    let secret = "ghp_0123456789abcdef0123456789abcdef0123";
+    let reason = format!("gh: HTTP 403 for token {secret}");
+    add_run(
+        &s,
+        "r-1",
+        &alpha,
+        &[
+            ("stage.started", "ci", 1, json!({})),
+            ("ci.rerun_failed", "ci", 1, json!({"summary": SUMMARY, "failing": ["deploy"], "rerun": format!("the re-run could not be started: {reason}"), "started": false, "reason": reason})),
+        ],
+    );
+
+    let shown = shown(&timeline(&s, "r-1"), "ci.rerun_failed")["flaky"].clone();
+    assert_eq!(shown["passed"], json!(false), "{shown}");
+    let not_started = shown["not_started"].as_str().unwrap_or_else(|| panic!("no reason: {shown}"));
+    assert!(not_started.starts_with("gh: HTTP 403"), "{shown}");
+    assert!(!not_started.contains("0123456789abcdef"), "the reason is redacted: {shown}");
+}
+
+#[test]
+fn the_timeline_says_a_retry_could_not_start_and_why_not_that_it_failed_too() {
+    let events = json!([
+        event("e0", "stage.started", "ci", 1, "2026-11-17T10:00:00Z", None),
+        event("e1", "ci.rerun_failed", "ci", 1, "2026-11-17T10:00:09Z", Some(json!({"summary": "deploy check is flaky", "passed": false, "not_started": "no failed workflow run to re-run"}))),
+    ]);
+    let Some(frame) = open_run(events) else { return };
+
+    let texts = texts(&frame);
+    let says = |text: &str| texts.iter().any(|t| t.contains(text));
+    assert!(says("the re-run could not be started (no failed workflow run to re-run); the failure was reported unrelated: deploy check is flaky"), "{texts:?}");
+    assert!(!says("the re-run failed too"), "{texts:?}");
+}
