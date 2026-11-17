@@ -242,3 +242,13 @@ fn a_viewport_wider_than_the_width_asked_for_is_reported_instead_of_measured() {
     let error = out.result["error"].as_str().unwrap_or_default();
     assert!(error.contains("980") && error.contains("360"), "{}", out.result);
 }
+
+#[test]
+fn a_helper_that_leaves_the_browser_group_and_keeps_the_output_open_does_not_hold_up_the_test() {
+    // The helper marks that it has left the group before the browser exits, so it is not stopped with it.
+    let browser = fake_browser("left=\"$(dirname \"$0\")/left\"\nrm -f \"$left\"\nsetsid sh -c 'touch \"$0\"; exec sleep 30' \"$left\" &\nwhile [ ! -f \"$left\" ]; do sleep 0.01; done\necho '<pre id=\"result\">{\"scrollWidth\":390,\"clientWidth\":390,\"offenders\":[]}</pre>'\nexit 0");
+    let started = std::time::Instant::now();
+    let out = web_chromium::measure_within(&browser, 390, "/dashboard", &[], json!([]), "", std::time::Duration::from_secs(1));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
+    assert!(out.result.get("error").is_some(), "the output never ended, so nothing counts as measured: {}", out.result);
+}

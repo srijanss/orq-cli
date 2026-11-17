@@ -159,10 +159,11 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
     measure_within(chromium, width, path, replies, steps, init, std::time::Duration::from_secs(60))
 }
 
-/// Output of a browser run that ended in time, or None when it was stopped at the deadline.
-fn run_until(mut command: Command, deadline: std::time::Duration) -> Option<std::process::Output> {
+/// Output of a browser run that ended, and whose output closed, before the deadline; otherwise why not.
+fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std::process::Output, String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
+    let started = std::time::Instant::now();
     command.process_group(0).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     // A browser script another test thread has just written can be briefly busy (ETXTBSY) while a
     // fork elsewhere still holds its write handle; try again for a moment before giving up.
@@ -176,16 +177,18 @@ fn run_until(mut command: Command, deadline: std::time::Duration) -> Option<std:
             spawned => break spawned.unwrap(),
         }
     };
-    let readers = [child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>)].map(|pipe| {
+    let (sender, received) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [child.stdout.take().map(|o| Box::new(o) as _), child.stderr.take().map(|e| Box::new(e) as _)];
+    for (index, pipe) in pipes.into_iter().enumerate() {
+        let sender = sender.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
                 let _ = pipe.read_to_end(&mut bytes);
             }
-            bytes
-        })
-    });
-    let started = std::time::Instant::now();
+            let _ = sender.send((index, bytes));
+        });
+    }
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break Some(status);
@@ -196,11 +199,24 @@ fn run_until(mut command: Command, deadline: std::time::Duration) -> Option<std:
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     // The browser's helpers share its process group; stop them all so the pipes close.
-    let _ = Command::new("kill").arg("-KILL").arg(format!("-{}", child.id())).status();
+    // SAFETY: killpg only sends a signal; the group id is the child's own pid (process_group(0)).
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
     let _ = child.kill();
     let _ = child.wait();
-    let [out, err] = readers.map(|reader| reader.join().unwrap_or_default());
-    status.map(|status| std::process::Output { status, stdout: out, stderr: err })
+    let Some(status) = status else {
+        return Err(format!("timed out after {deadline:?} and was stopped"));
+    };
+    // A helper that left the group can still hold the output open; wait for it only until the deadline.
+    let mut outputs = [None, None];
+    let ends = std::time::Instant::now().max(started + deadline);
+    while outputs.iter().any(Option::is_none) {
+        match received.recv_timeout(ends.saturating_duration_since(std::time::Instant::now())) {
+            Ok((index, bytes)) => outputs[index] = Some(bytes),
+            Err(_) => return Err(format!("exited but its output was still open when the {deadline:?} deadline passed")),
+        }
+    }
+    let [stdout, stderr] = outputs.map(Option::unwrap_or_default);
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 pub fn measure_within(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value, init: &str, deadline: std::time::Duration) -> Measured {
@@ -239,8 +255,9 @@ pub fn measure_within(chromium: &Path, width: u32, path: &str, replies: &[Reply]
     let _ = server.join();
     let _ = std::fs::remove_dir_all(&profile);
     let unanswered = served.unanswered.lock().unwrap().clone();
-    let Some(output) = output else {
-        return Measured { result: json!({"error": format!("{} timed out after {:?} and was stopped", chromium.display(), deadline)}), unanswered };
+    let output = match output {
+        Ok(output) => output,
+        Err(why) => return Measured { result: json!({"error": format!("{} {why}", chromium.display())}), unanswered },
     };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
