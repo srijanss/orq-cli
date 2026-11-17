@@ -16,3 +16,13 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+# Every orq run builds the whole workspace (and its hundreds of test binaries) into its own worktree's
+# `target/`, and full debug information made that 30 GB per worktree. Keep only line tables for the
+# workspace's crates, so panics and backtraces still name files and lines, and no debug information for
+# dependencies. The test profile inherits this; release builds are unchanged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

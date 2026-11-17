@@ -1085,6 +1085,7 @@ dependencies = [
  "orq-tui",
  "rusqlite",
  "serde_json",
+ "toml_edit",
 ]
 
 [[package]]
