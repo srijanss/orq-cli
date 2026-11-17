@@ -477,3 +477,22 @@ fn an_xdist_workers_line_starts_a_count_of_its_items() {
     assert_eq!(test_progress("8 workers [312 items]\n"), Some(TestProgress { done: 0, total: 312, current: None }));
     assert_eq!(test_progress("8 workers [312 things]\n"), None);
 }
+
+#[test]
+fn a_verbose_result_with_a_reason_after_its_outcome_counts() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "\
+collected 4 items
+a.py::t1 SKIPPED (unsupported platform) [ 25%]
+a.py::t2 XFAIL (known bug [#12]) [ 50%]
+";
+    assert_eq!(test_progress(log), Some(TestProgress { done: 2, total: 4, current: Some("a.py::t2".to_string()) }));
+}
+
+#[test]
+fn a_reason_with_brackets_of_its_own_still_ends_at_the_outcome() {
+    use orq_orchestrator::test_progress;
+    let log = "collected 2 items\na.py::t[x (y)] SKIPPED (needs (gpu) driver) [ 50%]\n";
+    assert_eq!(test_progress(log).and_then(|t| t.current), Some("a.py::t[x (y)]".to_string()));
+    assert_eq!(test_progress("collected 2 items\na.py::t1 (not a reason) [ 50%]\n").map(|t| t.done), Some(0));
+}

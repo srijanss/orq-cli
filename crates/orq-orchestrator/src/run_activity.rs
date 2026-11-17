@@ -148,7 +148,7 @@ fn xdist_total(line: &str) -> Option<u64> {
 /// What pytest prints for a finished test.
 const PYTEST_OUTCOMES: [&str; 6] = ["PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS"];
 
-/// The test id of a verbose pytest result line: `<test id> <OUTCOME> [ nn%]`, or with xdist
+/// The test id of a verbose pytest result line: `<test id> <OUTCOME>[ (<reason>)] [ nn%]`, or with xdist
 /// (`-n`) `[gwN] [ nn%] <OUTCOME> <test id>`.
 fn pytest_result(line: &str) -> Option<&str> {
     let line = line.trim();
@@ -162,7 +162,15 @@ fn pytest_result(line: &str) -> Option<&str> {
     }
     let (result, _) = before_progress_column(line)?;
     let (name, outcome) = result.rsplit_once(' ')?;
-    finished_test(name, outcome)
+    if let Some(name) = finished_test(name, outcome) {
+        return Some(name);
+    }
+    // A skipped or expected failure says why after its outcome: `<test id> SKIPPED (<reason>)`.
+    result.strip_suffix(')')?;
+    result.match_indices(" (").find_map(|(at, _)| {
+        let (name, outcome) = result[..at].rsplit_once(' ')?;
+        finished_test(name, outcome)
+    })
 }
 
 /// The percentage at the end of a row of quiet pytest output: `....F.s  [ 60%]`.
