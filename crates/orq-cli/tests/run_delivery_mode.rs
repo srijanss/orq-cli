@@ -235,6 +235,47 @@ fn a_run_recorded_with_the_removed_push_delivery_still_lists_but_is_not_resumed_
     assert_eq!(store(&w).run_ids().unwrap(), vec![paused.clone()], "no run was started");
 }
 
+/// A paused run recorded with the removed push delivery, refused once on resume.
+fn paused_push_run(tag: &str) -> (World, String) {
+    let w = world(tag);
+    pausing_gate(&w);
+    let first = run(&w, &[]);
+    assert!(text(&first.stdout).contains("state: paused"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let paused = store(&w).run_ids().unwrap().remove(0);
+    record_removed_push(&w, &paused);
+    (w, paused)
+}
+
+fn resumed_with(w: &World, paused: &str, delivery: &str) -> orq_orchestrator::RunRecord {
+    let out = run(w, &["--resume", "--delivery", delivery]);
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let new_id = store(w).run_ids().unwrap().into_iter().find(|id| id != paused).expect("a resumed run");
+    store(w).load(&new_id).unwrap()
+}
+
+#[test]
+fn a_paused_push_run_resumed_with_merge_local_named_merges_locally_and_pushes_nothing() {
+    let (w, paused) = paused_push_run("push-resume-merge");
+    let remote_main = rev(&w.remote, "refs/heads/main");
+    let record = resumed_with(&w, &paused, "merge-local");
+    assert_eq!(record.delivery, Delivery::MergeLocal, "the named delivery replaces push");
+    assert_eq!(ending(&w, &record.run_id).as_deref(), Some("merged"));
+    assert_eq!(rev(w.repo.root(), "refs/heads/main"), rev(w.repo.root(), &format!("refs/heads/{}", record.branch)));
+    assert!(remote_branch(&w, &record.branch).is_none(), "nothing was pushed");
+    assert_eq!(rev(&w.remote, "refs/heads/main"), remote_main, "the remote's main is untouched");
+    assert!(w.provider.calls().is_empty(), "no review was opened: {:?}", w.provider.calls());
+}
+
+#[test]
+fn a_paused_push_run_resumed_with_review_named_pushes_and_opens_a_review() {
+    let (w, paused) = paused_push_run("push-resume-review");
+    let record = resumed_with(&w, &paused, "review");
+    assert_eq!(record.delivery, Delivery::Review, "the named delivery replaces push");
+    assert!(remote_branch(&w, &record.branch).is_some(), "the branch was pushed");
+    assert!(!w.provider.calls().is_empty(), "a review was looked for or opened");
+    assert_ne!(ending(&w, &record.run_id).as_deref(), Some("merged"));
+}
+
 #[test]
 fn a_paused_run_resumes_with_its_own_delivery_when_its_project_now_names_the_removed_push() {
     let w = world("resume-push-saved");
