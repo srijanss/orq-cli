@@ -26,6 +26,8 @@ pub struct ResumePlan {
     /// For a run blocked on a rebase conflict that a person since finished: the commit that
     /// rebase replayed the branch onto, which the branch now contains.
     pub finished_by_hand: Option<String>,
+    /// The run blocked on a rebase conflict that is still in progress, which the resume finishes.
+    pub mid_rebase: bool,
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -395,6 +397,7 @@ fn plan(
         checkpoint,
         review_again,
         finished_by_hand,
+        mid_rebase,
     })
 }
 

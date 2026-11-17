@@ -51,7 +51,7 @@ mod terminal_session;
 mod worktree_databases;
 
 pub use checkpoint::{
-    latest_checkpoint, pause_at_boundary, record_checkpoint, record_rebase_finished_by_hand, validate_checkpoint, Checkpoint,
+    carry_conflict, latest_checkpoint, pause_at_boundary, record_checkpoint, record_rebase_finished_by_hand, validate_checkpoint, Checkpoint,
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};

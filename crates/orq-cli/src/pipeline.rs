@@ -458,11 +458,13 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     // told otherwise would judge the wrong changes. Without it the resume stops before it does
     // anything. Its run is removed, not failed: a resume continues a feature's newest run, and that
     // has to stay the one it could not continue.
-    // A rebase a person finished after the run blocked on its conflict is the resumed run's to record.
+    // A rebase a person finished after the run blocked on its conflict is the resumed run's to record;
+    // one still stopped on it is the resumed run's conflict.
     if let Some(resumed) = resumed.as_ref() {
         let from = resumed.from.run_id.as_str();
         let carried = orq_orchestrator::carry_rebase(&store, &record, from).and_then(|()| match &resumed.finished_by_hand {
             Some(onto) => orq_orchestrator::record_rebase_finished_by_hand(&store, &record, onto),
+            None if resumed.mid_rebase => orq_orchestrator::carry_conflict(&store, &record, from),
             None => Ok(()),
         });
         if let Err(err) = carried {

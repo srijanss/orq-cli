@@ -247,3 +247,51 @@ fn fix_conflicts_on_a_run_that_is_not_mid_rebase_is_refused() {
     assert!(text(&out.stderr).contains("--fix-conflicts"), "{}", text(&out.stderr));
     assert_eq!(store(&w).run_ids().unwrap(), vec![id], "no run was started");
 }
+
+/// The newest run: the one started last.
+fn newest_run(w: &World) -> String {
+    let store = store(w);
+    store
+        .run_ids()
+        .unwrap()
+        .into_iter()
+        .max_by_key(|id| store.events(id).unwrap().first().map(|e| e.occurred_at.clone()).unwrap_or_default())
+        .unwrap()
+}
+
+#[test]
+fn a_resume_whose_fix_session_left_the_rebase_unresolved_can_be_fixed_again() {
+    let w = world("fix-again");
+    let first = blocked_mid_rebase(&w);
+    let out = resume(&w, &first, &["--fix-conflicts"]);
+    assert_eq!(out.status.code(), Some(30), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let second = other_run(&w, &first);
+    harness(&w, "true", RESOLVE);
+
+    let out = resume(&w, &second, &["--fix-conflicts"]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("state: merged"), "{}", text(&out.stdout));
+    let third = newest_run(&w);
+    assert!(events(&w, &third).iter().any(|e| e.kind == "rebase.completed" && e.payload["resolved_by"] == "session"));
+}
+
+#[test]
+fn a_resume_whose_fix_session_left_the_rebase_unresolved_resumes_once_a_person_finished_it() {
+    let w = world("fix-then-hand");
+    let first = blocked_mid_rebase(&w);
+    let onto = conflict_onto(&w, &first);
+    let out = resume(&w, &first, &["--fix-conflicts"]);
+    assert_eq!(out.status.code(), Some(30), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let second = other_run(&w, &first);
+    let finished = Command::new("sh").arg("-c").arg(RESOLVE).current_dir(worktree(&w, &second)).status().unwrap();
+    assert!(finished.success());
+
+    let out = resume(&w, &second, &[]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("state: merged"), "{}", text(&out.stdout));
+    let third = newest_run(&w);
+    let by_hand = events(&w, &third).into_iter().find(|e| e.kind == "rebase.completed" && e.payload["resolved_by"] == "person");
+    assert_eq!(by_hand.expect("the person's rebase is recorded").payload["target_sha"], onto);
+}

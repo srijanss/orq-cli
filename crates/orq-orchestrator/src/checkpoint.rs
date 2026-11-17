@@ -201,11 +201,29 @@ pub fn mid_rebase_refusal(run_id: &str, worktree: &std::path::Path) -> String {
 /// The commit a run's rebase was replaying onto when it stopped on a conflict, if the run then
 /// blocked on it: its last rebase event is `rebase.conflict`, followed by `run.blocked`.
 pub fn blocked_on_conflict(events: &[Event]) -> Option<String> {
+    pending_conflict(events)?.payload["onto"].as_str().map(str::to_string)
+}
+
+/// The `rebase.conflict` event a run blocked on, if it did: its last rebase event, followed by
+/// `run.blocked`.
+fn pending_conflict(events: &[Event]) -> Option<&Event> {
     let last = events.iter().rposition(|e| e.kind.starts_with("rebase."))?;
     if events[last].kind != "rebase.conflict" || !events[last + 1..].iter().any(|e| e.kind == "run.blocked") {
         return None;
     }
-    events[last].payload["onto"].as_str().map(str::to_string)
+    Some(&events[last])
+}
+
+/// A run resumed to finish the rebase `from_run_id` blocked on, still in progress, takes over that
+/// conflict: should it block on it too, it is resumed the same way.
+pub fn carry_conflict(store: &RunStore, record: &crate::store::RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+    let events = store.events(from_run_id)?;
+    let Some(conflict) = pending_conflict(&events) else {
+        return Ok(());
+    };
+    let mut payload = conflict.payload.clone();
+    payload["carried_from"] = serde_json::json!(from_run_id);
+    crate::rebase::record_event(store, record, "rebase.conflict", payload)
 }
 
 /// Whether `worktree`'s HEAD contains `onto`, a full commit id: anything else, an option or a
