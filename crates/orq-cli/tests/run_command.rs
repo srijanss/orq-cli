@@ -2534,3 +2534,45 @@ fn a_feature_added_to_the_ledger_after_the_fix_session_ended_is_not_closed_by_th
     assert_eq!(ledger_status(&w, "FIX-01").0, "completed", "the fix session started it");
     assert_eq!(ledger_status(&w, "LATER-01"), ("in_progress".to_string(), None), "it was added after the fix session ended");
 }
+
+/// Saves the project's settings so it allows at most `max` active runs.
+fn limit_active_runs(w: &World, max: u8) {
+    let cache = w.env.state.parent().unwrap().join("cache");
+    let roots = orq_core::storage::StorageRoots::resolve(&|name| match name {
+        "XDG_DATA_HOME" => Some(w.env.data.display().to_string()),
+        "XDG_CONFIG_HOME" => Some(w.env.config.display().to_string()),
+        "XDG_STATE_HOME" => Some(w.env.state.display().to_string()),
+        "XDG_CACHE_HOME" => Some(cache.display().to_string()),
+        _ => None,
+    })
+    .unwrap();
+    roots.create_all().unwrap();
+    let mut store = orq_core::store::Store::open(&roots.database()).unwrap();
+    let root = std::fs::canonicalize(w.repo.root()).unwrap();
+    let revision = store.project_settings(&root).unwrap().revision;
+    let settings = orq_core::project_settings::ProjectSettings { max_active_runs: Some(max), ..Default::default() };
+    assert!(matches!(store.save_project_settings(&root, revision, &settings).unwrap(), orq_core::project_settings::SaveOutcome::Saved { .. }));
+}
+
+#[test]
+fn a_blocked_run_at_the_project_limit_is_resumed_to_its_review_and_a_new_start_is_still_refused() {
+    let w = world("limit-resume");
+    write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
+    let first = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
+    let blocked = run_with(&w, &first, &github(), &["--no-ci-check"]);
+    assert_eq!(blocked.status.code(), Some(EXIT_BLOCKED), "{}", stderr(&blocked));
+    limit_active_runs(&w, 1);
+
+    let idle = FakeAgent::builder().build();
+    let other = run_selecting(&w, &idle, &github(), &["--feature", "COM-02"], &["--no-ci-check"]);
+    assert_eq!(other.status.code(), Some(3), "the blocked run fills the limit: {}", stderr(&other));
+
+    let second = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let provider = github();
+    let resumed = run_with(&w, &second, &provider, &["--no-ci-check", "--resume"]);
+    let stdout = String::from_utf8_lossy(&resumed.stdout).into_owned();
+    assert_eq!(resumed.status.code(), Some(0), "a resume is not held by the limit: {}\n{stdout}", stderr(&resumed));
+    assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "pushed on resume");
+    let creates = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
+    assert_eq!(creates, 1, "{:?}", provider.calls());
+}
