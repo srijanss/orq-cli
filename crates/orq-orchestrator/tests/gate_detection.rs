@@ -119,21 +119,28 @@ fn left_unset_nextest_is_looked_for_by_asking_cargo_in_the_worktree() {
     assert!(probed == detected(&dir, true) || probed == detected(&dir, false), "{probed:?}");
 }
 
-#[test]
-fn a_library_with_a_doc_test_adds_the_doc_test_step_since_nextest_runs_none() {
-    const DOC: &[&str] = &["cargo", "test", "--workspace", "--doc"];
-    let dir = worktree("rust-doc");
-    touch(&dir, "Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n");
-    touch(&dir, "crates/plain/Cargo.toml", "[package]\nname = \"plain\"\n");
-    touch(&dir, "crates/plain/src/lib.rs", "//! Words only.\n/// ```text\n/// not rust\n/// ```\npub fn f() {}\n");
-    // A binary's doc comments are never run as tests, and nothing under target/ is the project's.
-    touch(&dir, "crates/tool/Cargo.toml", "[package]\nname = \"tool\"\n");
-    touch(&dir, "crates/tool/src/main.rs", "/// ```\n/// assert!(true);\n/// ```\nfn main() {}\n");
-    touch(&dir, "target/package/x/Cargo.toml", "[package]\nname = \"x\"\n");
-    touch(&dir, "target/package/x/src/lib.rs", "/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n");
-    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])), "no doc test yet");
+const DOC: &[&str] = &["cargo", "test", "--workspace", "--doc"];
 
-    touch(&dir, "crates/plain/src/deep/more.rs", "    //! ```rust,no_run\n    //! let x = 1;\n    //! ```\n");
+fn package(dir: &Path, name: &str, extra: &str) {
+    touch(dir, &format!("crates/{name}/Cargo.toml"), &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{extra}"));
+}
+
+#[test]
+fn a_library_cargo_would_doc_test_adds_the_doc_test_step_since_nextest_runs_none() {
+    let dir = worktree("rust-doc");
+    touch(&dir, "Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n");
+    // A binary is never doc-tested, nor a library that turns doc tests off; target/ is not a member.
+    package(&dir, "tool", "");
+    touch(&dir, "crates/tool/src/main.rs", "/// ```\n/// assert!(true);\n/// ```\nfn main() {}\n");
+    package(&dir, "quiet", "[lib]\ndoctest = false\n");
+    touch(&dir, "crates/quiet/src/lib.rs", "/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n");
+    touch(&dir, "target/package/x/Cargo.toml", "[package]\nname = \"x\"\nversion = \"0.1.0\"\n");
+    touch(&dir, "target/package/x/src/lib.rs", "pub fn f() {}\n");
+    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])), "nothing Cargo would doc-test");
+
+    // Cargo doc-tests a library wherever its [lib] path points, whatever its doc comments look like.
+    package(&dir, "api", "[lib]\npath = \"src/api.rs\"\n");
+    touch(&dir, "crates/api/src/api.rs", "/** Block docs.\n\n    let indented = 1;\n*/\npub fn f() {}\n");
     assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST, DOC])));
     assert_eq!(
         detected(&dir, false),
@@ -143,6 +150,13 @@ fn a_library_with_a_doc_test_adds_the_doc_test_step_since_nextest_runs_none() {
         }),
         "cargo test runs the doc tests itself"
     );
+}
+
+#[test]
+fn a_workspace_cargo_cannot_describe_keeps_the_doc_test_step_rather_than_drop_its_doc_tests() {
+    let dir = worktree("rust-doc-unreadable");
+    touch(&dir, "Cargo.toml", "[workspace\nnot toml\n");
+    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST, DOC])));
 }
 
 #[test]

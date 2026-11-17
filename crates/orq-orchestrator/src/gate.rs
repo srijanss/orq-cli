@@ -329,8 +329,8 @@ fn rust_steps(
         if options.nextest.unwrap_or_else(|| nextest_available(dir)) {
             // nextest fails a run that finds no test; the plain runner passes it, and so does the gate.
             steps.push(argv(&["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"]));
-            // nextest runs no doc tests: cargo test runs them, only when there are some.
-            if has_doc_tests(dir) {
+            // nextest runs no doc tests: cargo test runs them, when Cargo would doc-test a target.
+            if may_have_doc_tests(dir) {
                 steps.push(argv(&["cargo", "test", "--workspace", "--doc"]));
             }
         } else {
@@ -340,80 +340,25 @@ fn rust_steps(
     }
 }
 
-/// Whether a library under `dir` (a folder with a `Cargo.toml` and a `src/lib.rs`) has a Rust code
-/// block in a doc comment of its sources. Build output, dependencies, hidden folders and links are not
-/// looked in.
-fn has_doc_tests(dir: &Path) -> bool {
-    let skipped = |name: &str| name.starts_with('.') || name == "target" || name == "node_modules";
-    let is_library = dir.join("Cargo.toml").is_file() && dir.join("src/lib.rs").is_file();
-    if is_library && rust_sources_have_doc_tests(&dir.join("src")) {
+/// Whether Cargo would doc-test any target of the workspace in `dir`, as `cargo metadata` describes
+/// it: a library, wherever its `[lib] path` points, unless it sets `doctest = false`. When the
+/// metadata cannot be read, this says yes, so doc tests are never dropped for want of an answer.
+fn may_have_doc_tests(dir: &Path) -> bool {
+    let args = ["metadata", "--no-deps", "--format-version", "1"];
+    let Some(out) = run_bounded("cargo".as_ref(), &args, dir, NEXTEST_PROBE_LIMIT) else {
         return true;
-    }
-    subdirectories(dir)
-        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| !skipped(name)))
-        .any(|path| has_doc_tests(&path))
-}
-
-/// The folders directly in `dir`, without following links.
-fn subdirectories(dir: &Path) -> impl Iterator<Item = std::path::PathBuf> {
-    fs::read_dir(dir)
-        .into_iter()
+    };
+    let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&out) else {
+        return true;
+    };
+    let Some(packages) = metadata["packages"].as_array() else {
+        return true;
+    };
+    packages
+        .iter()
+        .filter_map(|package| package["targets"].as_array())
         .flatten()
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
-}
-
-/// Whether a `.rs` file anywhere under `src` has a doc test.
-fn rust_sources_have_doc_tests(src: &Path) -> bool {
-    let files = fs::read_dir(src).into_iter().flatten().flatten().filter(|entry| {
-        entry.file_type().is_ok_and(|kind| kind.is_file())
-            && entry.path().extension().is_some_and(|ext| ext == "rs")
-    });
-    for file in files {
-        if fs::read_to_string(file.path()).is_ok_and(|text| has_doc_test_block(&text)) {
-            return true;
-        }
-    }
-    subdirectories(src).any(|path| rust_sources_have_doc_tests(&path))
-}
-
-/// Whether a `///` or `//!` comment in `text` opens a fenced code block rustdoc runs: one with no
-/// language, or only Rust's own attributes (`rust`, `no_run`, `should_panic`, ...).
-fn has_doc_test_block(text: &str) -> bool {
-    let mut open = false;
-    for line in text.lines().map(str::trim_start) {
-        if line.starts_with("////") {
-            continue;
-        }
-        let Some(doc) = line.strip_prefix("///").or_else(|| line.strip_prefix("//!")) else {
-            continue;
-        };
-        let Some(info) = doc.trim().strip_prefix("```") else {
-            continue;
-        };
-        if open {
-            open = false;
-            continue;
-        }
-        open = true;
-        if is_rust_fence(info) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Whether a code fence's info string leaves its block a Rust doc test.
-fn is_rust_fence(info: &str) -> bool {
-    info.split([',', ' ', '\t'])
-        .filter(|word| !word.is_empty())
-        .all(|word| {
-            matches!(
-                word,
-                "rust" | "ignore" | "should_panic" | "no_run" | "compile_fail" | "test_harness" | "standalone_crate"
-            ) || word.starts_with("edition")
-        })
+        .any(|target| target["doctest"].as_bool() == Some(true))
 }
 
 /// How long `cargo nextest --version` may take before nextest counts as missing.
