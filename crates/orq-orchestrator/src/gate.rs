@@ -462,15 +462,16 @@ mod tests {
 
     /// Whether process `pid` stops running within a few seconds: it no longer exists, or it is a
     /// zombie no one has reaped yet. SIGKILL lands a moment after it is sent, and an orphan's zombie
-    /// lingers until its adopter reaps it, so neither an instant check nor `kill -0` will do.
+    /// lingers until its adopter reaps it, so neither an instant check nor `kill -0` will do. `ps` asks
+    /// the same on Linux and macOS; when it cannot answer, the test fails rather than guess.
     fn gone(pid: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let ended = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                // The state follows the command name, which is in parentheses and may hold spaces.
-                Ok(stat) => stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next()) == Some("Z"),
-                Err(_) => true,
-            };
+            let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().expect("ps runs");
+            let (state, problem) = (String::from_utf8_lossy(&ps.stdout), String::from_utf8_lossy(&ps.stderr));
+            // No row and no complaint: no such process. A row's state starts with Z for a zombie.
+            assert!(problem.trim().is_empty(), "could not look up process {pid}: {problem}");
+            let ended = state.trim().is_empty() || state.trim_start().starts_with('Z');
             if ended || Instant::now() >= deadline {
                 return ended;
             }
@@ -529,6 +530,12 @@ mod tests {
         assert!(!gone(&child.id().to_string()), "a sleeping process is running");
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    #[should_panic(expected = "could not look up process")]
+    fn a_process_that_cannot_be_looked_up_is_not_taken_for_gone() {
+        gone("not-a-pid");
     }
 
     #[test]
