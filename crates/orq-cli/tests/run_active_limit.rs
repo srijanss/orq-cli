@@ -212,3 +212,25 @@ fn a_detached_start_at_the_limit_is_refused_before_it_launches_and_without_a_lim
     let unlimited = start(repo.root(), &home, "COM-01", &["--check"]);
     assert_eq!(unlimited.status.code(), Some(0), "{}", text(&unlimited.stderr));
 }
+
+#[test]
+fn the_disk_floor_is_measured_on_the_filesystem_the_worktrees_directory_is_on() {
+    let elsewhere = std::path::PathBuf::from("/dev/shm");
+    let device = |path: &Path| std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(path).unwrap());
+    let repo = repo();
+    if !elsewhere.is_dir() || device(&elsewhere) == device(repo.root()) {
+        return;
+    }
+    let home = home("disk-elsewhere");
+    save(&home, repo.root(), &limited(None, Some(15)));
+    let target = elsewhere.join(format!("orq-run-active-limit-wt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir_all(repo.root().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&target, repo.root().join(".claude/worktrees")).unwrap();
+
+    let refused = start_with(repo.root(), &home, "COM-01", &["--check"], &[("ORQ_TEST_FREE_DISK_BYTES", "9800000000")]);
+    let _ = std::fs::remove_dir_all(&target);
+    assert_eq!(refused.status.code(), Some(EXIT_LIMIT), "{}", text(&refused.stderr));
+    assert!(text(&refused.stderr).contains("only 9.8 GB free on /dev/shm ("), "{}", text(&refused.stderr));
+}

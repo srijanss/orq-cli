@@ -709,7 +709,7 @@ fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::
     if settings.min_free_disk_gb.is_none() {
         return Ok(None);
     }
-    let free = orq_orchestrator::free_disk(&git.root).map_err(|error| format!("cannot measure the free disk of {}: {error}", git.name))?;
+    let free = orq_orchestrator::worktrees_free_disk(&git.root).map_err(|error| format!("cannot measure the free disk of {}: {error}", git.name))?;
     Ok(orq_orchestrator::disk_refusal(&git.name, settings.min_free_disk_gb, &free))
 }
 

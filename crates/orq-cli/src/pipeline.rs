@@ -396,7 +396,7 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
 fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartError> {
     let name = &options.project.name;
     if options.min_free_disk_gb.is_some() {
-        let free = orq_orchestrator::free_disk(&options.project.root)
+        let free = orq_orchestrator::worktrees_free_disk(&options.project.root)
             .map_err(|err| other(format!("cannot measure the free disk of {}: {err}", options.project.root.display())))?;
         if let Some(reason) = orq_orchestrator::disk_refusal(name, options.min_free_disk_gb, &free) {
             return Err(StartError::Limit(reason));

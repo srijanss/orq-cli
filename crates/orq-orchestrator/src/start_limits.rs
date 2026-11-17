@@ -31,6 +31,15 @@ pub fn free_disk(path: &Path) -> io::Result<FreeDisk> {
     Ok(FreeDisk { bytes, mount })
 }
 
+/// The free space where a run of the project at `project_root` makes its worktree: under
+/// `.claude/worktrees`, followed through any link, or, while that does not exist yet, its nearest
+/// existing ancestor (the filesystem it will be made on).
+pub fn worktrees_free_disk(project_root: &Path) -> io::Result<FreeDisk> {
+    let worktrees = project_root.join(orq_core::naming::WORKTREES_DIR);
+    let existing = worktrees.ancestors().find(|path| path.exists()).unwrap_or(project_root);
+    free_disk(existing)
+}
+
 fn overridden_free_bytes() -> Option<u64> {
     if !cfg!(debug_assertions) {
         return None;

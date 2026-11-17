@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use orq_orchestrator::{disk_refusal, free_disk, limit_refusal, FreeDisk};
+use orq_orchestrator::{disk_refusal, free_disk, limit_refusal, worktrees_free_disk, FreeDisk};
 
 fn active(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(run, feature)| (run.to_string(), feature.to_string())).collect()
@@ -55,4 +55,32 @@ fn free_disk_is_measured_on_the_filesystem_holding_the_path_and_a_debug_build_ta
     let overridden = free_disk(&dir).unwrap();
     unsafe { std::env::remove_var("ORQ_TEST_FREE_DISK_BYTES") };
     assert_eq!((overridden.bytes, overridden.mount), (9_800_000_000, measured.mount), "tests build in debug");
+}
+
+#[test]
+fn a_projects_free_disk_is_measured_where_its_run_worktrees_are_made_even_when_that_is_another_filesystem() {
+    let device = |path: &Path| std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(path).unwrap());
+    let root = orq_test_support::process_temp_dir().join(format!("orq-start-limits-wt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    // No .claude/worktrees yet: the filesystem it will be made on is the project's.
+    let measured = worktrees_free_disk(&root).unwrap();
+    assert_eq!(device(&measured.mount), device(&root), "{measured:?}");
+
+    // .claude/worktrees links to another filesystem: that one is measured, not the project's.
+    let elsewhere = PathBuf::from("/dev/shm");
+    if !elsewhere.is_dir() || device(&elsewhere) == device(&root) {
+        return;
+    }
+    let target = elsewhere.join(format!("orq-start-limits-wt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::create_dir_all(root.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&target, root.join(".claude/worktrees")).unwrap();
+    let measured = worktrees_free_disk(&root);
+    let _ = std::fs::remove_dir_all(&target);
+    let measured = measured.unwrap();
+    assert_eq!(device(&measured.mount), device(&elsewhere), "{measured:?}");
+    assert_ne!(device(&measured.mount), device(&root), "{measured:?}");
 }
