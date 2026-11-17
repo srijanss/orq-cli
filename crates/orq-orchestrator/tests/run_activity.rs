@@ -349,3 +349,108 @@ esac"#;
     let tests = newest_log_tail(&logs).unwrap().tests.unwrap();
     assert_eq!((tests.done, tests.total), (11, 60));
 }
+
+#[test]
+fn test_progress_reads_a_verbose_pytest_run_after_its_collection_line() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "\
+collecting ... collected 3336 items / 40 deselected / 3296 selected
+
+promotions/tests/test_a.py::test_one PASSED [  0%]
+promotions/tests/test_a.py::test_two PASSED [  0%]
+promotions/tests/test_views_staff_only.py::test_every_promotions_view_denies_a_customer[get-/promotions/giftcarddiscount-list] PASSED [  0%]
+";
+    assert_eq!(
+        test_progress(log),
+        Some(TestProgress {
+            done: 3,
+            total: 3296,
+            current: Some("promotions/tests/test_views_staff_only.py::test_every_promotions_view_denies_a_customer[get-/promotions/giftcarddiscount-list]".to_string()),
+        })
+    );
+}
+
+#[test]
+fn every_pytest_outcome_counts_as_a_finished_test() {
+    use orq_orchestrator::test_progress;
+    let log = "\
+collected 5 items
+
+a.py::t1 FAILED [ 20%]
+a.py::t2 SKIPPED [ 40%]
+a.py::t3 ERROR [ 60%]
+a.py::t4 XFAIL [ 80%]
+a.py::t5 PASSED [100%]
+";
+    assert_eq!(test_progress(log).map(|t| (t.done, t.total)), Some((5, 5)));
+}
+
+#[test]
+fn xdist_pytest_lines_count_with_the_test_id_after_the_outcome() {
+    use orq_orchestrator::test_progress;
+    let log = "\
+collected 10 items
+[gw0] [ 20%] PASSED a.py::t1
+[gw1] [ 40%] FAILED b.py::t2
+";
+    let progress = test_progress(log).unwrap();
+    assert_eq!((progress.done, progress.current.as_deref()), (2, Some("b.py::t2")));
+}
+
+#[test]
+fn quiet_pytest_output_is_counted_from_its_own_percentage() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "collected 10 items\n\n....F.                                                                   [ 60%]\n";
+    assert_eq!(test_progress(log), Some(TestProgress { done: 6, total: 10, current: None }));
+}
+
+#[test]
+fn coloured_pytest_lines_count_the_same_as_plain_ones() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "\
+\u{1b}[1mcollecting ... \u{1b}[0mcollected 4 items\u{1b}[0m
+a.py::t1 \u{1b}[32mPASSED\u{1b}[0m\u{1b}[32m [ 25%]\u{1b}[0m
+\u{1b}[31mb.py::t2 \u{1b}[31mFAILED\u{1b}[0m\u{1b}[31m [ 50%]\u{1b}[0m
+";
+    assert_eq!(test_progress(log), Some(TestProgress { done: 2, total: 4, current: Some("b.py::t2".to_string()) }));
+}
+
+#[test]
+fn a_later_pytest_collection_or_cargo_total_starts_the_count_again() {
+    use orq_orchestrator::{test_progress, test_total_line, TestProgress};
+    let first = "collected 3 items\na.py::t1 PASSED [ 33%]\na.py::t2 PASSED [ 66%]\n";
+    let second = format!("{first}collected 4 items\nb.py::t1 PASSED [ 25%]\n");
+    assert_eq!(test_progress(&second), Some(TestProgress { done: 1, total: 4, current: Some("b.py::t1".to_string()) }));
+
+    let then_cargo = format!("{first}{}\ntest x ... ok\ntest y ... FAILED\n", test_total_line(Some(4)));
+    assert_eq!(test_progress(&then_cargo), Some(TestProgress { done: 2, total: 4, current: Some("y".to_string()) }));
+}
+
+#[test]
+fn a_pytest_run_with_nothing_selected_has_no_progress() {
+    use orq_orchestrator::test_progress;
+    assert_eq!(test_progress("collected 0 items\n"), None);
+    assert_eq!(test_progress("collected 5 items / 5 deselected / 0 selected\n"), None);
+    assert_eq!(test_progress("collected 3 items\na.py::t1 PASSED [ 33%]\ncollected 0 items\n"), None, "a new run with nothing to measure");
+}
+
+#[test]
+fn a_pytest_gate_halfway_through_shows_its_percentage() {
+    use orq_orchestrator::{step_lines, test_progress};
+    let log = "collected 4 items\na.py::t1 PASSED [ 25%]\na.py::t2 PASSED [ 50%]\n";
+    let activity = orq_orchestrator::RunActivity { tests: test_progress(log), ..seen(&[event("stage.started", Some("verify"))], "x", 1) };
+    assert_eq!(step_lines(&activity), Some(vec!["Tests (Round 1) - 50%".to_string(), "  - a.py::t2".to_string()]));
+}
+
+#[test]
+fn a_pytest_test_id_in_the_newest_log_is_redacted_and_cut() {
+    let dir = log_dir("pytest-tests");
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let long = "x".repeat(300);
+    std::fs::write(dir.join("gate.log"), format!("collected 3 items\na.py::t[{token}] PASSED [ 33%]\n")).unwrap();
+    let current = newest_log_tail(&dir).unwrap().tests.unwrap().current.unwrap();
+    assert!(!current.contains("ghp_"), "{current}");
+
+    std::fs::write(dir.join("gate.log"), format!("collected 3 items\na.py::t[{long}] PASSED [ 33%]\n")).unwrap();
+    assert_eq!(newest_log_tail(&dir).unwrap().tests.unwrap().current.unwrap().chars().count(), 200);
+}

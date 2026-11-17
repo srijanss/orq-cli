@@ -1,6 +1,7 @@
 //! What a run is doing right now, in a few words a person can read: the stage, the last line
 //! of output and whether it looks stuck. Pure over the events and a look at the newest log.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::run_status::{summarize_run, RunPhase};
@@ -51,7 +52,7 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     }
 }
 
-/// How far a test run has come, read from `cargo test` output.
+/// How far a test run has come, read from `cargo test` or pytest output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestProgress {
     pub done: u64,
@@ -75,14 +76,32 @@ pub fn test_total_line(total: Option<u64>) -> String {
 /// The progress of the latest test run in `text`: the total comes from its [`test_total_line`] and
 /// the count from every result line after it, whichever test binary printed it, so it only goes up.
 /// A run with no known total has none: one binary's `running N tests` says nothing about the suite.
+/// pytest needs no total line: its own collection line starts a count, read from its verbose,
+/// xdist or quiet result lines.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
     for line in text.lines() {
         if let Some(total) = line.strip_prefix(TEST_TOTAL_PREFIX) {
-            progress = total.parse::<u64>().ok().filter(|total| *total > 0).map(|total| TestProgress { done: 0, total, current: None });
+            progress = total.parse::<u64>().ok().and_then(starting_count);
+            continue;
+        }
+        // pytest colours its lines with `--color=yes` or `FORCE_COLOR`: they are read without it.
+        let plain = if line.contains('\u{1b}') { Cow::Owned(printable(line)) } else { Cow::Borrowed(line) };
+        if let Some(total) = pytest_total(&plain) {
+            progress = starting_count(total);
             continue;
         }
         let Some(p) = progress.as_mut() else { continue };
+        if let Some(name) = pytest_result(&plain) {
+            p.done = (p.done + 1).min(p.total);
+            p.current = Some(name.to_string());
+            continue;
+        }
+        if let Some(percent) = pytest_quiet_percent(&plain) {
+            p.done = (p.total * percent / 100).min(p.total);
+            p.current = None;
+            continue;
+        }
         let Some(result) = line.trim().strip_prefix("test ") else { continue };
         let Some((name, outcome)) = result.rsplit_once(" ... ") else { continue };
         if matches!(outcome, "ok" | "FAILED" | "ignored") || outcome.starts_with("ignored,") {
@@ -91,6 +110,70 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
         }
     }
     progress
+}
+
+/// A count of none done out of `total`, or none at all when there is nothing to measure.
+fn starting_count(total: u64) -> Option<TestProgress> {
+    (total > 0).then_some(TestProgress { done: 0, total, current: None })
+}
+
+/// The number of tests a pytest collection line says will run: `collected N items`, or the
+/// selected count when some were deselected (`collected N items / D deselected / S selected`).
+fn pytest_total(line: &str) -> Option<u64> {
+    let line = line.trim();
+    let rest = line.strip_prefix("collecting ... ").unwrap_or(line).strip_prefix("collected ")?;
+    let mut parts = rest.split(" / ");
+    let (count, unit) = parts.next()?.split_once(' ')?;
+    if !matches!(unit, "items" | "item") {
+        return None;
+    }
+    let collected = count.parse::<u64>().ok()?;
+    let selected = parts.find_map(|part| part.strip_suffix(" selected")?.parse::<u64>().ok());
+    Some(selected.unwrap_or(collected))
+}
+
+/// What pytest prints for a finished test.
+const PYTEST_OUTCOMES: [&str; 6] = ["PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS"];
+
+/// The test id of a verbose pytest result line: `<test id> <OUTCOME> [ nn%]`, or with xdist
+/// (`-n`) `[gwN] [ nn%] <OUTCOME> <test id>`.
+fn pytest_result(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("[gw") {
+        let (worker, rest) = rest.split_once("] [")?;
+        worker.parse::<u32>().ok()?;
+        let (percent, rest) = rest.split_once("%] ")?;
+        pytest_percent(percent)?;
+        let (outcome, name) = rest.split_once(' ')?;
+        return finished_test(name, outcome);
+    }
+    let (result, _) = before_progress_column(line)?;
+    let (name, outcome) = result.rsplit_once(' ')?;
+    finished_test(name, outcome)
+}
+
+/// The percentage at the end of a row of quiet pytest output: `....F.s  [ 60%]`.
+fn pytest_quiet_percent(line: &str) -> Option<u64> {
+    let (marks, percent) = before_progress_column(line.trim())?;
+    let quiet = !marks.is_empty() && marks.chars().all(|c| matches!(c, '.' | 'F' | 'E' | 's' | 'x' | 'X'));
+    quiet.then_some(percent)
+}
+
+/// What a pytest line holds before its progress column `[ nn%]`, and that percentage.
+fn before_progress_column(line: &str) -> Option<(&str, u64)> {
+    let (before, column) = line.rsplit_once('[')?;
+    Some((before.trim_end(), pytest_percent(column.strip_suffix("%]")?)?))
+}
+
+/// The number in pytest's progress column, `[ nn%]`, without its brackets and sign.
+fn pytest_percent(text: &str) -> Option<u64> {
+    text.trim().parse::<u64>().ok().filter(|percent| *percent <= 100)
+}
+
+/// `name`, when `outcome` is one pytest prints for a finished test.
+fn finished_test<'a>(name: &'a str, outcome: &str) -> Option<&'a str> {
+    let name = name.trim();
+    PYTEST_OUTCOMES.contains(&outcome).then_some(name).filter(|name| !name.is_empty())
 }
 
 /// How much of the end of a log is looked at, and the longest line shown.
