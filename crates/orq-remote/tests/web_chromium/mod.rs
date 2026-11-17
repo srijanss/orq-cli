@@ -163,7 +163,19 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
 fn run_until(mut command: Command, deadline: std::time::Duration) -> Option<std::process::Output> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
-    let mut child = command.process_group(0).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    command.process_group(0).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    // A browser script another test thread has just written can be briefly busy (ETXTBSY) while a
+    // fork elsewhere still holds its write handle; try again for a moment before giving up.
+    let mut tries = 0;
+    let mut child = loop {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            spawned => break spawned.unwrap(),
+        }
+    };
     let readers = [child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>)].map(|pipe| {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -244,7 +256,11 @@ pub fn measure_within(chromium: &Path, width: u32, path: &str, replies: &[Reply]
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&amp;", "&");
-    let result = serde_json::from_str(&text).unwrap_or_else(|_| json!({"error": "no result", "stderr": String::from_utf8_lossy(&output.stderr).lines().rev().take(5).collect::<Vec<_>>()}));
+    let result: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({"error": "no result", "stderr": String::from_utf8_lossy(&output.stderr).lines().rev().take(5).collect::<Vec<_>>()}));
+    if result.get("error").is_none() && result["clientWidth"].as_u64() != Some(u64::from(width)) {
+        let error = format!("the viewport is {} px wide, not the {width} px asked for, so the page was not measured at that width", result["clientWidth"]);
+        return Measured { result: json!({"error": error, "measured": result}), unanswered };
+    }
     Measured { result, unanswered }
 }
 

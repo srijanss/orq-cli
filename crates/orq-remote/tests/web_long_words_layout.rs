@@ -234,3 +234,11 @@ fn a_browser_that_never_finishes_is_stopped_at_the_deadline() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
     assert!(out.result["error"].as_str().unwrap_or_default().contains("timed out"), "{}", out.result);
 }
+
+#[test]
+fn a_viewport_wider_than_the_width_asked_for_is_reported_instead_of_measured() {
+    let browser = fake_browser("echo '<pre id=\"result\">{\"scrollWidth\":980,\"clientWidth\":980,\"offenders\":[]}</pre>'");
+    let out = measure(&browser, 360, "/dashboard", &[], json!([]));
+    let error = out.result["error"].as_str().unwrap_or_default();
+    assert!(error.contains("980") && error.contains("360"), "{}", out.result);
+}
