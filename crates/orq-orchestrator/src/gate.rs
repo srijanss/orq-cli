@@ -327,7 +327,8 @@ fn rust_steps(
         }
         // Asked once per detection, so one gate run never mixes the two.
         if options.nextest.unwrap_or_else(|| nextest_available(dir)) {
-            steps.push(argv(&["cargo", "nextest", "run", "--workspace", "--no-fail-fast"]));
+            // nextest fails a run that finds no test; the plain runner passes it, and so does the gate.
+            steps.push(argv(&["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"]));
             // nextest runs no doc tests: cargo test runs them, only when there are some.
             if has_doc_tests(dir) {
                 steps.push(argv(&["cargo", "test", "--workspace", "--doc"]));

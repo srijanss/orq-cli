@@ -44,7 +44,7 @@ fn detected(dir: &Path, nextest: bool) -> Result<Gate, GateError> {
     )
 }
 
-const NEXTEST: &[&str] = &["cargo", "nextest", "run", "--workspace", "--no-fail-fast"];
+const NEXTEST: &[&str] = &["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"];
 
 const PACKAGE: &str =
     r#"{"scripts": {"typecheck": "tsc --noEmit", "test": "vitest run", "lint": "eslint ."}}"#;
@@ -98,6 +98,15 @@ fn a_rust_workspace_runs_nextest_when_it_is_there() {
     let dir = worktree("rust-nextest");
     touch(&dir, "Cargo.toml", "[workspace]\n");
     assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])));
+}
+
+#[test]
+fn a_rust_workspace_with_no_tests_passes_under_nextest_as_it_does_without_it() {
+    let dir = worktree("rust-no-tests");
+    touch(&dir, "Cargo.toml", "[workspace]\n");
+    let Ok(Gate::Steps { steps, .. }) = detected(&dir, true) else { panic!("a Rust workspace has steps") };
+    // nextest exits non-zero when it finds no test where the plain runner passes; the gate must pass too.
+    assert!(steps[0].iter().any(|word| word == "--no-tests=pass"), "{steps:?}");
 }
 
 #[test]
