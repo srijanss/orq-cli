@@ -26,7 +26,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 7] = ["
+const MIGRATIONS: [&str; 8] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -80,6 +80,9 @@ const MIGRATIONS: [&str; 7] = ["
         updated_at          INTEGER NOT NULL
     );
 ", "
+", "
+    ALTER TABLE project_settings ADD COLUMN max_active_runs INTEGER;
+    ALTER TABLE project_settings ADD COLUMN min_free_disk_gb INTEGER;
 "];
 
 /// The schema version that removed run pins: an empty `run_pins` is dropped, and one with pins in
@@ -88,6 +91,9 @@ const PINS_REMOVED_VERSION: u32 = 7;
 
 /// The schema version whose migration added `project_settings`.
 const PROJECT_SETTINGS_VERSION: u32 = 6;
+
+/// The schema version whose migration added a project's run limit and disk floor.
+const RUN_LIMITS_VERSION: u32 = 8;
 
 pub struct Store {
     conn: Connection,
@@ -137,7 +143,7 @@ impl Store {
             project_key(root)?;
             return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
         }
-        store.project_settings(root)
+        store.project_settings_at(root, version >= RUN_LIMITS_VERSION)
     }
 
     fn open_read_only_at_any_version(path: &Path) -> Result<(Store, u32)> {
@@ -440,11 +446,18 @@ impl Store {
     /// The settings saved for the project whose main checkout is `root`; a project with no record
     /// has the defaults at revision 0.
     pub fn project_settings(&self, root: &Path) -> Result<StoredProjectSettings> {
+        self.project_settings_at(root, true)
+    }
+
+    /// [`Store::project_settings`] from a database that has the limit columns or, before they were
+    /// added, reads them as unset.
+    fn project_settings_at(&self, root: &Path, has_limits: bool) -> Result<StoredProjectSettings> {
         let key = project_key(root)?;
+        let limits = if has_limits { "max_active_runs, min_free_disk_gb" } else { "NULL, NULL" };
         let row = self
             .conn
             .query_row(
-                "SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision FROM project_settings WHERE project_root = ?1",
+                &format!("SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, {limits} FROM project_settings WHERE project_root = ?1"),
                 params![key],
                 |row| {
                     let agent = |at: usize| -> rusqlite::Result<Option<ProjectAgent>> {
@@ -453,17 +466,20 @@ impl Store {
                         let effort: Option<String> = row.get(at + 2)?;
                         Ok(harness.zip(model).map(|(harness, model)| ProjectAgent { harness, model, effort }))
                     };
-                    Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?))
+                    Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, Option<i64>>(9)?))
                 },
             )
             .optional()
             .map_err(db)?;
-        let Some((implementer, reviewer, delivery, revision)) = row else {
+        let Some((implementer, reviewer, delivery, revision, max_active_runs, min_free_disk_gb)) = row else {
             return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
         };
         let delivery = Delivery::parse(&delivery)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("orq.db has an unknown delivery {delivery:?} for {key}")))?;
-        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery }, revision: revision as u64 })
+        let out_of_range = |field: &str, value: i64| Error::new(ErrorKind::InvalidData, format!("orq.db has {field} {value} for {key}, out of range"));
+        let max_active_runs = max_active_runs.map(|v| u8::try_from(v).map_err(|_| out_of_range("max_active_runs", v))).transpose()?;
+        let min_free_disk_gb = min_free_disk_gb.map(|v| u32::try_from(v).map_err(|_| out_of_range("min_free_disk_gb", v))).transpose()?;
+        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb }, revision: revision as u64 })
     }
 
     /// Saves a project's settings if it is still at `expected_revision`; otherwise nothing is
@@ -485,12 +501,13 @@ impl Store {
         let field = |agent: &Option<ProjectAgent>, pick: fn(&ProjectAgent) -> Option<&str>| agent.as_ref().and_then(pick).map(str::to_string);
         let (implementer, reviewer) = (&settings.implementer, &settings.reviewer);
         tx.execute(
-            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at, max_active_runs, min_free_disk_gb)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (project_root) DO UPDATE SET
                  implementer_harness = excluded.implementer_harness, implementer_model = excluded.implementer_model, implementer_effort = excluded.implementer_effort,
                  reviewer_harness = excluded.reviewer_harness, reviewer_model = excluded.reviewer_model, reviewer_effort = excluded.reviewer_effort,
-                 delivery = excluded.delivery, revision = excluded.revision, updated_at = excluded.updated_at",
+                 delivery = excluded.delivery, revision = excluded.revision, updated_at = excluded.updated_at,
+                 max_active_runs = excluded.max_active_runs, min_free_disk_gb = excluded.min_free_disk_gb",
             params![
                 key,
                 field(implementer, |a| Some(&a.harness)),
@@ -501,7 +518,9 @@ impl Store {
                 field(reviewer, |a| a.effort.as_deref()),
                 settings.delivery.as_str(),
                 revision as i64,
-                now
+                now,
+                settings.max_active_runs.map(i64::from),
+                settings.min_free_disk_gb.map(i64::from)
             ],
         )
         .map_err(db)?;

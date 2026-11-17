@@ -176,6 +176,8 @@ fn features(args: &[OsString]) -> ExitCode {
 const EXIT_INELIGIBLE: u8 = 20;
 const EXIT_MODEL_SELECTION: u8 = 21;
 const EXIT_BUSY: u8 = 22;
+/// The project's run limit or disk floor refused the start.
+const EXIT_LIMIT: u8 = 3;
 const EXIT_BLOCKED: u8 = 30;
 const EXIT_FAILED: u8 = 31;
 
@@ -417,6 +419,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         Err(message) => return fail(message),
     };
     let delivery = named_delivery.unwrap_or(project_settings.delivery);
+    let project_limits = (project_settings.max_active_runs, project_settings.min_free_disk_gb);
     // A record saved before push was removed still names it: the run waits for another choice
     // rather than be delivered some other way. A resumed run keeps the delivery it started with.
     if delivery == orq_core::project_settings::Delivery::Push && !parsed.resume {
@@ -486,6 +489,8 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         delivery_named: named_delivery.is_some(),
         set_aside: parsed.set_aside,
         fix_conflicts: parsed.fix_conflicts,
+        max_active_runs: project_limits.0,
+        min_free_disk_gb: project_limits.1,
         // A detached runner has no terminal, so it stays headless.
         interactive: {
             use std::io::IsTerminal;
@@ -506,9 +511,20 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         match pipeline::check(&options) {
             Ok(()) => {}
             Err(pipeline::StartError::Busy(active)) => return busy(&active),
+            Err(pipeline::StartError::Limit(message)) => return refuse(resuming, &printable(&message), EXIT_LIMIT),
             Err(pipeline::StartError::Refused(message) | pipeline::StartError::Other(message)) => {
                 return refuse(resuming, &printable(&message), 1)
             }
+        }
+    }
+    // A detached start over the project's limits is refused before anything is launched; the run
+    // checks them again as it is recorded.
+    if resuming.is_none() && parsed.detach {
+        match pipeline::check_project_limits(&options) {
+            Ok(()) => {}
+            Err(pipeline::StartError::Limit(message)) => return refuse(resuming, &printable(&message), EXIT_LIMIT),
+            Err(pipeline::StartError::Busy(active)) => return busy(&active),
+            Err(pipeline::StartError::Refused(message) | pipeline::StartError::Other(message)) => return fail(message),
         }
     }
     if parsed.detach {
@@ -538,6 +554,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(pipeline::StartError::Busy(active)) => busy(&active),
+            Err(pipeline::StartError::Limit(message)) => refuse(resuming, &printable(&message), EXIT_LIMIT),
             Err(pipeline::StartError::Refused(message)) => refuse(resuming, &printable(&message), 1),
             Err(pipeline::StartError::Other(message)) => fail(message),
         };
@@ -559,6 +576,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
             })
         }
         Err(pipeline::StartError::Busy(active)) => busy(&active),
+        Err(pipeline::StartError::Limit(message)) => refuse(resuming, &printable(&message), EXIT_LIMIT),
         Err(pipeline::StartError::Refused(message)) => refuse(resuming, &printable(&message), 1),
         Err(pipeline::StartError::Other(message)) => fail(message),
     }

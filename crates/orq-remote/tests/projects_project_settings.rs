@@ -68,7 +68,7 @@ fn a_saved_role_and_delivery_are_given_with_the_revision_and_an_unset_role_says_
     let s = setup("project-settings-saved", Some(MACHINE));
     let alpha = git_repo(&s.scan, "alpha");
     std::fs::write(alpha.join(".tdd-config.json"), r#"{"reviewers":{"default":{"reviewer":"pi","model":"kimi"}}}"#).unwrap();
-    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", Some("medium"))), reviewer: None, delivery: Delivery::MergeLocal });
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", Some("medium"))), reviewer: None, delivery: Delivery::MergeLocal, ..ProjectSettings::default() });
 
     let (status, body) = send(&s, "/api/projects/alpha/settings");
     assert_eq!(status, 200, "{body}");
@@ -82,6 +82,8 @@ fn a_saved_role_and_delivery_are_given_with_the_revision_and_an_unset_role_says_
             "fallback": {"harness": "pi", "model": "kimi", "effort": null, "source": "tdd_config"}
         },
         "delivery": "merge_local",
+        "max_active_runs": null,
+        "min_free_disk_gb": null,
         "revision": revision
     }}));
 }
@@ -105,7 +107,7 @@ fn a_project_with_no_record_has_the_defaults_at_revision_0_and_each_fallback_nam
 fn an_unknown_project_is_not_found_and_a_secret_looking_value_is_redacted() {
     let s = setup("project-settings-redact", None);
     let alpha = git_repo(&s.scan, "alpha");
-    save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789", None)), reviewer: None, delivery: Delivery::Review });
+    save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789", None)), reviewer: None, delivery: Delivery::Review, ..ProjectSettings::default() });
 
     assert_eq!(send(&s, "/api/projects/nope/settings").0, 404);
     let (status, body) = send(&s, "/api/projects/alpha/settings");
@@ -118,7 +120,7 @@ fn a_fallback_that_cannot_be_worked_out_is_null_and_the_saved_settings_are_still
     // A half-filled machine [implementer] that a run with the project's own implementer never reads.
     let s = setup("project-settings-broken-fallback", Some("[implementer]\nharness = \"claude\"\n"));
     let alpha = git_repo(&s.scan, "alpha");
-    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal });
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal, ..ProjectSettings::default() });
 
     let (status, body) = send(&s, "/api/projects/alpha/settings");
     assert_eq!(status, 200, "{body}");
@@ -150,7 +152,7 @@ fn a_linked_worktree_reads_the_record_of_its_main_checkout() {
     let linked = s.scan.join("alpha-wt");
     let out = Command::new("git").args(["worktree", "add", "-q", "-b", "side"]).arg(&linked).current_dir(&alpha).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal });
+    let revision = save(&s, &alpha, &ProjectSettings { implementer: Some(agent("claude", "sonnet", None)), reviewer: None, delivery: Delivery::MergeLocal, ..ProjectSettings::default() });
 
     let (status, body) = send(&s, "/api/projects/alpha-wt/settings");
     assert_eq!(status, 200, "{body}");

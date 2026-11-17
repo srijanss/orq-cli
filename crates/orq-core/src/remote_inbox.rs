@@ -192,6 +192,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Why project `id`'s settings refuse a run start now (its run limit or disk floor), `None` when
+    /// a start may go or there is no such project.
+    fn start_blocked(&self, _id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// The orchestration runs of project `id`, newest first, as a JSON array; `None` when there is no such project.
     fn runs(&self, _id: &str) -> Result<Option<Value>, String> {
         Ok(None)
@@ -1534,8 +1540,9 @@ fn delete_merged_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsP
     reply(200, json!({ "results": results }))
 }
 
-/// Saves project `id`'s own agents and delivery for its Settings page. The body names the whole
-/// record and the revision it was read at; a null role is reset so runs fall back again.
+/// Saves project `id`'s own agents, delivery and run limits for its Settings page. The body names the
+/// whole record and the revision it was read at; a null role is reset so runs fall back again, and a
+/// null limit is no limit.
 fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
     use crate::project_settings::{Delivery, ProjectAgent, ProjectSettings};
     use crate::remote_audit::{record, Attempt, Outcome};
@@ -1547,7 +1554,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("remote actions are off"));
         return error(404, "not found");
     }
-    const KEYS: [&str; 4] = ["implementer", "reviewer", "delivery", "revision"];
+    const KEYS: [&str; 6] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "revision"];
     if let Some(refusal) = body_refusal(body, &KEYS) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
@@ -1569,8 +1576,17 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
             _ => None,
         }
     };
+    // A limit is null (no limit) or a whole number; its range is checked once the body is read.
+    let limit = |key: &str| -> Option<Option<u64>> {
+        match fields.get(key)? {
+            Value::Null => Some(None),
+            value => value.as_u64().map(Some),
+        }
+    };
     let parsed = (agent("implementer"), agent("reviewer"), fields.get("delivery").and_then(Value::as_str).and_then(Delivery::parse), fields.get("revision").and_then(Value::as_u64));
-    let (Some(implementer), Some(reviewer), Some(delivery), Some(revision)) = parsed else {
+    let (Some(implementer), Some(reviewer), Some(delivery), Some(revision), Some(max_active_runs), Some(min_free_disk_gb)) =
+        (parsed.0, parsed.1, parsed.2, parsed.3, limit("max_active_runs"), limit("min_free_disk_gb"))
+    else {
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
     };
@@ -1578,6 +1594,15 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("the push delivery was removed"));
         return error(422, crate::project_settings::PUSH_REMOVED);
     }
+    use crate::project_settings::{MAX_ACTIVE_RUNS, MIN_FREE_DISK_GB};
+    let Ok(max_active_runs) = max_active_runs.map(|limit| u8::try_from(limit).ok().filter(|limit| MAX_ACTIVE_RUNS.contains(limit)).ok_or(())).transpose() else {
+        audit(Outcome::Refused, Some("run limit out of range"));
+        return error(422, "At most active runs must be empty or 1 to 8");
+    };
+    let Ok(min_free_disk_gb) = min_free_disk_gb.map(|floor| u32::try_from(floor).ok().filter(|floor| MIN_FREE_DISK_GB.contains(floor)).ok_or(())).transpose() else {
+        audit(Outcome::Refused, Some("disk floor out of range"));
+        return error(422, "Free disk needed to start must be empty or 1 to 500 GB");
+    };
     let chosen: Vec<&ProjectAgent> = implementer.iter().chain(reviewer.iter()).collect();
     // Resetting both roles names no agent, so it needs nothing offered.
     if !chosen.is_empty() {
@@ -1602,7 +1627,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
             return error(422, "That effort is not one this harness takes");
         }
     }
-    let settings = ProjectSettings { implementer, reviewer, delivery };
+    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
             audit(Outcome::Allowed, None);
@@ -1755,7 +1780,11 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some(rest) = path.strip_prefix("/api/projects/") {
         if let Some(id) = rest.strip_suffix("/features").filter(|id| !id.is_empty() && !id.contains('/')) {
             return match provider.map(|provider| provider.features(id)) {
-                Some(Ok(Some(features))) => reply(200, json!({ "features": features, "remote_actions": remote_actions_on(roots) })),
+                Some(Ok(Some(features))) => {
+                    // A reason that cannot be read leaves Start offered: the start itself still checks.
+                    let start_blocked = provider.and_then(|provider| provider.start_blocked(id).ok().flatten());
+                    reply(200, json!({ "features": features, "remote_actions": remote_actions_on(roots), "start_blocked": start_blocked }))
+                }
                 // The reason can name a path on this machine, so the caller is only told it failed.
                 Some(Err(_)) => error(500, "the feature ledger could not be read"),
                 _ => error(404, "not found"),

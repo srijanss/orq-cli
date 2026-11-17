@@ -93,6 +93,10 @@ pub enum StoreError {
     FeatureBusy {
         active_run_id: String,
     },
+    /// The project already has as many active runs as it allows: each as (run id, feature id).
+    ProjectAtLimit {
+        active: Vec<(String, String)>,
+    },
     NotFound(String),
     Io(std::io::Error),
     Corrupt(String),
@@ -105,6 +109,9 @@ impl std::fmt::Display for StoreError {
             StoreError::AlreadyExists(id) => write!(f, "run {id} already exists"),
             StoreError::FeatureBusy { active_run_id } => {
                 write!(f, "the feature already has an active run: {active_run_id}")
+            }
+            StoreError::ProjectAtLimit { active } => {
+                write!(f, "the project already has {} active runs", active.len())
             }
             StoreError::NotFound(id) => write!(f, "run {id} not found"),
             StoreError::Io(err) => write!(f, "run store I/O error: {err}"),
@@ -216,6 +223,56 @@ impl RunStore {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// [`RunStore::start_group_run`], refused when the project already has `max_active` active
+    /// runs. The count and the start are made under the project's lock, so of two starts at
+    /// once only as many pass as the limit leaves room for. No limit starts as before.
+    pub fn start_group_run_limited(
+        &self,
+        record: &RunRecord,
+        members: &[String],
+        max_active: Option<usize>,
+    ) -> Result<(), StoreError> {
+        let Some(max_active) = max_active else {
+            return self.start_group_run(record, members);
+        };
+        let _project = self.project_guard(&record.project_id)?;
+        let active = self.active_project_runs(&record.project_id)?;
+        if active.len() >= max_active {
+            return Err(StoreError::ProjectAtLimit { active });
+        }
+        self.start_group_run(record, members)
+    }
+
+    /// The project's runs that have not ended, as (run id, feature id) in run id order: running,
+    /// pausing, paused or blocked. A run recorded with no events yet has just started.
+    pub fn active_project_runs(&self, project_id: &str) -> Result<Vec<(String, String)>, StoreError> {
+        use crate::run_status::{summarize_run, RunPhase};
+        let mut active = Vec::new();
+        for run_id in self.run_ids()? {
+            let record = match self.load(&run_id) {
+                Ok(record) => record,
+                // Removed since it was listed.
+                Err(StoreError::NotFound(_)) => continue,
+                Err(err) => return Err(err),
+            };
+            if record.project_id != project_id {
+                continue;
+            }
+            let phase = summarize_run(&self.events(&run_id)?).phase;
+            if matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Blocked) {
+                active.push((run_id, record.feature_id));
+            }
+        }
+        Ok(active)
+    }
+
+    /// An exclusive advisory lock on the project's start, released when the handle is dropped.
+    /// Its name starts with a dot, which no feature id may, so it never shares a feature's guard.
+    fn project_guard(&self, project_id: &str) -> Result<fs::File, StoreError> {
+        self.lock_path(project_id, "project")?;
+        self.locked_guard(project_id, std::ffi::OsStr::new(".project"))
     }
 
     /// Release the lock of every member that `run_id` owns. Every member is tried; the first
@@ -348,9 +405,14 @@ impl RunStore {
     /// the returned handle is dropped. The file itself is never removed.
     fn guard(&self, project_id: &str, feature_id: &str) -> Result<fs::File, StoreError> {
         let path = self.lock_path(project_id, feature_id)?;
+        let name = path.file_stem().expect("lock path has a name").to_owned();
+        self.locked_guard(project_id, &name)
+    }
+
+    /// Open `guards/<project_id>/<name>` and take an exclusive advisory lock on it.
+    fn locked_guard(&self, project_id: &str, name: &std::ffi::OsStr) -> Result<fs::File, StoreError> {
         let dir = self.root.join("guards").join(project_id);
         fs::create_dir_all(&dir)?;
-        let name = path.file_stem().expect("lock path has a name").to_owned();
         let file = fs::OpenOptions::new()
             .create(true)
             .write(true)

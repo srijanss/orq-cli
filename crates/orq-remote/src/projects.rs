@@ -387,13 +387,35 @@ impl StoreProjects {
     /// orq.db is only read; without it the project has no record (revision 0). None for an unknown project.
     fn stored_settings_of(&self, id: &str) -> Result<Option<(orq_git::Project, orq_core::project_settings::StoredProjectSettings)>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        Ok(Some((git, self.stored_settings_at(&root)?)))
+    }
+
+    /// The settings saved in orq.db for the project whose main checkout is `root`; without orq.db, none.
+    fn stored_settings_at(&self, root: &Path) -> Result<orq_core::project_settings::StoredProjectSettings, String> {
         let database = self.roots.database();
-        let stored = if database.exists() {
-            orq_core::store::Store::read_project_settings(&database, &root).map_err(|error| error.to_string())?
+        if !database.exists() {
+            return Ok(orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 });
+        }
+        orq_core::store::Store::read_project_settings(&database, root).map_err(|error| error.to_string())
+    }
+
+    /// Why project `git`'s settings refuse a run start now, redacted for the page; `None` when it may start.
+    fn start_blocked_of(&self, git: &orq_git::Project) -> Result<Option<String>, String> {
+        let settings = self.settings_of_git(git)?;
+        let active = if settings.max_active_runs.is_some() {
+            orq_orchestrator::RunStore::new(&self.roots.state)
+                .active_project_runs(&orq_git::project_id(git))
+                .map_err(|error| format!("{error:?}"))?
         } else {
-            orq_core::project_settings::StoredProjectSettings { settings: Default::default(), revision: 0 }
+            Vec::new()
         };
-        Ok(Some((git, stored)))
+        Ok(start_blocked(git, &settings, &active)?.map(|why| orq_core::redact::redact(&why)))
+    }
+
+    /// The settings of project `git`, read from its main checkout's record.
+    fn settings_of_git(&self, git: &orq_git::Project) -> Result<orq_core::project_settings::ProjectSettings, String> {
+        let root = orq_git::main_checkout_root(git).unwrap_or_else(|| git.root.clone());
+        Ok(self.stored_settings_at(&root)?.settings)
     }
 
     /// Project `git`'s `stored` settings as the web reads them: each role's own choice and what a
@@ -433,6 +455,8 @@ impl StoreProjects {
             "implementer": role(&stored.settings.implementer, AgentRole::Implementer),
             "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer),
             "delivery": stored.settings.delivery.as_str(),
+            "max_active_runs": stored.settings.max_active_runs,
+            "min_free_disk_gb": stored.settings.min_free_disk_gb,
             "revision": stored.revision,
         })
     }
@@ -514,6 +538,10 @@ impl StoreProjects {
             }
         }
         let Some(launcher) = &self.launcher else { return Ok(RunStart::Refused("this server cannot start runs".to_string())) };
+        // Checked here so a refusal is the reason itself; the run checks again as it is recorded.
+        if let Some(why) = self.start_blocked_of(&git)? {
+            return Ok(RunStart::Refused(why));
+        }
         let started = match (target, profiles) {
             (Launch::Group(_), profiles) => launcher.start_group(&project.path, &ordered, profiles),
             (Launch::One(feature), Some(chosen)) => launcher.start_with(&project.path, feature, chosen),
@@ -657,17 +685,32 @@ pub enum LaunchError {
 /// Failures older than this are not counted as needing attention; the API states it with the count.
 pub const FAILED_WINDOW_HOURS: u64 = 24;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct RunCounts {
-    active: usize,
+    /// The runs that have not ended, as (run id, feature id).
+    active: Vec<(String, String)>,
     failed: usize,
 }
 
 struct Counts {
+    git: orq_git::Project,
     features: usize,
-    active_runs: usize,
+    active: Vec<(String, String)>,
     failed_runs: usize,
     reviews_waiting: usize,
+}
+
+/// Why a run of project `git` may not start now under its `settings`, with `active` its runs that
+/// have not ended: the run limit or the disk floor, as `orq run` words it. `None` when it may.
+fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::ProjectSettings, active: &[(String, String)]) -> Result<Option<String>, String> {
+    if let Some(why) = orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, active) {
+        return Ok(Some(why));
+    }
+    if settings.min_free_disk_gb.is_none() {
+        return Ok(None);
+    }
+    let free = orq_orchestrator::free_disk(&git.root).map_err(|error| format!("cannot measure the free disk of {}: {error}", git.name))?;
+    Ok(orq_orchestrator::disk_refusal(&git.name, settings.min_free_disk_gb, &free))
 }
 
 impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
@@ -1068,6 +1111,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
     }
 
+    fn start_blocked(&self, id: &str) -> Result<Option<String>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        self.start_blocked_of(&git)
+    }
+
     fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
@@ -1292,8 +1341,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let active = active_runs_by_project(&orq_orchestrator::RunStore::new(&self.roots.state));
         let list = discover(&self.scan_root)
             .into_iter()
-            .map(|project| match counts(&project, reviews.as_ref(), &active) {
-                Ok(counts) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active_runs, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
+            .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
+                let settings = self.settings_of_git(&counts.git)?;
+                let blocked = start_blocked(&counts.git, &settings, &counts.active)?.map(|why| orq_core::redact::redact(&why));
+                Ok((counts, settings.max_active_runs, blocked))
+            }) {
+                Ok((counts, max_active_runs, start_blocked)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
                 Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null, "failed_runs": null, "failed_window_hours": FAILED_WINDOW_HOURS}),
             })
             .collect::<Vec<_>>();
@@ -1374,12 +1427,12 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &
     let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
     let key = orq_git::project_id(&git);
     let features = ledger_entries(&orq_features::ledger_path(&git))?;
-    let runs = active.as_ref().map_err(Clone::clone)?.get(&key).copied().unwrap_or_default();
+    let runs = active.as_ref().map_err(Clone::clone)?.get(&key).cloned().unwrap_or_default();
     let reviews_waiting = match reviews {
         Some(store) => orq_core::review_inbox::waiting_count(store, &key)?,
         None => 0,
     };
-    Ok(Counts { features, active_runs: runs.active, failed_runs: runs.failed, reviews_waiting })
+    Ok(Counts { git, features, active: runs.active, failed_runs: runs.failed, reviews_waiting })
 }
 
 /// Active runs per project id, read in one pass over the run store. A record or event log that
@@ -1398,7 +1451,8 @@ fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::coll
         let entry: &mut RunCounts = counts.entry(record.project_id).or_default();
         let summary = orq_orchestrator::summarize_run(&events);
         match summary.phase {
-            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused => entry.active += 1,
+            // Not ended, as a project's run limit counts them.
+            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Blocked => entry.active.push((run_id, record.feature_id)),
             RunPhase::Failed if failed_recently(summary.phase_at.as_deref(), now) => entry.failed += 1,
             _ => {}
         }

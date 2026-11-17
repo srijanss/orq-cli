@@ -53,7 +53,16 @@ pub struct ProjectSettings {
     pub implementer: Option<ProjectAgent>,
     pub reviewer: Option<ProjectAgent>,
     pub delivery: Delivery,
+    /// How many of the project's runs may be active at once; unset is no limit.
+    pub max_active_runs: Option<u8>,
+    /// The free disk, in GB, a run needs to start or resume; unset is no check.
+    pub min_free_disk_gb: Option<u32>,
 }
+
+/// The range a project's run limit may take.
+pub const MAX_ACTIVE_RUNS: std::ops::RangeInclusive<u8> = 1..=8;
+/// The range a project's disk floor may take, in GB.
+pub const MIN_FREE_DISK_GB: std::ops::RangeInclusive<u32> = 1..=500;
 
 /// A project's settings with the revision a later save must name.
 /// Revision 0 means the project has no record.
@@ -70,11 +79,17 @@ pub enum SaveOutcome {
     Conflict,
 }
 
-/// Every value is a single non-empty line with no surrounding blanks, and the delivery is one that
-/// may still be chosen.
+/// Every value is a single non-empty line with no surrounding blanks, the delivery is one that
+/// may still be chosen, and each limit is in its range.
 pub(crate) fn check(settings: &ProjectSettings) -> Result<()> {
     if settings.delivery == Delivery::Push {
         return Err(Error::new(ErrorKind::InvalidInput, PUSH_REMOVED));
+    }
+    if let Some(limit) = settings.max_active_runs.filter(|limit| !MAX_ACTIVE_RUNS.contains(limit)) {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("max_active_runs must be empty or 1 to 8, got {limit}")));
+    }
+    if let Some(floor) = settings.min_free_disk_gb.filter(|floor| !MIN_FREE_DISK_GB.contains(floor)) {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("min_free_disk_gb must be empty or 1 to 500, got {floor}")));
     }
     for (role, agent) in [("implementer", &settings.implementer), ("reviewer", &settings.reviewer)] {
         let Some(agent) = agent else { continue };

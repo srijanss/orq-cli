@@ -37,6 +37,7 @@ fn a_project_s_settings_are_saved_per_project_and_a_stale_save_is_refused() {
         implementer: Some(agent("claude", "sonnet", Some("high"))),
         reviewer: None,
         delivery: Delivery::MergeLocal,
+        ..ProjectSettings::default()
     };
     assert_eq!(store.save_project_settings(alpha, 0, &chosen).unwrap(), SaveOutcome::Saved { revision: 1 });
     drop(store);
@@ -149,4 +150,49 @@ fn a_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_se
 
     rusqlite::Connection::open(&db).unwrap().pragma_update(None, "user_version", Store::LATEST_VERSION + 1).unwrap();
     assert!(Store::read_project_settings(&db, Path::new("/work/alpha")).is_err(), "a newer schema is not guessed at");
+}
+
+#[test]
+fn the_run_limit_and_the_disk_floor_are_saved_and_out_of_range_values_are_refused() {
+    let (mut store, db) = open("limits");
+    let alpha = Path::new("/work/alpha");
+    assert_eq!((ProjectSettings::default().max_active_runs, ProjectSettings::default().min_free_disk_gb), (None, None), "no limit unless set");
+
+    let limited = ProjectSettings { max_active_runs: Some(1), min_free_disk_gb: Some(15), ..ProjectSettings::default() };
+    assert_eq!(store.save_project_settings(alpha, 0, &limited).unwrap(), SaveOutcome::Saved { revision: 1 });
+    assert_eq!(store.project_settings(alpha).unwrap().settings, limited);
+    assert_eq!(Store::read_project_settings(&db, alpha).unwrap().settings, limited, "read without opening for writing too");
+
+    for bad in [
+        ProjectSettings { max_active_runs: Some(0), ..ProjectSettings::default() },
+        ProjectSettings { max_active_runs: Some(9), ..ProjectSettings::default() },
+        ProjectSettings { min_free_disk_gb: Some(0), ..ProjectSettings::default() },
+        ProjectSettings { min_free_disk_gb: Some(501), ..ProjectSettings::default() },
+    ] {
+        let err = store.save_project_settings(alpha, 1, &bad).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
+    }
+    assert_eq!(store.project_settings(alpha).unwrap().settings, limited, "a refused save writes nothing");
+
+    let edges = ProjectSettings { max_active_runs: Some(8), min_free_disk_gb: Some(500), ..ProjectSettings::default() };
+    assert_eq!(store.save_project_settings(alpha, 1, &edges).unwrap(), SaveOutcome::Saved { revision: 2 });
+    let cleared = ProjectSettings::default();
+    assert_eq!(store.save_project_settings(alpha, 2, &cleared).unwrap(), SaveOutcome::Saved { revision: 3 });
+    assert_eq!(store.project_settings(alpha).unwrap().settings, cleared, "both cleared back to no limit");
+}
+
+#[test]
+fn a_database_from_before_the_limits_reads_its_settings_with_no_limits() {
+    let (mut store, db) = open("pre-limits");
+    let alpha = Path::new("/work/alpha");
+    let chosen = ProjectSettings { delivery: Delivery::MergeLocal, ..ProjectSettings::default() };
+    store.save_project_settings(alpha, 0, &chosen).unwrap();
+    drop(store);
+    // Schema version 7 had project_settings without the two limit columns.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb;").unwrap();
+    conn.pragma_update(None, "user_version", 7).unwrap();
+    drop(conn);
+    let read = Store::read_project_settings(&db, alpha).unwrap();
+    assert_eq!((read.settings, read.revision), (chosen, 1));
 }

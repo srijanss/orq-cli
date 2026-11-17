@@ -1,7 +1,7 @@
 //! `POST /api/projects/{id}/settings` saves project `id`'s own agents and delivery. Like every action
 //! it is there only while remote actions are on, takes only an offered harness, model and effort and a
 //! known delivery, saves only while the revision presented is current, and leaves a project.settings
-//! audit line for each attempt. The body names the whole record; a null role is reset.
+//! audit line for each attempt. The body names the whole record; a null role or limit is reset.
 
 use std::cell::RefCell;
 
@@ -61,7 +61,7 @@ fn audit(roots: &StorageRoots) -> Vec<(Value, Value, Value)> {
 }
 
 fn whole() -> Value {
-    json!({"implementer": {"harness": "claude", "model": "sonnet", "effort": "high"}, "reviewer": null, "delivery": "merge_local", "revision": 4})
+    json!({"implementer": {"harness": "claude", "model": "sonnet", "effort": "high"}, "reviewer": null, "delivery": "merge_local", "max_active_runs": null, "min_free_disk_gb": null, "revision": 4})
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn a_whole_record_at_the_current_revision_is_saved_and_answered_with_the_setting
     let fake = fake();
     assert_eq!(save(&roots, &fake, "alpha", whole()), (200, json!({"settings": {"revision": 5}})));
     let implementer = ProjectAgent { harness: "claude".into(), model: "sonnet".into(), effort: Some("high".into()) };
-    assert_eq!(fake.saved.into_inner(), vec![("alpha".to_string(), 4, ProjectSettings { implementer: Some(implementer), reviewer: None, delivery: Delivery::MergeLocal })]);
+    assert_eq!(fake.saved.into_inner(), vec![("alpha".to_string(), 4, ProjectSettings { implementer: Some(implementer), reviewer: None, delivery: Delivery::MergeLocal, ..ProjectSettings::default() })]);
     assert_eq!(audit(&roots), vec![(json!("project.settings"), json!("alpha"), json!("allowed"))]);
 }
 
@@ -111,6 +111,10 @@ fn with_actions_off_or_a_body_that_is_not_a_whole_record_nothing_is_saved_and_th
         without("reviewer"),
         without("delivery"),
         without("revision"),
+        without("max_active_runs"),
+        without("min_free_disk_gb"),
+        with("max_active_runs", json!("1")),
+        with("min_free_disk_gb", json!(1.5)),
         with("extra", json!(1)),
         with("delivery", json!("deploy")),
         with("revision", json!(-1)),
@@ -150,7 +154,7 @@ fn only_an_offered_harness_model_and_effort_are_saved_and_a_reset_needs_no_optio
     assert!(fake.saved.borrow().is_empty());
     assert_eq!(save(&roots, &fake, "alpha", role(json!({"harness": "pi", "model": "kimi"}))).0, 200);
 
-    let reset = json!({"implementer": null, "reviewer": null, "delivery": "review", "revision": 4});
+    let reset = json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "revision": 4});
     let none = Fake { saved: RefCell::new(Vec::new()), options: Ok(None) };
     assert_eq!(save(&roots, &none, "alpha", reset).0, 200, "resetting both roles names no agent to check");
     assert_eq!(save(&roots, &none, "alpha", whole()), (404, json!({"error": "not found"})), "no options, no agent can be chosen");
@@ -172,4 +176,31 @@ fn a_stale_revision_an_unknown_project_and_a_failure_on_this_machine_save_nothin
     let lines = remote_audit::read(&roots, 100).unwrap();
     assert_eq!(lines.iter().rev().map(|line| (line["project"].clone(), line["outcome"].clone())).collect::<Vec<_>>(), vec![(json!("alpha"), json!("refused")), (json!("nope"), json!("refused")), (json!("broken"), json!("refused"))]);
     assert!(!serde_json::to_string(&lines).unwrap().contains("/home/me"), "{lines:?}");
+}
+
+#[test]
+fn the_run_limit_and_the_disk_floor_are_saved_in_range_and_refused_out_of_it() {
+    let roots = roots("limits", true);
+    let fake = fake();
+    let limits = |max: Value, floor: Value| {
+        let mut body = whole();
+        body["max_active_runs"] = max;
+        body["min_free_disk_gb"] = floor;
+        body
+    };
+    for (body, why) in [
+        (limits(json!(0), json!(null)), "At most active runs must be empty or 1 to 8"),
+        (limits(json!(9), json!(null)), "At most active runs must be empty or 1 to 8"),
+        (limits(json!(null), json!(0)), "Free disk needed to start must be empty or 1 to 500 GB"),
+        (limits(json!(null), json!(501)), "Free disk needed to start must be empty or 1 to 500 GB"),
+    ] {
+        assert_eq!(save(&roots, &fake, "alpha", body.clone()), (422, json!({"error": why})), "{body}");
+    }
+    assert!(fake.saved.borrow().is_empty(), "nothing out of range was saved");
+
+    assert_eq!(save(&roots, &fake, "alpha", limits(json!(1), json!(15))).0, 200);
+    let saved = fake.saved.into_inner().remove(0).2;
+    assert_eq!((saved.max_active_runs, saved.min_free_disk_gb), (Some(1), Some(15)));
+    let outcomes: Vec<Value> = audit(&roots).into_iter().rev().map(|line| line.2).collect();
+    assert_eq!(outcomes, [vec![json!("refused"); 4], vec![json!("allowed")]].concat());
 }

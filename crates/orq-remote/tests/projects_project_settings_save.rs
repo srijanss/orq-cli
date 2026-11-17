@@ -48,7 +48,11 @@ fn send(s: &Setup, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
     (r.status, r.body)
 }
 
-fn save(s: &Setup, id: &str, body: Value) -> (u16, Value) {
+/// Saves `body`, with no run limit and no disk floor unless it names them.
+fn save(s: &Setup, id: &str, mut body: Value) -> (u16, Value) {
+    for key in ["max_active_runs", "min_free_disk_gb"] {
+        body.as_object_mut().unwrap().entry(key).or_insert(Value::Null);
+    }
     send(s, "POST", &format!("/api/projects/{id}/settings"), body.to_string().as_bytes())
 }
 

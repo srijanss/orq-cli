@@ -64,6 +64,10 @@ pub struct Options<'a> {
     pub set_aside: bool,
     /// On resume of a run blocked mid-rebase on a conflict: a session of the implementer resolves it.
     pub fix_conflicts: bool,
+    /// The project's settings: at most this many of its runs active at once (a resume does not
+    /// count against it), and this much free disk, in GB, to start or resume a run.
+    pub max_active_runs: Option<u8>,
+    pub min_free_disk_gb: Option<u32>,
 }
 
 /// A run id no other run has: `run-<seconds>-<pid>-<sequence>`, the sequence telling apart the
@@ -185,6 +189,8 @@ pub enum StartError {
     Busy(String),
     /// The run's own pre-start checks refused it; nothing was created or started.
     Refused(String),
+    /// The project's run limit or disk floor refused it; nothing was created or started.
+    Limit(String),
     Other(String),
 }
 
@@ -344,6 +350,7 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     if let Some(file) = &settings.gate_from_script {
         eprintln!("orq: using GATE_CMD from {file} as the gate");
     }
+    project_limits(options, store)?;
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
         Some(orq_orchestrator::plan_group_resume_fixing(store, repo, &project_id(options.project), &members, options.fix_conflicts).map_err(other)?)
@@ -381,6 +388,33 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     // still only reach the host the user chose.
     let repository = orq_orchestrator::resolve_repository_url(repo, options.remote).map_err(|e| other(format!("{e:?}")))?;
     Ok(Preflight { settings, resumed, naming, provider, repository })
+}
+
+/// The refusals the project's settings make: too little free disk where the run's worktree is
+/// made, or, for a new run, as many active runs as the project allows. The limit is checked again
+/// when the run is recorded, under the project's lock.
+fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartError> {
+    let name = &options.project.name;
+    if options.min_free_disk_gb.is_some() {
+        let free = orq_orchestrator::free_disk(&options.project.root)
+            .map_err(|err| other(format!("cannot measure the free disk of {}: {err}", options.project.root.display())))?;
+        if let Some(reason) = orq_orchestrator::disk_refusal(name, options.min_free_disk_gb, &free) {
+            return Err(StartError::Limit(reason));
+        }
+    }
+    if options.max_active_runs.is_some() && !options.resume {
+        let active = store.active_project_runs(&project_id(options.project))?;
+        if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
+            return Err(StartError::Limit(reason));
+        }
+    }
+    Ok(())
+}
+
+/// [`project_limits`] on their own, for a launcher that refuses before it spawns the run.
+pub fn check_project_limits(options: &Options<'_>) -> Result<(), StartError> {
+    let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
+    project_limits(options, &RunStore::new(&root)).map_err(refused)
 }
 
 /// Every refusal [`execute`] makes before it fetches or records anything, with nothing started.
@@ -436,9 +470,16 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         .collect(),
     };
     let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-    match store.start_group_run(&record, &members) {
+    // A resume continues a run that was already counted, so only a new run is held to the limit.
+    let max_active = options.max_active_runs.filter(|_| resumed.is_none());
+    match store.start_group_run_limited(&record, &members, max_active.map(usize::from)) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
+        Err(StoreError::ProjectAtLimit { active }) => {
+            let reason = orq_orchestrator::limit_refusal(&options.project.name, max_active, &active)
+                .unwrap_or_else(|| format!("{} is at its limit of active runs", options.project.name));
+            return Err(StartError::Limit(reason));
+        }
         Err(err) => return Err(other(format!("{err:?}"))),
     }
     orq_orchestrator::end_children_with_this_process();

@@ -747,7 +747,15 @@ function isCount(value) {
 }
 
 function isProject(project) {
-  return project !== null && typeof project === "object" && typeof project.id === "string" && RUN_ID.test(project.id) && typeof project.name === "string" && typeof project.available === "boolean" && ["features", "active_runs", "reviews_waiting", "failed_runs"].every((key) => isCount(project[key]));
+  const limit = project && project.max_active_runs;
+  const blocked = project && project.start_blocked;
+  return project !== null && typeof project === "object" && typeof project.id === "string" && RUN_ID.test(project.id) && typeof project.name === "string" && typeof project.available === "boolean" && ["features", "active_runs", "reviews_waiting", "failed_runs"].every((key) => isCount(project[key]))
+    && (limit === undefined || limit === null || (Number.isInteger(limit) && limit > 0)) && (blocked === undefined || blocked === null || typeof blocked === "string");
+}
+
+// Why the project's settings refuse a run start now (its run limit or disk floor), or null when a start may go.
+function startBlockedOf(project) {
+  return project && typeof project.start_blocked === "string" && project.start_blocked !== "" ? project.start_blocked : null;
 }
 
 function parseProjects(data) {
@@ -785,7 +793,9 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
       {project.available ? (
         <div className="card-stats">
           <CardStat icon="flag" value={project.features} label="Features" to={base + "features"} id={project.id + "/features"} />
-          <CardStat icon="play" value={project.active_runs} label="Active runs" to={base + "orchestrations"} id={project.id + "/runs"} />
+          {Number.isInteger(project.max_active_runs) && project.active_runs !== null
+            ? <CardStat icon="play" value={project.active_runs + " of " + project.max_active_runs} label="runs active" to={base + "orchestrations"} id={project.id + "/runs"} />
+            : <CardStat icon="play" value={project.active_runs} label="Active runs" to={base + "orchestrations"} id={project.id + "/runs"} />}
           <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" to={base + "reviews"} id={project.id + "/reviews"} />
         </div>
       ) : (
@@ -1788,7 +1798,7 @@ function isFeature(feature) {
 }
 
 function parseFeatures(data) {
-  return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true } : null;
+  return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true, startBlocked: typeof data.start_blocked === "string" && data.start_blocked !== "" ? data.start_blocked : null } : null;
 }
 
 // A feature's dependencies: a link to the feature's own page for each one in this ledger, a marker
@@ -1874,10 +1884,20 @@ function OpenRun({ projectId, run }) {
   return <a data-open-run={run} href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>Open run</a>;
 }
 
+// Why a start is held back, beside its disabled button; nothing when it is not.
+function BlockedNote({ reason }) {
+  return reason === null ? null : <span role="status" className="run-action-note muted" data-start-blocked>{reason}</span>;
+}
+
+// The reason a control's project refuses a run start now, or null.
+function blockedOf(control) {
+  return control !== null && typeof control.startBlocked === "string" && control.startBlocked !== "" ? control.startBlocked : null;
+}
+
 // opensIn: the project whose orchestration page the run the action started is linked to, or null for an
-// action that starts no run.
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null }) {
-  const [phase, setPhase] = useState(asking ? "asking" : "idle");
+// action that starts no run. blocked: why the button is disabled now, shown beside it, or null.
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null }) {
+  const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
   const [note, setNote] = useState("");
   const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
@@ -1938,7 +1958,8 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   };
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
+      {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
+      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => (onCancel === null ? setPhase("idle") : onCancel())} /> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
@@ -2130,6 +2151,7 @@ function LaunchAction({ feature, control }) {
   const [run, setRun] = useState("");
   const choice = useLaunchChoice();
   const startPath = controlPath(control, "features/" + encodeURIComponent(feature.name) + "/runs");
+  const blocked = blockedOf(control);
   const ask = async () => {
     setNote("");
     setPhase("checking");
@@ -2174,7 +2196,8 @@ function LaunchAction({ feature, control }) {
   const asked = "Start " + feature.name + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button" data-start-with="" onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
+      {phase === "idle" ? <button type="button" className="primary-button" data-start-with="" disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
+      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
@@ -2386,6 +2409,7 @@ function StartMarked({ names, control, onFinished, place = null }) {
   const choice = useLaunchChoice();
   const label = "Start " + names.length + placeSuffix(place);
   const grouped = names.length > 1;
+  const blocked = blockedOf(control);
   const ask = async () => {
     setNote("");
     setPhase("checking");
@@ -2434,7 +2458,8 @@ function StartMarked({ names, control, onFinished, place = null }) {
   const asked = "Start " + featuresPhrase(names, place) + (grouped ? " as one group run" : "") + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button" data-start-marked onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
+      {phase === "idle" ? <button type="button" className="primary-button" data-start-marked disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
+      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
@@ -2760,7 +2785,7 @@ function FeatureAction({ feature, control, asking = false, onCancel = null }) {
   const name = encodeURIComponent(feature.name);
   const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
   return feature.status === "pending"
-    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
+    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} blocked={blockedOf(control)} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
 }
 
@@ -3096,7 +3121,7 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
 // Each row carries its own project's control, so a project that allows actions offers them here too.
 function AllFeatures({ token, projects, reloads, onSignedOut, onRefresh, onRows }) {
   const toRows = (parsed, project) => {
-    const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null;
+    const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh, startBlocked: startBlockedOf(project) } : null;
     return tagged(parsed.rows, project.id, project.name).map((feature) => ({ ...feature, control }));
   };
   const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "features", parse: parseFeatures, toRows });
@@ -3139,7 +3164,7 @@ function AllFeaturesPage({ token, reloads, onRefresh, onSignedOut }) {
 function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
   const runs = useFeatureRuns(token, projectId, reloads, name !== null);
   const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
-  const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null);
+  const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh, startBlocked: data.startBlocked } : null);
   return (
     <>
       <Loaded key={featuresPath} reloads={reloads} header={(state) => (
@@ -4180,8 +4205,32 @@ function isPicked(agent) {
 function parseProjectSettings(data) {
   const settings = data && data.settings;
   const role = (entry) => entry !== null && typeof entry === "object" && (entry.project === null || isPicked(entry.project)) && (entry.fallback === null || isPicked(entry.fallback));
-  const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && (settings.delivery === "push" || DELIVERIES.some(([value]) => value === settings.delivery)) && Number.isInteger(settings.revision) && settings.revision >= 0;
-  return ok ? settings : null;
+  const limit = (value, range) => value === undefined || value === null || (Number.isInteger(value) && value >= range[0] && value <= range[1]);
+  const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && (settings.delivery === "push" || DELIVERIES.some(([value]) => value === settings.delivery)) && Number.isInteger(settings.revision) && settings.revision >= 0
+    && limit(settings.max_active_runs, ACTIVE_RUNS_RANGE) && limit(settings.min_free_disk_gb, FREE_DISK_RANGE);
+  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null } : null;
+}
+
+// The limits a project may put on starting a run, as the server checks them; empty is no limit.
+const ACTIVE_RUNS_RANGE = [1, 8];
+const FREE_DISK_RANGE = [1, 500];
+
+function activeRunsLine(max) {
+  return max === null ? "No limit" : "At most " + max + (max === 1 ? " active run" : " active runs");
+}
+
+function freeDiskLine(gb) {
+  return gb === null ? "No limit" : gb + " GB";
+}
+
+// A typed free-disk floor as Save sends it: null for empty, the whole number of GB, or undefined when it is
+// neither, which holds Save back.
+function typedFloor(text) {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  if (!/^[0-9]+$/.test(trimmed)) return undefined;
+  const gb = Number(trimmed);
+  return gb >= FREE_DISK_RANGE[0] && gb <= FREE_DISK_RANGE[1] ? gb : undefined;
 }
 
 // An agent as one line: "claude sonnet, effort medium".
@@ -4283,7 +4332,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -4296,7 +4345,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, revision: draft.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -4342,14 +4391,37 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           )}
         </div>
       </section>
+      <section className="card settings-card">
+        <SettingsHead icon="play">Starting runs</SettingsHead>
+        <label className="settings-block">
+          <span>At most N active runs</span>
+          {editing ? (
+            <select data-max-active-runs aria-label="At most N active runs" value={draft.maxActiveRuns} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, maxActiveRuns: event.target.value })}>
+              <option value="">No limit</option>
+              {Array.from({ length: ACTIVE_RUNS_RANGE[1] - ACTIVE_RUNS_RANGE[0] + 1 }, (_, index) => String(ACTIVE_RUNS_RANGE[0] + index)).map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          ) : (
+            <span data-project-max-active-runs>{activeRunsLine(settings.max_active_runs)}</span>
+          )}
+        </label>
+        <label className="settings-block">
+          <span>Free disk needed to start (GB)</span>
+          {editing ? (
+            <input type="text" inputMode="numeric" data-min-free-disk aria-label="Free disk needed to start (GB)" placeholder="No limit" value={draft.minFreeDisk} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, minFreeDisk: event.target.value })} />
+          ) : (
+            <span data-project-min-free-disk>{freeDiskLine(settings.min_free_disk_gb)}</span>
+          )}
+          {editing && typedFloor(draft.minFreeDisk) === undefined ? <span className="error-text" data-min-free-disk-invalid>Leave it empty for no limit, or give a whole number from 1 to 500.</span> : null}
+        </label>
+      </section>
       {phase === "editing" ? (
         <div className="settings-block settings-actions">
-          <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery)} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
+          <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery) || typedFloor(draft.minFreeDisk) === undefined} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
           <button type="button" data-cancel onClick={() => { setPhase("idle"); setNote(""); setConflict(false); }}>Cancel</button>
         </div>
       ) : null}
       {phase === "asking" ? (
-        <Confirm question="Save this project's settings?" detail="Runs already going keep their agents and delivery." answer="Yes, save" tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
+        <Confirm question="Save this project's settings?" detail="Runs already going keep their agents and delivery, and are not stopped by a new limit." answer="Yes, save" tone="primary" onConfirm={send} onCancel={() => setPhase("editing")} />
       ) : null}
       <SettingsNotes sending={phase === "sending"} note={note} conflict={conflict} onReload={() => { setNote(""); setConflict(false); setPhase("idle"); onChanged(); }} />
     </div>
