@@ -377,6 +377,23 @@ impl Drop for Serving {
     }
 }
 
+impl Serving {
+    /// Stops the server as Ctrl-C would and waits up to 20 s for it to exit cleanly, which it does
+    /// only once the look under way, if any, has ended.
+    fn stop(mut self) {
+        assert!(Command::new("kill").args(["-TERM", &self.0.id().to_string()]).status().unwrap().success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "the server did not stop within 20 s");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(status.success(), "the server stopped cleanly: {status:?}");
+    }
+}
+
 impl Sandbox {
     fn serve(&self, repo: &Path, provider: &FakeProvider) -> Serving {
         let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
@@ -443,8 +460,8 @@ fn a_local_merge_recorded_while_the_provider_is_asked_is_kept() {
     let server = sandbox.serve(fixture.root(), &provider);
     assert_eq!(wait_for_calls(&provider, 1), 1, "the look is under way: {:?}", provider.calls());
     orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    drop(server);
+    // Stopping waits for the look under way to end, so what it saved, if anything, is in the index.
+    server.stop();
 
     assert_eq!(provider.calls().len(), 1, "{:?}", provider.calls());
     let kept = orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap();
@@ -466,7 +483,7 @@ fn a_run_merged_locally_is_not_looked_at_again() {
 
     let server = sandbox.serve(fixture.root(), &provider);
     std::thread::sleep(std::time::Duration::from_secs(3));
-    drop(server);
+    server.stop();
     assert!(provider.calls().is_empty(), "{:?}", provider.calls());
     assert_eq!(orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap(), before);
 }
