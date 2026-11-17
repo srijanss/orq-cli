@@ -20,7 +20,11 @@ pub fn copy_session_files(worktree: &Path, files: &[&Path]) -> Result<PathBuf, S
     fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     for file in files {
         let Some(name) = file.file_name() else { continue };
-        fs::copy(file, dir.join(name)).map_err(|err| format!("cannot copy {} into the worktree: {err}", file.display()))?;
+        if let Err(err) = fs::copy(file, dir.join(name)) {
+            // A session never starts from part of its files.
+            let _ = remove(&dir);
+            return Err(format!("cannot copy {} into the worktree: {err}", file.display()));
+        }
     }
     Ok(dir)
 }

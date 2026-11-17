@@ -109,3 +109,30 @@ fn a_copies_folder_the_session_turned_into_a_link_has_its_report_ignored_and_onl
     assert!(fs::symlink_metadata(&dir).is_err(), "the link is removed");
     assert_eq!(fs::read_to_string(elsewhere.join(UNRELATED_FAILURE_FILE)).unwrap(), "not the session's verdict\n", "where it pointed is untouched");
 }
+
+#[test]
+fn a_file_that_cannot_be_copied_is_an_error_and_leaves_no_partial_copies() {
+    let repo = GitFixture::new();
+    let logs = logs("missing-source");
+    fs::write(logs.join("gate.log"), "the gate\n").unwrap();
+
+    let failed = copy_session_files(repo.root(), &[&logs.join("gate.log"), &logs.join("gone.log")]);
+
+    assert!(failed.unwrap_err().contains("gone.log"), "the error names the file");
+    assert!(!repo.root().join(SESSION_FILES_DIR).exists(), "no partial copies are left for a session to read");
+}
+
+#[test]
+fn a_report_that_cannot_be_kept_is_an_error_and_the_copies_still_go() {
+    let repo = GitFixture::new();
+    let logs = logs("unkept-report");
+    fs::write(logs.join("gate.log"), "the gate\n").unwrap();
+    let dir = copy_session_files(repo.root(), &[&logs.join("gate.log")]).unwrap();
+    fs::write(dir.join(UNRELATED_FAILURE_FILE), "billing clock test is flaky\n").unwrap();
+    let missing = logs.join("no-such-folder");
+
+    let failed = finish_session_files(repo.root(), &missing);
+
+    assert!(failed.unwrap_err().contains("unrelated-failure report"), "the loss is reported");
+    assert!(!dir.exists(), "the copies are removed all the same");
+}
