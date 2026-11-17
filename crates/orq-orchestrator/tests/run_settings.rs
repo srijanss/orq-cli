@@ -752,3 +752,31 @@ fn allowed_tools_are_permission_rules_the_private_file_and_environment_override(
         assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Invalid { .. })), "{bad}");
     }
 }
+
+#[test]
+fn the_generated_files_and_their_rebuild_command_for_a_rebase_come_from_a_rebase_table() {
+    let r = repo("rebase");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!((s.rebase_generated, s.rebase_rebuild), (None, None));
+
+    shared(
+        &r,
+        "gate = [\"true\"]\n[rebase]\ngenerated = [\"web/app.js\", \"web/sw.js\"]\nrebuild = [\"node\", \"build.mjs\"]\n",
+    );
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.rebase_generated, Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()]));
+    assert_eq!(s.rebase_rebuild, Some(vec!["node".to_string(), "build.mjs".to_string()]));
+
+    // The private file wins key by key inside the table too.
+    private(&r, "[rebase]\nrebuild = [\"make\", \"assets\"]\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(s.rebase_generated, Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()]));
+    assert_eq!(s.rebase_rebuild, Some(vec!["make".to_string(), "assets".to_string()]));
+
+    assert!(invalid("[rebase]\nrebuild = \"node build.mjs\"\n", "rebase-shell").contains("rebase.rebuild"));
+    assert!(invalid("[rebase]\nrebuild = []\n", "rebase-empty").contains("rebase.rebuild"));
+    assert!(invalid("[rebase]\ngenerated = [\"\"]\n", "rebase-blank").contains("rebase.generated"));
+    assert!(invalid("[rebase]\ngenerated = \"a.js\"\n", "rebase-str").contains("rebase.generated"));
+    assert!(invalid("[rebase]\nother = 1\n", "rebase-unknown").contains("rebase.other"));
+    assert!(invalid("rebase = 1\n", "rebase-plain").contains("rebase"));
+}

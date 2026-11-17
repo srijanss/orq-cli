@@ -1393,12 +1393,58 @@ fn stages(
         }
         Ok(None)
     };
+    // A rebase stopped on a conflict: a session of the implementer resolves it and finishes the
+    // rebase; `Some` with how the run stops when it does not. A published branch is the user's own
+    // checkout, never edited by an agent.
+    let resolve_conflict = |reason: String| -> Result<Option<Report>, StoreError> {
+        if options.publish {
+            return stopped(Ending::Blocked, reason).map(Some);
+        }
+        let task = orq_orchestrator::conflict_fix_task(
+            store,
+            run_id,
+            settings.rebase_generated.as_deref().unwrap_or_default(),
+            settings.rebase_rebuild.as_deref(),
+        )?;
+        let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+        let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("rebase-fix.done"));
+        if options.interactive {
+            hook_needs_input(worktree, run_id, &options.project.root, marker.as_deref()).iter().for_each(|note| eprintln!("orq: {note}"));
+        }
+        let args = adapter_for(&options.implementer.harness)
+            .and_then(|adapter| {
+                adapter.fix_argv(&FixRequest {
+                    implementer: spec(&implementer),
+                    task: &task,
+                    exit_marker: marker.as_deref().and_then(Path::to_str),
+                    attended: options.interactive,
+                    allowed_commands: &allowed_commands,
+                })
+            })
+            .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+        let session = ImplementSession {
+            program: claude_program,
+            args: &args,
+            env: database_env,
+            cwd: worktree,
+            session_id: None,
+            log: &logs.join("rebase-fix.log"),
+            terminal: options.interactive,
+            exit_marker: marker.as_deref(),
+        };
+        match orq_orchestrator::fix_rebase_conflicts(store, run_id, &session)? {
+            orq_orchestrator::ConflictFixOutcome::Resolved => Ok(None),
+            orq_orchestrator::ConflictFixOutcome::StillBlocked { reason } => stopped(Ending::Blocked, reason).map(Some),
+        }
+    };
     if !done("gate") {
         if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
             return paused("rebase");
         }
         if let RebaseOutcome::Conflict { reason } = rebase_onto_target(store, run_id, options.rebase)? {
-            return stopped(Ending::Blocked, reason);
+            if let Some(stop) = resolve_conflict(reason)? {
+                return Ok(stop);
+            }
         }
         if let Some(stop) = check()? {
             return Ok(stop);
@@ -1481,8 +1527,11 @@ fn stages(
                 );
             }
             retries += 1;
+            // A conflict resolved here is checked by the gate again before the next merge attempt.
             if let RebaseOutcome::Conflict { reason } = orq_orchestrator::rebase_onto_commit(store, run_id, &base_sha)? {
-                return stopped(Ending::Blocked, reason);
+                if let Some(stop) = resolve_conflict(reason)? {
+                    return Ok(stop);
+                }
             }
             if let Some(stop) = check()? {
                 return Ok(stop);

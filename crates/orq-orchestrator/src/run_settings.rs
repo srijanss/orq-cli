@@ -73,6 +73,10 @@ pub struct RunSettings {
     /// The implement session may run the full suite itself, for a project whose gate is not one (off when
     /// unset: the session is told the gate runs it).
     pub full_suite_in_session: Option<bool>,
+    /// `[rebase] generated`: the files a rebase's conflict session rebuilds instead of merging by hand.
+    pub rebase_generated: Option<Vec<String>>,
+    /// `[rebase] rebuild`: the command that rebuilds the generated files.
+    pub rebase_rebuild: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +126,8 @@ struct Layer {
     compact_window: Option<u32>,
     allowed_tools: Option<Vec<String>>,
     full_suite_in_session: Option<bool>,
+    rebase_generated: Option<Vec<String>>,
+    rebase_rebuild: Option<Vec<String>>,
 }
 
 impl Layer {
@@ -153,6 +159,8 @@ impl Layer {
             compact_window: self.compact_window.or(lower.compact_window),
             allowed_tools: self.allowed_tools.or(lower.allowed_tools),
             full_suite_in_session: self.full_suite_in_session.or(lower.full_suite_in_session),
+            rebase_generated: self.rebase_generated.or(lower.rebase_generated),
+            rebase_rebuild: self.rebase_rebuild.or(lower.rebase_rebuild),
         }
     }
 }
@@ -200,6 +208,8 @@ pub fn load_run_settings(
         compact_window: merged.compact_window,
         allowed_tools: merged.allowed_tools,
         full_suite_in_session: merged.full_suite_in_session,
+        rebase_generated: merged.rebase_generated,
+        rebase_rebuild: merged.rebase_rebuild,
     })
 }
 
@@ -348,6 +358,10 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
         .map_err(|err: toml_edit::TomlError| invalid(label, err.to_string()))?;
     let mut layer = Layer::default();
     for (key, item) in doc.iter() {
+        if key == "rebase" {
+            read_rebase_table(item, label, &mut layer)?;
+            continue;
+        }
         let value = item
             .as_value()
             .ok_or_else(|| invalid(label, format!("{key} must be a plain value")))?;
@@ -487,6 +501,38 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
         }
     }
     Ok(layer)
+}
+
+/// The `[rebase]` table: `generated`, a list of paths, and `rebuild`, a command.
+fn read_rebase_table(item: &toml_edit::Item, label: &str, layer: &mut Layer) -> Result<(), SettingsError> {
+    let table = item
+        .as_table_like()
+        .ok_or_else(|| invalid(label, "rebase must be a table".to_string()))?;
+    for (key, item) in table.iter() {
+        let bad = |reason: &str| invalid(label, format!("rebase.{key} {reason}"));
+        let value = item.as_value().ok_or_else(|| bad("must be a plain value"))?;
+        match key {
+            "generated" => layer.rebase_generated = Some(paths(&json_of(value)).map_err(|r| bad(&r))?),
+            "rebuild" => layer.rebase_rebuild = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
+            _ => return Err(bad("is not a setting")),
+        }
+    }
+    Ok(())
+}
+
+/// A list, possibly empty, of non-empty one-line paths.
+fn paths(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    value
+        .as_array()
+        .ok_or("must be a list of paths")?
+        .iter()
+        .map(|path| match path.as_str() {
+            Some(path) if path.trim().is_empty() => Err("must not hold an empty path".to_string()),
+            Some(path) if path.chars().any(char::is_control) => Err("must hold one-line paths".to_string()),
+            Some(path) => Ok(path.to_string()),
+            None => Err("must hold only strings".to_string()),
+        })
+        .collect()
 }
 
 fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsError> {

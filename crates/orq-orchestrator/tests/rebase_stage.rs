@@ -171,11 +171,11 @@ fn the_run_branch_is_rebased_onto_the_fetched_target_and_its_sha_recorded() {
 }
 
 #[test]
-fn a_conflict_blocks_the_run_and_leaves_the_worktree_mid_rebase() {
+fn a_conflict_is_recorded_with_its_files_and_target_and_leaves_the_worktree_mid_rebase() {
     let w = world("conflict", None);
     fs::write(w.worktree.join("a.txt"), "mine\n").unwrap();
     git(&w.worktree, &["commit", "-q", "-am", "edit a"]);
-    advance_target(&w, "a.txt", "theirs\n");
+    let target = advance_target(&w, "a.txt", "theirs\n");
 
     let outcome = rebase_onto_target(&w.store, "run-1", true).unwrap();
 
@@ -189,9 +189,11 @@ fn a_conflict_blocks_the_run_and_leaves_the_worktree_mid_rebase() {
     );
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, "run.blocked");
+    assert_eq!(events[0].kind, "rebase.conflict", "a conflict is not yet a block: a session may resolve it");
     assert_eq!(events[0].stage.as_deref(), Some("rebase"));
-    assert_eq!(events[0].payload["reason"], reason.as_str());
+    assert_eq!(events[0].payload["files"], serde_json::json!(["a.txt"]));
+    assert_eq!(events[0].payload["onto"], target.as_str());
+    assert_eq!(events[0].payload["where"], "before_gate");
 }
 
 #[test]
@@ -440,4 +442,25 @@ fn a_commit_to_rebase_onto_that_is_not_a_commit_id_is_an_error_and_nothing_runs(
     assert!(!marker.exists(), "an option was run");
     assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), head, "the branch was not touched");
     assert!(kinds(&w).is_empty(), "nothing was recorded");
+}
+
+#[test]
+fn a_conflict_rebasing_onto_a_local_commit_is_recorded_as_at_the_merge() {
+    let w = world("local-conflict", None);
+    git(&w.worktree, &["checkout", "-q", "main"]);
+    fs::write(w.worktree.join("mine.txt"), "local\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "local mine"]);
+    let local = git(&w.worktree, &["rev-parse", "HEAD"]);
+    git(&w.worktree, &["checkout", "-q", "fix--COM-02"]);
+
+    let outcome = rebase_onto_commit(&w.store, "run-1", &local).unwrap();
+
+    assert!(matches!(outcome, RebaseOutcome::Conflict { .. }), "{outcome:?}");
+    let events = w.store.events("run-1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "rebase.conflict");
+    assert_eq!(events[0].payload["files"], serde_json::json!(["mine.txt"]));
+    assert_eq!(events[0].payload["onto"], local.as_str());
+    assert_eq!(events[0].payload["where"], "at_merge");
 }

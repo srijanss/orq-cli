@@ -491,7 +491,7 @@ fn a_merge_local_run_whose_base_moved_is_rebased_onto_it_checked_again_and_then_
 }
 
 #[test]
-fn a_merge_local_run_whose_rebase_onto_the_moved_base_conflicts_is_blocked_with_main_left_alone() {
+fn a_merge_local_run_whose_rebase_conflict_its_session_leaves_unresolved_is_blocked_with_main_left_alone() {
     let w = world("merge-moved-conflict");
     // Local main gets feature.txt too, with other contents: the rebase onto local main conflicts.
     local_main_moves_while_implementing(&w, "feature.txt", "theirs\n");
@@ -501,10 +501,12 @@ fn a_merge_local_run_whose_rebase_onto_the_moved_base_conflicts_is_blocked_with_
     let local_main = moved_main(&w, "feature.txt");
 
     assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
-    assert!(text(&out.stderr).contains("stopped on a conflict"), "the reason is given: {}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("is still in progress after the fix session"), "the reason is given: {}", text(&out.stderr));
     let id = store(&w).run_ids().unwrap().remove(0);
     let record = store(&w).load(&id).unwrap();
     assert_eq!(ending(&w, &id).as_deref(), Some("blocked"));
+    let conflict = store(&w).events(&id).unwrap().into_iter().find(|e| e.kind == "rebase.conflict").expect("the conflict is recorded");
+    assert_eq!(conflict.payload["where"], "at_merge");
     assert_eq!(rev(w.repo.root(), "refs/heads/main"), local_main, "main did not move");
     assert_eq!(gate_bases(&seen).len(), 1, "the gate is not run on a branch mid-rebase");
     assert!(record.worktree.exists(), "the run's worktree is kept");

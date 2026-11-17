@@ -67,6 +67,61 @@ pub fn fix_rebase_conflicts(
     Ok(ConflictFixOutcome::StillBlocked { reason })
 }
 
+/// The task of the session that resolves the conflict a run's rebase stopped on: where the rebase
+/// stands, the conflicting files with the commits of each side that touched them, and how to
+/// resolve it. `generated` and `rebuild` are the project's generated files and the command that
+/// rebuilds them, when its run settings name them.
+pub fn conflict_fix_task(
+    store: &RunStore,
+    run_id: &str,
+    generated: &[String],
+    rebuild: Option<&[String]>,
+) -> Result<String, StoreError> {
+    let record = store.load(run_id)?;
+    let onto = rebase_onto(&record)?;
+    let unmerged = git_raw(&record.worktree, &["diff", "--name-only", "--diff-filter=U"])?;
+    let files: Vec<&str> = unmerged.stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    // The run branch's ref still names the head the rebase started from until the rebase ends.
+    let branch = format!("refs/heads/{}", record.branch);
+    let commits = |range: String| -> Result<String, StoreError> {
+        let mut args = vec!["log", "--no-decorate", "--format=%h %s", &range, "--"];
+        args.extend(files.iter().copied());
+        let log = git_raw(&record.worktree, &args)?;
+        let text = log.stdout.trim();
+        Ok(if !log.success || text.is_empty() { "(none)".to_string() } else { text.to_string() })
+    };
+    let theirs = commits(format!("{branch}..{onto}"))?;
+    let ours = commits(format!("{onto}..{branch}"))?;
+    let target = &record.target_branch;
+    let listed = |names: &[String]| names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ");
+    let generated_rule = match (generated.is_empty(), rebuild) {
+        (false, Some(command)) => format!(
+            "This project's generated files are {}; rebuild them with `{}`, then add them.",
+            listed(generated),
+            command.join(" ")
+        ),
+        (true, Some(command)) => format!("This project rebuilds its generated files with `{}`; run it, then add them.", command.join(" ")),
+        (false, None) => format!("This project's generated files are {}; work out from the repository how they are rebuilt.", listed(generated)),
+        (true, None) => "Work out from the repository which of the conflicting files are generated and how they are rebuilt.".to_string(),
+    };
+    Ok(format!(
+        "The rebase of this run's branch onto {target} stopped on a conflict. It replays the branch {branch_name} onto {onto}, \
+         where {target} is now.\n\n\
+         Conflicting files:\n{files}\n\n\
+         Commits on {target} since this run's base that touched them:\n{theirs}\n\n\
+         This run's commits that touched them:\n{ours}\n\n\
+         Resolve the conflicts in this worktree:\n\
+         - Keep both sides' behaviour. When both sides added the same name (an event kind, a function, a field, a CSS class) \
+         with different meanings, keep {target}'s and rename this run's, everywhere this run's commits use it, tests included.\n\
+         - Generated files are never merged by hand: rebuild them from their sources. {generated_rule}\n\
+         - Finish with `git rebase --continue` until the rebase is done; when it stops on a later commit, resolve that one too. \
+         Do not skip or drop commits, do not abort the rebase, and do not change commits that did not conflict.\n\
+         - You may compile, but do not run the tests: the gate runs them after you.",
+        branch_name = record.branch,
+        files = files.iter().map(|file| format!("- {file}")).collect::<Vec<_>>().join("\n"),
+    ))
+}
+
 /// The rebase really finished: the run branch is checked out, no entry is
 /// unmerged, and the commit it was replayed onto is part of its history.
 fn completed_onto(record: &RunRecord, onto: &str) -> Result<bool, StoreError> {

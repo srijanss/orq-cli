@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use orq_orchestrator::{
-    fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome, ImplementSession, RebaseOutcome,
+    conflict_fix_task, fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome, ImplementSession, RebaseOutcome,
     RunRecord, RunStore,
 };
 
@@ -261,7 +261,7 @@ fn a_failing_session_with_the_conflict_left_keeps_the_run_blocked_and_records_th
     assert_eq!(
         event_kinds(&w),
         [
-            "run.blocked",
+            "rebase.conflict",
             "stage.started",
             "stage.failed",
             "run.blocked"
@@ -294,7 +294,7 @@ fn a_session_that_cannot_start_keeps_the_run_blocked_and_records_the_failure() {
     assert_eq!(
         event_kinds(&w),
         [
-            "run.blocked",
+            "rebase.conflict",
             "stage.started",
             "stage.failed",
             "run.blocked"
@@ -317,7 +317,7 @@ fn a_session_that_finishes_the_rebase_and_then_exits_nonzero_is_still_resolved()
     assert_eq!(
         event_kinds(&w),
         [
-            "run.blocked",
+            "rebase.conflict",
             "stage.started",
             "stage.failed",
             "rebase.completed"
@@ -463,4 +463,35 @@ fn a_worktree_that_is_not_mid_rebase_is_an_error_and_no_session_runs() {
     assert!(result.is_err());
     assert!(!marker.exists(), "the session must not start");
     assert!(w.store.events("run-1").unwrap().is_empty());
+}
+
+#[test]
+fn the_task_names_the_conflicting_files_both_sides_commits_the_rules_and_the_rebuild_command() {
+    let w = world("task", true);
+    let generated = vec!["web/app.js".to_string(), "web/sw.js".to_string()];
+    let rebuild = vec!["node".to_string(), "build.mjs".to_string()];
+
+    let task = conflict_fix_task(&w.store, "run-1", &generated, Some(&rebuild)).unwrap();
+
+    assert!(task.starts_with("The rebase of this run's branch onto main"), "{task}");
+    let onto = git(&w.root.join("remote.git"), &["rev-parse", "main"]);
+    assert!(task.contains(&onto), "the commit replayed onto: {task}");
+    assert!(task.contains("a.txt"), "the conflicting file: {task}");
+    assert!(task.contains("target a"), "the target's commit that touched it: {task}");
+    assert!(task.contains("edit a"), "the run's commit that touched it: {task}");
+    assert!(task.contains("keep main's and rename this run's"), "the rename rule: {task}");
+    assert!(task.contains("web/app.js") && task.contains("web/sw.js"), "the generated files: {task}");
+    assert!(task.contains("`node build.mjs`"), "the rebuild command: {task}");
+    assert!(task.contains("git rebase --continue"), "{task}");
+    assert!(task.contains("do not abort"), "{task}");
+}
+
+#[test]
+fn without_generated_files_or_a_rebuild_command_the_task_asks_the_session_to_work_them_out() {
+    let w = world("task-plain", true);
+
+    let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
+
+    assert!(task.contains("Generated files are never merged by hand"), "{task}");
+    assert!(task.contains("Work out from the repository which of the conflicting files are generated"), "{task}");
 }

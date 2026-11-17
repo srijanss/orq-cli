@@ -14,7 +14,7 @@ pub enum RebaseOutcome {
     Rebased { target_sha: String },
     /// Rebasing is switched off for this run.
     Skipped,
-    /// The rebase stopped on conflicts; the run is blocked.
+    /// The rebase stopped on conflicts, recorded as `rebase.conflict`; the worktree is mid-rebase.
     Conflict { reason: String },
 }
 
@@ -68,7 +68,7 @@ pub fn rebase_onto_target(
     }
     let target_sha = target_sha.stdout.trim().to_string();
 
-    rebase_record_onto(store, &record, target_sha)
+    rebase_record_onto(store, &record, target_sha, "before_gate")
 }
 
 /// Rebase `run_id`'s branch onto `target_sha`, a commit the repository already has, without
@@ -82,7 +82,7 @@ pub fn rebase_onto_commit(store: &RunStore, run_id: &str, target_sha: &str) -> R
         return Err(StoreError::Corrupt(format!("{target_sha:?} is not the id of a commit to rebase onto")));
     }
     on_run_branch(&record)?;
-    rebase_record_onto(store, &record, target_sha.to_string())
+    rebase_record_onto(store, &record, target_sha.to_string(), "at_merge")
 }
 
 /// Only ever rewrite the run's own branch: a switched or detached HEAD is left alone.
@@ -97,8 +97,10 @@ fn on_run_branch(record: &RunRecord) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Rebase the run's branch onto `target_sha`: recorded when done, the run blocked on a conflict.
-fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String) -> Result<RebaseOutcome, StoreError> {
+/// Rebase the run's branch onto `target_sha`: recorded when done. A conflict is recorded with its
+/// files, the commit being replayed onto and `place` (`before_gate` or `at_merge`); it is not a
+/// block yet, as a session may still resolve it.
+fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, place: &str) -> Result<RebaseOutcome, StoreError> {
     let worktree = record.worktree.as_path();
     let rebased = git_raw(worktree, &["rebase", &target_sha])?;
     if rebased.success {
@@ -121,11 +123,12 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String) 
         "the rebase onto {} stopped on a conflict",
         record.target_branch
     );
+    let files: Vec<&str> = unmerged.stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
     record_event(
         store,
         record,
-        "run.blocked",
-        serde_json::json!({ "reason": reason }),
+        "rebase.conflict",
+        serde_json::json!({ "files": files, "onto": target_sha, "where": place }),
     )?;
     Ok(RebaseOutcome::Conflict { reason })
 }
