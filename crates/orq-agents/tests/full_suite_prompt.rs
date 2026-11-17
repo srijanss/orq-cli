@@ -67,7 +67,6 @@ fn a_fix_session_is_never_told_to_leave_the_full_suite_to_the_gate() {
         let fix = FixRequest {
             implementer: spec(harness, "opus"),
             task: "The gate failed. Fix it.",
-            logs_dir: "/logs",
             exit_marker: Some("/logs/gate-fix.done"),
             attended: false,
             allowed_commands: &[],

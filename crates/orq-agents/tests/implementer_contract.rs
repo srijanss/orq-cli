@@ -144,7 +144,7 @@ fn each_harness_names_the_skill_and_the_thinking_flag_its_own_way_and_only_claud
 }
 
 fn fix_request<'a>(harness: &str, model: &str, exit_marker: Option<&'a str>, attended: bool) -> orq_agents::FixRequest<'a> {
-    orq_agents::FixRequest { implementer: spec(harness, model), task: "The gate failed. Fix it.", logs_dir: "/state/logs/run-1", exit_marker, attended, allowed_commands: &[] }
+    orq_agents::FixRequest { implementer: spec(harness, model), task: "The gate failed. Fix it.", exit_marker, attended, allowed_commands: &[] }
 }
 
 /// A headless fix session is refused what its run does not allow just as an implementer is, so it is
@@ -232,17 +232,16 @@ fn a_fix_session_refuses_a_task_its_program_would_read_as_an_option() {
     });
 }
 
+/// A fix session reads the run's logs from copies in its worktree, so it is given no other folder:
+/// Claude Code asks whether to trust a folder passed with `--add-dir`, and that would stop the session.
 #[test]
-fn a_claude_fix_session_may_read_the_logs_without_its_prompt_becoming_another_directory() {
-    let argv = adapter_for("claude").unwrap().fix_argv(&fix_request("claude", "opus", None, false)).unwrap();
-
-    // `--add-dir` takes any number of values, so what follows it must be another option.
-    let at = argv.iter().position(|a| a == "--add-dir").unwrap();
-    assert_eq!(argv[at + 1], "/state/logs/run-1");
-    assert!(argv[at + 2].starts_with('-'), "{argv:?}");
-
-    let leading = fix_request("claude", "opus", None, false);
-    assert!(adapter_for("claude").unwrap().fix_argv(&orq_agents::FixRequest { logs_dir: "-rf", ..leading }).is_err());
+fn a_fix_session_is_given_no_folder_outside_its_worktree() {
+    for_each_harness(|harness, model| {
+        for attended in [false, true] {
+            let argv = adapter_for(harness).unwrap().fix_argv(&fix_request(harness, model, None, attended)).unwrap();
+            assert!(!argv.iter().any(|a| a == "--add-dir"), "{harness}: {argv:?}");
+        }
+    });
 }
 
 #[test]

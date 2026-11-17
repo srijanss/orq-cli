@@ -38,6 +38,7 @@ mod review_observe;
 mod review_request;
 mod run_list;
 mod run_settings;
+mod session_files;
 mod run_activity;
 mod run_status;
 mod stop;
@@ -81,6 +82,7 @@ pub use kept_worktrees::{
     RunIndex,
 };
 pub use local_files::{carry_local_files, LocalFiles};
+pub use session_files::{copy_session_files, finish_session_files, remove_session_files, SESSION_FILES_DIR};
 pub use needs_input::{parse_needs_input, parse_waiting, prompt_was_submitted, question_was_answered, record_input_given, record_needs_input, record_prompt_submitted, NeedsInput};
 pub use notify::{
     notification_message, review_ready_message, send_notification, send_notification_with, wants_notification,

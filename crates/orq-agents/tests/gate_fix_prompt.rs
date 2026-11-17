@@ -18,7 +18,6 @@ fn each_fix_prompt(check: impl Fn(&str, bool, Option<&str>, &str)) {
                 let fix = FixRequest {
                     implementer: spec(harness, model),
                     task: "The gate failed. Fix it.",
-                    logs_dir: "/logs",
                     exit_marker: marker,
                     attended,
                     allowed_commands: &[],

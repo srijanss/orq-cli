@@ -442,7 +442,7 @@ fn a_red_gate_opens_its_fix_session_on_the_terminal_and_closes_it_when_the_sessi
     assert_eq!(std::fs::read_to_string(&fix_seen).unwrap_or_default().trim(), "tty", "{drawn}");
     let args = std::fs::read_to_string(&fix_args).unwrap();
     assert!(!format!(" {args} ").contains(" -p "), "an attended fix session is not headless: {args}");
-    assert!(args.contains("--add-dir") && args.contains("/logs/"), "the session may read the logs: {args}");
+    assert!(!args.contains("--add-dir") && args.contains(".claude/orq-run/"), "the session reads the logs' copies in its worktree: {args}");
     assert!(!late.exists(), "the session was closed by its marker");
     assert!(!drawn.contains("gate_fix"), "nothing is drawn over the session: {drawn}");
 }
@@ -484,7 +484,7 @@ fn a_red_ci_opens_its_fix_session_on_the_terminal_then_pushes_the_fix_and_waits_
     assert_eq!(std::fs::read_to_string(&fix_seen).unwrap_or_default().trim(), "tty", "{drawn}");
     let fix = std::fs::read_to_string(&fix_args).unwrap();
     assert!(!format!(" {fix} ").contains(" -p "), "an attended fix session is not headless: {fix}");
-    assert!(fix.contains("--add-dir") && fix.contains("/logs/"), "the session may read the logs: {fix}");
+    assert!(!fix.contains("--add-dir") && fix.contains(".claude/orq-run/"), "the session reads the logs' copies in its worktree: {fix}");
     assert!(!late.exists(), "the session was closed by its marker");
     assert!(!drawn.contains("ci_fix"), "nothing is drawn over the session: {drawn}");
     // The second wait is about another commit: the fix was pushed before CI was asked again.

@@ -813,7 +813,16 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
     let model = with_run_model(&options.implementer, options, settings).model;
     // The explainer is reachable from the app only when the run's own session is.
     let name = (settings.remote_control != Some(false)).then(|| format!("{}-explain", record.branch));
-    let Some(logs_dir) = logs.to_str() else { return };
+    // The explainer reads copies of the run's logs in the worktree, so it needs nothing outside it. It
+    // outlives the run, so its copies stay until the worktree goes or a later session replaces them.
+    let copies = match copy_run_logs(&record.worktree, logs) {
+        Ok(copies) => copies,
+        Err(err) => {
+            eprintln!("orq: cannot start the failure explainer: {err}");
+            return;
+        }
+    };
+    let Some(logs_dir) = copies.to_str() else { return };
     let argv = match orq_agents::explain_failure_argv(&model, name.as_deref(), detail, logs_dir) {
         Ok(argv) => argv,
         Err(err) => {
@@ -831,6 +840,21 @@ fn explain_failure(options: &Options<'_>, settings: &orq_orchestrator::RunSettin
     if let Err(err) = command.spawn() {
         eprintln!("orq: cannot start the failure explainer: {err}");
     }
+}
+
+/// Copy the run's logs in `logs` into `worktree`'s session files, but for the explainer's own log,
+/// which it is writing. Returns where the copies are.
+fn copy_run_logs(worktree: &Path, logs: &Path) -> Result<PathBuf, String> {
+    let entries = std::fs::read_dir(logs).map_err(|err| format!("cannot read {}: {err}", logs.display()))?;
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "log") && path.file_name().is_some_and(|name| name != "explain.log"))
+        .collect();
+    files.sort();
+    let files: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+    orq_orchestrator::copy_session_files(worktree, &files)
 }
 
 /// Tell the configured notifier how a run ended. Best effort: a notifier that fails never
@@ -1244,8 +1268,10 @@ fn stages(
         *ran_gate.borrow_mut() = Some(gate.clone());
         let gate_log = logs.join("gate.log");
         let fix_log = logs.join("gate-fix.log");
-        // Where a fix session says that the failure is not the run's; the session is told in its environment too.
-        let unrelated_report = logs.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
+        // The session reads a copy of the gate log in its worktree, and says there that the failure is not
+        // the run's; it is told the report's place in its environment too.
+        let session_files = worktree.join(orq_orchestrator::SESSION_FILES_DIR);
+        let unrelated_report = session_files.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
         let mut fix_env = database_env.to_vec();
         fix_env.push(("ORQ_UNRELATED_FAILURE_FILE".to_string(), unrelated_report.to_string_lossy().into_owned()));
         // A red gate gets a fix session with the run's environment, then runs again. A published branch is
@@ -1257,14 +1283,14 @@ fn stages(
             "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix. \
              If the failure has nothing to do with your changes (a flaky test, a test already broken on the target branch, a broken environment), do not fix it: \
              write a line saying what fails and why it is not caused by your changes to {} and stop.",
-            gate_log.display(),
+            session_files.join("gate.log").display(),
             unrelated_report.display()
         );
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
             run_gate_with_fixes_then(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
                 fix_features.before("gate_fix");
-                let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
+                orq_orchestrator::copy_session_files(worktree, &[gate_log.as_path()]).map_err(StoreError::Corrupt)?;
                 // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
                 let allowed_commands = recheck_permissions(store, record, settings, logs)?;
                 if options.interactive {
@@ -1275,7 +1301,6 @@ fn stages(
                         adapter.fix_argv(&FixRequest {
                             implementer: spec(&implementer),
                             task: &task,
-                            logs_dir,
                             exit_marker: fix_marker.as_deref().and_then(Path::to_str),
                             attended: options.interactive,
                             allowed_commands: &allowed_commands,
@@ -1292,7 +1317,13 @@ fn stages(
                     terminal: options.interactive,
                     exit_marker: fix_marker.clone(),
                 })
-            }, || fix_features.settle())?;
+            }, || {
+                fix_features.settle();
+                // The report the session left in its copies is kept where the gate loop reads it.
+                if let Err(err) = orq_orchestrator::finish_session_files(worktree, logs) {
+                    eprintln!("orq: {err}");
+                }
+            })?;
         match gate_outcome {
             GateFixOutcome::Failed { step, exit_code, .. } => {
                 return stopped_now(Ending::Failed, format!("the gate failed at step {step} (exit {exit_code:?})"));
@@ -1331,6 +1362,10 @@ fn stages(
     let clean_up = |ready: bool, ci: &CiOutcome| -> Result<(), StoreError> {
         if options.publish {
             return Ok(());
+        }
+        // Copies a fix session could not have removed go before the worktree is kept or removed.
+        if let Err(err) = orq_orchestrator::remove_session_files(worktree) {
+            eprintln!("orq: {err}");
         }
         if cleanup_worktree(store, run_id, ready, ci)? == orq_orchestrator::CleanupOutcome::Removed {
             let keep = settings.keep_test_db.unwrap_or(false);
@@ -1485,18 +1520,19 @@ fn stages(
     } else {
         // A CI fix is checked with the gate the pushed head passed, whatever a fix changes in what a gate would detect.
         let gate = last_gate()?;
-        // Where a fix session says that the failure is not the run's; the session is told in its environment too.
-        let unrelated_report = logs.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
+        // The session reads a copy of the CI failure in its worktree, and says there that the failure is not
+        // the run's; it is told the report's place in its environment too.
+        let session_files = worktree.join(orq_orchestrator::SESSION_FILES_DIR);
+        let unrelated_report = session_files.join(orq_orchestrator::UNRELATED_FAILURE_FILE);
         let mut fix_env = database_env.to_vec();
         fix_env.push(("ORQ_UNRELATED_FAILURE_FILE".to_string(), unrelated_report.to_string_lossy().into_owned()));
         let task = format!(
-            "CI failed on the pushed branch. The newest ci-failure-*.log in {} lists the failing checks. Read it, get each check's log with {provider_cli}, fix the cause in this worktree and commit the fix. \
+            "CI failed on the pushed branch. The ci-failure-*.log in {} lists the failing checks. Read it, get each check's log with {provider_cli}, fix the cause in this worktree and commit the fix. \
              If the failure has nothing to do with your changes (a flaky check, a check already failing on the target branch, a broken CI environment), do not fix it: \
              write a line saying what fails and why it is not caused by your changes to {} and stop.",
-            logs.display(),
+            session_files.display(),
             unrelated_report.display()
         );
-        let logs_dir = logs.to_str().ok_or_else(|| StoreError::Corrupt(format!("the logs folder {} is not valid text", logs.display())))?;
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
         let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("ci-fix.done"));
         let session_args = || {
@@ -1511,7 +1547,6 @@ fn stages(
                     adapter.fix_argv(&FixRequest {
                         implementer: spec(&implementer),
                         task: &task,
-                        logs_dir,
                         exit_marker: fix_marker.as_deref().and_then(Path::to_str),
                         attended: options.interactive,
                         allowed_commands: &allowed_commands,
@@ -1529,7 +1564,13 @@ fn stages(
             push_log: logs.join("push.log"),
             report: &|head, ci| build_review_report(store, record, options, &steps_of(&gate), head, ci, logs),
             session_args: &session_args,
-            session_ended: &|| fix_features.settle(),
+            session_ended: &|| {
+                fix_features.settle();
+                // The report the session left in its copies is kept where the CI fix loop reads it.
+                if let Err(err) = orq_orchestrator::finish_session_files(worktree, logs) {
+                    eprintln!("orq: {err}");
+                }
+            },
             session: FixSessionSpec {
                 program: claude_program.to_string(),
                 args: Vec::new(),
@@ -1745,7 +1786,8 @@ impl CiFixSteps for PipelineCiSteps<'_> {
         ci_failure_text(self.provider_cli, failing)
     }
 
-    fn fix_session(&mut self, _attempt: u32, _failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
+    fn fix_session(&mut self, _attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
+        orq_orchestrator::copy_session_files(&self.session.cwd, &[failure_log]).map_err(StoreError::Corrupt)?;
         let args = (self.session_args)()?;
         Ok(FixSessionSpec { args, ..self.session.clone() })
     }

@@ -105,8 +105,6 @@ pub struct FixRequest<'a> {
     pub implementer: ModelSpec,
     /// What went wrong and what to do, in words.
     pub task: &'a str,
-    /// The run's logs, which lie outside the worktree the session starts in.
-    pub logs_dir: &'a str,
     /// A file the session creates when it is finished, so orq can close it; `None` asks for nothing.
     pub exit_marker: Option<&'a str>,
     /// Someone is watching this session in a terminal and can answer it; `false` starts it headless.
@@ -329,8 +327,6 @@ impl HarnessAdapter for Claude {
     fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
         let prompt = fix_prompt("claude", request)?;
         let mut argv = if request.attended { vec!["--permission-mode".to_string(), "auto".to_string()] } else { vec!["-p".to_string()] };
-        // `--add-dir` takes any number of values, so an option has to follow it before the prompt.
-        argv.extend(["--add-dir".to_string(), request.logs_dir.to_string()]);
         argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
         Ok(argv)
     }
@@ -373,9 +369,6 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
         return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
     }
     plain("implementer model", &request.implementer.model)?;
-    if !request.logs_dir.starts_with('/') || request.logs_dir.chars().any(char::is_control) {
-        return Err(AdapterError::InvalidValue { field: "logs", value: request.logs_dir.to_string() });
-    }
     let Some(task) = checked_context(request.task)? else {
         return Err(AdapterError::InvalidValue { field: "task", value: String::new() });
     };
