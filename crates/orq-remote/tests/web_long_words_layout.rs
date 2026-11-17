@@ -225,3 +225,12 @@ fn the_browser_is_started_headless_and_a_launch_that_fails_is_reported() {
     let error = out.result["error"].as_str().unwrap_or_default();
     assert!(error.contains("exit") && error.contains("cannot open display"), "{}", out.result);
 }
+
+#[test]
+fn a_browser_that_never_finishes_is_stopped_at_the_deadline() {
+    let browser = fake_browser("sleep 30 &\nsleep 30");
+    let started = std::time::Instant::now();
+    let out = web_chromium::measure_within(&browser, 390, "/dashboard", &[], json!([]), "", std::time::Duration::from_secs(1));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
+    assert!(out.result["error"].as_str().unwrap_or_default().contains("timed out"), "{}", out.result);
+}

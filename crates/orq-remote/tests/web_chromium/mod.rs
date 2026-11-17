@@ -156,6 +156,42 @@ pub fn measure(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps
 
 /// As `measure`, with `init` run as a script before the page's own.
 pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value, init: &str) -> Measured {
+    measure_within(chromium, width, path, replies, steps, init, std::time::Duration::from_secs(60))
+}
+
+/// Output of a browser run that ended in time, or None when it was stopped at the deadline.
+fn run_until(mut command: Command, deadline: std::time::Duration) -> Option<std::process::Output> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let mut child = command.process_group(0).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let readers = [child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>)].map(|pipe| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // The browser's helpers share its process group; stop them all so the pipes close.
+    let _ = Command::new("kill").arg("-KILL").arg(format!("-{}", child.id())).status();
+    let _ = child.kill();
+    let _ = child.wait();
+    let [out, err] = readers.map(|reader| reader.join().unwrap_or_default());
+    status.map(|status| std::process::Output { status, stdout: out, stderr: err })
+}
+
+pub fn measure_within(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value, init: &str, deadline: std::time::Duration) -> Measured {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let served = Arc::new(Served { replies: replies.to_vec(), init: init.to_string(), unanswered: Mutex::new(Vec::new()) });
@@ -178,19 +214,22 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
         })
     };
     let profile = orq_test_support::process_temp_dir().join(format!("orq-chromium-{port}"));
-    let output = Command::new(chromium)
+    let mut command = Command::new(chromium);
+    command
         .args(["--headless", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--disable-dev-shm-usage"])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--window-size={width},800"))
         .arg("--virtual-time-budget=8000")
         .arg("--dump-dom")
-        .arg(format!("http://127.0.0.1:{port}{path}"))
-        .output()
-        .unwrap();
+        .arg(format!("http://127.0.0.1:{port}{path}"));
+    let output = run_until(command, deadline);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = server.join();
     let _ = std::fs::remove_dir_all(&profile);
     let unanswered = served.unanswered.lock().unwrap().clone();
+    let Some(output) = output else {
+        return Measured { result: json!({"error": format!("{} timed out after {:?} and was stopped", chromium.display(), deadline)}), unanswered };
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Measured { result: json!({"error": format!("{} did not start: {} exit, {}", chromium.display(), output.status, stderr.trim())}), unanswered };
