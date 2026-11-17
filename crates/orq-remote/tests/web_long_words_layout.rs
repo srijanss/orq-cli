@@ -243,14 +243,47 @@ fn a_viewport_wider_than_the_width_asked_for_is_reported_instead_of_measured() {
     assert!(error.contains("980") && error.contains("360"), "{}", out.result);
 }
 
+/// A helper that left the browser's process group, by its pid; stopped when dropped.
+struct EscapedHelper(libc::pid_t);
+
+impl EscapedHelper {
+    /// Waits for the pid the helper wrote once it had left the group.
+    fn from_marker(marker: &Path) -> EscapedHelper {
+        let pid = std::fs::read_to_string(marker).unwrap_or_else(|error| panic!("the helper never left the group ({error}): is setsid installed?"));
+        EscapedHelper(pid.trim().parse().unwrap_or_else(|_| panic!("the helper wrote {pid:?}, not its pid")))
+    }
+
+    fn alive(&self) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(self.0, 0) == 0 }
+    }
+}
+
+impl Drop for EscapedHelper {
+    fn drop(&mut self) {
+        // SAFETY: sends SIGKILL to the helper this test started.
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
+    }
+}
+
+/// A browser that prints a result and exits, leaving behind a helper in its own session that runs
+/// `helper` with the output still open. The helper writes its pid to `<dir>/left` once it has left.
+fn browser_leaving_a_helper(helper: &str) -> std::path::PathBuf {
+    fake_browser(&format!(
+        "left=\"$(dirname \"$0\")/left\"\nrm -f \"$left\"\nsetsid sh -c 'echo $$ > \"$0.tmp\"; mv \"$0.tmp\" \"$0\"; {helper}' \"$left\" &\nwhile [ ! -f \"$left\" ]; do sleep 0.01; done\necho '<pre id=\"result\">{{\"scrollWidth\":390,\"clientWidth\":390,\"offenders\":[]}}</pre>'\nexit 0"
+    ))
+}
+
 #[test]
 fn a_helper_that_leaves_the_browser_group_and_keeps_the_output_open_does_not_hold_up_the_test() {
-    // The helper marks that it has left the group before the browser exits, so it is not stopped with it.
-    let browser = fake_browser("left=\"$(dirname \"$0\")/left\"\nrm -f \"$left\"\nsetsid sh -c 'touch \"$0\"; exec sleep 30' \"$left\" &\nwhile [ ! -f \"$left\" ]; do sleep 0.01; done\necho '<pre id=\"result\">{\"scrollWidth\":390,\"clientWidth\":390,\"offenders\":[]}</pre>'\nexit 0");
+    let browser = browser_leaving_a_helper("exec sleep 30");
     let started = std::time::Instant::now();
     let out = web_chromium::measure_within(&browser, 390, "/dashboard", &[], json!([]), "", std::time::Duration::from_secs(1));
+    let helper = EscapedHelper::from_marker(&browser.with_file_name("left"));
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
-    assert!(out.result.get("error").is_some(), "the output never ended, so nothing counts as measured: {}", out.result);
+    let error = out.result["error"].as_str().unwrap_or_default();
+    assert!(error.ends_with(web_chromium::OUTPUT_LEFT_OPEN), "the browser exited but its output stayed open: {}", out.result);
+    drop(helper);
 }
 
 #[test]

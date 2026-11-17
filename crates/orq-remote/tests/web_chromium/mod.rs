@@ -159,6 +159,9 @@ pub fn measure_with(chromium: &Path, width: u32, path: &str, replies: &[Reply], 
     measure_within(chromium, width, path, replies, steps, init, std::time::Duration::from_secs(60))
 }
 
+/// How a run reads when the browser exited but a helper that left its group kept the output open.
+pub const OUTPUT_LEFT_OPEN: &str = "exited, but its output was still open at the deadline";
+
 /// Output of a browser run that ended, and whose output closed, before the deadline; otherwise why not.
 fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std::process::Output, String> {
     use std::io::Read;
@@ -213,7 +216,7 @@ fn run_until(mut command: Command, deadline: std::time::Duration) -> Result<std:
     while outputs.iter().any(Option::is_none) {
         match received.recv_timeout(ends.saturating_duration_since(std::time::Instant::now())) {
             Ok((index, bytes)) => outputs[index] = Some(bytes),
-            Err(_) => return Err(format!("exited but its output was still open when the {deadline:?} deadline passed")),
+            Err(_) => return Err(OUTPUT_LEFT_OPEN.to_string()),
         }
     }
     let [stdout, stderr] = outputs.map(Option::unwrap_or_default);
