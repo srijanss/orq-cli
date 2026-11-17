@@ -76,8 +76,8 @@ pub fn test_total_line(total: Option<u64>) -> String {
 /// The progress of the latest test run in `text`: the total comes from its [`test_total_line`] and
 /// the count from every result line after it, whichever test binary printed it, so it only goes up.
 /// A run with no known total has none: one binary's `running N tests` says nothing about the suite.
-/// pytest needs no total line: its own collection line starts a count, read from its verbose,
-/// xdist or quiet result lines.
+/// pytest needs no total line: its own collection line (or xdist's workers line) starts a count,
+/// read from its verbose, xdist or quiet result lines.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
     for line in text.lines() {
@@ -119,8 +119,12 @@ fn starting_count(total: u64) -> Option<TestProgress> {
 
 /// The number of tests a pytest collection line says will run: `collected N items`, or the
 /// selected count when some were deselected (`collected N items / D deselected / S selected`).
+/// With xdist (`-n`) the controller collects nothing itself and says `N workers [M items]`.
 fn pytest_total(line: &str) -> Option<u64> {
     let line = line.trim();
+    if let Some(total) = xdist_total(line) {
+        return Some(total);
+    }
     let rest = line.strip_prefix("collecting ... ").unwrap_or(line).strip_prefix("collected ")?;
     let mut parts = rest.split(" / ");
     let (count, unit) = parts.next()?.split_once(' ')?;
@@ -130,6 +134,15 @@ fn pytest_total(line: &str) -> Option<u64> {
     let collected = count.parse::<u64>().ok()?;
     let selected = parts.find_map(|part| part.strip_suffix(" selected")?.parse::<u64>().ok());
     Some(selected.unwrap_or(collected))
+}
+
+/// The item count of xdist's `N workers [M items]` (or `1 worker [1 item]`) line.
+fn xdist_total(line: &str) -> Option<u64> {
+    let (workers, items) = line.strip_suffix(']')?.split_once(" [")?;
+    let (count, unit) = workers.split_once(' ')?;
+    count.parse::<u32>().ok().filter(|_| matches!(unit, "workers" | "worker"))?;
+    let (total, unit) = items.split_once(' ')?;
+    total.parse::<u64>().ok().filter(|_| matches!(unit, "items" | "item"))
 }
 
 /// What pytest prints for a finished test.

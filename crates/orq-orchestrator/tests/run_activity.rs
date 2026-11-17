@@ -454,3 +454,26 @@ fn a_pytest_test_id_in_the_newest_log_is_redacted_and_cut() {
     std::fs::write(dir.join("gate.log"), format!("collected 3 items\na.py::t[{long}] PASSED [ 33%]\n")).unwrap();
     assert_eq!(newest_log_tail(&dir).unwrap().tests.unwrap().current.unwrap().chars().count(), 200);
 }
+
+#[test]
+fn an_xdist_run_takes_its_total_from_the_workers_line() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    let log = "\
+============================= test session starts ==============================
+created: 2/2 workers
+2 workers [10 items]
+
+[gw0] [ 10%] PASSED a.py::t1
+[gw1] [ 20%] FAILED b.py::t2
+";
+    assert_eq!(test_progress(log), Some(TestProgress { done: 2, total: 10, current: Some("b.py::t2".to_string()) }));
+    assert_eq!(test_progress("1 worker [1 item]\n[gw0] [100%] PASSED a.py::t1\n").map(|t| (t.done, t.total)), Some((1, 1)));
+    assert_eq!(test_progress("2 workers [0 items]\n"), None);
+}
+
+#[test]
+fn an_xdist_workers_line_starts_a_count_of_its_items() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    assert_eq!(test_progress("8 workers [312 items]\n"), Some(TestProgress { done: 0, total: 312, current: None }));
+    assert_eq!(test_progress("8 workers [312 things]\n"), None);
+}
