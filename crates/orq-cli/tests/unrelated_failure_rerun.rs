@@ -79,7 +79,7 @@ fn world(tag: &str, script: Script, provider: FakeProvider) -> World {
     let count = base.join("gate-runs");
     let gate = format!("n=$(cat '{0}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{0}'; [ $n -ge {1} ]", count.display(), script.gate_passes_at);
     std::fs::create_dir_all(repo.root().join(".orq")).unwrap();
-    std::fs::write(repo.root().join(".orq/run.toml"), format!("gate = [\"sh\", \"-c\", {}]\nexplain_failures = false\n", toml_string(&gate))).unwrap();
+    std::fs::write(repo.root().join(".orq/run.toml"), format!("gate = [\"sh\", \"-c\", {}]\nexplain_failures = false\nci_timeout_secs = 5\n", toml_string(&gate))).unwrap();
 
     let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let report = if script.reports_unrelated { format!("echo '{SUMMARY}' > \"$ORQ_UNRELATED_FAILURE_FILE\"") } else { String::new() };

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::Duration;
 
-use orq_orchestrator::{wait_for_ci, CiOutcome, CiWaitConfig, RunRecord, RunStore};
+use orq_orchestrator::{retry_ci, wait_for_ci, CiOutcome, CiWaitConfig, RunRecord, RunStore};
 use orq_test_support::{FakeProvider, FakeProviderBuilder};
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -843,4 +843,45 @@ fn a_commit_with_no_checks_yet_and_a_provider_that_errs_are_each_said_in_the_log
     let outcome = orq_orchestrator::wait_for_ci_logged(&err.store, "run-1", &provider.gh(), SHA, &config(), Some(&log)).unwrap();
     assert!(matches!(outcome, CiOutcome::Errored { .. }));
     assert!(fs::read_to_string(&log).unwrap().contains("did not answer usably"));
+}
+
+const FAILED_RUNS: &str = "[{\"databaseId\":42,\"conclusion\":\"failure\"}]\n";
+
+/// A GitHub fake whose failed workflow run 42 can be re-run, answering the check-run listing with `checks`
+/// in turn (one-shot) and `then` from there on.
+fn retryable_github(checks: &[String], then: &str) -> FakeProvider {
+    let mut builder = github_provider().reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "");
+    for answer in checks {
+        builder = builder.reply_once(&["api"], answer);
+    }
+    builder.reply(&["api"], then).build()
+}
+
+#[test]
+fn a_retry_waits_until_the_provider_no_longer_shows_the_old_failure_before_ci_is_read_again() {
+    let w = world("retry-stale", "github", "https://github.example/o/r.git");
+    // The provider still shows the failure the retry replaces twice, then the restarted checks.
+    let stale = gh_checks(RED, 1);
+    let provider = retryable_github(&[stale.clone(), stale], &gh_checks(GREEN, 1));
+
+    retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert_eq!(outcome, CiOutcome::Passed, "the old failure is not taken for the re-run's");
+    let calls: Vec<Vec<String>> = provider.calls().into_iter().map(|c| c.args).collect();
+    let rerun = calls.iter().position(|a| a[..2] == ["run", "rerun"]).unwrap();
+    assert!(calls[..rerun].iter().all(|a| a[0] != "api"), "CI is read only after the retry starts: {calls:?}");
+}
+
+#[test]
+fn a_retry_whose_restart_never_shows_waits_no_longer_than_the_ci_timeout() {
+    let w = world("retry-never", "github", "https://github.example/o/r.git");
+    let provider = retryable_github(&[], &gh_checks(RED, 1));
+    let started = std::time::Instant::now();
+
+    retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+
+    assert!(started.elapsed() < config().timeout + Duration::from_secs(2), "{:?}", started.elapsed());
+    let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+    assert!(matches!(outcome, CiOutcome::Failed { .. }), "{outcome:?}");
 }

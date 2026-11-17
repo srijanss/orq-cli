@@ -1845,15 +1845,9 @@ impl CiFixSteps for PipelineCiSteps<'_> {
     }
 
     fn retry(&mut self, head_sha: &str) -> Result<(), String> {
-        orq_orchestrator::retry_ci(self.store, self.run_id, self.provider, head_sha, self.config)?;
-        // The provider takes a moment to show the restarted checks; read too soon, the old failure answers.
-        std::thread::sleep(self.config.poll_interval.min(RETRY_SETTLE));
-        Ok(())
+        orq_orchestrator::retry_ci(self.store, self.run_id, self.provider, head_sha, self.config)
     }
 }
-
-/// The longest wait after a CI retry before its checks are read.
-const RETRY_SETTLE: Duration = Duration::from_secs(5);
 
 /// What a fix session starts from: orq knows the names of the failing checks, and the session
 /// fetches their logs with the provider's own CLI.

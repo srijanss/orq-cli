@@ -28,6 +28,8 @@ const STATUS_FIELDS: &str = "{state, total_count, statuses: [.statuses[] | {stat
 const MAX_POLL_FAILURES: u32 = 3;
 /// Floor on the pause between polls, so a zero interval cannot hammer the provider.
 const MIN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// The longest wait for a retried CI to show it restarted.
+const RESTART_LIMIT: Duration = Duration::from_secs(120);
 const MAX_FAILING_NAMES: usize = 20;
 const MAX_NAME_CHARS: usize = 100;
 
@@ -115,7 +117,7 @@ pub fn wait_for_ci_logged(
         }
     };
     let repo = repository_url(&record)?;
-    let Some(calls) = poll_calls(kind, &repo, head_sha) else {
+    let Some(sessions) = poll_sessions(&record, program, kind, &repo, head_sha) else {
         let reason = "the repository or commit cannot be addressed safely".to_string();
         let payload =
             serde_json::json!({ "result": "errored", "reason": reason, "head_sha": head_sha });
@@ -127,16 +129,6 @@ pub fn wait_for_ci_logged(
         "stage.started",
         serde_json::json!({ "provider": record.provider, "head_sha": head_sha }),
     )?;
-
-    let sessions: Vec<DraftSession> = calls
-        .into_iter()
-        .map(|args| DraftSession {
-            program: program.to_string_lossy().into_owned(),
-            args,
-            env: provider_environment(),
-            cwd: record.worktree.clone(),
-        })
-        .collect();
     let deadline = Instant::now() + config.timeout;
     let mut failures = 0;
     loop {
@@ -372,7 +364,45 @@ pub fn retry_ci(
         }
         other => return Err(format!("the provider {other} has no CI to re-run")),
     }
+    await_restart(&record, program, &repo, head_sha, config);
     Ok(())
+}
+
+/// After a retry starts, the provider can still show the failure it replaces for a while; read then, that
+/// old failure would be taken for the re-run's. Wait until CI shows something else (running, waiting or
+/// passed), for no more than `RESTART_LIMIT` (and never past the CI timeout): a re-run that fails before
+/// it is ever seen running is read as failed afterwards, as it is.
+fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str, config: &CiWaitConfig) {
+    let kind = if record.provider == "gitlab" { Kind::GitLab } else { Kind::GitHub };
+    let Some(sessions) = poll_sessions(record, program, kind, repo, head_sha) else { return };
+    let deadline = Instant::now() + config.timeout.min(RESTART_LIMIT);
+    while Instant::now() < deadline {
+        if !matches!(poll_once(&sessions, kind, head_sha, config, deadline), Verdict::Failed(_)) {
+            return;
+        }
+        std::thread::sleep(
+            config
+                .poll_interval
+                .max(MIN_POLL_INTERVAL)
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
+/// The sessions that list the checks of `head_sha`, or `None` when it cannot be addressed safely.
+fn poll_sessions(record: &RunRecord, program: &Path, kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<DraftSession>> {
+    let calls = poll_calls(kind, repo, head_sha)?;
+    Some(
+        calls
+            .into_iter()
+            .map(|args| DraftSession {
+                program: program.to_string_lossy().into_owned(),
+                args,
+                env: provider_environment(),
+                cwd: record.worktree.clone(),
+            })
+            .collect(),
+    )
 }
 
 /// The ids of the failed workflow runs in a `gh run list --json databaseId,conclusion` answer.
