@@ -66,7 +66,6 @@ fn one_runs_facts_equal_what_the_full_collection_says_about_it() {
     let f = fixture("same");
     add_failed_run(&f, "run-1", &f.base.join("gone"));
     add_failed_run(&f, "run-2", &f.base.join("gone"));
-    f.store.pin("run-2").unwrap();
     let all = collect_run_facts(&f.runs, &f.store).unwrap();
     for id in ["run-1", "run-2"] {
         let one = collect_run_facts_for(&f.runs, &f.store, id)
@@ -74,13 +73,8 @@ fn one_runs_facts_equal_what_the_full_collection_says_about_it() {
             .expect("the run is known");
         let from_all = &all[id];
         assert_eq!(
-            (one.state, one.ended_at, one.pinned, one.worktree_in_use),
-            (
-                from_all.state,
-                from_all.ended_at,
-                from_all.pinned,
-                from_all.worktree_in_use
-            )
+            (one.state, one.ended_at, one.worktree_in_use),
+            (from_all.state, from_all.ended_at, from_all.worktree_in_use)
         );
     }
 }

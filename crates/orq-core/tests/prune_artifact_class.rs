@@ -26,7 +26,7 @@ fn put(root: &Path, rel: &str) {
 
 // A failed run 20 days old: logs (14 days) are past retention, checkpoints (30 days) are not.
 fn facts() -> RunFacts {
-    RunFacts { run_id: "r1".into(), state: RunState::Failed, ended_at: Some(NOW - 20 * DAY), review: None, pinned: false, worktree_in_use: false }
+    RunFacts { run_id: "r1".into(), state: RunState::Failed, ended_at: Some(NOW - 20 * DAY), review: None, worktree_in_use: false }
 }
 
 fn plan_for(rel: &str, claimed: ArtifactClass) -> PrunePlan {

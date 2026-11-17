@@ -24,8 +24,9 @@ pub struct ReviewRecord {
 }
 
 /// Each entry upgrades the schema by one version; entries are never edited
-/// once released, only appended.
-const MIGRATIONS: [&str; 6] = ["
+/// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
+/// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
+const MIGRATIONS: [&str; 7] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -78,7 +79,12 @@ const MIGRATIONS: [&str; 6] = ["
         revision            INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
     );
+", "
 "];
+
+/// The schema version that removed run pins: an empty `run_pins` is dropped, and one with pins in
+/// it is kept until [`Store::take_removed_pins`] has counted them.
+const PINS_REMOVED_VERSION: u32 = 7;
 
 /// The schema version whose migration added `project_settings`.
 const PROJECT_SETTINGS_VERSION: u32 = 6;
@@ -183,6 +189,9 @@ impl Store {
         }
         for (index, migration) in MIGRATIONS.iter().enumerate().skip(current as usize) {
             tx.execute_batch(migration).map_err(db)?;
+            if index as u32 + 1 == PINS_REMOVED_VERSION && !has_pins(&tx)? {
+                drop_pins_table(&tx)?;
+            }
             tx.pragma_update(None, "user_version", index as u32 + 1).map_err(db)?;
         }
         tx.commit().map_err(db)
@@ -414,27 +423,15 @@ impl Store {
             .map_err(db)
     }
 
-    /// Exempts a run from pruning until it is unpinned. Pinning twice is a no-op.
-    pub fn pin(&self, run_id: &str) -> Result<()> {
-        check_run_id(run_id)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        self.conn.execute("INSERT OR IGNORE INTO run_pins (run_id, pinned_at) VALUES (?1, ?2)", params![run_id, now]).map(drop).map_err(db)
-    }
-
-    pub fn unpin(&self, run_id: &str) -> Result<()> {
-        check_run_id(run_id)?;
-        self.conn.execute("DELETE FROM run_pins WHERE run_id = ?1", params![run_id]).map(drop).map_err(db)
-    }
-
-    pub fn is_pinned(&self, run_id: &str) -> Result<bool> {
-        self.conn.query_row("SELECT EXISTS (SELECT 1 FROM run_pins WHERE run_id = ?1)", params![run_id], |row| row.get(0)).map_err(db)
-    }
-
-    /// Every pinned run id, sorted.
-    pub fn pinned(&self) -> Result<Vec<String>> {
-        let mut statement = self.conn.prepare("SELECT run_id FROM run_pins ORDER BY run_id").map_err(db)?;
-        let rows = statement.query_map([], |row| row.get(0)).map_err(db)?;
-        rows.collect::<std::result::Result<Vec<String>, _>>().map_err(db)
+    /// How many runs were pinned before pins were removed, counted once: the `run_pins` table the
+    /// upgrade kept for them is dropped, so a later call finds none.
+    pub fn take_removed_pins(&self) -> Result<u64> {
+        if !pins_table_exists(&self.conn)? {
+            return Ok(0);
+        }
+        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM run_pins", [], |row| row.get(0)).map_err(db)?;
+        drop_pins_table(&self.conn)?;
+        Ok(count.max(0) as u64)
     }
 
     /// The settings saved for the project whose main checkout is `root`; a project with no record
@@ -608,4 +605,17 @@ fn create_private_file(path: &Path) -> Result<()> {
     }
     #[cfg(not(unix))]
     options.open(path).map(drop)
+}
+
+fn pins_table_exists(conn: &Connection) -> Result<bool> {
+    conn.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_pins')", [], |row| row.get(0)).map_err(db)
+}
+
+/// Whether a `run_pins` table is there with at least one pin in it.
+fn has_pins(conn: &Connection) -> Result<bool> {
+    Ok(pins_table_exists(conn)? && conn.query_row("SELECT EXISTS (SELECT 1 FROM run_pins)", [], |row| row.get(0)).map_err(db)?)
+}
+
+fn drop_pins_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS run_pins").map_err(db)
 }

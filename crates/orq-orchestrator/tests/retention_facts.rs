@@ -95,7 +95,7 @@ fn a_failed_run_is_failed_and_ended_when_its_last_event_happened() {
     let got = &all["run-1"];
     assert_eq!(got.state, RunState::Failed);
     assert_eq!(got.ended_at, Some(ENDED));
-    assert!(!got.pinned && !got.worktree_in_use && got.review.is_none());
+    assert!(!got.worktree_in_use && got.review.is_none());
 }
 
 #[test]
@@ -166,12 +166,11 @@ fn a_worktree_that_still_exists_is_in_use() {
 }
 
 #[test]
-fn pins_and_the_last_review_observation_are_carried() {
+fn the_last_review_observation_is_carried() {
     let f = fixture("review");
     f.runs
         .create(&record("run-1", &f.base.join("gone")))
         .unwrap();
-    f.store.pin("run-1").unwrap();
     f.store
         .save_lifecycle(
             "run-1",
@@ -191,7 +190,6 @@ fn pins_and_the_last_review_observation_are_carried() {
         .unwrap();
     let all = facts(&f);
     let got = &all["run-1"];
-    assert!(got.pinned);
     assert_eq!(got.review.as_ref().unwrap().state, ProviderState::Merged);
 }
 

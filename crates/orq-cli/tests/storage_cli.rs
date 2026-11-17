@@ -117,31 +117,80 @@ fn prune_removes_old_finished_runs_files_and_a_second_prune_finds_nothing() {
     assert!(text(&again).contains("Nothing to prune"), "{}", text(&again));
 }
 
+const PINS_REMOVED: &str = "run pins were removed: storage cleanup asks before removing anything";
+
 #[test]
-fn a_pinned_run_survives_prune_until_it_is_unpinned() {
-    let s = Sandbox::new("pin");
+fn run_pin_and_unpin_are_gone_and_say_so() {
+    let s = Sandbox::new("pin-removed");
     s.failed_run("old-run", "2020-01-01T00:00:00Z", 100);
-    let pinned = s.orq(&["run", "pin", "old-run"]);
-    assert!(pinned.status.success(), "{}", text(&pinned));
+    for command in ["pin", "unpin"] {
+        let out = s.orq(&["run", command, "old-run"]);
+        assert_eq!(out.status.code(), Some(2), "{command}: {}", text(&out));
+        assert!(text(&out).contains(PINS_REMOVED), "{command}: {}", text(&out));
+    }
+    let usage = text(&s.orq(&["storage", "frobnicate"]));
+    assert!(!usage.contains("run pin"), "the usage no longer offers pins: {usage}");
+}
+
+#[test]
+fn storage_status_has_no_pinned_line_and_prune_removes_a_run_that_would_once_have_been_pinned() {
+    let s = Sandbox::new("no-pins");
+    s.failed_run("old-run", "2020-01-01T00:00:00Z", 100);
+    let status = text(&s.orq(&["storage", "status"]));
+    assert!(!status.to_lowercase().contains("pinned"), "{status}");
     let pruned = s.orq(&["storage", "prune"]);
     assert!(pruned.status.success(), "{}", text(&pruned));
-    assert!(s.data_file("runs/old-run/events.jsonl").exists());
-    assert!(text(&pruned).contains("old-run"), "the preview names what is kept: {}", text(&pruned));
-    let unpinned = s.orq(&["run", "unpin", "old-run"]);
-    assert!(unpinned.status.success(), "{}", text(&unpinned));
-    s.orq(&["storage", "prune"]);
+    assert!(!text(&pruned).contains("pinned"), "{}", text(&pruned));
     assert!(!s.data_file("runs/old-run/events.jsonl").exists());
 }
 
-#[test]
-fn an_unsafe_run_id_cannot_be_pinned() {
-    let s = Sandbox::new("unsafe");
-    let out = s.orq(&["run", "pin", "../etc"]);
-    assert!(!out.status.success());
+/// The database as an Orq from before pins were removed left it: at schema version 6, with a
+/// `run_pins` table holding `pins`.
+fn database_from_before_pins_were_removed(s: &Sandbox, pins: &[&str]) -> rusqlite::Connection {
+    assert!(s.orq(&["storage", "status"]).status.success());
+    let db = rusqlite::Connection::open(s.data_file("orq.db")).unwrap();
+    db.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); PRAGMA user_version = 6;").unwrap();
+    for pin in pins {
+        db.execute("INSERT INTO run_pins (run_id, pinned_at) VALUES (?1, 1)", [pin]).unwrap();
+    }
+    db
+}
+
+fn has_pins_table(db: &rusqlite::Connection) -> bool {
+    db.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_pins')", [], |row| row.get(0)).unwrap()
 }
 
 #[test]
-fn run_without_pin_keeps_its_usage_error() {
+fn an_empty_pins_table_is_dropped_without_a_word() {
+    let s = Sandbox::new("pins-empty");
+    let db = database_from_before_pins_were_removed(&s, &[]);
+    let status = s.orq(&["storage", "status"]);
+    assert!(status.status.success(), "{}", text(&status));
+    assert!(!text(&status).contains("pinned"), "{}", text(&status));
+    assert!(!has_pins_table(&db), "the empty table is dropped");
+}
+
+#[test]
+fn pins_left_from_before_are_mentioned_once_by_storage_status_and_then_forgotten() {
+    let s = Sandbox::new("pins-kept");
+    let db = database_from_before_pins_were_removed(&s, &["run-a", "run-b"]);
+    s.failed_run("run-a", "2020-01-01T00:00:00Z", 100);
+    assert!(s.orq(&["storage", "prune", "--dry-run"]).status.success());
+    assert!(has_pins_table(&db), "a table with pins in it is kept until status has said so");
+
+    let first = s.orq(&["storage", "status"]);
+    assert!(first.status.success(), "{}", text(&first));
+    assert!(text(&first).contains("2 runs were pinned before pins were removed: they're now pruned like any other run"), "{}", text(&first));
+    let second = text(&s.orq(&["storage", "status"]));
+    assert!(!second.contains("pinned"), "said once: {second}");
+    assert!(!has_pins_table(&db));
+
+    s.orq(&["storage", "prune"]);
+    assert!(!s.data_file("runs/run-a/events.jsonl").exists(), "a run pinned before is pruned like any other");
+}
+
+#[test]
+fn an_unknown_storage_command_is_a_usage_error() {
     let s = Sandbox::new("usage");
     let out = s.orq(&["storage", "frobnicate"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out));

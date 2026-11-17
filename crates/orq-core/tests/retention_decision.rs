@@ -11,7 +11,7 @@ fn facts(state: RunState, ended_days_ago: u64, review: Option<(ProviderState, u6
         state,
         ended_at: Some(NOW - ended_days_ago * DAY),
         review: review.map(|(state, checked_secs_ago, error)| ReviewFacts { state, observed_at: NOW - checked_secs_ago, last_error: error.map(String::from) }),
-        pinned: false,
+       
         worktree_in_use: false,
     }
 }
@@ -40,13 +40,6 @@ fn queued_preparing_running_and_blocked_runs_are_never_pruned_however_old() {
 #[test]
 fn a_run_awaiting_human_review_is_never_pruned() {
     assert_eq!(retained(&facts(RunState::ReviewReady, 5000, Some((ProviderState::Merged, 0, None)))), Retained::AwaitingReview);
-}
-
-#[test]
-fn a_pinned_run_is_never_pruned_and_pinning_outranks_everything() {
-    let mut f = facts(RunState::Failed, 5000, None);
-    f.pinned = true;
-    assert_eq!(retained(&f), Retained::Pinned);
 }
 
 #[test]

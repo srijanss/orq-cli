@@ -31,7 +31,7 @@ fn put(root: &Path, rel: &str, bytes: usize) {
 }
 
 fn failed(run: &str, days_ago: u64) -> RunFacts {
-    RunFacts { run_id: run.into(), state: RunState::Failed, ended_at: Some(NOW - days_ago * DAY), review: None, pinned: false, worktree_in_use: false }
+    RunFacts { run_id: run.into(), state: RunState::Failed, ended_at: Some(NOW - days_ago * DAY), review: None, worktree_in_use: false }
 }
 
 fn table(list: Vec<RunFacts>) -> BTreeMap<String, RunFacts> {
@@ -106,14 +106,14 @@ fn a_run_that_became_active_after_the_plan_is_left_alone() {
 }
 
 #[test]
-fn a_run_pinned_after_the_plan_is_left_alone() {
-    let w = world("pinned");
+fn a_run_whose_worktree_came_back_after_the_plan_is_left_alone() {
+    let w = world("in-use");
     put(&w.roots.data, "runs/old/events.jsonl", 100);
     let facts = table(vec![failed("old", 20)]);
     let p = planned(&w, &facts);
-    let mut pinned = failed("old", 20);
-    pinned.pinned = true;
-    run_prune(&w, &p, &table(vec![pinned]));
+    let mut in_use = failed("old", 20);
+    in_use.worktree_in_use = true;
+    run_prune(&w, &p, &table(vec![in_use]));
     assert!(exists(&w, "runs/old/events.jsonl"));
 }
 

@@ -11,7 +11,7 @@ fn facts(state: RunState, review: Option<(ProviderState, Option<&str>)>) -> RunF
         state,
         ended_at: Some(NOW - 5000 * DAY),
         review: review.map(|(state, error)| ReviewFacts { state, observed_at: NOW, last_error: error.map(String::from) }),
-        pinned: false,
+       
         worktree_in_use: false,
     }
 }

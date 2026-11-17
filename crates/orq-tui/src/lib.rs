@@ -2188,7 +2188,6 @@ pub struct StorageView {
     /// The retention policy, one line per rule.
     pub policy: Vec<String>,
     pub last_cleanup: Option<String>,
-    pub pinned: Vec<String>,
 }
 
 /// The tabs of the popup.
@@ -3178,8 +3177,6 @@ fn render_storage_section(
         }
     }
     line(format!(" Last cleanup: {}", storage.last_cleanup.as_deref().unwrap_or("never")), Style::new());
-    let pinned = if storage.pinned.is_empty() { "none".to_string() } else { storage.pinned.join(", ") };
-    line(format!(" Pinned: {pinned}"), Style::new());
 }
 
 /// Body row where the Storage section starts, below the role settings.

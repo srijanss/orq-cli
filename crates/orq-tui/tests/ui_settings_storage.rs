@@ -38,7 +38,6 @@ impl Fake {
                 usage: vec!["logs: 3 file(s), 4.0 KiB".into(), "reports: 1 file(s), 1.0 KiB".into()],
                 policy: vec!["failed runs: 30 days".into(), "logs: 14 days".into()],
                 last_cleanup: Some("2026-11-01T10:00:00Z".into()),
-                pinned: vec!["run-7".into()],
             },
             save_error: None,
             saved: Vec::new(),
@@ -99,11 +98,12 @@ fn has(lines: &[String], needle: &str) -> bool {
 }
 
 #[test]
-fn settings_shows_storage_usage_policy_last_cleanup_and_pins() {
+fn settings_shows_storage_usage_policy_and_last_cleanup_and_no_pins() {
     let lines = run(&mut Fake::new(), vec![key(KeyCode::Tab)]);
-    for needle in ["Storage", "logs: 3 file(s), 4.0 KiB", "reports: 1 file(s)", "failed runs: 30 days", "2026-11-01T10:00:00Z", "run-7"] {
+    for needle in ["Storage", "logs: 3 file(s), 4.0 KiB", "reports: 1 file(s)", "failed runs: 30 days", "2026-11-01T10:00:00Z"] {
         assert!(has(&lines, needle), "missing {needle}: {lines:#?}");
     }
+    assert!(!has(&lines, "Pinned"), "{lines:#?}");
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn a_storage_that_cannot_be_read_says_why_and_the_rest_still_works() {
 #[test]
 fn storage_text_from_disk_cannot_inject_terminal_controls() {
     let mut fake = Fake::new();
-    fake.storage.pinned = vec!["bad\u{1b}[2Jrun".into()];
+    fake.storage.usage = vec!["bad\u{1b}[2Jrun".into()];
     let lines = run(&mut fake, vec![key(KeyCode::Tab)]);
     assert!(!lines.iter().any(|l| l.contains('\u{1b}')), "{lines:#?}");
 }

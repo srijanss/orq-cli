@@ -1,5 +1,5 @@
-//! `orq storage status|list|prune [--dry-run]` and `orq run pin|unpin`: what
-//! Orq keeps on disk, and the safe, previewable way to give space back.
+//! `orq storage status|list|prune [--dry-run]`: what Orq keeps on disk, and the safe, previewable
+//! way to give space back.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use orq_core::prune::{prune, reconcile};
 use orq_core::retention::{human_bytes, inventory, plan, PrunePlan, RetentionPolicy};
-use orq_core::storage::{check_run_id, StorageRoots};
+use orq_core::storage::StorageRoots;
 use orq_core::store::Store;
 use orq_orchestrator::{collect_run_facts, collect_run_facts_for, RunStore};
 
@@ -76,8 +76,12 @@ fn status() -> Result<(), String> {
     for (class, (count, bytes)) in by_class {
         println!("  {class}: {count} file(s), {}", human_bytes(bytes));
     }
-    let pinned = store.pinned().map_err(|e| e.to_string())?;
-    println!("pinned runs: {}", if pinned.is_empty() { "none".to_string() } else { pinned.join(", ") });
+    // Said once: the table the upgrade kept for pins left from before is dropped as they are counted.
+    match store.take_removed_pins().map_err(|e| e.to_string())? {
+        0 => {}
+        1 => println!("1 run was pinned before pins were removed: it's now pruned like any other run"),
+        count => println!("{count} runs were pinned before pins were removed: they're now pruned like any other run"),
+    }
     println!("retention: {}", policy_summary(&policy(&roots)?));
     println!("last cleanup: {}", last_cleanup(&roots).map_or("never".to_string(), format_time));
     println!("{}", crate::worktree::status_line(&runs_store));
@@ -286,23 +290,8 @@ pub(crate) fn open_ctx() -> Result<Ctx, String> {
     Ok(Ctx { roots, store, runs })
 }
 
-/// `orq run pin|unpin <run-id>`.
-pub(crate) fn pin(args: &[OsString], pinned: bool) -> ExitCode {
-    let [run_id] = args else { return usage_error() };
-    let Some(run_id) = run_id.to_str() else { return usage_error() };
-    let result = (|| -> Result<(), String> {
-        check_run_id(run_id).map_err(|e| e.to_string())?;
-        let (_, store, _) = open()?;
-        if pinned { store.pin(run_id) } else { store.unpin(run_id) }.map_err(|e| e.to_string())
-    })();
-    match result {
-        Ok(()) => {
-            println!("{} run {run_id}.", if pinned { "Pinned" } else { "Unpinned" });
-            ExitCode::SUCCESS
-        }
-        Err(message) => fail(message),
-    }
-}
+/// `orq run pin|unpin`, which were removed.
+pub(crate) const PINS_REMOVED: &str = "run pins were removed: storage cleanup asks before removing anything";
 
 /// Everything storage commands need, so the CLI and the Settings tab act on the same things.
 pub(crate) struct Ctx {
@@ -351,10 +340,6 @@ pub(crate) fn ui_view(ctx: &Ctx) -> orq_tui::StorageView {
         Ok(items) => items,
         Err(error) => return failed(format!("cannot measure storage: {error}")),
     };
-    let pinned = match ctx.store.pinned() {
-        Ok(pinned) => pinned,
-        Err(error) => return failed(format!("cannot read pinned runs: {error}")),
-    };
     let mut by_class: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
     for item in &items {
         let entry = by_class.entry(item.class.as_str()).or_default();
@@ -369,7 +354,6 @@ pub(crate) fn ui_view(ctx: &Ctx) -> orq_tui::StorageView {
         usage,
         policy: vec![policy_summary(&policy)],
         last_cleanup: last_cleanup(&ctx.roots).map(format_time),
-        pinned,
     }
 }
 
@@ -478,16 +462,14 @@ mod tests {
     }
 
     #[test]
-    fn the_view_has_usage_by_category_the_policy_the_last_cleanup_and_pins() {
+    fn the_view_has_usage_by_category_the_policy_and_the_last_cleanup() {
         let c = ctx("view");
         old_failed_run(&c, "old-run", 2048);
-        c.store.pin("keep-me").unwrap();
         let view = ui_view(&c);
         assert_eq!(view.error, None);
         assert!(view.usage.iter().any(|l| l.contains("log") && l.contains("2.0 KiB")), "{:?}", view.usage);
         assert!(view.policy.iter().any(|l| l.contains("failed") && l.contains("30")), "{:?}", view.policy);
         assert_eq!(view.last_cleanup, None);
-        assert_eq!(view.pinned, vec!["keep-me".to_string()]);
     }
 
     #[test]

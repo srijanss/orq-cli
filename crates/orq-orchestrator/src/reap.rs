@@ -34,13 +34,11 @@ fn keep(reason: &str) -> ReapVerdict {
     ReapVerdict::Keep(reason.to_string())
 }
 
-/// Judge every readable run of `project_id`. `pinned` run ids are always kept. `program_for`
-/// maps a provider ("github", "gitlab") to its CLI.
+/// Judge every readable run of `project_id`. `program_for` maps a provider ("github", "gitlab") to its CLI.
 pub fn plan_reap(
     store: &RunStore,
     repo: &Path,
     project_id: &str,
-    pinned: &[String],
     program_for: &dyn Fn(&str) -> Option<PathBuf>,
     timeout: Duration,
 ) -> Result<Vec<ReapItem>, StoreError> {
@@ -63,7 +61,6 @@ pub fn plan_reap(
         item.verdict = judge(
             store,
             repo,
-            pinned,
             program_for,
             timeout,
             &record,
@@ -77,15 +74,11 @@ pub fn plan_reap(
 fn judge(
     store: &RunStore,
     repo: &Path,
-    pinned: &[String],
     program_for: &dyn Fn(&str) -> Option<PathBuf>,
     timeout: Duration,
     record: &crate::store::RunRecord,
     tip: &mut String,
 ) -> Result<ReapVerdict, StoreError> {
-    if pinned.iter().any(|p| p == &record.run_id) {
-        return Ok(keep("the run is pinned"));
-    }
     let Ok(events) = store.events(&record.run_id) else {
         return Ok(keep("the run's events cannot be read"));
     };

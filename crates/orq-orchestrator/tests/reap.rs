@@ -41,7 +41,6 @@ struct Case {
     /// The provider reports the branch tip as the review's head.
     pushed: bool,
     dirty: bool,
-    pinned: bool,
     finished: bool,
     /// Where the worktree lives relative to the repository.
     inside_worktrees_dir: bool,
@@ -66,7 +65,6 @@ const GOOD: Case = Case {
     state: "MERGED",
     pushed: true,
     dirty: false,
-    pinned: false,
     finished: true,
     inside_worktrees_dir: true,
     detached_ahead: false,
@@ -206,16 +204,10 @@ fn scenario(tag: &str, case: Case) -> Planned {
             .build()
     };
     let gh = provider.gh();
-    let pinned = if case.pinned {
-        vec!["run-1".to_string()]
-    } else {
-        Vec::new()
-    };
     let items = plan_reap(
         &store,
         &repo,
         "repo-1",
-        &pinned,
         &|_| Some(gh.clone()),
         WAIT,
     )
@@ -291,14 +283,6 @@ fn anything_not_provably_finished_and_safe_is_kept_with_its_reason() {
                 ..GOOD
             },
             "not merged or closed",
-        ),
-        (
-            "pinned",
-            Case {
-                pinned: true,
-                ..GOOD
-            },
-            "pinned",
         ),
         (
             "running",

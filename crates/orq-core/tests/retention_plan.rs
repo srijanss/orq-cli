@@ -8,7 +8,7 @@ const DAY: u64 = 86_400;
 const NOW: u64 = 10_000 * DAY;
 
 fn facts(run: &str, state: RunState, days_ago: u64) -> RunFacts {
-    RunFacts { run_id: run.into(), state, ended_at: Some(NOW - days_ago * DAY), review: None, pinned: false, worktree_in_use: false }
+    RunFacts { run_id: run.into(), state, ended_at: Some(NOW - days_ago * DAY), review: None, worktree_in_use: false }
 }
 
 fn artifact(run: &str, class: ArtifactClass, name: &str, bytes: u64) -> Artifact {
@@ -38,14 +38,14 @@ fn only_artifacts_of_eligible_classes_of_prunable_runs_are_candidates() {
 
 #[test]
 fn a_run_kept_for_a_reason_is_listed_with_that_reason() {
-    let mut pinned = facts("pinned", RunState::Failed, 500);
-    pinned.pinned = true;
-    let runs = all(vec![pinned, facts("busy", RunState::Running, 500)]);
-    let items = vec![artifact("pinned", ArtifactClass::Log, "events.jsonl", 1), artifact("busy", ArtifactClass::Log, "events.jsonl", 1)];
+    let mut kept = facts("kept", RunState::Failed, 500);
+    kept.worktree_in_use = true;
+    let runs = all(vec![kept, facts("busy", RunState::Running, 500)]);
+    let items = vec![artifact("kept", ArtifactClass::Log, "events.jsonl", 1), artifact("busy", ArtifactClass::Log, "events.jsonl", 1)];
     let p = plan(&RetentionPolicy::default(), &runs, &items, NOW);
     assert!(p.candidates.is_empty());
     let kept: Vec<_> = p.kept.iter().map(|k| (k.run_id.as_str(), k.why)).collect();
-    assert_eq!(kept, [("busy", Retained::Active), ("pinned", Retained::Pinned)]);
+    assert_eq!(kept, [("busy", Retained::Active), ("kept", Retained::WorktreeInUse)]);
 }
 
 #[test]

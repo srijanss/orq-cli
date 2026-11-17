@@ -42,7 +42,6 @@ impl Fake {
                 usage: vec!["logs: 3 file(s), 4.0 KiB".into(), "reports: 1 file(s), 1.0 KiB".into()],
                 policy: vec!["failed runs: 30 days".into(), "logs: 14 days".into()],
                 last_cleanup: Some("2026-11-01T10:00:00Z".into()),
-                pinned: vec!["run-7".into()],
             },
             save_error: None,
             saved: Vec::new(),

@@ -116,11 +116,17 @@ fn an_enabled_maintenance_prunes_once_per_interval_and_records_the_cleanup() {
 
 #[test]
 fn maintenance_keeps_what_a_manual_prune_keeps() {
-    let s = Sandbox::new("pinned");
+    let s = Sandbox::new("kept");
     s.config(ON);
     s.failed_run("kept");
     s.failed_run("gone");
-    assert!(s.orq(&["run", "pin", "kept"]).status.success());
+    // A run whose worktree is still there is kept by a manual prune, so maintenance keeps it too.
+    let kept_dir = s.home.join("kept-worktree");
+    std::fs::create_dir_all(&kept_dir).unwrap();
+    let record = s.home.join("state/orq/runs/kept/run.json");
+    let mut run: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    run["worktree"] = serde_json::Value::from(kept_dir.to_str().unwrap());
+    std::fs::write(&record, serde_json::to_vec(&run).unwrap()).unwrap();
     assert!(s.orq(&["storage", "maintain"]).status.success());
     assert!(s.data_file("runs/kept/events.jsonl").exists());
     assert!(!s.data_file("runs/gone/events.jsonl").exists());

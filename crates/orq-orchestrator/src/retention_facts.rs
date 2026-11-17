@@ -15,14 +15,9 @@ pub fn collect_run_facts(
     runs: &RunStore,
     store: &Store,
 ) -> Result<BTreeMap<String, RunFacts>, StoreError> {
-    let pinned: std::collections::BTreeSet<String> = store
-        .pinned()
-        .map_err(StoreError::from)?
-        .into_iter()
-        .collect();
     let mut all = BTreeMap::new();
     for run_id in runs.run_ids()? {
-        if let Some(facts) = facts_of(runs, store, &run_id, pinned.contains(&run_id))? {
+        if let Some(facts) = facts_of(runs, store, &run_id)? {
             all.insert(run_id, facts);
         }
     }
@@ -38,15 +33,13 @@ pub fn collect_run_facts_for(
     if check_run_id(run_id).is_err() {
         return Ok(None);
     }
-    let pinned = store.is_pinned(run_id).map_err(StoreError::from)?;
-    facts_of(runs, store, run_id, pinned)
+    facts_of(runs, store, run_id)
 }
 
 fn facts_of(
     runs: &RunStore,
     store: &Store,
     run_id: &str,
-    pinned: bool,
 ) -> Result<Option<RunFacts>, StoreError> {
     if check_run_id(run_id).is_err() {
         return Ok(None);
@@ -72,7 +65,6 @@ fn facts_of(
     // An unreadable review table is the same as not knowing: the run is kept either way.
     let review = store.review_observation(run_id).map_err(StoreError::from)?;
     Ok(Some(RunFacts {
-        pinned,
         run_id: run_id.to_string(),
         state,
         ended_at,

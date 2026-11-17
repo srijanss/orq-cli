@@ -65,7 +65,6 @@ pub struct RunFacts {
     pub ended_at: Option<u64>,
     /// What the provider last showed about the run's review, if anything.
     pub review: Option<ReviewFacts>,
-    pub pinned: bool,
     pub worktree_in_use: bool,
 }
 
@@ -90,7 +89,6 @@ pub enum ArtifactClass {
 pub enum Retained {
     Active,
     AwaitingReview,
-    Pinned,
     WorktreeInUse,
     UnresolvedReview,
     RemoteStateUncertain,
@@ -109,9 +107,6 @@ pub enum Assessment {
 const DAY_SECS: u64 = 86_400;
 
 pub fn assess(policy: &RetentionPolicy, facts: &RunFacts, now: u64) -> Assessment {
-    if facts.pinned {
-        return Assessment::Retained(Retained::Pinned);
-    }
     match facts.state {
         RunState::Queued
         | RunState::Preparing
@@ -345,7 +340,6 @@ impl Retained {
         match self {
             Retained::Active => "the run is still active",
             Retained::AwaitingReview => "the run is waiting for human review",
-            Retained::Pinned => "the run is pinned",
             Retained::WorktreeInUse => "the run's worktree is kept; delete it under Kept worktrees in Settings or with orq worktree remove",
             Retained::UnresolvedReview => "its review is still open",
             Retained::RemoteStateUncertain => "the review's remote state is unknown or out of date",
