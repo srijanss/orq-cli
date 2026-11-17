@@ -210,7 +210,7 @@ body { font-family: system-ui, Inter, sans-serif; margin: 0; overflow-x: hidden;
    so no page is wider than the screen because of its text. Buttons and badges break only when they overflow,
    so their short labels are never split to make room for a neighbour. */
 body { overflow-wrap: anywhere; }
-button, .badge { overflow-wrap: break-word; }
+.badge, button { overflow-wrap: break-word; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 input, select, textarea { max-width: 100%; }
 .page-header > *, .page-header .has-back > *, .header-status > *, .feature-detail-head > *, .feature-detail-line > *, .run-detail-head > *, .review-report-head > *, .confirm-fields > *, .confirm-actions > *, .confirm > * { min-width: 0; }
