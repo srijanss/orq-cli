@@ -496,3 +496,22 @@ fn a_reason_with_brackets_of_its_own_still_ends_at_the_outcome() {
     assert_eq!(test_progress(log).and_then(|t| t.current), Some("a.py::t[x (y)]".to_string()));
     assert_eq!(test_progress("collected 2 items\na.py::t1 (not a reason) [ 50%]\n").map(|t| t.done), Some(0));
 }
+
+#[test]
+fn a_quiet_pytest_run_without_a_collection_line_shows_its_own_percentage() {
+    use orq_orchestrator::{step_lines, test_progress};
+    // `pytest -q` prints no `collected N items` line.
+    let log = "\
+........................................................................ [ 21%]
+........F............................................................... [ 43%]
+";
+    let activity = orq_orchestrator::RunActivity { tests: test_progress(log), ..seen(&[event("stage.started", Some("verify"))], "x", 1) };
+    assert_eq!(step_lines(&activity), Some(vec!["Tests (Round 1) - 43%".to_string()]));
+}
+
+#[test]
+fn quiet_rows_with_no_known_total_count_in_hundredths() {
+    use orq_orchestrator::{test_progress, TestProgress};
+    assert_eq!(test_progress("..F. [ 21%]\n.... [ 43%]\n"), Some(TestProgress { done: 43, total: 100, current: None }));
+    assert_eq!(test_progress("..F. [ 21%]\ncollected 3 items\n").map(|t| (t.done, t.total)), Some((0, 3)), "a later collection starts again");
+}

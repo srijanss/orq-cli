@@ -77,7 +77,8 @@ pub fn test_total_line(total: Option<u64>) -> String {
 /// the count from every result line after it, whichever test binary printed it, so it only goes up.
 /// A run with no known total has none: one binary's `running N tests` says nothing about the suite.
 /// pytest needs no total line: its own collection line (or xdist's workers line) starts a count,
-/// read from its verbose, xdist or quiet result lines.
+/// read from its verbose, xdist or quiet result lines. `pytest -q` prints no collection line: its
+/// quiet rows' own percentage is then the progress, as hundredths.
 pub fn test_progress(text: &str) -> Option<TestProgress> {
     let mut progress: Option<TestProgress> = None;
     for line in text.lines() {
@@ -91,15 +92,17 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             progress = starting_count(total);
             continue;
         }
+        if let Some(percent) = pytest_quiet_percent(&plain) {
+            // `pytest -q` prints no collection line: its own percentage is then counted in hundredths.
+            let p = progress.get_or_insert(TestProgress { done: 0, total: 100, current: None });
+            p.done = (p.total * percent / 100).min(p.total);
+            p.current = None;
+            continue;
+        }
         let Some(p) = progress.as_mut() else { continue };
         if let Some(name) = pytest_result(&plain) {
             p.done = (p.done + 1).min(p.total);
             p.current = Some(name.to_string());
-            continue;
-        }
-        if let Some(percent) = pytest_quiet_percent(&plain) {
-            p.done = (p.total * percent / 100).min(p.total);
-            p.current = None;
             continue;
         }
         let Some(result) = line.trim().strip_prefix("test ") else { continue };
