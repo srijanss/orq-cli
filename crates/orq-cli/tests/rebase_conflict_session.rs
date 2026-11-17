@@ -232,3 +232,26 @@ fn a_run_with_rebasing_off_never_starts_a_conflict_session() {
     let id = only_run(&w);
     assert!(!events(&w, &id).iter().any(|e| e.kind == "rebase.conflict"));
 }
+
+#[test]
+fn a_published_branch_whose_rebase_conflicts_is_blocked_without_a_session_editing_the_checkout() {
+    let w = world("publish");
+    harness(&w, "", RESOLVE);
+    let root = w.repo.root();
+    git(root, &["checkout", "-q", "-b", "topic"]);
+    std::fs::write(root.join("feature.txt"), "mine\n").unwrap();
+    git(root, &["add", "feature.txt"]);
+    git(root, &["commit", "-q", "-m", "topic: feature.txt"]);
+    let script = remote_main_takes_feature(&w);
+    assert!(Command::new("sh").arg("-c").arg(&script).status().unwrap().success());
+
+    let repo = root.to_str().unwrap().to_string();
+    let out = orq(&w, &["run", "--repo", &repo, "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--publish"]);
+
+    assert_eq!(out.status.code(), Some(30), "blocked: {}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stderr).contains("stopped on a conflict"), "{}", text(&out.stderr));
+    assert!(!w.home.join("fix-task.txt").exists(), "no conflict-fix session on the user's checkout");
+    let id = only_run(&w);
+    assert!(!events(&w, &id).iter().any(|e| e.stage.as_deref() == Some("rebase_fix")));
+    assert_eq!(std::fs::read_to_string(root.join("feature.txt")).unwrap_or_default().contains("merged"), false, "no agent edit");
+}
