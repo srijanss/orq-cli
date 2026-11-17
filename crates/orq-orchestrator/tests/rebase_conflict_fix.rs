@@ -527,3 +527,25 @@ fn the_rebuild_command_is_given_shell_quoted_so_each_word_stays_one_argument() {
 
     assert!(task.contains(r#"`sh -c 'echo $HOME; make it'\''s' 'two words' plain-word_1.js`"#), "{task}");
 }
+
+#[test]
+fn a_long_history_on_the_conflicting_files_is_cut_to_the_latest_commits_and_says_how_to_see_the_rest() {
+    let w = world("task-long", false);
+    let other = w.root.join("other");
+    let long_subject = "x".repeat(500);
+    for i in 0..30 {
+        fs::write(other.join("a.txt"), format!("theirs {i}\n")).unwrap();
+        let subject = if i == 29 { format!("target a {i:02} {long_subject}") } else { format!("target a {i:02}") };
+        git(&other, &["commit", "-q", "-am", &subject]);
+    }
+    git(&other, &["push", "-q", "origin", "HEAD:main"]);
+    assert!(matches!(rebase_onto_target(&w.store, "run-1", true).unwrap(), RebaseOutcome::Conflict { .. }));
+
+    let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
+
+    assert!(task.contains("target a 28"), "the latest commits: {task}");
+    assert!(!task.contains("target a 05"), "older ones are cut: {task}");
+    assert!(!task.contains(&long_subject), "a long subject is cut: {task}");
+    assert!(task.contains("more; `git log"), "how to see the rest: {task}");
+    assert!(task.len() < 6000, "{} bytes", task.len());
+}

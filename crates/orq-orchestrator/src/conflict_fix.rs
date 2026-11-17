@@ -67,6 +67,10 @@ pub fn fix_rebase_conflicts(
     Ok(ConflictFixOutcome::StillBlocked { reason })
 }
 
+/// The most commits of each side the conflict session's task lists, and the longest line of one.
+const MAX_COMMITS: usize = 20;
+const MAX_SUBJECT: usize = 120;
+
 /// The task of the session that resolves the conflict a run's rebase stopped on: where the rebase
 /// stands, the conflicting files with the commits of each side that touched them, and how to
 /// resolve it. `generated` and `rebuild` are the project's generated files and the command that
@@ -84,12 +88,30 @@ pub fn conflict_fix_task(
     let pathspecs: Vec<String> = files.iter().map(|file| format!(":(literal){file}")).collect();
     // The run branch's ref still names the head the rebase started from until the rebase ends.
     let branch = format!("refs/heads/{}", record.branch);
+    // The latest commits of each side, their subjects cut short, so a long history does not fill the
+    // session's context; the rest are a `git log` away.
     let commits = |range: String| -> Result<String, StoreError> {
-        let mut args = vec!["log", "--no-decorate", "--format=%h %s", &range, "--"];
+        let max_count = format!("--max-count={}", MAX_COMMITS + 1);
+        let mut args = vec!["log", "--no-decorate", "--format=%h %s", &max_count, &range, "--"];
         args.extend(pathspecs.iter().map(String::as_str));
         let log = git_raw(&record.worktree, &args)?;
-        let text = log.stdout.trim();
-        Ok(if !log.success || text.is_empty() { "(none)".to_string() } else { text.to_string() })
+        let lines: Vec<&str> = log.stdout.lines().filter(|line| !line.trim().is_empty()).collect();
+        if !log.success || lines.is_empty() {
+            return Ok("(none)".to_string());
+        }
+        let mut text = lines
+            .iter()
+            .take(MAX_COMMITS)
+            .map(|line| match line.char_indices().nth(MAX_SUBJECT) {
+                Some((cut, _)) => format!("{}…", &line[..cut]),
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if lines.len() > MAX_COMMITS {
+            text += &format!("\n… and more; `git log --oneline {range} -- <the files above>` lists them all.");
+        }
+        Ok(text)
     };
     let theirs = commits(format!("{branch}..{onto}"))?;
     let ours = commits(format!("{onto}..{branch}"))?;
