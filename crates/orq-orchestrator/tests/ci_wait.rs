@@ -879,11 +879,44 @@ fn a_retry_whose_restart_never_shows_waits_no_longer_than_the_ci_timeout() {
     let provider = retryable_github(&[], &gh_checks(RED, 1));
     let started = std::time::Instant::now();
 
-    retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
+    let unseen = retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap_err();
 
     assert!(started.elapsed() < config().timeout + Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(unseen.contains("still showed only the failure"), "a restart never seen is not taken for one: {unseen}");
+}
+
+const RUNNING_CHECK: &str = "{\"name\":\"build\",\"status\":\"in_progress\",\"conclusion\":null}";
+
+#[test]
+fn a_provider_error_while_a_retry_restarts_does_not_end_the_wait_for_the_restart() {
+    let w = world("retry-blip", "github", "https://github.example/o/r.git");
+    let stale = gh_checks(RED, 1);
+    let provider = github_provider()
+        .reply(&["run", "list"], FAILED_RUNS)
+        .reply(&["run", "rerun"], "")
+        .reply_once(&["api"], &stale)
+        .fail_once(&["api"], 1, "HTTP 502 Bad Gateway")
+        .reply_once(&["api"], &stale)
+        .reply_once(&["api"], &gh_checks(RUNNING_CHECK, 1))
+        .reply(&["api"], &gh_checks(GREEN, 1))
+        .build();
+
+    retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
-    assert!(matches!(outcome, CiOutcome::Failed { .. }), "{outcome:?}");
+
+    assert_eq!(outcome, CiOutcome::Passed, "the stale failure after the error is not read as the re-run's");
+}
+
+#[test]
+fn a_retry_whose_restart_cannot_be_read_at_all_is_an_error_within_the_ci_timeout() {
+    let w = world("retry-unreadable", "github", "https://github.example/o/r.git");
+    let provider = github_provider().reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "").fail(&["api"], 1, "HTTP 502 Bad Gateway").build();
+    let started = std::time::Instant::now();
+
+    let unread = retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap_err();
+
+    assert!(started.elapsed() < config().timeout + Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(unread.contains("could not be read"), "{unread}");
 }
 
 const GLAB_POST: [&str; 5] = ["api", "--hostname", "gitlab.example", "--method", "POST"];

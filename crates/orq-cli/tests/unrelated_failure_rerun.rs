@@ -15,6 +15,8 @@ const UNRELATED: &str = "the gate fails for a reason unrelated to this run";
 
 const RED: &str = "{\"total_count\":1,\"check_runs\":[{\"name\":\"deploy\",\"status\":\"completed\",\"conclusion\":\"failure\"}]}\n";
 const GREEN: &str = "{\"state\":\"success\",\"statuses\":[],\"total_count\":1,\"check_runs\":[{\"name\":\"deploy\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n";
+/// Checks restarted by a re-run: still running, so neither the check-run nor the status call fails.
+const RUNNING: &str = "{\"state\":\"pending\",\"statuses\":[],\"total_count\":1,\"check_runs\":[{\"name\":\"deploy\",\"status\":\"in_progress\",\"conclusion\":null}]}\n";
 const FAILED_RUNS: &str = "[{\"databaseId\":42,\"conclusion\":\"failure\"},{\"databaseId\":41,\"conclusion\":\"success\"}]\n";
 
 struct World {
@@ -260,7 +262,8 @@ fn a_ci_pipeline_reported_unrelated_is_retried_once_and_a_pass_carries_the_run_o
 
 #[test]
 fn a_ci_pipeline_that_fails_its_retry_too_blocks_the_run() {
-    let provider = github().reply(&["api"], RED).reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "").build();
+    // CI fails; the re-run is seen running (one check-run and one status call), then fails too.
+    let provider = github().reply_once(&["api"], RED).reply_once(&["api"], RUNNING).reply_once(&["api"], RUNNING).reply(&["api"], RED).reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "").build();
     let w = world("ci-red", Script { gate_passes_at: 1, reports_unrelated: true }, provider);
 
     let output = run(&w, &[]);

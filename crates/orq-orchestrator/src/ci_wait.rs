@@ -364,21 +364,27 @@ pub fn retry_ci(
         }
         other => return Err(format!("the provider {other} has no CI to re-run")),
     }
-    await_restart(&record, program, &repo, head_sha, config);
-    Ok(())
+    await_restart(&record, program, &repo, head_sha, config)
 }
 
 /// After a retry starts, the provider can still show the failure it replaces for a while; read then, that
 /// old failure would be taken for the re-run's. Wait until CI shows something else (running, waiting or
-/// passed), for no more than `RESTART_LIMIT` (and never past the CI timeout): a re-run that fails before
-/// it is ever seen running is read as failed afterwards, as it is.
-fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str, config: &CiWaitConfig) {
+/// passed), for no more than `RESTART_LIMIT` (and never past the CI timeout). A provider error on the way
+/// proves nothing, so the wait goes on through it. A restart never seen is an error, not a started re-run:
+/// either CI went on showing only the old failure, or it could not be read at all.
+fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str, config: &CiWaitConfig) -> Result<(), String> {
     let kind = if record.provider == "gitlab" { Kind::GitLab } else { Kind::GitHub };
-    let Some(sessions) = poll_sessions(record, program, kind, repo, head_sha) else { return };
-    let deadline = Instant::now() + config.timeout.min(RESTART_LIMIT);
+    let sessions = poll_sessions(record, program, kind, repo, head_sha)
+        .ok_or_else(|| "the repository or commit cannot be addressed safely".to_string())?;
+    let limit = config.timeout.min(RESTART_LIMIT);
+    let deadline = Instant::now() + limit;
+    let mut seen_failure = false;
+    let mut last_error = None;
     while Instant::now() < deadline {
-        if !matches!(poll_once(&sessions, kind, head_sha, config, deadline), Verdict::Failed(_)) {
-            return;
+        match poll_once(&sessions, kind, head_sha, config, deadline) {
+            Verdict::Failed(_) => seen_failure = true,
+            Verdict::Unusable(reason) => last_error = Some(reason),
+            Verdict::Passed | Verdict::Pending | Verdict::Empty => return Ok(()),
         }
         std::thread::sleep(
             config
@@ -386,6 +392,11 @@ fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str,
                 .max(MIN_POLL_INTERVAL)
                 .min(deadline.saturating_duration_since(Instant::now())),
         );
+    }
+    let waited = limit.as_secs();
+    match last_error {
+        Some(reason) if !seen_failure => Err(format!("CI could not be read after the re-run was requested ({waited}s): {reason}")),
+        _ => Err(format!("CI still showed only the failure it replaces {waited}s after the re-run was requested")),
     }
 }
 
