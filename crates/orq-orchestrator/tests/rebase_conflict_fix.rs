@@ -40,6 +40,11 @@ struct World {
 /// A run whose branch conflicts with the target on `a.txt`; the rebase has
 /// already stopped, so the worktree is mid-rebase when `conflicted` is true.
 fn world(tag: &str, conflicted: bool) -> World {
+    world_on(tag, conflicted, "a.txt")
+}
+
+/// The run branch and the target both change `file`; the target also gets an unrelated commit.
+fn world_on(tag: &str, conflicted: bool, file: &str) -> World {
     let root = orq_test_support::process_temp_dir()
         .join(format!("orq-conflict-fix-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -73,13 +78,13 @@ fn world(tag: &str, conflicted: bool) -> World {
     ] {
         git(&worktree, &["config", key, value]);
     }
-    fs::write(worktree.join("a.txt"), "a\n").unwrap();
+    fs::write(worktree.join(file), "a\n").unwrap();
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "base"]);
     git(&worktree, &["push", "-q", "origin", "HEAD:main"]);
     let base = git(&worktree, &["rev-parse", "HEAD"]);
     git(&worktree, &["checkout", "-q", "-b", "fix--COM-02"]);
-    fs::write(worktree.join("a.txt"), "mine\n").unwrap();
+    fs::write(worktree.join(file), "mine\n").unwrap();
     git(&worktree, &["commit", "-q", "-am", "edit a"]);
     let other = root.join("other");
     git(
@@ -91,8 +96,11 @@ fn world(tag: &str, conflicted: bool) -> World {
             other.to_str().unwrap(),
         ],
     );
-    fs::write(other.join("a.txt"), "theirs\n").unwrap();
+    fs::write(other.join(file), "theirs\n").unwrap();
     git(&other, &["commit", "-q", "-am", "target a"]);
+    fs::write(other.join("1.txt"), "decoy\n").unwrap();
+    git(&other, &["add", "1.txt"]);
+    git(&other, &["commit", "-q", "-m", "target decoy"]);
     git(&other, &["push", "-q", "origin", "HEAD:main"]);
 
     let store = RunStore::new(&root.join("state"));
@@ -494,4 +502,18 @@ fn without_generated_files_or_a_rebuild_command_the_task_asks_the_session_to_wor
 
     assert!(task.contains("Generated files are never merged by hand"), "{task}");
     assert!(task.contains("Work out from the repository which of the conflicting files are generated"), "{task}");
+}
+
+#[test]
+fn a_conflicting_file_with_spaces_unicode_and_glob_characters_is_named_as_it_is_and_its_history_found() {
+    let name = " é [1].txt";
+    let w = world_on("odd-name", true, name);
+
+    let events = w.store.events("run-1").unwrap();
+    assert_eq!(events[0].kind, "rebase.conflict");
+    assert_eq!(events[0].payload["files"], serde_json::json!([name]));
+    let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
+    assert!(task.contains(&format!("- {name}\n")), "the name as it is: {task}");
+    assert!(task.contains("target a") && task.contains("edit a"), "both sides' commits: {task}");
+    assert!(!task.contains("target decoy"), "a glob of the name matches no other file: {task}");
 }

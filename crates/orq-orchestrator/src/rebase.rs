@@ -112,8 +112,8 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
         )?;
         return Ok(RebaseOutcome::Rebased { target_sha });
     }
-    let unmerged = git_raw(worktree, &["diff", "--name-only", "--diff-filter=U"])?;
-    if unmerged.stdout.trim().is_empty() {
+    let files = unmerged_files(worktree)?;
+    if files.is_empty() {
         return Err(StoreError::Corrupt(format!(
             "git rebase failed: {}",
             rebased.stderr.trim()
@@ -123,7 +123,6 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
         "the rebase onto {} stopped on a conflict",
         record.target_branch
     );
-    let files: Vec<&str> = unmerged.stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
     record_event(
         store,
         record,
@@ -131,6 +130,13 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
         serde_json::json!({ "files": files, "onto": target_sha, "where": place }),
     )?;
     Ok(RebaseOutcome::Conflict { reason })
+}
+
+/// The files with unmerged entries, named as they are: NUL-separated, so git neither quotes nor
+/// escapes them, and not trimmed.
+pub(crate) fn unmerged_files(worktree: &std::path::Path) -> Result<Vec<String>, StoreError> {
+    let unmerged = git_raw(worktree, &["diff", "--name-only", "-z", "--diff-filter=U"])?;
+    Ok(unmerged.stdout.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
 }
 
 /// The private ref of a run. Hex keeps any id the store accepts (`run..1`,

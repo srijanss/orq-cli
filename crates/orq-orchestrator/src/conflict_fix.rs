@@ -79,13 +79,14 @@ pub fn conflict_fix_task(
 ) -> Result<String, StoreError> {
     let record = store.load(run_id)?;
     let onto = rebase_onto(&record)?;
-    let unmerged = git_raw(&record.worktree, &["diff", "--name-only", "--diff-filter=U"])?;
-    let files: Vec<&str> = unmerged.stdout.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let files = crate::rebase::unmerged_files(&record.worktree)?;
+    // Each name is a literal pathspec: glob characters in it match only itself.
+    let pathspecs: Vec<String> = files.iter().map(|file| format!(":(literal){file}")).collect();
     // The run branch's ref still names the head the rebase started from until the rebase ends.
     let branch = format!("refs/heads/{}", record.branch);
     let commits = |range: String| -> Result<String, StoreError> {
         let mut args = vec!["log", "--no-decorate", "--format=%h %s", &range, "--"];
-        args.extend(files.iter().copied());
+        args.extend(pathspecs.iter().map(String::as_str));
         let log = git_raw(&record.worktree, &args)?;
         let text = log.stdout.trim();
         Ok(if !log.success || text.is_empty() { "(none)".to_string() } else { text.to_string() })
