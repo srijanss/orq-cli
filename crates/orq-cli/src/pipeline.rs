@@ -396,8 +396,14 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
 fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartError> {
     let name = &options.project.name;
     if options.min_free_disk_gb.is_some() {
-        let free = orq_orchestrator::worktrees_free_disk(&options.project.root)
-            .map_err(|err| other(format!("cannot measure the free disk of {}: {err}", options.project.root.display())))?;
+        // A resume continues in the worktree its run recorded; a new run is made under the project's.
+        let resumed = if options.resume { resumed_worktree(options, store)? } else { None };
+        let measured = resumed.as_deref().unwrap_or(&options.project.root);
+        let free = match &resumed {
+            Some(worktree) => orq_orchestrator::free_disk(worktree.ancestors().find(|path| path.exists()).unwrap_or(worktree)),
+            None => orq_orchestrator::worktrees_free_disk(&options.project.root),
+        }
+        .map_err(|err| other(format!("cannot measure the free disk of {}: {err}", measured.display())))?;
         if let Some(reason) = orq_orchestrator::disk_refusal(name, options.min_free_disk_gb, &free) {
             return Err(StartError::Limit(reason));
         }
@@ -409,6 +415,16 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
         }
     }
     Ok(())
+}
+
+/// The worktree recorded by the run a resume of `options` would continue, read without changing
+/// anything; `None` when there is no such run.
+fn resumed_worktree(options: &Options<'_>, store: &RunStore) -> Result<Option<PathBuf>, StartError> {
+    let project = project_id(options.project);
+    let Some(run_id) = orq_orchestrator::newest_run_of(store, &project, &slug(&options.features[0])).map_err(other)? else {
+        return Ok(None);
+    };
+    Ok(store.load(&run_id).ok().map(|record| record.worktree))
 }
 
 /// [`project_limits`] on their own, for a launcher that refuses before it spawns the run.

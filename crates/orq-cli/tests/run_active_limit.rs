@@ -234,3 +234,47 @@ fn the_disk_floor_is_measured_on_the_filesystem_the_worktrees_directory_is_on() 
     assert_eq!(refused.status.code(), Some(EXIT_LIMIT), "{}", text(&refused.stderr));
     assert!(text(&refused.stderr).contains("only 9.8 GB free on /dev/shm ("), "{}", text(&refused.stderr));
 }
+
+#[test]
+fn a_resume_measures_the_disk_its_recorded_worktree_is_on_and_a_new_start_the_worktrees_directory() {
+    let elsewhere = PathBuf::from("/dev/shm");
+    let device = |path: &Path| std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(path).unwrap());
+    let repo = repo();
+    if !elsewhere.is_dir() || device(&elsewhere) == device(repo.root()) {
+        return;
+    }
+    let home = home("disk-resumed");
+    save(&home, repo.root(), &limited(None, Some(15)));
+    let worktree = elsewhere.join(format!("orq-run-active-limit-resumed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&worktree);
+    std::fs::create_dir_all(&worktree).unwrap();
+    runs(&home)
+        .start_run(&RunRecord {
+            delivery: Default::default(),
+            run_id: "run-moved".into(),
+            project_id: orq_git::project_id(&project(repo.root())),
+            feature_id: "COM-01".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: "a".repeat(40),
+            branch: "orq/run-moved".into(),
+            worktree: worktree.clone(),
+            repository: String::new(),
+            profiles: BTreeMap::new(),
+        })
+        .unwrap();
+    append(&home, repo.root(), "run-moved", "COM-01", "stage.started", serde_json::json!({}));
+    append(&home, repo.root(), "run-moved", "COM-01", "run.completed", serde_json::json!({"ending": "blocked"}));
+    // An ended run gives its feature back.
+    runs(&home).finish_run(&orq_git::project_id(&project(repo.root())), "COM-01", "run-moved").unwrap();
+    let low = [("ORQ_TEST_FREE_DISK_BYTES", "9800000000")];
+
+    let resumed = start_with(repo.root(), &home, "COM-01", &["--check", "--resume"], &low);
+    let fresh = start_with(repo.root(), &home, "COM-02", &["--check"], &low);
+    let _ = std::fs::remove_dir_all(&worktree);
+    assert_eq!(resumed.status.code(), Some(EXIT_LIMIT), "{}", text(&resumed.stderr));
+    assert!(text(&resumed.stderr).contains("only 9.8 GB free on /dev/shm ("), "{}", text(&resumed.stderr));
+    assert_eq!(fresh.status.code(), Some(EXIT_LIMIT), "{}", text(&fresh.stderr));
+    assert!(!text(&fresh.stderr).contains("/dev/shm"), "{}", text(&fresh.stderr));
+}
