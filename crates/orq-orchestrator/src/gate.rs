@@ -371,7 +371,7 @@ fn nextest_available(dir: &Path) -> bool {
 
 /// What `program args` prints in `dir`, when it starts and exits 0 within `limit`; `None` otherwise.
 /// It gets only the environment a gate step gets, and runs in its own process group: at the limit the
-/// whole group is killed, and output a stray descendant still holds is not waited for.
+/// whole group is killed, including a descendant still holding the output open after the tool exits.
 fn run_bounded(program: &std::ffi::OsStr, args: &[&str], dir: &Path, limit: std::time::Duration) -> Option<Vec<u8>> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
@@ -391,25 +391,45 @@ fn run_bounded(program: &std::ffi::OsStr, args: &[&str], dir: &Path, limit: std:
         }
     }
     let mut child = command.spawn().ok()?;
-    // Read on the side, so output larger than a pipe holds cannot stall the tool.
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let group = child.id() as libc::pid_t;
+    // SAFETY: kill(2) on the group the child leads; it takes no memory of ours. Called only while the
+    // child is unreaped or a member of its group still holds the pipe, so the group id is not reused.
+    let kill_group = || unsafe {
+        libc::kill(-group, libc::SIGKILL);
+    };
+    // Read on the side, so output larger than a pipe holds cannot stall the tool. The reader reports
+    // through a channel, so waiting for it keeps to the same deadline.
+    let Some(mut stdout) = child.stdout.take() else {
+        kill_group();
+        let _ = child.wait();
+        return None;
+    };
+    let (sender, output) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
-        stdout.read_to_end(&mut out).map(|_| out)
+        let _ = sender.send(stdout.read_to_end(&mut out).map(|_| out));
     });
     let deadline = std::time::Instant::now() + limit;
-    loop {
+    let exited = loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return reader.join().ok()?.ok(),
-            Ok(Some(_)) => return None,
+            Ok(Some(status)) => break status.success(),
             Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
             _ => {
-                // SAFETY: kill(2) on the group this child leads; it takes no memory of ours.
-                unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+                kill_group();
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
             }
+        }
+    };
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    match output.recv_timeout(left) {
+        Ok(Ok(out)) if exited => Some(out),
+        Ok(_) => None,
+        Err(_) => {
+            // A descendant still holds the output open past the limit: stop the whole group.
+            kill_group();
+            None
         }
     }
 }
@@ -462,11 +482,24 @@ mod tests {
         let pid_file = dir.join("pid");
         let tool = script(&dir, &format!("echo $$ > {}; exec sleep 30", pid_file.display()));
         let started = Instant::now();
-        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_millis(300)), None);
+        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_secs(2)), None);
         assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
         assert!(!alive, "the hung tool {pid} was killed");
+    }
+
+    #[test]
+    fn a_tool_that_exits_while_a_descendant_holds_its_output_open_is_stopped_at_the_limit() {
+        let dir = scratch("stray");
+        let pid_file = dir.join("pid");
+        let tool = script(&dir, &format!("sleep 30 & echo $! > {}; echo done; exit 0", pid_file.display()));
+        let started = Instant::now();
+        assert_eq!(run_bounded(tool.as_os_str(), &[], &dir, Duration::from_secs(2)), None, "its output never ended");
+        assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).status().unwrap().success();
+        assert!(!alive, "the descendant {pid} was killed");
     }
 
     #[test]
