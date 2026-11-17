@@ -1,7 +1,6 @@
-//! A review ends without a PR/MR from the terminal too: a run delivered by a local merge resolves its
-//! review as merged, and `orq review resolve|dismiss|reopen <run> [--head <sha>]` records what a person
-//! decided, in the review index and in the run's events. `orq review backfill` resolves the reviews of
-//! runs merged locally before merges resolved them.
+//! A run delivered by a local merge resolves its review as merged, and `orq review backfill` resolves
+//! the reviews of runs merged locally before merges resolved them. Resolving, dismissing, reopening and
+//! refreshing a review moved to the web: `orq review resolve|dismiss|reopen|refresh` only say so.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -113,11 +112,10 @@ fn a_run_delivered_by_a_local_merge_resolves_its_review_as_merged() {
     let lifecycles = store.lifecycles_for_run(&id).unwrap();
     let merged = lifecycles.iter().find(|l| l.reported_head_sha == head).unwrap_or_else(|| panic!("the delivered head's review is resolved: {lifecycles:?}"));
     assert_eq!((merged.provider.as_str(), merged.state.as_str(), merged.review_id.as_str()), ("local", "merged", head.as_str()));
-
-    let refused = orq(&w, &["review", "dismiss", &id]);
-    assert!(!refused.status.success(), "a merged review cannot be dismissed");
-    assert!(text(&refused.stderr).contains("merged"), "{}", text(&refused.stderr));
 }
+
+/// What the removed `orq review resolve|dismiss|reopen|refresh` say instead of doing anything.
+const DONE_FROM_THE_WEB: &str = "this is done from the web's Reviews page now (resolve, dismiss and reopen need remote actions on); `orq serve` refreshes reviews itself";
 
 /// A project's run `run-1` reported at OLD and then at HEAD, with its run record in the run store.
 fn reported(tag: &str) -> World {
@@ -155,48 +153,38 @@ fn state(w: &World, run: &str) -> (String, String) {
     (latest.state.as_str().to_string(), latest.gate.as_str().to_string())
 }
 
-fn kinds(w: &World, run: &str) -> Vec<(String, serde_json::Value)> {
-    runs(w).events(run).unwrap().into_iter().filter(|e| e.kind.starts_with("review.")).map(|e| (e.kind, e.payload)).collect()
+#[test]
+fn the_removed_review_commands_point_to_the_web_and_change_nothing() {
+    let w = reported("removed");
+    let events_before = runs(&w).events("run-1").unwrap().len();
+    for args in [
+        &["review", "resolve", "run-1", "--head", HEAD][..],
+        &["review", "resolve", "run-1"][..],
+        &["review", "dismiss", "run-1"][..],
+        &["review", "reopen", "run-1"][..],
+        &["review", "refresh", "run-1"][..],
+        &["review", "refresh"][..],
+        &["review", "dismiss", "run-9"][..],
+    ] {
+        let out = orq(&w, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", text(&out.stderr));
+        assert!(out.stdout.is_empty(), "{args:?}: {}", text(&out.stdout));
+        assert_eq!(text(&out.stderr).trim_end(), format!("orq: {DONE_FROM_THE_WEB}"), "{args:?}");
+    }
+    assert!(Store::open(&roots(&w).database()).unwrap().lifecycles_for_run("run-1").unwrap().is_empty(), "the review index is unchanged");
+    assert_eq!(runs(&w).events("run-1").unwrap().len(), events_before, "the run's events are unchanged");
 }
 
 #[test]
-fn a_person_resolves_dismisses_and_reopens_a_review_from_the_terminal() {
-    let w = reported("actions");
-
-    let resolved = orq(&w, &["review", "resolve", "run-1", "--head", HEAD]);
-    assert!(resolved.status.success(), "{}", text(&resolved.stderr));
-    assert_eq!(state(&w, "run-1").1, "resolved");
-
-    let dismissed = orq(&w, &["review", "dismiss", "run-1"]);
-    assert!(dismissed.status.success(), "{}", text(&dismissed.stderr));
-    assert_eq!(state(&w, "run-1").0, "closed");
-
-    let reopened = orq(&w, &["review", "reopen", "run-1"]);
-    assert!(reopened.status.success(), "{}", text(&reopened.stderr));
-    assert_eq!(state(&w, "run-1"), ("open".to_string(), "awaiting_human_review".to_string()));
-
-    let by = serde_json::json!({"head_sha": HEAD, "by": "dana"});
-    assert_eq!(
-        kinds(&w, "run-1"),
-        vec![("review.resolved".into(), by.clone()), ("review.dismissed".into(), by.clone()), ("review.reopened".into(), by)],
-        "each action is in the run's events, with who took it"
-    );
-}
-
-#[test]
-fn an_action_on_an_older_head_or_an_unknown_run_changes_nothing() {
-    let w = reported("refused");
-
-    let stale = orq(&w, &["review", "resolve", "run-1", "--head", OLD]);
-    assert!(!stale.status.success());
-    assert!(text(&stale.stderr).contains(HEAD), "the newer report is named: {}", text(&stale.stderr));
-    let unknown = orq(&w, &["review", "dismiss", "run-9"]);
-    assert!(!unknown.status.success());
-    let bad = orq(&w, &["review", "resolve", "run-1", "--head", "not-a-sha"]);
-    assert!(!bad.status.success());
-
-    assert!(Store::open(&roots(&w).database()).unwrap().lifecycles_for_run("run-1").unwrap().is_empty());
-    assert!(kinds(&w, "run-1").is_empty());
+fn the_usage_keeps_build_show_and_backfill_and_drops_the_removed_commands() {
+    let w = world("usage");
+    let usage = text(&orq(&w, &["review"]).stderr);
+    for kept in ["orq review build", "orq review show", "orq review backfill"] {
+        assert!(usage.contains(kept), "{kept}: {usage}");
+    }
+    for gone in ["orq review refresh", "orq review resolve"] {
+        assert!(!usage.contains(gone), "{gone}: {usage}");
+    }
 }
 
 #[test]
@@ -226,18 +214,4 @@ fn backfill_resolves_the_reviews_of_runs_merged_locally_before() {
 
     let again = orq(&w, &["review", "backfill"]);
     assert!(text(&again.stdout).contains("0 "), "{}", text(&again.stdout));
-}
-
-#[test]
-fn a_decision_whose_run_events_cannot_take_it_still_stands_and_says_so() {
-    let w = reported("no-events");
-    let id = orq_git::project_id(&orq_git::resolve_project(w.repo.root()).unwrap());
-    // A report for a run the run store does not know, so its events cannot be written.
-    Store::open(&roots(&w).database()).unwrap().save_review(&roots(&w).data, "run-3", &id, "COM-01", HEAD, br#"{"status":"current","risks":[]}"#).unwrap();
-
-    let resolved = orq(&w, &["review", "resolve", "run-3", "--head", HEAD]);
-
-    assert!(resolved.status.success(), "the decision is made: {}", text(&resolved.stderr));
-    assert!(text(&resolved.stderr).contains("the run's events do not record this"), "{}", text(&resolved.stderr));
-    assert_eq!(state(&w, "run-3").1, "resolved");
 }

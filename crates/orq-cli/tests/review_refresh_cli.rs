@@ -114,22 +114,48 @@ fn text(output: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
 }
 
+impl Sandbox {
+    /// Records `run-1`'s review as open at `head`, as a look at the provider last showed it.
+    fn open_review(&self, head: &str) {
+        use orq_core::review_lifecycle::{Observation, ProviderState, ReviewLifecycle};
+        let index = orq_core::store::Store::open(&self.roots().database()).unwrap();
+        let open = ReviewLifecycle::associate("github", "7", "https://github.example/o/r/pull/7", head);
+        index.save_lifecycle("run-1", &open.apply(Ok(Observation { state: ProviderState::Open, head_sha: head.to_string() }))).unwrap();
+    }
+
+    /// Runs `orq serve` in `repo` until it has looked at `run-1`'s review with `provider` and saved
+    /// what it saw, the review's last look having been made over ten minutes ago.
+    fn look(&self, repo: &Path, provider: &FakeProvider) {
+        self.age_check(11 * 60);
+        let _server = self.serve(repo, provider);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !(provider.calls().len() == 1 && self.checked_just_now()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(self.checked_just_now(), "the server looked at the review: {:?}", provider.calls());
+        assert_eq!(provider.calls().len(), 1, "{:?}", provider.calls());
+    }
+
+    fn checked_just_now(&self) -> bool {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let last: Option<i64> = rusqlite::Connection::open(self.roots().database()).unwrap().query_row("SELECT MAX(last_checked) FROM review_lifecycles", [], |row| row.get(0)).unwrap();
+        last.is_some_and(|at| at >= now - 60)
+    }
+}
+
 #[test]
 fn a_pushed_review_waits_for_a_person_on_the_reported_commit() {
     let sandbox = Sandbox::new("open");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("OPEN", &head)).build();
 
-    let refreshed = sandbox.orq(&["review", "refresh", "run-1"], Some(&provider));
-    assert!(refreshed.status.success(), "{}", text(&refreshed));
-    let out = text(&refreshed);
-    assert!(out.contains("awaiting_human_review") && out.contains("open"), "{out}");
-    assert!(out.contains(&head) && !out.contains("stale"), "{out}");
+    sandbox.look(fixture.root(), &provider);
 
-    let shown = sandbox.orq(&["review", "show", "run-1"], None);
-    let shown = text(&shown);
+    let shown = text(&sandbox.orq(&["review", "show", "run-1"], None));
     assert!(shown.contains("awaiting_human_review") && shown.contains("pull/7"), "{shown}");
+    assert!(shown.contains(&head) && !shown.contains("stale"), "{shown}");
 }
 
 #[test]
@@ -137,10 +163,13 @@ fn a_review_merged_by_a_person_resolves_the_gate_and_orq_never_merges() {
     let sandbox = Sandbox::new("merged");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("MERGED", &head)).build();
 
-    let out = text(&sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)));
-    assert!(out.contains("merged") && out.contains("resolved"), "{out}");
+    sandbox.look(fixture.root(), &provider);
+
+    let shown = text(&sandbox.orq(&["review", "show", "run-1"], None));
+    assert!(shown.contains("merged") && shown.contains("resolved"), "{shown}");
     for call in provider.calls() {
         assert!(call.args.iter().all(|a| a != "merge" && a != "approve" && a != "create" && a != "close"), "{:?}", call.args);
     }
@@ -150,12 +179,12 @@ fn a_review_merged_by_a_person_resolves_the_gate_and_orq_never_merges() {
 fn a_force_pushed_head_marks_the_report_stale() {
     let sandbox = Sandbox::new("stale");
     let fixture = GitFixture::new();
-    run_with_report(&sandbox, &fixture);
+    let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("OPEN", OTHER)).build();
-    let out = text(&sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)));
-    assert!(out.contains("stale") && out.contains(OTHER), "{out}");
+    sandbox.look(fixture.root(), &provider);
     let shown = text(&sandbox.orq(&["review", "show", "run-1"], None));
-    assert!(shown.contains("stale"), "{shown}");
+    assert!(shown.contains("stale") && shown.contains(OTHER), "{shown}");
 }
 
 #[test]
@@ -163,9 +192,11 @@ fn closed_without_merging_is_reported_as_closed() {
     let sandbox = Sandbox::new("closed");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("CLOSED", &head)).build();
-    let out = text(&sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)));
-    assert!(out.contains("closed") && !out.contains("merged"), "{out}");
+    sandbox.look(fixture.root(), &provider);
+    let shown = text(&sandbox.orq(&["review", "show", "run-1"], None));
+    assert!(shown.contains("closed") && !shown.contains("merged"), "{shown}");
 }
 
 #[test]
@@ -173,41 +204,29 @@ fn an_unreachable_or_refusing_provider_keeps_the_last_known_state_and_says_why()
     let sandbox = Sandbox::new("errors");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let good = FakeProvider::builder().reply(&["pr", "list"], &listing("OPEN", &head)).build();
-    assert!(sandbox.orq(&["review", "refresh", "run-1"], Some(&good)).status.success());
+    sandbox.look(fixture.root(), &good);
 
     for (stderr, word) in [("HTTP 403: Forbidden\n", "permission"), ("HTTP 502: Bad Gateway\n", "could not be reached")] {
         let bad = FakeProvider::builder().fail(&["pr", "list"], 1, stderr).build();
-        let refreshed = sandbox.orq(&["review", "refresh", "run-1"], Some(&bad));
-        assert!(!refreshed.status.success());
-        assert!(text(&refreshed).to_lowercase().contains(word), "{}", text(&refreshed));
+        sandbox.look(fixture.root(), &bad);
         let shown = text(&sandbox.orq(&["review", "show", "run-1"], None));
         assert!(shown.contains("awaiting_human_review") && shown.to_lowercase().contains(word), "{shown}");
     }
 }
 
 #[test]
-fn refresh_needs_a_built_report_and_a_valid_run_id() {
-    let sandbox = Sandbox::new("noreport");
-    let provider = FakeProvider::builder().reply(&["pr", "list"], "[]").build();
-    let none = sandbox.orq(&["review", "refresh", "run-1"], Some(&provider));
-    assert!(!none.status.success());
-    assert!(provider.calls().is_empty());
-    assert!(!sandbox.orq(&["review", "refresh", "../x"], Some(&provider)).status.success());
-    assert!(!sandbox.orq(&["review", "refresh"], Some(&provider)).status.success());
-}
-
-#[test]
-fn refresh_after_the_worktree_is_removed_asks_about_the_pinned_repository_and_keeps_the_state() {
+fn a_look_after_the_worktree_is_removed_asks_about_the_pinned_repository_and_keeps_the_state() {
     let sandbox = Sandbox::new("noworktree");
     let fixture = GitFixture::new();
     let head = run_with_removed_worktree(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("MERGED", &head)).build();
 
-    let refreshed = sandbox.orq(&["review", "refresh", "run-1"], Some(&provider));
-    assert!(refreshed.status.success(), "{}", text(&refreshed));
+    sandbox.look(fixture.root(), &provider);
+
     let calls = provider.calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
     let repo = calls[0].args.iter().position(|a| a == "--repo").map(|i| calls[0].args[i + 1].clone());
     assert_eq!(repo.as_deref().map(|r| r.trim_end_matches(".git")), Some(REPO), "{:?}", calls[0].args);
     assert!(calls[0].cwd.exists(), "the provider runs in a directory that exists: {:?}", calls[0].cwd);
@@ -243,9 +262,10 @@ impl Sandbox {
 fn a_review_orq_created_keeps_its_link_when_the_provider_cannot_be_asked() {
     let sandbox = Sandbox::new("unverified-link");
     let fixture = GitFixture::new();
-    run_with_report(&sandbox, &fixture);
+    let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
     let provider = FakeProvider::builder().fail(&["pr", "list"], 1, "HTTP 502: Bad Gateway\n").build();
-    assert!(!sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)).status.success());
+    sandbox.look(fixture.root(), &provider);
 
     let detail = sandbox.api("/api/reviews/run-1");
     let row = sandbox.api("/api/reviews")["reviews"][0].clone();
@@ -415,19 +435,20 @@ fn a_local_merge_recorded_while_the_provider_is_asked_is_kept() {
     let sandbox = Sandbox::new("merge-during-look");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
+    sandbox.age_check(11 * 60);
     let provider = FakeProvider::builder().reply_slowly(&["pr", "list"], &listing("OPEN", &head), 1500).build();
     let merged = orq_core::review_lifecycle::ReviewLifecycle::merged_locally(&head, &"9".repeat(40));
 
-    let refreshed = std::thread::scope(|scope| {
-        let refresh = scope.spawn(|| sandbox.orq(&["review", "refresh", "run-1"], Some(&provider)));
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
-        refresh.join().unwrap()
-    });
+    let server = sandbox.serve(fixture.root(), &provider);
+    assert_eq!(wait_for_calls(&provider, 1), 1, "the look is under way: {:?}", provider.calls());
+    orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    drop(server);
 
-    assert_eq!(provider.calls().len(), 1, "the look was under way: {:?}", provider.calls());
+    assert_eq!(provider.calls().len(), 1, "{:?}", provider.calls());
     let kept = orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap();
-    assert_eq!(kept, vec![merged], "{}", text(&refreshed));
+    assert_eq!(kept, vec![merged], "the look saved nothing over the local merge");
     assert_eq!(sandbox.api("/api/reviews/run-1")["link"], serde_json::Value::Null);
 }
 
@@ -436,12 +457,16 @@ fn a_run_merged_locally_is_not_looked_at_again() {
     let sandbox = Sandbox::new("merged-here");
     let fixture = GitFixture::new();
     let head = run_with_report(&sandbox, &fixture);
+    sandbox.open_review(&head);
+    sandbox.age_check(11 * 60);
     let merged = orq_core::review_lifecycle::ReviewLifecycle::merged_locally(&head, &"9".repeat(40));
     orq_core::store::Store::open(&sandbox.roots().database()).unwrap().save_lifecycle("run-1", &merged).unwrap();
+    let before = orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap();
     let provider = FakeProvider::builder().reply(&["pr", "list"], &listing("OPEN", &head)).build();
 
-    let refreshed = sandbox.orq(&["review", "refresh", "run-1"], Some(&provider));
-    assert!(refreshed.status.success(), "{}", text(&refreshed));
+    let server = sandbox.serve(fixture.root(), &provider);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    drop(server);
     assert!(provider.calls().is_empty(), "{:?}", provider.calls());
-    assert_eq!(orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap(), vec![merged]);
+    assert_eq!(orq_core::store::Store::open(&sandbox.roots().database()).unwrap().lifecycles_for_run("run-1").unwrap(), before);
 }

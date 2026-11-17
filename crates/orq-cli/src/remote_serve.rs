@@ -127,7 +127,7 @@ fn run(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Looks at a run's review at its provider as `orq review refresh` does. A look that cannot be made is
+/// Looks at a run's review at its provider with `review::refresh_lifecycle`. A look that cannot be made is
 /// kept on the review as its last error, so it shows unverified and waits for the next round.
 struct ProviderLook {
     roots: orq_core::storage::StorageRoots,
