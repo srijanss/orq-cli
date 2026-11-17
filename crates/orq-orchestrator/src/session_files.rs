@@ -29,6 +29,11 @@ pub fn copy_session_files(worktree: &Path, files: &[&Path]) -> Result<PathBuf, S
 /// run's logs in `log_dir`, where orq reads it, then remove the copies.
 pub fn finish_session_files(worktree: &Path, log_dir: &Path) -> Result<(), String> {
     let dir = session_dir(worktree)?;
+    // The session may have put a link in the folder's place: what it points at is not its report.
+    if is_link(&dir) {
+        remove(&dir)?;
+        return Err(format!("{} in {} was replaced by a link, so its report is not read", SESSION_FILES_DIR, worktree.display()));
+    }
     let kept = match read_report(&dir.join(UNRELATED_FAILURE_FILE)) {
         Some(summary) => keep_report(&log_dir.join(UNRELATED_FAILURE_FILE), &summary),
         None => Ok(()),
@@ -61,9 +66,14 @@ fn session_dir(worktree: &Path) -> Result<PathBuf, String> {
     Ok(worktree.join(SESSION_FILES_DIR))
 }
 
-/// Remove `dir`, if anything is there.
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// Remove `dir`, if anything is there; a link in its place goes, never what it points at.
 fn remove(dir: &Path) -> Result<(), String> {
-    match fs::remove_dir_all(dir) {
+    let removed = if is_link(dir) { fs::remove_file(dir) } else { fs::remove_dir_all(dir) };
+    match removed {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(format!("cannot remove {}: {err}", dir.display())),
         _ => Ok(()),
     }

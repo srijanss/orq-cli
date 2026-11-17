@@ -87,3 +87,25 @@ fn removing_the_copies_leaves_the_rest_of_the_claude_folder_and_needs_no_copies(
     assert!(!dir.exists());
     assert!(repo.root().join(".claude/settings.json").exists());
 }
+
+/// A session can put a link in place of its copies' folder; the report behind it is not read, and only
+/// the link goes.
+#[cfg(unix)]
+#[test]
+fn a_copies_folder_the_session_turned_into_a_link_has_its_report_ignored_and_only_the_link_removed() {
+    let repo = GitFixture::new();
+    let logs = logs("folder-link");
+    fs::write(logs.join("gate.log"), "the gate\n").unwrap();
+    let dir = copy_session_files(repo.root(), &[&logs.join("gate.log")]).unwrap();
+    let elsewhere = logs.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join(UNRELATED_FAILURE_FILE), "not the session's verdict\n").unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+
+    assert!(finish_session_files(repo.root(), &logs).is_err(), "a linked folder is refused");
+
+    assert!(!logs.join(UNRELATED_FAILURE_FILE).exists(), "a report behind a link is not read");
+    assert!(fs::symlink_metadata(&dir).is_err(), "the link is removed");
+    assert_eq!(fs::read_to_string(elsewhere.join(UNRELATED_FAILURE_FILE)).unwrap(), "not the session's verdict\n", "where it pointed is untouched");
+}
