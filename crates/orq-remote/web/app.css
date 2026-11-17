@@ -206,6 +206,14 @@
 }
 html { overscroll-behavior-y: none; }
 body { font-family: system-ui, Inter, sans-serif; margin: 0; overflow-x: hidden; overscroll-behavior-y: none; background: var(--bg); color: var(--text); }
+/* Long words: text breaks inside a long word (a path, a hash, a long feature name) when it has to, everywhere,
+   so no page is wider than the screen because of its text. Buttons and badges break only when they overflow,
+   so their short labels are never split to make room for a neighbour. */
+body { overflow-wrap: anywhere; }
+button, .badge { overflow-wrap: break-word; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+input, select, textarea { max-width: 100%; }
+.page-header > *, .page-header .has-back > *, .header-status > *, .feature-detail-head > *, .feature-detail-line > *, .run-detail-head > *, .review-report-head > *, .confirm-fields > *, .confirm-actions > *, .confirm > * { min-width: 0; }
 a { color: var(--accent); }
 button { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.75rem; font: inherit; font-size: 0.9375rem; cursor: pointer; }
 input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
@@ -552,6 +560,7 @@ select:hover { border-color: var(--text-muted); }
 .feature-state.state-abandoned { color: var(--status-failed); background: var(--status-failed-bg); }
 .feature-state.state-in_progress { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .feature-tabs { display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 1.5rem; margin: 1rem 0 0.75rem; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.feature-tabs::-webkit-scrollbar { display: none; }
 .feature-tabs button { position: relative; flex: none; white-space: nowrap; text-align: left; min-height: 44px; padding: 0 0.125rem; border: 0; border-radius: 0; background: transparent; color: var(--text); font: inherit; font-weight: 500; cursor: pointer; }
 .feature-tabs button[aria-selected="true"] { color: var(--accent); font-weight: 700; }
 .feature-tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; background: var(--accent); border-radius: 0; }
