@@ -80,8 +80,20 @@ Object.defineProperty(window.document, "hidden", { get() { return visibility ===
 const timeouts = [];
 const realSetTimeout = window.setTimeout.bind(window);
 const realClearTimeout = window.clearTimeout.bind(window);
-window.setTimeout = (run, delay, ...rest) => { if (delay === 3000) { timeouts.push({ active: true, run }); return -timeouts.length; } return realSetTimeout(run, delay, ...rest); };
-window.clearTimeout = (id) => { if (id < 0) { if (timeouts[-id - 1]) timeouts[-id - 1].active = false; } else realClearTimeout(id); };
+// The sign-in status deadline (8000 ms) is faked apart from those, so a test fires it with {expire: 8000}.
+const deadlines = [];
+const DEADLINE_MS = 8000;
+const DEADLINE_IDS = 1000000;
+window.setTimeout = (run, delay, ...rest) => {
+  if (delay === 3000) { timeouts.push({ active: true, run }); return -timeouts.length; }
+  if (delay === DEADLINE_MS) { deadlines.push({ active: true, run }); return -(DEADLINE_IDS + deadlines.length); }
+  return realSetTimeout(run, delay, ...rest);
+};
+window.clearTimeout = (id) => {
+  if (id <= -DEADLINE_IDS) { if (deadlines[-id - DEADLINE_IDS - 1]) deadlines[-id - DEADLINE_IDS - 1].active = false; }
+  else if (id < 0) { if (timeouts[-id - 1]) timeouts[-id - 1].active = false; }
+  else realClearTimeout(id);
+};
 window.TextDecoder = TextDecoder;
 
 // A download is a Blob given to createObjectURL and an anchor with a `download` name that is clicked;
@@ -159,10 +171,14 @@ window.fetch = (url, options = {}) => {
     // `auth_failures` maps an /auth path to an HTTP status it answers with, to {status, json} for a
     // refusal with a body, or to "reject" for no answer at all.
     // `auth_sequence` answers /auth/status in turn, one entry per request, before falling back to the rest:
-    // "reject", "badjson" (a 200 whose body is not JSON), an HTTP status, or the JSON a 200 answers with.
+    // "reject", "badjson" (a 200 whose body is not JSON), "hold" (no answer until the request is aborted),
+    // "hold_body" (a 200 whose body never arrives until aborted), an HTTP status, or the JSON a 200 answers with.
     if (String(url) === "/auth/status" && Array.isArray(scenario.auth_sequence) && scenario.auth_sequence.length > 0) {
       const turn = scenario.auth_sequence.shift();
       if (turn === "reject") return Promise.reject(new Error("offline"));
+      const aborted = (reject) => { if (options.signal) options.signal.addEventListener("abort", () => reject(new window.DOMException("aborted", "AbortError"))); };
+      if (turn === "hold") return new Promise((resolve, reject) => aborted(reject));
+      if (turn === "hold_body") return Promise.resolve({ status: 200, ok: true, json: () => new Promise((resolve, reject) => aborted(reject)) });
       if (turn === "badjson") return Promise.resolve({ status: 200, ok: true, json: () => Promise.reject(new SyntaxError("bad json")) });
       if (typeof turn === "number") return Promise.resolve({ status: turn, ok: turn >= 200 && turn < 300, json: () => Promise.resolve({}) });
       return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(turn) });
@@ -257,7 +273,7 @@ function snapshot() {
   const times = [...page().querySelectorAll("time")].map((el) => ({ label: [...el.parentNode.childNodes].filter((c) => c.nodeType === 3).map((c) => c.data).join("").trim(), text: el.textContent, title: el.getAttribute("title"), datetime: el.getAttribute("datetime") }));
   const doc = window.document;
   const a11y = { mains: doc.querySelectorAll("main").length, banners: [...doc.querySelectorAll("header")].filter((h) => h.closest("main") === null).length, navs: [...doc.querySelectorAll("nav")].map((n) => n.getAttribute("aria-label")), live: [...doc.querySelectorAll("[aria-live], [role=status], [role=log]")].map((el) => ({ live: el.getAttribute("aria-live"), role: el.getAttribute("role"), text: el.textContent })) };
-  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), styles: Object.fromEntries((scenario.styles || []).map((sel) => [sel, root.querySelector(sel) === null ? null : root.querySelector(sel).getAttribute("style")])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", focusMatches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, window.document.activeElement !== null && window.document.activeElement.matches(sel)])), scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search, watched: watchedCount() };
+  return { a11y, logTop: (root.querySelector(".log-lines") || {}).scrollTop === undefined ? null : root.querySelector(".log-lines").scrollTop, attempts: [...root.querySelectorAll(".attempt")].map((el) => ({ title: (el.querySelector(".attempt-title") || {}).textContent, failed: el.hasAttribute("data-failed"), text: el.textContent, events: [...el.querySelectorAll(".event strong")].map((x) => x.textContent), times: [...el.querySelectorAll("time")].map((x) => x.getAttribute("datetime")) })), matches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, root.querySelectorAll(sel).length])), styles: Object.fromEntries((scenario.styles || []).map((sel) => [sel, root.querySelector(sel) === null ? null : root.querySelector(sel).getAttribute("style")])), classes: [...new Set([...root.querySelectorAll("[class]")].flatMap((el) => [...el.classList]))].sort(), selected: [...root.querySelectorAll("[data-selected]")].map((el) => el.getAttribute("data-selected")), injected, times, passkeyNotes: [...root.querySelectorAll(".passkey-blocker")].map((el) => el.textContent), enrolButtons: [...root.querySelectorAll(".passkey-enrol button")].map((el) => el.textContent), focused: window.document.activeElement ? window.document.activeElement.id : "", focusMatches: Object.fromEntries((scenario.selectors || []).map((sel) => [sel, window.document.activeElement !== null && window.document.activeElement.matches(sel)])), scrolled: [...scrolled], sessionDigest, retries: timeouts.filter((t) => t.active).length, deadlines: deadlines.filter((t) => t.active).length, visibilityListeners: visibilityListeners.size, activeIntervals: intervals.filter((i) => i.active && i.delay !== CLOCK_MS).map((i) => i.delay), checked, sessionKept: kept("sessionStorage"), localKept: kept("localStorage"), localTheme: (() => { try { return window.localStorage.getItem("orq.theme"); } catch (blocked) { return "blocked"; } })(), brandLogos: root.querySelectorAll(".signin .brand svg").length, scrim: root.querySelector(".scrim") !== null, switchers, sidebarLinks, skeletons: root.querySelectorAll(".skeleton").length, refreshButtons: root.querySelectorAll("[data-refresh]").length, theme: window.document.documentElement.dataset.theme || "", toggles: root.querySelectorAll("[data-theme-toggle]").length, cards: root.querySelectorAll(".card").length, shell: root.querySelector("[data-shell]") !== null, texts, inputs, buttons, links, hash: window.location.hash === "" ? "" : window.location.hash, path: window.location.pathname + window.location.search, watched: watchedCount() };
 }
 
 // Any error the page raises fails the run, so a crashed render is never mistaken for an empty page.
@@ -387,6 +403,9 @@ const all = (tag) => [...page().querySelectorAll(tag)];
       window.document.querySelector(step.focus).focus();
     } else if (step.remove !== undefined) {
       window.document.querySelector(step.remove).remove();
+    } else if (step.expire !== undefined) {
+      // The status deadline passes.
+      for (const timer of deadlines.filter((t) => t.active)) { timer.active = false; timer.run(); }
     } else if (step.online) {
       // The device got its connection back.
       window.dispatchEvent(new window.Event("online"));

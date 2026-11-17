@@ -121,3 +121,28 @@ fn a_status_reply_that_is_not_json_counts_as_no_passkey_support_and_offers_the_t
     assert_eq!(inputs(start), 1, "the token field: {out}");
     assert_eq!(start["settled"]["activeIntervals"], json!([]), "no retrying: {out}");
 }
+
+#[test]
+fn a_status_request_that_never_answers_gives_up_after_eight_seconds_as_unreachable() {
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": ["hold"], "steps": [{"expire": 8000}]})) else { return };
+    assert_eq!(out["frames"][0]["settled"]["deadlines"], 1, "the request is under way with its deadline: {out}");
+    assert!(!shown(&out["frames"][0]).contains(UNREACHABLE), "not before the deadline");
+    let after = &out["frames"][1];
+    assert!(shown(after).contains(UNREACHABLE), "{}", shown(after));
+    assert_eq!(after["settled"]["deadlines"], 0, "{out}");
+}
+
+#[test]
+fn a_status_body_that_stalls_gives_up_after_eight_seconds_as_unreachable() {
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": ["hold_body"], "steps": [{"expire": 8000}]})) else { return };
+    assert!(!shown(&out["frames"][0]).contains(UNREACHABLE), "not before the deadline");
+    assert!(shown(&out["frames"][1]).contains(UNREACHABLE), "{}", shown(&out["frames"][1]));
+}
+
+#[test]
+fn a_status_answered_in_time_leaves_no_deadline_behind() {
+    let Some(out) = run(json!({"url": "/dashboard", "webauthn": passkey_page(), "auth_sequence": [{"passkeys": true, "signed_in": false}]})) else { return };
+    let start = &out["frames"][0];
+    assert!(buttons(start).iter().any(|b| b == "Sign in with a passkey"), "{:?}", buttons(start));
+    assert_eq!(start["settled"]["deadlines"], 0, "{out}");
+}
