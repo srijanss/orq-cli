@@ -354,3 +354,23 @@ fn an_unattended_run_that_needs_a_decision_ends_blocked_on_it_even_when_its_revi
     assert!(stderr.contains("needs a decision: whether to drop the v1 API"), "{stderr}");
     assert_eq!(followups(w.repo.root()), Vec::<serde_json::Value>::new());
 }
+
+/// What an unattended run does with an escalated review does not hang on how its session reported: one
+/// that wrote OK after its review escalated is still blocked by a security finding, and its other open
+/// findings are still drafted.
+#[test]
+fn an_unattended_run_whose_session_reported_ok_after_its_review_escalated_is_judged_by_the_review() {
+    let agent = feature_agent();
+    let w = world("ok-security", &agent, &escalated_review(&[("token-in-url", "medium", "security")]), "OK");
+    let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(stdout.contains("state: blocked"), "{stdout}\n{stderr}");
+    assert!(stderr.contains("token-in-url"), "{stderr}");
+
+    let agent = feature_agent();
+    let w = world("ok-drafts", &agent, &escalated_review(&[("off-by-one", "medium", "bugs")]), "OK");
+    let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
+    assert!(stderr.contains("Follow-ups drafted: review-followup-COM-01-off-by-one"), "{stderr}");
+}

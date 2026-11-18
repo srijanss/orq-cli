@@ -1963,18 +1963,24 @@ fn stages(
                     return stopped(Ending::Blocked, decision);
                 }
             }
-            if !outcome.success {
-                // A session that stopped for its escalated review has done what it could; the
-                // decision is a human's, so the run waits for it instead of failing.
-                // Nobody decides for an unattended run: what is left open becomes a draft follow-up and
-                // the run carries on, unless a finding is one a person must see first.
-                let review = outcome.reported.as_ref().and_then(|_| escalated(worktree, &record.base_sha));
-                match review {
-                    Some(review) if options.unattended => {
+            // Nobody decides for an unattended run whose review escalated, however its session
+            // reported: what is left open becomes a draft follow-up and the run carries on, unless a
+            // finding is one a person must see first.
+            let drafted = options.unattended
+                && match escalated(worktree, &record.base_sha) {
+                    Some(review) => {
                         if let Err(reason) = draft_followups(store, record, &orq_features::ledger_path(options.project), &review) {
                             return stopped(Ending::Blocked, reason);
                         }
+                        true
                     }
+                    None => false,
+                };
+            if !outcome.success && !drafted {
+                // A session that stopped for its escalated review has done what it could; the
+                // decision is a human's, so the run waits for it instead of failing.
+                let review = (!options.unattended).then(|| outcome.reported.as_ref().and_then(|_| escalated(worktree, &record.base_sha))).flatten();
+                match review {
                     Some(review) => return stopped(Ending::NeedsReview, escalation_reason(&review)),
                     None => {
                         return stopped(Ending::Failed, match outcome.reported {
