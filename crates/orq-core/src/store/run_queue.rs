@@ -27,9 +27,52 @@ pub struct QueueAddition {
 /// The most features a project's queue holds: as many as one reorder request may name.
 pub const QUEUE_LIMIT: usize = 200;
 
-/// One queued feature.
+/// What a queued entry does with a run that already exists, instead of starting a feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    /// Resume the run, with the answer if one was given.
+    Resume,
+    /// Resume the run to review its unreviewed commits again and fix what that review finds.
+    ReviewAgain,
+    /// Accept the run, as the web's Accept does.
+    Accept,
+}
+
+impl QueueKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QueueKind::Resume => "resume",
+            QueueKind::ReviewAgain => "review_again",
+            QueueKind::Accept => "accept",
+        }
+    }
+
+    /// The kind named `name`; a feature's start is not one.
+    pub fn parse(name: &str) -> Option<QueueKind> {
+        [QueueKind::Resume, QueueKind::ReviewAgain, QueueKind::Accept].into_iter().find(|kind| kind.as_str() == name)
+    }
+}
+
+/// A run action to queue: what to do with which run, and a resume's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueueAction {
+    pub kind: QueueKind,
+    pub run: String,
+    pub answer: Option<String>,
+}
+
+impl QueueAction {
+    /// The entry's name in the queue, which no feature's can be (they hold no `:`).
+    pub fn entry_name(&self) -> String {
+        format!("{}:{}", self.kind.as_str(), self.run)
+    }
+}
+
+/// One queued entry: a feature to start, or a run action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedFeature {
+    /// The feature to start, or a run action's entry name (`<kind>:<run>`); entries are removed
+    /// and reordered by it.
     pub feature: String,
     /// When it was added, in seconds since the epoch.
     pub added_at: i64,
@@ -40,6 +83,10 @@ pub struct QueuedFeature {
     pub run: Option<String>,
     /// Whether that run failed or was blocked.
     pub failed: bool,
+    /// The run action, for an entry that is not a feature's start.
+    pub action: Option<QueueAction>,
+    /// Why the entry is no longer needed, once it was skipped for that.
+    pub skipped: Option<String>,
 }
 
 /// A project's queue: its entries in order, and the reason it is paused, if it is.
@@ -55,12 +102,16 @@ impl Store {
         let key = project_key(root)?;
         let mut statement = self
             .conn
-            .prepare("SELECT feature, added_at, added_by, implementer, reviewer, run_id, failed FROM run_queue WHERE project_root = ?1 ORDER BY position")
+            .prepare("SELECT feature, added_at, added_by, implementer, reviewer, run_id, failed, kind, target_run, answer, skipped FROM run_queue WHERE project_root = ?1 ORDER BY position")
             .map_err(db)?;
         let rows = statement
             .query_map(params![key], |row| {
                 let implementer: Option<String> = row.get(3)?;
                 let reviewer: Option<String> = row.get(4)?;
+                let kind: String = row.get(7)?;
+                let target: Option<String> = row.get(8)?;
+                let answer: Option<String> = row.get(9)?;
+                let action = QueueKind::parse(&kind).zip(target).map(|(kind, run)| QueueAction { kind, run, answer });
                 Ok(QueuedFeature {
                     feature: row.get(0)?,
                     added_at: row.get(1)?,
@@ -68,6 +119,8 @@ impl Store {
                     profiles: implementer.zip(reviewer).map(|(implementer, reviewer)| QueueProfiles { implementer, reviewer }),
                     run: row.get(5)?,
                     failed: row.get(6)?,
+                    action,
+                    skipped: row.get(10)?,
                 })
             })
             .map_err(db)?;
@@ -130,6 +183,43 @@ impl Store {
         }
         tx.commit().map_err(db)?;
         Ok(added)
+    }
+
+    /// Adds run `action` to the end of the queue and returns its entry name; `None` when the same
+    /// action on the same run is queued already. Refused with `InvalidInput` when the queue is full.
+    pub fn queue_add_action(&self, root: &Path, action: &QueueAction, added_by: &str, now: i64) -> Result<Option<String>> {
+        let key = project_key(root)?;
+        let entry = action.entry_name();
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(db)?;
+        let (count, position, queued): (i64, i64, bool) = tx
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(position), 0), COALESCE(MAX(feature = ?2), 0) FROM run_queue WHERE project_root = ?1",
+                params![key, entry],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(db)?;
+        if queued {
+            return Ok(None);
+        }
+        if count as usize >= QUEUE_LIMIT {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("the queue holds at most {QUEUE_LIMIT} features; {count} are queued")));
+        }
+        tx.execute(
+            "INSERT INTO run_queue (project_root, feature, position, added_at, added_by, kind, target_run, answer) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![key, entry, position + 1, now, added_by, action.kind.as_str(), action.run, action.answer],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(Some(entry))
+    }
+
+    /// Marks the entry `feature` as no longer needed, for `reason`; it stays in the queue, skipped.
+    pub fn queue_skip(&self, root: &Path, feature: &str, reason: &str) -> Result<()> {
+        let key = project_key(root)?;
+        self.conn
+            .execute("UPDATE run_queue SET skipped = ?3 WHERE project_root = ?1 AND feature = ?2", params![key, feature, reason])
+            .map(drop)
+            .map_err(db)
     }
 
     /// Removes `feature` from the queue; `false` when it was not queued.

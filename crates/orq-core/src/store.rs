@@ -28,7 +28,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 10] = ["
+const MIGRATIONS: [&str; 11] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -106,12 +106,17 @@ const MIGRATIONS: [&str; 10] = ["
     ALTER TABLE project_settings ADD COLUMN queue_stop_on_failure INTEGER NOT NULL DEFAULT 0;
 ", "
     ALTER TABLE project_settings ADD COLUMN queue_wait_for_review INTEGER NOT NULL DEFAULT 1;
+", "
+    ALTER TABLE run_queue ADD COLUMN kind TEXT NOT NULL DEFAULT 'start';
+    ALTER TABLE run_queue ADD COLUMN target_run TEXT;
+    ALTER TABLE run_queue ADD COLUMN answer TEXT;
+    ALTER TABLE run_queue ADD COLUMN skipped TEXT;
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false];
 
 /// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
 pub fn is_breaking(version: u32) -> bool {

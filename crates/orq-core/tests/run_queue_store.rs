@@ -148,3 +148,36 @@ fn the_queue_limit_is_checked_in_the_same_write_as_the_addition_so_two_adders_ca
     assert_eq!(refused.to_string(), "the queue holds at most 200 features; 200 are queued");
     assert_eq!(store.queue(alpha).unwrap().entries.len(), 200);
 }
+
+#[test]
+fn a_run_action_is_queued_once_per_run_and_kind_with_its_answer_and_can_be_marked_no_longer_needed() {
+    use orq_core::store::run_queue::{QueueAction, QueueKind};
+    let store = open("actions");
+    let alpha = Path::new("/work/alpha");
+    store.queue_add(alpha, &[plain("A")], "web", 100).unwrap();
+    let resume = QueueAction { kind: QueueKind::Resume, run: "run-7".into(), answer: Some("use v2".into()) };
+    assert_eq!(store.queue_add_action(alpha, &resume, "cli", 200).unwrap(), Some("resume:run-7".to_string()));
+    assert_eq!(store.queue_add_action(alpha, &resume, "web", 300).unwrap(), None, "the same action on the same run is queued already");
+    let accept = QueueAction { kind: QueueKind::Accept, run: "run-7".into(), answer: None };
+    assert_eq!(store.queue_add_action(alpha, &accept, "web", 400).unwrap(), Some("accept:run-7".to_string()));
+    let again = QueueAction { kind: QueueKind::ReviewAgain, run: "run-8".into(), answer: None };
+    store.queue_add_action(alpha, &again, "web", 500).unwrap();
+
+    let queue = store.queue(alpha).unwrap();
+    assert_eq!(features(&store, alpha), ["A", "resume:run-7", "accept:run-7", "review_again:run-8"]);
+    assert_eq!(queue.entries[0].action, None, "a feature's entry starts it");
+    assert_eq!(queue.entries[1].action.as_ref(), Some(&resume));
+    assert_eq!((queue.entries[1].added_at, queue.entries[1].added_by.as_str()), (200, "cli"));
+    assert_eq!(queue.entries[3].action.as_ref().map(|a| a.kind.as_str()), Some("review_again"));
+    assert_eq!(QueueKind::parse("review_again"), Some(QueueKind::ReviewAgain));
+    assert_eq!(QueueKind::parse("start"), None);
+
+    store.queue_skip(alpha, "resume:run-7", "it was resumed as run-9 meanwhile").unwrap();
+    let queue = store.queue(alpha).unwrap();
+    assert_eq!(queue.entries[1].skipped.as_deref(), Some("it was resumed as run-9 meanwhile"));
+    assert_eq!(queue.entries[2].skipped, None);
+    // Removed and reordered by its key, like a feature's entry.
+    store.queue_reorder(alpha, &["review_again:run-8".into(), "A".into(), "resume:run-7".into(), "accept:run-7".into()]).unwrap();
+    assert!(store.queue_remove(alpha, "accept:run-7").unwrap());
+    assert_eq!(features(&store, alpha), ["review_again:run-8", "A", "resume:run-7"]);
+}

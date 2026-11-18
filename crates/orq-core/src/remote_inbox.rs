@@ -263,6 +263,12 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// Resumes run `run` of project `id` as `control_run`'s Resume does, with the person's `answer`
+    /// put in the resumed session's prompt. A provider that cannot says so.
+    fn resume_with_answer(&self, _id: &str, _run: &str, _answer: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Refused("this server cannot resume a run with an answer".to_string()))
+    }
+
     /// Where run `run` of project `id` would continue if resumed now (`Done(next)`), or why it
     /// cannot be; nothing is resumed. A provider that cannot tell does not know the run.
     fn resume_check(&self, _id: &str, _run: &str) -> Result<RunControlOutcome, String> {
@@ -458,6 +464,9 @@ pub enum RunDiscard {
 pub enum RunControl {
     Pause,
     Resume,
+    /// Resume a run that needs review or failed to review the commits after its last review again,
+    /// fix what that review finds and change nothing else.
+    ReviewAgain,
     Stop,
     Accept,
     /// Merge a run blocked by uncommitted changes in the checkout, setting those changes aside meanwhile.
@@ -481,6 +490,9 @@ pub enum RunControlOutcome {
 pub enum QueueChange {
     /// Queue these features, each started with `profiles` when given, else the project's own.
     Add { features: Vec<String>, profiles: Option<LaunchProfiles> },
+    /// Queue a Resume, Review again or Accept of an existing run of the project.
+    AddAction(crate::store::run_queue::QueueAction),
+    /// Remove the entry named so: a feature, or a run action's `<kind>:<run>`.
     Remove(String),
     /// Put the queue in this order, which names every entry once.
     Reorder(Vec<String>),
@@ -611,6 +623,7 @@ fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
     match action {
         "pause" => Some((id, run, RunControl::Pause)),
         "resume" => Some((id, run, RunControl::Resume)),
+        "review-again" => Some((id, run, RunControl::ReviewAgain)),
         "stop" => Some((id, run, RunControl::Stop)),
         "accept" => Some((id, run, RunControl::Accept)),
         "merge-set-aside" => Some((id, run, RunControl::MergeSetAside)),
@@ -958,6 +971,17 @@ fn launch_choice(body: &[u8], feature: &str) -> Result<(Option<LaunchProfiles>, 
     }
 }
 
+/// The longest answer a queued Resume keeps, in characters.
+pub const MAX_QUEUED_ANSWER: usize = 8000;
+
+/// Whether `name` names a queue entry: a feature, or a run action's `<kind>:<run>`.
+fn queue_entry_name(name: &str) -> bool {
+    match name.split_once(':') {
+        Some((kind, run)) => crate::store::run_queue::QueueKind::parse(kind).is_some() && !run.is_empty() && plain_run_id(run),
+        None => !name.is_empty() && plain_feature_name(name),
+    }
+}
+
 /// Whether `feature` can only be a feature name, never a path.
 fn plain_feature_name(feature: &str) -> bool {
     feature.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) && !feature.starts_with('.')
@@ -1131,6 +1155,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     let (action, failed) = match control {
         RunControl::Pause => ("run.pause", "the run could not be paused"),
         RunControl::Resume => ("run.resume", "the run could not be resumed"),
+        RunControl::ReviewAgain => ("run.review_again", "the run could not be resumed"),
         RunControl::Stop => ("run.stop", "the run could not be stopped"),
         RunControl::Accept => ("run.accept", "the run could not be accepted"),
         RunControl::MergeSetAside => ("run.merge_set_aside", "the run could not be merged"),
@@ -1148,11 +1173,26 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         audit(Outcome::Refused, None, Some("not a run id"));
         return error(404, "not found");
     }
-    if let Some(refusal) = body_refusal(body, &[]) {
+    // Only a Resume takes a body: the person's answer, which can be longer than another action's body.
+    let refusal = match control {
+        RunControl::Resume => body_refusal_within(body, &["answer"], MAX_ACTION_BODY + 4 * MAX_QUEUED_ANSWER),
+        _ => body_refusal(body, &[]),
+    };
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let answer = match fields.get("answer") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(answer)) if answer.chars().count() <= MAX_QUEUED_ANSWER => Ok(Some(answer.trim()).filter(|answer| !answer.is_empty())),
+        Some(_) => Err(()),
+    };
+    let Some(answer) = refusal.is_none().then_some(answer).and_then(Result::ok) else {
         audit(Outcome::Refused, Some(run), Some("bad request body"));
-        return refusal;
-    }
-    match provider.map(|provider| provider.control_run(id, run, control)) {
+        return refusal.unwrap_or_else(|| error(400, "the request body is not one this action takes"));
+    };
+    let outcome = match answer {
+        Some(answer) => provider.map(|provider| provider.resume_with_answer(id, run, answer)),
+        None => provider.map(|provider| provider.control_run(id, run, control)),
+    };
+    match outcome {
         Some(Ok(RunControlOutcome::Done(now_run))) => {
             audit(Outcome::Allowed, Some(run), None);
             reply(202, json!({ "run": now_run }))
@@ -1464,22 +1504,24 @@ fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
         return error(404, "not found");
     }
     let keys: &[&str] = match leaf {
-        "add" => &["features", "implementer", "reviewer"],
+        "add" => &["features", "implementer", "reviewer", "action", "run", "answer"],
         "remove" => &["feature"],
         "reorder" => &["order"],
         _ => &[],
     };
-    if let Some(refusal) = body_refusal(body, keys) {
+    // A queued Resume's answer can be longer than another action's body.
+    if let Some(refusal) = body_refusal_within(body, keys, MAX_ACTION_BODY + 4 * MAX_QUEUED_ANSWER) {
         audit(Outcome::Refused, "bad request body");
         return refusal;
     }
     let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
-    let names = |key: &str| -> Option<Vec<String>> {
+    let names = |key: &str, valid: fn(&str) -> bool| -> Option<Vec<String>> {
         let list = fields.get(key)?.as_array()?;
-        let names: Vec<String> = list.iter().map(|name| name.as_str().filter(|name| !name.is_empty() && plain_feature_name(name)).map(str::to_string)).collect::<Option<_>>()?;
+        let names: Vec<String> = list.iter().map(|name| name.as_str().filter(|name| !name.is_empty() && valid(name)).map(str::to_string)).collect::<Option<_>>()?;
         (!names.is_empty() && names.len() <= 200).then_some(names)
     };
     let change = match leaf {
+        "add" if fields.get("action").is_some() => queued_action(&fields).map(QueueChange::AddAction),
         "add" => {
             let text = |key: &str| fields.get(key).and_then(Value::as_str).map(str::to_string);
             let profiles = match (text("implementer"), text("reviewer"), fields.get("implementer").is_some() || fields.get("reviewer").is_some()) {
@@ -1487,10 +1529,10 @@ fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
                 (_, _, true) => None,
                 _ => Some(None),
             };
-            names("features").zip(profiles).map(|(features, profiles)| QueueChange::Add { features, profiles })
+            names("features", plain_feature_name).zip(profiles).map(|(features, profiles)| QueueChange::Add { features, profiles })
         }
-        "remove" => fields.get("feature").and_then(Value::as_str).filter(|name| !name.is_empty() && plain_feature_name(name)).map(|name| QueueChange::Remove(name.to_string())),
-        "reorder" => names("order").map(QueueChange::Reorder),
+        "remove" => fields.get("feature").and_then(Value::as_str).filter(|name| queue_entry_name(name)).map(|name| QueueChange::Remove(name.to_string())),
+        "reorder" => names("order", queue_entry_name).map(QueueChange::Reorder),
         "pause" => Some(QueueChange::Pause),
         _ => Some(QueueChange::Resume),
     };
@@ -1501,6 +1543,8 @@ fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
     let named = match &change {
         QueueChange::Add { features, profiles: Some(p) } => format!("{}; implementer {}, reviewer {}", features.join(", "), p.implementer, p.reviewer),
         QueueChange::Add { features, profiles: None } => features.join(", "),
+        // The answer is the person's own text, so the audit names only the action.
+        QueueChange::AddAction(action) => action.entry_name(),
         QueueChange::Remove(feature) => feature.clone(),
         QueueChange::Reorder(order) => order.join(", "),
         QueueChange::Pause | QueueChange::Resume => String::new(),
@@ -1528,6 +1572,25 @@ fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
             error(404, "not found")
         }
     }
+}
+
+/// The run action a queue addition's body asks for: `action` (`resume`, `review_again` or `accept`)
+/// on `run`, with a Resume's optional `answer`; `None` when the body is not one of those.
+fn queued_action(fields: &Value) -> Option<crate::store::run_queue::QueueAction> {
+    use crate::store::run_queue::{QueueAction, QueueKind};
+    if ["features", "implementer", "reviewer"].iter().any(|key| fields.get(key).is_some()) {
+        return None;
+    }
+    let kind = QueueKind::parse(fields.get("action")?.as_str()?)?;
+    let run = fields.get("run")?.as_str().filter(|run| !run.is_empty() && plain_run_id(run))?.to_string();
+    let answer = match fields.get("answer") {
+        None | Some(Value::Null) => None,
+        Some(answer) => Some(answer.as_str()?.trim()).filter(|answer| !answer.is_empty()).map(str::to_string),
+    };
+    if answer.as_ref().is_some_and(|answer| kind != QueueKind::Resume || answer.chars().count() > MAX_QUEUED_ANSWER) {
+        return None;
+    }
+    Some(QueueAction { kind, run, answer })
 }
 
 /// The profiles a run can be started or switched with, for the web's pickers. It changes nothing, so it

@@ -9,13 +9,13 @@
 use std::path::Path;
 
 use orq_core::remote_inbox::{LaunchProfiles, QueueChange, RunControlOutcome, RunStart};
-use orq_core::store::run_queue::{QueueAddition, QueueProfiles, QueuedFeature, RunQueue};
+use orq_core::store::run_queue::{QueueAction, QueueAddition, QueueKind, QueueProfiles, QueuedFeature, RunQueue};
 use orq_core::store::Store;
 use orq_features::{FeatureEntry, Ineligible};
 use orq_orchestrator::{RunPhase, RunStore};
 use serde_json::{json, Value};
 
-use super::{discover, read_ledger, start_blocked, Launch, StoreProjects};
+use super::{carried_on, discover, read_ledger, start_blocked, Launch, ResumeRequest, StoreProjects};
 
 /// What a round of the queue needs to know about now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +125,11 @@ impl StoreProjects {
         for entry in store.queue(root).map_err(failed)?.entries {
             let Some(run) = &entry.run else { continue };
             let mut run = run.clone();
-            let mut settled = settle(store, &runs, &run, Some(root), settings.queue_wait_for_review);
+            let what = entry_label(&entry);
+            let mut settled = match &entry.action {
+                Some(QueueAction { kind: QueueKind::Accept, .. }) => self.settle_accept(store, &runs, &run, Some(root), settings.queue_wait_for_review),
+                _ => settle(store, &runs, &run, Some(root), settings.queue_wait_for_review),
+            };
             // A failure already marked is only looked at again for the run it was resumed as.
             if entry.failed && !matches!(settled, Settled::ContinuedAs(_)) {
                 continue;
@@ -152,14 +156,14 @@ impl StoreProjects {
                     store.queue_failed(root, &entry.feature).map_err(failed)?;
                     if settings.queue_stop_on_failure {
                         let why = reason.map_or(String::new(), |reason| format!(": {reason}"));
-                        let reason = orq_core::redact::redact(&format!("the run {run} of {} failed{why}", entry.feature));
+                        let reason = orq_core::redact::redact(&format!("the run {run} of {what} failed{why}"));
                         store.queue_pause(root, &reason).map_err(failed)?;
                     }
                 }
                 Settled::MrClosed => {
                     store.queue_failed(root, &entry.feature).map_err(failed)?;
                     if settings.queue_stop_on_failure {
-                        let reason = orq_core::redact::redact(&format!("{}'s MR was closed without merging", entry.feature));
+                        let reason = orq_core::redact::redact(&format!("{what}'s MR was closed without merging"));
                         store.queue_pause(root, &reason).map_err(failed)?;
                     }
                 }
@@ -177,23 +181,41 @@ impl StoreProjects {
         let ledger = read_ledger(&orq_features::ledger_path(git))?;
         let mut started = false;
         for entry in ordered(&queue.entries, &ledger) {
-            if entry.run.is_some() || orq_features::check_run_eligibility(&ledger, &entry.feature).is_err() {
+            if entry.run.is_some() || entry.skipped.is_some() {
                 continue;
+            }
+            match &entry.action {
+                None if orq_features::check_run_eligibility(&ledger, &entry.feature).is_err() => continue,
+                None => {}
+                // An action its run no longer needs is marked so and passed over, never started.
+                Some(action) => {
+                    if let Err(why) = action_applies(&runs, git, action) {
+                        store.queue_skip(root, &entry.feature, &orq_core::redact::redact(&why)).map_err(failed)?;
+                        continue;
+                    }
+                }
             }
             // A start takes a while: what was paused or removed meanwhile holds the starts after it.
             let now = store.queue(root).map_err(failed)?;
             if now.paused.is_some() {
                 return Ok(started);
             }
-            if !now.entries.iter().any(|current| current.feature == entry.feature && current.run.is_none()) {
+            if !now.entries.iter().any(|current| current.feature == entry.feature && current.run.is_none() && current.skipped.is_none()) {
                 continue;
             }
-            let active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
+            // A queued Accept holds a slot while its tests run, though an accepting run holds none.
+            let accepting = self.queued_accepts_going(&now, &runs);
+            let mut active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
+            active.extend(accepting.iter().cloned());
             if orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).is_some() {
                 return Ok(started);
             }
             let machine_active = match machine.limits.max_active {
-                Some(_) => runs.active_machine_runs().map_err(|error| format!("{error:?}"))?,
+                Some(_) => {
+                    let mut all = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
+                    all.extend(accepting);
+                    all
+                }
                 None => Vec::new(),
             };
             if orq_orchestrator::machine_limit_refusal(machine.limits.max_active, &machine_active).is_some() {
@@ -203,6 +225,23 @@ impl StoreProjects {
             // A run limit is waited out; anything else that refuses the start pauses the queue.
             let refused = match start_blocked(git, &settings, &active, &machine)? {
                 Some(why) => Some(why),
+                None if entry.action.is_some() => {
+                    let (action, what) = (entry.action.as_ref().expect("an action entry"), entry_label(entry));
+                    match self.start_queued_action(id, action) {
+                        Ok(RunControlOutcome::Done(run)) => {
+                            store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            started = true;
+                            None
+                        }
+                        Ok(RunControlOutcome::Refused(_)) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
+                        Ok(RunControlOutcome::Refused(why)) => Some(format!("{what} could not start: {why}")),
+                        Ok(RunControlOutcome::Unknown) => Some(format!("{what}: {} is not one of the project's runs", action.run)),
+                        Err(why) => {
+                            eprintln!("{}", launch_error_line(&what, &why));
+                            Some(format!("{what} could not start; see the server's log"))
+                        }
+                    }
+                }
                 None => {
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
                     match self.launch(id, Launch::One(&entry.feature), profiles.as_ref()) {
@@ -248,6 +287,52 @@ impl StoreProjects {
         Ok(orq_orchestrator::machine_limit_refusal(machine.limits.max_active, &active).is_some())
     }
 
+    /// What became of run `run`, which a queued Accept accepts: going while its tests run, failed
+    /// when the accept failed, and otherwise as [`settle`] says.
+    fn settle_accept(&self, store: &Store, runs: &RunStore, run: &str, repo: Option<&Path>, wait: bool) -> Settled {
+        if self.being_accepted(run).is_some() {
+            return Settled::Going;
+        }
+        let Ok(events) = runs.events(run) else { return settle(store, runs, run, repo, wait) };
+        let summary = orq_orchestrator::summarize_run(&events);
+        match (summary.phase, summary.accept_failure) {
+            (RunPhase::Accepting, _) => Settled::Going,
+            (RunPhase::NeedsReview | RunPhase::Failed | RunPhase::Blocked, Some(failure)) if summary.resumed_as.is_none() => Settled::Failed(Some(format!("its accept failed: {}", failure.reason))),
+            _ => settle(store, runs, run, repo, wait),
+        }
+    }
+
+    /// The runs of `queue`'s Accepts whose tests are running, as (run, entry) like the active runs.
+    fn queued_accepts_going(&self, queue: &RunQueue, runs: &RunStore) -> Vec<(String, String)> {
+        queue
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) && !entry.failed)
+            .filter_map(|entry| {
+                let run = entry.run.as_ref()?;
+                let accepting = self.being_accepted(run).is_some() || runs.events(run).is_ok_and(|events| orq_orchestrator::summarize_run(&events).phase == RunPhase::Accepting);
+                accepting.then(|| (run.clone(), entry.feature.clone()))
+            })
+            .collect()
+    }
+
+    /// Starts queued `action` in project `id` the way the web's Resume, Review again and Accept do:
+    /// the run that carries on (the accepted run itself, for an Accept), or why it may not.
+    fn start_queued_action(&self, id: &str, action: &QueueAction) -> Result<RunControlOutcome, String> {
+        let Some((project, store)) = self.own_run(id, &action.run)? else { return Ok(RunControlOutcome::Unknown) };
+        match action.kind {
+            QueueKind::Accept => self.accept(store, &action.run),
+            kind => {
+                if let Some(busy) = self.being_accepted(&action.run) {
+                    return Ok(RunControlOutcome::Refused(busy));
+                }
+                let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
+                let request = ResumeRequest { answer: action.answer.as_deref(), review_again: kind == QueueKind::ReviewAgain };
+                carried_on(launcher.resume_with(&project.path, &action.run, &request), &project.path)
+            }
+        }
+    }
+
     /// Project `id`'s queue as the web shows it; `None` when there is no such project.
     pub(super) fn queue_answer(&self, id: &str) -> Result<Option<Value>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
@@ -283,7 +368,7 @@ impl StoreProjects {
             }
         }
         let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
-        Ok(match change_queue(&store, &git, &root, change, "web")? {
+        Ok(match change_queue(&store, &RunStore::new(&self.roots.state), &git, &root, change, "web")? {
             Ok(done) => RunControlOutcome::Done(done),
             Err(why) => RunControlOutcome::Refused(orq_core::redact::redact(&why)),
         })
@@ -308,7 +393,9 @@ pub(super) fn queue_summary(store: Option<&Store>, runs: &RunStore, git: &orq_gi
 
 /// Applies `change` to the queue of project `git`, whose main checkout is `root`, as `by` (`web` or
 /// `cli`) asked: what was done, or why it may not be.
-pub fn change_queue(store: &Store, git: &orq_git::Project, root: &Path, change: &QueueChange, by: &str) -> Result<Result<String, String>, String> {
+/// A run action is checked against the run in `runs`: it must be one of the project's runs that the
+/// action applies to now.
+pub fn change_queue(store: &Store, runs: &RunStore, git: &orq_git::Project, root: &Path, change: &QueueChange, by: &str) -> Result<Result<String, String>, String> {
     let failed = |e: std::io::Error| e.to_string();
     Ok(match change {
         QueueChange::Add { features, profiles } => {
@@ -334,6 +421,23 @@ pub fn change_queue(store: &Store, git: &orq_git::Project, root: &Path, change: 
                 Err("those features are queued already".to_string())
             } else {
                 Ok(added.join(", "))
+            }
+        }
+        QueueChange::AddAction(action) => {
+            let label = action_label(action);
+            match runs.load(&action.run) {
+                Ok(record) if record.project_id == orq_git::project_id(git) => {}
+                _ => return Ok(Err(format!("{} is not one of the project's runs", action.run))),
+            }
+            if let Err(why) = action_applies(runs, git, action) {
+                return Ok(Err(format!("{label} cannot be queued: {why}")));
+            }
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+            match store.queue_add_action(root, action, by, now) {
+                Ok(Some(_)) => Ok(label),
+                Ok(None) => Err(format!("{label} is queued already")),
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => Err(error.to_string()),
+                Err(error) => return Err(error.to_string()),
             }
         }
         QueueChange::Remove(feature) => {
@@ -394,11 +498,16 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
     let entries: Vec<Value> = ordered(&queue.entries, ledger)
         .into_iter()
         .map(|entry| {
+            let eligible = || match &entry.action {
+                Some(_) => Ok(()),
+                None => orq_features::check_run_eligibility(ledger, &entry.feature).map(drop),
+            };
             let (state, reason) = match (&entry.run, entry.failed) {
+                _ if entry.skipped.is_some() => ("skipped", entry.skipped.as_ref().map(|why| format!("No longer needed: {why}"))),
                 (Some(_), true) => ("failed", None),
                 (Some(_), false) if review.contains_key(&entry.feature) => ("review", None),
                 (Some(_), false) => ("running", None),
-                (None, _) => match orq_features::check_run_eligibility(ledger, &entry.feature) {
+                (None, _) => match eligible() {
                     Ok(_) if !next_given => {
                         next_given = true;
                         ("next", None)
@@ -414,10 +523,15 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
             let profiles = entry.profiles.as_ref();
             let mr_url = review.get(&entry.feature).cloned().flatten().map(|url| orq_core::redact::redact(&url));
             if state == "review" && waiting_for_review.is_none() {
-                waiting_for_review = Some(json!({"feature": entry.feature, "mr_url": mr_url}));
+                waiting_for_review = Some(json!({"feature": entry.feature, "label": entry_label(entry), "mr_url": mr_url}));
             }
+            let action = entry.action.as_ref();
             json!({
                 "feature": entry.feature,
+                "kind": action.map_or("start", |action| action.kind.as_str()),
+                "label": entry_label(entry),
+                "target_run": action.map(|action| &action.run),
+                "answer": action.and_then(|action| action.answer.as_ref()).map(|answer| orq_core::redact::redact(answer)),
                 "state": state,
                 "reason": reason.map(|reason| orq_core::redact::redact(&reason)),
                 "run": entry.run,
@@ -466,6 +580,49 @@ fn ordered<'a>(entries: &'a [QueuedFeature], ledger: &[FeatureEntry]) -> Vec<&'a
         }
     }
     placed
+}
+
+/// How the page and `orq queue list` name an entry: `Start <feature>`, or the action and its run.
+pub fn entry_label(entry: &QueuedFeature) -> String {
+    entry.action.as_ref().map_or_else(|| format!("Start {}", entry.feature), action_label)
+}
+
+/// `Resume <run>`, `Review again <run>` or `Accept <run>`.
+pub fn action_label(action: &QueueAction) -> String {
+    let verb = match action.kind {
+        QueueKind::Resume => "Resume",
+        QueueKind::ReviewAgain => "Review again",
+        QueueKind::Accept => "Accept",
+    };
+    format!("{verb} {}", action.run)
+}
+
+/// Whether queued `action` still applies to its run in `runs`, of project `git`: why not, if it
+/// does not (the run was resumed, accepted, discarded or merged, or its feature started again).
+fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction) -> Result<(), String> {
+    let run = &action.run;
+    let Ok(record) = runs.load(run) else { return Err(format!("{run} was discarded")) };
+    if record.project_id != orq_git::project_id(git) {
+        return Err(format!("{run} is not one of the project's runs"));
+    }
+    let Ok(events) = runs.events(run) else { return Err(format!("{run} can no longer be read")) };
+    let summary = orq_orchestrator::summarize_run(&events);
+    if let Some(next) = summary.resumed_as {
+        return Err(format!("{run} was resumed as {next}"));
+    }
+    if let Ok(Some((later, _))) = orq_orchestrator::later_run_of(runs, run) {
+        return Err(format!("its feature {} was started again as {later}", record.feature_id));
+    }
+    let applies = match action.kind {
+        QueueKind::Resume => matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused | RunPhase::NeedsReview),
+        QueueKind::ReviewAgain => matches!(summary.phase, RunPhase::Failed | RunPhase::NeedsReview),
+        QueueKind::Accept => matches!(summary.phase, RunPhase::NeedsReview | RunPhase::Failed | RunPhase::Blocked),
+    };
+    match summary.phase {
+        _ if applies => Ok(()),
+        RunPhase::Completed | RunPhase::Merged => Err(format!("{run} was accepted or merged")),
+        phase => Err(format!("{run} is {}", phase.as_str().replace('_', " "))),
+    }
 }
 
 /// The server-log line for a start that failed with `why`, with any secret in it redacted.
@@ -575,7 +732,7 @@ fn oldest_waiting(store: &Store, git: &orq_git::Project, root: &Path) -> i64 {
     let queue = store.queue(root).unwrap_or_default();
     // An entry still waiting on its dependencies cannot take a slot, so it does not count.
     let ledger = read_ledger(&orq_features::ledger_path(git)).unwrap_or_default();
-    let may_start = |entry: &&QueuedFeature| entry.run.is_none() && !entry.failed && orq_features::check_run_eligibility(&ledger, &entry.feature).is_ok();
+    let may_start = |entry: &&QueuedFeature| entry.run.is_none() && !entry.failed && entry.skipped.is_none() && (entry.action.is_some() || orq_features::check_run_eligibility(&ledger, &entry.feature).is_ok());
     queue.entries.iter().filter(may_start).map(|entry| entry.added_at).min().unwrap_or(i64::MAX)
 }
 
@@ -588,7 +745,7 @@ mod tests {
     }
 
     fn queued(feature: String) -> super::QueuedFeature {
-        super::QueuedFeature { feature, added_at: 0, added_by: "web".into(), profiles: None, run: None, failed: false }
+        super::QueuedFeature { feature, added_at: 0, added_by: "web".into(), profiles: None, run: None, failed: false, action: None, skipped: None }
     }
 
     fn entry(feature: String, depends_on: Vec<String>) -> super::FeatureEntry {

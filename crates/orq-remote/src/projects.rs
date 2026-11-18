@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use orq_core::retention::PrunePlan;
 
 mod queue;
-pub use queue::{change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
+pub use queue::{action_label, change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
@@ -705,6 +705,17 @@ impl StoreProjects {
         Ok(MachineRuns { limits, active, malformed: None })
     }
 
+    /// The web's Resume or Review again of `run` of `project`, now: refused over the run limit, else
+    /// through the launcher with what `request` adds.
+    fn resume_now(&self, project: &Project, store: &orq_orchestrator::RunStore, run: &str, request: &ResumeRequest) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
+        if let Some(why) = self.resume_over_limit(project, store, run)? {
+            return Ok(RunControlOutcome::Refused(why));
+        }
+        carried_on(launcher.resume_with(&project.path, run, request), &project.path)
+    }
+
     /// Why resuming `run` of `project` would take the project over its run limit, redacted for the page: a
     /// blocked run holds no slot, so its resume is a start. `None` when it may resume.
     fn resume_over_limit(&self, project: &Project, store: &orq_orchestrator::RunStore, run: &str) -> Result<Option<String>, String> {
@@ -929,6 +940,16 @@ enum Launch<'a> {
 }
 
 /// Starts a run the way the CLI does. The server never starts one by itself: whoever builds it supplies this.
+/// What a resume carries beyond the run itself.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeRequest<'a> {
+    /// The person's answer, put in the resumed session's prompt.
+    pub answer: Option<&'a str>,
+    /// Review the commits after the run's last review again and fix what that review finds,
+    /// changing nothing else.
+    pub review_again: bool,
+}
+
 pub trait RunLauncher {
     /// Starts a run of `feature` in the project at `repo` and returns its id.
     fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError>;
@@ -953,6 +974,15 @@ pub trait RunLauncher {
     /// Continues run `run` of the project at `repo` and returns the id of the run that carries on.
     fn resume(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot resume runs".to_string()))
+    }
+
+    /// Continues run `run` as `resume` does, with what `request` adds: an answer for the resumed
+    /// session, or a review again of the commits after its last review.
+    fn resume_with(&self, repo: &Path, run: &str, request: &ResumeRequest) -> Result<String, LaunchError> {
+        if request.answer.is_none() && !request.review_again {
+            return self.resume(repo, run);
+        }
+        Err(LaunchError::Refused("this server cannot resume a run with an answer or a review again".to_string()))
     }
 
     /// Merges run `run` of the project at `repo`, blocked by uncommitted changes in the checkout to files it
@@ -1157,12 +1187,15 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 Err(why) if why.starts_with(&format!("{run} is ")) => Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
                 Err(why) => Err(why),
             },
-            RunControl::Resume => {
-                let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
-                if let Some(why) = self.resume_over_limit(&project, &store, run)? {
-                    return Ok(RunControlOutcome::Refused(why));
+            RunControl::Resume => self.resume_now(&project, &store, run, &ResumeRequest::default()),
+            RunControl::ReviewAgain => {
+                let events = store.events(run).map_err(|error| format!("run {run} is unreadable: {error:?}"))?;
+                let phase = orq_orchestrator::summarize_run(&events).phase;
+                if !matches!(phase, orq_orchestrator::RunPhase::NeedsReview | orq_orchestrator::RunPhase::Failed) {
+                    let phase = phase.as_str().replace('_', " ");
+                    return Ok(RunControlOutcome::Refused(format!("{run} is {phase}: only a run that needs review or failed can be reviewed again")));
                 }
-                carried_on(launcher.resume(&project.path, run), &project.path)
+                self.resume_now(&project, &store, run, &ResumeRequest { answer: None, review_again: true })
             }
             RunControl::Accept => self.accept(store, run),
             RunControl::BuildReport => self.build_report_now(&project, run),
@@ -1176,6 +1209,15 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 carried_on(launcher.merge_set_aside(&project.path, run), &project.path)
             }
         }
+    }
+
+    fn resume_with_answer(&self, id: &str, run: &str, answer: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        if let Some(busy) = self.being_accepted(run) {
+            return Ok(RunControlOutcome::Refused(busy));
+        }
+        self.resume_now(&project, &store, run, &ResumeRequest { answer: Some(answer), review_again: false })
     }
 
     fn resume_check(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
