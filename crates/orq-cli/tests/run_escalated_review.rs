@@ -296,3 +296,15 @@ fn a_resume_with_an_answer_puts_the_answer_in_the_resumed_session_s_prompt() {
     let second = second_prompt(&w, &resumed);
     assert!(second.contains("\n\nThe person who resumed this run answered:\nuse the v2 endpoint"), "{second}");
 }
+
+#[test]
+fn a_resume_with_an_answer_too_long_is_refused_before_the_run_is_resumed() {
+    let long = "x".repeat(8001);
+    let (w, _, resumed) = resume_failed("answer-long", |_| {}, &["--answer", &long]);
+
+    let stderr = text(&resumed.stderr);
+    assert_ne!(resumed.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("the answer is longer than 8000 characters"), "{stderr}");
+    assert_eq!(sessions(&w), 1, "no session starts: {stderr}");
+    assert_eq!(std::fs::read_dir(w.state.join("orq/runs")).unwrap().count(), 1, "no run carries the failed one on: {stderr}");
+}

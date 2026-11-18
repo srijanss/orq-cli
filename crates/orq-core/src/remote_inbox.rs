@@ -972,7 +972,7 @@ fn launch_choice(body: &[u8], feature: &str) -> Result<(Option<LaunchProfiles>, 
 }
 
 /// The longest answer a queued Resume keeps, in characters.
-pub const MAX_QUEUED_ANSWER: usize = 8000;
+pub const MAX_QUEUED_ANSWER: usize = crate::store::run_queue::MAX_ANSWER_CHARS;
 
 /// Whether `name` names a queue entry: a feature, or a run action's `<kind>:<run>`.
 fn queue_entry_name(name: &str) -> bool {
@@ -1181,7 +1181,7 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
     let answer = match fields.get("answer") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(answer)) if answer.chars().count() <= MAX_QUEUED_ANSWER => Ok(Some(answer.trim()).filter(|answer| !answer.is_empty())),
+        Some(Value::String(answer)) => crate::store::run_queue::checked_answer(answer).map_err(drop),
         Some(_) => Err(()),
     };
     let Some(answer) = refusal.is_none().then_some(answer).and_then(Result::ok) else {
@@ -1585,9 +1585,9 @@ fn queued_action(fields: &Value) -> Option<crate::store::run_queue::QueueAction>
     let run = fields.get("run")?.as_str().filter(|run| !run.is_empty() && plain_run_id(run))?.to_string();
     let answer = match fields.get("answer") {
         None | Some(Value::Null) => None,
-        Some(answer) => Some(answer.as_str()?.trim()).filter(|answer| !answer.is_empty()).map(str::to_string),
+        Some(answer) => crate::store::run_queue::checked_answer(answer.as_str()?).ok()?.map(str::to_string),
     };
-    if answer.as_ref().is_some_and(|answer| kind != QueueKind::Resume || answer.chars().count() > MAX_QUEUED_ANSWER) {
+    if answer.is_some() && kind != QueueKind::Resume {
         return None;
     }
     Some(QueueAction { kind, run, answer })

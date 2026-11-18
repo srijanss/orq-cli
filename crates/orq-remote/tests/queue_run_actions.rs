@@ -428,3 +428,18 @@ fn an_accept_queued_in_another_project_holds_a_machine_slot_while_its_tests_run(
     assert_eq!(started(&s), Vec::<String>::new(), "the machine's one slot is held by beta's accept");
     s.accept_outcomes.lock().unwrap().push(Ok(()));
 }
+
+#[test]
+fn an_answer_with_control_characters_is_refused_before_anything_is_resumed_or_queued() {
+    let s = setup("qra-bad-answer", |_| {});
+    stopped_run(&s, "run-old", "failed");
+    let bad = json!({"answer": "use \u{1b}[31mv2"});
+    let (status, _) = send(&s, "POST", "/api/projects/alpha/runs/run-old/resume", bad.to_string().as_bytes());
+    assert_eq!(status, 400);
+    let (status, _) = send(&s, "POST", "/api/projects/alpha/queue", json!({"action": "resume", "run": "run-old", "answer": "use \u{7}v2"}).to_string().as_bytes());
+    assert_eq!(status, 400);
+    assert_eq!(resumed(&s), Vec::<Resumed>::new());
+    assert_eq!(states(&s), Vec::<(String, String, String)>::new());
+    let (status, _) = send(&s, "POST", "/api/projects/alpha/runs/run-old/resume", json!({"answer": "line one\n\tline two"}).to_string().as_bytes());
+    assert_eq!(status, 202, "new lines and tabs are fine");
+}

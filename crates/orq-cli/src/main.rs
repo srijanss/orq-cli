@@ -361,6 +361,9 @@ fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
 /// [`run`], for the run that resumes `resuming` when given.
 fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     let Some(parsed) = parse_run_args(args) else { return usage_error() };
+    if let Some(Err(reason)) = parsed.answer.as_deref().map(orq_core::store::run_queue::checked_answer) {
+        return fail(format!("cannot resume: {reason}"));
+    }
     // A group of one is the feature itself; several features run as one session on one branch.
     let group = match (parsed.group.as_deref(), parsed.feature.as_deref()) {
         (Some(_), Some(_)) => return group_error("--group and --feature cannot be given together".to_string()),
@@ -5213,6 +5216,13 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
         }
     }
     let Some(run_id) = run_id else { return usage_error() };
+    // A bad answer is refused before the run is read, reconciled or resumed.
+    if let Some(answer) = &answer {
+        let Some(text) = answer.to_str() else { return usage_error() };
+        if let Err(reason) = orq_core::store::run_queue::checked_answer(text) {
+            return fail(format!("cannot resume {}: {reason}", printable(&run_id)));
+        }
+    }
     let Some(root) = pipeline::state_root() else {
         return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
     };

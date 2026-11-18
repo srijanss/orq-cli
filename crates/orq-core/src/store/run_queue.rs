@@ -27,6 +27,23 @@ pub struct QueueAddition {
 /// The most features a project's queue holds: as many as one reorder request may name.
 pub const QUEUE_LIMIT: usize = 200;
 
+/// The longest answer a Resume carries to the resumed session, in characters.
+pub const MAX_ANSWER_CHARS: usize = 8000;
+
+/// The answer a Resume (now or queued) carries to the resumed session, trimmed, or none when it is
+/// blank; why not when it is longer than [`MAX_ANSWER_CHARS`] or holds a control character other
+/// than a new line or tab. Checked before anything is resumed or queued.
+pub fn checked_answer(text: &str) -> std::result::Result<Option<&str>, String> {
+    if text.chars().count() > MAX_ANSWER_CHARS {
+        return Err(format!("the answer is longer than {MAX_ANSWER_CHARS} characters"));
+    }
+    if text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t')) {
+        return Err("the answer holds a control character".to_string());
+    }
+    let trimmed = text.trim();
+    Ok((!trimmed.is_empty()).then_some(trimmed))
+}
+
 /// What a queued entry does with a run that already exists, instead of starting a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueKind {
