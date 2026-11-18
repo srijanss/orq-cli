@@ -197,6 +197,15 @@ fn fail_interrupted_accepts(store: &orq_orchestrator::RunStore) {
     }
 }
 
+/// Takes a run out of the accepting set when dropped.
+struct Released(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>, String);
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.1);
+    }
+}
+
 type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
 
 fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
@@ -583,11 +592,12 @@ impl StoreProjects {
         drop(accepting);
         let (tests, in_flight, run_id) = (self.accept_tests.clone(), self.accepting.clone(), run.to_string());
         std::thread::spawn(move || {
+            // Let go of the run however this thread ends, an unwind included, so it can be accepted again.
+            let _release = Released(in_flight, run_id.clone());
             // A failure is recorded on the run (run.accept_failed), so every device sees it; the log keeps a line too.
             if let Err(why) = orq_orchestrator::accept_run_by(&store, &run_id, "web", &*tests) {
                 eprintln!("orq serve: accepting {run_id} failed: {}", orq_core::redact::redact(&why));
             }
-            in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&run_id);
         });
         Ok(RunControlOutcome::Done(run.to_string()))
     }

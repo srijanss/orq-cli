@@ -248,3 +248,25 @@ fn a_passing_accept_shows_the_run_review_ready_with_its_delivery() {
     assert_eq!(shown["accepted"], true, "{shown}");
     assert!(shown["accept_failure"].is_null(), "{shown}");
 }
+
+#[test]
+fn tests_that_panic_leave_the_run_free_to_accept_again() {
+    let s = setup("run-accept-panic");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-fail", &["run.started", "run.failed"]);
+    let tests: Tests = Arc::new(|_: &Path| panic!("the test runner blew up"));
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+
+    assert_eq!(post(&s, &provider, "r-fail").0, 202);
+    assert_eq!(kinds_once(&s, "r-fail", 4), ["run.started", "run.failed", "run.accept_started", "run.accept_failed"]);
+    // The server lets go of it: another accept is taken, not refused as still running.
+    let mut again = (0, Value::Null);
+    for _ in 0..50 {
+        again = post(&s, &provider, "r-fail");
+        if again.0 == 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(again.0, 202, "{}", again.1);
+}

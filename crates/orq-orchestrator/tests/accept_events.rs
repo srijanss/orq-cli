@@ -227,3 +227,13 @@ fn a_private_key_whose_start_scrolled_out_of_the_kept_output_is_not_kept() {
     assert!(err.contains("test result: FAILED"), "{err}");
     assert!(!err.contains("MIIkeybodyline"), "{err}");
 }
+
+#[test]
+fn tests_that_panic_are_recorded_as_a_failed_accept() {
+    let (_repo, _worktree, store) = ended_run("panic", "needs_review");
+    let err = accept_run_by(&store, "run-1", "web", &|_: &Path| panic!("the test runner blew up")).unwrap_err();
+    assert!(err.contains("the test runner blew up"), "{err}");
+    let summary = summarize_run(&store.events("run-1").unwrap());
+    assert_eq!(summary.phase, RunPhase::NeedsReview, "not left accepting");
+    assert!(summary.accept_failure.unwrap().reason.contains("the test runner blew up"));
+}

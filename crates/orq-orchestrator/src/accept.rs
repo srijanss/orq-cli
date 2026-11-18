@@ -96,7 +96,10 @@ pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&P
 }
 
 fn test_and_confirm(run_id: &str, record: &crate::store::RunRecord, head_before: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
-    tests(&record.worktree).map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
+    // Tests that panic fail the accept like any other failure, so the run is never left accepting.
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tests(&record.worktree)));
+    let ran = ran.unwrap_or_else(|panic| Err(format!("they panicked: {}", panic_message(&*panic))));
+    ran.map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
     verify_own_worktree(run_id, &record.worktree, &record.branch)?;
     let head_after = git(&record.worktree, &["rev-parse", "HEAD"])?;
     let status_after = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
@@ -104,6 +107,14 @@ fn test_and_confirm(run_id: &str, record: &crate::store::RunRecord, head_before:
         return Err(format!("the tests changed the worktree of {run_id}; what they left is not the work that was tested"));
     }
     Ok(())
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+        (Some(text), _) => text.to_string(),
+        (_, Some(text)) => text.clone(),
+        _ => "no message".to_string(),
+    }
 }
 
 /// What an accept the server stopped during is recorded as.
