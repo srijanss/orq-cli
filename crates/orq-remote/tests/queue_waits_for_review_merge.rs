@@ -310,6 +310,21 @@ fn the_dashboard_card_says_when_the_queue_waits_for_review() {
 
 
 /// The queue's wait for review on the page.
+#[test]
+fn an_mr_state_that_cannot_be_read_keeps_holding_the_queue() {
+    let s = setup("wait-mr-unreadable", Delivery::Review, |_| {});
+    round(&s);
+    end_run(&s, "run-1-COM-01", "review_ready");
+    mr(&s, "run-1-COM-01", ProviderState::Open);
+    let db = rusqlite::Connection::open(s.roots.database()).unwrap();
+    db.execute_batch("ALTER TABLE review_lifecycles RENAME TO review_lifecycles_gone;").unwrap();
+
+    round(&s);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "COM-02 waits while nobody can tell whether COM-01's MR merged");
+    assert_eq!(states(&s), pairs(&[("COM-01", "review"), ("COM-02", "next")]), "COM-01 stays in the queue, waiting for review");
+}
+
 mod page {
     //! On the page, a queue that waits for a run's review says so: the entry shows "Waiting for review"
     //! with its MR linked, the queue's head says "Waiting for <feature>'s MR to merge" (or its review, with

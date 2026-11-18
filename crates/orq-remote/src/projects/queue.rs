@@ -478,10 +478,12 @@ fn ending(events: &[orq_orchestrator::Event]) -> Option<&str> {
 }
 
 /// What became of run `run`, delivered for review, from the newest MR `store` holds for it: open, it
-/// waits for review; closed, it failed; merged, or with no MR, it is done.
+/// waits for review; closed, it failed; merged, or with no MR, it is done. When what the store holds
+/// cannot be read, the MR may still be open, so it still waits.
 fn mr_settled(store: &Store, run: &str) -> Settled {
     use orq_core::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
-    let newest = store.lifecycles_for_run(run).ok().and_then(|all| all.into_iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER));
+    let Ok(all) = store.lifecycles_for_run(run) else { return Settled::InReview(None) };
+    let newest = all.into_iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER);
     match newest {
         Some(mr) if mr.state == ProviderState::Open => Settled::InReview(Some(mr.url)),
         Some(mr) if mr.state == ProviderState::Closed => Settled::MrClosed,
