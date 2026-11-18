@@ -166,7 +166,9 @@ fn every_action_posts_a_json_object_body_from_the_one_helper_that_takes_it() {
 fn each_row_asks_for_itself_and_a_confirmed_action_posts_once() {
     let Some(out) = runs_page(Some(true), vec![checked()], vec![json!({"click": "[data-pause]"}), json!({"click": "[data-resume]"})]) else { return };
     assert_eq!(count(&out["frames"][2], "[data-confirm]"), 1, "{out}");
-    assert_eq!(count(&out["frames"][3], "[data-confirm]"), 2, "each row keeps its own question");
+    // A row's question floats on a wide screen and only one is open at a time (web_run_list_inline_confirm), so
+    // the second row's question replaces the first.
+    assert_eq!(count(&out["frames"][3], "[data-confirm]"), 1, "one row's question at a time: {out}");
     let ok = json!({"status": 202, "json": {"run": "run-9"}});
     let Some(out) = features_page(Some(true), vec![ok], vec![json!({"click": "[data-start]"}), json!({"click": "[data-confirm]"})]) else { return };
     assert_eq!(out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "POST").count(), 1, "{out}");

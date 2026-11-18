@@ -2,7 +2,8 @@
 // header on each request. A copy is kept in this tab's sessionStorage only, so a refresh does not
 // ask again and closing the tab forgets it; it goes nowhere else (no address, no other storage).
 // Every string from the API is rendered as text.
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
@@ -1936,8 +1937,12 @@ function blockedOf(control) {
 
 // opensIn: the project whose orchestration page the run the action started is linked to, or null for an
 // action that starts no run. blocked: why the button is disabled now, shown beside it, or null.
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null }) {
+// float: in a run table's row on a wide screen, the question floats in a panel anchored to the button (see
+// FloatingQuestion) so the row keeps its size; on a phone it opens in the row as everywhere else.
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false }) {
   const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
+  const floating = float && !usePhone();
+  const button = useRef(null);
   const [note, setNote] = useState("");
   const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
@@ -1996,12 +2001,31 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
     setNote(text);
     setPhase("idle");
   };
+  const cancel = () => (onCancel === null ? setPhase("idle") : onCancel());
+  if (floating) {
+    // The button stays in its row while the question is open, so the row keeps its size.
+    const open = phase === "asking" || phase === "sending";
+    return (
+      <div className="run-action">
+        {phase !== "done" ? <button type="button" ref={button} className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null || phase === "checking" || phase === "sending"} aria-expanded={open ? "true" : "false"} title={blocked ?? undefined} onClick={open ? cancel : ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
+        {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
+        {phase === "checking" ? <span role="status" className="sr-only">Checking…</span> : null}
+        {open ? (
+          <FloatingQuestion anchor={button} busy={phase === "sending"} onClose={cancel}>
+            <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={send} onCancel={cancel} />
+          </FloatingQuestion>
+        ) : null}
+        {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
+        {phase === "done" && opensIn !== null ? <OpenRun projectId={opensIn} run={run} /> : null}
+      </div>
+    );
+  }
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
       {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={() => (onCancel === null ? setPhase("idle") : onCancel())} /> : null}
+      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={cancel} /> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
       {phase === "done" && opensIn !== null ? <OpenRun projectId={opensIn} run={run} /> : null}
@@ -3687,6 +3711,7 @@ function RowActions({ run, control, menu = false }) {
   const setAside = dirtyFiles(run) === null ? null : <RunAction kind="merge-set-aside" label="Set aside my changes and merge" icon="check" question={SET_ASIDE_QUESTION} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/merge-set-aside")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Merging." : "Merging as run " + next + ".")} />;
   if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null && setAside === null) return null;
   const all = [pause, resume, setAside, model, stop, accept, discard].filter((action) => action !== null);
+  if (menu && all[0].type === RunAction) all[0] = cloneElement(all[0], { float: true });
   if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
 }
@@ -3699,31 +3724,8 @@ function MoreMenu({ label, children }) {
   const box = useRef(null);
   const toggle = useRef(null);
   const menu = useRef(null);
-  useLayoutEffect(() => {
-    if (!open) return undefined;
-    const place = () => {
-      // Measured at the window's top left: an auto-width fixed menu shrinks to the room on its right, so only
-      // there is it its own width, whatever its place in the row or where it was put last.
-      menu.current.style.top = "0px";
-      menu.current.style.left = "0px";
-      const at = placeMenu(toggle.current.getBoundingClientRect(), menu.current.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
-      menu.current.style.top = at.top + "px";
-      menu.current.style.left = at.left + "px";
-    };
-    place();
-    // A question an action asks makes the menu taller, so it is placed again whenever what it holds changes, and
-    // it follows its button when the page or the run table scrolls (captured: a scroll does not bubble) or the
-    // window changes size.
-    const changes = new MutationObserver(place);
-    changes.observe(menu.current, { childList: true, subtree: true, characterData: true });
-    window.addEventListener("scroll", place, true);
-    window.addEventListener("resize", place);
-    return () => {
-      changes.disconnect();
-      window.removeEventListener("scroll", place, true);
-      window.removeEventListener("resize", place);
-    };
-  }, [open]);
+  useOnlyOpen(open, () => setOpen(false));
+  useAnchored(open, toggle, menu);
   useEffect(() => {
     if (!open) return undefined;
     const onKeyDown = (event) => {
@@ -3745,6 +3747,92 @@ function MoreMenu({ label, children }) {
       <span className="run-more-menu" ref={menu}>{children}</span>
     </span>
   );
+}
+
+// The ⋯ menu or floating question open now, as a ref to what closes it: opening another closes it first, so
+// only one is ever open.
+let openPopup = null;
+function useOnlyOpen(open, close) {
+  const closer = useRef(close);
+  closer.current = close;
+  useEffect(() => {
+    if (!open) return undefined;
+    if (openPopup !== null && openPopup !== closer) openPopup.current();
+    openPopup = closer;
+    return () => {
+      if (openPopup === closer) openPopup = null;
+    };
+  }, [open]);
+}
+
+// Keeps the fixed element `floating` at its `anchor` button while `open` (see placeMenu). It is measured at the
+// window's top left: an auto-width fixed element shrinks to the room on its right, so only there is it its own
+// width, whatever its place or where it was put last. What it holds may change its size (a question an action
+// in a ⋯ menu asks), so it is placed again whenever that changes, and it follows its button when the page or
+// the run table scrolls (captured: a scroll does not bubble) or the window changes size.
+function useAnchored(open, anchor, floating) {
+  useLayoutEffect(() => {
+    if (!open || anchor.current === null || floating.current === null) return undefined;
+    const place = () => {
+      if (anchor.current === null || floating.current === null) return;
+      floating.current.style.top = "0px";
+      floating.current.style.left = "0px";
+      const at = placeMenu(anchor.current.getBoundingClientRect(), floating.current.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight });
+      floating.current.style.top = at.top + "px";
+      floating.current.style.left = at.left + "px";
+    };
+    place();
+    const changes = new MutationObserver(place);
+    changes.observe(floating.current, { childList: true, subtree: true, characterData: true });
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      changes.disconnect();
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+}
+
+// A run table row's question in a panel outside the table, anchored to its action's button like a ⋯ menu,
+// so the row and its columns keep their size. Focus moves to its first button; Cancel or Escape closes it
+// and puts focus back on the action's button; a press anywhere else closes it. Opening it closes any other
+// open panel or ⋯ menu. It is drawn in the page's content, outside the table, so its sideways scroll cannot
+// cut it off.
+function FloatingQuestion({ anchor, busy, onClose, children }) {
+  const panel = useRef(null);
+  const close = (refocus) => {
+    onClose();
+    if (refocus && anchor.current !== null) anchor.current.focus();
+  };
+  useOnlyOpen(true, () => close(false));
+  useAnchored(true, anchor, panel);
+  useEffect(() => {
+    const first = panel.current === null ? null : panel.current.querySelector("button:not([disabled])");
+    if (first !== null) first.focus();
+  }, []);
+  useEffect(() => {
+    if (busy) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") close(true);
+    };
+    const onPress = (event) => {
+      const inside = (ref) => ref.current !== null && ref.current.contains(event.target);
+      if (!inside(panel) && !inside(anchor)) close(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPress, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPress, true);
+    };
+  });
+  // Cancel unmounts the panel, so focus would fall to the page: it goes back to the action's button instead.
+  const onClick = (event) => {
+    if (event.target.closest("[data-cancel]") !== null && anchor.current !== null) anchor.current.focus();
+  };
+  const host = (anchor.current !== null && anchor.current.closest(".content")) || document.body;
+  return createPortal(<div className="run-action-float" data-run-action-float ref={panel} onClick={onClick}>{children}</div>, host);
 }
 
 // Where an open ⋯ menu goes in a window `view`: just under its button, right edges together, or just above the
