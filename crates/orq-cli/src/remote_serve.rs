@@ -57,7 +57,7 @@ fn restart_command(args: &[OsString]) -> ExitCode {
             return fail(format!("cannot restart orq serve (pid {}): {why}", server.pid));
         }
     }
-    let signal = if now { libc::SIGUSR2 } else { libc::SIGUSR1 };
+    let signal = restart_signal(now, force);
     for server in &servers {
         // SAFETY: kill only sends a signal; the pid is a live server's, held by its lock.
         if unsafe { libc::kill(server.pid as libc::pid_t, signal) } != 0 {
@@ -69,6 +69,13 @@ fn restart_command(args: &[OsString]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The signal that asks a server to restart. Only a forced restart goes ahead at once (SIGUSR2); any other
+/// asks it to restart when idle (SIGUSR1), so the server looks at the runs itself when it takes the signal
+/// and waits for one that started after `--now` found none.
+fn restart_signal(now: bool, force: bool) -> libc::c_int {
+    if now && force { libc::SIGUSR2 } else { libc::SIGUSR1 }
 }
 
 /// `1 run`, `2 runs`.
@@ -595,6 +602,15 @@ mod restart_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn only_a_forced_restart_skips_the_servers_own_idle_check() {
+        // An unforced --now found no run active, but one may start before the server takes the signal: the
+        // server looks again (as when idle), so the restart never goes ahead over it.
+        assert_eq!(restart_signal(false, false), libc::SIGUSR1);
+        assert_eq!(restart_signal(true, false), libc::SIGUSR1);
+        assert_eq!(restart_signal(true, true), libc::SIGUSR2);
     }
 
     fn executable(path: &std::path::Path) {
