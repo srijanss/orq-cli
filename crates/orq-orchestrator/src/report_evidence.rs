@@ -35,22 +35,24 @@ fn evidence_in(events: &[Event], head_sha: &str) -> RecordedEvidence {
         .iter()
         .rev()
         .filter(|e| ended(e, "ci"))
-        // A skip because CI is disabled names no head: it holds for any.
-        .filter(|e| e.payload.get("head_sha").and_then(|h| h.as_str()).map_or(e.kind == "stage.skipped", |h| h == head_sha))
-        .find_map(ci_outcome);
+        // A skip because CI is disabled names no head: it holds for any. The head's latest CI result stands, even one
+        // that cannot be read: an older pass does not vouch for it.
+        .find(|e| e.payload.get("head_sha").and_then(|h| h.as_str()).map_or(e.kind == "stage.skipped", |h| h == head_sha))
+        .map(ci_outcome);
     RecordedEvidence { gate_passed, gate_steps, ci }
 }
 
-fn ci_outcome(event: &Event) -> Option<CiOutcome> {
+/// What `event` says CI gave; one whose result cannot be read is an error, never no result.
+fn ci_outcome(event: &Event) -> CiOutcome {
     let text = |key: &str| event.payload.get(key).and_then(|v| v.as_str()).map(str::to_string);
-    match event.kind.as_str() {
-        "stage.completed" => Some(CiOutcome::Passed),
-        "stage.skipped" => Some(CiOutcome::Skipped),
-        _ => match text("result").as_deref() {
-            Some("failed") => Some(CiOutcome::Failed { failing: serde_json::from_value(event.payload.get("failing")?.clone()).unwrap_or_default() }),
-            Some("timed_out") => Some(CiOutcome::TimedOut),
-            Some("errored") => Some(CiOutcome::Errored { reason: text("reason").unwrap_or_default() }),
-            _ => None,
+    match (event.kind.as_str(), text("result").as_deref()) {
+        ("stage.completed", _) => CiOutcome::Passed,
+        ("stage.skipped", _) => CiOutcome::Skipped,
+        (_, Some("failed")) => CiOutcome::Failed {
+            failing: event.payload.get("failing").and_then(|failing| serde_json::from_value(failing.clone()).ok()).unwrap_or_default(),
         },
+        (_, Some("timed_out")) => CiOutcome::TimedOut,
+        (_, Some("errored")) => CiOutcome::Errored { reason: text("reason").unwrap_or_default() },
+        (kind, _) => CiOutcome::Errored { reason: format!("CI's result ({kind}) could not be read") },
     }
 }

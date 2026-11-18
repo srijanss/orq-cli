@@ -85,3 +85,77 @@ fn a_gate_whose_commit_could_not_be_read_is_no_heads_evidence() {
     run_gate_stage(&store, "run-1", &gate("true"), true, &log).unwrap();
     assert!(!recorded_evidence(&store, "run-1", &"f".repeat(40)).unwrap().gate_passed, "nor vouches for another head");
 }
+
+const CI_HEAD: &str = "c1c1000000000000000000000000000000000001";
+
+/// Records a CI stage event of `kind` with `payload` on run-1.
+fn ci_event(store: &RunStore, kind: &str, payload: serde_json::Value) {
+    let n = store.events("run-1").unwrap().len();
+    store
+        .append_event(&orq_orchestrator::Event {
+            schema_version: 1,
+            event_id: format!("ci-{n}"),
+            run_id: "run-1".into(),
+            project_id: "repo-1".into(),
+            feature_id: "f".into(),
+            kind: kind.into(),
+            stage: Some("ci".into()),
+            attempt: 1,
+            occurred_at: "2026-11-18T09:00:00Z".into(),
+            payload,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_newer_ci_failure_that_cannot_be_read_is_not_covered_by_an_older_pass() {
+    use orq_orchestrator::CiOutcome;
+    use serde_json::json;
+    for unreadable in [json!({"head_sha": CI_HEAD}), json!({"result": "exploded", "head_sha": CI_HEAD}), json!({"result": "failed", "head_sha": CI_HEAD})] {
+        let (store, _, _) = world_at("ci-unreadable");
+        ci_event(&store, "stage.completed", json!({"result": "passed", "head_sha": CI_HEAD}));
+        ci_event(&store, "stage.failed", unreadable.clone());
+
+        let ci = recorded_evidence(&store, "run-1", CI_HEAD).unwrap().ci;
+        assert!(matches!(ci, Some(CiOutcome::Failed { .. } | CiOutcome::Errored { .. })), "{unreadable} after a pass gave {ci:?}");
+    }
+}
+
+#[test]
+fn a_ci_failure_that_names_no_failing_checks_is_still_a_failure() {
+    let (store, _, _) = world_at("ci-failed-unnamed");
+    ci_event(&store, "stage.failed", serde_json::json!({"result": "failed", "head_sha": CI_HEAD}));
+
+    let ci = recorded_evidence(&store, "run-1", CI_HEAD).unwrap().ci;
+    assert_eq!(ci, Some(orq_orchestrator::CiOutcome::Failed { failing: Vec::new() }));
+}
+
+#[test]
+fn each_ci_result_for_the_head_is_its_evidence_and_another_heads_is_not() {
+    use orq_orchestrator::CiOutcome;
+    use serde_json::json;
+    let other = "0e0e000000000000000000000000000000000002";
+    let cases = [
+        ("stage.completed", json!({"result": "passed", "head_sha": CI_HEAD}), Some(CiOutcome::Passed)),
+        ("stage.failed", json!({"result": "failed", "failing": ["lint"], "head_sha": CI_HEAD}), Some(CiOutcome::Failed { failing: vec!["lint".into()] })),
+        ("stage.failed", json!({"result": "timed_out", "head_sha": CI_HEAD}), Some(CiOutcome::TimedOut)),
+        ("stage.failed", json!({"result": "errored", "reason": "no token", "head_sha": CI_HEAD}), Some(CiOutcome::Errored { reason: "no token".into() })),
+        // CI disabled: a skip names no head and holds for any.
+        ("stage.skipped", json!({"reason": "disabled"}), Some(CiOutcome::Skipped)),
+        // Another head's result, and a pass that names no head, say nothing about this one.
+        ("stage.completed", json!({"result": "passed", "head_sha": other}), None),
+        ("stage.completed", json!({"result": "passed"}), None),
+    ];
+    for (kind, payload, expected) in cases {
+        let (store, _, _) = world_at("ci-table");
+        ci_event(&store, kind, payload.clone());
+        assert_eq!(recorded_evidence(&store, "run-1", CI_HEAD).unwrap().ci, expected, "{kind} {payload}");
+    }
+
+    // With results for two heads, each keeps its own, whichever came last.
+    let (store, _, _) = world_at("ci-two-heads");
+    ci_event(&store, "stage.failed", json!({"result": "failed", "failing": [], "head_sha": CI_HEAD}));
+    ci_event(&store, "stage.completed", json!({"result": "passed", "head_sha": other}));
+    assert_eq!(recorded_evidence(&store, "run-1", CI_HEAD).unwrap().ci, Some(CiOutcome::Failed { failing: Vec::new() }));
+    assert_eq!(recorded_evidence(&store, "run-1", other).unwrap().ci, Some(CiOutcome::Passed));
+}
