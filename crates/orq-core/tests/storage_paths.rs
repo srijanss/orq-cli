@@ -53,6 +53,27 @@ fn under_the_test_sandbox_a_folder_outside_the_temp_dir_is_refused_by_name() {
     assert!(error.to_string().contains("/tmp/../home/u/.config/orq"), "{error}");
 }
 
+#[cfg(unix)]
+#[test]
+fn under_the_test_sandbox_a_symlink_out_of_the_temp_dir_is_refused() {
+    let base = scratch("sandbox-symlink");
+    let temp = base.join("tmp");
+    let protected = base.join("real-home");
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::create_dir_all(&protected).unwrap();
+    std::os::unix::fs::symlink(&protected, temp.join("home")).unwrap();
+    let home = temp.join("home");
+
+    // The data folder does not exist yet: the existing ancestor (the link) decides.
+    let error = StorageRoots::resolve(&env(&[("ORQ_TEST_SANDBOX", "1"), ("TMPDIR", temp.to_str().unwrap()), ("HOME", home.to_str().unwrap())])).unwrap_err();
+    assert!(error.to_string().contains(&home.join(".local/share/orq").display().to_string()), "{error}");
+
+    // A plain directory inside the same temp dir is still accepted.
+    let plain = temp.join("plain-home");
+    std::fs::create_dir_all(&plain).unwrap();
+    StorageRoots::resolve(&env(&[("ORQ_TEST_SANDBOX", "1"), ("TMPDIR", temp.to_str().unwrap()), ("HOME", plain.to_str().unwrap())])).unwrap();
+}
+
 #[test]
 fn relative_or_empty_xdg_values_are_ignored_and_a_missing_home_fails() {
     let roots = StorageRoots::resolve(&env(&[("HOME", "/home/u"), ("XDG_DATA_HOME", "relative/dir"), ("XDG_CACHE_HOME", "")])).unwrap();

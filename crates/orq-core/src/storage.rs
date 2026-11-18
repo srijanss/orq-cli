@@ -46,9 +46,12 @@ impl StorageRoots {
     /// so a test that forgot to move one fails instead of writing into the person's real folders.
     fn check_sandboxed(&self, env: &dyn Fn(&str) -> Option<String>) -> std::io::Result<()> {
         let temp = env("TMPDIR").map(PathBuf::from).filter(|dir| dir.is_absolute()).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let real_temp = real_path(&temp);
         for (var, root) in [("XDG_DATA_HOME", &self.data), ("XDG_CONFIG_HOME", &self.config), ("XDG_STATE_HOME", &self.state), ("XDG_CACHE_HOME", &self.cache)] {
             let climbs = root.components().any(|part| part == std::path::Component::ParentDir);
-            if climbs || !root.starts_with(&temp) {
+            // Compared where the path really leads, so a symlink inside the temp dir pointing at
+            // the real folders does not pass.
+            if climbs || !real_path(root).starts_with(&real_temp) {
                 return Err(Error::new(
                     ErrorKind::PermissionDenied,
                     format!("{TEST_SANDBOX}=1 refuses the orq folder {}: it is not inside the temporary directory {}; point HOME or {var} at a temporary directory", root.display(), temp.display()),
@@ -80,6 +83,25 @@ impl StorageRoots {
             create_private_dir(dir)?;
         }
         Ok(())
+    }
+}
+
+/// `path` with its deepest existing ancestor's symlinks resolved and the rest (not created yet)
+/// appended unchanged; `path` itself when nothing of it can be resolved.
+fn real_path(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return rest.iter().rev().fold(real, |path, part| path.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
