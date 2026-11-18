@@ -243,22 +243,32 @@ fn tests_that_panic_are_recorded_as_a_failed_accept() {
 fn two_accepts_started_together_run_the_tests_once() {
     let (_repo, _worktree, store) = ended_run("together", "failed");
     let runs = std::sync::atomic::AtomicUsize::new(0);
-    let start = std::sync::Barrier::new(2);
-    let results: Vec<Result<String, String>> = std::thread::scope(|scope| {
-        let accept = || {
-            start.wait();
+    let (started, on_start) = std::sync::mpsc::channel::<()>();
+    let (finish, on_finish) = std::sync::mpsc::channel::<()>();
+    let (started, on_finish) = (std::sync::Mutex::new(started), std::sync::Mutex::new(on_finish));
+    let (first, second) = std::thread::scope(|scope| {
+        // Owned here, so however this ends the first accept's tests are let go and the scope can end.
+        let finish = finish;
+        let first = scope.spawn(|| {
             accept_run_by(&store, "run-1", "web", &|_: &Path| {
                 runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                started.lock().unwrap().send(()).unwrap();
+                let _ = on_finish.lock().unwrap().recv();
                 Err("`cargo test` failed".into())
             })
-        };
-        let (a, b) = (scope.spawn(accept), scope.spawn(accept));
-        vec![a.join().unwrap(), b.join().unwrap()]
+        });
+        on_start.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        // The first accept is inside its tests until told to finish.
+        let second = accept_run_by(&store, "run-1", "cli", &|_: &Path| {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        finish.send(()).unwrap();
+        (first.join().unwrap(), second)
     });
-    assert_eq!(runs.into_inner(), 1, "{results:?}");
-    let refused: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).filter(|e| e.contains("an accept is running")).collect();
-    assert_eq!(refused.len(), 1, "{results:?}");
+    assert_eq!(runs.into_inner(), 1, "{first:?} {second:?}");
+    assert!(second.as_ref().is_err_and(|e| e.contains("an accept is running")), "{second:?}");
+    assert!(first.as_ref().is_err_and(|e| e.contains("`cargo test` failed")), "{first:?}");
     assert_eq!(kinds(&store).iter().filter(|k| *k == "run.accept_started").count(), 1);
     assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Failed);
 }
