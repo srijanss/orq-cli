@@ -18,6 +18,8 @@ const SELECTORS: &[&str] = &[
     "[data-run-action-float] .confirm [data-confirm]",
     "[data-run-action-float] .confirm [data-cancel]",
     "td [data-resume]",
+    "td [data-resume][disabled]",
+    ".run-action-note.error-text",
     ".run-more.open",
     ".run-action > .confirm",
     ".confirm",
@@ -133,6 +135,24 @@ fn only_one_panel_is_open_at_a_time() {
     assert_eq!(count(frame, PANEL), 1, "{out}");
     assert!(texts(frame).iter().any(|t| t.contains("Resume r-paused from implement?")), "{:?}", texts(frame));
     assert!(!texts(frame).iter().any(|t| t.contains("Resume r-fail from implement?")), "{:?}", texts(frame));
+}
+
+fn posts(out: &Value) -> usize {
+    out["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "POST").count()
+}
+
+#[test]
+fn opening_a_menu_while_a_confirmed_action_is_sending_cannot_send_it_again() {
+    // The resume is confirmed and its POST has no answer yet; a ⋯ menu opens, then Resume is pressed again.
+    let held = json!({"status": 202, "json": {"run": "r-next"}, "hold": "fetch"});
+    let steps = vec![resume(0), json!({"click": "[data-run-action-float] .confirm [data-confirm]"}), json!({"click": "[data-run-more]", "index": 1}), resume(0)];
+    let Some(out) = runs_page(vec![checked("r-fail"), held, checked("r-fail")], steps, false) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, ".run-more.open"), 1, "{out}");
+    assert_eq!(count(frame, "td [data-resume][disabled]"), 1, "Resume waits for its answer: {out}");
+    assert_eq!(posts(&out), 1, "{out}");
+    let checks = out["requests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/projects/alpha/runs/r-fail/resume-check").count();
+    assert_eq!(checks, 1, "Resume is not asked again while it is sending: {out}");
 }
 
 #[test]

@@ -1943,11 +1943,15 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
   const floating = float && !usePhone();
   const button = useRef(null);
+  // A floating question closed by another one opening while its answer is being sent: only hidden, so the
+  // action stays sending (its button disabled) until the answer arrives.
+  const [hidden, setHidden] = useState(false);
   const [note, setNote] = useState("");
   const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
   const ask = async () => {
     setNote("");
+    setHidden(false);
     if (check === undefined) {
       setPhase("asking");
       return;
@@ -2010,8 +2014,9 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
         {phase !== "done" ? <button type="button" ref={button} className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null || phase === "checking" || phase === "sending"} aria-expanded={open ? "true" : "false"} title={blocked ?? undefined} onClick={open ? cancel : ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
         {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
         {phase === "checking" ? <span role="status" className="sr-only">Checking…</span> : null}
-        {open ? (
-          <FloatingQuestion anchor={button} busy={phase === "sending"} onClose={cancel}>
+        {phase === "sending" ? <span role="status" className="sr-only">Sending…</span> : null}
+        {open && !hidden ? (
+          <FloatingQuestion anchor={button} busy={phase === "sending"} onClose={phase === "sending" ? () => setHidden(true) : cancel}>
             <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={send} onCancel={cancel} />
           </FloatingQuestion>
         ) : null}
