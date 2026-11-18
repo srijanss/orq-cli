@@ -800,3 +800,29 @@ fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_targ
         ]
     );
 }
+
+/// A blocked run of `repo` with no worktree, based on its current commit, whose last event is at
+/// 2026-11-02T10:00:00Z.
+fn blocked_run_based_here(tag: &str, repo: &Path) -> RunStore {
+    let (_, store) = store(tag);
+    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-{tag}-gone-{}", std::process::id()));
+    let mut rec = record(&gone, "orq-run-1");
+    rec.base_sha = head_sha(repo);
+    rec.target_branch = current_branch(repo);
+    store.start_run(&rec).unwrap();
+    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+    store
+}
+
+#[test]
+fn discard_finished_a_recorded_time_that_is_not_plain_ascii_or_not_utc_is_never_later_and_never_panics() {
+    let repo = GitFixture::new();
+    let store = blocked_run_based_here("odd-times", repo.root());
+    let completed: Vec<(String, Option<String>)> =
+        ["202é-11-02T10:00:00Z", "2026-11-0é10:00:00Z", "2026-11-03T10:00:00Zé", "2026-11-03T10:00:00+01:00", "2026-11-03", "é", ""]
+            .iter()
+            .enumerate()
+            .map(|(n, at)| (format!("F-{n}"), Some(at.to_string())))
+            .collect();
+    assert_eq!(orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed).unwrap(), vec![]);
+}

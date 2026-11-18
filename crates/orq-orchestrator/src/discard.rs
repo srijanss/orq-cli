@@ -304,6 +304,10 @@ pub fn features_finished_elsewhere(
 /// The second an RFC 3339 UTC time names, as `YYYY-MM-DDTHH:MM:SS` text that sorts by time; `None`
 /// for a time in another zone or not in that form, which is then never later than anything.
 fn utc_second(time: &str) -> Option<&str> {
+    // Ledger text: only plain ASCII is sliced at fixed byte offsets.
+    if !time.is_ascii() {
+        return None;
+    }
     let (second, rest) = (time.get(..19)?, time.get(19..)?);
     let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
     let well_formed = second.len() == 19
