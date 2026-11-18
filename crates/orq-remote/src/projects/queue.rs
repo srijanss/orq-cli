@@ -180,6 +180,7 @@ impl StoreProjects {
                             started = true;
                             None
                         }
+                        Ok(RunStart::Refused(_)) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Ok(RunStart::Refused(why)) => Some(format!("{} could not start: {why}", entry.feature)),
                         Ok(RunStart::Unknown) => Some(format!("{} is not in the project's features", entry.feature)),
                         Err(why) => {
@@ -198,6 +199,20 @@ impl StoreProjects {
             }
         }
         Ok(started)
+    }
+
+    /// Whether project `git` or the machine is now at its run limit: a start refused once another
+    /// took the last slot after the queue looked is waited out, not a pause.
+    fn limit_reached(&self, runs: &RunStore, git: &orq_git::Project, settings: &orq_core::project_settings::ProjectSettings, machine: &super::MachineRuns) -> Result<bool, String> {
+        let active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
+        if orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).is_some() {
+            return Ok(true);
+        }
+        if machine.limits.max_active.is_none() {
+            return Ok(false);
+        }
+        let active = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
+        Ok(orq_orchestrator::machine_limit_refusal(machine.limits.max_active, &active).is_some())
     }
 
     /// Project `id`'s queue as the web shows it; `None` when there is no such project.

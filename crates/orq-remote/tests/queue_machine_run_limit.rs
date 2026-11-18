@@ -19,13 +19,17 @@ struct Launcher {
     state: PathBuf,
     started: Mutex<Vec<String>>,
     refuse: Mutex<Option<LaunchError>>,
-    /// Done once, while the first run starts: what a person changes meanwhile.
+    /// Done once, while the first run starts or is refused: what changes meanwhile.
     meanwhile: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RunLauncher for Launcher {
     fn start(&self, repo: &Path, feature: &str) -> Result<String, LaunchError> {
         if let Some(refusal) = self.refuse.lock().unwrap().take() {
+            // Another start took the last slot between the queue's check and this one's.
+            if let Some(change) = self.meanwhile.lock().unwrap().take() {
+                change();
+            }
             return Err(refusal);
         }
         let mut started = self.started.lock().unwrap();
@@ -185,4 +189,23 @@ fn under_the_machines_disk_floor_the_queue_pauses_with_the_machines_reason() {
     assert!(started(&s).is_empty());
     let reason = queue(&s, "alpha")["paused"].as_str().unwrap_or_default().to_string();
     assert!(reason.contains("(this machine needs 15 GB to start a run): free some space, or lower [runs] min_free_disk_gb"), "{reason}");
+}
+
+#[test]
+fn a_start_refused_because_another_took_the_last_machine_slot_meanwhile_is_waited_out() {
+    let s = setup("queue-machine-race", "[runs]\nmax_active = 1\n");
+    git_repo(&s, "alpha", &[("A-01", "pending", &[])]);
+    let beta = git_repo(&s, "beta", &[("B-01", "pending", &[])]);
+    queue_add(&s, "alpha", &["A-01"]);
+    *s.launcher.refuse.lock().unwrap() = Some(LaunchError::Refused("this machine already has 1 active run (beta run-other): wait for it to finish, or raise [runs] max_active".into()));
+    let state = s.roots.state.clone();
+    *s.launcher.meanwhile.lock().unwrap() = Some(Box::new(move || seed_run(&state, &beta, "run-other", "B-01")));
+
+    round(&s);
+    let waiting = queue(&s, "alpha");
+    assert_eq!(waiting["paused"], Value::Null, "a full machine is waited out, even when found by the start itself: {waiting}");
+
+    end_run(&s, "run-other", "review_ready");
+    round(&s);
+    assert_eq!(started(&s), ["A-01"]);
 }
