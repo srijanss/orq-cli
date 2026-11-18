@@ -2267,6 +2267,12 @@ mod failure_log_open_tests {
     }
 
     #[test]
+    fn failure_log_open_gives_nothing_for_a_log_removed_after_it_was_checked() {
+        let dir = root("removed");
+        assert_eq!(open(&dir, || std::fs::remove_file(dir.join("logs/r1/gate.log")).unwrap()), None);
+    }
+
+    #[test]
     fn failure_log_open_does_not_wait_on_a_pipe_swapped_in() {
         let dir = root("fifo-swap");
         let got = open(&dir, || {

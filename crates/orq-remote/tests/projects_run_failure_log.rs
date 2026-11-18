@@ -306,3 +306,26 @@ fn an_attempt_with_a_recorded_byte_offset_is_read_from_there_without_rereading_t
     assert_eq!(found[0]["log"]["line"], json!(3), "{:?}", found[0]);
     assert!(found[0]["log"]["excerpt"].as_str().unwrap().starts_with("thread 'later' panicked"), "{:?}", found[0]);
 }
+
+#[test]
+fn an_empty_log_is_named_without_a_line_and_an_unreadable_one_gives_only_the_reason() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("failure-error-paths");
+    let empty = path_str(&write_log(&s, "r1", "empty.log", ""));
+    let locked_path = write_log(&s, "r1", "locked.log", "thread 'x' panicked at src/a.rs:1:1:\n");
+    std::fs::set_permissions(&locked_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let locked = path_str(&locked_path);
+    add_run(&s, "r1", &[
+        ("stage.started", Some("verify"), json!({"log": empty, "log_line": 0, "log_offset": 0})),
+        ("stage.failed", Some("verify"), json!({"log": empty, "reason": "empty"})),
+        ("stage.started", Some("verify"), json!({"log": locked, "log_line": 0, "log_offset": 0})),
+        ("stage.failed", Some("verify"), json!({"log": locked, "reason": "locked"})),
+    ]);
+    let found = failures(&timeline(&s, "r1"));
+    std::fs::set_permissions(&locked_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(found[0], json!({"reason": "empty", "log": {"file": "empty.log"}}));
+    // Root reads a file whatever its mode, so only the empty log is checked there.
+    if unsafe { libc::geteuid() } != 0 {
+        assert_eq!(found[1], json!({"reason": "locked"}));
+    }
+}
