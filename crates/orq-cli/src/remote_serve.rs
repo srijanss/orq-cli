@@ -520,13 +520,21 @@ fn restarts_after_exit(policy: &str) -> bool {
 /// Whether `path` can be started: an executable regular file. Checked before the server stops, so a
 /// binary that is gone or cannot run refuses the restart instead of leaving no server.
 fn runnable(path: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
     match std::fs::metadata(path) {
-        Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
-        Ok(meta) if meta.is_file() => Err(format!("{} is not executable", path.display())),
+        Ok(meta) if meta.is_file() && executable_by_this_process(path) => Ok(()),
+        Ok(meta) if meta.is_file() => Err(format!("{} is not executable by this user", path.display())),
         Ok(_) => Err(format!("{} is not a file", path.display())),
         Err(err) => Err(format!("cannot start {}: {:?}", path.display(), err.kind())),
     }
+}
+
+/// Whether this process may execute `path`, by its effective user and groups, as exec will decide: the
+/// owner's bits apply to the owner even when the others' allow it.
+fn executable_by_this_process(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a valid NUL-terminated path; faccessat only reads it.
+    unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) == 0 }
 }
 
 /// The runs a restart waits for: the active runs as the Runs view counts them, less the paused ones,
@@ -707,6 +715,24 @@ mod restart_tests {
         assert_eq!(restart_signal(false, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, true), libc::SIGUSR2);
+    }
+
+    #[test]
+    fn runnable_needs_execute_permission_for_this_user_not_just_any_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root may run any file with an execute bit
+        }
+        let dir = temp("others-only");
+        let path = dir.join("orq");
+        executable(&path);
+        // The owner's bits apply to the owner, so `r--` wins over the others' `x`.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o645)).unwrap();
+        let refused = runnable(&path).unwrap_err();
+        assert!(refused.contains("not executable"), "{refused}");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o744)).unwrap();
+        assert_eq!(runnable(&path), Ok(()));
     }
 
     #[test]
