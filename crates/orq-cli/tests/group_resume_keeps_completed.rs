@@ -296,3 +296,65 @@ fn set_status_completed_is_refused_with_the_reason_for_a_feature_no_run_complete
     assert!(stderr.contains("no run of this project recorded a session completing it"), "{stderr}");
     assert_eq!(std::fs::read(w.repo.root().join(".tdd-features.json")).unwrap(), before);
 }
+
+/// Copies the run directory `run_id` of `from`'s state into `to`'s state as `as_id`.
+fn copy_run(from: &World, run_id: &str, to: &World, as_id: &str) {
+    let source = from.state.join("orq/runs").join(run_id);
+    let target = to.state.join("orq/runs").join(as_id);
+    std::fs::create_dir_all(&target).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            std::fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
+#[test]
+fn set_status_completed_is_refused_when_only_another_projects_run_completed_the_feature() {
+    let other = world("set-other-project");
+    run_group(&other, &reporting_agent(), "completed", "first");
+    let w = world("set-this-project");
+    copy_run(&other, &only_run(&other), &w, "run-other-project");
+    let before = std::fs::read(w.repo.root().join(".tdd-features.json")).unwrap();
+
+    let output = set_status(&w, "COM-01", "completed");
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("no run of this project recorded a session completing it"), "{stderr}");
+    assert_eq!(std::fs::read(w.repo.root().join(".tdd-features.json")).unwrap(), before);
+}
+
+#[test]
+fn set_status_completed_is_refused_when_the_only_runs_cannot_be_read() {
+    let w = world("set-unreadable");
+    std::fs::create_dir_all(w.state.join("orq/runs/run-bad-record")).unwrap();
+    std::fs::write(w.state.join("orq/runs/run-bad-record/run.json"), "not json").unwrap();
+    std::fs::write(w.state.join("orq/runs/run-bad-record/events.jsonl"), "not json\n").unwrap();
+    let before = std::fs::read(w.repo.root().join(".tdd-features.json")).unwrap();
+
+    let output = set_status(&w, "COM-01", "completed");
+
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("no run of this project recorded a session completing it"), "{}", text(&output.stderr));
+    assert_eq!(std::fs::read(w.repo.root().join(".tdd-features.json")).unwrap(), before);
+}
+
+#[test]
+fn set_status_completed_uses_a_readable_completion_beside_unreadable_runs() {
+    let w = world("set-beside-unreadable");
+    run_group(&w, &reporting_agent(), "completed", "first");
+    let run_id = only_run(&w);
+    // Sorted before the good run: one whose record cannot be read, one of this project whose events cannot be.
+    std::fs::create_dir_all(w.state.join("orq/runs/0-bad-record")).unwrap();
+    std::fs::write(w.state.join("orq/runs/0-bad-record/run.json"), "not json").unwrap();
+    copy_run(&w, &run_id, &w, "0-bad-events");
+    std::fs::write(w.state.join("orq/runs/0-bad-events/events.jsonl"), "not json\n").unwrap();
+    set_all(w.repo.root(), "abandoned");
+
+    let output = set_status(&w, "COM-01", "completed");
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+}
