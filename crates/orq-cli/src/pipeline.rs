@@ -798,9 +798,8 @@ fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, led
     } else {
         // In a group, what a session of the run completed at the head the branch is still on is
         // finished work, which the group check counts; a single feature is completed at delivery.
-        let head = worktree_head(record);
         let kept = kept_by_group(store, record, features);
-        let still: Vec<String> = free.into_iter().filter(|name| !kept.iter().any(|(done, at)| done == name && Some(at) == head.as_ref())).collect();
+        let still: Vec<String> = free.into_iter().filter(|name| !kept.contains(name)).collect();
         (orq_features::reopen_unfinished_features(ledger, &still), "in_progress")
     };
     if let Err(err) = reopened {
@@ -812,9 +811,10 @@ fn reopen_undelivered(store: &RunStore, record: &RunRecord, ending: &Ending, led
 /// `pending`, so the session can start it again under the same name; a feature a later run took is
 /// left to that run. Best effort: a failure is said and changes nothing else about the run.
 fn hand_back_features(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String]) {
-    // A group feature a session of this run, or of a run it resumes, completed is not started again.
+    // A group feature a session of this run, or of a run it resumes, completed at the head the branch
+    // is still on is not started again.
     let completed = kept_by_group(store, record, features);
-    let free: Vec<String> = features_no_later_run_took(store, record, features).into_iter().filter(|name| !completed.iter().any(|(done, _)| done == name)).collect();
+    let free: Vec<String> = features_no_later_run_took(store, record, features).into_iter().filter(|name| !completed.contains(name)).collect();
     match orq_features::reopen_features(ledger, &free) {
         Ok(handed_back) => record_ledger(store, record, "ledger.handed_back", &handed_back),
         Err(err) => eprintln!("orq: cannot hand {} back to the session: {err}", free.join(",")),
@@ -903,13 +903,16 @@ fn session_completed(store: &RunStore, run_id: &str) -> Vec<(String, String)> {
     completed
 }
 
-/// [`session_completed`] for a group run; none for a single feature, whose ledger is left to its
-/// reopening and hand-back as before.
-fn kept_by_group(store: &RunStore, record: &RunRecord, features: &[String]) -> Vec<(String, String)> {
+/// The features of a group run a session of it (or of a run it resumes) completed at the head its
+/// worktree is on now; a completion at an earlier head is not finished work any more, the branch
+/// having changed after it. None for a single feature, whose ledger is left to its reopening and
+/// hand-back as before, nor when the head cannot be read.
+fn kept_by_group(store: &RunStore, record: &RunRecord, features: &[String]) -> Vec<String> {
     if features.len() < 2 {
         return Vec::new();
     }
-    session_completed(store, &record.run_id)
+    let Some(head) = worktree_head(record) else { return Vec::new() };
+    session_completed(store, &record.run_id).into_iter().filter(|(_, at)| *at == head).map(|(name, _)| name).collect()
 }
 
 /// Copies the `ledger.session_completed` events of `from` (its own and those it carried) into `record`'s
@@ -1554,12 +1557,12 @@ fn stopped(ending: Ending, detail: impl Into<String>) -> Result<Report, StoreErr
 
 /// Why a group's implement session is not done: the first member, in group order, that the ledger
 /// does not show completed and no session of the run (`session_completed`, carried across resumes)
-/// completed. One the session set `abandoned` (it was not `abandoned` in `before`, the ledger as the
+/// completed at the head the branch is on. One the session set `abandoned` (it was not `abandoned` in `before`, the ledger as the
 /// session found it) is said to be so. A single feature is not checked.
 fn unfinished_group_member(
     project: &orq_git::Project,
     features: &[String],
-    session_completed: &[(String, String)],
+    session_completed: &[String],
     before: Option<&[(String, orq_features::LedgerStatus)]>,
 ) -> Option<String> {
     if features.len() < 2 {
@@ -1571,7 +1574,7 @@ fn unfinished_group_member(
     };
     let completed = |feature: &str| {
         entries.iter().any(|e| e.feature_name == feature && e.status.known() == Some(orq_core::FeatureStatus::Completed))
-            || session_completed.iter().any(|(done, _)| done == feature)
+            || session_completed.iter().any(|done| done == feature)
     };
     let unfinished = features.iter().find(|feature| !completed(feature))?;
     let abandoned = orq_features::LedgerStatus::Known(orq_core::FeatureStatus::Abandoned);
@@ -1814,7 +1817,7 @@ fn stages(
             if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
                 return stopped(Ending::Blocked, reason);
             }
-            if let Some(reason) = unfinished_group_member(options.project, options.features, &session_completed(store, run_id), before.as_deref()) {
+            if let Some(reason) = unfinished_group_member(options.project, options.features, &kept_by_group(store, record, options.features), before.as_deref()) {
                 // Recorded as the session's stage failing, so resuming starts the session again.
                 orq_orchestrator::record_implement_unfinished(store, run_id, &reason)?;
                 return stopped(Ending::Failed, reason);

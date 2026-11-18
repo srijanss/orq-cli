@@ -203,6 +203,32 @@ fn a_feature_completed_and_then_changed_by_a_later_commit_is_reopened() {
 }
 
 #[test]
+fn a_completion_from_before_the_head_changed_does_not_finish_a_resumed_group() {
+    let w = world("stale");
+    run_group(&w, &reporting_agent(), "completed", "first");
+    let first = only_run(&w);
+    let changing = FakeAgent::builder().write_file("more.txt", "more\n").commit("fix: more").exit_code(3).build();
+    resume(&w, &first, &changing, "", "second");
+    let second = runs_of(&w).into_iter().find(|run| run != &first).unwrap();
+
+    let output = resume(&w, &second, &FakeAgent::builder().build(), "", "third");
+
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains("failed"), "{stdout}\n{}", text(&output.stderr));
+    assert!(!stdout.contains("review_ready"), "{stdout}");
+    let third = runs_of(&w).into_iter().find(|run| run != &first && run != &second).unwrap();
+    let events = orq_orchestrator::RunStore::new(&w.state.join("orq")).events(&third).unwrap();
+    let handed: Vec<String> = events.iter().filter(|e| e.kind == "ledger.handed_back").map(|e| e.payload.to_string()).collect();
+    assert!(handed.iter().any(|p| p.contains("COM-01") && p.contains("COM-02")), "{handed:?}");
+    assert_ne!(status_of(w.repo.root(), "COM-01"), "completed");
+}
+
+/// The ids of every run in the world's state.
+fn runs_of(w: &World) -> Vec<String> {
+    std::fs::read_dir(w.state.join("orq/runs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
+}
+
+#[test]
 fn a_group_feature_its_session_set_abandoned_is_not_done_and_the_ending_says_so() {
     let w = world("abandoned");
     let agent = FakeAgent::builder().write_file("feature.txt", "both\n").commit("feat: both").build();
