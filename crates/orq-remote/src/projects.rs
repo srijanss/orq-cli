@@ -436,14 +436,25 @@ impl StoreProjects {
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         let settings = self.settings_of_git(&git)?;
         let machine = self.machine_runs_now()?;
-        if let Some(why) = machine.refusal(&git, false)? {
-            return Ok(Some(orq_core::redact::redact(&why)));
+        if let Some(why) = &machine.malformed {
+            return Ok(Some(orq_core::redact::redact(why)));
+        }
+        if machine.limits.min_free_disk_gb.is_some() {
+            // A resume continues in the worktree its run recorded, which may be on another filesystem.
+            let free = match store.load(run).ok().map(|record| record.worktree) {
+                Some(worktree) => orq_orchestrator::free_disk(worktree.ancestors().find(|path| path.exists()).unwrap_or(&worktree)),
+                None => orq_orchestrator::worktrees_free_disk(&git.root),
+            }
+            .map_err(|error| format!("cannot measure the free disk of {}: {error}", git.name))?;
+            if let Some(why) = orq_orchestrator::machine_disk_refusal(machine.limits.min_free_disk_gb, &free) {
+                return Ok(Some(orq_core::redact::redact(&why)));
+            }
         }
         let takes_a_slot = (settings.max_active_runs.is_some() || machine.limits.max_active.is_some()) && orq_orchestrator::resume_takes_a_slot(store, run)?;
         if !takes_a_slot {
             return Ok(None);
         }
-        if let Some(why) = machine.refusal(&git, true)? {
+        if let Some(why) = orq_orchestrator::machine_limit_refusal(machine.limits.max_active, &machine.active) {
             return Ok(Some(orq_core::redact::redact(&why)));
         }
         let active = store.active_project_runs(&orq_git::project_id(&git)).map_err(|error| format!("{error:?}"))?;
@@ -750,16 +761,14 @@ pub(super) struct MachineRuns {
 }
 
 impl MachineRuns {
-    /// Why the machine refuses a run of project `git`, as `orq run` words it: its settings, its disk
-    /// floor, and with `counted` its run limit. `None` when it may start.
-    fn refusal(&self, git: &orq_git::Project, counted: bool) -> Result<Option<String>, String> {
+    /// Why the machine refuses a new run of project `git`, as `orq run` words it: its settings, its
+    /// run limit, and its disk floor. `None` when it may start.
+    fn refusal(&self, git: &orq_git::Project) -> Result<Option<String>, String> {
         if let Some(why) = &self.malformed {
             return Ok(Some(why.clone()));
         }
-        if counted {
-            if let Some(why) = orq_orchestrator::machine_limit_refusal(self.limits.max_active, &self.active) {
-                return Ok(Some(why));
-            }
+        if let Some(why) = orq_orchestrator::machine_limit_refusal(self.limits.max_active, &self.active) {
+            return Ok(Some(why));
         }
         if self.limits.min_free_disk_gb.is_none() {
             return Ok(None);
@@ -773,7 +782,7 @@ impl MachineRuns {
 /// `settings`, with `active` its runs that have not ended: a run limit or a disk floor, as `orq run`
 /// words it. `None` when it may.
 fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::ProjectSettings, active: &[(String, String)], machine: &MachineRuns) -> Result<Option<String>, String> {
-    if let Some(why) = machine.refusal(git, true)? {
+    if let Some(why) = machine.refusal(git)? {
         return Ok(Some(why));
     }
     if let Some(why) = orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, active) {

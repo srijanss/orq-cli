@@ -186,12 +186,26 @@ fn a_malformed_runs_setting_refuses_a_start_naming_the_key() {
 #[test]
 fn under_the_machines_disk_floor_the_listing_shows_the_free_disk_and_a_start_is_a_409() {
     let s = setup("machine-disk", "[runs]\nmin_free_disk_gb = 15\n");
-    git_repo(&s, "alpha");
+    let alpha = git_repo(&s, "alpha");
+    // A paused run whose worktree is on another filesystem (a tmpfs): its resume measures there.
+    let elsewhere = std::path::Path::new("/dev/shm").join(format!("orq-machine-disk-{}", std::process::id()));
+    let (store, template) = seeded_run(&s, &alpha, "run-template", "COM-03");
+    event(&store, &template, "run.completed", json!({"ending": "review_ready"}));
+    let paused = RunRecord { run_id: "run-paused".into(), feature_id: "COM-02".into(), branch: "orq/run-paused".into(), worktree: elsewhere.join("run-paused"), ..template };
+    store.create(&paused).unwrap();
+    event(&store, &paused, "stage.started", json!({}));
+    event(&store, &paused, "run.pause_requested", json!({}));
+    event(&store, &paused, "run.paused", json!({}));
     // SAFETY: the only test in this binary that sets it.
     unsafe { std::env::set_var("ORQ_TEST_FREE_DISK_BYTES", "9800000000") };
     let body = listing(&s);
     let started = send(&s, "POST", "/api/projects/alpha/features/COM-01/runs", b"");
+    let resumed = send(&s, "POST", "/api/projects/alpha/runs/run-paused/resume", b"");
     unsafe { std::env::remove_var("ORQ_TEST_FREE_DISK_BYTES") };
+    assert_eq!(resumed.0, 409, "{resumed:?}");
+    let why = resumed.1["error"].as_str().unwrap_or_default();
+    assert!(why.starts_with("only 9.8 GB free on /dev/shm (this machine needs 15 GB"), "measured where the run's worktree is: {why}");
+    assert!(s.launcher.resumed.lock().unwrap().is_empty());
     let machine = &body["machine"];
     assert_eq!((&machine["max_active_runs"], &machine["min_free_disk_gb"], &machine["free_disk_gb"]), (&Value::Null, &json!(15), &json!(9.8)), "{body}");
     let blocked = listed(&body, "alpha")["start_blocked"].as_str().unwrap_or_default().to_string();
