@@ -383,3 +383,15 @@ fn a_failed_run_s_page_says_it_can_be_reviewed_again_only_once_something_came_af
     end_run(&s, "run-f", "blocked");
     assert_eq!(reviewable(&s), None, "only a failed run");
 }
+
+#[test]
+fn a_queued_resume_of_a_paused_run_starts_on_the_slot_the_paused_run_still_holds() {
+    let s = setup("qra-paused", |_| {});
+    seed_run(&s.roots.state, &s.repo, "run-p", "COM-00");
+    event(&RunStore::new(&s.roots.state), "run-p", "run.pause_requested", json!({}));
+    event(&RunStore::new(&s.roots.state), "run-p", "run.paused", json!({}));
+    std::fs::write(s.roots.config_file(), "remote_actions = true\n[runs]\nmax_active = 1\n").unwrap();
+    add(&s, json!({"action": "resume", "run": "run-p"}));
+    round(&s);
+    assert_eq!(resumed(&s), [("run-p".to_string(), None, false)], "the paused run's own slot is the one its resume carries on in");
+}

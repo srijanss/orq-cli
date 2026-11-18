@@ -203,14 +203,27 @@ impl StoreProjects {
             if !now.entries.iter().any(|current| current.feature == entry.feature && current.run.is_none() && current.skipped.is_none()) {
                 continue;
             }
+            // A resume of a paused run carries on in the slot that run still holds, so no run limit
+            // holds it back; anything else is a start.
+            let keeps_slot = match &entry.action {
+                Some(action) if action.kind != QueueKind::Accept => !orq_orchestrator::resume_takes_a_slot(&runs, &action.run)?,
+                _ => false,
+            };
             // A queued Accept holds a slot while its tests run, though an accepting run holds none.
             let accepting = self.queued_accepts_going(&now, &runs);
-            let mut active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
-            active.extend(accepting.iter().cloned());
+            let active = match keeps_slot {
+                true => Vec::new(),
+                false => {
+                    let mut active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
+                    active.extend(accepting.iter().cloned());
+                    active
+                }
+            };
             if orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).is_some() {
                 return Ok(started);
             }
             let machine_active = match machine.limits.max_active {
+                Some(_) if keeps_slot => Vec::new(),
                 Some(_) => {
                     let mut all = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
                     all.extend(accepting);
