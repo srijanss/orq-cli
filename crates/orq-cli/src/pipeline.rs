@@ -457,6 +457,13 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
     let store = RunStore::new(&root);
     let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store).map_err(refused)?;
+    // A paused run's resume continues a run that was already counted; a new run, and the resume of a
+    // run that holds no slot (blocked, failed, waiting on review), are held to the limit.
+    // Read with the rest of the resume's checks, before anything else is read or started.
+    let takes_a_slot = match &resumed {
+        Some(r) => orq_orchestrator::resume_takes_a_slot(&store, &r.from.run_id).map_err(other)?,
+        None => true,
+    };
     // A run starts from the local target branch in the project root, with whatever it has that its
     // remote does not: the project as it is here, not as last pushed.
     let base_sha = local_target_base(repo, options.target).map_err(|e| other(e.to_string()))?;
@@ -499,12 +506,6 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         .collect(),
     };
     let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-    // A paused run's resume continues a run that was already counted; a new run, and the resume of a
-    // run that holds no slot (blocked, failed, waiting on review), are held to the limit.
-    let takes_a_slot = match &resumed {
-        Some(r) => orq_orchestrator::resume_takes_a_slot(&store, &r.from.run_id).map_err(other)?,
-        None => true,
-    };
     let max_active = options.max_active_runs.filter(|_| takes_a_slot);
     match store.start_group_run_limited(&record, &members, max_active.map(usize::from)) {
         Ok(()) => {}
