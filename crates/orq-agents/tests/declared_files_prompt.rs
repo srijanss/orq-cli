@@ -19,6 +19,7 @@ fn request<'a>(implementer: &str, declared_files: &'a [String], undeclared_files
         context: None,
         exit_marker: Some("/logs/implement.done"),
         attended: false,
+        unattended: false,
         remote_control: None,
         handoff: None,
         continuing: None,

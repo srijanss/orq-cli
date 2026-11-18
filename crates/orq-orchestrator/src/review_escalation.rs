@@ -38,6 +38,11 @@ pub struct EscalatedFinding {
     pub file: Option<String>,
     pub line: Option<u64>,
     pub claim: String,
+    /// The checklist category the reviewer gave it (`bugs`, `missing-tests`, `security`,
+    /// `performance`); older rounds have none.
+    pub category: Option<String>,
+    /// What the reviewer suggested doing about it, when it said.
+    pub suggestion: Option<String>,
     /// `open`, `rejected` or `deferred` as the ledger has it now, or `fixed` once it left it.
     pub status: String,
 }
@@ -141,6 +146,8 @@ fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Op
                 file: text(f, "file").map(str::to_string),
                 line: f.get("line").and_then(Value::as_u64),
                 claim: text(f, "claim").unwrap_or("").to_string(),
+                category: text(f, "category").map(str::to_string),
+                suggestion: text(f, "suggestion").map(str::to_string),
                 id,
                 status,
             }

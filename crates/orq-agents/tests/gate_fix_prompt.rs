@@ -37,6 +37,7 @@ fn implement_prompt(harness: &str, model: &str) -> String {
         context: None,
         exit_marker: Some("/logs/implement.done"),
         attended: true,
+        unattended: false,
         remote_control: None,
         handoff: None,
         continuing: None,

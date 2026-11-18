@@ -44,6 +44,8 @@ struct LogSummary {
     resumed_as: Option<String>,
     resumed_from: Option<String>,
     dirty_files: Option<Vec<String>>,
+    /// Whether the queue started the run unattended.
+    unattended: bool,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -80,6 +82,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             resumed_as: handed_over_to(&summary),
             resumed_from: resumed_from(&events),
             dirty_files: dirty_files(&events, summary.phase),
+            unattended: orq_orchestrator::was_unattended(&events),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -222,6 +225,10 @@ fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let mut row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
     add_resume_links(&mut row, log.resumed_as.as_ref(), log.resumed_from.as_ref());
     add_dirty_files(&mut row, log.dirty_files.as_deref());
+    // Said only of a run the queue started unattended; any other run is attended.
+    if log.unattended {
+        row["unattended"] = true.into();
+    }
     (sort_key, record.run_id.clone(), row, record)
 }
 
@@ -859,7 +866,7 @@ impl StoreProjects {
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
         // A group's members in the order to run them; a run of one feature has none.
         let ordered: Vec<String> = match target {
-            Launch::One(feature) => match orq_features::check_run_eligibility(&ledger, feature) {
+            Launch::One(feature) | Launch::Queued(feature) => match orq_features::check_run_eligibility(&ledger, feature) {
                 Ok(_) => Vec::new(),
                 Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
                 Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
@@ -886,6 +893,7 @@ impl StoreProjects {
             (Launch::Group(_), profiles) => launcher.start_group(&project.path, &ordered, profiles),
             (Launch::One(feature), Some(chosen)) => launcher.start_with(&project.path, feature, chosen),
             (Launch::One(feature), None) => launcher.start(&project.path, feature),
+            (Launch::Queued(feature), profiles) => launcher.start_unattended(&project.path, feature, profiles),
         };
         match started {
             Ok(run) => Ok(match launcher.start_warning(&project.path) {
@@ -936,6 +944,8 @@ struct AgentOptions {
 #[derive(Clone, Copy)]
 enum Launch<'a> {
     One(&'a str),
+    /// A run of one feature the queue starts: nobody watches it, so it runs unattended.
+    Queued(&'a str),
     Group(&'a [String]),
 }
 
@@ -963,6 +973,16 @@ pub trait RunLauncher {
     /// and reviewer or the launch defaults, and returns its id.
     fn start_group(&self, _repo: &Path, _features: &[String], _profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
         Err(LaunchError::Refused("this server cannot start a group run".to_string()))
+    }
+
+    /// Starts a run of `feature` as the queue does: unattended, as nobody watches it, so its session
+    /// never waits for an answer. A launcher that cannot start one so starts it as `start` or
+    /// `start_with` does.
+    fn start_unattended(&self, repo: &Path, feature: &str, profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        match profiles {
+            Some(chosen) => self.start_with(repo, feature, chosen),
+            None => self.start(repo, feature),
+        }
     }
 
     /// What whoever started a run in the project at `repo` should know about it, such as commits only the

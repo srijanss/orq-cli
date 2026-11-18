@@ -228,3 +228,21 @@ fn a_run_whose_group_note_does_not_start_with_its_own_feature_is_a_run_of_that_f
         [("run-empty", vec!["COM-01"]), ("run-good", vec!["COM-01", "COM-02"]), ("run-other", vec!["COM-01"])]
     );
 }
+
+/// A run the queue started says so with its `run.unattended` event; any other run is attended.
+#[test]
+fn an_unattended_run_is_listed_as_unattended() {
+    let s = store("unattended");
+    let queued = record("run-a", "repo-1", "COM-01");
+    let by_hand = record("run-b", "repo-1", "COM-02");
+    s.create(&queued).unwrap();
+    s.create(&by_hand).unwrap();
+    s.append_event(&event(&queued, orq_orchestrator::UNATTENDED_EVENT, "implement_and_review", serde_json::json!({}))).unwrap();
+    s.append_event(&event(&by_hand, "stage.started", "implement_and_review", serde_json::json!({}))).unwrap();
+
+    let runs = list_runs(&s, "repo-1").unwrap();
+
+    let unattended: Vec<(&str, bool)> = runs.iter().map(|r| (r.run_id.as_str(), r.unattended)).collect();
+    assert_eq!(unattended, vec![("run-a", true), ("run-b", false)]);
+    assert!(orq_orchestrator::was_unattended(&s.events("run-a").unwrap()));
+}

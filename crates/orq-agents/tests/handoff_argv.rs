@@ -14,6 +14,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         context: Some("keep the API stable"),
         exit_marker: Some("/logs/implement.done"),
         attended: false,
+        unattended: false,
         remote_control: None,
         handoff: Some("Plan:\n- COM-02 (in_progress)\nRemaining: gate"),
         continuing: None,

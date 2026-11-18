@@ -133,6 +133,12 @@ impl CliLauncher {
     /// in the order given, with the chosen profiles or, without a choice, none named, so the run picks
     /// its agents as it does on the command line: the project's own, else the machine's.
     fn launch(&self, repo: &Path, features: &[String], chosen: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        self.launch_as(repo, features, chosen, false)
+    }
+
+    /// [`Self::launch`], or, when `unattended`, a run nobody watches: the queue's, which starts
+    /// detached and unattended and never in a Herdr pane, where nobody would answer it.
+    fn launch_as(&self, repo: &Path, features: &[String], chosen: Option<&orq_core::remote_inbox::LaunchProfiles>, unattended: bool) -> Result<String, LaunchError> {
         let feature = features.first().map(String::as_str).unwrap_or_default();
         let refused = |reason: String| LaunchError::Refused(without_paths(&reason));
         let project = orq_git::resolve_project(repo).map_err(|err| LaunchError::Failed(format!("cannot resolve project: {err:?}")))?;
@@ -169,8 +175,12 @@ impl CliLauncher {
         }
         let mut detached = args;
         detached.push("--detach".into());
-        // While Herdr is running the run goes in a pane of its own, where its session can be answered.
-        detached.push("--in-herdr".into());
+        if unattended {
+            detached.push("--unattended".into());
+        } else {
+            // While Herdr is running the run goes in a pane of its own, where its session can be answered.
+            detached.push("--in-herdr".into());
+        }
         let (ok, out, err) = self.run(&detached)?;
         crate::launch_outcome(ok, &out, &err).map_err(LaunchError::Failed)
     }
@@ -187,6 +197,10 @@ impl RunLauncher for CliLauncher {
 
     fn start_with(&self, repo: &Path, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<String, LaunchError> {
         self.launch(repo, &[feature.to_string()], Some(profiles))
+    }
+
+    fn start_unattended(&self, repo: &Path, feature: &str, profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        self.launch_as(repo, &[feature.to_string()], profiles, true)
     }
 
     fn start_warning(&self, repo: &Path) -> Option<String> {

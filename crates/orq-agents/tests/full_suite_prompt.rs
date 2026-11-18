@@ -17,6 +17,7 @@ fn request(implementer: &str, leave_full_suite_to_gate: bool) -> ImplementReques
         context: None,
         exit_marker: Some("/logs/implement.done"),
         attended: false,
+        unattended: false,
         remote_control: None,
         handoff: None,
         continuing: None,

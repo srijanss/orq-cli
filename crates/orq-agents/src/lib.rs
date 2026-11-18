@@ -61,6 +61,9 @@ pub struct ImplementRequest<'a> {
     /// Someone is watching this session in a terminal and can answer it; `false` keeps a headless
     /// session's wording.
     pub attended: bool,
+    /// Nobody watches the run at all (the queue started it): the session runs in print mode, without
+    /// Remote Control, and is told never to ask and what to do instead.
+    pub unattended: bool,
     /// The name the session is reachable under from the Claude app; `None` starts it without Remote Control.
     pub remote_control: Option<&'a str>,
     /// Where an earlier session left the work, when this session continues one after a model switch.
@@ -336,7 +339,10 @@ impl HarnessAdapter for Claude {
             argv.push("--effort".to_string());
             argv.push(thinking.clone());
         }
-        if let Some(name) = request.remote_control {
+        if request.unattended {
+            argv.insert(0, "-p".to_string());
+        }
+        if let Some(name) = request.remote_control.filter(|_| !request.unattended) {
             plain("remote control name", name)?;
             argv.push("--remote-control".to_string());
             argv.push(name.to_string());
@@ -363,6 +369,10 @@ fn attended_wording(harness: &str) -> String {
     let how = if harness == "claude" { "ask with AskUserQuestion" } else { "ask in this session" };
     format!("\n\nA person is watching this session and can answer you, so this run is not unattended, whatever a skill's wording says. When you need a decision you cannot make yourself, {how} and wait for the answer.")
 }
+
+/// What a session nobody watches is told instead of being asked to ask: what it does when its review
+/// escalates or it needs a decision it cannot make.
+const UNATTENDED_WORDING: &str = "\n\nNobody is watching this session: the queue started this run and nobody can answer it, so never ask a question and never wait for an answer, whatever a skill's wording says. Decide what you can. If the review loop escalates at its round limit, do not ask and do not run another round: stop the loop there and finish; orq records each open finding as a draft follow-up (review-followup-<feature>-<finding id>) and carries the run on, or ends the run blocked when a finding is high severity or in the security category. Any other decision you cannot make yourself: write PROBLEM on the first line of the finish marker and `needs a decision: <what has to be decided>` on the next, then stop; the run ends blocked with that reason.";
 
 /// The paragraph that tells an unattended session which command forms its run allows: each
 /// `Bash(...)` rule as the command it matches, a trailing `:*` shown as ` ...`. Other rules are not
@@ -578,6 +588,9 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     if request.attended {
         prompt.push_str(&attended_wording(harness));
     } else {
+        if request.unattended {
+            prompt.push_str(UNATTENDED_WORDING);
+        }
         prompt.push_str(&allowed_commands_wording(request.allowed_commands));
     }
     if let Some(marker) = request.exit_marker {

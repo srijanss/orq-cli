@@ -444,3 +444,27 @@ fn a_resume_with_an_answer_or_a_review_again_passes_them_to_orq_run_resume() {
         format!("[run][resume][r-1][--yes]{tail}"),
     ]);
 }
+
+/// Nobody watches a run the queue starts: it starts detached and unattended, never in a Herdr pane,
+/// with the queued profiles when the entry chose them.
+#[test]
+fn a_queued_start_is_checked_then_started_detached_unattended_and_never_in_herdr() {
+    let dir = scratch("launch-queued");
+    let repo = repo(&dir);
+    let config = dir.join("config.toml");
+    std::fs::write(&config, MODELS).unwrap();
+    let launcher = CliLauncher::new(fake_orq(&dir), Some(config));
+
+    assert_eq!(launcher.start_unattended(&repo, "ready", None).unwrap(), "run-42");
+    let chosen = orq_core::remote_inbox::LaunchProfiles { implementer: "opus".into(), reviewer: "opus".into() };
+    assert_eq!(launcher.start_unattended(&repo, "ready", Some(&chosen)).unwrap(), "run-42");
+
+    let calls = std::fs::read_to_string(dir.join("calls.log")).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines.len(), 4, "{calls}");
+    assert!(lines[0].contains("--check") && lines[2].contains("--check"), "{calls}");
+    for detached in [lines[1], lines[3]] {
+        assert!(detached.contains("--detach") && detached.contains("--unattended") && !detached.contains("--in-herdr"), "{detached}");
+    }
+    assert!(!lines[1].contains("--implementer") && lines[3].contains("--implementer opus --reviewer opus"), "{calls}");
+}

@@ -92,6 +92,27 @@ fn a_review_that_escalated_at_the_round_cap_names_its_open_findings_and_the_comm
     assert_eq!(review.unreviewed_commits[0].subject, "fix by hand");
 }
 
+/// An unattended run turns each open finding into a draft follow-up, which says what the reviewer
+/// found and suggested and in which category.
+#[test]
+fn an_escalated_finding_carries_its_category_and_suggestion() {
+    let (dir, base) = repo("category");
+    let reviewed = commit(&dir, "a.txt", "feature");
+    let mut leak = finding("leak", "medium", "open");
+    leak["category"] = json!("security");
+    let mut bare = finding("bare", "medium", "open");
+    bare.as_object_mut().unwrap().remove("category");
+    bare.as_object_mut().unwrap().remove("suggestion");
+    ledger(&dir, &base, vec![round(&base, &reviewed, 3, vec![leak.clone(), bare.clone()])], vec![leak, bare]);
+
+    let review = escalated_review(&dir, &base).unwrap().expect("the review escalated");
+
+    assert_eq!(review.findings[0].category.as_deref(), Some("security"));
+    assert_eq!(review.findings[0].suggestion.as_deref(), Some("fix it"));
+    assert_eq!(review.findings[1].category, None);
+    assert_eq!(review.findings[1].suggestion, None);
+}
+
 /// A run of `repo`'s linked worktree, recorded in a fresh store; `base` is where its branch starts.
 fn stored_run(tag: &str) -> (orq_test_support::GitFixture, PathBuf, orq_orchestrator::RunStore, orq_orchestrator::RunRecord) {
     let repo = orq_test_support::GitFixture::new();

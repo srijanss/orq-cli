@@ -59,6 +59,9 @@ pub struct Options<'a> {
     pub delivery_named: bool,
     /// The implement session is given orq's own terminal, so the agent runs interactively in it.
     pub interactive: bool,
+    /// Nobody watches the run (the queue started it): its session runs headless and is told never to
+    /// ask, and the run never waits for an answer.
+    pub unattended: bool,
     /// A merge-local delivery blocked by uncommitted changes to the run's files sets them aside while
     /// it merges, then puts them back (`orq run merge --set-aside`).
     pub set_aside: bool,
@@ -709,6 +712,9 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if let Some(note) = undeclared_note(&store, &report.run_id) {
         add_note(&mut report, note);
     }
+    if let Some(note) = followups_note(&store, &report.run_id) {
+        add_note(&mut report, note);
+    }
     if matches!(report.ending, Ending::Merged | Ending::ReviewReady) {
         if let Some(note) = flaky_note(&store, &report.run_id) {
             add_note(&mut report, note);
@@ -764,6 +770,108 @@ fn escalation_reason(review: &orq_orchestrator::EscalatedReview) -> String {
     let rounds = if review.rounds == 1 { "round" } else { "rounds" };
     let findings = if open == 1 { "finding" } else { "findings" };
     format!("the review escalated after {} {rounds} with {open} {findings} open", review.rounds)
+}
+
+/// How an unattended session's reported problem says a person has to decide something.
+/// Records on the run that it runs unattended, so its record and the runs lists say so; a note
+/// when the event cannot be written.
+fn record_unattended(store: &RunStore, record: &RunRecord) -> Option<String> {
+    let event = orq_orchestrator::Event {
+        schema_version: 1,
+        event_id: format!("{}-unattended", record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: orq_orchestrator::UNATTENDED_EVENT.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: crate::review::utc_now(),
+        payload: serde_json::json!({ "started_by": "queue" }),
+    };
+    store.append_event(&event).err().map(|err| format!("the run's events do not record that it runs unattended: {err:?}"))
+}
+
+const NEEDS_A_DECISION: &str = "needs a decision:";
+
+/// Why an unattended run stops when its session asked for something nobody can give: the last need its
+/// needs-input hook put on the run, if one did.
+fn unanswered_need(store: &RunStore, run_id: &str) -> Option<String> {
+    let events = store.events(run_id).inspect_err(|err| eprintln!("orq: cannot tell whether {run_id}'s session asked a question: {err:?}")).ok()?;
+    let need = events.iter().rev().find(|e| e.kind == "run.needs_input")?;
+    let text = need.payload["text"].as_str().unwrap_or_default();
+    Some(match need.payload["kind"].as_str() {
+        Some("permission") => format!("waited for a permission in an unattended run: {text}"),
+        _ => format!("asked a question in an unattended run: {text}"),
+    })
+}
+
+/// For an unattended run whose review escalated: each finding still open becomes a draft ledger entry
+/// `review-followup-<feature>-<finding id>` that says what was found, recorded as the run's
+/// `run.followups_drafted` event. One already in the ledger is kept as it is. A finding at high
+/// severity or above, or in the security category, is not left for later: `Err` names them, and
+/// nothing is drafted.
+fn draft_followups(store: &RunStore, record: &RunRecord, ledger: &Path, review: &orq_orchestrator::EscalatedReview) -> Result<(), String> {
+    let open: Vec<&orq_orchestrator::EscalatedFinding> = review.findings.iter().filter(|f| f.status == "open").collect();
+    let serious: Vec<String> = open
+        .iter()
+        .filter(|f| matches!(f.severity.as_str(), "high" | "critical") || f.category.as_deref() == Some("security"))
+        .map(|f| match &f.category {
+            Some(category) => format!("{} ({}, {category})", f.id, f.severity),
+            None => format!("{} ({})", f.id, f.severity),
+        })
+        .collect();
+    if !serious.is_empty() {
+        return Err(format!("{}, and an unattended run does not leave a high-severity or security finding for later: {}", escalation_reason(review), serious.join(", ")));
+    }
+    let drafts: Vec<orq_features::FeatureDraft> = open
+        .iter()
+        .map(|f| orq_features::FeatureDraft {
+            description: Some(followup_description(&record.feature_id, f)),
+            depends_on: Some(Vec::new()),
+            ..orq_features::FeatureDraft::new(followup_name(&record.feature_id, &f.id))
+        })
+        .collect();
+    let names: Vec<String> = drafts.iter().map(|d| d.feature_name.clone()).collect();
+    if names.is_empty() {
+        return Ok(());
+    }
+    for _ in 0..5 {
+        let loaded = orq_features::LoadedLedger::load_or_new(ledger).map_err(|err| format!("{}, and its follow-ups cannot be drafted: the feature ledger: {err:?}", escalation_reason(review)))?;
+        let new: Vec<orq_features::FeatureDraft> = drafts.iter().filter(|d| !loaded.entries().iter().any(|e| e.feature_name == d.feature_name)).cloned().collect();
+        match loaded.append_many(&new) {
+            Ok(_) => {
+                record_ledger(store, record, "run.followups_drafted", &names);
+                return Ok(());
+            }
+            Err(orq_features::AppendError::Save(orq_features::SaveError::Conflict)) => continue,
+            Err(err) => return Err(format!("{}, and its follow-ups cannot be drafted: {err}", escalation_reason(review))),
+        }
+    }
+    Err(format!("{}, and its follow-ups cannot be drafted: the feature ledger kept changing", escalation_reason(review)))
+}
+
+/// The ledger name of the follow-up of `finding` in a run of `feature`: only letters, digits, `-` and
+/// `_`, whatever the reviewer named the finding.
+fn followup_name(feature: &str, finding: &str) -> String {
+    let clean = |text: &str| text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>();
+    format!("review-followup-{}-{}", clean(feature), clean(finding))
+}
+
+fn followup_description(feature: &str, f: &orq_orchestrator::EscalatedFinding) -> String {
+    let place = match (&f.file, f.line) {
+        (Some(file), Some(line)) => format!(" at {file}:{line}"),
+        (Some(file), None) => format!(" at {file}"),
+        _ => String::new(),
+    };
+    let category = f.category.as_deref().map(|c| format!(", {c}")).unwrap_or_default();
+    let suggestion = f.suggestion.as_deref().map(|s| format!(" Suggested: {s}")).unwrap_or_default();
+    format!("Review follow-up of {feature}, finding {} ({}{category}){place}, left open when its unattended run's review escalated: {}{suggestion}", f.id, f.severity, f.claim)
+}
+
+/// The ending's note on the follow-ups the run drafted, if it drafted any.
+fn followups_note(store: &RunStore, run_id: &str) -> Option<String> {
+    let drafted = features_in_events(store, run_id, "run.followups_drafted").ok()?;
+    (!drafted.is_empty()).then(|| format!("Follow-ups drafted: {}", drafted.join(", ")))
 }
 
 /// The findings still open in an escalated review, one line each, for the session that reviews again.
@@ -1307,8 +1415,13 @@ fn extra_features_note(store: &RunStore, run_id: &str) -> Option<String> {
 
 /// The features the run's `ledger.extra_features` events credit it with, each once.
 fn extra_features_recorded(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
+    features_in_events(store, run_id, "ledger.extra_features")
+}
+
+/// The features the run's `kind` events name, each once, in the order first named.
+fn features_in_events(store: &RunStore, run_id: &str, kind: &str) -> Result<Vec<String>, StoreError> {
     let mut added: Vec<String> = Vec::new();
-    for event in store.events(run_id)?.iter().filter(|e| e.kind == "ledger.extra_features") {
+    for event in store.events(run_id)?.iter().filter(|e| e.kind == kind) {
         for name in event.payload["features"].as_array().into_iter().flatten().filter_map(|n| n.as_str()) {
             if !added.iter().any(|a| a == name) {
                 added.push(name.to_string());
@@ -1640,8 +1753,13 @@ fn hook_needs_input(worktree: &Path, run_id: &str, root: &Path, marker: Option<&
         Ok(orq) => orq,
         Err(err) => return vec![format!("the session will not say when it needs an answer: orq's own path is unknown ({:?})", err.kind())],
     };
+    // The session's environment is cleared, so the hook is told where the run's state is when orq was.
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| format!("XDG_STATE_HOME={} ", crate::sh_quote(&dir.to_string_lossy())))
+        .unwrap_or_default();
     let mut command = format!(
-        "{} run needs-input {} --repo {}",
+        "{state}{} run needs-input {} --repo {}",
         crate::sh_quote(&orq.to_string_lossy()),
         crate::sh_quote(run_id),
         crate::sh_quote(&root.to_string_lossy())
@@ -1738,6 +1856,11 @@ fn stages(
         if options.interactive {
             let marker = (settings.auto_exit != Some(false)).then(|| logs.join("implement.done"));
             notes.extend(hook_needs_input(worktree, run_id, &options.project.root, marker.as_deref()));
+        } else if options.unattended {
+            // Nobody can answer an unattended session: the hook only puts on the run that it asked, and
+            // the run ends blocked with what it asked.
+            notes.extend(hook_needs_input(worktree, run_id, &options.project.root, None));
+            notes.extend(record_unattended(store, record));
         } else {
             notes.extend(orq_orchestrator::remove_needs_input_hook(worktree));
         }
@@ -1794,6 +1917,7 @@ fn stages(
                     context: options.context,
                     exit_marker: marker,
                     attended: options.interactive,
+                    unattended: options.unattended,
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
                     continuing,
@@ -1822,18 +1946,36 @@ fn stages(
             record_session_completed(store, record, &orq_features::ledger_path(options.project), options.features, before.as_deref());
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
+            if options.unattended {
+                if let Some(reason) = unanswered_need(store, run_id) {
+                    return stopped(Ending::Blocked, reason);
+                }
+            }
             if !outcome.success {
                 // A session that stopped for its escalated review has done what it could; the
                 // decision is a human's, so the run waits for it instead of failing.
-                if outcome.reported.is_some() {
-                    if let Some(review) = escalated(worktree, &record.base_sha) {
-                        return stopped(Ending::NeedsReview, escalation_reason(&review));
+                // Nobody decides for an unattended run: what is left open becomes a draft follow-up and
+                // the run carries on, unless a finding is one a person must see first.
+                let review = outcome.reported.as_ref().and_then(|_| escalated(worktree, &record.base_sha));
+                match review {
+                    Some(review) if options.unattended => {
+                        if let Err(reason) = draft_followups(store, record, &orq_features::ledger_path(options.project), &review) {
+                            return stopped(Ending::Blocked, reason);
+                        }
+                    }
+                    Some(review) => return stopped(Ending::NeedsReview, escalation_reason(&review)),
+                    // What an unattended session could not decide waits for a person, not a fix.
+                    None if options.unattended && outcome.reported.as_deref().is_some_and(|p| p.contains(NEEDS_A_DECISION)) => {
+                        let problem = outcome.reported.as_deref().unwrap_or_default();
+                        return stopped(Ending::Blocked, problem[problem.find(NEEDS_A_DECISION).unwrap_or(0)..].to_string());
+                    }
+                    None => {
+                        return stopped(Ending::Failed, match outcome.reported {
+                            Some(problem) => format!("the implement session reported a problem: {problem}"),
+                            None => "the implement session failed".to_string(),
+                        })
                     }
                 }
-                return stopped(Ending::Failed, match outcome.reported {
-                    Some(problem) => format!("the implement session reported a problem: {problem}"),
-                    None => "the implement session failed".to_string(),
-                });
             }
             if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
                 return stopped(Ending::Blocked, reason);

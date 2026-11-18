@@ -23,6 +23,8 @@ struct Launcher {
     refuse: Mutex<Option<LaunchError>>,
     /// Done once, while the first run starts: what a person changes meanwhile.
     meanwhile: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// The features whose run was started unattended, as the queue starts them.
+    unattended: Mutex<Vec<String>>,
 }
 
 impl RunLauncher for Launcher {
@@ -40,6 +42,11 @@ impl RunLauncher for Launcher {
         }
         Ok(run)
     }
+
+    fn start_unattended(&self, repo: &Path, feature: &str, _profiles: Option<&orq_core::remote_inbox::LaunchProfiles>) -> Result<String, LaunchError> {
+        self.unattended.lock().unwrap().push(feature.to_string());
+        self.start(repo, feature)
+    }
 }
 
 struct Setup {
@@ -53,7 +60,7 @@ fn setup(label: &str) -> Setup {
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
     std::fs::write(roots.config_file(), "remote_actions = true\n").unwrap();
-    let launcher = Arc::new(Launcher { state: roots.state.clone(), started: Mutex::default(), refuse: Mutex::default(), meanwhile: Mutex::default() });
+    let launcher = Arc::new(Launcher { state: roots.state.clone(), started: Mutex::default(), refuse: Mutex::default(), meanwhile: Mutex::default(), unattended: Mutex::default() });
     Setup { scan: base.join("code"), roots, launcher }
 }
 
@@ -526,4 +533,20 @@ fn the_server_s_queue_rounds_start_a_queued_feature_on_their_own_and_stop_when_d
     }
     drop(rounds);
     assert_eq!(started(&s), ["COM-01"]);
+}
+
+/// Nobody watches a run the queue starts, so it starts unattended; a run started from the web's Start
+/// has someone there, so it does not.
+#[test]
+fn the_queue_starts_its_runs_unattended_and_a_start_from_the_web_stays_attended() {
+    let s = setup("queue-unattended");
+    git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    assert_eq!(queue_add(&s, &["COM-01"]).0, 200);
+
+    round(&s);
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/features/COM-02/runs", b"");
+
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(started(&s), ["COM-01", "COM-02"]);
+    assert_eq!(*s.launcher.unattended.lock().unwrap(), ["COM-01"], "only the queued run is unattended");
 }

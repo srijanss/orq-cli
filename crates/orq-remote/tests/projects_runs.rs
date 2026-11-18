@@ -274,3 +274,18 @@ fn a_run_resumed_while_the_list_is_polled_turns_resumed_on_the_next_read_and_sta
         assert_eq!(state(&after), (json!("resumed"), Some(json!("run-2"))), "{after}");
     }
 }
+
+#[test]
+fn an_unattended_run_is_listed_as_unattended_and_any_other_run_says_nothing_of_it() {
+    let s = setup("runs-unattended");
+    let alpha = git_repo(&s.scan, "alpha");
+    let a = project_id(&alpha);
+    add_run(&s, "queued", &a, "main", &[("run.started", None, "2026-11-02T10:00:00Z"), (orq_orchestrator::UNATTENDED_EVENT, None, "2026-11-02T10:00:01Z")]);
+    add_run(&s, "by-hand", &a, "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+
+    let (status, body) = get(&s, "/api/projects/alpha/runs");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["runs"][0]["run_id"], "queued", "{body}");
+    assert_eq!(body["runs"][0]["unattended"], true, "{body}");
+    assert!(body["runs"][1].get("unattended").is_none(), "{body}");
+}

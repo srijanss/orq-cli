@@ -25,6 +25,8 @@ pub struct RunListing {
     pub mcp_notes: Vec<String>,
     /// The run that took this one over when it was resumed, if one did.
     pub resumed_as: Option<String>,
+    /// Whether the queue started the run unattended: nobody watched its session.
+    pub unattended: bool,
 }
 
 /// The runs of a project, and how many run directories could not be read.
@@ -87,9 +89,18 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
             review_url,
             mcp_notes: mcp_notes(&events),
             resumed_as,
+            unattended: was_unattended(&events),
         });
     }
     Ok(list)
+}
+
+/// The event a run records when it starts unattended: started by the queue, with nobody watching.
+pub const UNATTENDED_EVENT: &str = "run.unattended";
+
+/// Whether the run started unattended, as its [`UNATTENDED_EVENT`] says.
+pub fn was_unattended(events: &[crate::store::Event]) -> bool {
+    events.iter().any(|e| e.kind == UNATTENDED_EVENT)
 }
 
 /// The notes of the run's latest `mcp.setup` event; none when it has no such event.

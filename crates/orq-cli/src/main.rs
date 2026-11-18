@@ -215,6 +215,9 @@ struct RunArgs {
     in_herdr: bool,
     /// `--check`: make every check a launch makes, then stop without starting anything.
     check: bool,
+    /// `--unattended`: nobody watches the run (the queue started it), so its sessions run headless,
+    /// are told never to ask, and the run never waits for an answer.
+    unattended: bool,
     /// Set by `orq run merge --set-aside`: a merge-local delivery blocked by uncommitted changes to the
     /// run's files sets those changes aside, merges, and puts them back.
     set_aside: bool,
@@ -263,6 +266,7 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--detach" => parsed.detach = true,
             "--in-herdr" => parsed.in_herdr = true,
             "--check" => parsed.check = true,
+            "--unattended" => parsed.unattended = true,
             "--set-aside" => parsed.set_aside = true,
             "--fix-conflicts" => parsed.fix_conflicts = true,
             "--review-again" => parsed.review_again = true,
@@ -510,11 +514,12 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         max_active_runs: project_limits.0,
         min_free_disk_gb: project_limits.1,
         machine: machine_limits,
-        // A detached runner has no terminal, so it stays headless.
-        interactive: {
+        // A detached runner has no terminal, so it stays headless; nobody watches an unattended one.
+        interactive: !parsed.unattended && {
             use std::io::IsTerminal;
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
         },
+        unattended: parsed.unattended,
     };
     let busy = |active: &str| {
         let message = if features.len() > 1 {
@@ -787,6 +792,9 @@ fn reap(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// How a run the queue started unattended is shown in the runs lists.
+const UNATTENDED_LABEL: &str = "Unattended (queue)";
+
 fn runs(args: &[OsString]) -> ExitCode {
     if args.first().is_some_and(|a| a == "reap") {
         return reap(&args[1..]);
@@ -826,6 +834,7 @@ fn runs(args: &[OsString]) -> ExitCode {
                     "review_url": run.review_url,
                     "mcp_notes": run.mcp_notes,
                     "resumed_as": run.resumed_as,
+                    "unattended": run.unattended,
                 })
             })
             .collect();
@@ -845,6 +854,9 @@ fn runs(args: &[OsString]) -> ExitCode {
                 printable(&field(&run.review_url)),
             );
             // An indented line under its run, so the tab-separated rows stay as they were.
+            if run.unattended {
+                println!("  {UNATTENDED_LABEL}");
+            }
             for note in &run.mcp_notes {
                 println!("  mcp: {}", printable(note));
             }
@@ -4157,6 +4169,7 @@ mod ledger_backend_tests {
             review_url: url.map(str::to_string),
             mcp_notes: Vec::new(),
             resumed_as: None,
+            unattended: false,
         };
         let runs = [run("run-1", Some("https://example.test/mr/1")), run("run-2", None)];
 
@@ -4191,6 +4204,7 @@ mod ledger_backend_tests {
             review_url: Some("https://example.test/mr/1".into()),
             mcp_notes: Vec::new(),
             resumed_as: None,
+            unattended: false,
         }];
 
         let rows = crate::reviews_with_links(vec![inbox(true), inbox(false)], Some(&runs));

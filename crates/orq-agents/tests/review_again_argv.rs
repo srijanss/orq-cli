@@ -15,6 +15,7 @@ fn request<'a>(implementer: &str, review_again: Option<ReviewAgain<'a>>) -> Impl
         context: None,
         exit_marker: Some("/logs/implement.done"),
         attended: false,
+        unattended: false,
         remote_control: None,
         handoff: None,
         continuing: None,

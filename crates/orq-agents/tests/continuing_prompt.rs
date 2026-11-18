@@ -15,6 +15,7 @@ fn request<'a>(continuing: Option<Continuing<'a>>) -> ImplementRequest<'a> {
         context: None,
         exit_marker: Some("/logs/implement.done"),
         attended: false,
+        unattended: false,
         remote_control: None,
         handoff: None,
         continuing,
