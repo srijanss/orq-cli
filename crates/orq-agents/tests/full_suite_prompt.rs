@@ -23,6 +23,8 @@ fn request(implementer: &str, leave_full_suite_to_gate: bool) -> ImplementReques
         review_again: None,
         leave_full_suite_to_gate,
         allowed_commands: &[],
+        declared_files: &[],
+        undeclared_files: &[],
     }
 }
 

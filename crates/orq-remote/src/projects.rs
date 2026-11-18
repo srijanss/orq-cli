@@ -1329,6 +1329,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "gate.flaky_tests" {
                     listed["flaky_tests"] = flaky_tests_shown(&event.payload);
                 }
+                if event.kind == "session.undeclared_files" {
+                    listed["undeclared_files"] = undeclared_files_shown(&event.payload);
+                }
                 listed
             })
             .collect();
@@ -1418,6 +1421,13 @@ fn flaky_tests_shown(payload: &serde_json::Value) -> serde_json::Value {
         })
         .collect();
     serde_json::Value::Array(tests)
+}
+
+/// What the run page shows of a `session.undeclared_files` event: each file a session changed outside
+/// its features' files, redacted. Anything else the payload holds is left out.
+fn undeclared_files_shown(payload: &serde_json::Value) -> serde_json::Value {
+    let files: Vec<_> = payload.get("files").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|file| Some(orq_core::redact::redact(file.as_str()?))).collect();
+    serde_json::json!(files)
 }
 
 /// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the

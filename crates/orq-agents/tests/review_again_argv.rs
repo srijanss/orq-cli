@@ -21,6 +21,8 @@ fn request<'a>(implementer: &str, review_again: Option<ReviewAgain<'a>>) -> Impl
         review_again,
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
+        declared_files: &[],
+        undeclared_files: &[],
     }
 }
 

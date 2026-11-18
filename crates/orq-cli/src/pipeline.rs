@@ -668,6 +668,9 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if let Some(note) = extra_features_note(&store, &report.run_id) {
         add_note(&mut report, note);
     }
+    if let Some(note) = undeclared_note(&store, &report.run_id) {
+        add_note(&mut report, note);
+    }
     if matches!(report.ending, Ending::Merged | Ending::ReviewReady) {
         if let Some(note) = flaky_note(&store, &report.run_id) {
             add_note(&mut report, note);
@@ -859,6 +862,170 @@ fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, fe
         .filter(|name| statuses.iter().any(|(entry, status)| entry == name && matches!(status.known(), Some(InProgress | Completed))))
         .collect();
     record_ledger(store, record, "ledger.extra_features", &added);
+}
+
+/// The event naming the files a session stage changed outside its features' files.
+const UNDECLARED_FILES: &str = "session.undeclared_files";
+
+/// After the session stage `stage` (`implement_and_review`, `gate_fix` or `rebase_fix`): the files the
+/// run's commits changed since its base that no feature of the run declares, and that no earlier stage
+/// already named, are recorded as `session.undeclared_files {files, stage}`. Information only: nothing
+/// is blocked, and what cannot be read is said and records nothing.
+fn record_undeclared_files(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], generated: &[String], stage: &str) {
+    let events = match store.events(&record.run_id) {
+        Ok(events) => events,
+        Err(err) => {
+            eprintln!("orq: {}: cannot tell which files the {} session changed outside its features' files: {err:?}", record.run_id, stage_words(stage));
+            return;
+        }
+    };
+    let changed = match changed_files(record, &events) {
+        Ok(changed) => changed,
+        Err(err) => {
+            eprintln!("orq: {}: cannot tell which files the {} session changed outside its features' files: {err}", record.run_id, stage_words(stage));
+            return;
+        }
+    };
+    let Some(declared) = declared_files(store, record, ledger, features, generated) else { return };
+    let named = undeclared_recorded(&events);
+    let outside: Vec<String> = changed
+        .into_iter()
+        .filter(|file| !declared.contains(file) && !exempt(file) && !named.iter().any(|(named, _)| named == file))
+        .collect();
+    if outside.is_empty() {
+        return;
+    }
+    // Recorded under the stage's latest attempt, so the run page lists the files on that step.
+    let attempt = events.iter().rev().find(|e| e.stage.as_deref() == Some(stage)).map_or(1, |e| e.attempt);
+    let event = orq_orchestrator::Event {
+        schema_version: 1,
+        event_id: format!("{}-undeclared-{}", record.run_id, events.len()),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: UNDECLARED_FILES.to_string(),
+        stage: Some(stage.to_string()),
+        attempt,
+        occurred_at: crate::review::utc_now(),
+        payload: serde_json::json!({ "files": outside, "stage": stage }),
+    };
+    if let Err(err) = store.append_event(&event) {
+        eprintln!("orq: {}: cannot record the files changed outside its features' files ({}): {err:?}", record.run_id, outside.join(","));
+    }
+}
+
+/// The files the implement session is told: those `features` declare, and those this run, or the run
+/// it resumes, already recorded as changed outside them. A name a prompt cannot hold is left out.
+fn session_files(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], resumed_from: Option<&str>) -> (Vec<String>, Vec<String>) {
+    let promptable = |file: &String| !file.is_empty() && !file.chars().any(char::is_control);
+    let declared: Vec<String> = declared_files(store, record, ledger, features, &[]).unwrap_or_default().into_iter().filter(promptable).collect();
+    let mut undeclared: Vec<String> = Vec::new();
+    for run_id in std::iter::once(record.run_id.as_str()).chain(resumed_from) {
+        for (file, _) in store.events(run_id).map(|events| undeclared_recorded(&events)).unwrap_or_default() {
+            if promptable(&file) && !undeclared.contains(&file) {
+                undeclared.push(file);
+            }
+        }
+    }
+    (declared, undeclared)
+}
+
+/// How the ending note and messages say a session stage.
+fn stage_words(stage: &str) -> &str {
+    match stage {
+        "implement_and_review" => "implement",
+        "gate_fix" => "gate fix",
+        "rebase_fix" => "rebase fix",
+        other => other,
+    }
+}
+
+/// The files the run's commits changed: since the commit its branch was last rebased (or stopped
+/// rebasing) onto, else since its base.
+fn changed_files(record: &RunRecord, events: &[orq_orchestrator::Event]) -> Result<Vec<String>, String> {
+    let onto = events.iter().rev().find_map(|e| match e.kind.as_str() {
+        "rebase.completed" | "run.rebase_carried" => e.payload["target_sha"].as_str(),
+        "rebase.conflict" => e.payload["onto"].as_str(),
+        _ => None,
+    });
+    let base = onto.unwrap_or(&record.base_sha);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&record.worktree)
+        .args(["diff", "--name-only", "--no-renames", "-z", &format!("{base}...HEAD"), "--"])
+        .output()
+        .map_err(|err| format!("cannot run git: {err}"))?;
+    if !output.status.success() {
+        return Err(format!("git diff {base}...HEAD: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect())
+}
+
+/// The files the run's features declare: the `targetFiles` and test files of its own features and of
+/// those its sessions started, and the files `generated` from them. None when the ledger cannot be
+/// read, which is said.
+fn declared_files(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], generated: &[String]) -> Option<std::collections::BTreeSet<String>> {
+    let entries = match orq_features::load_ledger(ledger) {
+        Ok(entries) => entries,
+        Err(orq_features::LedgerError::Missing { .. }) => Vec::new(),
+        Err(err) => {
+            eprintln!("orq: {}: cannot read the feature ledger to tell the features' files: {err:?}", record.run_id);
+            return None;
+        }
+    };
+    let mut names: Vec<String> = features.to_vec();
+    names.extend(extra_features_recorded(store, &record.run_id).unwrap_or_default());
+    names.extend(orq_orchestrator::fix_features(store, &record.run_id).unwrap_or_default());
+    let mut declared = std::collections::BTreeSet::new();
+    for entry in entries.iter().filter(|entry| names.contains(&entry.feature_name)) {
+        declared.extend(entry.target_files.iter().cloned());
+        // A test target is a path or an expression holding paths (`path::name`, options).
+        for word in entry.test_file.iter().flat_map(|t| t.split_whitespace()).filter(|w| !w.starts_with('-')) {
+            declared.insert(word.split("::").next().unwrap_or(word).to_string());
+        }
+    }
+    // A web bundle is rebuilt from its sources: a declared source declares what it builds.
+    let bundles: Vec<String> = declared.iter().filter_map(|file| file.split_once("web-src/").map(|(crate_dir, _)| crate_dir.to_string())).collect();
+    for dir in bundles {
+        for built in ["web/app.react.js", "web/app.react.js.stamp", "web/sw.js"] {
+            declared.insert(format!("{dir}{built}"));
+        }
+    }
+    declared.extend(generated.iter().cloned());
+    Some(declared)
+}
+
+/// A file whose change is normal whatever the features declare: an existing test under a `tests/`
+/// directory, a lockfile, or the TDD workflow's own records (`.tdd-*`, such as its ledger and log).
+fn exempt(file: &str) -> bool {
+    const LOCKFILES: [&str; 4] = ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "uv.lock"];
+    let name = file.rsplit('/').next().unwrap_or(file);
+    LOCKFILES.contains(&name) || name.starts_with(".tdd-") || file.split('/').rev().skip(1).any(|dir| dir == "tests")
+}
+
+/// The files the run's `session.undeclared_files` events name, each once, with the stage that first
+/// named it.
+fn undeclared_recorded(events: &[orq_orchestrator::Event]) -> Vec<(String, String)> {
+    let mut named: Vec<(String, String)> = Vec::new();
+    for event in events.iter().filter(|e| e.kind == UNDECLARED_FILES) {
+        let stage = event.payload["stage"].as_str().unwrap_or_default();
+        for file in event.payload["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+            if !named.iter().any(|(n, _)| n == file) {
+                named.push((file.to_string(), stage.to_string()));
+            }
+        }
+    }
+    named
+}
+
+/// The ending's note on the files the run changed outside its features' files, if any were recorded.
+fn undeclared_note(store: &RunStore, run_id: &str) -> Option<String> {
+    let events = store.events(run_id).ok()?;
+    let named = undeclared_recorded(&events);
+    (!named.is_empty()).then(|| {
+        let listed: Vec<String> = named.iter().map(|(file, stage)| format!("{file} ({})", stage_words(stage))).collect();
+        format!("changed outside its features' files: {}", listed.join(", "))
+    })
 }
 
 /// The session log lines that are not the run's, each with how many times it is there: a project that
@@ -1449,6 +1616,8 @@ fn stages(
             // for again reviews instead.
             let continued_log = resumed_from.filter(|_| review_again.is_none()).map(|_| short_log(worktree, &record.base_sha));
             let continuing = resumed_from.zip(continued_log.as_deref()).map(|(from, log)| orq_agents::Continuing { run: &from.run_id, base: &record.base_sha, log });
+            // The session is told the features' files, and on a resumed run those already changed outside them.
+            let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), options.features, resumed_from.map(|from| from.run_id.as_str()));
             let args = adapter
                 .implement_argv(&ImplementRequest {
                     features: &features,
@@ -1465,6 +1634,8 @@ fn stages(
                     // whose gate is not a full suite opts out.
                     leave_full_suite_to_gate: options.gate && settings.full_suite_in_session != Some(true),
                     allowed_commands: &allowed_commands,
+                    declared_files: &declared_files,
+                    undeclared_files: &undeclared_files,
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
@@ -1479,6 +1650,7 @@ fn stages(
             };
             let outcome = run_implement_stage(store, run_id, &session)?;
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
+            record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
             if !outcome.success {
                 // A session that stopped for its escalated review has done what it could; the
                 // decision is a human's, so the run waits for it instead of failing.
@@ -1571,6 +1743,7 @@ fn stages(
             }, || {
                 fix_features.settle();
                 record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "gate fix");
+            record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "gate_fix");
                 // The report the session left in its copies is kept where the gate loop reads it.
                 if let Err(err) = orq_orchestrator::finish_session_files(worktree, logs) {
                     eprintln!("orq: {err}");
@@ -1644,6 +1817,7 @@ fn stages(
         };
         let outcome = orq_orchestrator::fix_rebase_conflicts(store, run_id, &session)?;
         record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "rebase fix");
+            record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "rebase_fix");
         match outcome {
             orq_orchestrator::ConflictFixOutcome::Resolved => Ok(None),
             orq_orchestrator::ConflictFixOutcome::StillBlocked { reason } => stopped(Ending::Blocked, reason).map(Some),

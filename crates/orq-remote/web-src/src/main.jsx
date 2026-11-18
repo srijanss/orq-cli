@@ -3774,6 +3774,14 @@ function flakyTests(events) {
     .filter((test) => test && typeof test.name === "string" && test.name !== "");
 }
 
+// The files the step's sessions changed outside their features' files, as the run page lists them.
+function undeclaredFiles(events) {
+  return events
+    .filter((event) => event.kind === "session.undeclared_files" && Array.isArray(event.undeclared_files))
+    .flatMap((event) => event.undeclared_files)
+    .filter((file) => typeof file === "string" && file !== "");
+}
+
 function RunSteps({ events, rounds, running, ended = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   return (
@@ -3795,6 +3803,9 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
             {flaky === null ? null : <p className="run-flaky-note field-hint muted">{flaky}</p>}
             {flakyTests(step.events).map((test, n) => (
               <p key={"flaky" + n} className="run-step-flaky field-hint muted" data-step-flaky>{"Flaky: " + test.name + (Number.isInteger(test.retry) ? " (passed on retry " + test.retry + ")" : " (passed on a retry)")}</p>
+            ))}
+            {undeclaredFiles(step.events).map((file, n) => (
+              <p key={"undeclared" + n} className="run-step-undeclared field-hint muted" data-step-undeclared>{"Changed outside its features' files: " + file}</p>
             ))}
             {kind === "failed" ? (
               <p className="run-step-failure">

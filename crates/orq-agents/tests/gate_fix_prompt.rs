@@ -43,6 +43,8 @@ fn implement_prompt(harness: &str, model: &str) -> String {
         review_again: None,
         leave_full_suite_to_gate: true,
         allowed_commands: &[],
+        declared_files: &[],
+        undeclared_files: &[],
     };
     adapter_for(harness).unwrap().implement_argv(&request).unwrap().last().unwrap().clone()
 }

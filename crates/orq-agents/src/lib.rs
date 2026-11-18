@@ -77,6 +77,12 @@ pub struct ImplementRequest<'a> {
     /// The run's permission rules: an unattended session is told the `Bash(...)` forms it may run, since
     /// a command in another form is refused with nobody to allow it. Empty says nothing about it.
     pub allowed_commands: &'a [String],
+    /// The files the features declare (their target and test files): the session is told them, so it
+    /// can tell a change outside them. Empty names none.
+    pub declared_files: &'a [String],
+    /// The files an earlier session of the run changed outside the features' declared files: a resumed
+    /// or review-again session is told to check each change is needed and tested. Empty says nothing.
+    pub undeclared_files: &'a [String],
 }
 
 /// The run a resumed run continues, and the commits its session already made on the branch.
@@ -408,6 +414,33 @@ const MARKER_FORMAT: &str = " The first line of that file says how it went: leav
 /// What an implement session is told when orq's gate runs the full suite after it.
 const LEAVE_FULL_SUITE_TO_GATE: &str = "Testing: run only the tests for what you changed, through run_tests; don't run the full suite or workspace-wide test commands (including a full-suite regression sweep), because orq's gate runs the full suite after review and a gate-fix session repairs what it finds.";
 
+const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in implement.done. Never edit around a refusal silently.";
+
+/// What the session is told about the features' files: the rule for a file write_code refuses, the
+/// files the features declare, and those the run already changed outside them. A file name holding a
+/// control character could break the prompt and is refused.
+fn files_wording(declared: &[String], undeclared: &[String]) -> Result<String, AdapterError> {
+    for file in declared.iter().chain(undeclared) {
+        if file.is_empty() || file.chars().any(char::is_control) {
+            return Err(AdapterError::InvalidValue { field: "file", value: file.clone() });
+        }
+    }
+    let mut wording = format!("\n\n{REFUSAL_RULE}");
+    if !declared.is_empty() {
+        wording.push_str(&format!(
+            " The features declare these files: {}. Before start_review, check each committed file outside them is needed and tested, and name it and why in implement.done.",
+            declared.join(", ")
+        ));
+    }
+    if !undeclared.is_empty() {
+        wording.push_str(&format!(
+            " These files are outside the feature's declared files: {}; check each change is needed and tested.",
+            undeclared.join(", ")
+        ));
+    }
+    Ok(wording)
+}
+
 /// The one prompt argument of an implementer session on `harness`, after checking everything the
 /// request puts into it. `command` is how that harness names the implement-and-review skill. Every
 /// adapter builds its prompt here so they all refuse the same unsafe values.
@@ -483,6 +516,7 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str("\n\n");
         prompt.push_str(LEAVE_FULL_SUITE_TO_GATE);
     }
+    prompt.push_str(&files_wording(request.declared_files, request.undeclared_files)?);
     if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
         prompt.push_str("\n\nExtra context:\n");
         prompt.push_str(context);
