@@ -70,7 +70,7 @@ impl World {
         for (name, dir) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"), ("HOME", "home")] {
             command.env(name, self.root.join(dir));
         }
-        command.env("ORQ_INSTALLED_BINARY", installed).env_remove("INVOCATION_ID").env_remove("NOTIFY_SOCKET").env_remove("ORQ_SYSTEMD_UNIT");
+        command.env("ORQ_INSTALLED_BINARY", installed).env_remove("INVOCATION_ID").env_remove("NOTIFY_SOCKET");
         command
     }
 
@@ -238,15 +238,6 @@ impl World {
         vec!["serve".into(), "--repo".into(), self.repo.display().to_string(), "--listen".into(), "127.0.0.1:0".into()]
     }
 
-    /// This build at `bin/orq`, outside target/, as a unit's ExecStart names the installed orq.
-    fn installed_build(&self) -> PathBuf {
-        let dir = self.root.join("bin");
-        fs::create_dir_all(&dir).unwrap();
-        let installed = dir.join("orq");
-        fs::hard_link(env!("CARGO_BIN_EXE_orq"), &installed).or_else(|_| fs::copy(env!("CARGO_BIN_EXE_orq"), &installed).map(|_| ())).unwrap();
-        installed
-    }
-
     /// `orq serve` as systemd would start it from `binary`, in the unit `orq-serve.service` whose `Restart=`
     /// is `policy`: `INVOCATION_ID` is set, and a stand-in `systemctl` answers for the unit.
     fn serve_under_systemd(&self, binary: &Path, installed: &Path, policy: &str) -> Running {
@@ -257,7 +248,7 @@ impl World {
         fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
         let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
         let mut command = self.command_from(binary, installed);
-        command.env("INVOCATION_ID", "0123abcd").env("ORQ_SYSTEMD_UNIT", "orq-serve.service").env("PATH", path);
+        command.env("INVOCATION_ID", "0123abcd").env("PATH", path);
         let mut child = command.arg("serve").arg("--repo").arg(&self.repo).args(["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         let running = Running { child, out: Default::default(), err: Default::default() };
@@ -388,45 +379,15 @@ fn a_restart_with_no_server_running_says_so() {
 }
 
 #[test]
-fn under_systemd_a_restart_exits_with_a_status_systemd_restarts() {
+fn under_systemd_a_restart_re_executes_the_installed_orq_in_place_whatever_the_units_restart_policy() {
     let world = World::new("systemd");
-    let installed = world.installed_build();
-    let mut server = world.serve_under_systemd(&installed, &installed, "always");
-    assert!(world.restart(&installed, &["--when-idle"]).status.success());
-    let deadline = Instant::now() + WAIT;
-    let status = loop {
-        if let Some(status) = server.child.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "serve did not exit: {}", server.output());
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    assert_eq!(status.code(), Some(75), "{}", server.output());
-    assert!(world.execd().is_none(), "systemd starts the new server, not serve");
-}
-
-#[test]
-fn under_systemd_a_server_run_from_a_target_build_refuses_a_restart_systemd_would_start_it_again() {
-    let world = World::new("systemd-target");
     let installed = world.installed();
-    let mut server = world.serve_under_systemd(Path::new(env!("CARGO_BIN_EXE_orq")), &installed, "on-failure");
-    let refused = world.restart(&installed, &["--when-idle"]);
-    assert!(!refused.status.success(), "{}", text(&refused.stdout));
-    let why = text(&refused.stderr);
-    assert!(why.contains("systemd") && why.contains("target/") && why.contains("ExecStart"), "{why}");
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(server.child.try_wait().unwrap().is_none(), "the server keeps running: {}", server.output());
-    assert!(world.execd().is_none());
-}
-
-#[test]
-fn under_a_systemd_unit_that_does_not_restart_it_a_restart_re_executes_the_installed_orq_instead_of_exiting() {
-    let world = World::new("systemd-norestart");
-    let installed = world.installed();
-    let mut server = world.serve_under_systemd(Path::new(env!("CARGO_BIN_EXE_orq")), &installed, "no");
+    // Even a unit that restarts on exit: its RestartPreventExitStatus= or SuccessExitStatus= could still keep
+    // an exit from being restarted, so the server never exits for systemd; exec keeps the pid systemd tracks.
+    let mut server = world.serve_under_systemd(Path::new(env!("CARGO_BIN_EXE_orq")), &installed, "always");
     let asked = world.restart(&installed, &["--when-idle"]);
     assert!(asked.status.success(), "{}", text(&asked.stderr));
-    assert_eq!(world.wait_for_exec(&server), world.serve_args(), "exiting would leave no server");
+    assert_eq!(world.wait_for_exec(&server), world.serve_args(), "{}", server.output());
     assert!(server.child.try_wait().unwrap().is_none(), "the same process goes on as the installed orq: {}", server.output());
 }
 
