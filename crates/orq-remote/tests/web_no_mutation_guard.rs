@@ -1,4 +1,4 @@
-//! The page offers exactly thirteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! The page offers exactly fifteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, queue a run's resume, review again or accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and the Settings server card's restart when idle and its cancel, and no other merge, nor any approve,
 //! restart or edit control or request.
 
@@ -10,8 +10,12 @@ fn code() -> String {
 fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_accept_set_aside_merge_and_model_actions() {
     let code = code();
     let calls: Vec<&str> = code.split("<RunAction ").skip(1).map(|call| call.split(" />").next().unwrap()).collect();
-    let kinds: Vec<&str> = calls.iter().map(|call| call.split("kind=\"").nth(1).unwrap().split('"').next().unwrap()).collect();
-    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "merge-set-aside"]);
+    // A literal kind, or {kind} for the one queueing helper that names its kind per use.
+    let kinds: Vec<&str> = calls.iter().map(|call| match call.split("kind=\"").nth(1) {
+        Some(kind) => kind.split('"').next().unwrap(),
+        None => call.split("kind={").nth(1).unwrap().split('}').next().unwrap(),
+    }).collect();
+    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "review-again", "kind", "merge-set-aside"]);
     let tail = |call: &str| call.split("controlPath(control, ").nth(1).unwrap().to_string();
     assert!(tail(calls[0]).starts_with("\"features/\"") && tail(calls[0]).contains("+ \"/runs\")"), "{}", tail(calls[0]));
     assert!(tail(calls[1]).starts_with("\"features/\"") && tail(calls[1]).contains("+ \"/promote\")"), "{}", tail(calls[1]));
@@ -29,10 +33,21 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert!(warning.starts_with("\"runs/\"") && warning.contains("+ \"/discard-warning\")"), "{warning}");
     assert!(tail(calls[6]).starts_with("\"runs/\"") && tail(calls[6]).contains("+ \"/accept\")"), "{}", tail(calls[6]));
     assert!(!calls[6].contains("check="), "accept asks nothing of the server first");
+    // Review again posts to the run's review-again route through the row's run path; nothing else.
+    const RUN_PATH: &str = "const runPath = (tail) => controlPath(control, \"runs/\" + encodeURIComponent(run.run_id) + \"/\" + tail);";
+    assert_eq!(code.matches(RUN_PATH).count(), 1, "the row's run path is defined once");
+    assert_eq!(code.matches("runPath(").count(), 1, "only Review again uses the row's run path");
+    assert!(calls[7].contains("path={runPath(\"review-again\")}"), "{}", calls[7]);
+    assert!(!calls[7].contains("check="), "review again asks nothing of the server first");
+    // Queueing a run's Resume, Review again or Accept posts to the project's queue add route; nothing else.
+    assert!(tail(calls[8]).starts_with("\"queue/add\")"), "{}", tail(calls[8]));
+    assert!(!calls[8].contains("check="), "queueing asks nothing of the server first");
+    let queued_kinds: Vec<&str> = code.split("queued(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
+    assert_eq!(queued_kinds, ["queue-run-review-again", "queue-run-resume", "queue-run-accept"]);
     // The one merge the page offers: a blocked run's set-aside merge, at exactly this route.
     const SET_ASIDE: &str = "\"runs/\" + encodeURIComponent(run.run_id) + \"/merge-set-aside\")";
-    assert!(tail(calls[7]).starts_with(SET_ASIDE), "{}", tail(calls[7]));
-    assert!(!calls[7].contains("check="), "the set-aside merge asks nothing of the server first");
+    assert!(tail(calls[9]).starts_with(SET_ASIDE), "{}", tail(calls[9]));
+    assert!(!calls[9].contains("check="), "the set-aside merge asks nothing of the server first");
     // The model switch and the launch picker read the launch profiles through one reader; nothing else.
     let paths = |name: &str| -> Vec<String> {
         let body = code.split(&format!("function {name}(")).nth(1).unwrap_or_else(|| panic!("{name}")).split("\nfunction ").next().unwrap();
@@ -90,7 +105,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 21, "the definition, the nine actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 23, "the definition, the eight run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
