@@ -496,3 +496,12 @@ fn a_run_whose_record_is_gone_but_whose_events_remain_credits_nothing_and_says_s
     assert_eq!(credits, Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
     assert!(stderr.contains("cannot tell which features the rebase fix session started"), "{stderr}");
 }
+
+#[test]
+fn a_run_sharing_the_worktree_whose_events_cannot_be_read_credits_nothing_and_says_so() {
+    let (out, credits) = resume_with_first_run_damaged("credit-unreadable-events", |dir| format!("printf 'not an event\\n' >> '{}'", dir.join("events.jsonl").display()));
+
+    let stderr = text(&out.stderr);
+    assert_eq!(credits, Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
+    assert!(stderr.contains("cannot tell which features the rebase fix session started"), "{stderr}");
+}
