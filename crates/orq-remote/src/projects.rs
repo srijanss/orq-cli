@@ -548,18 +548,13 @@ impl StoreProjects {
         };
         let runs = orq_orchestrator::RunStore::new(&self.roots.state);
         self.build_missing_report(&runs, run, &missing, Some(project.path.clone()))?;
-        let created = orq_orchestrator::created_reviews(&runs).map_err(|error| format!("cannot read the runs' review requests: {error:?}"))?;
-        for review in created.iter().filter(|review| review.run_id == run) {
-            if orq_core::review_inbox::backfill_created_reviews(&store, std::slice::from_ref(review))? > 0 {
-                note_report_log(&self.roots, run, &format!("review {} recorded ({REPAIRED})", review.url));
-            }
-        }
+        self.record_reviews_of(&runs, &store, Some(run))?;
         Ok(RunControlOutcome::Done(run.to_string()))
     }
 
     /// Repairs what runs could not record, as `orq review backfill` would and with the report each run would have
-    /// built: a missing report is built from the evidence in the run's events, then each created or adopted PR/MR
-    /// without a review state is recorded. Each repair is noted in the run's review-report log; a repair that fails
+    /// built: a missing report is built from the evidence in the run's events, then each run merged here is resolved
+    /// as merged and each created or adopted PR/MR without a review state is recorded. Each repair is noted in the run's review-report log; a repair that fails
     /// is only logged here, and the next round tries again.
     pub fn repair_missing_reviews(&self) {
         let database = self.roots.database();
@@ -588,17 +583,31 @@ impl StoreProjects {
                 }
             }
         }
-        let created = match orq_orchestrator::created_reviews(&runs) {
-            Ok(created) => created,
-            Err(error) => return eprintln!("orq: cannot read the runs' review requests: {error:?}"),
-        };
-        for review in &created {
-            match orq_core::review_inbox::backfill_created_reviews(&store, std::slice::from_ref(review)) {
+        if let Err(error) = self.record_reviews_of(&runs, &store, None) {
+            eprintln!("orq: cannot repair missing reviews: {error}");
+        }
+    }
+
+    /// Records the review state of each run (only `only` when given) whose report is now there, as `orq review
+    /// backfill` does: a run merged here first, so it reads as merged and its PR/MR is then left alone; then each
+    /// created or adopted PR/MR, noted in the run's log. A run whose record fails is said and the others go on.
+    fn record_reviews_of(&self, runs: &orq_orchestrator::RunStore, store: &orq_core::store::Store, only: Option<&str>) -> Result<(), String> {
+        let wanted = |run_id: &str| only.is_none_or(|only| only == run_id);
+        let merges = orq_orchestrator::local_merges(runs).map_err(|error| format!("cannot read the runs' local merges: {error:?}"))?;
+        for merge in merges.iter().filter(|(run_id, _)| wanted(run_id)) {
+            if let Err(error) = orq_core::review_inbox::backfill_local_merges(store, std::slice::from_ref(merge)) {
+                eprintln!("orq: cannot resolve the review of {}, merged here: {error}", merge.0);
+            }
+        }
+        let created = orq_orchestrator::created_reviews(runs).map_err(|error| format!("cannot read the runs' review requests: {error:?}"))?;
+        for review in created.iter().filter(|review| wanted(&review.run_id)) {
+            match orq_core::review_inbox::backfill_created_reviews(store, std::slice::from_ref(review)) {
                 Ok(0) => {}
                 Ok(_) => note_report_log(&self.roots, &review.run_id, &format!("review {} recorded ({REPAIRED})", review.url)),
                 Err(error) => eprintln!("orq: cannot record the review request of {}: {error}", review.run_id),
             }
         }
+        Ok(())
     }
 
     /// Resolves the reviews of runs merged locally before local merges resolved them. It runs once

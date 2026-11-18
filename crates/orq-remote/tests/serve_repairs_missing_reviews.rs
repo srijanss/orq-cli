@@ -256,3 +256,42 @@ fn a_failed_repair_says_why_once_does_not_stop_the_others_and_is_tried_again() {
     assert_eq!(lifecycles(&s, "run-flaky"), 1);
     assert_eq!(tries.lock().unwrap().iter().filter(|r| *r == "run-flaky").count(), 3);
 }
+
+/// `run_id` ended merged here at `merged`, after creating MR 976, and its report could not be built.
+fn merged_run(s: &Setup, run_id: &str, merged: &str) {
+    ended_run(s, run_id);
+    event(s, run_id, "merge.completed", Some("merge"), json!({"head_sha": merged}));
+    event(s, run_id, "run.completed", None, json!({"ending": "merged"}));
+    note(s, run_id, &format!("no report for {HEAD}: {NO_INDEX}"));
+}
+
+fn kept(s: &Setup, run_id: &str) -> Vec<(String, orq_core::review_lifecycle::ProviderState)> {
+    let store = Store::open(&s.roots.database()).unwrap();
+    store.lifecycles_for_run(run_id).unwrap().into_iter().map(|l| (l.provider, l.state)).collect()
+}
+
+#[test]
+fn a_repaired_report_of_a_run_merged_here_reads_as_merged_not_as_its_mr() {
+    let s = setup("repair-merged");
+    let merged = "77aa000000000000000000000000000000000001";
+    merged_run(&s, "run-merged", merged);
+    let (projects, asked) = provider(&s);
+
+    projects.repair_missing_reviews();
+
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert_eq!(kept(&s, "run-merged"), vec![("local".to_string(), orq_core::review_lifecycle::ProviderState::Merged)]);
+}
+
+#[test]
+fn build_it_now_on_a_run_merged_here_reads_as_merged_not_as_its_mr() {
+    use orq_core::remote_inbox::{ProjectsProvider, RunControl};
+    let s = setup("repair-merged-now");
+    merged_run(&s, "run-merged-now", "77aa000000000000000000000000000000000002");
+    alpha_project(&s, "run-merged-now");
+    let (projects, _) = provider(&s);
+
+    projects.control_run("alpha", "run-merged-now", RunControl::BuildReport).unwrap();
+
+    assert_eq!(kept(&s, "run-merged-now"), vec![("local".to_string(), orq_core::review_lifecycle::ProviderState::Merged)]);
+}
