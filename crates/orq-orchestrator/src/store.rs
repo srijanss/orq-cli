@@ -558,6 +558,12 @@ impl RunStore {
         Ok(())
     }
 
+    /// Whether `run_id` has an event log, whether or not its record is there: a run whose record is
+    /// gone may still have events, while one just being created has neither.
+    pub fn has_event_log(&self, run_id: &str) -> Result<bool, StoreError> {
+        Ok(self.run_dir(run_id)?.join("events.jsonl").try_exists()?)
+    }
+
     /// Every event of the run, in the order written. A line that is not an
     /// event is an error, never silently skipped.
     pub fn events(&self, run_id: &str) -> Result<Vec<Event>, StoreError> {

@@ -845,18 +845,19 @@ fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, fe
 /// The session log lines that are not the run's, each with how many times it is there: a project that
 /// keeps the log in git hands the worktree the events of other sessions, at the run's base and again
 /// with each commit a rebase put the branch onto. Every run that shared the worktree (a resumed run
-/// keeps it) is looked at, since its rebases moved this branch too; one whose record cannot be read is
-/// an error, as it may be such a run. A line counts as many times as the
+/// keeps it) is looked at, since its rebases moved this branch too. A line counts as many times as the
 /// commit with most of it has it. An error when what one of those commits or runs holds cannot be
-/// read, since then no line can be told to be the run's.
+/// read, or a run's record is gone while its events remain, since then no line can be told to be the
+/// run's.
 fn lines_not_the_runs(store: &RunStore, record: &RunRecord) -> Result<std::collections::HashMap<String, usize>, String> {
     let mut commits = vec![record.base_sha.clone()];
     for run_id in store.run_ids().map_err(|err| format!("cannot list the runs: {err:?}"))? {
         if run_id != record.run_id {
             match store.load(&run_id) {
                 Ok(other) if other.worktree == record.worktree => {}
-                // A run whose record is not written yet is still starting: it has rebased nothing.
-                Ok(_) | Err(StoreError::NotFound(_)) => continue,
+                Ok(_) => continue,
+                // A run with neither a record nor events is still starting: it has rebased nothing.
+                Err(StoreError::NotFound(_)) if !store.has_event_log(&run_id).map_err(|err| format!("cannot read the run {run_id}: {err:?}"))? => continue,
                 Err(err) => return Err(format!("cannot read the run {run_id}, which may have rebased this branch: {err:?}")),
             }
         }

@@ -459,23 +459,40 @@ fn a_resumed_run_does_not_credit_the_session_log_lines_its_predecessors_rebase_b
     assert!(!stderr.contains("old-extra") && !stderr.contains("up-extra"), "{stderr}");
 }
 
-#[test]
-fn a_run_record_sharing_the_worktree_that_cannot_be_read_credits_nothing_and_says_so() {
-    let (w, on_implement, on_fix) = tracked_log_world("credit-unreadable-run");
+/// A tracked-log run blocked mid-rebase, resumed with `--fix-conflicts`; while the resumed run's fix
+/// session works, `damage`, given the first run's store directory, is run in the shell. Returns what
+/// the resume printed and the features each of the resumed run's credits names.
+fn resume_with_first_run_damaged(tag: &str, damage: impl Fn(&Path) -> String) -> (Output, Vec<serde_json::Value>) {
+    let (w, on_implement, on_fix) = tracked_log_world(tag);
     harness(&w, &on_implement, "true");
     let first = run(&w, &[]);
     assert_eq!(first.status.code(), Some(30), "{}\n{}", text(&first.stdout), text(&first.stderr));
     let id = only_run(&w);
-    // While the resumed run's fix session works, the first run's record is damaged, so which
-    // commits its rebases put the branch onto cannot be told.
-    let record = w.home.join("state/orq/runs").join(&id).join("run.json");
-    assert!(record.is_file(), "{}", record.display());
-    harness(&w, "true", &format!("printf 'not json' > '{}'; {on_fix}", record.display()));
+    let dir = w.home.join("state/orq/runs").join(&id);
+    assert!(dir.join("run.json").is_file() && dir.join("events.jsonl").is_file(), "{}", dir.display());
+    harness(&w, "true", &format!("{}; {on_fix}", damage(&dir)));
 
     let out = resume(&w, &id, &["--fix-conflicts"]);
 
-    let stderr = text(&out.stderr);
     let resumed = other_run(&w, &id);
-    assert_eq!(credited(&w, &resumed), Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
+    let credits = credited(&w, &resumed);
+    (out, credits)
+}
+
+#[test]
+fn a_run_record_sharing_the_worktree_that_cannot_be_read_credits_nothing_and_says_so() {
+    let (out, credits) = resume_with_first_run_damaged("credit-unreadable-run", |dir| format!("printf 'not json' > '{}'", dir.join("run.json").display()));
+
+    let stderr = text(&out.stderr);
+    assert_eq!(credits, Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
+    assert!(stderr.contains("cannot tell which features the rebase fix session started"), "{stderr}");
+}
+
+#[test]
+fn a_run_whose_record_is_gone_but_whose_events_remain_credits_nothing_and_says_so() {
+    let (out, credits) = resume_with_first_run_damaged("credit-recordless-run", |dir| format!("rm '{}'", dir.join("run.json").display()));
+
+    let stderr = text(&out.stderr);
+    assert_eq!(credits, Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
     assert!(stderr.contains("cannot tell which features the rebase fix session started"), "{stderr}");
 }
