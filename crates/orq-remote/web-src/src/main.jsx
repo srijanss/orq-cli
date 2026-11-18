@@ -2018,7 +2018,8 @@ function blockedOf(control) {
 // action that starts no run. blocked: why the button is disabled now, shown beside it, or null.
 // float: in a run table's row on a wide screen, the question floats in a panel anchored to the button (see
 // FloatingQuestion) so the row keeps its size; on a phone it opens in the row as everywhere else.
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false }) {
+// With `answers`, its question carries a field for an answer the resumed session is given; a blank one is not sent.
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false, body: sent = {}, answers = false }) {
   const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
   const floating = float && !usePhone();
   const button = useRef(null);
@@ -2028,6 +2029,13 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   const [note, setNote] = useState("");
   const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
+  const [answer, setAnswer] = useState("");
+  const field = answers ? (
+    <label className="field">
+      <span>Answer for the session (optional)</span>
+      <input type="text" data-answer value={answer} maxLength={8000} onChange={(event) => setAnswer(event.target.value)} />
+    </label>
+  ) : null;
   const ask = async () => {
     setNote("");
     setHidden(false);
@@ -2062,7 +2070,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
     setPhase("sending");
     let text = "The action could not be completed.";
     try {
-      const response = await actionRequest(path, token);
+      const response = await actionRequest(path, token, answer.trim() === "" ? sent : { ...sent, answer: answer.trim() });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -2096,7 +2104,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
         {phase === "sending" ? <span role="status" className="sr-only">Sending…</span> : null}
         {open && !hidden ? (
           <FloatingQuestion anchor={button} busy={phase === "sending"} onClose={phase === "sending" ? () => setHidden(true) : cancel}>
-            <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={send} onCancel={cancel} />
+            <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={send} onCancel={cancel}>{field}</Confirm>
           </FloatingQuestion>
         ) : null}
         {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
@@ -2109,7 +2117,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
       {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={cancel} /> : null}
+      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={cancel}>{field}</Confirm> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
       {phase === "done" && opensIn !== null ? <OpenRun projectId={opensIn} run={run} /> : null}
@@ -2685,8 +2693,13 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-const QUEUE_STATES = ["running", "review", "failed", "next", "queued", "waiting"];
-const QUEUE_STATE_LABELS = { running: "Running", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting" };
+const QUEUE_STATES = ["running", "review", "failed", "next", "queued", "waiting", "skipped"];
+const QUEUE_STATE_LABELS = { running: "Running", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting", skipped: "No longer needed" };
+
+// What a queue entry shows: a feature's start by its name, a queued Resume, Review again or Accept by its label.
+function queueName(entry) {
+  return typeof entry.label === "string" && entry.label !== "" && entry.kind !== "start" && entry.kind !== undefined ? entry.label : entry.feature;
+}
 
 function isQueue(queue) {
   const text = (value) => value === null || typeof value === "string";
@@ -2701,7 +2714,7 @@ function isQueue(queue) {
 function QueueReviewWait({ queue }) {
   const wait = queue.waiting_for_review ?? null;
   if (wait === null) return null;
-  return <p className="queue-waiting" data-queue-waiting-review><Icon name="clock" size={16} />{"Waiting for " + wait.feature + (typeof wait.mr_url === "string" ? "'s MR to merge" : "'s review")}</p>;
+  return <p className="queue-waiting" data-queue-waiting-review><Icon name="clock" size={16} />{"Waiting for " + (typeof wait.label === "string" && !wait.label.startsWith("Start ") ? wait.label : wait.feature) + (typeof wait.mr_url === "string" ? "'s MR to merge" : "'s review")}</p>;
 }
 
 // The link to a queued run's MR, when it has one an https address points to.
@@ -2785,16 +2798,16 @@ function QueueView({ data, control, projectId }) {
               onDragOver={(event) => { if (dragged !== null) event.preventDefault(); }}
               onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); setDragged(null); }}
               onDragEnd={() => setDragged(null)}>
-              <span className="queue-feature">{entry.feature}</span>
+              <span className="queue-feature">{queueName(entry)}</span>
               <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
               {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
               <QueueMr entry={entry} />
               {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
               {control !== null ? (
                 <span className="queue-controls">
-                  <button type="button" className="icon-button" data-queue-up aria-label={"Move " + entry.feature + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
-                  <button type="button" className="icon-button" data-queue-down aria-label={"Move " + entry.feature + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
-                  <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + entry.feature} disabled={busy} onClick={() => { setNote(""); setRemoving(entry.feature); }}><Icon name="trash" size={16} /></button>
+                  <button type="button" className="icon-button" data-queue-up aria-label={"Move " + queueName(entry) + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
+                  <button type="button" className="icon-button" data-queue-down aria-label={"Move " + queueName(entry) + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
+                  <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + queueName(entry)} disabled={busy} onClick={() => { setNote(""); setRemoving(entry); }}><Icon name="trash" size={16} /></button>
                 </span>
               ) : null}
             </li>
@@ -2802,7 +2815,7 @@ function QueueView({ data, control, projectId }) {
         </ol>
       ) : null}
       {removing !== null ? (
-        <Confirm question={"Remove " + removing + " from the queue?"} detail="A run it already started goes on." answer="Yes, remove" tone="danger" onConfirm={() => { const name = removing; setRemoving(null); change("remove", { feature: name }); }} onCancel={() => setRemoving(null)} />
+        <Confirm question={"Remove " + queueName(removing) + " from the queue?"} detail="A run it already started goes on." answer="Yes, remove" tone="danger" onConfirm={() => { const name = removing.feature; setRemoving(null); change("remove", { feature: name }); }} onCancel={() => setRemoving(null)} />
       ) : null}
       {busy ? <span role="status">Sending…</span> : null}
       {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
@@ -3813,14 +3826,20 @@ function RowActions({ run, control, menu = false }) {
   // Its tests are running in the worktree: nothing may change the run under them, so nothing is offered.
   if (run.state === "accepting") return <span className="run-actions muted" data-accept-busy>{"Accept, Review again, Resume and Discard wait: an accept is running"}</span>;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
-  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const runPath = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
+  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" tone="danger" icon="trash" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
   const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={"Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. It shows as review ready when they pass."} /> : null;
+  // A failed run whose commits after its last review no review saw may be reviewed again from there.
+  const reviewAgain = run.state === "failed" && run.reviewable_again === true ? <RunAction kind="review-again" label="Review again" icon="rotate" question={"Review " + run.run_id + " again? A session reviews the commits after its last review and fixes what that review finds."} path={runPath("review-again")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Reviewing again." : "Reviewing again as run " + next + ".")} /> : null;
+  const queued = (kind, action, label, title, answers = false) => <RunAction kind={kind} label={label} icon="clock" answers={answers} question={"Queue " + title + " " + run.run_id + "? It starts when the project's limits and queue hours allow."} path={controlPath(control, "queue/add")} body={{ action, run: run.run_id }} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Queued " + title + " " + run.run_id + "."} />;
+  const queueResume = !RESUMABLE.includes(run.state) ? null : run.state === "needs_review" ? queued("queue-run-review-again", "review_again", "Queue review again", "Review again") : queued("queue-run-resume", "resume", "Queue resume", "Resume", true);
+  const queueAccept = ACCEPTABLE.includes(run.state) ? queued("queue-run-accept", "accept", "Queue accept", "Accept") : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
   const setAside = dirtyFiles(run) === null ? null : <RunAction kind="merge-set-aside" label="Set aside my changes and merge" icon="check" question={SET_ASIDE_QUESTION} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/merge-set-aside")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Merging." : "Merging as run " + next + ".")} />;
   if (pause === null && resume === null && stop === null && discard === null && accept === null && model === null && setAside === null) return null;
-  const all = [pause, resume, setAside, model, stop, accept, discard].filter((action) => action !== null);
+  const all = [pause, resume, reviewAgain, setAside, model, stop, accept, queueResume, queueAccept, discard].filter((action) => action !== null);
   if (menu && all[0].type === RunAction) all[0] = cloneElement(all[0], { float: true });
   if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
@@ -4057,7 +4076,7 @@ function QueueGroup({ project, queue }) {
         <ol className="queue-list">
           {queue.entries.map((entry) => (
             <li key={entry.feature} className="queue-entry" data-queue-entry={entry.feature}>
-              <span className="queue-feature">{entry.feature}</span>
+              <span className="queue-feature">{queueName(entry)}</span>
               <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
               {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
               <QueueMr entry={entry} />

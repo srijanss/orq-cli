@@ -1769,6 +1769,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
         add_accept(&mut shown, &events, &summary);
         add_missing_report(&mut shown, &self.roots, run);
+        // A failed run with commits its last review never saw may be reviewed again (the page's Review again).
+        let reviewable_again = summary.phase == orq_orchestrator::RunPhase::Failed
+            && orq_orchestrator::last_review(&record.worktree, &record.base_sha).ok().flatten().is_some_and(|review| !review.unreviewed_commits.is_empty());
+        if reviewable_again {
+            shown["reviewable_again"] = serde_json::json!(true);
+        }
         Ok(Some(serde_json::json!({
             "run": shown,
             "events": listed,

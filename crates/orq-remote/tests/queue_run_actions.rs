@@ -359,3 +359,27 @@ fn run_now_resume_takes_an_answer_and_review_again_resumes_a_needs_review_or_fai
     assert_eq!(post("run-old-r1/review-again", json!({"answer": "x"})).0, 400, "a review again takes no answer");
     assert_eq!(resumed(&s).len(), 2);
 }
+
+/// Writes a review ledger in `worktree` with one round from `start` that reviewed `head`.
+fn reviewed_up_to(worktree: &Path, start: &str, head: &str) {
+    let scope = format!("review:{start}");
+    let round = json!({"start": start, "head": head, "reviewer": "pi", "model": "m", "findings": [], "round": 1, "recordedAt": "2026-11-18T10:00:00+00:00"});
+    std::fs::write(worktree.join(".tdd-review-rounds.json"), json!({ &scope: [round] }).to_string()).unwrap();
+    std::fs::write(worktree.join(".tdd-review-findings.json"), json!({ &scope: [] }).to_string()).unwrap();
+}
+
+#[test]
+fn a_failed_run_s_page_says_it_can_be_reviewed_again_only_once_something_came_after_its_last_review() {
+    let s = setup("qra-reviewable", |_| {});
+    worktree_run(&s, "run-f", "COM-01", "failed");
+    let worktree = s.repo.join(".claude/worktrees/run-f");
+    let base = git(&s.repo, &["rev-parse", "main"]);
+    reviewed_up_to(&worktree, &base, &git(&worktree, &["rev-parse", "HEAD"]));
+    let reviewable = |s: &Setup| send(s, "GET", "/api/projects/alpha/runs/run-f", b"").1["run"].get("reviewable_again").cloned();
+
+    assert_eq!(reviewable(&s), None, "nothing came after its review");
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "after the review"]);
+    assert_eq!(reviewable(&s), Some(json!(true)));
+    end_run(&s, "run-f", "blocked");
+    assert_eq!(reviewable(&s), None, "only a failed run");
+}
