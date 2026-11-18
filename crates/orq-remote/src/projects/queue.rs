@@ -112,6 +112,14 @@ impl StoreProjects {
             if entry.run.is_some() || orq_features::check_run_eligibility(&ledger, &entry.feature).is_err() {
                 continue;
             }
+            // A start takes a while: what was paused or removed meanwhile holds the starts after it.
+            let now = store.queue(root).map_err(failed)?;
+            if now.paused.is_some() {
+                return Ok(());
+            }
+            if !now.entries.iter().any(|current| current.feature == entry.feature && current.run.is_none()) {
+                continue;
+            }
             let active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
             if orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).is_some() {
                 return Ok(());

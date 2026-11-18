@@ -21,6 +21,8 @@ struct Launcher {
     state: PathBuf,
     started: Mutex<Vec<String>>,
     refuse: Mutex<Option<LaunchError>>,
+    /// Done once, while the first run starts: what a person changes meanwhile.
+    meanwhile: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RunLauncher for Launcher {
@@ -32,6 +34,10 @@ impl RunLauncher for Launcher {
         started.push(feature.to_string());
         let run = format!("run-{}-{feature}", started.len());
         seed_run(&self.state, repo, &run, feature);
+        drop(started);
+        if let Some(change) = self.meanwhile.lock().unwrap().take() {
+            change();
+        }
         Ok(run)
     }
 }
@@ -47,7 +53,7 @@ fn setup(label: &str) -> Setup {
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
     std::fs::write(roots.config_file(), "remote_actions = true\n").unwrap();
-    let launcher = Arc::new(Launcher { state: roots.state.clone(), started: Mutex::default(), refuse: Mutex::default() });
+    let launcher = Arc::new(Launcher { state: roots.state.clone(), started: Mutex::default(), refuse: Mutex::default(), meanwhile: Mutex::default() });
     Setup { scan: base.join("code"), roots, launcher }
 }
 
@@ -175,6 +181,35 @@ fn a_feature_waits_in_the_queue_until_the_feature_it_depends_on_completes_then_s
     round(&s);
     assert_eq!(started(&s), ["COM-01", "COM-02"]);
     assert_eq!(states(&s), pairs(&[("COM-02", "running")]), "a completed run's entry leaves the queue");
+}
+
+#[test]
+fn a_pause_or_removal_made_while_a_round_starts_a_run_holds_the_starts_after_it() {
+    let s = setup("queue-meanwhile");
+    let repo = git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[]), ("COM-03", "pending", &[])]);
+    assert_eq!(queue_add(&s, &["COM-01", "COM-02", "COM-03"]).0, 200);
+    let database = s.roots.database();
+    let root = repo.clone();
+    *s.launcher.meanwhile.lock().unwrap() = Some(Box::new(move || {
+        let store = orq_core::store::Store::open(&database).unwrap();
+        store.queue_remove(&root, "COM-02").unwrap();
+        store.queue_pause(&root, "paused from the web").unwrap();
+    }));
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "nothing starts after the queue was paused");
+    assert_eq!(states(&s), pairs(&[("COM-01", "running"), ("COM-03", "next")]));
+
+    std::fs::write(s.roots.config_file(), "remote_actions = true\n").unwrap();
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/queue/resume", b"{}").0, 200);
+    let database = s.roots.database();
+    let root = repo.clone();
+    *s.launcher.meanwhile.lock().unwrap() = Some(Box::new(move || {
+        orq_core::store::Store::open(&database).unwrap().queue_remove(&root, "COM-04").unwrap();
+    }));
+    write_ledger(&repo, &[("COM-01", "pending", &[]), ("COM-03", "pending", &[]), ("COM-04", "pending", &[]), ("COM-05", "pending", &[])]);
+    assert_eq!(queue_add(&s, &["COM-04", "COM-05"]).0, 200);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01", "COM-03", "COM-05"], "a feature removed meanwhile is not started");
 }
 
 /// Saves the project's settings from the web: no agents, review delivery, and `extra`.
