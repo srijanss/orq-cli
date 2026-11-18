@@ -69,3 +69,72 @@ fn features_are_queued_listed_in_start_order_paused_resumed_and_removed_from_the
 
     assert_eq!(s.queue(repo.root(), &["shuffle"]).status.code(), Some(2), "an unknown verb is a usage error");
 }
+
+/// A run `run` of `feature` in the sandbox's run store, ended with `ending` when given (else running).
+fn seed_run(s: &Sandbox, repo: &Path, run: &str, feature: &str, ending: Option<&str>) {
+    use orq_orchestrator::{Event, RunRecord, RunStore};
+    let store = RunStore::new(&s.home.join("state").join("orq"));
+    let head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo).output().unwrap();
+    let record = RunRecord {
+        delivery: Default::default(),
+        run_id: run.into(),
+        project_id: orq_git::project_id(&orq_git::resolve_project(repo).unwrap()),
+        feature_id: feature.into(),
+        remote: "origin".into(),
+        provider: "gitlab".into(),
+        target_branch: "main".into(),
+        base_sha: String::from_utf8_lossy(&head.stdout).trim().to_string(),
+        branch: format!("orq/{run}"),
+        worktree: repo.join(".claude/worktrees").join(run),
+        repository: String::new(),
+        profiles: Default::default(),
+    };
+    store.create(&record).unwrap();
+    let events = [("stage.started", serde_json::json!({}))].into_iter().chain(ending.map(|ending| ("run.completed", serde_json::json!({"ending": ending}))));
+    for (n, (kind, payload)) in events.enumerate() {
+        store
+            .append_event(&Event {
+                schema_version: 1,
+                event_id: format!("{run}-{n}"),
+                run_id: run.into(),
+                project_id: record.project_id.clone(),
+                feature_id: record.feature_id.clone(),
+                kind: kind.into(),
+                stage: Some("implement".into()),
+                attempt: 1,
+                occurred_at: format!("2026-01-01T10:00:0{n}Z"),
+                payload,
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_resume_with_an_answer_a_review_again_and_an_accept_of_existing_runs_are_queued_from_the_terminal() {
+    let s = Sandbox::new("run-actions");
+    let repo = GitFixture::new();
+    // Each run of its own feature: a later run of the same feature would make the earlier no longer needed.
+    write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
+    seed_run(&s, repo.root(), "run-f", "COM-01", Some("failed"));
+    seed_run(&s, repo.root(), "run-n", "COM-02", Some("needs_review"));
+    seed_run(&s, repo.root(), "run-b", "COM-03", Some("blocked"));
+    seed_run(&s, repo.root(), "run-going", "COM-04", None);
+
+    assert_eq!(s.ok(repo.root(), &["add", "--resume", "run-f", "--answer", "use the v2 endpoint"]), "Queued Resume run-f.\n");
+    assert_eq!(s.ok(repo.root(), &["add", "--review-again", "run-n"]), "Queued Review again run-n.\n");
+    assert_eq!(s.ok(repo.root(), &["add", "--accept", "run-b"]), "Queued Accept run-b.\n");
+    let listed: serde_json::Value = s.ok(repo.root(), &["list", "--json"]).trim_end().parse().unwrap();
+    assert_eq!(listed["entries"][0]["answer"], "use the v2 endpoint");
+    assert_eq!(listed["entries"][0]["added_by"], "cli");
+    assert_eq!(s.ok(repo.root(), &["list"]), "Resume run-f  next\nReview again run-n  queued\nAccept run-b  queued\n");
+
+    let unknown = s.queue(repo.root(), &["add", "--accept", "run-nope"]);
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("run-nope is not one of the project's runs"), "{}", String::from_utf8_lossy(&unknown.stderr));
+    let going = s.queue(repo.root(), &["add", "--resume", "run-going"]);
+    assert!(String::from_utf8_lossy(&going.stderr).contains("Resume run-going cannot be queued: run-going is running"), "{}", String::from_utf8_lossy(&going.stderr));
+    assert_eq!(s.queue(repo.root(), &["add", "--accept", "run-b", "--answer", "x"]).status.code(), Some(2), "only a Resume takes an answer");
+    assert_eq!(s.queue(repo.root(), &["add", "--resume"]).status.code(), Some(2));
+
+    assert_eq!(s.ok(repo.root(), &["remove", "accept:run-b"]), "Removed Accept run-b.\n");
+}
