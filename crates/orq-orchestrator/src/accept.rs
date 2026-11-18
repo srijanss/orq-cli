@@ -246,17 +246,17 @@ pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
         drop(reader); // a child still writing after a failed read gets a broken pipe, not a full one
         let status = child.wait().map_err(cannot_run)?;
         if !status.success() {
-            let printed = orq_core::redact::redact(&String::from_utf8_lossy(&printed));
+            let printed = orq_core::redact::redact(&printed);
             return Err(format!("`{}` failed: {}", argv.join(" "), tail(&printed)));
         }
     }
     Ok(())
 }
 
-/// Read `source` to its end, keeping only the last bytes of it so a noisy command costs bounded memory. What is
-/// kept is always more than [`tail`] keeps when anything was dropped, so the cut made here never shows.
-fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
-    let mut kept: Vec<u8> = Vec::new();
+/// Read `source` to its end, keeping only the end of it, redacted, so a noisy command costs bounded memory.
+/// Each line is redacted whole before anything older is let go, so no cut ever splits a secret.
+fn read_tail(source: &mut impl std::io::Read) -> String {
+    let mut shown = ShownOutput::default();
     let mut chunk = [0u8; 8192];
     loop {
         let n = match source.read(&mut chunk) {
@@ -265,12 +265,85 @@ fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
-        kept.extend_from_slice(&chunk[..n]);
-        if kept.len() > 4 * OUTPUT_TAIL {
-            kept.drain(..kept.len() - 2 * OUTPUT_TAIL);
+        shown.push(&chunk[..n]);
+    }
+    shown.finish()
+}
+
+/// The longest line shown. A longer one is left out whole: a part of it could be part of a secret, with what
+/// would show it is one (its name, its start) in the part that is gone.
+const LONGEST_LINE: usize = 1000;
+/// How much of a line that is too long is still looked at, enough to find a private key's first line in it.
+const LINE_END_LOOKED_AT: usize = 128;
+const LEFT_OUT_LINE: &str = "[a line too long to show was left out]";
+const LEFT_OUT_KEY: &str = "[REDACTED private key]";
+
+/// Output read so far, line by line: redacted lines, the last ones kept, and the line still being read.
+#[derive(Default)]
+struct ShownOutput {
+    kept: String,
+    line: Vec<u8>,
+    too_long: bool,
+    in_private_key: bool,
+}
+
+impl ShownOutput {
+    fn push(&mut self, mut bytes: &[u8]) {
+        while let Some(at) = bytes.iter().position(|&b| b == b'\n') {
+            self.add(&bytes[..at]);
+            self.end_line();
+            bytes = &bytes[at + 1..];
+        }
+        self.add(bytes);
+    }
+
+    fn add(&mut self, part: &[u8]) {
+        self.line.extend_from_slice(part);
+        if self.line.len() > LONGEST_LINE {
+            self.too_long = true;
+            self.line.drain(..self.line.len() - LINE_END_LOOKED_AT);
         }
     }
-    kept
+
+    /// A private key is left out from its first line to its last; one that never ends leaves out all after it.
+    fn end_line(&mut self) {
+        let line = String::from_utf8_lossy(&std::mem::take(&mut self.line)).into_owned();
+        let too_long = std::mem::take(&mut self.too_long);
+        let key_marker = line.contains("PRIVATE KEY-----");
+        if self.in_private_key {
+            self.in_private_key = !(key_marker && line.contains("-----END"));
+        } else if key_marker && line.contains("-----BEGIN") && (too_long || !line.contains("-----END")) {
+            self.in_private_key = !line.contains("-----END");
+            self.keep(LEFT_OUT_KEY);
+        } else if too_long {
+            self.keep(LEFT_OUT_LINE);
+        } else {
+            self.keep(&orq_core::redact::redact(&line));
+        }
+    }
+
+    fn keep(&mut self, line: &str) {
+        if !self.kept.is_empty() {
+            self.kept.push('\n');
+        }
+        self.kept.push_str(line);
+        // Only whole, redacted lines go, and always more stays than [`tail`] keeps.
+        if self.kept.len() > 4 * OUTPUT_TAIL {
+            let mut from = self.kept.len() - 2 * OUTPUT_TAIL;
+            while !self.kept.is_char_boundary(from) {
+                from += 1;
+            }
+            let from = self.kept[from..].find('\n').map_or(from, |at| from + at + 1);
+            self.kept.drain(..from);
+        }
+    }
+
+    fn finish(mut self) -> String {
+        if !self.line.is_empty() || self.too_long {
+            self.end_line();
+        }
+        self.kept
+    }
 }
 
 #[cfg(test)]
@@ -297,6 +370,6 @@ mod tests {
     #[test]
     fn an_interrupted_read_is_retried_not_taken_for_the_end_of_the_output() {
         let mut source = Interrupted(&[b"first ", b"last"], false);
-        assert_eq!(read_tail(&mut source), b"first last");
+        assert_eq!(read_tail(&mut source), "first last");
     }
 }

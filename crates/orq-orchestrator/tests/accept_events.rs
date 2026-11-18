@@ -208,7 +208,8 @@ fn a_private_key_whose_start_is_cut_off_is_not_kept() {
 fn test_output_is_redacted_before_only_its_tail_is_kept() {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-steps-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let script = format!("printf 'start\\n{TOKEN}\\n'; head -c 1473 /dev/zero | tr '\\0' z; exit 1");
+    // 1473 bytes after the token, in two lines short enough to show, so the cut falls in the token.
+    let script = format!("printf 'start\\n{TOKEN}\\n'; head -c 735 /dev/zero | tr '\\0' z; echo; head -c 737 /dev/zero | tr '\\0' z; exit 1");
     let err = orq_orchestrator::run_steps(&dir, &[vec!["sh".into(), "-c".into(), script]]).unwrap_err();
     // What the command printed, after the command itself.
     let err = err.rsplit_once("` failed: ").unwrap().1;
@@ -300,4 +301,28 @@ fn an_accept_whose_tests_are_still_running_is_not_recorded_as_interrupted() {
         accepted.unwrap();
     });
     assert!(!kinds(&store).contains(&"run.accept_failed".to_string()), "{:?}", kinds(&store));
+}
+
+/// What `script` printed before failing, as the accept would show it.
+fn shown_output(tag: &str, script: &str) -> String {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let err = orq_orchestrator::run_steps(&dir, &[vec!["sh".into(), "-c".into(), script.into()]]).unwrap_err();
+    err.rsplit_once("` failed: ").unwrap().1.to_string()
+}
+
+#[test]
+fn a_secret_on_a_line_longer_than_what_is_kept_is_not_kept() {
+    // The last thing printed, with no line end after it, so nothing after it marks where it began.
+    let script = "echo 'test result: FAILED'; printf 'API_TOKEN=%s' \"$(head -c 9000 /dev/zero | tr '\\0' s)\"; exit 1";
+    let shown = shown_output("long-line", script);
+    assert!(shown.contains("test result: FAILED"), "{shown}");
+    assert!(!shown.contains("ssssssssss"), "{shown}");
+}
+
+#[test]
+fn a_private_key_that_never_ends_is_not_kept_after_its_start_scrolled_out() {
+    let script = "echo 'test result: FAILED'; echo '-----BEGIN OPENSSH PRIVATE KEY-----'; i=0; while [ $i -lt 400 ]; do echo MIIkeybodylineMIIkeybodyline; i=$((i+1)); done; exit 1";
+    let shown = shown_output("open-key", script);
+    assert!(!shown.contains("MIIkeybodyline"), "{shown}");
 }
