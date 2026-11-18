@@ -445,11 +445,12 @@ fn files_wording(declared: &[String], undeclared: &[String]) -> Result<String, A
 }
 
 /// `files` as a `<tag>` list, one JSON-quoted name a line: a name is the repository's text, so no quote
-/// in it can end its entry and no bracket can close the list.
+/// in it can end its entry and no bracket can close the list. Brackets are JSON escapes, so each entry
+/// still reads back as exactly its file's name.
 fn file_list(tag: &str, files: &[String]) -> String {
     let quoted: Vec<String> = files
         .iter()
-        .map(|file| serde_json::Value::String(file.clone()).to_string().replace('<', "‹").replace('>', "›"))
+        .map(|file| serde_json::Value::String(file.clone()).to_string().replace('<', "\\u003c").replace('>', "\\u003e"))
         .collect();
     format!("\n<{tag}>\n{}\n</{tag}>\n", quoted.join("\n"))
 }
