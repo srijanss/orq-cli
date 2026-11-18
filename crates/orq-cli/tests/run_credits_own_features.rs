@@ -313,3 +313,22 @@ fn features_a_session_log_committed_at_the_base_names_are_not_credited_to_the_ru
     assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{stderr}", text(&output.stdout));
     assert_eq!(payloads_by_feature(&w, "ledger.extra_features")["COM-01"], vec![serde_json::json!({"features": ["new-extra"]})]);
 }
+
+#[test]
+fn a_session_log_git_cannot_read_at_the_base_credits_nothing_and_says_so() {
+    let history = "{\"event\": \"init_feature\", \"featureName\": \"old-extra\"}\n";
+    let w = world_with_log("unreadable-log", "explain_failures = false\n", Some(history));
+    let ledger = ledger_file(&w, "unreadable-log", &[("COM-01", "in_progress"), ("COM-02", "pending"), ("old-extra", "completed"), ("new-extra", "completed")]);
+    let shared = w.repo.root().join(".tdd-features.json");
+    // The base's copy of the log is lost from the object store, so git cannot say what it held.
+    let lose_base_log = "b=$(git rev-parse HEAD:.tdd-session.log) && rm -f \"$(git rev-parse --git-common-dir)/objects/$(printf %s \"$b\" | cut -c1-2)/$(printf %s \"$b\" | cut -c3-)\"";
+    let script = format!("{lose_base_log}\n{}\ncp '{}' '{}'", log_init("new-extra"), ledger.display(), shared.display());
+    let agent = finishing_agent("t.txt");
+
+    let output = start_run(&w, "COM-01", path_with(&w, "unreadable-log", &agent, &script)).wait_with_output().unwrap();
+
+    let stderr = text(&output.stderr);
+    assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{stderr}", text(&output.stdout));
+    assert_eq!(payloads_by_feature(&w, "ledger.extra_features")["COM-01"], Vec::<serde_json::Value>::new(), "{stderr}");
+    assert!(stderr.contains("cannot tell which features the implement session started"), "{stderr}");
+}

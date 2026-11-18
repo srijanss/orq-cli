@@ -802,7 +802,13 @@ fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, fe
     let log = record.worktree.join(SESSION_LOG);
     let started = match std::fs::read_to_string(&log) {
         Ok(text) => {
-            let mut foreign = lines_not_the_runs(store, record);
+            let mut foreign = match lines_not_the_runs(store, record) {
+                Ok(foreign) => foreign,
+                Err(err) => {
+                    eprintln!("orq: {}: cannot tell which features the {stage} session started, so none are credited to the run: {err}", record.run_id);
+                    return;
+                }
+            };
             // Each line a commit the branch sat on already had is not the run's, however a rebase
             // interleaved the run's own lines with them.
             features_started_in(text.lines().filter(|line| match foreign.get_mut(*line) {
@@ -840,14 +846,15 @@ fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, fe
 /// keeps the log in git hands the worktree the events of other sessions, at the run's base and again
 /// with each commit a rebase put the branch onto. Every run that shared the worktree (a resumed run
 /// keeps it) is looked at, since its rebases moved this branch too. A line counts as many times as the
-/// commit with most of it has it.
-fn lines_not_the_runs(store: &RunStore, record: &RunRecord) -> std::collections::HashMap<String, usize> {
+/// commit with most of it has it. An error when what one of those commits or runs holds cannot be
+/// read, since then no line can be told to be the run's.
+fn lines_not_the_runs(store: &RunStore, record: &RunRecord) -> Result<std::collections::HashMap<String, usize>, String> {
     let mut commits = vec![record.base_sha.clone()];
-    for run_id in store.run_ids().unwrap_or_default() {
+    for run_id in store.run_ids().map_err(|err| format!("cannot list the runs: {err:?}"))? {
         if run_id != record.run_id && store.load(&run_id).map_or(true, |other| other.worktree != record.worktree) {
             continue;
         }
-        for event in store.events(&run_id).unwrap_or_default() {
+        for event in store.events(&run_id).map_err(|err| format!("cannot read the events of {run_id}: {err:?}"))? {
             let onto = match event.kind.as_str() {
                 "rebase.completed" => event.payload["target_sha"].as_str(),
                 "rebase.conflict" => event.payload["onto"].as_str(),
@@ -861,7 +868,7 @@ fn lines_not_the_runs(store: &RunStore, record: &RunRecord) -> std::collections:
     let mut foreign: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for commit in &commits {
         let mut here: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let text = log_at(record, commit);
+        let text = log_at(record, commit)?.unwrap_or_default();
         for line in text.lines() {
             *here.entry(line).or_default() += 1;
         }
@@ -870,21 +877,28 @@ fn lines_not_the_runs(store: &RunStore, record: &RunRecord) -> std::collections:
             *most = (*most).max(count);
         }
     }
-    foreign
+    Ok(foreign)
 }
 
-/// The session log as `commit` has it; empty when it has none.
-fn log_at(record: &RunRecord, commit: &str) -> String {
-    let at = Command::new("git")
-        .arg("-C")
-        .arg(&record.worktree)
-        .args(["show", &format!("{commit}:{SESSION_LOG}")])
-        .stderr(std::process::Stdio::null())
-        .output();
-    match at {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).into_owned(),
-        _ => String::new(),
+/// The session log as `commit` has it; None when the commit has none. An error when git cannot say,
+/// such as when the commit or the log's contents cannot be read.
+fn log_at(record: &RunRecord, commit: &str) -> Result<Option<String>, String> {
+    let git = |args: &[&str]| -> Result<String, String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&record.worktree)
+            .args(args)
+            .output()
+            .map_err(|err| format!("cannot run git: {err}"))?;
+        if !output.status.success() {
+            return Err(format!("cannot read {SESSION_LOG} at {commit}: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    if git(&["ls-tree", "--name-only", commit, "--", SESSION_LOG])?.trim().is_empty() {
+        return Ok(None);
     }
+    git(&["cat-file", "blob", &format!("{commit}:{SESSION_LOG}")]).map(Some)
 }
 
 /// The features the `init_feature` events among a TDD session log's `lines` name, each once, in the
