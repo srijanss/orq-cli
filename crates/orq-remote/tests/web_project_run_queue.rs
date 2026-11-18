@@ -219,7 +219,7 @@ fn settings_show_the_queue_hours_and_stop_on_failure_and_save_sends_both() {
     let Some(out) = run("/projects/alpha/settings", vec![project_settings(json!("22:00-07:00"), true), projects(vec![project("alpha", Value::Null)])], vec![]) else { return };
     let frame = last(&out);
     assert!(texts(frame).iter().any(|t| t == "22:00-07:00"), "{:?}", texts(frame));
-    assert!(shows(frame, "A failed run pauses the queue"), "{:?}", texts(frame));
+    assert!(shows(frame, "When a run fails") && shows(frame, "Pauses the queue"), "{:?}", texts(frame));
 
     let machine = json!({"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": [], "remote_actions": true, "version": "v-1"}}});
     let options = json!({"status": 200, "json": {"options": [{"harness": "claude", "models": ["opus"]}]}});

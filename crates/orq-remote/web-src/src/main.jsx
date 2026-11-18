@@ -4823,10 +4823,10 @@ function RoleFields({ title, role, entry, options, choice, disabled, onChoose })
   );
 }
 
-// One setting of the "Starting runs" card as a settings row: its label on the left and its value on the
+// One setting of a project settings card ("Starting runs", "Queue") as a settings row: its label on the left and its value on the
 // right, wrapping under the label on a phone; while editing, the label wraps the control (its accessible
 // name) and the control with its message stacks under or beside it.
-function StartingRunsRow({ label, editing, value, children }) {
+function SettingsRow({ label, editing, value, children }) {
   if (!editing) {
     return (
       <div className="settings-row" data-setting-row>
@@ -4943,38 +4943,31 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
       </section>
       <section className="card settings-card" data-starting-runs>
         <SettingsHead icon="play">Starting runs</SettingsHead>
-        <StartingRunsRow label="At most N active runs" editing={editing} value={<span data-project-max-active-runs>{activeRunsLine(settings.max_active_runs)}</span>}>
+        <SettingsRow label="At most N active runs" editing={editing} value={<span data-project-max-active-runs>{activeRunsLine(settings.max_active_runs)}</span>}>
           {editing ? <select data-max-active-runs aria-label="At most N active runs" value={draft.maxActiveRuns} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, maxActiveRuns: event.target.value })}>
             <option value="">No limit</option>
             {Array.from({ length: ACTIVE_RUNS_RANGE[1] - ACTIVE_RUNS_RANGE[0] + 1 }, (_, index) => String(ACTIVE_RUNS_RANGE[0] + index)).map((value) => <option key={value} value={value}>{value}</option>)}
           </select> : null}
-        </StartingRunsRow>
-        <StartingRunsRow label="Free disk needed to start (GB)" editing={editing} value={<span data-project-min-free-disk>{freeDiskLine(settings.min_free_disk_gb)}</span>}>
+        </SettingsRow>
+        <SettingsRow label="Free disk needed to start (GB)" editing={editing} value={<span data-project-min-free-disk>{freeDiskLine(settings.min_free_disk_gb)}</span>}>
           {editing ? <input type="text" inputMode="numeric" data-min-free-disk aria-label="Free disk needed to start (GB)" placeholder="No limit" value={draft.minFreeDisk} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, minFreeDisk: event.target.value })} /> : null}
           {editing && typedFloor(draft.minFreeDisk) === undefined ? <span className="error-text" data-min-free-disk-invalid>Leave it empty for no limit, or give a whole number from 1 to 500.</span> : null}
-        </StartingRunsRow>
+        </SettingsRow>
       </section>
-      <section className="card settings-card">
+      <section className="card settings-card" data-queue-settings>
         <SettingsHead icon="clock">Queue</SettingsHead>
-        <label className="settings-block">
-          <span>Hours the queue starts runs</span>
-          {editing ? (
-            <input type="text" data-queue-hours aria-label="Hours the queue starts runs" placeholder="Any time, or 22:00-07:00" value={draft.queueHours} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, queueHours: event.target.value })} />
-          ) : (
-            <span data-project-queue-hours>{settings.queue_hours === null ? "Any time" : settings.queue_hours}</span>
-          )}
+        <SettingsRow label="Hours the queue starts runs" editing={editing} value={<span data-project-queue-hours>{settings.queue_hours === null ? "Any time" : settings.queue_hours}</span>}>
+          {editing ? <input type="text" data-queue-hours aria-label="Hours the queue starts runs" placeholder="Any time, or 22:00-07:00" value={draft.queueHours} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, queueHours: event.target.value })} /> : null}
           {editing && typedHours(draft.queueHours) === undefined ? <span className="error-text" data-queue-hours-invalid>Leave it empty for any time, or give a window like 22:00-07:00.</span> : null}
-        </label>
-        <label className="settings-block">
-          {editing ? (
-            <>
-              <input type="checkbox" data-queue-stop-on-failure checked={draft.stopOnFailure} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, stopOnFailure: event.target.checked })} />
-              <span>A failed run pauses the queue</span>
-            </>
-          ) : (
-            <span data-project-queue-stop>{settings.queue_stop_on_failure ? "A failed run pauses the queue" : "A failed run leaves the queue going; only its dependents wait"}</span>
-          )}
-        </label>
+        </SettingsRow>
+        {editing ? (
+          <label className="settings-row settings-check">
+            <input type="checkbox" data-queue-stop-on-failure checked={draft.stopOnFailure} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, stopOnFailure: event.target.checked })} />
+            <span>A failed run pauses the queue</span>
+          </label>
+        ) : (
+          <SettingsRow label="When a run fails" editing={false} value={<span data-project-queue-stop>{settings.queue_stop_on_failure ? "Pauses the queue" : "Keeps going; only its dependents wait"}</span>} />
+        )}
       </section>
       {phase === "editing" ? (
         <div className="settings-block settings-actions">
