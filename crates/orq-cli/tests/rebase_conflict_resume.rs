@@ -380,3 +380,57 @@ fn a_rebase_fix_session_that_leaves_the_conflict_is_still_credited_with_the_feat
     assert_eq!(credited(&w, &id), vec![serde_json::json!(["rfix-extra"])]);
     assert!(text(&out.stderr).contains("the session also added: rfix-extra"), "{}", text(&out.stderr));
 }
+
+/// One `init_feature` line of a session log, as the outside-in-tdd server writes it.
+fn init_line(name: &str) -> String {
+    format!("{{\"event\": \"init_feature\", \"featureName\": \"{name}\"}}")
+}
+
+#[test]
+fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_the_run() {
+    let w = world("credit-tracked-log");
+    // The project keeps its session log in git: main holds an earlier session's event.
+    let root = w.repo.root();
+    std::fs::write(root.join(".tdd-session.log"), format!("{}\n", init_line("old-extra"))).unwrap();
+    git(root, &["add", ".tdd-session.log"]);
+    git(root, &["commit", "-q", "-m", "keep the session log"]);
+    let dir = w.home.join("ledger");
+    std::fs::create_dir_all(&dir).unwrap();
+    let after = write_ledger(
+        &dir,
+        &[
+            LedgerEntry::new("COM-01", "in_progress"),
+            LedgerEntry::new("old-extra", "completed"),
+            LedgerEntry::new("up-extra", "completed"),
+            LedgerEntry::new("impl-extra", "completed"),
+            LedgerEntry::new("rfix-extra", "in_progress"),
+        ],
+    );
+    // While the run works, another run's merge lands on main with its own session's event and feature.txt.
+    let done = w.home.join("moved");
+    let upstream = format!(
+        "[ -f '{done}' ] || {{ touch '{done}'; printf 'theirs\\n' > '{r}/feature.txt' && printf '%s\\n' '{up}' >> '{r}/.tdd-session.log' && git -C '{r}' add feature.txt .tdd-session.log && git -C '{r}' -c user.name=Someone -c user.email=someone@example.invalid commit -q -m 'other: feature.txt'; }}",
+        done = done.display(),
+        r = root.display(),
+        up = init_line("up-extra"),
+    );
+    let on_implement = format!("{upstream}; {}; cp '{}' '{}'", log_init("impl-extra"), after.display(), root.join(".tdd-features.json").display());
+    // The fix session keeps both sides of the log, then starts a feature of its own.
+    let on_fix = format!(
+        "printf '%s\\n' '{}' '{}' '{}' > .tdd-session.log; {}; git add .tdd-session.log; {RESOLVE}",
+        init_line("old-extra"),
+        init_line("up-extra"),
+        init_line("impl-extra"),
+        log_init("rfix-extra"),
+    );
+    harness(&w, &on_implement, &on_fix);
+
+    let out = run(&w, &[]);
+
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}\n{stderr}", text(&out.stdout));
+    assert!(w.home.join("fix-task.txt").exists(), "the rebase fix session ran");
+    let id = only_run(&w);
+    assert_eq!(credited(&w, &id), vec![serde_json::json!(["impl-extra"]), serde_json::json!(["rfix-extra"])], "{stderr}");
+    assert!(!stderr.contains("old-extra") && !stderr.contains("up-extra"), "{stderr}");
+}
