@@ -826,3 +826,16 @@ fn discard_finished_a_recorded_time_that_is_not_plain_ascii_or_not_utc_is_never_
             .collect();
     assert_eq!(orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed).unwrap(), vec![]);
 }
+
+#[test]
+fn discard_finished_the_target_history_is_not_read_when_every_feature_was_finished_after_the_run_stopped() {
+    let repo = GitFixture::new();
+    let store = blocked_run_based_here("no-history", repo.root());
+    // No repository there: reading the target's history would fail.
+    let nowhere = orq_test_support::process_temp_dir().join(format!("orq-discard-no-repo-{}", std::process::id()));
+    let late = |name: &str| (name.to_string(), Some("2026-11-02T10:00:05Z".to_string()));
+    assert_eq!(
+        orq_orchestrator::features_finished_elsewhere(&store, "run-1", &nowhere, &[late("F-b"), late("F-a")]).unwrap(),
+        vec![("F-b".to_string(), "finished after this run stopped".to_string()), ("F-a".to_string(), "finished after this run stopped".to_string())]
+    );
+}

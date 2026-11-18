@@ -288,11 +288,14 @@ pub fn features_finished_elsewhere(
     let record = store.load(run_id).map_err(|e| e.to_string())?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let stopped = events.last().and_then(|event| utc_second(&event.occurred_at));
-    let commits = target_commits_since_base(repo, &record)?;
+    let after = |recorded_at: &Option<String>| {
+        matches!((recorded_at.as_deref().and_then(utc_second), stopped), (Some(recorded), Some(stopped)) if recorded > stopped)
+    };
+    // The target's history is read only when some feature is not already told by its time.
+    let commits = if completed.iter().all(|(_, recorded_at)| after(recorded_at)) { Vec::new() } else { target_commits_since_base(repo, &record)? };
     let mut kept = Vec::new();
     for (feature, recorded_at) in completed {
-        let after = matches!((recorded_at.as_deref().and_then(utc_second), stopped), (Some(recorded), Some(stopped)) if recorded > stopped);
-        if after {
+        if after(recorded_at) {
             kept.push((feature.clone(), "finished after this run stopped".to_string()));
         } else if let Some((sha, _)) = commits.iter().find(|(_, subject)| names_feature(subject, feature)) {
             kept.push((feature.clone(), format!("its work is on {} ({})", record.target_branch, &sha[..sha.len().min(8)])));
