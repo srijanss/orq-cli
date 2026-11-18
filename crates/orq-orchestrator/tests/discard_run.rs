@@ -839,3 +839,29 @@ fn discard_finished_the_target_history_is_not_read_when_every_feature_was_finish
         vec![("F-b".to_string(), "finished after this run stopped".to_string()), ("F-a".to_string(), "finished after this run stopped".to_string())]
     );
 }
+
+#[test]
+fn discard_finished_a_missing_target_or_base_names_no_commit_and_a_git_that_fails_is_an_error() {
+    let repo = GitFixture::new();
+    let undated = [("F-undated".to_string(), None)];
+
+    let (_, no_target) = store("no-target");
+    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-no-target-gone-{}", std::process::id()));
+    let mut rec = record(&gone, "orq-run-1");
+    rec.base_sha = head_sha(repo.root());
+    rec.target_branch = "no-such-branch".into();
+    no_target.start_run(&rec).unwrap();
+    assert_eq!(orq_orchestrator::features_finished_elsewhere(&no_target, "run-1", repo.root(), &undated).unwrap(), vec![]);
+
+    let (_, no_base) = store("no-base");
+    let mut rec = record(&gone, "orq-run-1");
+    rec.base_sha = "0123456789abcdef0123456789abcdef01234567".into();
+    rec.target_branch = current_branch(repo.root());
+    no_base.start_run(&rec).unwrap();
+    assert_eq!(orq_orchestrator::features_finished_elsewhere(&no_base, "run-1", repo.root(), &undated).unwrap(), vec![]);
+
+    let based_here = blocked_run_based_here("git-fails", repo.root());
+    let nowhere = orq_test_support::process_temp_dir().join(format!("orq-discard-no-repo-fails-{}", std::process::id()));
+    let err = orq_orchestrator::features_finished_elsewhere(&based_here, "run-1", &nowhere, &undated).unwrap_err();
+    assert!(err.contains("could not read the commits on"), "{err}");
+}

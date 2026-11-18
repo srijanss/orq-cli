@@ -243,3 +243,23 @@ fn a_discard_leaves_completed_a_feature_finished_after_the_run_stopped_or_whose_
     assert!(body["note"].as_str().unwrap().contains("f-r-wip is pending again."), "{body}");
     assert_eq!(ledger_status(&repos[3], "f-r-wip"), "pending");
 }
+
+#[test]
+fn a_discard_leaves_completed_a_feature_it_cannot_tell_was_finished_outside_the_run_when_the_target_history_cannot_be_read() {
+    let s = setup("run-discard-unreadable-history");
+    let repo = git_repo(&s.scan, "broken");
+    add_run(&s, &repo, "r-broken", &["run.started", "run.blocked"]);
+    std::fs::write(repo.join(".tdd-features.json"), r#"[{"featureName":"f-r-broken","status":"completed","recordedAt":"2026-11-01T09:00:00Z"}]"#).unwrap();
+    // The person threw the run's checkout away, and main moved on past a commit whose object is lost.
+    git(&repo, &["worktree", "remove", "--force", repo.join(".claude/worktrees/r-broken").to_str().unwrap()]);
+    git(&repo, &["branch", "-D", "orq/r-broken"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "lost"]);
+    let lost = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "after the lost one"]);
+    std::fs::remove_file(repo.join(".git/objects").join(&lost[..2]).join(&lost[2..])).unwrap();
+
+    let (status, body) = send(&s, "POST", "/api/projects/broken/runs/r-broken/discard");
+    assert_eq!(status, 202, "{body}");
+    assert!(body["note"].as_str().unwrap().contains("f-r-broken stays completed: cannot tell whether it was finished outside this run."), "{body}");
+    assert_eq!(ledger_status(&repo, "f-r-broken"), "completed");
+}
