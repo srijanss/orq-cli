@@ -538,14 +538,17 @@ pub fn holds_run_slot(phase: RunPhase) -> bool {
     matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused)
 }
 
-/// Whether resuming `run_id` is a start as far as its project's run limit goes: a blocked run holds
-/// no slot, so its resume needs one; a paused run's resume keeps the slot the run already holds.
+/// Whether resuming `run_id` is a start as far as its project's run limit goes: a run [`holds_run_slot`]
+/// says holds no slot (blocked, failed, waiting on review) needs one; a paused or pausing run's resume
+/// keeps the slot it already holds. A run whose events still say running but whose process is gone
+/// is counted among the active runs until the resume records it as failed, so either way the resume
+/// adds no run beyond the limit. Whether the run can be resumed at all is the resume planner's call.
 pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, String> {
     let events = store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     if events.is_empty() {
         store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     }
-    Ok(summarize_run(&events).phase == RunPhase::Blocked)
+    Ok(!holds_run_slot(summarize_run(&events).phase))
 }
 
 /// The runs among `runs` (run id, record, events) that are active, as (run id, feature id) in the

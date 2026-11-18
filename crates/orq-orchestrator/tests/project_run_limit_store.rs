@@ -124,7 +124,7 @@ fn of_starts_racing_at_a_limit_of_one_exactly_one_is_recorded() {
 }
 
 #[test]
-fn resuming_a_blocked_run_takes_a_slot_and_resuming_a_paused_one_keeps_the_slot_it_holds() {
+fn resuming_a_run_holding_no_slot_takes_one_and_resuming_a_paused_or_pausing_one_keeps_the_slot_it_holds() {
     let store = store("resume-slot");
     let started = |run_id: &str| {
         let record = record("p", run_id, run_id);
@@ -132,13 +132,22 @@ fn resuming_a_blocked_run_takes_a_slot_and_resuming_a_paused_one_keeps_the_slot_
         event(&store, &record, "stage.started", serde_json::json!({}));
         record
     };
-    let blocked = started("run-blocked");
-    event(&store, &blocked, "run.completed", serde_json::json!({"ending": "blocked"}));
-    let paused = started("run-paused");
-    event(&store, &paused, "run.pause_requested", serde_json::json!({}));
-    event(&store, &paused, "run.paused", serde_json::json!({}));
+    let histories: [(&str, Vec<(&str, serde_json::Value)>, bool); 5] = [
+        ("run-blocked", vec![("run.completed", serde_json::json!({"ending": "blocked"}))], true),
+        ("run-failed", vec![("run.failed", serde_json::json!({"reason": "x"}))], true),
+        ("run-review", vec![("run.completed", serde_json::json!({"ending": "needs_review"}))], true),
+        ("run-paused", vec![("run.pause_requested", serde_json::json!({})), ("run.paused", serde_json::json!({}))], false),
+        ("run-pausing", vec![("run.pause_requested", serde_json::json!({}))], false),
+    ];
+    for (run_id, history, _) in &histories {
+        let record = started(run_id);
+        for (kind, payload) in history {
+            event(&store, &record, kind, payload.clone());
+        }
+    }
 
-    assert_eq!(orq_orchestrator::resume_takes_a_slot(&store, "run-blocked"), Ok(true));
-    assert_eq!(orq_orchestrator::resume_takes_a_slot(&store, "run-paused"), Ok(false));
+    for (run_id, _, takes) in &histories {
+        assert_eq!(orq_orchestrator::resume_takes_a_slot(&store, run_id), Ok(*takes), "{run_id}");
+    }
     assert!(orq_orchestrator::resume_takes_a_slot(&store, "run-missing").is_err(), "a run that cannot be read is not guessed at");
 }
