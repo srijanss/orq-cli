@@ -39,6 +39,11 @@ fn text(bytes: &[u8]) -> String {
 
 /// A repository with a pushed `main`, pending COM-01 and COM-02, and `run_toml` as its run settings.
 fn world(tag: &str, run_toml: &str) -> World {
+    world_with_log(tag, run_toml, None)
+}
+
+/// As `world`, with `tracked_log` committed on `main` as a session log the project keeps in git.
+fn world_with_log(tag: &str, run_toml: &str, tracked_log: Option<&str>) -> World {
     let base = orq_test_support::process_temp_dir().join(format!("orq-credits-own-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("config/orq")).unwrap();
@@ -48,6 +53,11 @@ fn world(tag: &str, run_toml: &str) -> World {
     std::fs::write(repo.root().join(".gitignore"), ".tdd-session.log\n").unwrap();
     git(repo.root(), &["add", ".gitignore"]);
     git(repo.root(), &["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "ignore the session log"]);
+    if let Some(log) = tracked_log {
+        std::fs::write(repo.root().join(".tdd-session.log"), log).unwrap();
+        git(repo.root(), &["add", "-f", ".tdd-session.log"]);
+        git(repo.root(), &["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "keep the session log"]);
+    }
     let remote = repo.add_bare_remote();
     git(repo.root(), &["branch", "-M", "main"]);
     git(repo.root(), &["push", "--quiet", "origin", "main"]);
@@ -286,4 +296,20 @@ fn a_resumed_run_credits_what_its_first_session_started_once() {
         store.events(&resumed).unwrap().into_iter().filter(|e| e.kind == "ledger.extra_features").map(|e| e.payload).collect();
     assert_eq!(credited, vec![serde_json::json!({"features": ["r-extra"]})]);
     assert!(stderr.contains("the session also added: r-extra") && !stderr.contains("r-extra, r-extra"), "{stderr}");
+}
+
+#[test]
+fn features_a_session_log_committed_at_the_base_names_are_not_credited_to_the_run() {
+    let history = "{\"event\": \"init_feature\", \"featureName\": \"old-extra\"}\n";
+    let w = world_with_log("tracked-log", "explain_failures = false\n", Some(history));
+    let ledger = ledger_file(&w, "tracked-log", &[("COM-01", "in_progress"), ("COM-02", "pending"), ("old-extra", "completed"), ("new-extra", "completed")]);
+    let shared = w.repo.root().join(".tdd-features.json");
+    let script = format!("{}\ncp '{}' '{}'", log_init("new-extra"), ledger.display(), shared.display());
+    let agent = finishing_agent("t.txt");
+
+    let output = start_run(&w, "COM-01", path_with(&w, "tracked-log", &agent, &script)).wait_with_output().unwrap();
+
+    let stderr = text(&output.stderr);
+    assert!(text(&output.stdout).contains("state: review_ready"), "{}\n{stderr}", text(&output.stdout));
+    assert_eq!(payloads_by_feature(&w, "ledger.extra_features")["COM-01"], vec![serde_json::json!({"features": ["new-extra"]})]);
 }

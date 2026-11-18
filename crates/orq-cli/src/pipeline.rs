@@ -801,7 +801,7 @@ const SESSION_LOG: &str = ".tdd-session.log";
 fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], stage: &str) {
     let log = record.worktree.join(SESSION_LOG);
     let started = match std::fs::read_to_string(&log) {
-        Ok(text) => features_started_in(&text),
+        Ok(text) => features_started_in(text.lines().skip(lines_at_base(record))),
         Err(err) => {
             eprintln!(
                 "orq: {}: cannot tell which features the {stage} session started, so none are credited to the run: cannot read {}: {err}",
@@ -825,11 +825,27 @@ fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, fe
     record_ledger(store, record, "ledger.extra_features", &added);
 }
 
-/// The features a TDD session log's `init_feature` events name, each once, in the order first
-/// started. A line that is not such an event is skipped.
-fn features_started_in(log: &str) -> Vec<String> {
+/// How many lines the session log has at the run's base commit: a project that keeps the log in git
+/// hands every worktree the events of the sessions before the run, which are not the run's. The log
+/// is only appended to, so the run's own events follow them. None when the base has no log.
+fn lines_at_base(record: &RunRecord) -> usize {
+    let at_base = Command::new("git")
+        .arg("-C")
+        .arg(&record.worktree)
+        .args(["show", &format!("{}:{SESSION_LOG}", record.base_sha)])
+        .stderr(std::process::Stdio::null())
+        .output();
+    match at_base {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).lines().count(),
+        _ => 0,
+    }
+}
+
+/// The features the `init_feature` events among a TDD session log's `lines` name, each once, in the
+/// order first started. A line that is not such an event is skipped.
+fn features_started_in<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut started: Vec<String> = Vec::new();
-    for line in log.lines() {
+    for line in lines {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         if event["event"] != "init_feature" {
             continue;
