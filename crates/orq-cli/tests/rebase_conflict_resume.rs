@@ -321,3 +321,62 @@ fn fix_conflicts_on_a_different_rebase_than_the_one_the_run_blocked_on_is_refuse
     assert!(text(&out.stderr).contains(onto), "{}", text(&out.stderr));
     assert_eq!(store(&w).run_ids().unwrap(), vec![id], "no run was started");
 }
+
+/// A shell line appending an `init_feature` event for `name` to the session log of the worktree the
+/// session runs in, as the outside-in-tdd server writes it.
+fn log_init(name: &str) -> String {
+    format!("printf '%s\\n' '{{\"event\": \"init_feature\", \"featureName\": \"{name}\"}}' >> .tdd-session.log")
+}
+
+/// The repository ignores the session log, as a real project does. Returns a shell line that puts
+/// the ledger as the sessions leave it over the repository's: COM-01 in progress, `impl-extra`
+/// completed and `rfix-extra` in progress.
+fn sessions_log_their_features(w: &World) -> String {
+    let exclude = w.repo.root().join(".git/info/exclude");
+    let mut ignored = std::fs::read_to_string(&exclude).unwrap_or_default();
+    ignored.push_str("\n.tdd-session.log\n");
+    std::fs::write(&exclude, ignored).unwrap();
+    let dir = w.home.join("ledger");
+    std::fs::create_dir_all(&dir).unwrap();
+    let after = write_ledger(
+        &dir,
+        &[LedgerEntry::new("COM-01", "in_progress"), LedgerEntry::new("impl-extra", "completed"), LedgerEntry::new("rfix-extra", "in_progress")],
+    );
+    format!("cp '{}' '{}'", after.display(), w.repo.root().join(".tdd-features.json").display())
+}
+
+/// The features each `ledger.extra_features` event of `id` credits, in order.
+fn credited(w: &World, id: &str) -> Vec<serde_json::Value> {
+    events(w, id).into_iter().filter(|e| e.kind == "ledger.extra_features").map(|e| e.payload["features"].clone()).collect()
+}
+
+#[test]
+fn a_rebase_fix_session_that_resolves_the_conflict_is_credited_with_the_feature_it_started_once() {
+    let w = world("credit-resolved");
+    let ledger = sessions_log_their_features(&w);
+    let on_implement = format!("{}; {}; {ledger}", local_main_takes_feature(&w), log_init("impl-extra"));
+    let on_fix = format!("{}; {}; {RESOLVE}", log_init("impl-extra"), log_init("rfix-extra"));
+    harness(&w, &on_implement, &on_fix);
+
+    let out = run(&w, &[]);
+
+    assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    assert!(w.home.join("fix-task.txt").exists(), "the rebase fix session ran");
+    let id = only_run(&w);
+    assert_eq!(credited(&w, &id), vec![serde_json::json!(["impl-extra"]), serde_json::json!(["rfix-extra"])]);
+    assert!(text(&out.stderr).contains("the session also added: impl-extra, rfix-extra"), "{}", text(&out.stderr));
+}
+
+#[test]
+fn a_rebase_fix_session_that_leaves_the_conflict_is_still_credited_with_the_feature_it_started() {
+    let w = world("credit-blocked");
+    let ledger = sessions_log_their_features(&w);
+    harness(&w, &format!("{}; {ledger}", local_main_takes_feature(&w)), &log_init("rfix-extra"));
+
+    let out = run(&w, &[]);
+
+    assert_eq!(out.status.code(), Some(30), "{}\n{}", text(&out.stdout), text(&out.stderr));
+    let id = only_run(&w);
+    assert_eq!(credited(&w, &id), vec![serde_json::json!(["rfix-extra"])]);
+    assert!(text(&out.stderr).contains("the session also added: rfix-extra"), "{}", text(&out.stderr));
+}
