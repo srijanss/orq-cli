@@ -143,7 +143,7 @@ impl StoreProjects {
                         Ok(RunStart::Refused(why)) => Some(format!("{} could not start: {why}", entry.feature)),
                         Ok(RunStart::Unknown) => Some(format!("{} is not in the project's features", entry.feature)),
                         Err(why) => {
-                            eprintln!("orq: the queue could not start {}: {why}", entry.feature);
+                            eprintln!("{}", launch_error_line(&entry.feature, &why.to_string()));
                             Some(format!("{} could not start; see the server's log", entry.feature))
                         }
                     }
@@ -310,6 +310,11 @@ fn ordered<'a>(entries: &'a [QueuedFeature], ledger: &[FeatureEntry]) -> Vec<&'a
     placed
 }
 
+/// The server-log line for a start that failed with `why`, with any secret in it redacted.
+fn launch_error_line(feature: &str, why: &str) -> String {
+    orq_core::redact::redact(&format!("orq: the queue could not start {feature}: {why}"))
+}
+
 /// What became of run `run`, from its events. A run that cannot be read anymore counts as failed.
 fn settle(runs: &RunStore, run: &str) -> Settled {
     let Ok(events) = runs.events(run) else { return Settled::Failed(Some(format!("the run {run} cannot be read"))) };
@@ -372,4 +377,13 @@ fn local_minute_of_day() -> u16 {
         return ((now / 60) % (24 * 60)) as u16;
     }
     (tm.tm_hour * 60 + tm.tm_min) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_start_error_is_logged_with_its_secrets_redacted() {
+        let line = super::launch_error_line("COM-01", "git push failed: password=hunter2hunter2");
+        assert_eq!(line, "orq: the queue could not start COM-01: git push failed: password=[REDACTED]");
+    }
 }
