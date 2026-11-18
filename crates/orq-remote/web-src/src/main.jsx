@@ -3985,17 +3985,52 @@ function parseTimeline(data) {
   return ok ? data : null;
 }
 
-function EventItem({ event }) {
+function EventItem({ event, onLog = null }) {
+  const failure = failureOf(event);
   return (
     <li className="event">
       <strong className="event-kind">{event.kind}</strong>
       {event.stage ? <span className="event-meta">{"Stage: " + event.stage}</span> : null}
       <span className="event-meta">{"Attempt " + event.attempt}</span>
       <Moment at={event.occurred_at} />
+      {failure !== null && failure.reason !== null ? <span className="event-meta event-failure" data-event-failure>{failure.reason}</span> : null}
+      {failure !== null && failure.log !== null && onLog !== null ? <button type="button" className="link-button" data-event-log onClick={() => onLog(failure.log)}>Open log at the error</button> : null}
       {event.mcp ? <McpSetup mcp={event.mcp} /> : null}
       {event.set_aside ? <SetAside setAside={event.set_aside} /> : null}
     </li>
   );
+}
+
+// What the server says about a failure event: why it failed and, when it names one of the run's logs, where
+// in it the error is (`line` counts from 1, or is null when the server could not give one) and the lines
+// around it. Null for any other event or for data that is not that shape; a log that is not usable is left out.
+function failureOf(event) {
+  const failure = event.kind.endsWith(".failed") ? event.failure : undefined;
+  if (failure === null || typeof failure !== "object" || Array.isArray(failure)) return null;
+  const reason = typeof failure.reason === "string" && failure.reason !== "" ? failure.reason : null;
+  const log = failure.log;
+  const usable = log !== null && typeof log === "object" && typeof log.file === "string" && LOG_FILE.test(log.file)
+    && (log.line === undefined || log.line === null || (Number.isInteger(log.line) && log.line >= 1))
+    && (log.excerpt === undefined || typeof log.excerpt === "string");
+  return { reason, log: usable ? { file: log.file, line: Number.isInteger(log.line) ? log.line : null, excerpt: typeof log.excerpt === "string" ? log.excerpt : "" } : null };
+}
+
+// The latest failure among some events that the server gave anything for, or, with `withLog`, that names a log.
+function latestFailure(events, withLog = false) {
+  for (let at = events.length - 1; at >= 0; at -= 1) {
+    const failure = failureOf(events[at]);
+    if (failure !== null && (!withLog || failure.log !== null)) return failure;
+  }
+  return null;
+}
+
+// How many lines above an error its log opens at, so what led up to it shows too.
+const LINES_BEFORE_ERROR = 5;
+
+// A run's Logs address for a failure's log: at its error line, marked, when the server placed it.
+function failureLogAddress(runPath, log) {
+  const file = runPath + "/logs/" + encodeURIComponent(log.file);
+  return log.line === null ? file : file + "/after/" + Math.max(0, log.line - LINES_BEFORE_ERROR) + "/line/" + log.line;
 }
 
 // What a set-aside merge did with the checkout's changes: put back, or, when they conflicted, the stash that
@@ -4149,13 +4184,13 @@ function StepTime({ events }) {
 }
 
 // The events as a list, drawn the same way for the fetched page and for events that arrive live.
-function EventTimeline({ events, rounds = 0, ended = false, running = false }) {
+function EventTimeline({ events, rounds = 0, ended = false, running = false, onLog = null }) {
   const items = groupEvents(events, rounds);
   const lastStep = items.reduce((found, item, at) => (item.events === undefined ? found : at), -1);
   return (
     <ol className="run-events">
       {items.map((item, at) => {
-        if (item.events === undefined) return <EventItem key={item.event.event_id} event={item.event} />;
+        if (item.events === undefined) return <EventItem key={item.event.event_id} event={item.event} onLog={onLog} />;
         const state = stepState(item, { last: at === lastStep, ended, running });
         return (
           <li key={item.events[0].event_id} className="attempt" data-failed={item.failed ? "true" : undefined} data-step={state}>
@@ -4167,7 +4202,7 @@ function EventTimeline({ events, rounds = 0, ended = false, running = false }) {
             {item.failed ? <strong className="attempt-outcome">Failed</strong> : null}
             <ol className="attempt-events">
               {item.events.map((event) => (
-                <EventItem key={event.event_id} event={event} />
+                <EventItem key={event.event_id} event={event} onLog={onLog} />
               ))}
             </ol>
           </li>
@@ -4237,6 +4272,8 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
         const took = stepDuration(step.events);
         const undeclared = undeclaredFiles(step.events);
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
+        const failure = kind === "failed" ? latestFailure(step.events) : null;
+        const failedLog = failure === null ? null : failure.log;
         return (
           <li key={step.events[0].event_id} className="run-step" data-step={kind}>
             <span className="run-step-mark" aria-hidden="true">{kind === "done" ? <Icon name="check" size={14} /> : kind === "failed" ? <Icon name="close" size={14} /> : null}</span>
@@ -4252,9 +4289,14 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />
-                <span>{"Failed: " + step.events[step.events.length - 1].kind + " "}<Moment at={step.events[step.events.length - 1].occurred_at} /></span>
-                {onLogs ? <button type="button" className="link-button" data-step-logs onClick={onLogs}>See the logs</button> : null}
+                <span>{"Failed: " + (failure !== null && failure.reason !== null ? failure.reason : step.events[step.events.length - 1].kind) + " "}<Moment at={step.events[step.events.length - 1].occurred_at} /></span>
+                {onLogs ? <button type="button" className="link-button" data-step-logs onClick={() => onLogs(failedLog)}>See the logs</button> : null}
               </p>
+            ) : null}
+            {failedLog !== null && failedLog.excerpt !== "" ? (
+              <div className="run-step-excerpt">
+                <pre data-step-excerpt tabIndex={0} aria-label="Log lines at the error">{failedLog.excerpt}</pre>
+              </div>
             ) : null}
           </li>
         );
@@ -4279,17 +4321,26 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
     setTab(id);
     if (id === "logs") setLogsOpened(true);
   };
+  // A failure's log opens at its error, as an address of its own; without a log the tab opens as it is.
+  const openLog = (log) => (log === null ? choose("logs") : navigate(failureLogAddress(runPath, log)));
   const panels = (all) => (
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
-        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={() => choose("logs")} />}
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={openLog} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
-        {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} />}
+        {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLog={openLog} />}
       </div>
     </>
   );
+  // The events drawn last, live ones included, kept for the Logs tab, which is drawn after them and
+  // reads them once, when it opens.
+  const drawn = useRef(events);
+  const panelsOf = (all) => {
+    drawn.current = all;
+    return panels(all);
+  };
   return (
     <section className="card feature-detail run-detail">
       <div className="feature-detail-head">
@@ -4317,11 +4368,11 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls={"run-panel-" + id} data-run-tab={id} onClick={() => choose(id)}>{label}</button>
         ))}
       </div>
-      {live ? <FollowLive key={follow.base} rounds={rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} draw={panels} quiet={tab === "logs"} /> : panels(events)}
+      {live ? <FollowLive key={follow.base} rounds={rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} draw={panelsOf} quiet={tab === "logs"} /> : panelsOf(events)}
       {next !== null && tab !== "logs" && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
       {logsOpened && (
         <div className="feature-panel" id="run-panel-logs" role="tabpanel" aria-labelledby="run-tab-logs" hidden={tab !== "logs"}>
-          <RunLogs {...logs} runId={run.run_id} />
+          <RunLogs {...logs} runId={run.run_id} preferred={latestFailure(drawn.current, true)?.log.file ?? null} />
         </div>
       )}
     </section>
@@ -4446,6 +4497,8 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet
 // separator, exactly the server's own rule. The name is always encoded into the address.
 const LOG_FILE = /^[^./\\][^/\\]*\.log$/;
 const LINE_CURSOR = /^[0-9]{1,12}$/;
+// A line an address marks, counted from 1.
+const MARKED_LINE = /^[1-9][0-9]{0,11}$/;
 
 function parseLogFiles(data) {
   const ok = data && Array.isArray(data.files) && data.files.every((file) => file !== null && typeof file === "object" && typeof file.name === "string" && Number.isInteger(file.bytes));
@@ -4458,20 +4511,24 @@ function parseLogPage(data) {
 }
 
 // The run's logs inside its Logs tab: the file list is read once, then one file's page at a time.
-function RunLogs({ token, onSignedOut, reloads, base, file, cursor, runId }) {
-  return <Loaded key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} runId={runId} />} onSignedOut={onSignedOut} />;
+function RunLogs({ token, onSignedOut, reloads, base, file, cursor, mark = null, runId, preferred = null }) {
+  return <Loaded key={base} token={token} path={base} loading="Loading the logs…" parse={parseLogFiles} draw={(files) => <LogsPanel files={files} token={token} onSignedOut={onSignedOut} reloads={reloads} base={base} wanted={file} cursor={cursor} mark={mark} runId={runId} preferred={preferred} />} onSignedOut={onSignedOut} />;
 }
 
 // One file's lines with its filters, follow switch and pager. The filters stay while another page of
 // the same file opens; choosing another file starts it unfiltered on its first page. Paging keeps the
 // cursors already passed, so Prev goes back without asking the server where it was.
-function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, runId }) {
+// An address that names a line marks it: the page opens with it in view and Follow off, and it stays
+// marked while its own page is shown unfiltered. Opened plainly, the tab starts at `preferred` (the
+// latest failure's log) when the run has it, else at the first file.
+function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, mark = null, runId, preferred = null }) {
   const openable = files.filter((file) => LOG_FILE.test(file.name));
-  const [name, setName] = useState(wanted !== null ? wanted : openable.length > 0 ? openable[0].name : null);
+  const first = wanted !== null ? wanted : openable.some((file) => file.name === preferred) ? preferred : openable.length > 0 ? openable[0].name : null;
+  const [name, setName] = useState(first);
   const [pages, setPages] = useState([wanted !== null ? cursor : null]);
   const [text, setText] = useState("");
   const [level, setLevel] = useState("all");
-  const [follow, setFollow] = useState(true);
+  const [follow, setFollow] = useState(mark === null);
   const filters = { text, setText, level, setLevel };
   const pick = (next) => {
     setName(next);
@@ -4482,6 +4539,8 @@ function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, r
   const at = pages[pages.length - 1];
   const pagePath = name === null ? null : base + "/" + encodeURIComponent(name) + (at === null ? "" : "/after/" + encodeURIComponent(at));
   const pager = { number: pages.length, onPrev: pages.length > 1 ? () => setPages(pages.slice(0, -1)) : null, onNext: (next) => setPages([...pages, next]) };
+  // The marked line's place in the page the address opened, which starts after `cursor` lines.
+  const marked = mark !== null && wanted !== null && name === wanted && pages.length === 1 ? mark - 1 - (cursor === null ? 0 : Number(cursor)) : null;
   return (
     <div className="run-logs">
       <div className="run-logs-head">
@@ -4498,7 +4557,7 @@ function LogsPanel({ files, token, onSignedOut, reloads, base, wanted, cursor, r
           ))}
         </select>
       ) : name !== null ? <p className="log-file-name">{name}</p> : null}
-      {name === null ? <p>No logs for this run.</p> : <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} />} onSignedOut={onSignedOut} />}
+      {name === null ? <p>No logs for this run.</p> : <Loaded key={pagePath} reloads={reloads} token={token} path={pagePath} loading="Loading the log…" parse={parseLogPage} draw={(page) => <LogPage page={page} filters={filters} follow={follow} onFollow={setFollow} pager={pager} marked={marked} />} onSignedOut={onSignedOut} />}
     </div>
   );
 }
@@ -4534,10 +4593,10 @@ const BOTTOM_SLACK = 24;
 // A time a line starts with, drawn apart from the rest of the line.
 const LOG_TIME = /^(\[?(?:\d{4}-\d\d-\d\d[T ])?\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?\]?)(?=\s)/;
 
-function LogLine({ line }) {
+function LogLine({ line, marked = false }) {
   const time = LOG_TIME.exec(line);
   return (
-    <div className="log-line" data-level={lineLevel(line)}>
+    <div className="log-line" data-level={lineLevel(line)} id={marked ? "log-mark" : undefined} data-log-mark={marked ? "" : undefined}>
       {time === null ? line : <><span className="log-time">{time[1]}</span>{line.slice(time[1].length)}</>}
     </div>
   );
@@ -4545,7 +4604,7 @@ function LogLine({ line }) {
 
 // The lines, which follow new ones while Follow is on. Scrolling up turns it off, and the lines that
 // arrived since are counted beside a control that jumps to the latest; reaching the bottom turns it on.
-function LogLines({ shown, total, follow = true, onFollow = () => {} }) {
+function LogLines({ shown, total, follow = true, onFollow = () => {}, marked = null }) {
   const box = useRef(null);
   const atBottom = useRef(true);
   const first = useRef(true);
@@ -4575,6 +4634,9 @@ function LogLines({ shown, total, follow = true, onFollow = () => {} }) {
       // A log opened taller than its box starts at the top, so it is not following.
       first.current = false;
       const el = box.current;
+      // A marked line is brought into view as the page opens.
+      const mark = marked === null ? null : el.querySelector("[data-log-mark]");
+      if (mark !== null && typeof mark.scrollIntoView === "function") mark.scrollIntoView({ block: "center" });
       if (!follow) atBottom.current = false;
       else if (el.scrollHeight > el.clientHeight) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_SLACK;
       onFollow(atBottom.current);
@@ -4602,7 +4664,7 @@ function LogLines({ shown, total, follow = true, onFollow = () => {} }) {
     <>
       <pre className="log-lines" ref={box} onScroll={onScroll}>
         {shown.map((line, at) => (
-          <LogLine key={at} line={line} />
+          <LogLine key={at} line={line} marked={at === marked} />
         ))}
       </pre>
       {waiting > 0 && (
@@ -4616,9 +4678,11 @@ function LogLines({ shown, total, follow = true, onFollow = () => {} }) {
 }
 
 // One page of a log's already-redacted lines, drawn as plain text, with its filters above and its pager below.
-function LogPage({ page, filters: { text, setText, level, setLevel }, follow, onFollow, pager: { number, onPrev, onNext } }) {
+function LogPage({ page, filters: { text, setText, level, setLevel }, follow, onFollow, pager: { number, onPrev, onNext }, marked = null }) {
   const { lines, next_cursor: next, truncated } = page;
   const shown = filterLines(lines, text, level);
+  // A filtered list has other lines at each place, so the mark is only drawn on the whole page.
+  const mark = marked !== null && text === "" && level === "all" && marked >= 0 && marked < lines.length ? marked : null;
   return (
     <>
       <div className="log-tools">
@@ -4635,7 +4699,7 @@ function LogPage({ page, filters: { text, setText, level, setLevel }, follow, on
       </div>
       {lines.length === 0 ? <p>This log has no more lines.</p> : null}
       {lines.length > 0 && shown.length === 0 ? <p>No lines match the filter.</p> : null}
-      <LogLines shown={shown} total={lines.length} follow={follow} onFollow={onFollow} />
+      <LogLines shown={shown} total={lines.length} follow={follow} onFollow={onFollow} marked={mark} />
       {onPrev !== null || next !== null ? <PagerBar label="Log pages" status={"Page " + number} prev={{ attrs: { "data-log-prev": "" }, onClick: onPrev }} next={{ attrs: { "data-more": "lines" }, onClick: next === null ? null : () => onNext(next) }} /> : null}
       <div className="log-pager">
         <span className="log-count">{shown.length + " of " + lines.length + " lines"}</span>
@@ -4976,18 +5040,20 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
   }
   // A run's page. Its tabs switch in place; a logs address (kept so older links still work) opens the
   // same page on its Logs tab, at that file and line if it names them.
-  const logs = /^\/projects\/[^/]+\/orchestrations\/([^/]+)\/logs(?:\/([^/]+)(?:\/after\/([^/]+))?)?$/.exec(address);
+  const logs = /^\/projects\/[^/]+\/orchestrations\/([^/]+)\/logs(?:\/([^/]+)(?:\/after\/([^/]+)(?:\/line\/([^/]+))?)?)?$/.exec(address);
   const timeline = logs !== null ? null : /^\/projects\/[^/]+\/orchestrations\/([^/]+)(?:\/after\/([^/]+))?$/.exec(address);
   if (logs !== null || timeline !== null) {
     let run = null;
     let cursor = null;
     let file = null;
     let line = null;
+    let mark = null;
     try {
       if (logs !== null) {
         run = decodeURIComponent(logs[1]);
         file = logs[2] === undefined ? null : decodeURIComponent(logs[2]);
         line = logs[3] === undefined ? null : decodeURIComponent(logs[3]);
+        mark = logs[4] === undefined ? null : decodeURIComponent(logs[4]);
       } else {
         run = decodeURIComponent(timeline[1]);
         cursor = timeline[2] === undefined ? null : decodeURIComponent(timeline[2]);
@@ -4995,12 +5061,12 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
     } catch (malformed) {
       return <NotFound />;
     }
-    if (!RUN_ID.test(run) || (cursor !== null && !RUN_ID.test(cursor)) || (file !== null && !LOG_FILE.test(file)) || (line !== null && !LINE_CURSOR.test(line))) return <NotFound />;
+    if (!RUN_ID.test(run) || (cursor !== null && !RUN_ID.test(cursor)) || (file !== null && !LOG_FILE.test(file)) || (line !== null && !LINE_CURSOR.test(line)) || (mark !== null && !MARKED_LINE.test(mark))) return <NotFound />;
     const listPath = "/projects/" + encodeURIComponent(projectId) + "/orchestrations";
     const runPath = listPath + "/" + encodeURIComponent(run);
     const apiRun = "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(run);
     const timelinePath = apiRun + (cursor === null ? "" : "/after/" + encodeURIComponent(cursor));
-    const logsAt = { token, onSignedOut, reloads, base: apiRun + "/logs", file, cursor: line };
+    const logsAt = { token, onSignedOut, reloads, base: apiRun + "/logs", file, cursor: line, mark: mark === null ? null : Number(mark) };
     return (
       <>
         <Loaded key={timelinePath} reloads={reloads} header={(state) => (

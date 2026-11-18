@@ -1576,7 +1576,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             return Ok(None);
         }
         // Only plain, non-hidden `.log` files that are not links are logs.
-        let plain = |name: &str| name.ends_with(".log") && !name.starts_with('.') && !name.contains(['/', '\\']);
+        let plain = plain_log_name;
         let Some(file) = file else {
             let mut files = Vec::new();
             // A run that has written no logs has no directory; any other failure is an error.
@@ -1674,9 +1674,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let advance = |round: u64, event: &orq_orchestrator::Event| if event.kind == "stage.started" || round == 0 { round + 1 } else { round };
         let is_review = |event: &orq_orchestrator::Event| event.stage.as_deref() == Some("review");
         let mut round = events[..start].iter().filter(|event| is_review(event)).fold(0, advance);
+        let logs_dir = self.roots.state.join("logs").join(run);
         let listed: Vec<_> = page
             .iter()
-            .map(|event| {
+            .enumerate()
+            .map(|(n, event)| {
                 let mut listed = serde_json::json!({"event_id": event.event_id, "kind": event.kind, "stage": event.stage, "attempt": event.attempt, "occurred_at": event.occurred_at});
                 if is_review(event) {
                     round = advance(round, event);
@@ -1696,6 +1698,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 }
                 if event.kind == "session.undeclared_files" {
                     listed["undeclared_files"] = undeclared_files_shown(&event.payload);
+                }
+                if event.kind.ends_with(".failed") {
+                    if let Some(failure) = failure_shown(&events, start + n, &logs_dir) {
+                        listed["failure"] = failure;
+                    }
                 }
                 listed
             })
@@ -1797,6 +1804,242 @@ fn flaky_tests_shown(payload: &serde_json::Value) -> serde_json::Value {
 fn undeclared_files_shown(payload: &serde_json::Value) -> serde_json::Value {
     let files: Vec<_> = payload.get("files").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|file| Some(orq_core::redact::redact(file.as_str()?))).collect();
     serde_json::json!(files)
+}
+
+/// How many lines a failure's excerpt holds at most.
+const EXCERPT_LINES: usize = 15;
+/// How far before the end of its part a failure with no failure line points.
+const TAIL_LINES: usize = 40;
+
+/// Where an attempt's error is in its log: the line, numbered from 1, and the lines from it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogSpot {
+    pub line: usize,
+    /// Where the line starts in the file, in bytes.
+    pub offset: u64,
+    pub excerpt: Vec<String>,
+}
+
+/// Which part of an appended log one attempt wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogPart {
+    /// The lines after line `start` up to line `end`, or to the end of the file when `None`.
+    Lines { start: usize, end: Option<usize> },
+    /// The `n`th attempt (from 1), each starting with the log's first line again; when the log does not
+    /// have that many, the whole file and its last failure line.
+    Attempt(usize),
+}
+
+/// How surely a line says something failed: a test or build tool's own failure line, or only a command
+/// that exited with a failure status, which a test's own output can also print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Strong,
+    Weak,
+}
+
+/// Whether `line` is a failure line; `traceback` says a Python traceback came before it.
+fn failure_marker(line: &str, traceback: bool) -> Option<Marker> {
+    let trimmed = line.trim_start();
+    let trimmed_end = line.trim_end();
+    let first_word = line.split([':', ' ', '\t']).next().unwrap_or("");
+    let summary_failed = line.match_indices("= ").any(|(at, _)| {
+        let rest = &line[at + 2..];
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        digits > 0 && rest[digits..].starts_with(" failed")
+    });
+    let strong = line.contains("panicked at")
+        || line.contains("test result: FAILED")
+        || (trimmed.starts_with("test ") && trimmed_end.ends_with(" ... FAILED"))
+        || (trimmed.starts_with("---- ") && trimmed_end.ends_with(" stdout ----"))
+        || (trimmed.starts_with("error[E") && line.contains("]:"))
+        || trimmed.starts_with("error: could not compile")
+        || trimmed.starts_with("error: test failed")
+        || line.starts_with("FAILED ")
+        || (traceback && !line.starts_with([' ', '\t']) && first_word.contains("Error"))
+        || summary_failed
+        || line.contains(" FAIL ")
+        || trimmed.starts_with('✕')
+        || trimmed.starts_with('×')
+        || line.contains("AssertionError");
+    if strong {
+        Some(Marker::Strong)
+    } else if line.contains("exited with status") {
+        Some(Marker::Weak)
+    } else {
+        None
+    }
+}
+
+/// A failure line and the excerpt that runs on from it.
+#[derive(Default)]
+struct Capture {
+    spot: Option<LogSpot>,
+}
+
+impl Capture {
+    /// Take `line` as the failure line when `marker` and `replace` (or nothing is held yet); otherwise
+    /// add it to the held excerpt while that has room.
+    fn offer(&mut self, (number, offset): (usize, u64), line: &str, marker: bool, replace: bool) {
+        match &mut self.spot {
+            Some(_) if marker && replace => self.spot = Some(LogSpot { line: number, offset, excerpt: vec![line.to_string()] }),
+            Some(spot) if spot.excerpt.len() < EXCERPT_LINES => spot.excerpt.push(line.to_string()),
+            Some(_) => {}
+            None if marker => self.spot = Some(LogSpot { line: number, offset, excerpt: vec![line.to_string()] }),
+            None => {}
+        }
+    }
+
+    fn full(&self) -> bool {
+        self.spot.as_ref().is_some_and(|spot| spot.excerpt.len() == EXCERPT_LINES)
+    }
+}
+
+/// One part of a log read line by line: its first (or, with `last`, last) strong and weak failure lines,
+/// and its last lines for a part with neither.
+#[derive(Default)]
+struct PartScan {
+    last: bool,
+    traceback: bool,
+    strong: Capture,
+    weak: Capture,
+    tail: std::collections::VecDeque<((usize, u64), String)>,
+}
+
+impl PartScan {
+    fn add(&mut self, at: (usize, u64), line: &str) {
+        let marker = failure_marker(line, self.traceback);
+        if line.starts_with("Traceback") {
+            self.traceback = true;
+        }
+        self.strong.offer(at, line, marker == Some(Marker::Strong), self.last);
+        self.weak.offer(at, line, marker == Some(Marker::Weak), self.last);
+        if self.tail.len() == TAIL_LINES + 1 {
+            self.tail.pop_front();
+        }
+        self.tail.push_back((at, line.to_string()));
+    }
+
+    /// Whether reading on can change nothing: the first strong failure line and its excerpt are read.
+    fn settled(&self) -> bool {
+        !self.last && self.strong.full()
+    }
+
+    fn spot(self) -> Option<LogSpot> {
+        if let Some(spot) = self.strong.spot.or(self.weak.spot) {
+            return Some(spot);
+        }
+        let ((line, offset), _) = *self.tail.front()?;
+        let excerpt = self.tail.into_iter().take(EXCERPT_LINES).map(|(_, text)| text).collect();
+        Some(LogSpot { line, offset, excerpt })
+    }
+}
+
+/// The first failure line of `part` of the log at `path`, read once, line by line, stopping at the part's end.
+pub fn find_failure_line(path: &std::path::Path, part: LogPart) -> std::io::Result<Option<LogSpot>> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut buffer = Vec::new();
+    let mut number = 0;
+    let mut offset = 0;
+    let mut first_line: Option<String> = None;
+    let mut attempts = 0;
+    let mut found = PartScan::default();
+    // The whole file, for an attempt the log does not have.
+    let mut whole = PartScan { last: true, ..PartScan::default() };
+    loop {
+        buffer.clear();
+        let read = reader.read_until(b'\n', &mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        number += 1;
+        let at = (number, offset);
+        offset += read as u64;
+        let line = String::from_utf8_lossy(&buffer).trim_end_matches(['\n', '\r']).to_string();
+        match part {
+            LogPart::Lines { start, end } => {
+                if end.is_some_and(|end| number > end) {
+                    break;
+                }
+                if number > start {
+                    found.add(at, &line);
+                }
+            }
+            LogPart::Attempt(wanted) => {
+                if first_line.is_none() {
+                    first_line = Some(line.clone());
+                }
+                if first_line.as_deref() == Some(line.as_str()) {
+                    attempts += 1;
+                }
+                if attempts > wanted {
+                    break;
+                }
+                if attempts == wanted {
+                    found.add(at, &line);
+                }
+                whole.add(at, &line);
+            }
+        }
+        if found.settled() {
+            break;
+        }
+    }
+    if matches!(part, LogPart::Attempt(wanted) if attempts < wanted) {
+        return Ok(whole.spot());
+    }
+    Ok(found.spot())
+}
+
+/// The largest log a failure's error is looked for in.
+const FAILURE_SEARCH_CAP: u64 = 20 * 1024 * 1024;
+
+/// Whether `name` is one a run's logs page lists: a plain, non-hidden `.log` name.
+fn plain_log_name(name: &str) -> bool {
+    name.ends_with(".log") && !name.starts_with('.') && !name.contains(['/', '\\'])
+}
+
+/// The name of the log at `path` when it is a plain `.log` file, not a link, directly inside `logs_dir`,
+/// itself no link either; `None` for anything else.
+fn run_log_name(path: &std::path::Path, logs_dir: &std::path::Path) -> Option<String> {
+    let is_dir = |path: &std::path::Path| path.symlink_metadata().is_ok_and(|meta| meta.is_dir());
+    if path.parent() != Some(logs_dir) || !logs_dir.parent().is_some_and(is_dir) || !is_dir(logs_dir) {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    (plain_log_name(name) && path.symlink_metadata().is_ok_and(|meta| meta.is_file())).then(|| name.to_string())
+}
+
+/// What the run page shows of the failure event at `at`: its reason and, when it names one of the run's own
+/// logs, the line in it where this attempt's error is, all redacted. The attempt's part of an appended log
+/// runs from the line count its stage start recorded to the next start's.
+fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::path::Path) -> Option<serde_json::Value> {
+    use orq_core::redact::redact;
+    let event = &events[at];
+    let log = event.payload.get("log")?.as_str()?;
+    let reason = event.payload.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    let mut failure = serde_json::json!({"reason": redact(reason)});
+    let path = std::path::Path::new(log);
+    let Some(file) = run_log_name(path, logs_dir) else { return Some(failure) };
+    let starts_of_log = |event: &&orq_orchestrator::Event| event.kind == "stage.started" && event.payload.get("log").and_then(|v| v.as_str()) == Some(log);
+    let log_line = |event: &orq_orchestrator::Event| event.payload.get("log_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    // A run from before stage starts recorded their line count is split at the log's repeated first line.
+    let part = match events[..at].iter().rev().find(starts_of_log).and_then(log_line) {
+        Some(start) => LogPart::Lines { start, end: events[at..].iter().find(starts_of_log).and_then(log_line) },
+        None => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
+    };
+    let mut shown = serde_json::json!({"file": file});
+    let small = path.symlink_metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
+    if let Some(spot) = small.then(|| find_failure_line(path, part).ok().flatten()).flatten() {
+        // The logs page reads only a log's first part, so a line past it could not be opened.
+        if spot.offset < LOG_READ_CAP {
+            shown["line"] = serde_json::json!(spot.line);
+        }
+        shown["excerpt"] = serde_json::json!(redact(&spot.excerpt.join("\n")));
+    }
+    failure["log"] = shown;
+    Some(failure)
 }
 
 /// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the

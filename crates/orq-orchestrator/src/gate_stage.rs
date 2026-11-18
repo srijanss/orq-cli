@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::gate::Gate;
-use crate::implement::{next_event_id, now_rfc3339, open_log};
+use crate::implement::{log_line_count, next_event_id, now_rfc3339, open_log};
 use crate::run_activity::{nextest_flaky, printable, test_total_line};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
@@ -116,18 +116,18 @@ fn run_gate_attempt_limited(
     };
 
     let mut log = open_log(log_path)?;
+    // Where this attempt's part of the log, which every attempt appends to, starts.
+    let log_line = log_line_count(&log);
     // What detection had to settle for (cargo test without nextest) is said before any step runs.
     for note in notes {
         writeln!(log, "orq: {note}")?;
     }
     let log_name = log_path.to_string_lossy().into_owned();
-    record_event(
-        store,
-        &record,
-        "stage.started",
-        attempt,
-        serde_json::json!({ "log": log_name, "steps": steps.len() }),
-    )?;
+    let mut started = serde_json::json!({ "log": log_name, "steps": steps.len() });
+    if let Some(lines) = log_line {
+        started["log_line"] = lines.into();
+    }
+    record_event(store, &record, "stage.started", attempt, started)?;
 
     let listings: Vec<Option<Listing>> = steps.iter().map(|argv| step_listing(argv, &record.worktree)).collect();
     let counts_tests = listings.iter().any(Option::is_some);

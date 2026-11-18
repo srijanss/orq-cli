@@ -389,3 +389,23 @@ fn a_terminal_session_whose_marker_reports_a_problem_logs_how_it_ended_and_the_p
     assert!(lines[1].ends_with("] sh was closed by orq after it wrote its exit marker"), "{log}");
     assert!(lines[2].ends_with(&format!("] {reason}")), "{log}");
 }
+
+#[test]
+fn a_session_start_records_how_many_lines_its_log_already_has() {
+    let s = setup("log-line");
+    let args = argv(&["-c", "echo one; echo two"]);
+
+    run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+    // A later attempt appends to the same log, after the first attempt's two lines.
+    run_implement_stage(&s.store, "run-1", &session(&s, &args, &[])).unwrap();
+
+    let starts: Vec<_> = s
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "stage.started")
+        .map(|e| e.payload["log_line"].clone())
+        .collect();
+    assert_eq!(starts, [serde_json::json!(0), serde_json::json!(2)]);
+}

@@ -79,7 +79,11 @@ pub(crate) fn run_session_stage(
             payload,
         }
     };
-    store.append_event(&event("stage.started", serde_json::json!({})))?;
+    let started = match log_line_count(&log) {
+        Some(lines) => serde_json::json!({ "log_line": lines }),
+        None => serde_json::json!({}),
+    };
+    store.append_event(&event("stage.started", started))?;
 
     let mut command = Command::new(session.program);
     command
@@ -540,7 +544,8 @@ fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::Fil
         )
     };
     let mut open = fs::OpenOptions::new();
-    open.append(true);
+    // Read too, so the lines already in it can be counted through the very handle that was checked.
+    open.append(true).read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -577,6 +582,26 @@ fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::Fil
         Ok(_) => Err(refuse(
             "an existing file, which cannot be opened safely on this platform",
         )),
+    }
+}
+
+/// How many lines the log open as `log` holds now, read from its start without moving its offset;
+/// `None` when it cannot be read. A stage start records it, so the part of an appended log a later
+/// attempt wrote can be told from an earlier one's.
+pub(crate) fn log_line_count(log: &fs::File) -> Option<u64> {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut at = 0u64;
+    let mut lines = 0u64;
+    loop {
+        #[cfg(unix)]
+        let read = std::os::unix::fs::FileExt::read_at(log, &mut buffer, at).ok()?;
+        #[cfg(not(unix))]
+        let read = std::os::windows::fs::FileExt::seek_read(log, &mut buffer, at).ok()?;
+        if read == 0 {
+            return Some(lines);
+        }
+        lines += buffer[..read].iter().filter(|&&byte| byte == b'\n').count() as u64;
+        at += read as u64;
     }
 }
 

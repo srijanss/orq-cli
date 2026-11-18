@@ -806,3 +806,27 @@ fn a_gate_with_no_flaky_line_records_no_flaky_event_even_when_a_step_fails() {
 
     assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.failed")]);
 }
+
+#[test]
+fn a_gate_start_records_how_many_lines_its_log_had_before_the_attempt_wrote_to_it() {
+    let w = world("log-line");
+    fs::write(&w.log, "earlier attempt\nits failure\n").unwrap();
+    let gate = Gate::Steps {
+        steps: vec![sh("echo checked")],
+        notes: vec!["nextest is not installed".to_string()],
+    };
+
+    run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
+
+    let start = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "stage.started")
+        .unwrap();
+    // The attempt's part starts with its notes, so they belong to it.
+    assert_eq!(start.payload["log_line"], 2, "{}", start.payload);
+    let log = fs::read_to_string(&w.log).unwrap();
+    assert_eq!(log.lines().nth(2), Some("orq: nextest is not installed"), "{log}");
+}
