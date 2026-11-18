@@ -1897,7 +1897,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/projects" {
         return match provider {
             Some(provider) => match provider.projects() {
-                Ok(projects) => reply(200, json!({ "projects": projects, "machine": provider.machine_runs().ok().flatten() })),
+                Ok(projects) => {
+                    let mut body = json!({ "projects": projects });
+                    if let Some(machine) = provider.machine_runs().ok().flatten() {
+                        body["machine"] = machine;
+                    }
+                    reply(200, body)
+                }
                 Err(why) => error(500, &why),
             },
             None => error(404, "not found"),
