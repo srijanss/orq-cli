@@ -295,3 +295,36 @@ fn build_it_now_on_a_run_merged_here_reads_as_merged_not_as_its_mr() {
 
     assert_eq!(kept(&s, "run-merged-now"), vec![("local".to_string(), orq_core::review_lifecycle::ProviderState::Merged)]);
 }
+
+#[test]
+fn a_merged_run_whose_merge_could_not_be_recorded_keeps_its_mr_out_until_a_later_round_records_it() {
+    let s = setup("repair-merged-retry");
+    merged_run(&s, "run-merged-retry", "77aa000000000000000000000000000000000003");
+    let (projects, _) = provider(&s);
+    let db = rusqlite::Connection::open(s.roots.database()).unwrap();
+    db.execute_batch("CREATE TRIGGER no_local BEFORE INSERT ON review_lifecycles WHEN NEW.provider = 'local' BEGIN SELECT RAISE(FAIL, 'disk hiccup'); END;").unwrap();
+
+    projects.repair_missing_reviews();
+    assert_eq!(kept(&s, "run-merged-retry"), vec![], "the MR is not taken for the run merged here");
+
+    db.execute_batch("DROP TRIGGER no_local;").unwrap();
+    projects.repair_missing_reviews();
+    assert_eq!(kept(&s, "run-merged-retry"), vec![("local".to_string(), orq_core::review_lifecycle::ProviderState::Merged)]);
+}
+
+#[test]
+fn build_it_now_on_a_merged_run_whose_merge_could_not_be_recorded_leaves_its_mr_out() {
+    use orq_core::remote_inbox::{ProjectsProvider, RunControl};
+    let s = setup("repair-merged-now-fails");
+    merged_run(&s, "run-merged-now-fails", "77aa000000000000000000000000000000000004");
+    alpha_project(&s, "run-merged-now-fails");
+    let (projects, _) = provider(&s);
+    rusqlite::Connection::open(s.roots.database())
+        .unwrap()
+        .execute_batch("CREATE TRIGGER no_local BEFORE INSERT ON review_lifecycles WHEN NEW.provider = 'local' BEGIN SELECT RAISE(FAIL, 'disk hiccup'); END;")
+        .unwrap();
+
+    let _ = projects.control_run("alpha", "run-merged-now-fails", RunControl::BuildReport);
+
+    assert_eq!(kept(&s, "run-merged-now-fails"), vec![]);
+}

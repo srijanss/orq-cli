@@ -589,8 +589,8 @@ impl StoreProjects {
     }
 
     /// Records the review state of each run (only `only` when given) whose report is now there, as `orq review
-    /// backfill` does: a run merged here first, so it reads as merged and its PR/MR is then left alone; then each
-    /// created or adopted PR/MR, noted in the run's log. A run whose record fails is said and the others go on.
+    /// backfill` does: a run merged here first, so it reads as merged and its PR/MR is left alone; then each other
+    /// run's created or adopted PR/MR, noted in the run's log. A run whose record fails is said and the others go on.
     fn record_reviews_of(&self, runs: &orq_orchestrator::RunStore, store: &orq_core::store::Store, only: Option<&str>) -> Result<(), String> {
         let wanted = |run_id: &str| only.is_none_or(|only| only == run_id);
         let merges = orq_orchestrator::local_merges(runs).map_err(|error| format!("cannot read the runs' local merges: {error:?}"))?;
@@ -600,7 +600,10 @@ impl StoreProjects {
             }
         }
         let created = orq_orchestrator::created_reviews(runs).map_err(|error| format!("cannot read the runs' review requests: {error:?}"))?;
-        for review in created.iter().filter(|review| wanted(&review.run_id)) {
+        // A run merged here is its local merge's, even when recording that failed this round: its PR/MR kept now would
+        // stand in the way of the next round's try.
+        let merged_here = |run_id: &str| merges.iter().any(|(merged, _)| merged == run_id);
+        for review in created.iter().filter(|review| wanted(&review.run_id) && !merged_here(&review.run_id)) {
             match orq_core::review_inbox::backfill_created_reviews(store, std::slice::from_ref(review)) {
                 Ok(0) => {}
                 Ok(_) => note_report_log(&self.roots, &review.run_id, &format!("review {} recorded ({REPAIRED})", review.url)),
