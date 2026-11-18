@@ -844,7 +844,8 @@ fn draft_followups(store: &RunStore, record: &RunRecord, ledger: &Path, review: 
     }
     for _ in 0..5 {
         let loaded = orq_features::LoadedLedger::load_or_new(ledger).map_err(|err| format!("{}, and its follow-ups cannot be drafted: the feature ledger: {err:?}", escalation_reason(review)))?;
-        let new: Vec<orq_features::FeatureDraft> = drafts.iter().filter(|d| !loaded.entries().iter().any(|e| e.feature_name == d.feature_name)).cloned().collect();
+        let existing: std::collections::HashSet<&str> = loaded.entries().iter().map(|e| e.feature_name.as_str()).collect();
+        let new: Vec<orq_features::FeatureDraft> = drafts.iter().filter(|d| !existing.contains(d.feature_name.as_str())).cloned().collect();
         match loaded.append_many(&new) {
             Ok(_) => {
                 record_ledger(store, record, "run.followups_drafted", &names);
