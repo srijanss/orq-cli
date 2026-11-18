@@ -3751,6 +3751,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                   <td>
                     <RunState state={run.state} />
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
+                    {run.unattended === true ? <div className="run-ending muted" data-run-unattended>Unattended (queue)</div> : null}
                     <DirtyCheckout run={run} />
                   </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>

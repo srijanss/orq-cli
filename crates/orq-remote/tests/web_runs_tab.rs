@@ -175,3 +175,17 @@ fn filtering_by_completed_lists_hand_merged_runs_too() {
     let rows: Vec<String> = shown(&out["frames"][2]).into_iter().filter(|t| t.ends_with("-feature")).collect();
     assert_eq!(rows, ["pushed-feature", "merged-feature", "reviewed-feature", "hand-merged-feature"]);
 }
+
+/// A run the queue started has nobody watching it: its row says so, and no other row does.
+#[test]
+fn a_run_the_queue_started_unattended_says_so_in_its_row() {
+    let mut queued = row("run-q", "queued-feature", "running", Value::Null);
+    queued["unattended"] = json!(true);
+    let runs = json!({"status": 200, "json": {"runs": [queued, row("run-w", "web-feature", "running", Value::Null)]}});
+    let Some(out) = run("/projects/alpha/orchestrations", json!([runs, projects()]), json!([{"submit": TOKEN}])) else { return };
+    let texts = shown(&out["frames"][1]);
+    let at = |needle: &str| texts.iter().position(|t| t == needle).unwrap_or_else(|| panic!("{needle} missing: {texts:?}"));
+    assert_eq!(texts.iter().filter(|t| *t == "Unattended (queue)").count(), 1, "{texts:?}");
+    let label = at("Unattended (queue)");
+    assert!(at("queued-feature") < label && label < at("web-feature"), "the label is in the queued run's row: {texts:?}");
+}
