@@ -1942,16 +1942,17 @@ pub fn find_failure_line(path: &std::path::Path, part: LogPart) -> std::io::Resu
     find_failure_line_in(std::fs::File::open(path)?, part)
 }
 
-/// The first failure line of `part` of the log read from `log`.
-fn find_failure_line_in(log: impl std::io::Read, part: LogPart) -> std::io::Result<Option<LogSpot>> {
+/// The first failure line of `part` of the log read from `log`, from its start or, for `After`, its offset.
+fn find_failure_line_in(mut log: impl std::io::Read + std::io::Seek, part: LogPart) -> std::io::Result<Option<LogSpot>> {
     use std::io::BufRead;
-    let mut reader = std::io::BufReader::new(log);
-    let mut buffer = Vec::new();
-    // A reader already at an attempt's offset numbers its lines on from the line count recorded there.
+    // An attempt read from its offset numbers its lines on from the line count recorded there.
     let (mut number, mut offset, part) = match part {
         LogPart::After { line, offset, end } => (line, offset, LogPart::Lines { start: line, end }),
         part => (0, 0, part),
     };
+    log.seek(std::io::SeekFrom::Start(offset))?;
+    let mut reader = std::io::BufReader::new(log);
+    let mut buffer = Vec::new();
     let mut first_line: Option<String> = None;
     let mut attempts = 0;
     let mut found = PartScan::default();
@@ -2068,12 +2069,7 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
         (None, _) => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
     };
     let mut shown = serde_json::json!({"file": file});
-    let mut opened = opened;
-    let at_part = match part {
-        LogPart::After { offset, .. } => std::io::Seek::seek(&mut opened, std::io::SeekFrom::Start(offset)).is_ok(),
-        _ => true,
-    };
-    let small = at_part && opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
+    let small = opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
     if let Some(spot) = small.then(|| find_failure_line_in(opened, part).ok().flatten()).flatten() {
         // The logs page reads only a log's first part, so a line past it could not be opened.
         if spot.offset < LOG_READ_CAP {

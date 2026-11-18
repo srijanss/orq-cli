@@ -329,3 +329,15 @@ fn an_empty_log_is_named_without_a_line_and_an_unreadable_one_gives_only_the_rea
         assert_eq!(found[1], json!({"reason": "locked"}));
     }
 }
+
+#[test]
+fn the_scanner_given_an_attempts_byte_offset_reads_from_there() {
+    use orq_remote::projects::{find_failure_line, LogPart};
+    let s = setup("failure-scanner-offset");
+    let before = "$ cargo test\nthread 'early' panicked at src/a.rs:1:1:\n";
+    let after = "$ cargo test\nthread 'later' panicked at src/b.rs:2:2:\n";
+    let path = write_log(&s, "r1", "gate.log", &format!("{before}{after}"));
+    let spot = find_failure_line(&path, LogPart::After { line: 2, offset: before.len() as u64, end: None }).unwrap().unwrap();
+    assert_eq!((spot.line, spot.offset), (4, (before.len() + "$ cargo test\n".len()) as u64));
+    assert!(spot.excerpt[0].starts_with("thread 'later'"), "{spot:?}");
+}
