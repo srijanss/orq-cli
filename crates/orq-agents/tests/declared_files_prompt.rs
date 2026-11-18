@@ -62,12 +62,17 @@ fn a_session_after_files_were_changed_outside_the_features_is_told_to_check_them
     }
 }
 
+/// With no declared file every changed file is outside them, so the check before review still applies.
 #[test]
-fn a_session_without_declared_files_still_gets_the_refusal_rule_but_no_file_list() {
+fn a_session_whose_features_declare_no_file_is_told_every_committed_file_is_outside_them() {
     for harness in ["claude", "pi"] {
         let prompt = prompt(&request(harness, &[], &[]));
         assert!(prompt.contains(REFUSAL_RULE), "{harness}: {prompt}");
-        assert!(!prompt.contains("The features declare these files"), "{harness}: {prompt}");
+        assert!(prompt.contains("The features declare no files, so every committed file is outside them."), "{harness}: {prompt}");
+        assert!(
+            prompt.contains("Before start_review, check each committed file outside them is needed and tested, and name it and why in implement.done."),
+            "{harness}: {prompt}"
+        );
     }
 }
 

@@ -426,12 +426,13 @@ fn files_wording(declared: &[String], undeclared: &[String]) -> Result<String, A
         }
     }
     let mut wording = format!("\n\n{REFUSAL_RULE}");
-    if !declared.is_empty() {
-        wording.push_str(&format!(
-            " The features declare these files: {}. Before start_review, check each committed file outside them is needed and tested, and name it and why in implement.done.",
-            declared.join(", ")
-        ));
+    // With none declared every committed file is outside them, so the check before review still applies.
+    if declared.is_empty() {
+        wording.push_str(" The features declare no files, so every committed file is outside them.");
+    } else {
+        wording.push_str(&format!(" The features declare these files: {}.", declared.join(", ")));
     }
+    wording.push_str(" Before start_review, check each committed file outside them is needed and tested, and name it and why in implement.done.");
     if !undeclared.is_empty() {
         wording.push_str(&format!(
             " These files are outside the feature's declared files: {}; check each change is needed and tested.",
