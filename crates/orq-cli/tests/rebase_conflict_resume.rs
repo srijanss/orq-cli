@@ -386,10 +386,12 @@ fn init_line(name: &str) -> String {
     format!("{{\"event\": \"init_feature\", \"featureName\": \"{name}\"}}")
 }
 
-#[test]
-fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_the_run() {
-    let w = world("credit-tracked-log");
-    // The project keeps its session log in git: main holds an earlier session's event.
+/// A world whose project keeps its session log in git, with main holding an earlier session's
+/// `old-extra` event. Returns it with the implement session's shell, which, once, lands another run's
+/// merge on main that changes feature.txt and logs its session's `up-extra`, then starts `impl-extra`;
+/// and the fix session's shell, which keeps both sides of the log, starts `rfix-extra` and resolves.
+fn tracked_log_world(tag: &str) -> (World, String, String) {
+    let w = world(tag);
     let root = w.repo.root();
     std::fs::write(root.join(".tdd-session.log"), format!("{}\n", init_line("old-extra"))).unwrap();
     git(root, &["add", ".tdd-session.log"]);
@@ -406,7 +408,6 @@ fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_
             LedgerEntry::new("rfix-extra", "in_progress"),
         ],
     );
-    // While the run works, another run's merge lands on main with its own session's event and feature.txt.
     let done = w.home.join("moved");
     let upstream = format!(
         "[ -f '{done}' ] || {{ touch '{done}'; printf 'theirs\\n' > '{r}/feature.txt' && printf '%s\\n' '{up}' >> '{r}/.tdd-session.log' && git -C '{r}' add feature.txt .tdd-session.log && git -C '{r}' -c user.name=Someone -c user.email=someone@example.invalid commit -q -m 'other: feature.txt'; }}",
@@ -415,7 +416,6 @@ fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_
         up = init_line("up-extra"),
     );
     let on_implement = format!("{upstream}; {}; cp '{}' '{}'", log_init("impl-extra"), after.display(), root.join(".tdd-features.json").display());
-    // The fix session keeps both sides of the log, then starts a feature of its own.
     let on_fix = format!(
         "printf '%s\\n' '{}' '{}' '{}' > .tdd-session.log; {}; git add .tdd-session.log; {RESOLVE}",
         init_line("old-extra"),
@@ -423,6 +423,12 @@ fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_
         init_line("impl-extra"),
         log_init("rfix-extra"),
     );
+    (w, on_implement, on_fix)
+}
+
+#[test]
+fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_the_run() {
+    let (w, on_implement, on_fix) = tracked_log_world("credit-tracked-log");
     harness(&w, &on_implement, &on_fix);
 
     let out = run(&w, &[]);
@@ -432,5 +438,23 @@ fn session_log_lines_a_rebase_brings_from_the_target_branch_are_not_credited_to_
     assert!(w.home.join("fix-task.txt").exists(), "the rebase fix session ran");
     let id = only_run(&w);
     assert_eq!(credited(&w, &id), vec![serde_json::json!(["impl-extra"]), serde_json::json!(["rfix-extra"])], "{stderr}");
+    assert!(!stderr.contains("old-extra") && !stderr.contains("up-extra"), "{stderr}");
+}
+
+#[test]
+fn a_resumed_run_does_not_credit_the_session_log_lines_its_predecessors_rebase_brought_in() {
+    let (w, on_implement, on_fix) = tracked_log_world("credit-resumed-log");
+    harness(&w, &on_implement, "true");
+    let first = run(&w, &[]);
+    assert_eq!(first.status.code(), Some(30), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let id = only_run(&w);
+    harness(&w, "true", &on_fix);
+
+    let out = resume(&w, &id, &["--fix-conflicts"]);
+
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}\n{stderr}", text(&out.stdout));
+    let resumed = other_run(&w, &id);
+    assert_eq!(credited(&w, &resumed), vec![serde_json::json!(["impl-extra", "rfix-extra"])], "{stderr}");
     assert!(!stderr.contains("old-extra") && !stderr.contains("up-extra"), "{stderr}");
 }
