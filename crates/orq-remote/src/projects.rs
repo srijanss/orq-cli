@@ -2068,17 +2068,25 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
         (Some(start), None) => LogPart::Lines { start, end: end() },
         (None, _) => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
     };
+    let size = opened.metadata().map_or(u64::MAX, |meta| meta.len());
+    failure["log"] = log_shown(file, opened, size, part);
+    Some(failure)
+}
+
+/// What the run page shows of the log `file`, `size` bytes long and read from `log`: its name and, when
+/// it is small enough to search and reads to the end of `part`, the error's line and the redacted lines
+/// from it. A log that fails to read part way is named only, since what was read may not hold the error.
+fn log_shown(file: String, log: impl std::io::Read + std::io::Seek, size: u64, part: LogPart) -> serde_json::Value {
     let mut shown = serde_json::json!({"file": file});
-    let small = opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
-    if let Some(spot) = small.then(|| find_failure_line_in(opened, part).ok().flatten()).flatten() {
+    let small = size <= FAILURE_SEARCH_CAP;
+    if let Some(spot) = small.then(|| find_failure_line_in(log, part).ok().flatten()).flatten() {
         // The logs page reads only a log's first part, so a line past it could not be opened.
         if spot.offset < LOG_READ_CAP {
             shown["line"] = serde_json::json!(spot.line);
         }
-        shown["excerpt"] = serde_json::json!(redact(&spot.excerpt.join("\n")));
+        shown["excerpt"] = serde_json::json!(orq_core::redact::redact(&spot.excerpt.join("\n")));
     }
-    failure["log"] = shown;
-    Some(failure)
+    shown
 }
 
 /// What the run page shows of an `mcp.setup` event: each server's name, version and source, and the
@@ -2234,6 +2242,43 @@ mod failure_log_open_tests {
     fn open(dir: &Path, between: impl FnOnce()) -> Option<(String, String)> {
         let logs = dir.join("logs/r1");
         read(open_run_log_with(&logs.join("gate.log"), &logs, between))
+    }
+
+    /// A log that gives `good` and then fails to read.
+    struct Failing {
+        good: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.good.read(buf)? {
+                0 => Err(std::io::Error::other("disk gone")),
+                read => Ok(read),
+            }
+        }
+    }
+
+    impl std::io::Seek for Failing {
+        fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.good.seek(to)
+        }
+    }
+
+    fn failing() -> Failing {
+        // Partly read before the error: a command, then a line that is no failure yet.
+        Failing { good: std::io::Cursor::new(b"$ cargo test\nrunning 3 tests\n".to_vec()) }
+    }
+
+    #[test]
+    fn failure_log_open_a_read_error_after_part_of_the_log_is_an_error_of_the_scan() {
+        let part = super::LogPart::Lines { start: 0, end: None };
+        assert!(super::find_failure_line_in(failing(), part).is_err());
+    }
+
+    #[test]
+    fn failure_log_open_a_log_that_fails_to_read_is_still_named_without_a_line_or_excerpt() {
+        let part = super::LogPart::Lines { start: 0, end: None };
+        assert_eq!(super::log_shown("gate.log".to_string(), failing(), 30, part), serde_json::json!({"file": "gate.log"}));
     }
 
     #[test]
