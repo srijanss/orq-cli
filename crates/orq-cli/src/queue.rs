@@ -45,9 +45,9 @@ enum Action {
 fn run(action: &Action, repo: PathBuf) -> Result<String, String> {
     let git = orq_git::resolve_project(&repo).map_err(|error| format!("cannot resolve project: {error:?}"))?;
     let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
-    let (_, store, _) = crate::storage::open()?;
+    let (_, store, runs) = crate::storage::open()?;
     match action {
-        Action::List { json } => list(&store, &git, &root, *json),
+        Action::List { json } => list(&store, &runs, &git, &root, *json),
         Action::Change(change) => {
             let done = orq_remote::projects::change_queue(&store, &git, &root, change, "cli")?.map_err(|why| printable(&why))?;
             Ok(match change {
@@ -61,8 +61,8 @@ fn run(action: &Action, repo: PathBuf) -> Result<String, String> {
     }
 }
 
-fn list(store: &Store, git: &orq_git::Project, root: &std::path::Path, json: bool) -> Result<String, String> {
-    let shown = orq_remote::projects::project_queue_json(store, git, root)?;
+fn list(store: &Store, runs: &orq_orchestrator::RunStore, git: &orq_git::Project, root: &std::path::Path, json: bool) -> Result<String, String> {
+    let shown = orq_remote::projects::project_queue_json(store, runs, git, root)?;
     if json {
         return Ok(format!("{shown}\n"));
     }

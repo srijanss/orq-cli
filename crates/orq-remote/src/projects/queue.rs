@@ -249,16 +249,12 @@ impl StoreProjects {
         let queue = self.read_queue(&root)?;
         let wait = self.settings_of_git(&git)?.queue_wait_for_review;
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
-        let mut review = std::collections::HashMap::new();
-        if self.roots.database().exists() {
+        let review = if self.roots.database().exists() {
             let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
-            let runs = RunStore::new(&self.roots.state);
-            for entry in queue.entries.iter().filter(|entry| !entry.failed) {
-                if let Some(Settled::InReview(url)) = entry.run.as_ref().map(|run| settle(&store, &runs, run, Some(git.root.as_path()), wait)) {
-                    review.insert(entry.feature.clone(), url);
-                }
-            }
-        }
+            in_review(&store, &RunStore::new(&self.roots.state), &queue, &git, wait)
+        } else {
+            std::collections::HashMap::new()
+        };
         Ok(Some(queue_json_with(&queue, &ledger, &review)))
     }
 
@@ -358,11 +354,25 @@ pub fn change_queue(store: &Store, git: &orq_git::Project, root: &Path, change: 
     })
 }
 
-/// Project `git`'s queue in `store`, whose main checkout is `root`, as `orq queue list` shows it.
-pub fn project_queue_json(store: &Store, git: &orq_git::Project, root: &Path) -> Result<Value, String> {
+/// Project `git`'s queue in `store`, whose main checkout is `root`, as `orq queue list` shows it: as
+/// the page does, with the runs in `runs` that wait for review shown so when the project waits for them.
+pub fn project_queue_json(store: &Store, runs: &RunStore, git: &orq_git::Project, root: &Path) -> Result<Value, String> {
     let queue = store.queue(root).map_err(|error| format!("cannot read the queue: {error}"))?;
     let ledger = read_ledger(&orq_features::ledger_path(git))?;
-    Ok(queue_json(&queue, &ledger))
+    let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
+    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait)))
+}
+
+/// The entries of `queue` whose run waits for a person's review, each to its open MR's address, if
+/// any; none unless the project is to `wait` for review.
+fn in_review(store: &Store, runs: &RunStore, queue: &RunQueue, git: &orq_git::Project, wait: bool) -> std::collections::HashMap<String, Option<String>> {
+    let mut review = std::collections::HashMap::new();
+    for entry in queue.entries.iter().filter(|entry| !entry.failed) {
+        if let Some(Settled::InReview(url)) = entry.run.as_ref().map(|run| settle(store, runs, run, Some(git.root.as_path()), wait)) {
+            review.insert(entry.feature.clone(), url);
+        }
+    }
+    review
 }
 
 /// The queue as the page and `orq queue list` show it: entries in the order they will start, each

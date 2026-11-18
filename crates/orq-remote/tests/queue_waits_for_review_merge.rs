@@ -356,6 +356,21 @@ fn a_queued_run_continued_as_one_already_waiting_for_review_holds_the_queue_in_t
     assert_eq!(queue(&s)["entries"][0]["run"], "run-9-COM-01", "the entry follows the whole chain");
 }
 
+#[test]
+fn orq_queue_list_shows_the_run_waiting_for_review_as_the_page_does() {
+    let s = setup("wait-cli-list", Delivery::Review, |_| {});
+    round(&s);
+    end_run(&s, "run-1-COM-01", "review_ready");
+    mr(&s, "run-1-COM-01", ProviderState::Open);
+    let git = orq_git::resolve_project(&s.repo).unwrap();
+    let store = Store::open(&s.roots.database()).unwrap();
+    let listed = orq_remote::projects::project_queue_json(&store, &RunStore::new(&s.roots.state), &git, &s.repo).unwrap();
+    assert_eq!(listed["entries"][0]["state"], "review", "{listed}");
+    assert_eq!(listed["entries"][0]["mr_url"], MR, "{listed}");
+    assert_eq!(listed["waiting_for_review"], json!({"feature": "COM-01", "mr_url": MR}), "{listed}");
+    assert_eq!(listed, queue(&s), "the terminal and the page show the same queue");
+}
+
 mod page {
     //! On the page, a queue that waits for a run's review says so: the entry shows "Waiting for review"
     //! with its MR linked, the queue's head says "Waiting for <feature>'s MR to merge" (or its review, with
