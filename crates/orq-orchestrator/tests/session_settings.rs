@@ -435,6 +435,26 @@ fn only_the_exact_command_orq_writes_counts_as_its_own_hook() {
 }
 
 #[test]
+fn a_hook_told_where_the_state_is_is_still_orqs_own() {
+    let (_repo, worktree) = checkout("needs-input-hook-state");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    let marked = "XDG_STATE_HOME='/st'\\''ate' '/orq' run needs-input 'r' --repo '/x' --marker '/logs/implement.done'";
+    assert!(orq_orchestrator::write_needs_input_hook(&worktree, marked).is_empty());
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert_eq!(settings["hooks"]["Stop"][0]["hooks"][0]["command"], marked, "a marked hook hears the session stop: {settings}");
+
+    let someone_elses = "XDG_STATE_HOME='/st' audit; '/orq' run needs-input 'r' --repo '/x'";
+    let mut settings = settings;
+    settings["hooks"]["PreToolUse"][0]["hooks"].as_array_mut().unwrap().push(serde_json::json!({"type": "command", "command": someone_elses}));
+    fs::write(worktree.join(".claude/settings.local.json"), settings.to_string()).unwrap();
+
+    assert!(orq_orchestrator::remove_needs_input_hook(&worktree).is_empty());
+    let settings = read_json(&worktree.join(".claude/settings.local.json"));
+    assert!(!settings.to_string().contains("--marker"), "{settings}");
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], someone_elses, "{settings}");
+}
+
+#[test]
 fn a_hook_with_a_marker_also_hears_the_session_stop_go_idle_and_be_answered_and_only_then() {
     let (_repo, worktree) = checkout("needs-input-hook-marker");
     fs::create_dir_all(worktree.join(".claude")).unwrap();

@@ -690,8 +690,8 @@ fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {
 }
 
 /// Whether `command` is exactly what Orq writes, `'<orq>' run needs-input '<run>' --repo '<root>'`,
-/// with or without ` --marker '<path>'`, one quoted word in each place: someone's own command,
-/// compound or merely with these words in it, stays.
+/// with or without a leading `XDG_STATE_HOME='<dir>' ` and a trailing ` --marker '<path>'`, one
+/// quoted word in each place: someone's own command, compound or merely with these words in it, stays.
 fn is_needs_input_command(command: &str) -> bool {
     needs_input_marker(command).is_some()
 }
@@ -699,6 +699,10 @@ fn is_needs_input_command(command: &str) -> bool {
 /// For a command `is_needs_input_command` takes for Orq's, its quoted ` --marker '<path>'`, or ""
 /// when it names none; `None` for any other command.
 fn needs_input_marker(command: &str) -> Option<&str> {
+    let command = match command.strip_prefix("XDG_STATE_HOME=") {
+        Some(state) => after_quoted_word(state)?.strip_prefix(' ')?,
+        None => command,
+    };
     let rest = after_quoted_word(command)?.strip_prefix(NEEDS_INPUT_COMMAND)?;
     let rest = after_quoted_word(rest)?.strip_prefix(" --repo ")?;
     let rest = after_quoted_word(rest)?;
