@@ -458,3 +458,24 @@ fn a_resumed_run_does_not_credit_the_session_log_lines_its_predecessors_rebase_b
     assert_eq!(credited(&w, &resumed), vec![serde_json::json!(["impl-extra", "rfix-extra"])], "{stderr}");
     assert!(!stderr.contains("old-extra") && !stderr.contains("up-extra"), "{stderr}");
 }
+
+#[test]
+fn a_run_record_sharing_the_worktree_that_cannot_be_read_credits_nothing_and_says_so() {
+    let (w, on_implement, on_fix) = tracked_log_world("credit-unreadable-run");
+    harness(&w, &on_implement, "true");
+    let first = run(&w, &[]);
+    assert_eq!(first.status.code(), Some(30), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let id = only_run(&w);
+    // While the resumed run's fix session works, the first run's record is damaged, so which
+    // commits its rebases put the branch onto cannot be told.
+    let record = w.home.join("state/orq/runs").join(&id).join("run.json");
+    assert!(record.is_file(), "{}", record.display());
+    harness(&w, "true", &format!("printf 'not json' > '{}'; {on_fix}", record.display()));
+
+    let out = resume(&w, &id, &["--fix-conflicts"]);
+
+    let stderr = text(&out.stderr);
+    let resumed = other_run(&w, &id);
+    assert_eq!(credited(&w, &resumed), Vec::<serde_json::Value>::new(), "{}\n{stderr}", text(&out.stdout));
+    assert!(stderr.contains("cannot tell which features the rebase fix session started"), "{stderr}");
+}
