@@ -610,7 +610,7 @@ mod restart_tests {
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("orq-restart-unit-{}-{tag}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-restart-unit-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -766,7 +766,7 @@ mod restart_control_tests {
 
     #[test]
     fn restart_status_reads_the_installed_version_again_only_when_the_file_changes() {
-        let dir = std::env::temp_dir().join(format!("orq-restart-status-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-restart-status-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let installed = script(&dir, "orq 1.0.0 (aaaaaaa 2026-01-01T00:00:00Z)");
@@ -830,7 +830,7 @@ mod restart_active_tests {
 
     #[test]
     fn restart_waits_for_running_and_pausing_runs_but_not_paused_or_ended_ones() {
-        let dir = std::env::temp_dir().join(format!("orq-restart-active-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-restart-active-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = RunStore::new(&dir);
         run(&store, "run-gate", &["stage.started"]);
@@ -843,7 +843,7 @@ mod restart_active_tests {
     }
 
     fn fresh(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("orq-restart-unreadable-{}-{tag}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-restart-unreadable-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

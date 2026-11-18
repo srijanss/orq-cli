@@ -1,5 +1,6 @@
 //! The page offers exactly thirteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
-//! and no other merge, nor any approve, restart or edit control or request.
+//! and the Settings server card's restart when idle and its cancel, and no other merge, nor any approve,
+//! restart or edit control or request.
 
 fn code() -> String {
     std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap()
@@ -70,7 +71,14 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let kept_body = code.split("function KeptWorktrees(").nth(1).expect("KeptWorktrees").split("\nfunction ").next().unwrap();
     let kept: Vec<&str> = kept_body.split("API_WORKTREES").skip(1).map(|tail| tail.split(',').next().unwrap()).collect();
     assert_eq!(kept, [""," + \"/\" + encodeURIComponent(project) + \"/\" + branchPath(worktree.branch) + \"/delete\"", " + \"/delete-merged\""]);
-    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1);
+    // The Server card posts the restart when idle and its cancel, to the one restart route; nothing else.
+    const RESTART_ROUTE: &str = "const API_SERVER_RESTART = \"/api/server/restart\";";
+    assert_eq!(code.matches(RESTART_ROUTE).count(), 1, "the restart route is defined once");
+    let server_body = code.split("function ServerCard(").nth(1).expect("ServerCard").split("\nfunction ").next().unwrap();
+    let sent: Vec<&str> = server_body.split("send(").skip(1).filter(|tail| !tail.starts_with("path)")).map(|tail| tail.split(')').next().unwrap()).collect();
+    assert_eq!(sent, ["API_SERVER_RESTART + \"/cancel\"", "API_SERVER_RESTART"]);
+    assert_eq!(code.matches("API_SERVER_RESTART").count(), 3, "only the Server card uses the restart route");
+    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1).replacen(server_body, "", 1).replacen(RESTART_ROUTE, "", 1);
     // Queueing posts the chosen features to the project's queue; the queue view posts to its pause,
     // resume, remove and reorder routes; nothing else.
     let queued = paths("queueFeatures");
