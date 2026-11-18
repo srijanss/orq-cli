@@ -104,8 +104,9 @@ fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
     let mut live = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let named_by_pid = path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| stem.parse::<u32>().is_ok());
-        if !named_by_pid || path.extension().is_none_or(|ext| ext != "json") {
+        // Only a real process id: 0 would signal the process group, and one past pid_t a group or every process.
+        let Some(own_pid) = path.file_stem().and_then(|stem| stem.to_str()).and_then(|stem| stem.parse::<libc::pid_t>().ok()).filter(|pid| *pid > 0) else { continue };
+        if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
         let Ok(file) = std::fs::File::open(&path) else { continue };
@@ -114,9 +115,17 @@ fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
             let _ = std::fs::remove_file(&path);
             continue;
         }
+        // Held by its server only when the lock would block; any other failure says nothing about it.
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+            continue;
+        }
         let Ok(info) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|text| serde_json::from_str::<serde_json::Value>(&text).map_err(|_| ())) else { continue };
         let (Some(pid), Some(exe)) = (info["pid"].as_u64(), info["exe"].as_str()) else { continue };
-        live.push(LiveServer { pid: pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string(), systemd: info["systemd"] == true });
+        // The file a server writes is named by its own pid; one that says otherwise is not that server's.
+        if pid != own_pid as u64 {
+            continue;
+        }
+        live.push(LiveServer { pid: own_pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string(), systemd: info["systemd"] == true });
     }
     live
 }
@@ -628,6 +637,30 @@ mod restart_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn live_servers_only_names_a_pid_that_is_the_files_own_and_a_real_process_id() {
+        use std::os::fd::AsRawFd;
+        let base = temp("live");
+        let roots = orq_core::storage::StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        let dir = serve_dir(&roots);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Each file held as its server holds it, so all of them look live.
+        let held: Vec<std::fs::File> = [("0", 0u64), ("4294967295", 4_294_967_295), ("7", 8), ("9", 9)]
+            .into_iter()
+            .map(|(stem, pid)| {
+                let path = dir.join(format!("{stem}.json"));
+                std::fs::write(&path, serde_json::json!({ "pid": pid, "exe": "/usr/local/bin/orq", "listen": "127.0.0.1:1" }).to_string()).unwrap();
+                let file = std::fs::File::open(&path).unwrap();
+                // SAFETY: flock on a descriptor the test owns.
+                assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+                file
+            })
+            .collect();
+        let pids: Vec<u32> = live_servers(&roots).iter().map(|server| server.pid).collect();
+        assert_eq!(pids, vec![9], "pid 0 signals a process group, a pid past pid_t wraps to one, and a pid that is not the file's own is not this server");
+        drop(held);
     }
 
     #[test]
