@@ -10,7 +10,7 @@ use crate::{fail, usage_error};
 /// Where a plain `orq serve` listens unless told otherwise: this machine only.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 
-/// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]]`: the same server with nothing to set up. The
+/// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now]`: the same server with nothing to set up. The
 /// command itself is the opt-in, so the run settings need not enable remote control, a missing
 /// token is created, and the repository defaults to the current directory.
 pub fn serve_plain(args: &[OsString]) -> ExitCode {
@@ -25,6 +25,7 @@ fn run(args: &[OsString]) -> ExitCode {
     let mut listen = String::from(DEFAULT_LISTEN);
     let mut passkey_host = None;
     let mut loopback_token = true;
+    let mut upgrade_now = false;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match word.to_str() {
@@ -41,6 +42,7 @@ fn run(args: &[OsString]) -> ExitCode {
                 _ => return usage_error(),
             },
             Some("--no-loopback-token") if loopback_token => loopback_token = false,
+            Some("--upgrade-now") if !upgrade_now => upgrade_now = true,
             _ => return usage_error(),
         }
     }
@@ -68,6 +70,10 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(roots) => roots,
         Err(err) => return fail(format!("cannot locate the Orq directories: {err}")),
     };
+    // Before anything opens orq.db, which upgrades it.
+    if let Err(reason) = orq_remote::projects::check_upgrade(&roots, upgrade_now) {
+        return fail(reason);
+    }
     let config = match orq_core::remote_inbox::RemoteConfig::load_or_create(&roots) {
         Ok(config) => config,
         Err(reason) => return fail(reason),
@@ -96,6 +102,8 @@ fn run(args: &[OsString]) -> ExitCode {
     projects = projects.with_agent_options(std::sync::Arc::new(|| crate::agent_options(&crate::find_program)));
     // The web cleans up storage as the popup does: the same preview, the same prune and its lock.
     projects = projects.with_storage(std::sync::Arc::new(crate::storage::WebCleanup::new()));
+    // Reports runs could not build are built again from their events, as the runs would have.
+    projects = projects.with_report_builder(std::sync::Arc::new(crate::pipeline::repair_review_report));
     let projects = std::sync::Arc::new(projects);
     let state_roots = roots.clone();
     let state = std::sync::Arc::new(orq_remote::ServerState {
@@ -122,10 +130,13 @@ fn run(args: &[OsString]) -> ExitCode {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     // Open provider reviews are looked at again while the server runs.
     let rounds = orq_remote::review_refresh::start_rounds(reviews, orq_remote::review_refresh::ROUND_EVERY);
+    // What runs could not record is repaired now and on each review round.
+    let repair_rounds = orq_remote::projects::start_repair_rounds(queued.clone(), orq_remote::review_refresh::ROUND_EVERY);
     // Queued features start on their own; no restart is ever pending yet, so starts are never held for one.
     let queue_rounds = orq_remote::projects::start_queue_rounds(queued, std::time::Duration::from_secs(5), || false);
     wait_for_interrupt();
     drop(queue_rounds);
+    drop(repair_rounds);
     drop(server);
     drop(rounds);
     ExitCode::SUCCESS

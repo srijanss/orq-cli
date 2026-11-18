@@ -175,7 +175,8 @@ fn run_gate_attempt_limited(
         &record,
         "stage.completed",
         attempt,
-        serde_json::json!({ "exit_code": 0, "log": log_name }),
+        // The commands that passed, so a report built after the run ended can say what was checked.
+        serde_json::json!({ "exit_code": 0, "log": log_name, "commands": steps }),
     )?;
     Ok(GateOutcome::Passed)
 }

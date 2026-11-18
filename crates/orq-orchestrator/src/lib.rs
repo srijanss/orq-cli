@@ -19,6 +19,7 @@ mod handoff;
 mod implement;
 mod interrupted;
 mod launch;
+mod report_evidence;
 mod local_files;
 mod mcp_setup;
 mod merge_local;
@@ -77,7 +78,8 @@ pub use interrupted::{
     reconcile_interrupted,
 };
 pub use child_groups::end_children_with_this_process;
-pub use launch::{record_launch, record_owner};
+pub use launch::{record_launch, record_owner, record_upgraded_under_runs};
+pub use report_evidence::{recorded_evidence, RecordedEvidence};
 pub use kept_worktrees::{
     delete_kept_worktree, list_kept_worktrees, ChangeKind, ChangedFile, DeleteRefusal, DeletedWorktree, KeptWorktree,
     RunIndex,

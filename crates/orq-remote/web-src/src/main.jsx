@@ -3656,6 +3656,23 @@ function AcceptNotes({ run }) {
   return null;
 }
 
+// A run that ended without its review report, because building it failed: why, and Build it now when the server
+// allows actions. Serve also builds it again by itself, so the note goes once the report is there.
+function MissingReport({ run, control }) {
+  const missing = run.missing_report;
+  if (missing === null || typeof missing !== "object" || typeof missing.reason !== "string") return null;
+  const build = control === null || !RUN_ID.test(run.run_id) ? null : <RunAction kind="build-report" label="Build it now" icon="rotate" question={"Build the review report of " + run.run_id + " now?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/build-report")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Report built."} />;
+  return (
+    <div className="banner error-banner missing-report" role="note" data-missing-report>
+      <Icon name="alert" size={18} />
+      <div>
+        <strong>{"Review report missing: " + missing.reason}</strong>
+        {build}
+      </div>
+    </div>
+  );
+}
+
 // Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
@@ -4108,6 +4125,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           </div>
           <DirtyCheckout run={run} />
           <AcceptNotes run={run} />
+          <MissingReport run={run} control={control} />
           <RowActions run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />
           {validTime(run.started_at) === null && delivery === null ? null : (

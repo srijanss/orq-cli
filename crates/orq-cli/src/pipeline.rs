@@ -2200,6 +2200,27 @@ fn build_review_report(
     note_review_report(logs, &note);
 }
 
+/// Builds, for orq serve's repair, the report a run ended without: from the gate and CI results its events hold, with
+/// the review rounds and diff base the run itself would have used. A gate recorded before gates named their commands
+/// counts as one passed command.
+pub(crate) fn repair_review_report(repair: &orq_remote::projects::ReportRepair) -> Result<PathBuf, String> {
+    let repo = repair.repo.as_deref().ok_or("the run's project is not among the projects serve sees")?;
+    let state = state_root().ok_or("no state location: set XDG_STATE_HOME or HOME")?;
+    let store = RunStore::new(&state);
+    let record = store.load(&repair.run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let gate_steps = match (&repair.evidence.gate_passed, &repair.evidence.gate_steps) {
+        (false, _) => Vec::new(),
+        (true, Some(steps)) => steps.clone(),
+        (true, None) => vec![vec!["the run's gate".to_string()]],
+    };
+    let tests = crate::run_evidence::tests_evidence(&repair.head_sha, &gate_steps, repair.evidence.ci.as_ref());
+    let rebased = orq_orchestrator::rebased_onto(&store, &record.run_id).map_err(|err| format!("cannot read what the branch was rebased onto: {err:?}"))?;
+    let base = rebased.unwrap_or_else(|| record.base_sha.clone());
+    let review = crate::run_evidence::review_from_ledger(&record.worktree, &record.base_sha);
+    let turn = crate::run_evidence::report_turn(&record.run_id);
+    crate::review::build_for_run(repo, &record.run_id, &record.feature_id, &base, &repair.head_sha, &tests, review.as_ref(), &turn)
+}
+
 /// Adds a line to the run's review-report log; a log that cannot be written is let go.
 fn note_review_report(logs: &std::path::Path, note: &str) {
     use std::io::Write;

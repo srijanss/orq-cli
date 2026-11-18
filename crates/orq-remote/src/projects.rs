@@ -185,6 +185,15 @@ fn add_accept(row: &mut serde_json::Value, events: &[orq_orchestrator::Event], s
     }
 }
 
+/// Adds `missing_report` (why it could not be built) to a run's JSON when the run ended without its report.
+fn add_missing_report(row: &mut serde_json::Value, roots: &orq_core::storage::StorageRoots, run: &str) {
+    let database = roots.database();
+    let Some(store) = database.exists().then(|| orq_core::store::Store::open_read_only(&database).ok()).flatten() else { return };
+    if let Some(missing) = missing_report(roots, &store, run) {
+        row["missing_report"] = serde_json::json!({"head_sha": missing.head_sha, "reason": orq_core::redact::redact(&missing.reason)});
+    }
+}
+
 /// Records as failed every accept a server that stopped left without a result: nothing runs its tests anymore.
 fn fail_interrupted_accepts(store: &orq_orchestrator::RunStore) {
     let Ok(runs) = store.run_ids() else { return };
@@ -337,6 +346,66 @@ fn fnv1a(text: &str, seed: u64) -> u64 {
     text.bytes().fold(seed, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// Before serve opens orq.db: an upgrade that would leave active runs of an older Orq unable to use the database
+/// waits for them unless `upgrade_now`, which applies it and records `store.upgraded_under_runs` on each of them.
+/// The error lists those runs. A run launched before runs recorded their schema is taken to have the file's.
+pub fn check_upgrade(roots: &orq_core::storage::StorageRoots, upgrade_now: bool) -> Result<(), String> {
+    use orq_core::store::Store;
+    let database = roots.database();
+    let Some((from, needed)) = Store::breaking_upgrade(&database).map_err(|error| format!("cannot read orq.db: {error}"))? else { return Ok(()) };
+    let runs = orq_orchestrator::RunStore::new(&roots.state);
+    let active = runs.active_machine_runs().map_err(|error| format!("cannot read the runs: {error:?}"))?;
+    let mut older = Vec::new();
+    for (_, run_id) in active {
+        let events = runs.events(&run_id).map_err(|error| format!("cannot read {run_id}: {error:?}"))?;
+        let launched = events.iter().rev().find(|event| event.kind == "run.launched");
+        let schema = launched.and_then(|event| event.payload.get("schema")).and_then(serde_json::Value::as_u64).map_or(from, |schema| schema.min(u32::MAX as u64) as u32);
+        if schema < needed {
+            older.push(run_id);
+        }
+    }
+    if older.is_empty() {
+        return Ok(());
+    }
+    let to = Store::LATEST_VERSION;
+    if !upgrade_now {
+        return Err(format!(
+            "upgrading orq.db from schema {from} to {to} would leave these runs, started by an older Orq, unable to record their reviews: {}. \
+             Wait for them to finish, or start with --upgrade-now",
+            older.join(", ")
+        ));
+    }
+    drop(Store::open(&database).map_err(|error| format!("cannot upgrade orq.db: {error}"))?);
+    orq_orchestrator::record_upgraded_under_runs(&runs, &older, from, to).map_err(|error| format!("cannot record the upgrade on the runs: {error:?}"))
+}
+
+/// The server's repair rounds, stopped and joined when dropped.
+pub struct RepairRounds {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Repairs missing reviews at once, then every `every`, as the review refresh looks at reviews again.
+pub fn start_repair_rounds(projects: std::sync::Arc<StoreProjects>, every: std::time::Duration) -> RepairRounds {
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || loop {
+        projects.repair_missing_reviews();
+        if !matches!(stopped.recv_timeout(every), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+            break;
+        }
+    });
+    RepairRounds { stop: Some(stop), thread: Some(thread) }
+}
+
+impl Drop for RepairRounds {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// The projects provider the server hands to the handler: it rescans the scan root on each
 /// request and reads counts from the same storage the CLI writes. A project it cannot read is
 /// listed as unavailable, never dropped.
@@ -352,6 +421,60 @@ pub struct StoreProjects {
     accept_tests: AcceptTests,
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     backfilled: std::sync::Once,
+    report_builder: Option<ReportBuilder>,
+}
+
+/// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
+#[derive(Debug, Clone)]
+pub struct ReportRepair {
+    pub run_id: String,
+    /// The run's project among those serve sees; `None` when it is not one of them.
+    pub repo: Option<std::path::PathBuf>,
+    pub head_sha: String,
+    pub evidence: orq_orchestrator::RecordedEvidence,
+}
+
+/// Builds and records the report a [`ReportRepair`] asks for; the path of the report, or why it could not be built.
+pub type ReportBuilder = std::sync::Arc<dyn Fn(&ReportRepair) -> Result<std::path::PathBuf, String> + Send + Sync>;
+
+/// The report a run ended without: the head it is missing for and why the run could not build it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingReport {
+    pub head_sha: String,
+    pub reason: String,
+}
+
+/// What the repairs say in a run's review-report log.
+const REPAIRED: &str = "repaired by orq serve";
+
+/// Adds `note` to `run_id`'s review-report log; a log that cannot be written is let go.
+fn note_report_log(roots: &orq_core::storage::StorageRoots, run_id: &str, note: &str) {
+    use std::io::Write;
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(report_log(roots, run_id));
+    let _ = log.and_then(|mut file| writeln!(file, "{note}"));
+}
+
+fn report_log(roots: &orq_core::storage::StorageRoots, run_id: &str) -> std::path::PathBuf {
+    roots.state.join("logs").join(run_id).join("review-report.log")
+}
+
+/// The report `run_id` ended without: it ended review_ready or merged, the last line its review-report log has about a
+/// report says it could not be built, and orq.db holds none for that head. A run id that could name a path elsewhere has none.
+pub fn missing_report(roots: &orq_core::storage::StorageRoots, store: &orq_core::store::Store, run_id: &str) -> Option<MissingReport> {
+    orq_core::storage::check_run_id(run_id).ok()?;
+    let events = orq_orchestrator::RunStore::new(&roots.state).events(run_id).ok()?;
+    let ending = events.iter().rev().find(|e| e.kind == "run.completed")?.payload.get("ending")?.as_str()?;
+    if !matches!(ending, "review_ready" | "merged") || orq_orchestrator::summarize_run(&events).phase != orq_orchestrator::RunPhase::Completed {
+        return None;
+    }
+    let log = std::fs::read_to_string(report_log(roots, run_id)).ok()?;
+    let last = log.lines().rev().find(|line| line.starts_with("no report for ") || line.starts_with("report for "))?;
+    let (head_sha, reason) = last.strip_prefix("no report for ")?.split_once(": ")?;
+    let reported = store.reviews_for_run(run_id).ok()?;
+    if reported.iter().any(|report| report.head_sha == head_sha) {
+        return None;
+    }
+    Some(MissingReport { head_sha: head_sha.to_string(), reason: reason.to_string() })
 }
 
 /// Runs the tests of a run's worktree when it is accepted; the error is what failed.
@@ -384,6 +507,87 @@ impl StoreProjects {
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
             accepting: Default::default(),
             backfilled: std::sync::Once::new(),
+            report_builder: None,
+        }
+    }
+
+    /// Lets the repairs build a missing report through `builder`; without one only PR/MRs are recorded.
+    pub fn with_report_builder(mut self, builder: ReportBuilder) -> Self {
+        self.report_builder = Some(builder);
+        self
+    }
+
+    /// Builds `missing`, the report `run_id` ended without, from the evidence its events hold, and notes it in its log.
+    fn build_missing_report(&self, runs: &orq_orchestrator::RunStore, run_id: &str, missing: &MissingReport, repo: Option<std::path::PathBuf>) -> Result<(), String> {
+        let builder = self.report_builder.as_ref().ok_or("this server cannot build review reports")?;
+        let evidence = orq_orchestrator::recorded_evidence(runs, run_id, &missing.head_sha).map_err(|error| format!("cannot read the evidence of {run_id}: {error:?}"))?;
+        let path = builder(&ReportRepair { run_id: run_id.to_string(), repo, head_sha: missing.head_sha.clone(), evidence })?;
+        note_report_log(&self.roots, run_id, &format!("report for {}: {} ({REPAIRED})", missing.head_sha, path.display()));
+        Ok(())
+    }
+
+    /// The web's Build it now: builds the report `run` of `project` ended without, then records its PR/MR.
+    fn build_report_now(&self, project: &Project, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        if self.report_builder.is_none() {
+            return Ok(RunControlOutcome::Refused("this server cannot build review reports".to_string()));
+        }
+        let store = orq_core::store::Store::open(&self.roots.database()).map_err(|error| format!("cannot open the review index: {error}"))?;
+        let Some(missing) = missing_report(&self.roots, &store, run) else {
+            return Ok(RunControlOutcome::Refused("this run's review report is not missing".to_string()));
+        };
+        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        self.build_missing_report(&runs, run, &missing, Some(project.path.clone()))?;
+        let created = orq_orchestrator::created_reviews(&runs).map_err(|error| format!("cannot read the runs' review requests: {error:?}"))?;
+        for review in created.iter().filter(|review| review.run_id == run) {
+            if orq_core::review_inbox::backfill_created_reviews(&store, std::slice::from_ref(review))? > 0 {
+                note_report_log(&self.roots, run, &format!("review {} recorded ({REPAIRED})", review.url));
+            }
+        }
+        Ok(RunControlOutcome::Done(run.to_string()))
+    }
+
+    /// Repairs what runs could not record, as `orq review backfill` would and with the report each run would have
+    /// built: a missing report is built from the evidence in the run's events, then each created or adopted PR/MR
+    /// without a review state is recorded. Each repair is noted in the run's review-report log; a repair that fails
+    /// is only logged here, and the next round tries again.
+    pub fn repair_missing_reviews(&self) {
+        let database = self.roots.database();
+        if !database.exists() {
+            return;
+        }
+        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        let store = match orq_core::store::Store::open(&database) {
+            Ok(store) => store,
+            Err(error) => return eprintln!("orq: cannot repair missing reviews: cannot open the review index: {error}"),
+        };
+        if self.report_builder.is_some() {
+            let mut repos: Option<std::collections::HashMap<String, std::path::PathBuf>> = None;
+            for run_id in runs.run_ids().unwrap_or_default() {
+                let Some(missing) = missing_report(&self.roots, &store, &run_id) else { continue };
+                // Looked up once, and only when a report is missing.
+                let repos = repos.get_or_insert_with(|| {
+                    discover(&self.scan_root)
+                        .into_iter()
+                        .filter_map(|project| Some((orq_git::project_id(&orq_git::resolve_project(&project.path).ok()?), project.path)))
+                        .collect()
+                });
+                let repo = runs.load(&run_id).ok().and_then(|record| repos.get(&record.project_id).cloned());
+                if let Err(error) = self.build_missing_report(&runs, &run_id, &missing, repo) {
+                    eprintln!("orq: cannot build the missing report of {run_id}: {error}");
+                }
+            }
+        }
+        let created = match orq_orchestrator::created_reviews(&runs) {
+            Ok(created) => created,
+            Err(error) => return eprintln!("orq: cannot read the runs' review requests: {error:?}"),
+        };
+        for review in &created {
+            match orq_core::review_inbox::backfill_created_reviews(&store, std::slice::from_ref(review)) {
+                Ok(0) => {}
+                Ok(_) => note_report_log(&self.roots, &review.run_id, &format!("review {} recorded ({REPAIRED})", review.url)),
+                Err(error) => eprintln!("orq: cannot record the review request of {}: {error}", review.run_id),
+            }
         }
     }
 
@@ -926,6 +1130,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 carried_on(launcher.resume(&project.path, run), &project.path)
             }
             RunControl::Accept => self.accept(store, run),
+            RunControl::BuildReport => self.build_report_now(&project, run),
             RunControl::MergeSetAside => {
                 // Only a run whose last merge was refused over the checkout's changes may set them aside.
                 let events = store.events(run).map_err(|error| format!("run {run} is unreadable: {error:?}"))?;
@@ -1479,6 +1684,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
         add_accept(&mut shown, &events, &summary);
+        add_missing_report(&mut shown, &self.roots, run);
         Ok(Some(serde_json::json!({
             "run": shown,
             "events": listed,

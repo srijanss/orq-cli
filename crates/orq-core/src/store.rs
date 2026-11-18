@@ -106,6 +106,31 @@ const MIGRATIONS: [&str; 9] = ["
     ALTER TABLE project_settings ADD COLUMN queue_stop_on_failure INTEGER NOT NULL DEFAULT 0;
 "];
 
+/// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
+/// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
+/// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false];
+
+/// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
+pub fn is_breaking(version: u32) -> bool {
+    version.checked_sub(1).and_then(|index| BREAKING.get(index as usize)).copied().unwrap_or(true)
+}
+
+/// The oldest schema an Orq must understand to use a database at `version`: that of its newest breaking migration.
+fn compat_after(version: u32) -> u32 {
+    (1..=version).rev().find(|v| is_breaking(*v)).unwrap_or(0)
+}
+
+/// The one-row marker of the version it was written for and that version's `compat_from`. It sits outside the
+/// numbered migrations, so writing it never moves the schema past what an older Orq knows.
+const COMPAT_MARKER: &str = "
+    CREATE TABLE IF NOT EXISTS schema_compat (
+        only        INTEGER PRIMARY KEY CHECK (only = 1),
+        version     INTEGER NOT NULL,
+        compat_from INTEGER NOT NULL
+    );
+";
+
 /// The schema version that removed run pins: an empty `run_pins` is dropped, and one with pins in
 /// it is kept until [`Store::take_removed_pins`] has counted them.
 const PINS_REMOVED_VERSION: u32 = 7;
@@ -123,18 +148,37 @@ pub struct Store {
     conn: Connection,
 }
 
+/// The marker's version and `compat_from`; `None` when no marking Orq has migrated the database.
+fn read_marker(conn: &Connection) -> Result<Option<(u32, u32)>> {
+    let exists: bool = conn
+        .query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_compat')", [], |row| row.get(0))
+        .map_err(db)?;
+    if !exists {
+        return Ok(None);
+    }
+    conn.query_row("SELECT version, compat_from FROM schema_compat WHERE only = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(db)
+}
+
 impl Store {
     pub const LATEST_VERSION: u32 = MIGRATIONS.len() as u32;
 
     /// Opens (creating owner-only if needed) and migrates the database. A
     /// database written by a newer Orq is refused rather than downgraded.
     pub fn open(path: &Path) -> Result<Store> {
+        Self::open_understanding(path, Self::LATEST_VERSION)
+    }
+
+    /// [`Store::open`] as an Orq that understands schema versions up to `latest` (at most this Orq's own), so tests
+    /// can stand in for an older Orq.
+    #[doc(hidden)]
+    pub fn open_understanding(path: &Path, latest: u32) -> Result<Store> {
+        let latest = latest.min(Self::LATEST_VERSION);
         create_private_file(path)?;
         let conn = Connection::open(path).map_err(db)?;
         conn.busy_timeout(std::time::Duration::from_secs(10)).map_err(db)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(db)?;
         let mut store = Store { conn };
-        store.migrate()?;
+        store.migrate(latest)?;
         Ok(store)
     }
 
@@ -143,7 +187,9 @@ impl Store {
     /// schema this Orq understands is refused.
     pub fn open_read_only(path: &Path) -> Result<Store> {
         let (store, version) = Self::open_read_only_at_any_version(path)?;
-        if version != Self::LATEST_VERSION {
+        if version > Self::LATEST_VERSION {
+            store.check_newer(version, Self::LATEST_VERSION)?;
+        } else if version != Self::LATEST_VERSION {
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 format!("orq.db has schema version {version}, not the {} this Orq reads; run Orq once to upgrade it", Self::LATEST_VERSION),
@@ -158,16 +204,25 @@ impl Store {
     pub fn read_project_settings(path: &Path, root: &Path) -> Result<StoredProjectSettings> {
         let (store, version) = Self::open_read_only_at_any_version(path)?;
         if version > Self::LATEST_VERSION {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("orq.db has schema version {version}, newer than this Orq understands ({})", Self::LATEST_VERSION),
-            ));
+            store.check_newer(version, Self::LATEST_VERSION)?;
         }
         if version < PROJECT_SETTINGS_VERSION {
             project_key(root)?;
             return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
         }
         store.project_settings_at(root, version)
+    }
+
+    /// The schema `Store::open` would upgrade the database at `path` from, and the version an Orq must understand
+    /// afterwards, when the upgrade is breaking: when it would raise the database's `compat_from`, leaving an Orq that
+    /// uses it now unable to. `None` without a database, or when the pending migrations only add.
+    pub fn breaking_upgrade(path: &Path) -> Result<Option<(u32, u32)>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let (_, version) = Self::open_read_only_at_any_version(path)?;
+        let needed = compat_after(Self::LATEST_VERSION);
+        Ok((version < Self::LATEST_VERSION && needed > compat_after(version)).then_some((version, needed)))
     }
 
     fn open_read_only_at_any_version(path: &Path) -> Result<(Store, u32)> {
@@ -201,29 +256,55 @@ impl Store {
         self.conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db)
     }
 
-    fn migrate(&mut self) -> Result<()> {
-        // An up-to-date database needs no write lock, so opening it never waits
-        // behind a writer.
-        if self.schema_version()? == Self::LATEST_VERSION {
+    /// The oldest schema version an Orq must understand to use this database, as its marker says; `None` for a
+    /// database no marking Orq has migrated.
+    pub fn compat_from(&self) -> Result<Option<u32>> {
+        Ok(read_marker(&self.conn)?.map(|(_, compat)| compat))
+    }
+
+    /// Lets an Orq that understands up to `latest` use a database at the newer `version` only when the marker,
+    /// written for that same version, says nothing since `latest` broke what it reads or writes.
+    fn check_newer(&self, version: u32, latest: u32) -> Result<()> {
+        match read_marker(&self.conn)? {
+            Some((marked, compat)) if marked == version && compat <= latest => Ok(()),
+            Some((marked, compat)) if marked == version => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "orq.db has schema version {version}, which needs an Orq that understands version {compat} or newer; \
+                     this Orq understands {latest}: restart runs started before the upgrade"
+                ),
+            )),
+            _ => Err(Error::new(ErrorKind::InvalidData, format!("orq.db has schema version {version}, newer than this Orq understands ({latest})"))),
+        }
+    }
+
+    fn migrate(&mut self, latest: u32) -> Result<()> {
+        // An up-to-date or compatible newer database needs no write lock, so opening it never waits behind a writer.
+        let version = self.schema_version()?;
+        if version == latest {
             return Ok(());
+        }
+        if version > latest {
+            return self.check_newer(version, latest);
         }
         // The version is re-read inside the write lock so two processes
         // opening at once cannot both apply the same migration.
-        let tx =self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db)?;
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db)?;
         let current: u32 = tx.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(db)?;
-        if current > Self::LATEST_VERSION {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("orq.db has schema version {current}, newer than this Orq understands ({})", Self::LATEST_VERSION),
-            ));
+        if current >= latest {
+            drop(tx);
+            return if current == latest { Ok(()) } else { self.check_newer(current, latest) };
         }
-        for (index, migration) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+        for (index, migration) in MIGRATIONS.iter().enumerate().take(latest as usize).skip(current as usize) {
             tx.execute_batch(migration).map_err(db)?;
             if index as u32 + 1 == PINS_REMOVED_VERSION && !has_pins(&tx)? {
                 drop_pins_table(&tx)?;
             }
             tx.pragma_update(None, "user_version", index as u32 + 1).map_err(db)?;
         }
+        tx.execute_batch(COMPAT_MARKER).map_err(db)?;
+        tx.execute("INSERT OR REPLACE INTO schema_compat (only, version, compat_from) VALUES (1, ?1, ?2)", params![latest, compat_after(latest)])
+            .map_err(db)?;
         tx.commit().map_err(db)
     }
 
