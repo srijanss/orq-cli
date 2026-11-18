@@ -1062,14 +1062,17 @@ fn feature_set_status(args: &[OsString]) -> ExitCode {
         }
         _ => return usage_error(),
     };
-    if status != "pending" {
-        return fail(format!("cannot set status {status:?}: only --status pending is supported"));
+    if status != "pending" && status != "completed" {
+        return fail(format!("cannot set status {status:?}: only --status pending or completed is supported"));
     }
     let project = match orq_git::resolve_project(&repo) {
         Ok(project) => project,
         Err(err) => return fail(format!("cannot resolve project: {err:?}")),
     };
     let path = orq_features::ledger_path(&project);
+    if status == "completed" {
+        return feature_set_completed(&project, &path, id);
+    }
     match orq_features::promote_feature(&path, id) {
         Ok(entry) => {
             println!("{}", entry_json(&entry));
@@ -1077,6 +1080,59 @@ fn feature_set_status(args: &[OsString]) -> ExitCode {
         }
         Err(err) => fail(promote_error_text(&err, id)),
     }
+}
+
+/// `orq feature set-status ... --status completed`: allowed only for a feature a session of a run of
+/// this project recorded completing (`ledger.session_completed`), whose ledger entry lost that, so a
+/// person can repair the ledger without a fake TDD cycle. Prints the updated entry.
+fn feature_set_completed(project: &orq_git::Project, path: &std::path::Path, id: &str) -> ExitCode {
+    let Some(root) = pipeline::state_root() else {
+        return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+    };
+    match completed_by_a_session(&orq_orchestrator::RunStore::new(&root), &pipeline::project_id(project), id) {
+        Ok(true) => {}
+        Ok(false) => return fail(format!("cannot set {id} completed: no run of this project recorded a session completing it")),
+        Err(err) => return fail(format!("cannot set {id} completed: cannot tell whether a run's session completed it: {err}")),
+    }
+    let entries = match orq_features::load_ledger(path) {
+        Ok(entries) => entries,
+        Err(err) => return fail(ledger_error_text(&err)),
+    };
+    let Some(entry) = entries.iter().find(|e| e.feature_name == id) else {
+        return fail(format!("unknown feature: {id}"));
+    };
+    if entry.status != orq_features::LedgerStatus::Known(orq_core::FeatureStatus::Completed) {
+        if let Err(err) = orq_features::restore_completed_features(path, &[id.to_string()], &review::utc_now()) {
+            return fail(err);
+        }
+    }
+    match orq_features::load_ledger(path).map(|entries| entries.into_iter().find(|e| e.feature_name == id)) {
+        Ok(Some(entry)) if entry.status == orq_features::LedgerStatus::Known(orq_core::FeatureStatus::Completed) => {
+            println!("{}", entry_json(&entry));
+            ExitCode::SUCCESS
+        }
+        Ok(Some(entry)) => fail(format!("feature {id} is {} and is left alone", status_text(&entry.status))),
+        Ok(None) => fail(format!("unknown feature: {id}")),
+        Err(err) => fail(ledger_error_text(&err)),
+    }
+}
+
+/// Whether a session of a run of `project_id` recorded completing `feature` (its run's
+/// `ledger.session_completed` events). A run that cannot be read vouches for nothing and is skipped;
+/// only a run store that cannot be listed is an error.
+fn completed_by_a_session(store: &orq_orchestrator::RunStore, project_id: &str, feature: &str) -> Result<bool, String> {
+    for run_id in store.run_ids().map_err(|err| format!("{err:?}"))? {
+        let Ok(record) = store.load(&run_id) else { continue };
+        if record.project_id != project_id {
+            continue;
+        }
+        let Ok(events) = store.events(&run_id) else { continue };
+        let names = events.iter().filter(|e| e.kind == pipeline::SESSION_COMPLETED).flat_map(|e| e.payload.get("features").and_then(|f| f.as_array()).cloned().unwrap_or_default());
+        if names.into_iter().any(|name| name.as_str() == Some(feature)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn promote_error_text(err: &orq_features::PromoteError, id: &str) -> String {

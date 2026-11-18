@@ -60,9 +60,9 @@ fn any_other_target_status_is_refused_and_the_file_is_untouched() {
     write_ledger(repo.root(), &[LedgerEntry::new("alpha", "draft")]);
     let before = ledger_bytes(repo.root());
 
-    let out = set_status(repo.root(), "alpha", "completed");
+    let out = set_status(repo.root(), "alpha", "abandoned");
 
-    assert_refused(&out, &before, repo.root(), "only --status pending");
+    assert_refused(&out, &before, repo.root(), "only --status pending or completed");
 }
 
 #[test]

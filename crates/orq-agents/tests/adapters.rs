@@ -386,6 +386,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
         "{prompt}"
     );
     assert!(prompt.contains("one commit per feature"), "{prompt}");
+    assert!(prompt.contains("Never set any of these features to abandoned"), "{prompt}");
 
     // A single feature asks for nothing extra, so its prompt is unchanged.
     let single = ImplementRequest { features: &["COM-01"], ..request.clone() };

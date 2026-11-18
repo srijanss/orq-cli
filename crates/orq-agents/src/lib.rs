@@ -529,7 +529,7 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str("\n\nThe review of this branch escalated and a human asked for another review of the commits since the head it last reviewed. These findings were open when it escalated:\n");
         prompt.push_str(&again.findings.replace('\0', " "));
     } else if request.features.len() > 1 {
-        prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status.");
+        prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status. Never set any of these features to abandoned: orq does not count an abandoned feature as done, so the run fails; if one cannot be finished, say why instead.");
     }
     if let Some(continuing) = &request.continuing {
         prompt.push_str(&continuing_wording(request.features, continuing)?);

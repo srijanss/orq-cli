@@ -78,6 +78,21 @@ pub fn complete_run_features(path: &Path, names: &[String], recorded_at: &str) -
     }, &mut || {})
 }
 
+/// For a feature a session of a run completed, which the ledger lost: each of `names` the ledger at
+/// `path` records as `pending`, `in_progress` or `abandoned` becomes `completed`, with `recordedAt` set
+/// to `recorded_at`. The caller checks that a session did complete it. Any other status, and any name
+/// the ledger does not have, is left alone; saved as [`reopen_features`] saves. Returns the names that
+/// were completed.
+pub fn restore_completed_features(path: &Path, names: &[String], recorded_at: &str) -> Result<Vec<String>, String> {
+    let lost = |status: &LedgerStatus, _: &str| {
+        is(status, FeatureStatus::Pending) || is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::Abandoned)
+    };
+    edit(path, names, &lost, &|text, completed| {
+        let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
+        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+    }, &mut || {})
+}
+
 /// `text` with the `recordedAt` of the entry `name` set to `at`. A member added to an entry laid out one
 /// member per line goes on a line of its own, indented as the member before it.
 fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> {
