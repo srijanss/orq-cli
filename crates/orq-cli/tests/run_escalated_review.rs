@@ -233,7 +233,9 @@ fn a_marker_saying_ok_with_notes_does_not_fail_the_run() {
 
     let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
     // The run goes on past the implement stage; this world has no drafting session, so it ends there.
-    assert!(!stderr.contains("implement session"), "{stdout}\n{stderr}");
+    // A session that writes no session log is told that nothing is credited to it; that is not a failure.
+    assert!(!stderr.contains("the implement session failed"), "{stdout}\n{stderr}");
+    assert!(!stderr.contains("the implement session ended before"), "{stdout}\n{stderr}");
     assert!(!stderr.contains("reported a problem"), "{stdout}\n{stderr}");
     assert!(stderr.contains("review request"), "the run reached the review request: {stdout}\n{stderr}");
 }
