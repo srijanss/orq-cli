@@ -380,7 +380,12 @@ fn path_adding_com_02(w: &World, agent: &FakeAgent, tag: &str) -> std::ffi::OsSt
     let both = r#"[{"featureName": "COM-01", "dependsOn": [], "status": "in_progress"}, {"featureName": "COM-02", "dependsOn": [], "status": "completed"}]"#;
     std::fs::write(
         w.base.join(format!("bin-{tag}/claude")),
-        format!("#!/bin/sh\nprintf '%s\\n' '{both}' > '{ledger}'\nexec '{agent}' \"$@\"\n", ledger = ledger.display(), agent = agent.path().display()),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' '{both}' > '{ledger}'\nprintf '%s\\n' '{init}' >> .tdd-session.log\nexec '{agent}' \"$@\"\n",
+            ledger = ledger.display(),
+            init = r#"{"event": "init_feature", "featureName": "COM-02"}"#,
+            agent = agent.path().display()
+        ),
     )
     .unwrap();
     path

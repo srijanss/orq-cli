@@ -1,7 +1,9 @@
 //! orq tells which ledger features a run's sessions added by comparing the ledger before and after
 //! each session. The ledger is shared, so a person may add or approve features while a session runs;
 //! only a new entry the session itself started (`in_progress` or `completed`, as the TDD workflow's
-//! `init_feature` and `complete_feature` leave it) is the session's.
+//! `init_feature` and `complete_feature` leave it) is the session's. The features credited in the
+//! ending note are further limited to those the run's own session log names (see
+//! run_credits_own_features.rs).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -139,7 +141,9 @@ fn run_with_others_added(tag: &str) -> (World, Output) {
     );
     let agent = finishing_agent();
     let ledger = w.repo.root().join(".tdd-features.json");
-    let path = path_with(&w, &agent, &format!("cp '{}' '{}'", after.display(), ledger.display()));
+    // The session's TDD server logs the feature it starts in the worktree, as the run reads it.
+    let log = r#"printf '%s\n' '{"event": "init_feature", "featureName": "COM-02"}' >> .tdd-session.log"#;
+    let path = path_with(&w, &agent, &format!("{log}\ncp '{}' '{}'", after.display(), ledger.display()));
     let output = run(&w, path);
     (w, output)
 }

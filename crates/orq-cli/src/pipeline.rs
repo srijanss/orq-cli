@@ -789,19 +789,56 @@ fn ledger_statuses(ledger: &Path, session: &str) -> Option<Vec<(String, orq_feat
     }
 }
 
-/// After the implement session: the names it added to the ledger that are not the run's `features`
-/// are recorded as `ledger.extra_features`, and left as they are. Best effort.
-fn record_extra_features(
-    store: &RunStore,
-    record: &RunRecord,
-    ledger: &Path,
-    before: Option<Vec<(String, orq_features::LedgerStatus)>>,
-    features: &[String],
-) {
-    let Some(before) = before else { return };
-    let Some(after) = ledger_statuses(ledger, "the implement session") else { return };
-    let added: Vec<String> = started_by_session(&before, after).into_iter().filter(|name| !features.contains(name)).collect();
+/// The TDD session log the run's sessions write in its worktree; its `init_feature` events name the
+/// features they started.
+const SESSION_LOG: &str = ".tdd-session.log";
+
+/// After a session stage: the features the run's own sessions started, as the session log in its
+/// worktree names them, that are not the run's `features` nor already credited to it, and that the
+/// ledger has `in_progress` or `completed`, are recorded as `ledger.extra_features` and left as they
+/// are. The shared ledger is never diffed for them: another run's session adds to it too. Without a
+/// session log nothing is credited and that is said. Best effort.
+fn record_extra_features(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], stage: &str) {
+    let log = record.worktree.join(SESSION_LOG);
+    let started = match std::fs::read_to_string(&log) {
+        Ok(text) => features_started_in(&text),
+        Err(err) => {
+            eprintln!(
+                "orq: {}: cannot tell which features the {stage} session started, so none are credited to the run: cannot read {}: {err}",
+                record.run_id,
+                log.display()
+            );
+            return;
+        }
+    };
+    let credited = extra_features_recorded(store, &record.run_id).unwrap_or_default();
+    let candidates: Vec<String> = started.into_iter().filter(|name| !features.contains(name) && !credited.contains(name)).collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let Some(statuses) = ledger_statuses(ledger, &format!("the {stage} session")) else { return };
+    use orq_core::FeatureStatus::{Completed, InProgress};
+    let added: Vec<String> = candidates
+        .into_iter()
+        .filter(|name| statuses.iter().any(|(entry, status)| entry == name && matches!(status.known(), Some(InProgress | Completed))))
+        .collect();
     record_ledger(store, record, "ledger.extra_features", &added);
+}
+
+/// The features a TDD session log's `init_feature` events name, each once, in the order first
+/// started. A line that is not such an event is skipped.
+fn features_started_in(log: &str) -> Vec<String> {
+    let mut started: Vec<String> = Vec::new();
+    for line in log.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if event["event"] != "init_feature" {
+            continue;
+        }
+        if let Some(name) = event["featureName"].as_str().filter(|name| !started.iter().any(|s| s == name)) {
+            started.push(name.to_string());
+        }
+    }
+    started
 }
 
 /// The features a session started: the names in `after` that were not in `before` and that the
@@ -837,22 +874,27 @@ fn add_note(report: &mut Report, note: String) {
 
 /// The ending's note on the features the run's sessions added beside its own, if any were recorded.
 fn extra_features_note(store: &RunStore, run_id: &str) -> Option<String> {
-    let events = match store.events(run_id) {
-        Ok(events) => events,
+    let added = match extra_features_recorded(store, run_id) {
+        Ok(added) => added,
         Err(err) => {
             eprintln!("orq: cannot read which features the session of {run_id} added: {err:?}");
             return None;
         }
     };
+    (!added.is_empty()).then(|| format!("the session also added: {}", added.join(", ")))
+}
+
+/// The features the run's `ledger.extra_features` events credit it with, each once.
+fn extra_features_recorded(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
     let mut added: Vec<String> = Vec::new();
-    for event in events.iter().filter(|e| e.kind == "ledger.extra_features") {
+    for event in store.events(run_id)?.iter().filter(|e| e.kind == "ledger.extra_features") {
         for name in event.payload["features"].as_array().into_iter().flatten().filter_map(|n| n.as_str()) {
             if !added.iter().any(|a| a == name) {
                 added.push(name.to_string());
             }
         }
     }
-    (!added.is_empty()).then(|| format!("the session also added: {}", added.join(", ")))
+    Ok(added)
 }
 
 /// The ending's note on failures reported unrelated that passed on a re-run, so a delivered run still
@@ -1333,10 +1375,8 @@ fn stages(
                 terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
-            let ledger = orq_features::ledger_path(options.project);
-            let before = ledger_statuses(&ledger, "the implement session");
             let outcome = run_implement_stage(store, run_id, &session)?;
-            record_extra_features(store, record, &ledger, before, options.features);
+            record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
             if !outcome.success {
                 // A session that stopped for its escalated review has done what it could; the
                 // decision is a human's, so the run waits for it instead of failing.
@@ -1428,6 +1468,7 @@ fn stages(
                 })
             }, || {
                 fix_features.settle();
+                record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "gate fix");
                 // The report the session left in its copies is kept where the gate loop reads it.
                 if let Err(err) = orq_orchestrator::finish_session_files(worktree, logs) {
                     eprintln!("orq: {err}");
@@ -1499,7 +1540,9 @@ fn stages(
             terminal: options.interactive,
             exit_marker: marker.as_deref(),
         };
-        match orq_orchestrator::fix_rebase_conflicts(store, run_id, &session)? {
+        let outcome = orq_orchestrator::fix_rebase_conflicts(store, run_id, &session)?;
+        record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "rebase fix");
+        match outcome {
             orq_orchestrator::ConflictFixOutcome::Resolved => Ok(None),
             orq_orchestrator::ConflictFixOutcome::StillBlocked { reason } => stopped(Ending::Blocked, reason).map(Some),
         }
