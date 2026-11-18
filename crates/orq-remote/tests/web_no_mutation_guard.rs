@@ -1,4 +1,4 @@
-//! The page offers exactly twelve run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! The page offers exactly thirteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and no other merge, nor any approve, restart or edit control or request.
 
 fn code() -> String {
@@ -10,11 +10,14 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let code = code();
     let calls: Vec<&str> = code.split("<RunAction ").skip(1).map(|call| call.split(" />").next().unwrap()).collect();
     let kinds: Vec<&str> = calls.iter().map(|call| call.split("kind=\"").nth(1).unwrap().split('"').next().unwrap()).collect();
-    assert_eq!(kinds, ["start", "promote", "pause", "resume", "stop", "discard", "accept", "merge-set-aside"]);
+    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "merge-set-aside"]);
     let tail = |call: &str| call.split("controlPath(control, ").nth(1).unwrap().to_string();
     assert!(tail(calls[0]).starts_with("\"features/\"") && tail(calls[0]).contains("+ \"/runs\")"), "{}", tail(calls[0]));
     assert!(tail(calls[1]).starts_with("\"features/\"") && tail(calls[1]).contains("+ \"/promote\")"), "{}", tail(calls[1]));
     assert!(!calls[1].contains("check="), "promote asks nothing of the server first");
+    assert!(tail(calls[2]).starts_with("\"runs/\"") && tail(calls[2]).contains("+ \"/build-report\")"), "{}", tail(calls[2]));
+    assert!(!calls[2].contains("check="), "building the report asks nothing of the server first");
+    let calls = [&calls[..2], &calls[3..]].concat();
     assert!(tail(calls[2]).starts_with("\"runs/\"") && tail(calls[2]).contains("+ \"/pause\")"), "{}", tail(calls[2]));
     assert!(tail(calls[3]).starts_with("\"runs/\"") && tail(calls[3]).contains("+ \"/resume\")"), "{}", tail(calls[3]));
     let check = calls[3].split("check={controlPath(control, ").nth(1).expect("resume asks the resume check first");
@@ -77,7 +80,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 20, "the definition, the eight actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 21, "the definition, the nine actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
