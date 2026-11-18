@@ -354,6 +354,30 @@ fn with_stop_on_failure_a_failed_run_pauses_the_queue() {
 }
 
 #[test]
+fn a_queued_run_that_cannot_be_read_is_marked_failed_and_pauses_only_under_stop_on_failure() {
+    for stop in [false, true] {
+        let s = setup(&format!("queue-unreadable-{stop}"));
+        git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+        save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": stop}));
+        queue_add(&s, &["COM-01", "COM-02"]);
+        round(&s);
+        // Its record is gone: the run cannot be read, and no longer counts towards the run limit.
+        std::fs::remove_file(s.roots.state.join("runs/run-1-COM-01/run.json")).unwrap();
+
+        round(&s);
+        let entry = queue(&s)["entries"][0].clone();
+        assert_eq!((&entry["feature"], &entry["state"], &entry["run"]), (&json!("COM-01"), &json!("failed"), &json!("run-1-COM-01")), "stop {stop}");
+        if stop {
+            assert_eq!(paused(&s), "the run run-1-COM-01 of COM-01 failed: the run run-1-COM-01 cannot be read");
+            assert_eq!(started(&s), ["COM-01"]);
+        } else {
+            assert_eq!(paused(&s), Value::Null);
+            assert_eq!(started(&s), ["COM-01", "COM-02"], "the rest go on");
+        }
+    }
+}
+
+#[test]
 fn only_an_approved_feature_can_be_queued() {
     let s = setup("queue-draft");
     git_repo(&s, &[("COM-01", "draft", &[]), ("COM-02", "pending", &[])]);
