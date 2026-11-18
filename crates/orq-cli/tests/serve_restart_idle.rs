@@ -238,17 +238,19 @@ impl World {
         vec!["serve".into(), "--repo".into(), self.repo.display().to_string(), "--listen".into(), "127.0.0.1:0".into()]
     }
 
-    /// `orq serve` as systemd would start it from `binary`: `INVOCATION_ID` is set, and a stand-in `systemctl`
-    /// on the PATH answers `orq-serve.service`'s `Restart=` with `answer`, a shell command.
+    /// `orq serve` as systemd would start it from `binary`, in the unit `orq-serve.service`: `INVOCATION_ID` and
+    /// `ORQ_SYSTEMD_UNIT` are set, and a stand-in `systemctl` on the PATH notes each call in
+    /// [`Self::systemctl_calls`] and answers any query, whatever unit it names, with `answer`, a shell command.
     fn serve_under_systemd(&self, binary: &Path, installed: &Path, answer: &str) -> Running {
         let fake = self.root.join("fakebin");
         fs::create_dir_all(&fake).unwrap();
         let systemctl = fake.join("systemctl");
-        fs::write(&systemctl, format!("#!/bin/sh\ncase \"$*\" in *Restart*orq-serve.service*) {answer} ;; *) exit 1 ;; esac\n")).unwrap();
+        let calls = self.root.join("systemctl-calls");
+        fs::write(&systemctl, format!("#!/bin/sh\necho \"$*\" >> '{}'\n{answer}\n", calls.display())).unwrap();
         fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
         let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
         let mut command = self.command_from(binary, installed);
-        command.env("INVOCATION_ID", "0123abcd").env("PATH", path);
+        command.env("INVOCATION_ID", "0123abcd").env("ORQ_SYSTEMD_UNIT", "orq-serve.service").env("PATH", path);
         let mut child = command.arg("serve").arg("--repo").arg(&self.repo).args(["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         let running = Running { child, out: Default::default(), err: Default::default() };
@@ -256,6 +258,11 @@ impl World {
         collect(stderr, running.err.clone());
         running.wait_for(|out| out.contains("http://127.0.0.1:"), "the server did not announce its address");
         running
+    }
+
+    /// Each call the stand-in `systemctl` of [`Self::serve_under_systemd`] saw, one per line.
+    fn systemctl_calls(&self) -> String {
+        fs::read_to_string(self.root.join("systemctl-calls")).unwrap_or_default()
     }
 }
 
@@ -389,6 +396,7 @@ fn under_systemd_a_restart_re_executes_the_installed_orq_in_place_whatever_the_u
     assert!(asked.status.success(), "{}", text(&asked.stderr));
     assert_eq!(world.wait_for_exec(&server), world.serve_args(), "{}", server.output());
     assert!(server.child.try_wait().unwrap().is_none(), "the same process goes on as the installed orq: {}", server.output());
+    assert_eq!(world.systemctl_calls(), "", "the unit's restart policy plays no part in a restart");
 }
 
 #[test]
@@ -400,6 +408,8 @@ fn under_systemd_a_systemctl_that_never_answers_holds_up_neither_the_server_nor_
     let asked = world.restart(&installed, &["--when-idle"]);
     assert!(asked.status.success(), "{}", text(&asked.stderr));
     assert_eq!(world.wait_for_exec(&server), world.serve_args(), "{}", server.output());
+    // The unit is named and any query stalls, so a lookup of the unit's policy, by name or by cgroup, shows here.
+    assert_eq!(world.systemctl_calls(), "", "neither the server nor its restart asks systemctl: {}", server.output());
 }
 
 #[test]
