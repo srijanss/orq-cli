@@ -332,6 +332,27 @@ fn cancel_stops_a_pending_restart() {
 }
 
 #[test]
+fn an_unforced_now_that_saw_no_run_still_waits_for_a_run_the_server_sees() {
+    let world = World::new("now-race");
+    let installed = world.installed();
+    let server = world.serve(&installed);
+    world.start_run("run-late");
+    // The CLI looks at a store without the run, as when the run starts between its check and its signal;
+    // it sees the same servers.
+    let blind = world.root.join("blind");
+    fs::create_dir_all(blind.join("orq")).unwrap();
+    std::os::unix::fs::symlink(world.state().join("serve"), blind.join("orq/serve")).unwrap();
+    let asked = world.command(&installed).env("XDG_STATE_HOME", &blind).args(["serve", "restart", "--now"]).output().unwrap();
+    assert!(asked.status.success(), "the CLI saw no run: {}", text(&asked.stderr));
+    let body = wait_for_pending(&server.addr());
+    assert_eq!(body["server"]["waiting_for"], 1, "{body}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(world.execd().is_none(), "restarted over a run that started after the CLI looked: {}", server.output());
+    world.finish_run("run-late");
+    assert_eq!(world.wait_for_exec(&server), world.serve_args());
+}
+
+#[test]
 fn now_is_refused_over_active_runs_and_names_them_unless_forced() {
     let world = World::new("now");
     let installed = world.installed();
