@@ -23,6 +23,7 @@ const DETAIL_PREFIX = "/reviews/";
 // Places the sidebar offers that have no page yet; they say so instead of showing the inbox.
 const UNBUILT_DESTINATIONS = ["/projects"];
 const API_SETTINGS = "/api/settings";
+const API_SERVER_RESTART = "/api/server/restart";
 const API_AUDIT = "/api/audit";
 const API_PROJECTS = "/api/projects";
 // The same plain identifiers the server accepts, checked before one is put in a
@@ -964,7 +965,82 @@ function isAgent(agent) {
 function parseSettings(data) {
   const settings = data && data.settings;
   const ok = settings && typeof settings === "object" && isAgent(settings.implementer) && isAgent(settings.reviewer) && Array.isArray(settings.models) && settings.models.every((model) => model !== null && typeof model === "object" && typeof model.name === "string" && isAgent(model));
-  return ok && settings.implementer !== undefined && settings.reviewer !== undefined ? settings : null;
+  if (!(ok && settings.implementer !== undefined && settings.reviewer !== undefined)) return null;
+  return { ...settings, server: parseServer(data.server) };
+}
+
+// The server's own status beside the settings: its build, the installed one, and any restart waiting for the
+// runs to end; null when the server does not say.
+function parseServer(server) {
+  if (server === null || typeof server !== "object" || typeof server.running !== "string") return null;
+  return {
+    running: server.running,
+    installed: typeof server.installed === "string" ? server.installed : null,
+    newer: server.newer_installed === true,
+    pending: server.restart_pending === true,
+    waiting: typeof server.waiting_for === "number" ? server.waiting_for : 0,
+  };
+}
+
+// The server's builds on Settings, and its restart. Restart when idle needs remote actions on and a passkey
+// session, and asks first; the server restarts into the installed orq once no run is active. While a restart
+// waits, it says for how many runs, and Cancel drops it.
+function ServerCard({ server, on, token, onSignedOut, onChanged }) {
+  const [asking, setAsking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const send = async (path) => {
+    setSending(true);
+    setNote("");
+    let text = "The server could not be asked.";
+    try {
+      const response = await actionRequest(path, token);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        setSending(false);
+        setAsking(false);
+        onChanged();
+        return;
+      }
+      const reply = await response.json().catch(() => null);
+      if (reply !== null && typeof reply.error === "string") text = reply.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setSending(false);
+    setAsking(false);
+    setNote(text);
+  };
+  const runs = (count) => count + (count === 1 ? " run" : " runs");
+  return (
+    <section className="card settings-card" data-server>
+      <SettingsHead icon="cpu">Server</SettingsHead>
+      <dl className="settings-fields">
+        <div className="settings-row"><dt>Running</dt><dd>{server.running}</dd></div>
+        <div className="settings-row"><dt>Installed</dt><dd>{server.installed ?? <span className="muted">No installed orq found</span>}</dd></div>
+      </dl>
+      {server.newer ? <p className="settings-block" role="status" data-newer-installed>A newer orq is installed</p> : null}
+      {server.pending ? (
+        <div className="settings-row" data-restart-pending>
+          <span role="status">{"Restart pending: waiting for " + runs(server.waiting)}</span>
+          <button type="button" data-restart-cancel disabled={sending} onClick={() => send(API_SERVER_RESTART + "/cancel")}>Cancel</button>
+        </div>
+      ) : on && token === SESSION ? (
+        <div className="settings-row">
+          <span>Restart when idle</span>
+          {asking ? (
+            <Confirm question="Restart orq once no run is active? It restarts into the installed orq." answer="Yes, restart when idle" tone="primary" busy={sending} onConfirm={() => send(API_SERVER_RESTART)} onCancel={() => setAsking(false)} />
+          ) : (
+            <button type="button" className="primary-button" data-restart-server onClick={() => { setNote(""); setAsking(true); }}>Restart when idle</button>
+          )}
+        </div>
+      ) : null}
+      {note !== "" && <p role="alert">{note}</p>}
+    </section>
+  );
 }
 
 // One agent's fields as labelled text; a value the server did not give is a dash that says so.
@@ -1796,6 +1872,7 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
         <SettingsHead icon="sliders">Run settings</SettingsHead>
         <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
+      {settings.server !== null ? <ServerCard server={settings.server} on={on} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
       <div className="settings-group-head" data-machine-defaults>
         <h2>Machine defaults</h2>
         <p>Each project can override these on its own Settings page.</p>
@@ -1839,7 +1916,7 @@ function isFeature(feature) {
 }
 
 function parseFeatures(data) {
-  return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true, startBlocked: typeof data.start_blocked === "string" && data.start_blocked !== "" ? data.start_blocked : null } : null;
+  return data && Array.isArray(data.features) && data.features.every(isFeature) ? { rows: data.features, actions: data.remote_actions === true, startBlocked: typeof data.start_blocked === "string" && data.start_blocked !== "" ? data.start_blocked : null, restartPending: data.restart_pending === true } : null;
 }
 
 // A feature's dependencies: a link to the feature's own page for each one in this ledger, a marker
@@ -3017,11 +3094,14 @@ function SwipeButton({ feature, onPress }) {
 // One feature's Start (pending) or Promote (draft), on its page or under a swiped row; a swiped row's opens
 // on its question, and cancelling it closes the row's action. Keyed by the feature's status where it is shown,
 // so a draft just promoted offers a fresh Start rather than the finished Promote.
+// A start while the server waits to restart still goes ahead, but the restart then waits for that run too.
+const RESTART_START_QUESTION = "orq will restart after this run; start anyway?";
+
 function FeatureAction({ feature, control, asking = false, onCancel = null }) {
   const name = encodeURIComponent(feature.name);
   const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
   return feature.status === "pending"
-    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} blocked={blockedOf(control)} question={"Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
+    ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} blocked={blockedOf(control)} question={control.restartPending === true ? RESTART_START_QUESTION : "Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
 }
 
@@ -3402,7 +3482,7 @@ function AllFeaturesPage({ token, reloads, onRefresh, onSignedOut }) {
 function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
   const runs = useFeatureRuns(token, projectId, reloads, name !== null);
   const featuresPath = "/api/projects/" + encodeURIComponent(projectId) + "/features";
-  const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh, startBlocked: data.startBlocked } : null);
+  const control = (data) => (data.actions ? { token, projectId, onSignedOut, onDone: onRefresh, startBlocked: data.startBlocked, restartPending: data.restartPending } : null);
   return (
     <>
       <Loaded key={featuresPath} reloads={reloads} header={(state) => (

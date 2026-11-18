@@ -365,6 +365,25 @@ pub trait ProjectsProvider {
     fn delete_kept_worktrees(&self, items: &[(&str, &str, &str)], force: bool) -> Vec<Result<WorktreeDelete, String>> {
         items.iter().map(|(project, branch, version)| self.delete_kept_worktree(project, branch, version, force)).collect()
     }
+
+    /// The server answering, when it can show its build and restart itself; `None` otherwise.
+    fn server(&self) -> Option<&dyn ServerControl> {
+        None
+    }
+}
+
+/// The running server itself, as `orq serve` offers it to the web: its build, the installed orq's, and a
+/// restart once no run is active.
+pub trait ServerControl: Send + Sync {
+    /// What Settings shows: `{running, installed, newer_installed, restart_pending, waiting_for}`.
+    fn status(&self) -> Value;
+    /// Asks for a restart once no run is active: how many runs it waits for, or why it may not restart
+    /// (safe to show).
+    fn restart_when_idle(&self) -> Result<usize, String>;
+    /// Drops a pending restart; whether one was pending.
+    fn cancel_restart(&self) -> bool;
+    /// Whether a restart waits for the active runs to end.
+    fn restart_pending(&self) -> bool;
 }
 
 /// How deleting a kept worktree from the web ended.
@@ -603,6 +622,56 @@ fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
 /// Whether the settings switch remote actions on; anything unreadable counts as off.
 fn remote_actions_on(roots: &StorageRoots) -> bool {
     public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
+}
+
+/// Leaves an audit line for an attempt on the server itself from the web.
+fn server_audit(roots: &StorageRoots, action: &str, outcome: crate::remote_audit::Outcome, reason: Option<&str>) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let _ = crate::remote_audit::record(roots, &crate::remote_audit::Attempt { identity: "web", action, project: "server", run: None, outcome, reason }, now);
+}
+
+/// Asks the server to restart once no run is active, and leaves an audit line for the attempt.
+/// It needs remote actions on and a passkey session (`passkey`): the token alone may not restart the server.
+fn restart_server(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8], passkey: bool) -> Response {
+    use crate::remote_audit::Outcome;
+    let audit = |outcome, reason: Option<&str>| server_audit(roots, "server.restart", outcome, reason);
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, Some("remote actions are off"));
+        return error(403, "remote actions are off");
+    }
+    if !passkey {
+        audit(Outcome::Refused, Some("no passkey session"));
+        return error(403, "restarting the server needs a passkey sign-in");
+    }
+    let Some(server) = provider.and_then(|provider| provider.server()) else { return error(404, "not found") };
+    match server.restart_when_idle() {
+        Ok(waiting_for) => {
+            audit(Outcome::Allowed, None);
+            reply(202, json!({ "restart_pending": true, "waiting_for": waiting_for }))
+        }
+        Err(why) => {
+            audit(Outcome::Refused, Some(&why));
+            error(409, &why)
+        }
+    }
+}
+
+/// Drops a pending restart, and leaves an audit line saying whether one was pending.
+fn cancel_restart(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
+    use crate::remote_audit::Outcome;
+    let audit = |outcome, reason: Option<&str>| server_audit(roots, "server.restart_cancel", outcome, reason);
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    let Some(server) = provider.and_then(|provider| provider.server()) else { return error(404, "not found") };
+    let cancelled = server.cancel_restart();
+    audit(Outcome::Allowed, (!cancelled).then_some("no restart was pending"));
+    reply(200, json!({ "cancelled": cancelled }))
 }
 
 /// Turns remote actions off or on for the web, while the settings version presented is still current,
@@ -1851,6 +1920,13 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/settings/remote-actions" && request.method == "POST" {
         return set_remote_actions(roots, body, confirm);
     }
+    // Not behind the remote_actions gate, like turning actions off: holding a restart back is always possible.
+    if path == "/api/server/restart/cancel" && request.method == "POST" {
+        return cancel_restart(roots, provider, body);
+    }
+    if path == "/api/server/restart" && request.method == "POST" {
+        return restart_server(roots, provider, body, confirm.is_some());
+    }
     if path == "/api/settings/agents" && request.method == "POST" {
         return set_agents(roots, provider, body);
     }
@@ -1927,9 +2003,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         };
     }
     if path == "/api/settings" {
-        return match provider.map(|provider| provider.settings()) {
-            Some(Ok(Some(settings))) => reply(200, json!({ "settings": settings })),
-            Some(Err(why)) => error(500, &why),
+        return match provider.map(|provider| (provider.settings(), provider.server())) {
+            Some((Ok(Some(settings)), server)) => reply(200, json!({ "settings": settings, "server": server.map(|server| server.status()) })),
+            Some((Err(why), _)) => error(500, &why),
             _ => error(404, "not found"),
         };
     }
@@ -1939,7 +2015,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
                 Some(Ok(Some(features))) => {
                     // A reason that cannot be read leaves Start offered: the start itself still checks.
                     let start_blocked = provider.and_then(|provider| provider.start_blocked(id).ok().flatten());
-                    reply(200, json!({ "features": features, "remote_actions": remote_actions_on(roots), "start_blocked": start_blocked }))
+                    // A start while the server waits to restart asks first: the restart then waits for it too.
+                    let restart_pending = provider.and_then(|provider| provider.server()).is_some_and(|server| server.restart_pending());
+                    reply(200, json!({ "features": features, "remote_actions": remote_actions_on(roots), "start_blocked": start_blocked, "restart_pending": restart_pending }))
                 }
                 // The reason can name a path on this machine, so the caller is only told it failed.
                 Some(Err(_)) => error(500, "the feature ledger could not be read"),

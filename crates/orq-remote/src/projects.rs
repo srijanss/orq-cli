@@ -425,6 +425,7 @@ pub struct StoreProjects {
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     backfilled: std::sync::Once,
     report_builder: Option<ReportBuilder>,
+    server: Option<std::sync::Arc<dyn orq_core::remote_inbox::ServerControl>>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -511,7 +512,14 @@ impl StoreProjects {
             accepting: Default::default(),
             backfilled: std::sync::Once::new(),
             report_builder: None,
+            server: None,
         }
+    }
+
+    /// Gives the web the server's own controls: its builds and a restart when idle.
+    pub fn with_server(mut self, server: std::sync::Arc<dyn orq_core::remote_inbox::ServerControl>) -> Self {
+        self.server = Some(server);
+        self
     }
 
     /// Lets the repairs build a missing report through `builder`; without one only PR/MRs are recorded.
@@ -1065,6 +1073,10 @@ fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::
 }
 
 impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
+    fn server(&self) -> Option<&dyn orq_core::remote_inbox::ServerControl> {
+        self.server.as_deref()
+    }
+
     fn review_scope(&self, id: &str) -> Result<Option<orq_core::remote_inbox::ReviewScope>, String> {
         // Only a project found by the scan counts; the id is matched, never used as a path.
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
