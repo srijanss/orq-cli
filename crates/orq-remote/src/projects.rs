@@ -1937,8 +1937,13 @@ impl PartScan {
 
 /// The first failure line of `part` of the log at `path`, read once, line by line, stopping at the part's end.
 pub fn find_failure_line(path: &std::path::Path, part: LogPart) -> std::io::Result<Option<LogSpot>> {
+    find_failure_line_in(std::fs::File::open(path)?, part)
+}
+
+/// The first failure line of `part` of the log read from `log`.
+fn find_failure_line_in(log: impl std::io::Read, part: LogPart) -> std::io::Result<Option<LogSpot>> {
     use std::io::BufRead;
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut reader = std::io::BufReader::new(log);
     let mut buffer = Vec::new();
     let mut number = 0;
     let mut offset = 0;
@@ -2011,6 +2016,26 @@ fn run_log_name(path: &std::path::Path, logs_dir: &std::path::Path) -> Option<St
     (plain_log_name(name) && path.symlink_metadata().is_ok_and(|meta| meta.is_file())).then(|| name.to_string())
 }
 
+/// The run's own log at `path`, checked by `run_log_name` and then opened through handles that follow no
+/// link: the logs directory, the run's directory in it and the file itself. A path swapped for a link or
+/// a pipe after it was checked is not opened, or not read. `between` runs between the check and the open.
+fn open_run_log_with(path: &std::path::Path, logs_dir: &std::path::Path, between: impl FnOnce()) -> Option<(String, std::fs::File)> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let name = run_log_name(path, logs_dir)?;
+    between();
+    let open_dir = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(logs_dir.parent()?).ok()?;
+    let at = |dir: &std::fs::File, entry: &std::ffi::OsStr, flags: libc::c_int| -> Option<std::fs::File> {
+        let entry = std::ffi::CString::new(entry.as_bytes()).ok()?;
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), entry.as_ptr(), flags | libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        (fd >= 0).then(|| unsafe { std::fs::File::from_raw_fd(fd) })
+    };
+    let run_dir = at(&open_dir, logs_dir.file_name()?, libc::O_DIRECTORY)?;
+    let file = at(&run_dir, std::ffi::OsStr::new(&name), libc::O_NONBLOCK)?;
+    file.metadata().is_ok_and(|meta| meta.is_file()).then_some((name, file))
+}
+
 /// What the run page shows of the failure event at `at`: its reason (also without a log) and, when it names one of the run's own
 /// logs, the line in it where this attempt's error is, all redacted. The attempt's part of an appended log
 /// runs from the line count its stage start recorded to the next start's.
@@ -2023,7 +2048,7 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
     let mut failure = serde_json::json!({"reason": redact(reason.unwrap_or(""))});
     let Some(log) = log else { return reason.map(|_| failure) };
     let path = std::path::Path::new(log);
-    let Some(file) = run_log_name(path, logs_dir) else { return Some(failure) };
+    let Some((file, opened)) = open_run_log_with(path, logs_dir, || {}) else { return Some(failure) };
     let starts_of_log = |event: &&orq_orchestrator::Event| event.kind == "stage.started" && event.payload.get("log").and_then(|v| v.as_str()) == Some(log);
     let log_line = |event: &orq_orchestrator::Event| event.payload.get("log_line").and_then(|v| v.as_u64()).map(|n| n as usize);
     // A run from before stage starts recorded their line count is split at the log's repeated first line.
@@ -2032,8 +2057,8 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
         None => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
     };
     let mut shown = serde_json::json!({"file": file});
-    let small = path.symlink_metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
-    if let Some(spot) = small.then(|| find_failure_line(path, part).ok().flatten()).flatten() {
+    let small = opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
+    if let Some(spot) = small.then(|| find_failure_line_in(opened, part).ok().flatten()).flatten() {
         // The logs page reads only a log's first part, so a line past it could not be opened.
         if spot.offset < LOG_READ_CAP {
             shown["line"] = serde_json::json!(spot.line);
@@ -2168,6 +2193,74 @@ fn unredacted<'a>(value: &str, mut stored: impl Iterator<Item = &'a String>) -> 
 fn ledger_version(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod failure_log_open_tests {
+    use super::open_run_log_with;
+    use std::io::Read;
+    use std::path::{Path, PathBuf};
+
+    fn root(tag: &str) -> PathBuf {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-failure-log-open-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("logs/r1")).unwrap();
+        std::fs::create_dir_all(dir.join("private")).unwrap();
+        std::fs::write(dir.join("logs/r1/gate.log"), "gate\n").unwrap();
+        std::fs::write(dir.join("private/gate.log"), "secret\n").unwrap();
+        dir
+    }
+
+    fn read(opened: Option<(String, std::fs::File)>) -> Option<(String, String)> {
+        opened.map(|(name, mut file)| {
+            let mut text = String::new();
+            file.read_to_string(&mut text).unwrap();
+            (name, text)
+        })
+    }
+
+    fn open(dir: &Path, between: impl FnOnce()) -> Option<(String, String)> {
+        let logs = dir.join("logs/r1");
+        read(open_run_log_with(&logs.join("gate.log"), &logs, between))
+    }
+
+    #[test]
+    fn failure_log_open_reads_the_runs_own_log() {
+        let dir = root("plain");
+        assert_eq!(open(&dir, || {}), Some(("gate.log".to_string(), "gate\n".to_string())));
+    }
+
+    #[test]
+    fn failure_log_open_never_follows_a_log_swapped_for_a_link_after_it_was_checked() {
+        let dir = root("file-swap");
+        let got = open(&dir, || {
+            std::fs::remove_file(dir.join("logs/r1/gate.log")).unwrap();
+            std::os::unix::fs::symlink(dir.join("private/gate.log"), dir.join("logs/r1/gate.log")).unwrap();
+        });
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn failure_log_open_never_follows_a_run_directory_swapped_for_a_link_after_it_was_checked() {
+        let dir = root("dir-swap");
+        let got = open(&dir, || {
+            std::fs::rename(dir.join("logs/r1"), dir.join("logs/r1-old")).unwrap();
+            std::os::unix::fs::symlink(dir.join("private"), dir.join("logs/r1")).unwrap();
+        });
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn failure_log_open_does_not_wait_on_a_pipe_swapped_in() {
+        let dir = root("fifo-swap");
+        let got = open(&dir, || {
+            let path = dir.join("logs/r1/gate.log");
+            std::fs::remove_file(&path).unwrap();
+            let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        });
+        assert_eq!(got, None);
+    }
 }
 
 #[cfg(test)]
