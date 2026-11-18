@@ -285,6 +285,32 @@ struct ShownOutput {
     line: Vec<u8>,
     too_long: bool,
     in_private_key: bool,
+    /// The line being read has a private key's first line in it, seen before any of it was let go.
+    line_opens_key: bool,
+    /// The last private key marker in the line being read: `Some(true)` a first line, `Some(false)` a last one.
+    line_last_marker: Option<bool>,
+}
+
+/// Find private key markers (`-----BEGIN … PRIVATE KEY-----`, `-----END … PRIVATE KEY-----`) in `text`:
+/// whether one opens a key, and whether the last one opens (true) or closes (false) a key.
+fn key_markers(text: &[u8]) -> (bool, Option<bool>) {
+    const KEY: &[u8] = b"PRIVATE KEY-----";
+    let (mut opens, mut last) = (false, None);
+    for at in (0..text.len().saturating_sub(KEY.len() - 1)).filter(|&at| text[at..].starts_with(KEY)) {
+        let before = &text[at.saturating_sub(48)..at];
+        let found = |marker: &[u8]| before.windows(marker.len()).rposition(|w| w == marker);
+        let marker = match (found(b"-----BEGIN"), found(b"-----END")) {
+            (Some(begin), Some(end)) => Some(begin > end),
+            (Some(_), None) => Some(true),
+            (None, Some(_)) => Some(false),
+            (None, None) => None,
+        };
+        if let Some(begins) = marker {
+            opens |= begins;
+            last = Some(begins);
+        }
+    }
+    (opens, last)
 }
 
 impl ShownOutput {
@@ -300,20 +326,32 @@ impl ShownOutput {
     fn add(&mut self, part: &[u8]) {
         self.line.extend_from_slice(part);
         if self.line.len() > LONGEST_LINE {
+            // Look for key markers before letting go of anything; one still being read is in what stays.
+            self.see_key_markers();
             self.too_long = true;
             self.line.drain(..self.line.len() - LINE_END_LOOKED_AT);
         }
     }
 
+    fn see_key_markers(&mut self) {
+        let (opens, last) = key_markers(&self.line);
+        self.line_opens_key |= opens;
+        self.line_last_marker = last.or(self.line_last_marker);
+    }
+
     /// A private key is left out from its first line to its last; one that never ends leaves out all after it.
     fn end_line(&mut self) {
+        self.see_key_markers();
         let line = String::from_utf8_lossy(&std::mem::take(&mut self.line)).into_owned();
         let too_long = std::mem::take(&mut self.too_long);
-        let key_marker = line.contains("PRIVATE KEY-----");
-        if self.in_private_key {
-            self.in_private_key = !(key_marker && line.contains("-----END"));
-        } else if key_marker && line.contains("-----BEGIN") && (too_long || !line.contains("-----END")) {
-            self.in_private_key = !line.contains("-----END");
+        let opens_key = std::mem::take(&mut self.line_opens_key);
+        let was_in_key = self.in_private_key;
+        if let Some(begins) = self.line_last_marker.take() {
+            self.in_private_key = begins;
+        }
+        if was_in_key {
+            // Part of a key, its last line included.
+        } else if opens_key && (too_long || self.in_private_key) {
             self.keep(LEFT_OUT_KEY);
         } else if too_long {
             self.keep(LEFT_OUT_LINE);
@@ -371,5 +409,14 @@ mod tests {
     fn an_interrupted_read_is_retried_not_taken_for_the_end_of_the_output() {
         let mut source = Interrupted(&[b"first ", b"last"], false);
         assert_eq!(read_tail(&mut source), "first last");
+    }
+
+    #[test]
+    fn a_private_key_marker_split_across_reads_of_a_long_line_still_opens_the_key() {
+        let spaces = vec![b' '; 3000];
+        let chunks: [&[u8]; 5] = [b"FAILED\n-----BEGIN OPENSSH PRIV", b"ATE KEY-----", &spaces, &spaces, b"\nMIIkeybody\nMIIkeybody\n"];
+        let shown = read_tail(&mut Interrupted(&chunks, false));
+        assert!(shown.contains("FAILED"), "{shown}");
+        assert!(!shown.contains("MIIkeybody"), "{shown}");
     }
 }

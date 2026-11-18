@@ -336,3 +336,11 @@ fn a_private_key_that_never_ends_is_not_kept_after_its_start_scrolled_out() {
     let shown = shown_output("open-key", script);
     assert!(!shown.contains("MIIkeybodyline"), "{shown}");
 }
+
+#[test]
+fn a_private_key_whose_first_line_is_too_long_to_show_is_not_kept() {
+    let script = "echo 'test result: FAILED'; printf '%s%2000s\\n' '-----BEGIN OPENSSH PRIVATE KEY-----' ''; i=0; while [ $i -lt 40 ]; do echo MIIkeybodylineMIIkeybodyline; i=$((i+1)); done; exit 1";
+    let shown = shown_output("long-key-line", script);
+    assert!(shown.contains("test result: FAILED"), "{shown}");
+    assert!(!shown.contains("MIIkeybodyline"), "{shown}");
+}
