@@ -126,6 +126,7 @@ fn python_steps(
     }
     let pyproject_path = dir.join("pyproject.toml");
     let mut pytest_in_pyproject = false;
+    let mut pytest_dependency = false;
     if pyproject_path.is_file() {
         match fs::read_to_string(&pyproject_path)
             .ok()
@@ -135,15 +136,19 @@ fn python_steps(
                 pytest_in_pyproject = doc
                     .get("tool")
                     .and_then(|tool| tool.get("pytest"))
-                    .is_some()
+                    .is_some();
+                pytest_dependency = depends_on_pytest(&doc);
             }
             None => notes.push(
                 "pyproject.toml could not be read as TOML; settings in it were ignored".to_string(),
             ),
         }
     }
-    let pytest_configured =
+    let at_root =
         pytest_in_pyproject || dir.join("pytest.ini").is_file() || dir.join("tests").is_dir();
+    // A Django project may keep its pytest settings beside manage.py; the root's win when both exist.
+    let in_src = !at_root && django && pytest_settings_in(&dir.join("src"));
+    let pytest_configured = at_root || in_src;
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
@@ -187,17 +192,89 @@ fn python_steps(
         ]));
     }
     if !pytest_configured {
+        if pytest_dependency {
+            notes.push(
+                "pytest is a dependency but no pytest settings were found; the tests were not run"
+                    .to_string(),
+            );
+        }
         return;
     }
-    let mut pytest = argv(&["uv", "run", "pytest"]);
+    // Run where the settings are, so they make pytest's root; uv still finds the project above it.
+    let mut pytest = if in_src {
+        argv(&["uv", "run", "--directory", "src", "pytest"])
+    } else {
+        argv(&["uv", "run", "pytest"])
+    };
     if let (true, Some(changed)) = (django, changed) {
         match changed_tested_apps(dir, changed) {
             Some(targets) if targets.is_empty() => return,
+            // Paths are relative to where pytest runs.
+            Some(targets) if in_src => pytest.extend(
+                targets
+                    .iter()
+                    .map(|target| target.strip_prefix("src/").unwrap_or(target).to_string()),
+            ),
             Some(targets) => pytest.extend(targets),
             None => {}
         }
     }
     steps.push(pytest);
+}
+
+/// Whether pytest itself is among the pyproject's dependencies: `[project] dependencies`,
+/// `[project.optional-dependencies]`, `[dependency-groups]` or `[tool.uv] dev-dependencies`.
+fn depends_on_pytest(doc: &toml_edit::DocumentMut) -> bool {
+    let item = |path: &[&str]| {
+        path.iter()
+            .try_fold(doc.as_item(), |item, key| item.get(key))
+    };
+    let mut lists: Vec<&toml_edit::Item> = Vec::new();
+    lists.extend(item(&["project", "dependencies"]));
+    lists.extend(item(&["tool", "uv", "dev-dependencies"]));
+    for table in [
+        &["project", "optional-dependencies"][..],
+        &["dependency-groups"][..],
+    ] {
+        if let Some(table) = item(table).and_then(|item| item.as_table_like()) {
+            lists.extend(table.iter().map(|(_, list)| list));
+        }
+    }
+    lists
+        .iter()
+        .filter_map(|list| list.as_array())
+        .flat_map(|array| array.iter())
+        .filter_map(|requirement| requirement.as_str())
+        .any(|requirement| requirement_name(requirement) == "pytest")
+}
+
+/// A PEP 508 requirement's project name, normalized: `Pytest[testing]>=8` is `pytest`.
+fn requirement_name(requirement: &str) -> String {
+    requirement
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .map(|c| {
+            if matches!(c, '_' | '.') {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// Whether `dir` holds pytest settings: a `pytest.ini`, a `setup.cfg` with `[tool:pytest]`, a `tox.ini`
+/// with `[pytest]`, or a `conftest.py`.
+fn pytest_settings_in(dir: &Path) -> bool {
+    let has_section = |name: &str, section: &str| {
+        fs::read_to_string(dir.join(name))
+            .is_ok_and(|text| text.lines().any(|line| line.trim() == section))
+    };
+    dir.join("pytest.ini").is_file()
+        || has_section("setup.cfg", "[tool:pytest]")
+        || has_section("tox.ini", "[pytest]")
+        || dir.join("conftest.py").is_file()
 }
 
 /// What to hand pytest for a change that touches only documentation and Django apps with tests, sorted:

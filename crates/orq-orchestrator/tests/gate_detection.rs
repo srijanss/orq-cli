@@ -874,3 +874,107 @@ fn a_configured_gate_ignores_the_lint_and_build_options() {
         Ok(run(&[&["make", "check"]]))
     );
 }
+
+const PYTEST_IN_SRC: &[&str] = &["uv", "run", "--directory", "src", "pytest"];
+
+/// A Django project whose pytest settings sit beside manage.py, as `src/pytest.ini` does: they make
+/// the project's root, so pytest runs there.
+fn django_configured_in_src(tag: &str) -> PathBuf {
+    let dir = worktree(tag);
+    touch(&dir, "uv.lock", "");
+    touch(&dir, "src/manage.py", "");
+    touch(&dir, "src/shop/tests/test_views.py", "");
+    touch(&dir, "src/blog/models.py", "");
+    dir
+}
+
+#[test]
+fn pytest_settings_beside_manage_py_run_pytest_from_src_after_the_migrations_check() {
+    let dir = django_configured_in_src("django-src-ini");
+    touch(&dir, "src/pytest.ini", "[pytest]\nDJANGO_SETTINGS_MODULE = config.settings\n");
+
+    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])));
+}
+
+#[test]
+fn setup_cfg_tox_ini_or_a_conftest_beside_manage_py_are_pytest_settings_too() {
+    for (tag, name, text) in [
+        ("setup-cfg", "src/setup.cfg", "[metadata]\nname = shop\n\n[tool:pytest]\naddopts = --reuse-db\n"),
+        ("tox-ini", "src/tox.ini", "[tox]\nenvlist = py312\n\n[pytest]\naddopts = --reuse-db\n"),
+        ("conftest", "src/conftest.py", ""),
+    ] {
+        let dir = django_configured_in_src(&format!("django-src-{tag}"));
+        touch(&dir, name, text);
+        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])), "{tag}");
+    }
+}
+
+/// A setup.cfg or tox.ini that only configures other tools holds no pytest settings.
+#[test]
+fn setup_cfg_or_tox_ini_without_a_pytest_section_are_not_pytest_settings() {
+    for (tag, name, text) in [
+        ("setup-cfg-other", "src/setup.cfg", "[flake8]\nmax-line-length = 100\n# [tool:pytest] comes later\n"),
+        ("tox-ini-other", "src/tox.ini", "[tox]\nenvlist = py312\n[testenv:pytest]\n"),
+    ] {
+        let dir = django_configured_in_src(&format!("django-src-{tag}"));
+        touch(&dir, name, text);
+        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS])), "{tag}");
+    }
+}
+
+/// Run from `src/`, pytest is handed the changed apps relative to it.
+#[test]
+fn run_from_src_pytest_is_handed_the_changed_tested_apps_relative_to_src() {
+    let dir = django_configured_in_src("django-src-scoped");
+    touch(&dir, "src/pytest.ini", "[pytest]\n");
+    touch(&dir, "src/billing/tests.py", "");
+    let changed = ["src/shop/views.py".to_string(), "src/billing/models.py".to_string()];
+
+    assert_eq!(
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "--directory", "src", "pytest", "billing/tests.py", "shop"]]))
+    );
+}
+
+/// A root `pytest.ini` wins over one beside manage.py, so pytest runs from the root as before.
+#[test]
+fn root_pytest_settings_win_over_those_beside_manage_py() {
+    let dir = django("django-root-and-src");
+    touch(&dir, "src/pytest.ini", "[pytest]\n");
+
+    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])));
+}
+
+const PYTEST_UNSET: &str = "pytest is a dependency but no pytest settings were found; the tests were not run";
+
+/// pytest among the dependencies with no settings anywhere the gate looks is said, not skipped silently.
+#[test]
+fn pytest_as_a_dependency_without_settings_is_a_note_not_a_silent_skip() {
+    for (tag, pyproject) in [
+        ("dependencies", "[project]\nname = \"shop\"\ndependencies = [\"django>=5\", \"pytest>=8\"]\n"),
+        ("optional", "[project]\nname = \"shop\"\n[project.optional-dependencies]\ntest = [\"pytest-django\", \"pytest==8.3\"]\n"),
+        ("groups", "[project]\nname = \"shop\"\n[dependency-groups]\ndev = [\"pytest[testing]\", {include-group = \"lint\"}]\nlint = [\"ruff\"]\n"),
+        ("uv-dev", "[project]\nname = \"shop\"\n[tool.uv]\ndev-dependencies = [\"Pytest ; python_version >= '3.10'\"]\n"),
+    ] {
+        let dir = django_configured_in_src(&format!("django-note-{tag}"));
+        touch(&dir, "pyproject.toml", pyproject);
+        assert_eq!(
+            detected(&dir, true),
+            Ok(Gate::Steps { steps: steps(&[MIGRATIONS]), notes: vec![PYTEST_UNSET.to_string()] }),
+            "{tag}"
+        );
+    }
+}
+
+/// Without pytest among the dependencies, or with only a plugin of it, there is nothing to say.
+#[test]
+fn without_pytest_among_the_dependencies_there_is_no_note() {
+    for (tag, pyproject) in [
+        ("none", "[project]\nname = \"shop\"\ndependencies = [\"django>=5\"]\n"),
+        ("plugin-only", "[project]\nname = \"shop\"\ndependencies = [\"pytest-django\"]\n"),
+    ] {
+        let dir = django_configured_in_src(&format!("django-no-note-{tag}"));
+        touch(&dir, "pyproject.toml", pyproject);
+        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS])), "{tag}");
+    }
+}
