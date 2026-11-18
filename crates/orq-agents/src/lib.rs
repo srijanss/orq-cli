@@ -414,18 +414,26 @@ const MARKER_FORMAT: &str = " The first line of that file says how it went: leav
 /// What an implement session is told when orq's gate runs the full suite after it.
 const LEAVE_FULL_SUITE_TO_GATE: &str = "Testing: run only the tests for what you changed, through run_tests; don't run the full suite or workspace-wide test commands (including a full-suite regression sweep), because orq's gate runs the full suite after review and a gate-fix session repairs what it finds.";
 
-const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in implement.done. Never edit around a refusal silently.";
+/// The refusal rule; `{report}` is where the session names a file it changed outside the features.
+const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in {report}. Never edit around a refusal silently.";
+
+/// Where a session with a finish marker names the files it changed outside its features.
+const REPORT_IN_MARKER: &str = "implement.done";
+
+/// Where a session without a finish marker (auto_exit off) names them: there is no marker file to write.
+const REPORT_IN_MESSAGE: &str = "your final message";
 
 /// What the session is told about the features' files: the rule for a file write_code refuses, the
 /// files the features declare, and those the run already changed outside them. A file name holding a
-/// control character could break the prompt and is refused.
-fn files_wording(declared: &[String], undeclared: &[String]) -> Result<String, AdapterError> {
+/// control character could break the prompt and is refused. `report` is where the session names a
+/// file it changed outside them: its finish marker, or its final message when it has none.
+fn files_wording(declared: &[String], undeclared: &[String], report: &str) -> Result<String, AdapterError> {
     for file in declared.iter().chain(undeclared) {
         if file.is_empty() || file.chars().any(char::is_control) {
             return Err(AdapterError::InvalidValue { field: "file", value: file.clone() });
         }
     }
-    let mut wording = format!("\n\n{REFUSAL_RULE}");
+    let mut wording = format!("\n\n{}", REFUSAL_RULE.replace("{report}", report));
     // With none declared every committed file is outside them, so the check before review still applies.
     if declared.is_empty() {
         wording.push_str(" The features declare no files, so every committed file is outside them.");
@@ -433,7 +441,7 @@ fn files_wording(declared: &[String], undeclared: &[String]) -> Result<String, A
         wording.push_str(" The features declare the files listed below.");
         wording.push_str(&file_list("declared-files", declared));
     }
-    wording.push_str(" Before start_review, check each committed file outside them is needed and tested, and name it and why in implement.done.");
+    wording.push_str(&format!(" Before start_review, check each committed file outside them is needed and tested, and name it and why in {report}."));
     if !undeclared.is_empty() {
         wording.push_str(" These files are outside the feature's declared files; check each change is needed and tested.");
         wording.push_str(&file_list("undeclared-files", undeclared));
@@ -530,7 +538,8 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str("\n\n");
         prompt.push_str(LEAVE_FULL_SUITE_TO_GATE);
     }
-    prompt.push_str(&files_wording(request.declared_files, request.undeclared_files)?);
+    let report = if request.exit_marker.is_some() { REPORT_IN_MARKER } else { REPORT_IN_MESSAGE };
+    prompt.push_str(&files_wording(request.declared_files, request.undeclared_files, report)?);
     if let Some(context) = request.context.map(checked_context).transpose()?.flatten() {
         prompt.push_str("\n\nExtra context:\n");
         prompt.push_str(context);

@@ -114,3 +114,19 @@ fn each_listed_name_reads_back_as_the_exact_file_name() {
         assert_eq!(names, declared, "{harness}: {list}");
     }
 }
+
+/// Without a finish marker (auto_exit off) there is no implement.done to write, so the session names
+/// the files in its final message instead.
+#[test]
+fn a_session_without_a_finish_marker_names_the_files_in_its_final_message() {
+    for harness in ["claude", "pi"] {
+        let unmarked = ImplementRequest { exit_marker: None, ..request(harness, &[], &[]) };
+        let prompt = prompt(&unmarked);
+        assert!(!prompt.contains("implement.done"), "{harness}: {prompt}");
+        assert!(prompt.contains("otherwise make the change with Edit and name the file and why in your final message."), "{harness}: {prompt}");
+        assert!(
+            prompt.contains("Before start_review, check each committed file outside them is needed and tested, and name it and why in your final message."),
+            "{harness}: {prompt}"
+        );
+    }
+}

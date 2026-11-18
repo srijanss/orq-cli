@@ -1932,7 +1932,11 @@ fn every_run_records_exactly_one_run_completed_event_with_how_it_ended() {
     let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert_eq!(output.status.code(), Some(0), "{}\n{stdout}", stderr(&output));
-    assert_eq!(completed_events(&w, &stdout), [("review_ready".to_string(), None)]);
+    // COM-01 declares no files, so the feature's file is named as changed outside them.
+    assert_eq!(
+        completed_events(&w, &stdout),
+        [("review_ready".to_string(), Some("changed outside its features' files: feature.txt (implement)".to_string()))]
+    );
 
     let w = world("completed-blocked");
     let agent = FakeAgent::builder().write_file("notes.txt", "wip\n").build();

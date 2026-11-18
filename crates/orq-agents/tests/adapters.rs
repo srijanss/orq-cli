@@ -8,6 +8,10 @@ fn spec(harness: &str, model: &str, thinking: Option<&str>) -> ModelSpec {
     }
 }
 
+/// The files note every implement prompt carries when its features declare no files and it has no
+/// finish marker.
+const NO_FILES_NOTE: &str = "\n\nFiles: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in your final message. Never edit around a refusal silently. The features declare no files, so every committed file is outside them. Before start_review, check each committed file outside them is needed and tested, and name it and why in your final message.";
+
 #[test]
 fn claude_and_pi_declare_different_capabilities_and_unknown_harnesses_are_refused() {
     let claude = adapter_for("claude").unwrap();
@@ -52,14 +56,14 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
             "opus".to_string(),
             "--permission-mode".to_string(),
             "dontAsk".to_string(),
-            "/implement-and-review COM-02 --reviewer pi --model openai/gpt-6-astra --thinking medium".to_string(),
+            format!("/implement-and-review COM-02 --reviewer pi --model openai/gpt-6-astra --thinking medium{NO_FILES_NOTE}"),
         ]
     );
 
     // A reviewer without a thinking level passes none.
     let plain = ImplementRequest { reviewer: spec("pi", "kimi-k3", None), ..request };
     let argv = claude.implement_argv(&plain).unwrap();
-    assert_eq!(argv[4], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
+    assert_eq!(argv[4], format!("/implement-and-review COM-02 --reviewer pi --model kimi-k3{NO_FILES_NOTE}"));
 }
 
 #[test]
@@ -176,12 +180,12 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
     assert_eq!(argv.len(), 5, "the context stays inside the one prompt argument");
     assert_eq!(
         argv[4],
-        "/implement-and-review COM-02 --reviewer pi --model kimi-k3\n\nExtra context:\nkeep the API stable\nand mention it in the MR"
+        format!("/implement-and-review COM-02 --reviewer pi --model kimi-k3{NO_FILES_NOTE}\n\nExtra context:\nkeep the API stable\nand mention it in the MR")
     );
 
     // Blank context is no context.
     request.context = Some("  \n ");
-    assert_eq!(claude.implement_argv(&request).unwrap()[4], "/implement-and-review COM-02 --reviewer pi --model kimi-k3");
+    assert_eq!(claude.implement_argv(&request).unwrap()[4], format!("/implement-and-review COM-02 --reviewer pi --model kimi-k3{NO_FILES_NOTE}"));
 
     // Control characters other than newline and tab, and over-long text, are refused.
     let long = "x".repeat(4001);
@@ -386,7 +390,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
     // A single feature asks for nothing extra, so its prompt is unchanged.
     let single = ImplementRequest { features: &["COM-01"], ..request.clone() };
     let argv = claude.implement_argv(&single).unwrap();
-    assert_eq!(argv[4], "/implement-and-review COM-01 --reviewer pi --model kimi-k3");
+    assert_eq!(argv[4], format!("/implement-and-review COM-01 --reviewer pi --model kimi-k3{NO_FILES_NOTE}"));
 
     // Every id must stay a single plain argument, and there must be at least one.
     let bad = ImplementRequest { features: &["COM-01", "x y"], ..request.clone() };
