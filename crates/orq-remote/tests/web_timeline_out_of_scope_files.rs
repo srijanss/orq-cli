@@ -137,3 +137,22 @@ fn on_a_phone_an_opened_list_wraps_long_paths_without_scrolling_sideways() {
     assert!(boxes.iter().all(|b| b["right"].as_i64().unwrap() <= 360), "{result}");
     assert!(boxes[0]["bottom"].as_i64().unwrap() - boxes[0]["top"].as_i64().unwrap() > boxes[1]["bottom"].as_i64().unwrap() - boxes[1]["top"].as_i64().unwrap(), "the long path wraps onto more lines: {result}");
 }
+
+#[test]
+fn the_opened_list_stays_inside_its_step_at_every_width() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    let long = format!("crates/{}/src/{}.rs", "deeply-nested-directory-name".repeat(4), "x".repeat(120));
+    let events = json!([event("e0", "stage.started", None), event("e1", "session.undeclared_files", Some(json!([long, "src/b.rs"]))), event("e2", "stage.completed", None)]);
+    let project = json!({"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
+    let replies = [web_chromium::get("/api/projects", json!({"projects": [project]})), web_chromium::get("/api/projects/alpha/runs/run-1", page(events)["json"].clone())];
+    const STEP: &str = ".run-step:has(.run-step-undeclared)";
+    const GROUP: &str = ".run-step-undeclared";
+    for width in [360, 1280] {
+        let steps = json!([{"wait": TOGGLE}, {"click": TOGGLE}, {"wait": FILES}, {"boxes": STEP}, {"boxes": GROUP}]);
+        let result = web_chromium::measure(&chromium, width, "/projects/alpha/orchestrations/run-1", &replies, steps).result;
+        assert!(result.get("error").is_none(), "{width} px: {result}");
+        let (step, group) = (&result["boxes"][STEP][0], &result["boxes"][GROUP][0]);
+        assert!(group["right"].as_i64().unwrap() <= step["right"].as_i64().unwrap(), "{width} px: the list {group} ends past its step {step}");
+        assert!(group["left"].as_i64().unwrap() > step["left"].as_i64().unwrap(), "{width} px: the list {group} is indented in its step {step}");
+    }
+}

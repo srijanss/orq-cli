@@ -695,7 +695,7 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .link-button { min-height: 44px; padding: 0 0.25rem; border: 0; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .run-step[data-step="current"] .run-step-time { color: var(--status-running); }
 /* A step's files changed outside its features' files: one closed line that opens to a compact list. */
-.run-step-undeclared { flex: 1 0 100%; min-width: 0; margin: 0 0 0.5rem calc(1.375rem + 0.75rem); font-size: 0.875rem; }
+.run-step-undeclared { flex: 1 0 100%; box-sizing: border-box; min-width: 0; max-width: 100%; margin: 0 0 0.5rem; padding-left: calc(1.375rem + 0.75rem); font-size: 0.875rem; }
 .run-step-undeclared-toggle { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; color: var(--text-muted); text-align: left; text-decoration: none; overflow-wrap: anywhere; }
 .run-step-undeclared-toggle svg { flex: none; }
 .run-step-undeclared-list { margin: 0.25rem 0 0; padding: 0 0 0 1.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word; }
