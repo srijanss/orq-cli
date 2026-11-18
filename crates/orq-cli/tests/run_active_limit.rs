@@ -310,3 +310,28 @@ fn a_blocked_run_holds_no_slot_so_a_start_passes_but_its_own_resume_is_held_to_t
     assert_ne!(paused.status.code(), Some(EXIT_LIMIT), "{}", text(&paused.stderr));
     assert!(!text(&paused.stderr).contains("raise the limit"), "{}", text(&paused.stderr));
 }
+
+#[test]
+fn a_failed_or_review_waiting_run_holds_no_slot_and_its_resume_is_refused_at_the_limit_and_passes_under_it() {
+    let endings: [(&str, &str, serde_json::Value); 2] = [
+        ("failed", "run.failed", serde_json::json!({"reason": "x"})),
+        ("review", "run.completed", serde_json::json!({"ending": "needs_review"})),
+    ];
+    for (tag, kind, payload) in endings {
+        let repo = repo();
+        let home = home(&format!("ended-{tag}"));
+        save(&home, repo.root(), &limited(Some(1), None));
+        seed_active(&home, repo.root(), "run-ended", "COM-01");
+        append(&home, repo.root(), "run-ended", "COM-01", kind, payload);
+        runs(&home).finish_run(&orq_git::project_id(&project(repo.root())), "COM-01", "run-ended").unwrap();
+
+        let under = start(repo.root(), &home, "COM-01", &["--check", "--resume"]);
+        assert!(!text(&under.stderr).contains("raise the limit"), "{tag}: {}", text(&under.stderr));
+        assert_ne!(under.status.code(), Some(EXIT_LIMIT), "{tag}: {}", text(&under.stderr));
+
+        seed_active(&home, repo.root(), "run-running", "COM-02");
+        let full = start(repo.root(), &home, "COM-01", &["--check", "--resume"]);
+        assert_eq!(full.status.code(), Some(EXIT_LIMIT), "{tag}: {}", text(&full.stderr));
+        assert!(text(&full.stderr).contains("already has 1 active run (run-running, COM-02)"), "{tag}: {}", text(&full.stderr));
+    }
+}

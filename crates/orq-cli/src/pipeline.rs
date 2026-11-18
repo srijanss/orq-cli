@@ -500,7 +500,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     };
     let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
     // A paused run's resume continues a run that was already counted; a new run, and the resume of a
-    // blocked run, which holds no slot, are held to the limit.
+    // run that holds no slot (blocked, failed, waiting on review), are held to the limit.
     let takes_a_slot = match &resumed {
         Some(r) => orq_orchestrator::resume_takes_a_slot(&store, &r.from.run_id).map_err(other)?,
         None => true,
