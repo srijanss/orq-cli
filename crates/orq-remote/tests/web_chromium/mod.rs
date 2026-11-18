@@ -150,8 +150,11 @@ pub struct Measured {
 
 /// Opens `path` at `width` x 800 with `replies`, runs `steps` (each `{"click": selector, "text"?: text}`,
 /// `{"wait": selector, "text"?: text}`, `{"type": selector, "value": text}` filling a field, `{"lines":
-/// selector, "text": text}` or `{"boxes": selector}`), and returns what the probe measured: `boxes` maps
-/// each `boxes` selector to the rounded rects (`left`, `top`, `right`, `bottom`) of every match, in order.
+/// selector, "text": text}`, `{"boxes": selector}`, `{"styles": selector, "props": [css property, ...]}` or
+/// `{"tokens": [custom property, ...]}`), and returns what the probe measured: `boxes` maps each `boxes`
+/// selector to the rounded rects (`left`, `top`, `right`, `bottom`) of every match, in order; `styles` maps
+/// each `styles` selector to every match's computed values of those properties; `tokens` maps each custom
+/// property to the colour it resolves to as a `color` (`rgb(...)`), on the page's root.
 pub fn measure(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value) -> Measured {
     measure_with(chromium, width, path, replies, steps, "")
 }
@@ -374,6 +377,22 @@ const PROBE: &str = r##"
       return {left: Math.round(rect.left), top: Math.round(rect.top), right: Math.round(rect.right), bottom: Math.round(rect.bottom)};
     });
   }
+  function stylesOf(selector, props) {
+    return Array.prototype.map.call(document.querySelectorAll(selector), function (element) {
+      var computed = getComputedStyle(element);
+      var out = {};
+      props.forEach(function (prop) { out[prop] = computed.getPropertyValue(prop); });
+      return out;
+    });
+  }
+  function tokenColours(tokens) {
+    var probe = document.createElement("span");
+    document.body.appendChild(probe);
+    var out = {};
+    tokens.forEach(function (token) { probe.style.color = "var(" + token + ")"; out[token] = getComputedStyle(probe).color; });
+    probe.remove();
+    return out;
+  }
   function fill(element, value) {
     var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;
     setter.call(element, value);
@@ -389,12 +408,15 @@ const PROBE: &str = r##"
         result.boxes = {};
         steps.forEach(function (step) { if (step.lines) result.lines[step.lines] = linesOf(step.lines, step.text); });
         steps.forEach(function (step) { if (step.boxes) result.boxes[step.boxes] = boxesOf(step.boxes); });
+        result.styles = {};
+        steps.forEach(function (step) { if (step.styles) result.styles[step.styles] = stylesOf(step.styles, step.props || []); });
+        steps.forEach(function (step) { if (step.tokens) result.tokens = tokenColours(step.tokens); });
         document.getElementById("result").textContent = JSON.stringify(result);
       }, 300);
       return;
     }
     var step = steps[at];
-    if (step.lines || step.boxes) { at += 1; waited = 0; return next(); }
+    if (step.lines || step.boxes || step.styles || step.tokens) { at += 1; waited = 0; return next(); }
     var element = find(step);
     if (element === null) {
       waited += 50;

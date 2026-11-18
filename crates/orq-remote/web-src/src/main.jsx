@@ -2693,8 +2693,22 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-const QUEUE_STATES = ["running", "review", "failed", "next", "queued", "waiting", "skipped"];
 const QUEUE_STATE_LABELS = { running: "Running", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting", skipped: "No longer needed" };
+// The badge each state wears (SPEC section 7); a state not named here, or "No longer needed", wears a neutral one.
+const QUEUE_STATE_BADGES = { running: "badge-status-running", review: "badge-status-waiting", failed: "badge-status-failed", next: "badge-status-queued", queued: "badge-status-queued", waiting: "badge-status-waiting" };
+
+// A queue entry's state as a badge that always shows its words; Next also carries the play icon, so it
+// differs from Queued by more than colour. A state the page does not know shows as itself, neutral.
+function QueueStateBadge({ state }) {
+  const tone = Object.hasOwn(QUEUE_STATE_BADGES, state) ? QUEUE_STATE_BADGES[state] : "badge-neutral";
+  const label = Object.hasOwn(QUEUE_STATE_LABELS, state) ? QUEUE_STATE_LABELS[state] : state;
+  return (
+    <span className={"badge queue-state " + tone} data-queue-state={state}>
+      {state === "next" ? <Icon name="play" size={12} /> : null}
+      {label}
+    </span>
+  );
+}
 
 // What a queue entry shows: a feature's start by its name, a queued Resume, Review again or Accept by its label.
 function queueName(entry) {
@@ -2706,7 +2720,7 @@ function isQueue(queue) {
   const wait = queue === null || typeof queue !== "object" ? null : queue.waiting_for_review ?? null;
   return queue !== null && typeof queue === "object" && text(queue.paused) && Array.isArray(queue.entries)
     && (wait === null || (typeof wait === "object" && typeof wait.feature === "string" && text(wait.mr_url ?? null)))
-    && queue.entries.every((entry) => entry !== null && typeof entry === "object" && typeof entry.feature === "string" && QUEUE_STATES.includes(entry.state) && text(entry.run ?? null) && text(entry.reason ?? null) && text(entry.mr_url ?? null));
+    && queue.entries.every((entry) => entry !== null && typeof entry === "object" && typeof entry.feature === "string" && typeof entry.state === "string" && entry.state !== "" && text(entry.run ?? null) && text(entry.reason ?? null) && text(entry.mr_url ?? null));
 }
 
 // "Waiting for COM-01's MR to merge" (or its review, with no MR) while the queue starts nothing more
@@ -2715,6 +2729,39 @@ function QueueReviewWait({ queue }) {
   const wait = queue.waiting_for_review ?? null;
   if (wait === null) return null;
   return <p className="queue-waiting" data-queue-waiting-review><Icon name="clock" size={16} />{"Waiting for " + (typeof wait.label === "string" && !wait.label.startsWith("Start ") ? wait.label : wait.feature) + (typeof wait.mr_url === "string" ? "'s MR to merge" : "'s review")}</p>;
+}
+
+// What one queue entry's row holds, on a project's queue and on the all-projects one: its position, its
+// name with its state badge, its MR and run links, its reason under the name, and, when given, the
+// controls that reorder and remove it.
+function QueueEntryRow({ entry, position, projectId, controls }) {
+  return (
+    <>
+      <span className="queue-position" aria-hidden="true">{position}</span>
+      <div className="queue-entry-text">
+        <div className="queue-entry-line">
+          <span className="queue-feature">{queueName(entry)}</span>
+          <QueueStateBadge state={entry.state} />
+          <QueueMr entry={entry} />
+          {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
+        </div>
+        {typeof entry.reason === "string" && entry.reason !== "" ? <p className="queue-reason">{entry.reason}</p> : null}
+      </div>
+      {controls}
+    </>
+  );
+}
+
+// A paused queue's banner at the top of its card, in the waiting colours: the pause icon, "Paused" and
+// why, and whatever action (Resume) is given beside it.
+function QueuePausedBanner({ reason, children = null }) {
+  return (
+    <div className="banner waiting-banner queue-paused" data-queue-paused>
+      <Icon name="pause" size={16} />
+      <p className="queue-paused-text">{"Paused: " + reason}</p>
+      {children}
+    </div>
+  );
 }
 
 // The link to a queued run's MR, when it has one an https address points to.
@@ -2750,7 +2797,9 @@ function QueueView({ data, control, projectId }) {
   const [removing, setRemoving] = useState(null);
   const [note, setNote] = useState("");
   const [dragged, setDragged] = useState(null);
+  const [over, setOver] = useState(null);
   const busy = phase === "sending";
+  const endDrag = () => { setDragged(null); setOver(null); };
   const change = async (tail, body) => {
     setPhase("sending");
     setNote("");
@@ -2782,34 +2831,31 @@ function QueueView({ data, control, projectId }) {
   };
   return (
     <section className="card queue-section" data-queue-section>
-      <div className="queue-head">
-        {queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : (queue.waiting_for_review ?? null) !== null ? <QueueReviewWait queue={queue} /> : <p className="muted">{queue.entries.length === 0 ? "Nothing is queued." : "The server starts the next feature when the project's limits and queue hours allow."}</p>}
-        {control !== null ? (
-          queue.paused !== null
-            ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button>
-            : <button type="button" data-queue-pause disabled={busy} onClick={() => change("pause", {})}><Icon name="pause" size={16} />Pause</button>
-        ) : null}
-      </div>
+      {queue.paused !== null ? (
+        <QueuePausedBanner reason={queue.paused}>
+          {control !== null ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button> : null}
+        </QueuePausedBanner>
+      ) : (
+        <div className="queue-head">
+          {(queue.waiting_for_review ?? null) !== null ? <QueueReviewWait queue={queue} /> : <p className="muted">{queue.entries.length === 0 ? "Nothing is queued." : "The server starts the next feature when the project's limits and queue hours allow."}</p>}
+          {control !== null ? <button type="button" data-queue-pause disabled={busy} onClick={() => change("pause", {})}><Icon name="pause" size={16} />Pause</button> : null}
+        </div>
+      )}
       {queue.entries.length > 0 ? (
         <ol className="queue-list">
           {queue.entries.map((entry, index) => (
-            <li key={entry.feature} className={dragged === index ? "queue-entry dragging" : "queue-entry"} data-queue-entry={entry.feature} draggable={control !== null && !busy}
+            <li key={entry.feature} className={"queue-entry" + (dragged === index ? " dragging" : "") + (dragged !== null && over === index && over !== dragged ? " drop-target" : "")} data-queue-entry={entry.feature} draggable={control !== null && !busy}
               onDragStart={(event) => { setDragged(index); if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"; }}
-              onDragOver={(event) => { if (dragged !== null) event.preventDefault(); }}
-              onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); setDragged(null); }}
-              onDragEnd={() => setDragged(null)}>
-              <span className="queue-feature">{queueName(entry)}</span>
-              <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
-              {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
-              <QueueMr entry={entry} />
-              {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
-              {control !== null ? (
+              onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); if (over !== index) setOver(index); } }}
+              onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); endDrag(); }}
+              onDragEnd={endDrag}>
+              <QueueEntryRow entry={entry} position={index + 1} projectId={projectId} controls={control !== null ? (
                 <span className="queue-controls">
                   <button type="button" className="icon-button" data-queue-up aria-label={"Move " + queueName(entry) + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
                   <button type="button" className="icon-button" data-queue-down aria-label={"Move " + queueName(entry) + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
                   <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + queueName(entry)} disabled={busy} onClick={() => { setNote(""); setRemoving(entry); }}><Icon name="trash" size={16} /></button>
                 </span>
-              ) : null}
+              ) : null} />
             </li>
           ))}
         </ol>
@@ -4070,17 +4116,13 @@ function QueueGroup({ project, queue }) {
         {queue !== null ? <span className="muted">{queue.entries.length + " queued"}</span> : null}
       </div>
       {queue === null ? <p className="error-text" data-queue-group-error>The queue could not be read.</p> : null}
-      {queue !== null && queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : null}
+      {queue !== null && queue.paused !== null ? <QueuePausedBanner reason={queue.paused} /> : null}
       {queue !== null && queue.paused === null ? <QueueReviewWait queue={queue} /> : null}
       {queue !== null && queue.entries.length > 0 ? (
         <ol className="queue-list">
-          {queue.entries.map((entry) => (
+          {queue.entries.map((entry, index) => (
             <li key={entry.feature} className="queue-entry" data-queue-entry={entry.feature}>
-              <span className="queue-feature">{queueName(entry)}</span>
-              <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
-              {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
-              <QueueMr entry={entry} />
-              {typeof entry.run === "string" ? <OpenRun projectId={project.id} run={entry.run} /> : null}
+              <QueueEntryRow entry={entry} position={index + 1} projectId={project.id} controls={null} />
             </li>
           ))}
         </ol>

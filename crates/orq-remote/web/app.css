@@ -343,7 +343,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .content p[role=alert]:not(.banner) { margin: 0.5rem 0; color: var(--status-failed); font-size: 0.875rem; }
 p[role=alert]:empty { display: none; }
 .error-text { color: var(--status-failed); font-size: 0.875rem; }
-.badge-risk-other, .badge-risk-resolved { color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); }
+.badge-risk-other, .badge-risk-resolved, .badge-neutral { color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); }
 .not-found { max-width: 24rem; }
 
 .projects { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr)); gap: 0.75rem; }
@@ -843,10 +843,33 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 
 /* The Queue page across every project: one card per project, its name linking to the project's queue. */
 .queue-group + .queue-group { margin-top: 0.75rem; }
-.queue-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }
-.queue-group-name { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
-.queue-group .queue-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
-.queue-group .queue-entry { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.25rem 0; }
-.queue-group .queue-feature { overflow-wrap: anywhere; min-width: 0; }
+.queue-group-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+.queue-group-name { font-size: 0.9375rem; font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+
+/* A project's queue and the all-projects one: a head (or a paused banner), then one row per entry with its
+   position, its name and state badge, its reason under the name and, on a project's queue, its controls at
+   the row's end (under the text on a phone). */
+.queue-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; }
+.queue-head > p { flex: 1 1 16rem; min-width: 0; margin: 0; }
+.queue-paused { align-items: center; margin: 0.5rem 0 0; }
+.queue-section > .queue-paused:first-child { margin-top: 0; }
+.queue-paused-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.queue-paused > button { margin-left: auto; }
+.queue-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
+.queue-list > li + li { border-top: 1px solid var(--border); }
+.queue-entry { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 0.75rem; padding: 0.625rem 0; }
+.queue-position { align-self: start; line-height: 1.75rem; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.queue-entry-text { grid-column: 2; min-width: 0; }
+.queue-entry-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; min-width: 0; min-height: 1.75rem; }
+.queue-feature { font-family: ui-monospace, 'JetBrains Mono', monospace; overflow-wrap: anywhere; min-width: 0; }
+.queue-reason { margin: 0.25rem 0 0; color: var(--text-muted); font-size: 0.875rem; overflow-wrap: anywhere; }
+.queue-controls { grid-column: 3; display: flex; gap: 0.25rem; }
+.queue-entry.dragging { opacity: 0.5; outline: 2px dashed var(--accent); outline-offset: -2px; }
+.queue-entry.drop-target { box-shadow: inset 0 3px 0 var(--accent); }
+@media (max-width: 700px) {
+  .queue-paused-text { flex-basis: calc(100% - 2rem); }
+  .queue-paused > button { margin-left: 0; }
+  .queue-controls { grid-column: 2 / -1; justify-self: start; }
+}
 .queue-waiting { display: flex; align-items: center; gap: 0.375rem; margin: 0.5rem 0 0; overflow-wrap: anywhere; min-width: 0; }
 .queue-mr { display: inline-flex; align-items: center; gap: 0.25rem; }
