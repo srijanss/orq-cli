@@ -124,8 +124,9 @@ fn run_gate_attempt_limited(
     }
     let log_name = log_path.to_string_lossy().into_owned();
     let mut started = serde_json::json!({ "log": log_name, "steps": steps.len() });
-    if let Some(lines) = log_line {
+    if let Some((lines, bytes)) = log_line {
         started["log_line"] = lines.into();
+        started["log_offset"] = bytes.into();
     }
     record_event(store, &record, "stage.started", attempt, started)?;
 

@@ -827,6 +827,8 @@ fn a_gate_start_records_how_many_lines_its_log_had_before_the_attempt_wrote_to_i
         .unwrap();
     // The attempt's part starts with its notes, so they belong to it.
     assert_eq!(start.payload["log_line"], 2, "{}", start.payload);
+    // And the byte the part starts at, so it is read from there.
+    assert_eq!(start.payload["log_offset"], "earlier attempt\nits failure\n".len(), "{}", start.payload);
     let log = fs::read_to_string(&w.log).unwrap();
     assert_eq!(log.lines().nth(2), Some("orq: nextest is not installed"), "{log}");
 }

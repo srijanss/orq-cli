@@ -289,3 +289,20 @@ fn a_failure_without_a_log_still_gives_its_redacted_reason() {
     // Nothing to say gives no failure at all.
     assert!(found[2].is_null(), "{:?}", found[2]);
 }
+
+#[test]
+fn an_attempt_with_a_recorded_byte_offset_is_read_from_there_without_rereading_the_lines_before_it() {
+    let s = setup("failure-offset");
+    let before = "$ cargo test\nthread 'early' panicked at src/a.rs:1:1:\nend of earlier attempt\n";
+    let after = "$ cargo test\nthread 'later' panicked at src/b.rs:2:2:\n";
+    let log = path_str(&write_log(&s, "r1", "gate.log", &format!("{before}{after}")));
+    // The start says one line came before, though three did: only the byte offset is used to find the
+    // attempt, and its lines are numbered on from the recorded count.
+    add_run(&s, "r1", &[
+        ("stage.started", Some("verify"), json!({"log": log, "log_line": 1, "log_offset": before.len()})),
+        ("stage.failed", Some("verify"), json!({"log": log, "reason": "gate failed"})),
+    ]);
+    let found = failures(&timeline(&s, "r1"));
+    assert_eq!(found[0]["log"]["line"], json!(3), "{:?}", found[0]);
+    assert!(found[0]["log"]["excerpt"].as_str().unwrap().starts_with("thread 'later' panicked"), "{:?}", found[0]);
+}

@@ -80,7 +80,7 @@ pub(crate) fn run_session_stage(
         }
     };
     let started = match log_line_count(&log) {
-        Some(lines) => serde_json::json!({ "log_line": lines }),
+        Some((lines, bytes)) => serde_json::json!({ "log_line": lines, "log_offset": bytes }),
         None => serde_json::json!({}),
     };
     store.append_event(&event("stage.started", started))?;
@@ -585,10 +585,10 @@ fn open_log_with(path: &Path, between: impl FnOnce()) -> std::io::Result<fs::Fil
     }
 }
 
-/// How many lines the log open as `log` holds now, read from its start without moving its offset;
-/// `None` when it cannot be read. A stage start records it, so the part of an appended log a later
-/// attempt wrote can be told from an earlier one's.
-pub(crate) fn log_line_count(log: &fs::File) -> Option<u64> {
+/// How many lines and bytes the log open as `log` holds now, read from its start without moving its
+/// offset; `None` when it cannot be read. A stage start records both, so the part of an appended log a
+/// later attempt wrote can be told from an earlier one's and read from where it starts.
+pub(crate) fn log_line_count(log: &fs::File) -> Option<(u64, u64)> {
     let mut buffer = [0u8; 64 * 1024];
     let mut at = 0u64;
     let mut lines = 0u64;
@@ -598,7 +598,7 @@ pub(crate) fn log_line_count(log: &fs::File) -> Option<u64> {
         #[cfg(not(unix))]
         let read = std::os::windows::fs::FileExt::seek_read(log, &mut buffer, at).ok()?;
         if read == 0 {
-            return Some(lines);
+            return Some((lines, at));
         }
         lines += buffer[..read].iter().filter(|&&byte| byte == b'\n').count() as u64;
         at += read as u64;

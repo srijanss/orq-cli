@@ -1825,6 +1825,8 @@ pub struct LogSpot {
 pub enum LogPart {
     /// The lines after line `start` up to line `end`, or to the end of the file when `None`.
     Lines { start: usize, end: Option<usize> },
+    /// The lines after line `line` up to line `end`, read from byte `offset`, where line `line` ends, on.
+    After { line: usize, offset: u64, end: Option<usize> },
     /// The `n`th attempt (from 1), each starting with the log's first line again; when the log does not
     /// have that many, the whole file and its last failure line.
     Attempt(usize),
@@ -1945,8 +1947,11 @@ fn find_failure_line_in(log: impl std::io::Read, part: LogPart) -> std::io::Resu
     use std::io::BufRead;
     let mut reader = std::io::BufReader::new(log);
     let mut buffer = Vec::new();
-    let mut number = 0;
-    let mut offset = 0;
+    // A reader already at an attempt's offset numbers its lines on from the line count recorded there.
+    let (mut number, mut offset, part) = match part {
+        LogPart::After { line, offset, end } => (line, offset, LogPart::Lines { start: line, end }),
+        part => (0, 0, part),
+    };
     let mut first_line: Option<String> = None;
     let mut attempts = 0;
     let mut found = PartScan::default();
@@ -1971,6 +1976,7 @@ fn find_failure_line_in(log: impl std::io::Read, part: LogPart) -> std::io::Resu
                     found.add(at, &line);
                 }
             }
+            LogPart::After { .. } => unreachable!("read as Lines from its offset"),
             LogPart::Attempt(wanted) => {
                 if first_line.is_none() {
                     first_line = Some(line.clone());
@@ -2051,13 +2057,23 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
     let Some((file, opened)) = open_run_log_with(path, logs_dir, || {}) else { return Some(failure) };
     let starts_of_log = |event: &&orq_orchestrator::Event| event.kind == "stage.started" && event.payload.get("log").and_then(|v| v.as_str()) == Some(log);
     let log_line = |event: &orq_orchestrator::Event| event.payload.get("log_line").and_then(|v| v.as_u64()).map(|n| n as usize);
-    // A run from before stage starts recorded their line count is split at the log's repeated first line.
-    let part = match events[..at].iter().rev().find(starts_of_log).and_then(log_line) {
-        Some(start) => LogPart::Lines { start, end: events[at..].iter().find(starts_of_log).and_then(log_line) },
-        None => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
+    let log_offset = |event: &orq_orchestrator::Event| event.payload.get("log_offset").and_then(|v| v.as_u64());
+    let started = events[..at].iter().rev().find(starts_of_log);
+    let end = || events[at..].iter().find(starts_of_log).and_then(log_line);
+    // A start that recorded where the log ended is read from there; one that recorded only its line count
+    // is found by counting lines; a run from before either is split at the log's repeated first line.
+    let part = match (started.and_then(log_line), started.and_then(log_offset)) {
+        (Some(line), Some(offset)) => LogPart::After { line, offset, end: end() },
+        (Some(start), None) => LogPart::Lines { start, end: end() },
+        (None, _) => LogPart::Attempt(events[..at].iter().filter(starts_of_log).count().max(1)),
     };
     let mut shown = serde_json::json!({"file": file});
-    let small = opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
+    let mut opened = opened;
+    let at_part = match part {
+        LogPart::After { offset, .. } => std::io::Seek::seek(&mut opened, std::io::SeekFrom::Start(offset)).is_ok(),
+        _ => true,
+    };
+    let small = at_part && opened.metadata().is_ok_and(|meta| meta.len() <= FAILURE_SEARCH_CAP);
     if let Some(spot) = small.then(|| find_failure_line_in(opened, part).ok().flatten()).flatten() {
         // The logs page reads only a log's first part, so a line past it could not be opened.
         if spot.offset < LOG_READ_CAP {

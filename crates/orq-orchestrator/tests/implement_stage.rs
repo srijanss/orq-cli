@@ -408,4 +408,13 @@ fn a_session_start_records_how_many_lines_its_log_already_has() {
         .map(|e| e.payload["log_line"].clone())
         .collect();
     assert_eq!(starts, [serde_json::json!(0), serde_json::json!(2)]);
+    let offsets: Vec<_> = s
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "stage.started")
+        .map(|e| e.payload["log_offset"].clone())
+        .collect();
+    assert_eq!(offsets, [serde_json::json!(0), serde_json::json!("one\ntwo\n".len())]);
 }
