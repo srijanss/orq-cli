@@ -312,12 +312,12 @@ impl StoreProjects {
         if self.being_accepted(run).is_some() {
             return Settled::Going;
         }
-        let Ok(events) = runs.events(run) else { return settle(store, runs, run, repo, wait) };
-        let summary = orq_orchestrator::summarize_run(&events);
-        match (summary.phase, summary.accept_failure) {
-            (RunPhase::Accepting, _) => Settled::Going,
-            (RunPhase::NeedsReview | RunPhase::Failed | RunPhase::Blocked, Some(failure)) if summary.resumed_as.is_none() => Settled::Failed(Some(format!("its accept failed: {}", failure.reason))),
-            _ => settle(store, runs, run, repo, wait),
+        if runs.events(run).is_ok_and(|events| orq_orchestrator::summarize_run(&events).phase == RunPhase::Accepting) {
+            return Settled::Going;
+        }
+        match accept_failed(runs, run) {
+            Some(reason) => Settled::Failed(Some(format!("its accept failed: {reason}"))),
+            None => settle(store, runs, run, repo, wait),
         }
     }
 
@@ -505,11 +505,23 @@ pub fn project_queue_json(store: &Store, runs: &RunStore, git: &orq_git::Project
     Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait)))
 }
 
+/// Why the last accept of run `run` failed, when the run is still where that failure left it.
+fn accept_failed(runs: &RunStore, run: &str) -> Option<String> {
+    let summary = orq_orchestrator::summarize_run(&runs.events(run).ok()?);
+    let stopped = matches!(summary.phase, RunPhase::NeedsReview | RunPhase::Failed | RunPhase::Blocked) && summary.resumed_as.is_none();
+    summary.accept_failure.filter(|_| stopped).map(|failure| failure.reason)
+}
+
 /// The entries of `queue` whose run waits for a person's review, each to its open MR's address, if
 /// any; none unless the project is to `wait` for review.
 fn in_review(store: &Store, runs: &RunStore, queue: &RunQueue, git: &orq_git::Project, wait: bool) -> std::collections::HashMap<String, Option<String>> {
     let mut review = std::collections::HashMap::new();
     for entry in queue.entries.iter().filter(|entry| !entry.failed) {
+        // A queued Accept whose tests failed is a failure, not a run waiting for review.
+        let accepting = matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. }));
+        if accepting && entry.run.as_deref().is_some_and(|run| accept_failed(runs, run).is_some()) {
+            continue;
+        }
         if let Some(Settled::InReview(url)) = entry.run.as_ref().map(|run| settle(store, runs, run, Some(git.root.as_path()), wait)) {
             review.insert(entry.feature.clone(), url);
         }

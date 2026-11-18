@@ -443,3 +443,27 @@ fn an_answer_with_control_characters_is_refused_before_anything_is_resumed_or_qu
     let (status, _) = send(&s, "POST", "/api/projects/alpha/runs/run-old/resume", json!({"answer": "line one\n\tline two"}).to_string().as_bytes());
     assert_eq!(status, 202, "new lines and tabs are fine");
 }
+
+#[test]
+fn a_queued_accept_whose_tests_fail_is_marked_failed_and_pauses_the_queue_only_when_stop_on_failure_is_on() {
+    for stop in [true, false] {
+        let s = setup(if stop { "qra-accept-fail-stop" } else { "qra-accept-fail-go" }, |settings| settings.queue_stop_on_failure = stop);
+        worktree_run(&s, "run-nr", "COM-00", "needs_review");
+        add(&s, json!({"action": "accept", "run": "run-nr"}));
+        add(&s, json!({"features": ["COM-01"]}));
+        round(&s);
+        assert_eq!(states(&s), triples(&[("accept", "run-nr", "running"), ("start", "COM-01", "next")]), "stop {stop}");
+
+        finish_accept(&s, "run-nr", Err("3 tests failed".to_string()));
+        if stop {
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "next")]));
+            let paused = queue(&s)["paused"].as_str().unwrap().to_string();
+            assert!(paused.starts_with("the run run-nr of Accept run-nr failed: its accept failed: ") && paused.contains("3 tests failed"), "{paused}");
+            assert_eq!(started(&s), Vec::<String>::new(), "nothing starts while the queue is paused");
+        } else {
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "running")]), "the next one starts");
+            assert_eq!(queue(&s)["paused"], Value::Null);
+            assert_eq!(started(&s), ["COM-01"]);
+        }
+    }
+}

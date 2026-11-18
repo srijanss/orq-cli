@@ -248,12 +248,12 @@ fn the_queue_says_which_review_it_waits_for_with_the_mr_link() {
     mr(&s, "run-1-COM-01", ProviderState::Open);
     let shown = queue(&s);
     assert_eq!(shown["entries"][0]["mr_url"], MR);
-    assert_eq!(shown["waiting_for_review"], json!({"feature": "COM-01", "mr_url": MR}));
+    assert_eq!(shown["waiting_for_review"], json!({"feature": "COM-01", "label": "Start COM-01", "mr_url": MR}));
 
     end_run(&s, "run-1-COM-01", "needs_review");
     let shown = queue(&s);
     assert_eq!(shown["entries"][0]["mr_url"], Value::Null);
-    assert_eq!(shown["waiting_for_review"], json!({"feature": "COM-01", "mr_url": null}));
+    assert_eq!(shown["waiting_for_review"], json!({"feature": "COM-01", "label": "Start COM-01", "mr_url": null}));
 
     mr(&s, "run-1-COM-01", ProviderState::Merged);
     end_run(&s, "run-1-COM-01", "review_ready");
@@ -367,7 +367,7 @@ fn orq_queue_list_shows_the_run_waiting_for_review_as_the_page_does() {
     let listed = orq_remote::projects::project_queue_json(&store, &RunStore::new(&s.roots.state), &git, &s.repo).unwrap();
     assert_eq!(listed["entries"][0]["state"], "review", "{listed}");
     assert_eq!(listed["entries"][0]["mr_url"], MR, "{listed}");
-    assert_eq!(listed["waiting_for_review"], json!({"feature": "COM-01", "mr_url": MR}), "{listed}");
+    assert_eq!(listed["waiting_for_review"], json!({"feature": "COM-01", "label": "Start COM-01", "mr_url": MR}), "{listed}");
     assert_eq!(listed, queue(&s), "the terminal and the page show the same queue");
 }
 
