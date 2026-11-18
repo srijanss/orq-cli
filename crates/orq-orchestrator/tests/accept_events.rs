@@ -173,3 +173,57 @@ fn an_accept_the_server_stopped_during_is_recorded_as_failed_and_a_settled_run_i
     assert_eq!(fail_interrupted_accept(&store, "run-1"), Ok(false));
     assert_eq!(kinds(&store), before);
 }
+
+const TOKEN: &str = "ghp_SECRETSECRETSECRETSECRET0123456789AB";
+
+fn recorded_failure(tag: &str, why: String) -> orq_orchestrator::AcceptFailure {
+    let (_repo, _worktree, store) = ended_run(tag, "failed");
+    accept_run_by(&store, "run-1", "web", &|_: &Path| Err(why.clone())).unwrap_err();
+    summarize_run(&store.events("run-1").unwrap()).accept_failure.expect("the accept failure")
+}
+
+#[test]
+fn a_secret_cut_by_the_reason_limit_is_redacted_whole_first() {
+    // The first line is cut near 300 characters, inside the token.
+    let failure = recorded_failure("cut-reason", format!("{} {TOKEN}", "x".repeat(254)));
+    assert!(!failure.reason.contains("SECRETSECRET"), "{}", failure.reason);
+}
+
+#[test]
+fn a_secret_cut_by_the_output_tail_is_redacted_whole_first() {
+    // The kept tail starts inside the token: only its end would be left, too short to be recognised.
+    let why = format!("`cargo test` failed: noise\n{TOKEN}\n{}", "z".repeat(1472));
+    let failure = recorded_failure("cut-output", why);
+    assert!(!failure.output.contains("0123456789AB"), "{}", failure.output);
+}
+
+#[test]
+fn a_private_key_whose_start_is_cut_off_is_not_kept() {
+    let key = format!("-----BEGIN RSA PRIVATE KEY-----\n{}-----END RSA PRIVATE KEY-----", "MIIkeybodylineMIIkeybodyline\n".repeat(200));
+    let failure = recorded_failure("cut-key", format!("`cargo test` failed: {key}\ntest result: FAILED"));
+    assert!(!failure.output.contains("MIIkeybodyline"), "{}", failure.output);
+}
+
+#[test]
+fn test_output_is_redacted_before_only_its_tail_is_kept() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-steps-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = format!("printf 'start\\n{TOKEN}\\n'; head -c 1473 /dev/zero | tr '\\0' z; exit 1");
+    let err = orq_orchestrator::run_steps(&dir, &[vec!["sh".into(), "-c".into(), script]]).unwrap_err();
+    // What the command printed, after the command itself.
+    let err = err.rsplit_once("` failed: ").unwrap().1;
+    assert!(err.contains("zzz"), "{err}");
+    assert!(!err.contains("0123456789AB"), "{err}");
+}
+
+#[test]
+fn a_private_key_whose_start_scrolled_out_of_the_kept_output_is_not_kept() {
+    let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Far more than is kept, so its BEGIN line is gone before anything can recognise it.
+    let script = "echo '-----BEGIN RSA PRIVATE KEY-----'; i=0; while [ $i -lt 400 ]; do echo MIIkeybodylineMIIkeybodyline; i=$((i+1)); done; echo '-----END RSA PRIVATE KEY-----'; echo 'test result: FAILED'; exit 1";
+    let err = orq_orchestrator::run_steps(&dir, &[vec!["sh".into(), "-c".into(), script.into()]]).unwrap_err();
+    let err = err.rsplit_once("` failed: ").unwrap().1;
+    assert!(err.contains("test result: FAILED"), "{err}");
+    assert!(!err.contains("MIIkeybodyline"), "{err}");
+}

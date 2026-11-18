@@ -121,15 +121,13 @@ pub fn fail_interrupted_accept(store: &RunStore, run_id: &str) -> Result<bool, S
     Ok(true)
 }
 
-/// Record why the accept failed: the first line of `why` as the reason, and the end of all of it as the output,
-/// both redacted.
+/// Record why the accept failed: the first line of `why` as the reason, and the end of all of it as the output.
+/// All of it is redacted before either is cut, so a cut never leaves part of a secret too short to recognise.
 fn record_accept_failed(store: &RunStore, record: &crate::store::RunRecord, why: &str) -> Result<(), String> {
+    let why = orq_core::redact::redact(why);
     let first = why.lines().next().unwrap_or_default();
     let reason: String = first.chars().take(300).collect();
-    let payload = serde_json::json!({
-        "reason": orq_core::redact::redact(&reason),
-        "output": orq_core::redact::redact(tail(why)),
-    });
+    let payload = serde_json::json!({ "reason": reason, "output": tail(&why) });
     append(store, record, "run.accept_failed", payload)
 }
 
@@ -152,6 +150,9 @@ fn append(store: &RunStore, record: &crate::store::RunRecord, kind: &str, payloa
 
 const OUTPUT_TAIL: usize = 1500;
 
+/// The end of `text`, at most [`OUTPUT_TAIL`] bytes. Redact `text` first: what is cut off cannot be recognised.
+/// The line the cut falls in goes too, since it may hold the end of a secret; and when the kept text holds the end
+/// of a private key whose start was cut off, everything up to that end goes.
 fn tail(text: &str) -> &str {
     let text = text.trim();
     if text.len() <= OUTPUT_TAIL {
@@ -161,7 +162,17 @@ fn tail(text: &str) -> &str {
     while !text.is_char_boundary(from) {
         from += 1;
     }
-    &text[from..]
+    let mut kept = &text[from..];
+    if let Some(newline) = kept.find('\n') {
+        kept = &kept[newline + 1..];
+    }
+    const KEY_END: &str = "PRIVATE KEY-----";
+    if let Some(end) = kept.rfind(KEY_END) {
+        if !kept[..end].contains("-----BEGIN") {
+            kept = kept[end + KEY_END.len()..].trim_start();
+        }
+    }
+    kept
 }
 
 /// Run the tests of `worktree`: the `configured` command if given, otherwise what its stacks
@@ -194,13 +205,15 @@ pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
         drop(reader); // a child still writing after a failed read gets a broken pipe, not a full one
         let status = child.wait().map_err(cannot_run)?;
         if !status.success() {
-            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&String::from_utf8_lossy(&printed))));
+            let printed = orq_core::redact::redact(&String::from_utf8_lossy(&printed));
+            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&printed)));
         }
     }
     Ok(())
 }
 
-/// Read `source` to its end, keeping only the last bytes of it so a noisy command costs bounded memory.
+/// Read `source` to its end, keeping only the last bytes of it so a noisy command costs bounded memory. What is
+/// kept is always more than [`tail`] keeps when anything was dropped, so the cut made here never shows.
 fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
     let mut kept: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -212,8 +225,8 @@ fn read_tail(source: &mut impl std::io::Read) -> Vec<u8> {
             Err(_) => break,
         };
         kept.extend_from_slice(&chunk[..n]);
-        if kept.len() > 2 * OUTPUT_TAIL {
-            kept.drain(..kept.len() - OUTPUT_TAIL);
+        if kept.len() > 4 * OUTPUT_TAIL {
+            kept.drain(..kept.len() - 2 * OUTPUT_TAIL);
         }
     }
     kept
