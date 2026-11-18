@@ -272,3 +272,20 @@ fn a_failure_line_past_what_the_logs_page_can_show_is_not_given() {
     assert!(found[0]["log"].get("line").is_none(), "the Logs tab reads only the first 8 MB: {found:?}");
     assert!(found[0]["log"]["excerpt"].as_str().unwrap().contains("panicked at"), "{found:?}");
 }
+
+#[test]
+fn a_failure_without_a_log_still_gives_its_redacted_reason() {
+    let s = setup("failure-no-log");
+    add_run(&s, "r1", &[
+        ("stage.failed", Some("verify"), json!({"reason": "could not start: token=ghp_abcdefghijklmnopqrstuvwxyz0123456789"})),
+        ("stage.failed", Some("verify"), json!({"reason": "bad log", "log": 7})),
+        ("stage.failed", Some("verify"), json!({"exit_code": 1})),
+    ]);
+    let found = failures(&timeline(&s, "r1"));
+    assert!(found[0]["reason"].as_str().unwrap().starts_with("could not start"), "{:?}", found[0]);
+    assert!(!found[0]["reason"].as_str().unwrap().contains("ghp_abcdef"), "{:?}", found[0]);
+    assert!(found[0].get("log").is_none(), "{:?}", found[0]);
+    assert_eq!(found[1], json!({"reason": "bad log"}));
+    // Nothing to say gives no failure at all.
+    assert!(found[2].is_null(), "{:?}", found[2]);
+}

@@ -2011,15 +2011,17 @@ fn run_log_name(path: &std::path::Path, logs_dir: &std::path::Path) -> Option<St
     (plain_log_name(name) && path.symlink_metadata().is_ok_and(|meta| meta.is_file())).then(|| name.to_string())
 }
 
-/// What the run page shows of the failure event at `at`: its reason and, when it names one of the run's own
+/// What the run page shows of the failure event at `at`: its reason (also without a log) and, when it names one of the run's own
 /// logs, the line in it where this attempt's error is, all redacted. The attempt's part of an appended log
 /// runs from the line count its stage start recorded to the next start's.
 fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::path::Path) -> Option<serde_json::Value> {
     use orq_core::redact::redact;
     let event = &events[at];
-    let log = event.payload.get("log")?.as_str()?;
-    let reason = event.payload.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-    let mut failure = serde_json::json!({"reason": redact(reason)});
+    let reason = event.payload.get("reason").and_then(|v| v.as_str());
+    let log = event.payload.get("log").and_then(|v| v.as_str());
+    // A failure before any log was written still says why.
+    let mut failure = serde_json::json!({"reason": redact(reason.unwrap_or(""))});
+    let Some(log) = log else { return reason.map(|_| failure) };
     let path = std::path::Path::new(log);
     let Some(file) = run_log_name(path, logs_dir) else { return Some(failure) };
     let starts_of_log = |event: &&orq_orchestrator::Event| event.kind == "stage.started" && event.payload.get("log").and_then(|v| v.as_str()) == Some(log);
