@@ -4583,6 +4583,26 @@ function RoleFields({ title, role, entry, options, choice, disabled, onChoose })
   );
 }
 
+// One setting of the "Starting runs" card as a settings row: its label on the left and its value on the
+// right, wrapping under the label on a phone; while editing, the label wraps the control (its accessible
+// name) and the control with its message stacks under or beside it.
+function StartingRunsRow({ label, editing, value, children }) {
+  if (!editing) {
+    return (
+      <div className="settings-row" data-setting-row>
+        <span className="settings-label" data-setting-label>{label}</span>
+        <span className="settings-row-value" data-setting-value>{value}</span>
+      </div>
+    );
+  }
+  return (
+    <label className="settings-row settings-field" data-setting-row>
+      <span className="settings-label" data-setting-label>{label}</span>
+      <span className="settings-field-control">{children}</span>
+    </label>
+  );
+}
+
 const PROJECT_ROLES = [["Implementer", "implementer"], ["Reviewer", "reviewer"]];
 
 // A project's settings: each role and the delivery, read only until Edit. Edit checks that remote actions
@@ -4681,28 +4701,18 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           )}
         </div>
       </section>
-      <section className="card settings-card">
+      <section className="card settings-card" data-starting-runs>
         <SettingsHead icon="play">Starting runs</SettingsHead>
-        <label className="settings-block">
-          <span>At most N active runs</span>
-          {editing ? (
-            <select data-max-active-runs aria-label="At most N active runs" value={draft.maxActiveRuns} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, maxActiveRuns: event.target.value })}>
-              <option value="">No limit</option>
-              {Array.from({ length: ACTIVE_RUNS_RANGE[1] - ACTIVE_RUNS_RANGE[0] + 1 }, (_, index) => String(ACTIVE_RUNS_RANGE[0] + index)).map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>
-          ) : (
-            <span data-project-max-active-runs>{activeRunsLine(settings.max_active_runs)}</span>
-          )}
-        </label>
-        <label className="settings-block">
-          <span>Free disk needed to start (GB)</span>
-          {editing ? (
-            <input type="text" inputMode="numeric" data-min-free-disk aria-label="Free disk needed to start (GB)" placeholder="No limit" value={draft.minFreeDisk} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, minFreeDisk: event.target.value })} />
-          ) : (
-            <span data-project-min-free-disk>{freeDiskLine(settings.min_free_disk_gb)}</span>
-          )}
+        <StartingRunsRow label="At most N active runs" editing={editing} value={<span data-project-max-active-runs>{activeRunsLine(settings.max_active_runs)}</span>}>
+          {editing ? <select data-max-active-runs aria-label="At most N active runs" value={draft.maxActiveRuns} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, maxActiveRuns: event.target.value })}>
+            <option value="">No limit</option>
+            {Array.from({ length: ACTIVE_RUNS_RANGE[1] - ACTIVE_RUNS_RANGE[0] + 1 }, (_, index) => String(ACTIVE_RUNS_RANGE[0] + index)).map((value) => <option key={value} value={value}>{value}</option>)}
+          </select> : null}
+        </StartingRunsRow>
+        <StartingRunsRow label="Free disk needed to start (GB)" editing={editing} value={<span data-project-min-free-disk>{freeDiskLine(settings.min_free_disk_gb)}</span>}>
+          {editing ? <input type="text" inputMode="numeric" data-min-free-disk aria-label="Free disk needed to start (GB)" placeholder="No limit" value={draft.minFreeDisk} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, minFreeDisk: event.target.value })} /> : null}
           {editing && typedFloor(draft.minFreeDisk) === undefined ? <span className="error-text" data-min-free-disk-invalid>Leave it empty for no limit, or give a whole number from 1 to 500.</span> : null}
-        </label>
+        </StartingRunsRow>
       </section>
       <section className="card settings-card">
         <SettingsHead icon="clock">Queue</SettingsHead>

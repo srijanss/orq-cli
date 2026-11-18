@@ -148,8 +148,10 @@ pub struct Measured {
     pub unanswered: Vec<String>,
 }
 
-/// Opens `path` at `width` x 800 with `replies`, runs `steps` (each `{"click": selector, "text"?: text}`
-/// or `{"wait": selector, "text"?: text}`), and returns what the probe measured.
+/// Opens `path` at `width` x 800 with `replies`, runs `steps` (each `{"click": selector, "text"?: text}`,
+/// `{"wait": selector, "text"?: text}`, `{"type": selector, "value": text}` filling a field, `{"lines":
+/// selector, "text": text}` or `{"boxes": selector}`), and returns what the probe measured: `boxes` maps
+/// each `boxes` selector to the rounded rects (`left`, `top`, `right`, `bottom`) of every match, in order.
 pub fn measure(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value) -> Measured {
     measure_with(chromium, width, path, replies, steps, "")
 }
@@ -318,7 +320,7 @@ const PROBE: &str = r##"
 (function () {
   var steps = window.__steps || [];
   function find(step) {
-    var all = document.querySelectorAll(step.click || step.wait);
+    var all = document.querySelectorAll(step.click || step.wait || step.type);
     for (var i = 0; i < all.length; i++) {
       if (step.text === undefined || (all[i].textContent || "").trim().indexOf(step.text) === 0) return all[i];
     }
@@ -366,6 +368,17 @@ const PROBE: &str = r##"
     }
     return -1;
   }
+  function boxesOf(selector) {
+    return Array.prototype.map.call(document.querySelectorAll(selector), function (element) {
+      var rect = element.getBoundingClientRect();
+      return {left: Math.round(rect.left), top: Math.round(rect.top), right: Math.round(rect.right), bottom: Math.round(rect.bottom)};
+    });
+  }
+  function fill(element, value) {
+    var setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value").set;
+    setter.call(element, value);
+    element.dispatchEvent(new Event("input", {bubbles: true}));
+  }
   var at = 0;
   var waited = 0;
   function next() {
@@ -373,13 +386,15 @@ const PROBE: &str = r##"
       setTimeout(function () {
         var result = measure();
         result.lines = {};
+        result.boxes = {};
         steps.forEach(function (step) { if (step.lines) result.lines[step.lines] = linesOf(step.lines, step.text); });
+        steps.forEach(function (step) { if (step.boxes) result.boxes[step.boxes] = boxesOf(step.boxes); });
         document.getElementById("result").textContent = JSON.stringify(result);
       }, 300);
       return;
     }
     var step = steps[at];
-    if (step.lines) { at += 1; waited = 0; return next(); }
+    if (step.lines || step.boxes) { at += 1; waited = 0; return next(); }
     var element = find(step);
     if (element === null) {
       waited += 50;
@@ -390,6 +405,7 @@ const PROBE: &str = r##"
       return setTimeout(next, 50);
     }
     if (step.click) element.click();
+    if (step.type) fill(element, step.value);
     at += 1;
     waited = 0;
     setTimeout(next, 100);
