@@ -374,3 +374,20 @@ fn an_unattended_run_whose_session_reported_ok_after_its_review_escalated_is_jud
     assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
     assert!(stderr.contains("Follow-ups drafted: review-followup-COM-01-off-by-one"), "{stderr}");
 }
+
+/// Finding ids that differ only in characters a ledger name cannot hold still get a follow-up each,
+/// under names of their own; an id a ledger name can hold is kept as it is.
+#[test]
+fn findings_whose_ids_clean_to_the_same_name_each_get_a_follow_up_of_their_own() {
+    let agent = feature_agent();
+    let w = world("collide", &agent, &escalated_review(&[("a/b", "medium", "bugs"), ("a:b", "medium", "bugs"), ("a-b", "medium", "bugs")]), "PROBLEM\\nthe review escalated after 3 rounds\\n");
+
+    let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
+
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
+    let names: std::collections::BTreeSet<String> = followups(w.repo.root()).iter().map(|e| e["featureName"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert!(names.contains("review-followup-COM-01-a-b"), "{names:?}");
+    assert!(names.iter().all(|n| n.starts_with("review-followup-COM-01-a-b") && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')), "{names:?}");
+}

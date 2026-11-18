@@ -858,10 +858,18 @@ fn draft_followups(store: &RunStore, record: &RunRecord, ledger: &Path, review: 
 }
 
 /// The ledger name of the follow-up of `finding` in a run of `feature`: only letters, digits, `-` and
-/// `_`, whatever the reviewer named the finding.
+/// `_`, whatever the reviewer named the finding. A name that had to be cleaned ends in a stable hash
+/// of what it was, so ids that clean to the same text (`a/b`, `a:b`, `a-b`) keep a follow-up each.
 fn followup_name(feature: &str, finding: &str) -> String {
-    let clean = |text: &str| text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect::<String>();
-    format!("review-followup-{}-{}", clean(feature), clean(finding))
+    let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let clean = |text: &str| text.chars().map(|c| if allowed(c) { c } else { '-' }).collect::<String>();
+    let name = format!("review-followup-{}-{}", clean(feature), clean(finding));
+    if feature.chars().chain(finding.chars()).all(allowed) {
+        return name;
+    }
+    // FNV-1a, so the name is the same in every run and every build.
+    let hash = feature.bytes().chain([0]).chain(finding.bytes()).fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    format!("{name}-{:08x}", hash as u32)
 }
 
 fn followup_description(feature: &str, f: &orq_orchestrator::EscalatedFinding) -> String {
