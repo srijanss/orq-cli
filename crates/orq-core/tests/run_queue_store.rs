@@ -10,11 +10,16 @@ use orq_core::store::run_queue::{QueueAddition, QueueProfiles};
 use orq_core::store::Store;
 
 fn open(tag: &str) -> Store {
+    Store::open(&database(tag)).unwrap()
+}
+
+/// A fresh orq.db's path for test `tag`.
+fn database(tag: &str) -> std::path::PathBuf {
     let base = orq_test_support::process_temp_dir().join(format!("orq-run-queue-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
-    Store::open(&roots.database()).unwrap()
+    roots.database()
 }
 
 fn plain(feature: &str) -> QueueAddition {
@@ -109,4 +114,34 @@ fn a_project_s_queue_hours_and_stop_on_failure_are_saved_with_its_settings_and_b
     assert!(!within_queue_hours(night, 12 * 60));
     assert!(within_queue_hours("09:00-17:30", 9 * 60));
     assert!(!within_queue_hours("09:00-17:30", 17 * 60 + 30));
+}
+
+#[test]
+fn the_queue_limit_is_checked_in_the_same_write_as_the_addition_so_two_adders_cannot_pass_it_together() {
+    let database = database("limit");
+    let store = Store::open(&database).unwrap();
+    let alpha = Path::new("/work/alpha");
+    let first: Vec<QueueAddition> = (1..orq_core::store::run_queue::QUEUE_LIMIT).map(|i| plain(&format!("F{i:03}"))).collect();
+    store.queue_add(alpha, &first, "web", 1).unwrap();
+
+    let refused = store.queue_add(alpha, &[plain("X"), plain("Y")], "web", 2).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(refused.to_string(), "the queue holds at most 200 features; 199 are queued");
+    assert_eq!(store.queue_add(alpha, &[plain("F001")], "web", 2).unwrap(), Vec::<String>::new(), "one already queued fits");
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let adders: Vec<_> = ["X", "Y"]
+        .map(|feature| {
+            let (database, barrier) = (database.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let store = Store::open(&database).unwrap();
+                barrier.wait();
+                store.queue_add(Path::new("/work/alpha"), &[plain(feature)], "cli", 3).is_ok()
+            })
+        })
+        .into_iter()
+        .collect();
+    let added = adders.into_iter().map(|adder| adder.join().unwrap()).filter(|ok| *ok).count();
+    assert_eq!(added, 1);
+    assert_eq!(store.queue(alpha).unwrap().entries.len(), 200);
 }

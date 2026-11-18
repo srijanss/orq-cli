@@ -24,6 +24,9 @@ pub struct QueueAddition {
     pub profiles: Option<QueueProfiles>,
 }
 
+/// The most features a project's queue holds: as many as one reorder request may name.
+pub const QUEUE_LIMIT: usize = 200;
+
 /// One queued feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedFeature {
@@ -89,12 +92,25 @@ impl Store {
 
     /// Adds each feature not queued yet to the end of the queue, in the order given, and returns the
     /// ones it added.
+    /// Adds `additions` in order, skipping a feature queued already; refused with `InvalidInput`
+    /// when the queue would hold more than [`QUEUE_LIMIT`] features.
     pub fn queue_add(&self, root: &Path, additions: &[QueueAddition], added_by: &str, now: i64) -> Result<Vec<String>> {
         let key = project_key(root)?;
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(db)?;
         let mut position: i64 = tx
             .query_row("SELECT COALESCE(MAX(position), 0) FROM run_queue WHERE project_root = ?1", params![key], |row| row.get(0))
             .map_err(db)?;
+        // Checked in this write, so two adders at once cannot both pass the limit.
+        let queued: Vec<String> = {
+            let mut statement = tx.prepare("SELECT feature FROM run_queue WHERE project_root = ?1").map_err(db)?;
+            let rows = statement.query_map(params![key], |row| row.get(0)).map_err(db)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db)?
+        };
+        let new: std::collections::BTreeSet<&str> =
+            additions.iter().map(|addition| addition.feature.as_str()).filter(|feature| !queued.iter().any(|queued| queued == feature)).collect();
+        if queued.len() + new.len() > QUEUE_LIMIT {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("the queue holds at most {QUEUE_LIMIT} features; {} are queued", queued.len())));
+        }
         let mut added = Vec::new();
         for addition in additions {
             let (implementer, reviewer) = match &addition.profiles {
