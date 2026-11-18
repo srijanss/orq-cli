@@ -1018,3 +1018,17 @@ fn root_setup_cfg_or_tox_ini_settings_win_over_those_beside_manage_py() {
         assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])), "{tag}");
     }
 }
+
+/// A root conftest.py shares fixtures but configures nothing, so settings beside manage.py still
+/// decide where pytest runs, and a root conftest.py alone still runs pytest from the root.
+#[test]
+fn a_root_conftest_py_does_not_hide_settings_beside_manage_py() {
+    let dir = django_configured_in_src("django-src-and-root-conftest");
+    touch(&dir, "src/pytest.ini", "[pytest]\n");
+    touch(&dir, "conftest.py", "");
+    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])));
+
+    let dir = django_configured_in_src("django-root-conftest-only");
+    touch(&dir, "conftest.py", "");
+    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])));
+}

@@ -144,11 +144,15 @@ fn python_steps(
             ),
         }
     }
-    // Settings decide where pytest runs: the root's win, then those a Django project keeps beside
-    // manage.py. A root `tests/` directory configures nothing, so it only counts when neither has any.
-    let root_settings = pytest_in_pyproject || pytest_settings_in(dir);
-    let in_src = !root_settings && django && pytest_settings_in(&dir.join("src"));
-    let pytest_configured = root_settings || in_src || dir.join("tests").is_dir();
+    // Settings decide where pytest runs: the root's configuration wins, then the settings a Django
+    // project keeps beside manage.py. A root `tests/` directory or conftest.py configures nothing,
+    // so it only counts when neither has any.
+    let root_config = pytest_in_pyproject || pytest_config_in(dir);
+    let in_src = !root_config && django && pytest_settings_in(&dir.join("src"));
+    let pytest_configured = root_config
+        || in_src
+        || dir.join("tests").is_dir()
+        || dir.join("conftest.py").is_file();
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
@@ -269,6 +273,12 @@ fn requirement_name(requirement: &str) -> String {
 /// Whether `dir` holds pytest settings: a `pytest.ini`, a `setup.cfg` with `[tool:pytest]`, a `tox.ini`
 /// with `[pytest]`, or a `conftest.py`.
 fn pytest_settings_in(dir: &Path) -> bool {
+    pytest_config_in(dir) || dir.join("conftest.py").is_file()
+}
+
+/// Whether `dir` holds a pytest configuration file: a `pytest.ini`, a `setup.cfg` with
+/// `[tool:pytest]`, or a `tox.ini` with `[pytest]`.
+fn pytest_config_in(dir: &Path) -> bool {
     let has_section = |name: &str, section: &str| {
         fs::read_to_string(dir.join(name))
             .is_ok_and(|text| text.lines().any(|line| line.trim() == section))
@@ -276,7 +286,6 @@ fn pytest_settings_in(dir: &Path) -> bool {
     dir.join("pytest.ini").is_file()
         || has_section("setup.cfg", "[tool:pytest]")
         || has_section("tox.ini", "[pytest]")
-        || dir.join("conftest.py").is_file()
 }
 
 /// What to hand pytest for a change that touches only documentation and Django apps with tests, sorted:
