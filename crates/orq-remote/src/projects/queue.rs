@@ -298,14 +298,35 @@ pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
 /// The entries in the order they may start: one never comes before a queued feature it depends on,
 /// and otherwise the queue's own order holds.
 fn ordered<'a>(entries: &'a [QueuedFeature], ledger: &[FeatureEntry]) -> Vec<&'a QueuedFeature> {
-    let depends_on = |feature: &str| -> &[String] { ledger.iter().find(|entry| entry.feature_name == feature).map_or(&[][..], |entry| &entry.depends_on[..]) };
-    let mut remaining: Vec<&QueuedFeature> = entries.iter().collect();
+    use std::collections::{BTreeSet, HashMap};
+    let depends_on: HashMap<&str, &[String]> = ledger.iter().map(|entry| (entry.feature_name.as_str(), &entry.depends_on[..])).collect();
+    let position: HashMap<&str, usize> = entries.iter().enumerate().map(|(at, entry)| (entry.feature.as_str(), at)).collect();
+    // For each queued feature, how many of its dependencies are still queued before it, and which
+    // queued features wait on it.
+    let mut waiting_on = vec![0usize; entries.len()];
+    let mut dependents = vec![Vec::new(); entries.len()];
+    for (at, entry) in entries.iter().enumerate() {
+        for dep in depends_on.get(entry.feature.as_str()).copied().unwrap_or_default() {
+            if let Some(&of) = position.get(dep.as_str()) {
+                waiting_on[at] += 1;
+                dependents[of].push(at);
+            }
+        }
+    }
+    let mut remaining: BTreeSet<usize> = (0..entries.len()).collect();
+    let mut free: BTreeSet<usize> = (0..entries.len()).filter(|&at| waiting_on[at] == 0).collect();
     let mut placed = Vec::with_capacity(entries.len());
-    while !remaining.is_empty() {
-        let free = remaining.iter().position(|entry| depends_on(&entry.feature).iter().all(|dep| !remaining.iter().any(|other| &other.feature == dep)));
+    while let Some(&first) = remaining.first() {
         // A cycle among queued features keeps the queue's own order for what is left.
-        let at = free.unwrap_or(0);
-        placed.push(remaining.remove(at));
+        let at = free.pop_first().unwrap_or(first);
+        remaining.remove(&at);
+        placed.push(&entries[at]);
+        for &next in &dependents[at] {
+            waiting_on[next] -= 1;
+            if waiting_on[next] == 0 && remaining.contains(&next) {
+                free.insert(next);
+            }
+        }
     }
     placed
 }
@@ -385,5 +406,43 @@ mod tests {
     fn a_start_error_is_logged_with_its_secrets_redacted() {
         let line = super::launch_error_line("COM-01", "git push failed: password=hunter2hunter2");
         assert_eq!(line, "orq: the queue could not start COM-01: git push failed: password=[REDACTED]");
+    }
+
+    fn queued(feature: String) -> super::QueuedFeature {
+        super::QueuedFeature { feature, added_at: 0, added_by: "web".into(), profiles: None, run: None, failed: false }
+    }
+
+    fn entry(feature: String, depends_on: Vec<String>) -> super::FeatureEntry {
+        super::FeatureEntry {
+            feature_name: feature,
+            description: None,
+            depends_on,
+            status: orq_features::LedgerStatus::Known(orq_core::FeatureStatus::Pending),
+            test_file: None,
+            target_files: Vec::new(),
+            recorded_at: None,
+            cycles_completed: None,
+            parallelizable: None,
+        }
+    }
+
+    #[test]
+    fn a_long_chain_queued_backwards_is_put_in_dependency_order_quickly() {
+        let name = |i: usize| format!("COM-{i:04}");
+        let ledger: Vec<_> = (0..3000).map(|i| entry(name(i), if i == 0 { Vec::new() } else { vec![name(i - 1)] })).collect();
+        let entries: Vec<_> = (0..3000).rev().map(|i| queued(name(i))).collect();
+        let started = std::time::Instant::now();
+        let order: Vec<&str> = super::ordered(&entries, &ledger).into_iter().map(|e| e.feature.as_str()).collect();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert_eq!(order, (0..3000).map(name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_queue_order_is_kept_where_dependencies_allow_and_for_a_cycle() {
+        let s = |v: &str| v.to_string();
+        let ledger = vec![entry(s("A"), vec![s("C")]), entry(s("B"), vec![]), entry(s("C"), vec![]), entry(s("X"), vec![s("Y")]), entry(s("Y"), vec![s("X")])];
+        let entries: Vec<_> = ["X", "A", "B", "Y", "C"].map(s).into_iter().map(queued).collect();
+        let order: Vec<&str> = super::ordered(&entries, &ledger).into_iter().map(|e| e.feature.as_str()).collect();
+        assert_eq!(order, ["B", "C", "A", "X", "Y"]);
     }
 }
