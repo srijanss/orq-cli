@@ -813,7 +813,7 @@ fn unanswered_need(store: &RunStore, run_id: &str) -> Option<String> {
 }
 
 /// For an unattended run whose review escalated: each finding still open becomes a draft ledger entry
-/// `review-followup-<feature>-<finding id>` that says what was found, recorded as the run's
+/// `review-followup-<feature>-<finding id>-<hash>` that says what was found, recorded as the run's
 /// `run.followups_drafted` event. One already in the ledger is kept as it is. A finding at high
 /// severity or above, or in the security category, is not left for later: `Err` names them, and
 /// nothing is drafted.
@@ -858,18 +858,16 @@ fn draft_followups(store: &RunStore, record: &RunRecord, ledger: &Path, review: 
 }
 
 /// The ledger name of the follow-up of `finding` in a run of `feature`: only letters, digits, `-` and
-/// `_`, whatever the reviewer named the finding. A name that had to be cleaned ends in a stable hash
-/// of what it was, so ids that clean to the same text (`a/b`, `a:b`, `a-b`) keep a follow-up each.
+/// `_`, whatever the reviewer named the finding. Every name ends in a stable hash of the pair, so no two
+/// pairs share one: not ids that clean to the same text (`a/b`, `a:b`, `a-b`), not a safe id that
+/// spells out another's name, and not pairs a `-` splits two ways (`A-B`/`C`, `A`/`B-C`).
 fn followup_name(feature: &str, finding: &str) -> String {
     let allowed = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let clean = |text: &str| text.chars().map(|c| if allowed(c) { c } else { '-' }).collect::<String>();
-    let name = format!("review-followup-{}-{}", clean(feature), clean(finding));
-    if feature.chars().chain(finding.chars()).all(allowed) {
-        return name;
-    }
-    // FNV-1a, so the name is the same in every run and every build.
+    // FNV-1a of the pair as it was, the two kept apart by a byte neither holds, so the name is the
+    // same in every run and every build and tells apart what the readable part cannot.
     let hash = feature.bytes().chain([0]).chain(finding.bytes()).fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
-    format!("{name}-{:08x}", hash as u32)
+    format!("review-followup-{}-{}-{:012x}", clean(feature), clean(finding), hash & 0xffff_ffff_ffff)
 }
 
 fn followup_description(feature: &str, f: &orq_orchestrator::EscalatedFinding) -> String {
@@ -2723,5 +2721,19 @@ mod tests {
         assert!(super::has_commits(&record_in(dir.clone())));
         assert!(!super::has_commits(&record_in(dir.join("gone"))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Distinct (feature, finding) pairs never share a follow-up name: not when cleaning makes two ids
+    /// alike, not when a safe id spells out another's name, and not when `-` splits a pair two ways.
+    #[test]
+    fn distinct_findings_never_share_a_follow_up_name() {
+        use super::followup_name;
+        let cleaned = followup_name("COM-01", "a/b");
+        let spelled = cleaned.trim_start_matches("review-followup-COM-01-");
+        assert_ne!(followup_name("COM-01", spelled), cleaned, "a safe id spelling out another's name");
+        assert_ne!(followup_name("A-B", "C"), followup_name("A", "B-C"), "the `-` between feature and finding");
+        assert_ne!(followup_name("COM-01", "a/b"), followup_name("COM-01", "a-b"));
+        assert_eq!(followup_name("COM-01", "a/b"), cleaned, "the same pair always has the same name");
+        assert!(followup_name("COM-01", "off-by-one").starts_with("review-followup-COM-01-off-by-one-"));
     }
 }

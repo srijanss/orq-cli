@@ -192,18 +192,25 @@ fn an_unattended_run_whose_review_escalated_drafts_a_follow_up_per_open_finding_
 
     let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
     assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
-    assert!(stderr.contains("Follow-ups drafted: review-followup-COM-01-off-by-one, review-followup-COM-01-no-edge-test"), "{stdout}\n{stderr}");
+    let drafted = stderr.lines().find_map(|l| l.split("Follow-ups drafted: ").nth(1)).unwrap_or_else(|| panic!("{stdout}\n{stderr}"));
+    let drafted: Vec<&str> = drafted.split(", ").collect();
+    assert!(matches!(drafted[..], [a, b] if named(a, "review-followup-COM-01-off-by-one") && named(b, "review-followup-COM-01-no-edge-test")), "{stderr}");
     let ledger = ledger(w.repo.root());
-    let draft = ledger.iter().find(|e| e["featureName"] == "review-followup-COM-01-off-by-one").unwrap_or_else(|| panic!("{ledger:?}"));
+    let draft = ledger.iter().find(|e| named(e["featureName"].as_str().unwrap_or_default(), "review-followup-COM-01-off-by-one")).unwrap_or_else(|| panic!("{ledger:?}"));
     assert_eq!(draft["status"], "draft");
     assert_eq!(draft["dependsOn"], serde_json::json!([]));
     let description = draft["description"].as_str().unwrap();
     for part in ["off-by-one", "src/lib.rs:1", "bugs", "medium", "the off-by-one claim", "fix off-by-one"] {
         assert!(description.contains(part), "{part} missing from {description}");
     }
-    assert!(ledger.iter().any(|e| e["featureName"] == "review-followup-COM-01-no-edge-test" && e["status"] == "draft"), "{ledger:?}");
+    assert!(ledger.iter().any(|e| named(e["featureName"].as_str().unwrap_or_default(), "review-followup-COM-01-no-edge-test") && e["status"] == "draft"), "{ledger:?}");
     // orq drafted them, not the session: they are not work the session added beside its own.
     assert!(!stderr.contains("also added"), "{stderr}");
+}
+
+/// Whether `name` is the follow-up name `readable` with the hash every follow-up name ends in.
+fn named(name: &str, readable: &str) -> bool {
+    name.strip_prefix(readable).and_then(|rest| rest.strip_prefix('-')).is_some_and(|hash| hash.len() == 12 && hash.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn followups(repo: &Path) -> Vec<serde_json::Value> {
@@ -372,11 +379,11 @@ fn an_unattended_run_whose_session_reported_ok_after_its_review_escalated_is_jud
     let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
     let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
     assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
-    assert!(stderr.contains("Follow-ups drafted: review-followup-COM-01-off-by-one"), "{stderr}");
+    assert!(stderr.lines().find_map(|l| l.split("Follow-ups drafted: ").nth(1)).is_some_and(|n| named(n, "review-followup-COM-01-off-by-one")), "{stderr}");
 }
 
 /// Finding ids that differ only in characters a ledger name cannot hold still get a follow-up each,
-/// under names of their own; an id a ledger name can hold is kept as it is.
+/// under names of their own.
 #[test]
 fn findings_whose_ids_clean_to_the_same_name_each_get_a_follow_up_of_their_own() {
     let agent = feature_agent();
@@ -388,8 +395,7 @@ fn findings_whose_ids_clean_to_the_same_name_each_get_a_follow_up_of_their_own()
     assert!(stdout.contains("state: merged"), "{stdout}\n{stderr}");
     let names: std::collections::BTreeSet<String> = followups(w.repo.root()).iter().map(|e| e["featureName"].as_str().unwrap().to_string()).collect();
     assert_eq!(names.len(), 3, "{names:?}");
-    assert!(names.contains("review-followup-COM-01-a-b"), "{names:?}");
-    assert!(names.iter().all(|n| n.starts_with("review-followup-COM-01-a-b") && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')), "{names:?}");
+    assert!(names.iter().all(|n| named(n, "review-followup-COM-01-a-b")), "{names:?}");
 }
 
 /// A session that crashed, leaving no finish report, has failed whatever review it left: an escalated
