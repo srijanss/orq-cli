@@ -496,15 +496,17 @@ pub fn later_run_of(store: &RunStore, run_id: &str) -> Result<Option<(String, Ve
     Ok(Some((later, taken)))
 }
 
+/// Whether `other` works on `run`'s branch or in its worktree, as a run that continues it does.
+fn shares_checkout(run: &RunRecord, other: &RunRecord) -> bool {
+    (!run.branch.is_empty() && other.branch == run.branch) || (!run.worktree.as_os_str().is_empty() && other.worktree == run.worktree)
+}
+
 /// The newest run of `run_id`'s project that started after it on its branch or in its worktree, as
 /// a resume continues a run: that run works in the checkout `run_id` recorded, so what is done to
 /// the checkout is its to do. A run of the same features on a checkout of its own is no such run.
 pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, String> {
     let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     let own = run_order(run_id, &store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?);
-    let shares_checkout = |other: &RunRecord| {
-        (!record.branch.is_empty() && other.branch == record.branch) || (!record.worktree.as_os_str().is_empty() && other.worktree == record.worktree)
-    };
     // One scan: a run whose record cannot be read may be the one that took this checkout over, and
     // so may a run on it whose events cannot be read; either fails rather than let another run's
     // work be discarded or accepted. Runs elsewhere are not read further.
@@ -515,7 +517,7 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
             Err(StoreError::NotFound(_)) => continue,
             Err(e) => return Err(format!("cannot tell whether {other} took over {run_id}: its record cannot be read: {e:?}")),
         };
-        if other == run_id || candidate.project_id != record.project_id || !shares_checkout(&candidate) {
+        if other == run_id || candidate.project_id != record.project_id || !shares_checkout(&record, &candidate) {
             continue;
         }
         let events = store
@@ -527,6 +529,44 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
         }
     }
     Ok(newest.map(|(_, other)| other))
+}
+
+/// Whether a run in `phase` holds one of its project's active-run slots: it is running, pausing or
+/// paused (a paused run keeps its worktree mid-stage and resumes into the same session). A blocked,
+/// failed, review-waiting or ended run waits on a person, not on the machine, and holds none.
+pub fn holds_run_slot(phase: RunPhase) -> bool {
+    matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused)
+}
+
+/// Whether resuming `run_id` is a start as far as its project's run limit goes: a blocked run holds
+/// no slot, so its resume needs one; a paused run's resume keeps the slot the run already holds.
+pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, String> {
+    let events = store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    if events.is_empty() {
+        store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    }
+    Ok(summarize_run(&events).phase == RunPhase::Blocked)
+}
+
+/// The runs among `runs` (run id, record, events) that are active, as (run id, feature id) in the
+/// order given: those [`holds_run_slot`] says hold a slot, less any a later run of the same project
+/// continued on its branch or in its worktree, which is that later run's business whatever the
+/// run's own events last said.
+pub fn active_runs(runs: &[(String, RunRecord, Vec<Event>)]) -> Vec<(String, String)> {
+    let ordered: Vec<RunOrder> = runs.iter().map(|(run_id, _, events)| run_order(run_id, events)).collect();
+    runs.iter()
+        .zip(&ordered)
+        .filter(|((_, _, events), _)| holds_run_slot(summarize_run(events).phase))
+        .filter(|((run_id, record, _), own)| {
+            !runs.iter().zip(&ordered).any(|((other_id, other, _), order)| {
+                other_id != run_id
+                    && other.project_id == record.project_id
+                    && shares_checkout(record, other)
+                    && order > own
+            })
+        })
+        .map(|((run_id, record, _), _)| (run_id.clone(), record.feature_id.clone()))
+        .collect()
 }
 
 /// The pipeline continues the latest run of a run's features: `Ok` when the group resume is valid

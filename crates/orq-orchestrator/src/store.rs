@@ -245,11 +245,11 @@ impl RunStore {
         self.start_group_run(record, members)
     }
 
-    /// The project's runs that have not ended, as (run id, feature id) in run id order: running,
-    /// pausing, paused or blocked. A run recorded with no events yet has just started.
+    /// The project's active runs, as (run id, feature id) in run id order: running, pausing or
+    /// paused, and not continued by a later run (see [`crate::active_runs`]). A run recorded with
+    /// no events yet has just started.
     pub fn active_project_runs(&self, project_id: &str) -> Result<Vec<(String, String)>, StoreError> {
-        use crate::run_status::{summarize_run, RunPhase};
-        let mut active = Vec::new();
+        let mut runs = Vec::new();
         for run_id in self.run_ids()? {
             let record = match self.load(&run_id) {
                 Ok(record) => record,
@@ -260,12 +260,10 @@ impl RunStore {
             if record.project_id != project_id {
                 continue;
             }
-            let phase = summarize_run(&self.events(&run_id)?).phase;
-            if matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Blocked) {
-                active.push((run_id, record.feature_id));
-            }
+            let events = self.events(&run_id)?;
+            runs.push((run_id, record, events));
         }
-        Ok(active)
+        Ok(crate::resume::active_runs(&runs))
     }
 
     /// An exclusive advisory lock on the project's start, released when the handle is dropped.

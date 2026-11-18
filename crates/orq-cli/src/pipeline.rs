@@ -408,7 +408,8 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
             return Err(StartError::Limit(reason));
         }
     }
-    if options.max_active_runs.is_some() && !options.resume {
+    // A blocked run holds no slot, so resuming one is a start; a paused one's resume keeps its slot.
+    if options.max_active_runs.is_some() && (!options.resume || resume_takes_a_slot(options, store)?) {
         let active = store.active_project_runs(&project_id(options.project))?;
         if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
             return Err(StartError::Limit(reason));
@@ -420,11 +421,23 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
 /// The worktree recorded by the run a resume of `options` would continue, read without changing
 /// anything; `None` when there is no such run.
 fn resumed_worktree(options: &Options<'_>, store: &RunStore) -> Result<Option<PathBuf>, StartError> {
-    let project = project_id(options.project);
-    let Some(run_id) = orq_orchestrator::newest_run_of(store, &project, &slug(&options.features[0])).map_err(other)? else {
+    let Some(run_id) = resumed_run(options, store)? else {
         return Ok(None);
     };
     Ok(store.load(&run_id).ok().map(|record| record.worktree))
+}
+
+/// Whether the resume of `options` is held to the run limit: the run it continues is blocked.
+fn resume_takes_a_slot(options: &Options<'_>, store: &RunStore) -> Result<bool, StartError> {
+    match resumed_run(options, store)? {
+        Some(run) => orq_orchestrator::resume_takes_a_slot(store, &run).map_err(other),
+        None => Ok(false),
+    }
+}
+
+/// The run a resume of `options` would continue; `None` when there is no such run.
+fn resumed_run(options: &Options<'_>, store: &RunStore) -> Result<Option<String>, StartError> {
+    orq_orchestrator::newest_run_of(store, &project_id(options.project), &slug(&options.features[0])).map_err(other)
 }
 
 /// [`project_limits`] on their own, for a launcher that refuses before it spawns the run.
@@ -486,8 +499,13 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         .collect(),
     };
     let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-    // A resume continues a run that was already counted, so only a new run is held to the limit.
-    let max_active = options.max_active_runs.filter(|_| resumed.is_none());
+    // A paused run's resume continues a run that was already counted; a new run, and the resume of a
+    // blocked run, which holds no slot, are held to the limit.
+    let takes_a_slot = match &resumed {
+        Some(r) => orq_orchestrator::resume_takes_a_slot(&store, &r.from.run_id).map_err(other)?,
+        None => true,
+    };
+    let max_active = options.max_active_runs.filter(|_| takes_a_slot);
     match store.start_group_run_limited(&record, &members, max_active.map(usize::from)) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),

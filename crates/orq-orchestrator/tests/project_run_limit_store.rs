@@ -52,7 +52,7 @@ fn active(run_id: &str, feature: &str) -> (String, String) {
 }
 
 #[test]
-fn running_paused_and_blocked_runs_are_active_and_a_start_at_the_limit_is_refused_with_them() {
+fn only_running_pausing_and_paused_runs_are_active_and_a_start_at_the_limit_is_refused_with_them() {
     let store = store("count");
     let started = |run_id: &str, feature: &str| {
         let record = record("p", run_id, feature);
@@ -64,17 +64,25 @@ fn running_paused_and_blocked_runs_are_active_and_a_start_at_the_limit_is_refuse
     let paused = started("run-b", "B");
     event(&store, &paused, "run.pause_requested", serde_json::json!({}));
     event(&store, &paused, "run.paused", serde_json::json!({}));
-    let blocked = started("run-c", "C");
-    event(&store, &blocked, "run.completed", serde_json::json!({"ending": "blocked"}));
-    for (run_id, feature, ending) in [("run-d", "D", "review_ready"), ("run-e", "E", "failed"), ("run-f", "F", "needs_review")] {
+    let pausing = started("run-c", "C");
+    event(&store, &pausing, "run.pause_requested", serde_json::json!({}));
+    for (run_id, feature, ending) in [("run-d", "D", "review_ready"), ("run-e", "E", "failed"), ("run-f", "F", "needs_review"), ("run-j", "J", "blocked")] {
         let ended = started(run_id, feature);
         event(&store, &ended, "run.completed", serde_json::json!({"ending": ending}));
     }
+    // A paused run continued by a later run on its branch: its own events never say so.
+    let taken = started("run-k", "K");
+    event(&store, &taken, "run.pause_requested", serde_json::json!({}));
+    event(&store, &taken, "run.paused", serde_json::json!({}));
+    let later = RunRecord { run_id: "run-l".into(), worktree: "/w/elsewhere".into(), ..taken.clone() };
+    store.create(&later).unwrap();
+    event(&store, &later, "stage.started", serde_json::json!({}));
+    event(&store, &later, "run.completed", serde_json::json!({"ending": "review_ready"}));
     let other = record("q", "run-g", "G");
     store.start_run(&other).unwrap();
 
     let expected = vec![active("run-a", "A"), active("run-b", "B"), active("run-c", "C")];
-    assert_eq!(store.active_project_runs("p").unwrap(), expected);
+    assert_eq!(store.active_project_runs("p").unwrap(), expected, "blocked, failed, review-waiting, ended and taken-over runs are not active");
     assert_eq!(store.active_project_runs("q").unwrap(), vec![active("run-g", "G")], "a run with no events yet is active");
 
     match store.start_group_run_limited(&record("p", "run-h", "H"), &["H".to_string()], Some(3)) {
@@ -113,4 +121,24 @@ fn of_starts_racing_at_a_limit_of_one_exactly_one_is_recorded() {
     assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1, "{outcomes:?}");
     assert!(outcomes.iter().all(|outcome| matches!(outcome, Ok(()) | Err(StoreError::ProjectAtLimit { .. }))), "{outcomes:?}");
     assert_eq!(store.run_ids().unwrap().len(), 1);
+}
+
+#[test]
+fn resuming_a_blocked_run_takes_a_slot_and_resuming_a_paused_one_keeps_the_slot_it_holds() {
+    let store = store("resume-slot");
+    let started = |run_id: &str| {
+        let record = record("p", run_id, run_id);
+        store.start_run(&record).unwrap();
+        event(&store, &record, "stage.started", serde_json::json!({}));
+        record
+    };
+    let blocked = started("run-blocked");
+    event(&store, &blocked, "run.completed", serde_json::json!({"ending": "blocked"}));
+    let paused = started("run-paused");
+    event(&store, &paused, "run.pause_requested", serde_json::json!({}));
+    event(&store, &paused, "run.paused", serde_json::json!({}));
+
+    assert_eq!(orq_orchestrator::resume_takes_a_slot(&store, "run-blocked"), Ok(true));
+    assert_eq!(orq_orchestrator::resume_takes_a_slot(&store, "run-paused"), Ok(false));
+    assert!(orq_orchestrator::resume_takes_a_slot(&store, "run-missing").is_err(), "a run that cannot be read is not guessed at");
 }

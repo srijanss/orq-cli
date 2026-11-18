@@ -412,6 +412,18 @@ impl StoreProjects {
         Ok(start_blocked(git, &settings, &active)?.map(|why| orq_core::redact::redact(&why)))
     }
 
+    /// Why resuming `run` of `project` would take the project over its run limit, redacted for the page: a
+    /// blocked run holds no slot, so its resume is a start. `None` when it may resume.
+    fn resume_over_limit(&self, project: &Project, store: &orq_orchestrator::RunStore, run: &str) -> Result<Option<String>, String> {
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let settings = self.settings_of_git(&git)?;
+        if settings.max_active_runs.is_none() || !orq_orchestrator::resume_takes_a_slot(store, run)? {
+            return Ok(None);
+        }
+        let active = store.active_project_runs(&orq_git::project_id(&git)).map_err(|error| format!("{error:?}"))?;
+        Ok(orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).map(|why| orq_core::redact::redact(&why)))
+    }
+
     /// The settings of project `git`, read from its main checkout's record.
     fn settings_of_git(&self, git: &orq_git::Project) -> Result<orq_core::project_settings::ProjectSettings, String> {
         let root = orq_git::main_checkout_root(git).unwrap_or_else(|| git.root.clone());
@@ -787,6 +799,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             },
             RunControl::Resume => {
                 let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
+                if let Some(why) = self.resume_over_limit(&project, &store, run)? {
+                    return Ok(RunControlOutcome::Refused(why));
+                }
                 carried_on(launcher.resume(&project.path, run), &project.path)
             }
             RunControl::Accept => self.accept(store, run),
@@ -1440,7 +1455,8 @@ fn counts(project: &Project, reviews: Option<&orq_core::store::Store>, active: &
 fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::collections::HashMap<String, RunCounts>, String> {
     use orq_orchestrator::{RunPhase, StoreError};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let mut counts = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<String, RunCounts> = std::collections::HashMap::new();
+    let mut all = Vec::new();
     for run_id in runs.run_ids().map_err(|error| format!("{error:?}"))? {
         let record = match runs.load(&run_id) {
             Ok(record) => record,
@@ -1448,14 +1464,18 @@ fn active_runs_by_project(runs: &orq_orchestrator::RunStore) -> Result<std::coll
             Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
         };
         let events = runs.events(&run_id).map_err(|error| format!("run {run_id} is unreadable: {error:?}"))?;
-        let entry: &mut RunCounts = counts.entry(record.project_id).or_default();
+        let entry = counts.entry(record.project_id.clone()).or_default();
         let summary = orq_orchestrator::summarize_run(&events);
-        match summary.phase {
-            // Not ended, as a project's run limit counts them.
-            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Blocked => entry.active.push((run_id, record.feature_id)),
-            RunPhase::Failed if failed_recently(summary.phase_at.as_deref(), now) => entry.failed += 1,
-            _ => {}
+        if summary.phase == RunPhase::Failed && failed_recently(summary.phase_at.as_deref(), now) {
+            entry.failed += 1;
         }
+        all.push((run_id, record, events));
+    }
+    // Active as a project's run limit counts them: the one rule the limit itself uses.
+    let projects: std::collections::HashMap<&str, &str> = all.iter().map(|(run_id, record, _)| (run_id.as_str(), record.project_id.as_str())).collect();
+    for (run_id, feature) in orq_orchestrator::active_runs(&all) {
+        let project = projects[run_id.as_str()].to_string();
+        counts.entry(project).or_default().active.push((run_id, feature));
     }
     Ok(counts)
 }

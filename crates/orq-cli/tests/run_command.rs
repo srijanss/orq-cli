@@ -2555,7 +2555,7 @@ fn limit_active_runs(w: &World, max: u8) {
 }
 
 #[test]
-fn a_blocked_run_at_the_project_limit_is_resumed_to_its_review_and_a_new_start_is_still_refused() {
+fn a_blocked_run_does_not_fill_the_project_limit_and_its_resume_is_held_to_it_and_carried_through_to_its_review() {
     let w = world("limit-resume");
     write_ledger(w.repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
     let first = FakeAgent::builder().write_file("notes.txt", "wip\n").build();
@@ -2564,14 +2564,14 @@ fn a_blocked_run_at_the_project_limit_is_resumed_to_its_review_and_a_new_start_i
     limit_active_runs(&w, 1);
 
     let idle = FakeAgent::builder().build();
-    let other = run_selecting(&w, &idle, &github(), &["--feature", "COM-02"], &["--no-ci-check"]);
-    assert_eq!(other.status.code(), Some(3), "the blocked run fills the limit: {}", stderr(&other));
+    let other = run_selecting(&w, &idle, &github(), &["--feature", "COM-02"], &["--no-ci-check", "--check"]);
+    assert_eq!(other.status.code(), Some(0), "a blocked run holds no slot: {}", stderr(&other));
 
     let second = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
     let provider = github();
     let resumed = run_with(&w, &second, &provider, &["--no-ci-check", "--resume"]);
     let stdout = String::from_utf8_lossy(&resumed.stdout).into_owned();
-    assert_eq!(resumed.status.code(), Some(0), "a resume is not held by the limit: {}\n{stdout}", stderr(&resumed));
+    assert_eq!(resumed.status.code(), Some(0), "the resume takes the free slot: {}\n{stdout}", stderr(&resumed));
     assert!(git(&w.remote, &["branch", "--list"]).contains("fix--COM-01"), "pushed on resume");
     let creates = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".into(), "create".into()])).count();
     assert_eq!(creates, 1, "{:?}", provider.calls());

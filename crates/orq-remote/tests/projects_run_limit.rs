@@ -17,12 +17,18 @@ use serde_json::{json, Value};
 #[derive(Default)]
 struct Launcher {
     started: Mutex<Vec<String>>,
+    resumed: Mutex<Vec<String>>,
 }
 
 impl RunLauncher for Launcher {
     fn start(&self, _repo: &Path, feature: &str) -> Result<String, LaunchError> {
         self.started.lock().unwrap().push(feature.to_string());
         Ok("run-new".into())
+    }
+
+    fn resume(&self, _repo: &Path, run: &str) -> Result<String, LaunchError> {
+        self.resumed.lock().unwrap().push(run.to_string());
+        Ok("run-resumed".into())
     }
 }
 
@@ -92,26 +98,30 @@ fn event(store: &RunStore, record: &RunRecord, kind: &str, payload: Value) {
         .unwrap();
 }
 
-/// A run of COM-02 in the project at `repo`, started and then blocked: not ended, so active.
-fn blocked_run(s: &Setup, repo: &Path) -> (RunStore, RunRecord) {
+/// A run of COM-02 in the project at `repo`, started and still running: active.
+fn running_run(s: &Setup, repo: &Path) -> (RunStore, RunRecord) {
+    seeded_run(s, repo, "run-seed", "COM-02")
+}
+
+/// A run of `feature` in the project at `repo`, started.
+fn seeded_run(s: &Setup, repo: &Path, run_id: &str, feature: &str) -> (RunStore, RunRecord) {
     let store = RunStore::new(&s.roots.state);
     let record = RunRecord {
         delivery: Default::default(),
-        run_id: "run-seed".into(),
+        run_id: run_id.into(),
         project_id: orq_git::project_id(&orq_git::resolve_project(repo).unwrap()),
-        feature_id: "COM-02".into(),
+        feature_id: feature.into(),
         remote: "origin".into(),
         provider: "github".into(),
         target_branch: "main".into(),
         base_sha: "a".repeat(40),
-        branch: "orq/run-seed".into(),
-        worktree: repo.join(".claude/worktrees/run-seed"),
+        branch: format!("orq/{run_id}"),
+        worktree: repo.join(".claude/worktrees").join(run_id),
         repository: String::new(),
         profiles: Default::default(),
     };
-    store.start_run(&record).unwrap();
+    store.create(&record).unwrap();
     event(&store, &record, "stage.started", json!({}));
-    event(&store, &record, "run.completed", json!({"ending": "blocked"}));
     (store, record)
 }
 
@@ -141,7 +151,7 @@ fn the_settings_api_saves_both_limits_and_refuses_values_out_of_range() {
 fn a_start_at_the_limit_is_a_409_with_the_reason_and_the_listing_says_why_until_the_run_ends() {
     let s = setup("run-limit-start");
     let repo = git_repo(&s, "alpha");
-    let (store, record) = blocked_run(&s, &repo);
+    let (store, record) = running_run(&s, &repo);
 
     let project = listed(&s);
     assert_eq!((&project["active_runs"], &project["max_active_runs"], &project["start_blocked"]), (&json!(1), &Value::Null, &Value::Null), "no limit: {project}");
@@ -178,4 +188,33 @@ fn under_the_disk_floor_the_listing_says_so_and_a_start_is_a_409_with_what_is_fr
     assert!(reason.starts_with("only 9.8 GB free on ") && reason.ends_with("(alpha needs 15 GB to start a run): free some space, or lower the floor in project settings"), "{reason}");
     assert_eq!(started, (409, json!({"error": reason})));
     assert!(s.launcher.started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn blocked_and_taken_over_runs_are_not_active_and_a_blocked_run_resumed_at_the_limit_is_a_409() {
+    let s = setup("run-limit-blocked");
+    let repo = git_repo(&s, "alpha");
+    let (store, blocked) = seeded_run(&s, &repo, "run-blocked", "COM-01");
+    event(&store, &blocked, "run.completed", json!({"ending": "blocked"}));
+    // A paused run a later run continued on its branch, with nothing in its own events to say so.
+    let (_, taken) = seeded_run(&s, &repo, "run-taken", "COM-02");
+    event(&store, &taken, "run.pause_requested", json!({}));
+    event(&store, &taken, "run.paused", json!({}));
+    let later = RunRecord { run_id: "run-taken-later".into(), worktree: repo.join(".claude/worktrees/elsewhere"), ..taken.clone() };
+    store.create(&later).unwrap();
+    event(&store, &later, "stage.started", json!({}));
+    event(&store, &later, "run.completed", json!({"ending": "blocked"}));
+    assert_eq!(save(&s, 0, json!(1), Value::Null).0, 200);
+
+    let project = listed(&s);
+    assert_eq!((&project["active_runs"], &project["start_blocked"]), (&json!(0), &Value::Null), "only blocked and taken-over runs: {project}");
+
+    let (_, running) = seeded_run(&s, &repo, "run-running", "COM-03");
+    let reason = "alpha already has 1 active run (run-running, COM-03): wait for it to finish, or raise the limit in project settings";
+    assert_eq!(listed(&s)["active_runs"], json!(1));
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/runs/run-blocked/resume", b""), (409, json!({"error": reason})));
+    assert!(s.launcher.resumed.lock().unwrap().is_empty(), "a refused resume never reaches the launcher");
+
+    event(&store, &running, "run.completed", json!({"ending": "review_ready"}));
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/runs/run-blocked/resume", b""), (202, json!({"run": "run-resumed"})));
 }

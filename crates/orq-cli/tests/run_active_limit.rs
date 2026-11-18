@@ -278,3 +278,35 @@ fn a_resume_measures_the_disk_its_recorded_worktree_is_on_and_a_new_start_the_wo
     assert_eq!(fresh.status.code(), Some(EXIT_LIMIT), "{}", text(&fresh.stderr));
     assert!(!text(&fresh.stderr).contains("/dev/shm"), "{}", text(&fresh.stderr));
 }
+
+/// A run of `feature` that blocked and gave its feature back, as an ended run does.
+fn seed_blocked(home: &Path, repo: &Path, run_id: &str, feature: &str) {
+    seed_active(home, repo, run_id, feature);
+    append(home, repo, run_id, feature, "run.completed", serde_json::json!({"ending": "blocked"}));
+    runs(home).finish_run(&orq_git::project_id(&project(repo)), feature, run_id).unwrap();
+}
+
+#[test]
+fn a_blocked_run_holds_no_slot_so_a_start_passes_but_its_own_resume_is_held_to_the_limit_and_a_paused_resume_is_not() {
+    let repo = repo();
+    let home = home("blocked");
+    save(&home, repo.root(), &limited(Some(1), None));
+    seed_blocked(&home, repo.root(), "run-blocked", "COM-01");
+
+    let fresh = start(repo.root(), &home, "COM-02", &["--check"]);
+    assert_eq!(fresh.status.code(), Some(0), "a blocked run is not active: {}", text(&fresh.stderr));
+
+    seed_active(&home, repo.root(), "run-running", "COM-02");
+    let resumed = start(repo.root(), &home, "COM-01", &["--check", "--resume"]);
+    assert_eq!(resumed.status.code(), Some(EXIT_LIMIT), "{}", text(&resumed.stderr));
+    let name = project(repo.root()).name;
+    let expected = format!("{name} already has 1 active run (run-running, COM-02): wait for it to finish, or raise the limit in project settings");
+    assert!(text(&resumed.stderr).contains(&expected), "{}", text(&resumed.stderr));
+
+    seed_active(&home, repo.root(), "run-paused", "COM-03");
+    append(&home, repo.root(), "run-paused", "COM-03", "run.pause_requested", serde_json::json!({}));
+    append(&home, repo.root(), "run-paused", "COM-03", "run.paused", serde_json::json!({}));
+    let paused = start(repo.root(), &home, "COM-03", &["--check", "--resume"]);
+    assert_ne!(paused.status.code(), Some(EXIT_LIMIT), "{}", text(&paused.stderr));
+    assert!(!text(&paused.stderr).contains("raise the limit"), "{}", text(&paused.stderr));
+}

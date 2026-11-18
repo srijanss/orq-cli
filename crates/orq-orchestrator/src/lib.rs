@@ -99,7 +99,7 @@ pub use reap::{
 };
 pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, RebaseOutcome};
 pub use resume::{
-    carry_rebase, check_group_resume, check_group_resume_fixing, later_run_of, newest_run_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
+    active_runs, carry_rebase, check_group_resume, check_group_resume_fixing, holds_run_slot, later_run_of, resume_takes_a_slot, newest_run_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
     record_inherited_implement, resume_check, run_members,
     supersede_resumed, ResumePlan,
 };
