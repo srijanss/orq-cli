@@ -325,6 +325,37 @@ fn an_mr_state_that_cannot_be_read_keeps_holding_the_queue() {
     assert_eq!(states(&s), pairs(&[("COM-01", "review"), ("COM-02", "next")]), "COM-01 stays in the queue, waiting for review");
 }
 
+/// Records that `run` was resumed as `next`, a run of the same feature that `ending` ended (or that
+/// still runs, with none).
+fn continue_as(s: &Setup, run: &str, next: &str, ending: Option<&str>) {
+    seed_run(&s.roots.state, &s.repo, next, "COM-01");
+    if let Some(ending) = ending {
+        end_run(s, next, ending);
+    }
+    event(&RunStore::new(&s.roots.state), run, "run.resumed", json!({"resumed_as": next}));
+}
+
+#[test]
+fn a_queued_run_continued_as_one_already_waiting_for_review_holds_the_queue_in_that_same_round() {
+    let s = setup("wait-continued-needs-review", Delivery::Review, |_| {});
+    round(&s);
+    continue_as(&s, "run-1-COM-01", "run-9-COM-01", Some("needs_review"));
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "COM-02 waits for the review of the run COM-01 continued as");
+    assert_eq!(states(&s), pairs(&[("COM-01", "review"), ("COM-02", "next")]));
+    assert_eq!(queue(&s)["entries"][0]["run"], "run-9-COM-01");
+
+    let s = setup("wait-continued-twice-open-mr", Delivery::Review, |_| {});
+    round(&s);
+    continue_as(&s, "run-1-COM-01", "run-8-COM-01", None);
+    continue_as(&s, "run-8-COM-01", "run-9-COM-01", Some("review_ready"));
+    mr(&s, "run-9-COM-01", ProviderState::Open);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "COM-02 waits while the MR of the run COM-01 was continued as, twice over, is open");
+    assert_eq!(states(&s), pairs(&[("COM-01", "review"), ("COM-02", "next")]));
+    assert_eq!(queue(&s)["entries"][0]["run"], "run-9-COM-01", "the entry follows the whole chain");
+}
+
 mod page {
     //! On the page, a queue that waits for a run's review says so: the entry shows "Waiting for review"
     //! with its MR linked, the queue's head says "Waiting for <feature>'s MR to merge" (or its review, with

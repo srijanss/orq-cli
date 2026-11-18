@@ -124,10 +124,19 @@ impl StoreProjects {
         let mut in_review = false;
         for entry in store.queue(root).map_err(failed)?.entries {
             let Some(run) = &entry.run else { continue };
-            let settled = settle(store, &runs, run, Some(root), settings.queue_wait_for_review);
+            let mut run = run.clone();
+            let mut settled = settle(store, &runs, &run, Some(root), settings.queue_wait_for_review);
             // A failure already marked is only looked at again for the run it was resumed as.
             if entry.failed && !matches!(settled, Settled::ContinuedAs(_)) {
                 continue;
+            }
+            // The entry follows the run it was continued as, as far as it goes, so that a run that
+            // already waits for review holds the starts below in this same round.
+            for _ in 0..CONTINUATIONS_FOLLOWED {
+                let Settled::ContinuedAs(next) = settled else { break };
+                store.queue_started(root, &entry.feature, &next).map_err(failed)?;
+                settled = settle(store, &runs, &next, Some(root), settings.queue_wait_for_review);
+                run = next;
             }
             match settled {
                 Settled::Going => {}
@@ -490,6 +499,10 @@ fn mr_settled(store: &Store, run: &str) -> Settled {
         _ => Settled::Done,
     }
 }
+
+/// How many runs, each continued as the next, one round follows; a longer chain, or a loop, is
+/// followed further in the rounds after.
+const CONTINUATIONS_FOLLOWED: usize = 16;
 
 /// How often the server works every queue even when no queued run ended.
 pub const QUEUE_ROUND_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
