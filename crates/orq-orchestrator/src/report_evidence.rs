@@ -7,7 +7,8 @@ use crate::store::{Event, RunStore, StoreError};
 /// The test evidence a run's events hold for one head.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordedEvidence {
-    /// Whether the run's latest gate passed: the gate runs before every push, so that is the pushed head's.
+    /// Whether the head's own gate passed: the latest gate that tested it, or, for gates recorded before they named
+    /// their commit, the run's latest.
     pub gate_passed: bool,
     /// The commands of that passing gate, when its event names them; gates recorded before they did name none.
     pub gate_steps: Option<Vec<Vec<String>>>,
@@ -22,7 +23,8 @@ pub fn recorded_evidence(store: &RunStore, run_id: &str, head_sha: &str) -> Resu
 
 fn evidence_in(events: &[Event], head_sha: &str) -> RecordedEvidence {
     let ended = |e: &&Event, stage: &str| e.stage.as_deref() == Some(stage) && matches!(e.kind.as_str(), "stage.completed" | "stage.failed" | "stage.skipped");
-    let gate = events.iter().rev().find(|e| ended(e, "verify"));
+    // A gate names the commit it tested; one recorded before gates did is taken as the head's.
+    let gate = events.iter().rev().filter(|e| ended(e, "verify")).find(|e| e.payload.get("head_sha").and_then(|h| h.as_str()).is_none_or(|h| h == head_sha));
     let gate_passed = gate.is_some_and(|e| e.kind == "stage.completed");
     let gate_steps = gate.filter(|_| gate_passed).and_then(|e| serde_json::from_value(e.payload.get("commands")?.clone()).ok());
     let ci = events

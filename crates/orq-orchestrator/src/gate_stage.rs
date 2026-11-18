@@ -94,6 +94,8 @@ fn run_gate_attempt_limited(
     limit: std::time::Duration,
 ) -> Result<GateOutcome, StoreError> {
     let record = store.load(run_id)?;
+    // The commit the gate tests, so its result is that commit's and not a later push's.
+    let head_sha = worktree_head(&record.worktree);
     let skip_reason = match gate {
         _ if !enabled => Some("the local gate is disabled".to_string()),
         Gate::Skipped { reason } => Some(reason.clone()),
@@ -105,7 +107,7 @@ fn run_gate_attempt_limited(
             &record,
             "stage.skipped",
             attempt,
-            serde_json::json!({ "reason": reason }),
+            serde_json::json!({ "reason": reason, "head_sha": head_sha }),
         )?;
         return Ok(GateOutcome::Skipped { reason });
     }
@@ -162,7 +164,7 @@ fn run_gate_attempt_limited(
                 &record,
                 "stage.failed",
                 attempt,
-                serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name }),
+                serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name, "head_sha": head_sha }),
             )?;
             return Ok(GateOutcome::Failed {
                 step: index,
@@ -176,9 +178,16 @@ fn run_gate_attempt_limited(
         "stage.completed",
         attempt,
         // The commands that passed, so a report built after the run ended can say what was checked.
-        serde_json::json!({ "exit_code": 0, "log": log_name, "commands": steps }),
+        serde_json::json!({ "exit_code": 0, "log": log_name, "commands": steps, "head_sha": head_sha }),
     )?;
     Ok(GateOutcome::Passed)
+}
+
+/// The commit checked out in `worktree`; `None` when git cannot say.
+fn worktree_head(worktree: &Path) -> Option<String> {
+    let out = std::process::Command::new("git").args(["rev-parse", "--verify", "HEAD"]).current_dir(worktree).output().ok()?;
+    let sha = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !sha.is_empty()).then_some(sha)
 }
 
 /// What lists a step's tests beforehand, with the same selection.
