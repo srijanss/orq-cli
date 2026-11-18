@@ -88,7 +88,7 @@ struct LiveServer {
     pid: u32,
     exe: PathBuf,
     listen: String,
-    /// Started by systemd, which starts it again when it exits.
+    /// Restarts by exiting for systemd, which starts it again.
     systemd: bool,
 }
 
@@ -144,7 +144,7 @@ fn announce_server(roots: &orq_core::storage::StorageRoots, listen: &str) -> Opt
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}"), "systemd": under_systemd() });
+    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}"), "systemd": exits_for_systemd() });
     file.set_len(0).ok()?;
     file.write_all(info.to_string().as_bytes()).ok()?;
     Some((path, file))
@@ -320,7 +320,7 @@ fn run(args: &[OsString]) -> ExitCode {
     if let Err(err) = std::fs::write(&marker, serde_json::json!({ "from": format!("orq {BUILD}") }).to_string()) {
         eprintln!("orq serve: cannot note the restart for the next server: {:?}", err.kind());
     }
-    if under_systemd() {
+    if exits_for_systemd() {
         println!("orq serve: exiting with status {RESTART_EXIT} for systemd to start {}", target.display());
         let _ = std::io::Write::flush(&mut std::io::stdout());
         return ExitCode::from(RESTART_EXIT);
@@ -475,9 +475,46 @@ fn restart_plan(exe: &std::path::Path, installed: &std::path::Path, systemd: boo
     Ok(target)
 }
 
-/// Whether this server was started by systemd, which restarts it when it exits.
+/// Whether this server was started by systemd. That alone does not say systemd starts it again when it
+/// exits: see [`exits_for_systemd`].
 fn under_systemd() -> bool {
     std::env::var_os("INVOCATION_ID").is_some()
+}
+
+/// Whether a restart exits with [`RESTART_EXIT`] for systemd to start the server again, rather than
+/// re-executing: only when systemd says this server's unit restarts after such an exit. Anything else,
+/// including a unit or policy that cannot be found, re-executes, so a restart never leaves no server.
+/// Asked once, when first needed.
+fn exits_for_systemd() -> bool {
+    static ANSWER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ANSWER.get_or_init(|| {
+        if !under_systemd() {
+            return false;
+        }
+        let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+        // Tests name the unit, as they cannot run the server in one; orq's unit is a user service.
+        let named = std::env::var("ORQ_SYSTEMD_UNIT").ok().filter(|unit| !unit.is_empty()).map(|unit| (unit, true));
+        let Some((unit, user)) = named.or_else(|| unit_from_cgroup(&cgroup)) else { return false };
+        let mut systemctl = std::process::Command::new("systemctl");
+        if user {
+            systemctl.arg("--user");
+        }
+        let asked = systemctl.args(["show", "--property=Restart", "--value", &unit]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+        matches!(asked, Ok(out) if out.status.success() && restarts_after_exit(&String::from_utf8_lossy(&out.stdout)))
+    })
+}
+
+/// The systemd service this process runs in, and whether the user's manager runs it, from the text of
+/// /proc/self/cgroup; `None` outside a service (a login session, a scope, the manager itself).
+fn unit_from_cgroup(cgroup: &str) -> Option<(String, bool)> {
+    let path = cgroup.lines().find_map(|line| line.strip_prefix("0::"))?;
+    let unit = path.rsplit('/').next().filter(|unit| unit.ends_with(".service") && !unit.starts_with("user@"))?;
+    Some((unit.to_string(), path.contains("/user@")))
+}
+
+/// Whether a unit with this `Restart=` is started again after exiting with [`RESTART_EXIT`].
+fn restarts_after_exit(policy: &str) -> bool {
+    matches!(policy.trim(), "always" | "on-failure")
 }
 
 /// Whether `path` can be started: an executable regular file. Checked before the server stops, so a
@@ -530,7 +567,7 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
         Box::new(move || active_run_ids(&state).unwrap_or_else(|why| vec![why])),
         Box::new(move || {
             let exe = std::env::current_exe().map_err(|err| format!("cannot find the running orq: {:?}", err.kind()))?;
-            restart_plan(&exe, &target_installed, under_systemd())
+            restart_plan(&exe, &target_installed, exits_for_systemd())
         }),
     )
 }
@@ -670,6 +707,23 @@ mod restart_tests {
         assert_eq!(restart_signal(false, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, true), libc::SIGUSR2);
+    }
+
+    #[test]
+    fn systemd_unit_is_read_from_the_cgroup_and_only_a_restarting_policy_counts() {
+        let user = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/orq-serve.service\n";
+        assert_eq!(unit_from_cgroup(user), Some(("orq-serve.service".to_string(), true)));
+        let system = "0::/system.slice/orq-serve.service\n";
+        assert_eq!(unit_from_cgroup(system), Some(("orq-serve.service".to_string(), false)));
+        assert_eq!(unit_from_cgroup("0::/user.slice/user-1000.slice/user@1000.service/init.scope\n"), None, "the manager itself is no unit of orq's");
+        assert_eq!(unit_from_cgroup("0::/user.slice/user-1000.slice/session-3.scope\n"), None, "a login session is no service");
+        assert_eq!(unit_from_cgroup(""), None);
+        for policy in ["always", "on-failure", "always\n"] {
+            assert!(restarts_after_exit(policy), "{policy}");
+        }
+        for policy in ["no", "on-success", "on-abnormal", "on-abort", "on-watchdog", ""] {
+            assert!(!restarts_after_exit(policy), "{policy}: exit status {RESTART_EXIT} would leave no server");
+        }
     }
 
     #[test]
