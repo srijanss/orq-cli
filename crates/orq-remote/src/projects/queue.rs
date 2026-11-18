@@ -74,6 +74,7 @@ impl StoreProjects {
         let Ok(roots) = store.queued_projects() else { return false };
         roots.iter().filter_map(|root| store.queue(Path::new(root)).ok()).flat_map(|queue| queue.entries).any(|entry| match (&entry.run, entry.failed) {
             (Some(run), false) => !matches!(settle(&runs, run), Settled::Going),
+            (Some(run), true) => matches!(settle(&runs, run), Settled::ContinuedAs(_)),
             _ => false,
         })
     }
@@ -83,8 +84,13 @@ impl StoreProjects {
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
         for entry in store.queue(root).map_err(failed)?.entries {
-            let (Some(run), false) = (&entry.run, entry.failed) else { continue };
-            match settle(&runs, run) {
+            let Some(run) = &entry.run else { continue };
+            let settled = settle(&runs, run);
+            // A failure already marked is only looked at again for the run it was resumed as.
+            if entry.failed && !matches!(settled, Settled::ContinuedAs(_)) {
+                continue;
+            }
+            match settled {
                 Settled::Going => {}
                 Settled::Done => drop(store.queue_remove(root, &entry.feature).map_err(failed)?),
                 Settled::ContinuedAs(next) => store.queue_started(root, &entry.feature, &next).map_err(failed)?,

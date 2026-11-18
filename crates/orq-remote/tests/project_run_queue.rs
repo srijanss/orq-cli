@@ -317,6 +317,28 @@ fn a_failed_run_stays_marked_failed_its_dependents_never_start_and_the_rest_go_o
 }
 
 #[test]
+fn a_failed_run_resumed_as_another_is_followed_by_its_entry_until_that_run_completes() {
+    let s = setup("queue-failed-resumed");
+    let repo = git_repo(&s, &[("COM-01", "pending", &[])]);
+    queue_add(&s, &["COM-01"]);
+    round(&s);
+    end_run(&s, "run-1-COM-01", "failed");
+    round(&s);
+    assert_eq!(states(&s), pairs(&[("COM-01", "failed")]));
+
+    seed_run(&s.roots.state, &repo, "run-9-COM-01", "COM-01");
+    event(&RunStore::new(&s.roots.state), "run-1-COM-01", "run.resumed", json!({"resumed_as": "run-9-COM-01"}));
+    round(&s);
+    assert_eq!(states(&s), pairs(&[("COM-01", "running")]), "the resumed run is followed");
+    assert_eq!(queue(&s)["entries"][0]["run"], "run-9-COM-01");
+
+    end_run(&s, "run-9-COM-01", "merged");
+    round(&s);
+    assert_eq!(states(&s), pairs(&[]), "its completion takes the entry out of the queue");
+    assert_eq!(started(&s), ["COM-01"], "nothing was started again");
+}
+
+#[test]
 fn with_stop_on_failure_a_failed_run_pauses_the_queue() {
     let s = setup("queue-stop-on-failure");
     git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
