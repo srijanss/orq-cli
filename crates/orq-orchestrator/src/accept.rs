@@ -81,6 +81,13 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
 /// (with `by` and the head being tested) is recorded; a failure after that is recorded as `run.accept_failed`,
 /// which gives the run back the phase it had, and is returned as the reason.
 pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+    store.load(run_id).map_err(|e| e.to_string())?;
+    // Held until the result is recorded, so only one accept of a run runs at a time, whoever starts it.
+    let Some(_lock) = lock_accept(store, run_id)? else {
+        return Err(format!("{run_id}: an accept is running; wait for its tests to finish"));
+    };
+    // With the lock ours, an accept still shown running has nothing running its tests.
+    record_interrupted(store, run_id)?;
     let record = check(store, run_id)?;
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     append(store, &record, "run.accept_started", serde_json::json!({ "by": by, "head": head_before.trim() }))?;
@@ -123,6 +130,24 @@ pub const ACCEPT_INTERRUPTED: &str = "the server stopped while the tests were ru
 /// When `run_id` is still accepting (started, no result) and nothing is running its tests anymore, record the
 /// accept as failed because the server stopped. Says whether it recorded anything.
 pub fn fail_interrupted_accept(store: &RunStore, run_id: &str) -> Result<bool, String> {
+    record_interrupted(store, run_id)
+}
+
+/// Take the accept lock of `run_id` (`accept.lock` in its run folder) if no one holds it. The lock goes with the
+/// returned file, and the system lets go of it when the process holding it ends, however it ends.
+fn lock_accept(store: &RunStore, run_id: &str) -> Result<Option<std::fs::File>, String> {
+    let path = store.run_dir(run_id).map_err(|e| format!("{e:?}"))?.join("accept.lock");
+    let opened = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+    let file = opened.map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("could not lock {}: {e}", path.display())),
+    }
+}
+
+/// Record the accept of `run_id` as interrupted when the run is still shown accepting. Call it holding the lock.
+fn record_interrupted(store: &RunStore, run_id: &str) -> Result<bool, String> {
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     if summarize_run(&events).phase != RunPhase::Accepting {
         return Ok(false);

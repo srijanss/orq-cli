@@ -237,3 +237,40 @@ fn tests_that_panic_are_recorded_as_a_failed_accept() {
     assert_eq!(summary.phase, RunPhase::NeedsReview, "not left accepting");
     assert!(summary.accept_failure.unwrap().reason.contains("the test runner blew up"));
 }
+
+#[test]
+fn two_accepts_started_together_run_the_tests_once() {
+    let (_repo, _worktree, store) = ended_run("together", "failed");
+    let runs = std::sync::atomic::AtomicUsize::new(0);
+    let start = std::sync::Barrier::new(2);
+    let results: Vec<Result<String, String>> = std::thread::scope(|scope| {
+        let accept = || {
+            start.wait();
+            accept_run_by(&store, "run-1", "web", &|_: &Path| {
+                runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Err("`cargo test` failed".into())
+            })
+        };
+        let (a, b) = (scope.spawn(accept), scope.spawn(accept));
+        vec![a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(runs.into_inner(), 1, "{results:?}");
+    let refused: Vec<_> = results.iter().filter_map(|r| r.as_ref().err()).filter(|e| e.contains("an accept is running")).collect();
+    assert_eq!(refused.len(), 1, "{results:?}");
+    assert_eq!(kinds(&store).iter().filter(|k| *k == "run.accept_started").count(), 1);
+    assert_eq!(summarize_run(&store.events("run-1").unwrap()).phase, RunPhase::Failed);
+}
+
+#[test]
+fn a_second_start_with_no_result_between_keeps_what_the_run_goes_back_to() {
+    let events = vec![
+        event("run.completed", serde_json::json!({ "ending": "failed", "reason": "gate failed" })),
+        event("run.accept_started", serde_json::json!({ "by": "web", "head": "abc" })),
+        event("run.accept_started", serde_json::json!({ "by": "cli", "head": "abc" })),
+        event("run.accept_failed", serde_json::json!({ "reason": "tests failed", "output": "" })),
+    ];
+    let summary = summarize_run(&events);
+    assert_eq!(summary.phase, RunPhase::Failed);
+    assert_eq!(summary.reason.as_deref(), Some("gate failed"));
+}

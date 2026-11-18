@@ -156,7 +156,7 @@ impl RunStore {
         }
     }
 
-    fn run_dir(&self, run_id: &str) -> Result<PathBuf, StoreError> {
+    pub(crate) fn run_dir(&self, run_id: &str) -> Result<PathBuf, StoreError> {
         let valid = !run_id.is_empty()
             && !run_id.starts_with('.')
             && run_id

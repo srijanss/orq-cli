@@ -242,6 +242,8 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
     let mut before_accept: Option<(RunPhase, Option<String>, Option<String>)> = None;
     for event in events {
         let phase = match event.kind.as_str() {
+            // A start with no result since the last one keeps what the run goes back to: it was accepting already.
+            "run.accept_started" if summary.phase == RunPhase::Accepting => continue,
             "run.accept_started" => {
                 before_accept = Some((summary.phase, summary.reason.take(), summary.phase_at.take()));
                 summary.accept_failure = None;
