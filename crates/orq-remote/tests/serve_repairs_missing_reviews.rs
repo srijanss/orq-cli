@@ -220,3 +220,39 @@ fn the_run_page_says_its_report_is_missing_and_why_and_build_report_builds_it() 
     let again = projects.control_run("alpha", "run-now", RunControl::BuildReport).unwrap();
     assert!(matches!(again, RunControlOutcome::Refused(_)), "nothing is missing any more");
 }
+
+#[test]
+fn a_failed_repair_says_why_once_does_not_stop_the_others_and_is_tried_again() {
+    let s = setup("repair-retry");
+    for run in ["run-flaky", "run-fine"] {
+        ended_run(&s, run);
+        note(&s, run, &format!("no report for {HEAD}: {NO_INDEX}"));
+    }
+    let tries: Arc<Mutex<Vec<String>>> = Default::default();
+    let (seen, roots) = (tries.clone(), s.roots.clone());
+    let builder = Arc::new(move |repair: &ReportRepair| {
+        let mut seen = seen.lock().unwrap();
+        seen.push(repair.run_id.clone());
+        // run-flaky's first two builds fail.
+        if repair.run_id == "run-flaky" && seen.iter().filter(|r| *r == "run-flaky").count() <= 2 {
+            return Err("git diff failed: worktree is gone".to_string());
+        }
+        Ok(record_report(&roots, &repair.run_id))
+    });
+    let projects = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_report_builder(builder);
+
+    projects.repair_missing_reviews();
+    assert_eq!(lifecycles(&s, "run-fine"), 1, "the other run is repaired in the same round");
+    let log = std::fs::read_to_string(report_log(&s, "run-flaky")).unwrap();
+    assert_eq!(log.lines().last(), Some(format!("no report for {HEAD}: git diff failed: worktree is gone (orq serve could not repair it)").as_str()), "{log}");
+    assert!(!log.contains("repaired by orq serve"), "{log}");
+
+    projects.repair_missing_reviews();
+    assert_eq!(std::fs::read_to_string(report_log(&s, "run-flaky")).unwrap(), log, "the same failure is said once");
+
+    projects.repair_missing_reviews();
+    let log = std::fs::read_to_string(report_log(&s, "run-flaky")).unwrap();
+    assert!(log.contains("repaired by orq serve"), "a later round builds it: {log}");
+    assert_eq!(lifecycles(&s, "run-flaky"), 1);
+    assert_eq!(tries.lock().unwrap().iter().filter(|r| *r == "run-flaky").count(), 3);
+}

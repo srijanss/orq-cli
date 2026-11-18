@@ -520,11 +520,18 @@ impl StoreProjects {
         self
     }
 
-    /// Builds `missing`, the report `run_id` ended without, from the evidence its events hold, and notes it in its log.
+    /// Builds `missing`, the report `run_id` ended without, from the evidence its events hold, and notes it in its log;
+    /// a build that fails is noted there with why, and stays missing for the next round to try again.
     fn build_missing_report(&self, runs: &orq_orchestrator::RunStore, run_id: &str, missing: &MissingReport, repo: Option<std::path::PathBuf>) -> Result<(), String> {
         let builder = self.report_builder.as_ref().ok_or("this server cannot build review reports")?;
         let evidence = orq_orchestrator::recorded_evidence(runs, run_id, &missing.head_sha).map_err(|error| format!("cannot read the evidence of {run_id}: {error:?}"))?;
-        let path = builder(&ReportRepair { run_id: run_id.to_string(), repo, head_sha: missing.head_sha.clone(), evidence })?;
+        let path = builder(&ReportRepair { run_id: run_id.to_string(), repo, head_sha: missing.head_sha.clone(), evidence }).inspect_err(|error| {
+            // Why the repair failed becomes the reason the run's page shows; the same failure again is not said again.
+            let reason = format!("{error} (orq serve could not repair it)");
+            if missing.reason != reason {
+                note_report_log(&self.roots, run_id, &format!("no report for {}: {reason}", missing.head_sha));
+            }
+        })?;
         note_report_log(&self.roots, run_id, &format!("report for {}: {} ({REPAIRED})", missing.head_sha, path.display()));
         Ok(())
     }
