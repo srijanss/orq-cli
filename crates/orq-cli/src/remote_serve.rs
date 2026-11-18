@@ -858,6 +858,46 @@ mod restart_active_tests {
         active.sort();
         assert_eq!(active, vec!["run-gate".to_string(), "run-pausing".to_string()]);
     }
+
+    fn fresh(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("orq-restart-unreadable-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn unreadable_restart_state_is_an_error_naming_the_run_never_an_idle_server() {
+        let dir = fresh("record");
+        run(&RunStore::new(&dir), "run-ok", &["run.completed"]);
+        std::fs::create_dir_all(dir.join("runs/run-bad")).unwrap();
+        std::fs::write(dir.join("runs/run-bad/run.json"), "{ not json").unwrap();
+        let why = active_run_ids(&dir).unwrap_err();
+        assert!(why.contains("run-bad") && why.contains("unreadable"), "{why}");
+
+        let dir = fresh("events");
+        let store = RunStore::new(&dir);
+        run(&store, "run-torn", &["stage.started"]);
+        let events = dir.join("runs/run-torn/events.jsonl");
+        let mut text = std::fs::read_to_string(&events).unwrap();
+        text.push_str("{ torn\n");
+        std::fs::write(&events, text).unwrap();
+        let why = active_run_ids(&dir).unwrap_err();
+        assert!(why.contains("run-torn") && why.contains("unreadable"), "{why}");
+    }
+
+    #[test]
+    fn a_pending_restart_over_unreadable_runs_waits_and_counts_the_error_as_a_run() {
+        use orq_core::remote_inbox::ServerControl;
+        let base = fresh("control");
+        let roots = orq_core::storage::StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        std::fs::create_dir_all(roots.state.join("runs/run-bad")).unwrap();
+        std::fs::write(roots.state.join("runs/run-bad/run.json"), "{ not json").unwrap();
+        let control = restart_control(&roots);
+        control.pending.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(!control.due(), "a run it cannot read may be active");
+        assert!(control.restart_pending());
+        assert_eq!(control.status()["waiting_for"], 1, "{}", control.status());
+    }
 }
 
 #[cfg(test)]
