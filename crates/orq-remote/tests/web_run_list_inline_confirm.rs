@@ -156,6 +156,30 @@ fn opening_a_menu_while_a_confirmed_action_is_sending_cannot_send_it_again() {
 }
 
 #[test]
+fn confirming_in_the_panel_posts_once_and_closes_it() {
+    let ok = json!({"status": 202, "json": {"run": "r-next"}});
+    let rows = json!({"status": 200, "json": {"runs": [one("r-next", "running"), one("r-paused", "paused")], "next_cursor": null, "total": 2, "running": 1, "remote_actions": true}});
+    let steps = vec![resume(0), json!({"click": "[data-run-action-float] .confirm [data-confirm]"})];
+    let Some(out) = runs_page(vec![checked("r-fail"), ok, rows], steps, false) else { return };
+    assert_eq!(posts(&out), 1, "{out}");
+    let post = out["requests"].as_array().unwrap().iter().find(|r| r["method"] == "POST").unwrap();
+    assert_eq!(post["url"], "/api/projects/alpha/runs/r-fail/resume", "{post}");
+    assert_eq!(count(last(&out), PANEL), 0, "{out}");
+}
+
+#[test]
+fn a_refused_send_closes_the_panel_and_leaves_its_action_usable_with_the_reason() {
+    let refused = json!({"status": 409, "json": {"error": "The run is already running."}});
+    let steps = vec![resume(0), json!({"click": "[data-run-action-float] .confirm [data-confirm]"})];
+    let Some(out) = runs_page(vec![checked("r-fail"), refused], steps, false) else { return };
+    let frame = last(&out);
+    assert_eq!(posts(&out), 1, "{out}");
+    assert_eq!((count(frame, PANEL), count(frame, ".run-action-note.error-text")), (0, 1), "{out}");
+    assert!(texts(frame).iter().any(|t| t.contains("The run is already running.")), "{:?}", texts(frame));
+    assert_eq!((count(frame, "td [data-resume]"), count(frame, "td [data-resume][disabled]")), (2, 0), "Resume can be tried again: {out}");
+}
+
+#[test]
 fn on_a_phone_the_question_still_opens_in_its_row() {
     let Some(out) = runs_page(vec![checked("r-fail")], vec![resume(0)], true) else { return };
     let frame = last(&out);
