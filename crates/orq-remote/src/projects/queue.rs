@@ -137,6 +137,8 @@ impl StoreProjects {
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
                     match self.launch(id, Launch::One(&entry.feature), profiles.as_ref()) {
                         Ok(RunStart::Started(run) | RunStart::StartedWithWarning { run, .. }) => {
+                            // Removed while it started, the queue no longer follows the run, which
+                            // goes on; removed and added again, the new entry follows this run.
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
                             None
                         }

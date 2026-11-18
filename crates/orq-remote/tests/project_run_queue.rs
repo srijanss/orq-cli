@@ -212,6 +212,36 @@ fn a_pause_or_removal_made_while_a_round_starts_a_run_holds_the_starts_after_it(
     assert_eq!(started(&s), ["COM-01", "COM-03", "COM-05"], "a feature removed meanwhile is not started");
 }
 
+#[test]
+fn a_feature_removed_while_its_own_start_is_going_is_not_followed_nor_started_again_and_one_re_added_follows_that_run() {
+    let s = setup("queue-removed-while-starting");
+    let repo = git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    queue_add(&s, &["COM-01", "COM-02"]);
+    let (database, root) = (s.roots.database(), repo.clone());
+    *s.launcher.meanwhile.lock().unwrap() = Some(Box::new(move || {
+        orq_core::store::Store::open(&database).unwrap().queue_remove(&root, "COM-01").unwrap();
+    }));
+    round(&s);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01", "COM-02"], "the run already started goes on; the queue starts it no more");
+    assert_eq!(states(&s), pairs(&[("COM-02", "running")]), "nor does it follow it");
+
+    let s = setup("queue-re-added-while-starting");
+    let repo = git_repo(&s, &[("COM-01", "pending", &[])]);
+    queue_add(&s, &["COM-01"]);
+    let (database, root) = (s.roots.database(), repo.clone());
+    *s.launcher.meanwhile.lock().unwrap() = Some(Box::new(move || {
+        let store = orq_core::store::Store::open(&database).unwrap();
+        store.queue_remove(&root, "COM-01").unwrap();
+        store.queue_add(&root, &[orq_core::store::run_queue::QueueAddition { feature: "COM-01".into(), profiles: None }], "cli", 1).unwrap();
+    }));
+    round(&s);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "the feature re-added follows the run started for it rather than starting a second one");
+    assert_eq!(states(&s), pairs(&[("COM-01", "running")]));
+    assert_eq!(queue(&s)["entries"][0]["added_by"], "cli");
+}
+
 /// Saves the project's settings from the web: no agents, review delivery, and `extra`.
 fn save_settings(s: &Setup, extra: Value) {
     let (_, current) = send(s, "GET", "/api/projects/alpha/settings", b"");
