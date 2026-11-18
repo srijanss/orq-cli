@@ -31,14 +31,14 @@ fn shell(scenario: Value) -> Option<Value> {
 }
 
 #[test]
-fn the_tab_bar_holds_the_five_destinations_and_marks_the_current_one() {
+fn the_tab_bar_holds_the_six_destinations_and_marks_the_current_one() {
     let selectors = ["nav.tabbar a", "nav.tabbar a[aria-current=\"page\"]", "nav.tabbar a svg", "nav.tabbar a .tab-label"];
     let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "selectors": selectors})) else { return };
     let m = &out["frames"][0]["matches"];
-    assert_eq!(m["nav.tabbar a"], 5, "{out}");
+    assert_eq!(m["nav.tabbar a"], 6, "{out}");
     assert_eq!(m["nav.tabbar a[aria-current=\"page\"]"], 1, "{out}");
-    assert_eq!(m["nav.tabbar a svg"], 5, "{out}");
-    assert_eq!(m["nav.tabbar a .tab-label"], 5, "{out}");
+    assert_eq!(m["nav.tabbar a svg"], 6, "{out}");
+    assert_eq!(m["nav.tabbar a .tab-label"], 6, "{out}");
 }
 
 #[test]

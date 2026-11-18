@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 22] = [
+const SELECTORS: [&str; 23] = [
     "[data-queue-entry]",
+    "[data-queue-link]",
     "[data-queue-state=\"next\"]",
     "[data-queue-state=\"waiting\"]",
     "[data-queue-state=\"running\"]",
@@ -242,4 +243,13 @@ fn settings_show_the_queue_hours_and_stop_on_failure_and_save_sends_both() {
         sent[0].1,
         json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": "09:00-17:30", "queue_stop_on_failure": true, "revision": 3})
     );
+}
+
+#[test]
+fn the_features_list_has_no_queue_link_and_the_sidebar_reaches_the_projects_queue() {
+    let Some(out) = run("/projects/alpha/features", vec![ledger(), projects(vec![project("alpha", Value::Null)])], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-queue-link]"), 0, "{out}");
+    let sidebar: Vec<&str> = frame["settled"]["sidebarLinks"].as_array().unwrap().iter().filter_map(|l| l.as_str()).collect();
+    assert!(sidebar.contains(&"/projects/alpha/queue"), "{sidebar:?}");
 }

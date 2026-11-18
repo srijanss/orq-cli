@@ -16,6 +16,7 @@ export function navigationEntries(projectId) {
   entries.push(
     { label: "Features", icon: "flag", href: `${base}/features` },
     { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
+    { label: "Queue", icon: "clock", href: `${base}/queue` },
     { label: "Reviews", icon: "doc", href: `${base}/reviews` },
   );
   entries.push({ label: "Settings", icon: "gear", href: "/settings" });
@@ -27,7 +28,7 @@ function within(path, href) {
   return path === href || path.startsWith(href + "/");
 }
 
-const SECTIONS = { features: "Features", orchestrations: "Orchestrations", reviews: "Reviews" };
+const SECTIONS = { features: "Features", orchestrations: "Orchestrations", queue: "Queue", reviews: "Reviews" };
 
 // What assistive technology hears after moving to `path`; "" for a log page.
 function describePage(path, entries) {

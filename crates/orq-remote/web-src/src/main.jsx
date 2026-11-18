@@ -2512,12 +2512,6 @@ function StartMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-// The project's queue page, from its Features list.
-function QueueLink({ projectId }) {
-  const href = "/projects/" + encodeURIComponent(projectId) + "/queue";
-  return <a className="queue-link" data-queue-link href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}><Icon name="clock" size={16} />Queue</a>;
-}
-
 // Sends features to the project's run queue: the server starts each in turn when its limits allow, and
 // never on its own approval. One request for all of them, so the server audits them as one change.
 async function queueFeatures(control, names) {
@@ -3295,11 +3289,10 @@ function tagged(rows, projectId, projectName) {
   return rows.map((feature) => ({ ...feature, projectId, projectName }));
 }
 
-// Every readable project's ledger, read side by side and merged into one list.
 // Reads one list from every readable project side by side; toRows turns a project's parsed reply
-// into rows, and a project that cannot be read is counted rather than shown.
+// into rows, and a project that cannot be read is counted (and named in `failed`) rather than shown.
 function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, toRows }) {
-  const [state, setState] = useState({ loading: true, rows: [], read: 0, unread: 0 });
+  const [state, setState] = useState({ loading: true, rows: [], read: 0, unread: 0, failed: [] });
   const readable = projects.filter((project) => project.available !== false);
   const key = readable.map((project) => project.id).join("\n");
   useEffect(() => {
@@ -3323,7 +3316,8 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
         return;
       }
       const read = results.filter((rows) => rows !== null);
-      setState({ loading: false, rows: read.flat(), read: read.length, unread: results.length - read.length });
+      const failed = readable.filter((project, at) => results[at] === null).map((project) => project.id);
+      setState({ loading: false, rows: read.flat(), read: read.length, unread: results.length - read.length, failed });
     })();
     return () => {
       current = false;
@@ -3386,7 +3380,6 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
         <>
           <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} badge={name === null ? inProgressBadge(state.data?.rows) : null} onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} />
-          {name === null && projectId !== null ? <QueueLink projectId={projectId} /> : null}
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
         if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} />;
@@ -3821,6 +3814,69 @@ function AllOrchestrationsPage({ token, reloads, onRefresh, onSignedOut }) {
       <>
         <ProjectSelect projects={projects} projectId={null} section="orchestrations" />
         <AllOrchestrations token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
+      </>
+    )} onSignedOut={onSignedOut} />
+  );
+}
+
+// Every readable project's run queue, one group per project in project order: the projects with something
+// queued or paused, and those whose queue could not be read. Only shown here; each group links to its
+// project's queue page, where it is reordered, removed from and paused, so no order across projects is implied.
+function AllQueues({ token, projects, reloads, onSignedOut }) {
+  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "queue", parse: parseQueue, toRows: (parsed, project) => [{ projectId: project.id, queue: parsed.queue }] });
+  if (state.loading) {
+    return (
+      <div className="skeleton" role="status" aria-busy="true">
+        <span className="skeleton-bar" aria-hidden="true" />
+        <span className="sr-only">Loading the queues…</span>
+      </div>
+    );
+  }
+  const groups = projects.flatMap((project) => {
+    if (state.failed.includes(project.id)) return [{ project, queue: null }];
+    const row = state.rows.find((candidate) => candidate.projectId === project.id);
+    return row !== undefined && (row.queue.entries.length > 0 || row.queue.paused !== null) ? [{ project, queue: row.queue }] : [];
+  });
+  if (groups.length === 0) {
+    return <p className="card muted queue-empty" data-queue-empty>Nothing is queued. Queue pending features from a project's Features page.</p>;
+  }
+  return groups.map(({ project, queue }) => <QueueGroup key={project.id} project={project} queue={queue} />);
+}
+
+// One project's queue on the all-projects page, read-only; a null queue is one that could not be read.
+function QueueGroup({ project, queue }) {
+  const href = "/projects/" + encodeURIComponent(project.id) + "/queue";
+  return (
+    <section className="card queue-section queue-group" data-queue-group={project.id}>
+      <div className="queue-group-head">
+        <a className="queue-group-name" href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{project.name}</a>
+        {queue !== null ? <span className="muted">{queue.entries.length + " queued"}</span> : null}
+      </div>
+      {queue === null ? <p className="error-text" data-queue-group-error>The queue could not be read.</p> : null}
+      {queue !== null && queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : null}
+      {queue !== null && queue.entries.length > 0 ? (
+        <ol className="queue-list">
+          {queue.entries.map((entry) => (
+            <li key={entry.feature} className="queue-entry" data-queue-entry={entry.feature}>
+              <span className="queue-feature">{entry.feature}</span>
+              <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
+              {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
+              {typeof entry.run === "string" ? <OpenRun projectId={project.id} run={entry.run} /> : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
+// The Queue page across every project: the header, the project picker, and each project's queue.
+function AllQueuesPage({ token, reloads, onRefresh, onSignedOut }) {
+  return (
+    <Loaded key={API_PROJECTS} reloads={reloads} header={() => <PageHeader title="Queue" subtitle="The features each project's server starts in turn" onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
+      <>
+        <ProjectSelect projects={projects} projectId={null} section="queue" />
+        <AllQueues token={token} projects={projects.filter((project) => project.available !== false)} reloads={reloads} onSignedOut={onSignedOut} />
       </>
     )} onSignedOut={onSignedOut} />
   );
@@ -4780,7 +4836,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       <Loaded key={queuePath} reloads={reloads} header={() => (
         <>
           <PageHeader title="Queue" subtitle="The features the server starts in turn, when the project's limits allow" onRefresh={onRefresh} />
-          <ProjectSelect projects={projects} projectId={projectId} />
+          <ProjectSelect projects={projects} projectId={projectId} section="queue" />
         </>
       )} token={token} path={queuePath} loading="Loading the queue…" parse={parseQueue} draw={(data) => <QueueView key={JSON.stringify(data.queue)} data={data} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
     );
@@ -4914,6 +4970,9 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   }
   if (hash === "/features") {
     return <AllFeaturesPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
+  }
+  if (hash === "/queue") {
+    return <AllQueuesPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
   }
   if (hash === "/orchestrations") {
     return <AllOrchestrationsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;

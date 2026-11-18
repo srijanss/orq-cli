@@ -1,4 +1,4 @@
-//! The sidebar always offers Features, Orchestrations and Reviews. With no project chosen each one
+//! The sidebar always offers Features, Orchestrations, Queue and Reviews. With no project chosen each one
 //! lists the items of every project, grouped under the project's name.
 
 mod web_deps;
@@ -50,7 +50,7 @@ fn without_a_project_the_sidebar_still_offers_features_orchestrations_and_review
     let Some(out) = shell(json!({"path": "/dashboard"})) else { return };
     let links = out["frames"][0]["links"].as_array().unwrap();
     let pairs: Vec<(&str, &str)> = links.iter().map(|l| (l["text"].as_str().unwrap(), l["href"].as_str().unwrap())).collect();
-    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Reviews", "/reviews"), ("Settings", "/settings")], "{out}");
+    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Queue", "/queue"), ("Reviews", "/reviews"), ("Settings", "/settings")], "{out}");
 }
 
 #[test]
@@ -97,4 +97,31 @@ fn a_project_that_cannot_be_read_says_so_and_the_others_still_show() {
     let texts = shown(&out["frames"][1]).join(" | ");
     assert!(texts.contains("beta-feature"), "{texts}");
     assert!(texts.contains("could not be read"), "{texts}");
+}
+
+fn queue_link(frame: &Value) -> (String, Option<String>) {
+    let links = frame["links"].as_array().unwrap();
+    let queue = links.iter().find(|l| l["text"] == "Queue").unwrap_or_else(|| panic!("no Queue link: {links:?}"));
+    (queue["href"].as_str().unwrap().to_string(), queue["current"].as_str().map(String::from))
+}
+
+#[test]
+fn queue_follows_orchestrations_and_points_at_the_chosen_projects_queue_inside_a_project() {
+    let Some(out) = shell(json!({"path": "/projects/alpha/features", "projectId": "alpha"})) else { return };
+    let links = out["frames"][0]["links"].as_array().unwrap();
+    let labels: Vec<&str> = links.iter().map(|l| l["text"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(queue_link(&out["frames"][0]), ("/projects/alpha/queue".to_string(), None), "{out}");
+}
+
+#[test]
+fn queue_is_marked_on_the_queue_pages_and_not_on_others() {
+    for (path, project) in [("/queue", Value::Null), ("/projects/alpha/queue", json!("alpha"))] {
+        let Some(out) = shell(json!({"path": path, "projectId": project})) else { return };
+        assert_eq!(queue_link(&out["frames"][0]), (path.to_string(), Some("page".to_string())), "{out}");
+    }
+    for (path, project) in [("/orchestrations", Value::Null), ("/projects/alpha/orchestrations", json!("alpha"))] {
+        let Some(out) = shell(json!({"path": path, "projectId": project})) else { return };
+        assert_eq!(queue_link(&out["frames"][0]).1, None, "{path}: {out}");
+    }
 }
