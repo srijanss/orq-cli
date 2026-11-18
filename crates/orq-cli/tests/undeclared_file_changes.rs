@@ -98,8 +98,14 @@ fn path_with(w: &World, agent: &FakeAgent, script: &str) -> std::ffi::OsString {
 
 /// `orq run` of COM-01 with `path`.
 fn run(w: &World, path: std::ffi::OsString) -> Output {
+    run_with(w, &path, &[])
+}
+
+/// `orq <args> --repo <repo>` with `path`.
+fn orq(w: &World, path: &std::ffi::OsStr, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_orq"))
-        .args(["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--repo"])
+        .args(args)
+        .arg("--repo")
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)
@@ -110,6 +116,13 @@ fn run(w: &World, path: std::ffi::OsString) -> Output {
         .env_remove("TDD_FEATURES_PATH")
         .output()
         .unwrap()
+}
+
+/// `orq run` of COM-01 with `path` and `extra` arguments.
+fn run_with(w: &World, path: &std::ffi::OsStr, extra: &[&str]) -> Output {
+    let mut args = vec!["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"];
+    args.extend_from_slice(extra);
+    orq(w, path, &args)
 }
 
 /// The payloads of every `kind` event any run recorded.
@@ -193,4 +206,55 @@ fn a_gate_fix_sessions_change_outside_the_features_files_is_recorded_under_its_s
     assert_eq!(output.status.code(), Some(0), "{stderr}");
     assert_eq!(payloads_of(&w, "session.undeclared_files"), vec![serde_json::json!({"files": ["fixed.txt"], "stage": "gate_fix"})]);
     assert!(stderr.contains("changed outside its features' files: fixed.txt (gate fix)"), "{stderr}");
+}
+
+/// A rebase-fix session's own file is recorded under its stage; what the moved main brought, here
+/// `upstream.txt`, is not the run's change and is never named.
+#[test]
+fn a_rebase_fix_sessions_change_outside_the_features_files_is_recorded_and_upstream_files_are_not() {
+    let w = world("rebase-fix", "gate = [\"true\"]\nexplain_failures = false\n", &ledger(&[]));
+    let agent = agent_writing(&["src/feature.rs"]);
+    let root = w.repo.root().display().to_string();
+    let done = w.base.join("moved").display().to_string();
+    // While the implement session works, another run's local merge commits src/feature.rs and upstream.txt on main.
+    let move_main = format!(
+        "[ -f '{done}' ] || {{ touch '{done}'; mkdir -p '{root}/src' && printf 'theirs\\n' > '{root}/src/feature.rs' && printf 'up\\n' > '{root}/upstream.txt' && git -C '{root}' add src/feature.rs upstream.txt && git -C '{root}' -c user.name=Someone -c user.email=someone@example.invalid commit -q -m 'other: feature'; }}"
+    );
+    let resolve = "printf 'merged\\n' > src/feature.rs && printf 'x\\n' > resolve-extra.txt && git add src/feature.rs resolve-extra.txt && GIT_EDITOR=true git -c user.name=Fixer -c user.email=fixer@example.invalid rebase --continue";
+    let script = format!("case \"$*\" in\n*'The rebase of this run'*) {resolve}; exit 0;;\nesac\n{move_main}");
+    let path = path_with(&w, &agent, &script);
+    let output = run_with(&w, &path, &["--delivery", "merge-local"]);
+
+    let stderr = text(&output.stderr);
+    assert!(text(&output.stdout).contains("state: merged"), "{}\n{stderr}", text(&output.stdout));
+    assert_eq!(payloads_of(&w, "session.undeclared_files"), vec![serde_json::json!({"files": ["resolve-extra.txt"], "stage": "rebase_fix"})]);
+    assert!(stderr.contains("changed outside its features' files: resolve-extra.txt (rebase fix)"), "{stderr}");
+    assert!(!stderr.contains("upstream.txt"), "{stderr}");
+}
+
+/// A resumed run's implement session is told, once each, the files the run it resumes changed
+/// outside its features' files.
+#[test]
+fn a_resumed_runs_session_is_told_the_files_the_failed_run_changed_outside_its_features() {
+    let w = world("resumed", "explain_failures = false\n", &ledger(&[]));
+    let ledger_path = w.repo.root().join(".tdd-features.json").display().to_string();
+    let prompt_file = w.base.join("prompt.txt");
+    // As the agent's TDD server does, the session marks COM-01 started; the implement prompt is kept.
+    let script = format!(
+        "sed -i -E 's/\"status\": \"[a-z_]+\"/\"status\": \"in_progress\"/' '{ledger_path}'\ncase \"$*\" in *'Before start_review'*) printf '%s' \"$*\" > '{}';; esac",
+        prompt_file.display()
+    );
+    let failing = FakeAgent::builder().write_file("src/feature.rs", "half\n").write_file("src/other.rs", "x\n").commit("wip").exit_code(3).build();
+    let failed = run(&w, path_with(&w, &failing, &script));
+    assert!(text(&failed.stdout).contains("failed"), "{}\n{}", text(&failed.stdout), text(&failed.stderr));
+    assert_eq!(payloads_of(&w, "session.undeclared_files"), vec![serde_json::json!({"files": ["src/other.rs"], "stage": "implement_and_review"})]);
+    let run_id = orq_orchestrator::RunStore::new(&w.state.join("orq")).run_ids().unwrap().remove(0);
+
+    let finishing = agent_writing(&["src/feature.rs"]);
+    let resumed = orq(&w, &path_with(&w, &finishing, &script), &["run", "resume", &run_id, "--yes", "--no-ci-check"]);
+
+    assert!(text(&resumed.stdout).contains("state: review_ready"), "{}\n{}", text(&resumed.stdout), text(&resumed.stderr));
+    let prompt = std::fs::read_to_string(&prompt_file).unwrap();
+    assert!(prompt.contains("<undeclared-files>\n\"src/other.rs\"\n</undeclared-files>"), "{prompt}");
+    assert_eq!(prompt.matches("\"src/other.rs\"").count(), 1, "{prompt}");
 }
