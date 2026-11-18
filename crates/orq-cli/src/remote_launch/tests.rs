@@ -419,3 +419,28 @@ fn a_set_aside_merge_runs_orq_run_merge_detached_in_herdr_and_its_refusal_is_the
     assert!(matches!(launcher.merge_set_aside(&repo, "--yes"), Err(LaunchError::Refused(_))));
     assert_eq!(std::fs::read_to_string(dir.join("calls.log")).unwrap().lines().count(), 4);
 }
+
+#[test]
+fn a_resume_with_an_answer_or_a_review_again_passes_them_to_orq_run_resume() {
+    let dir = scratch("resume-with");
+    let repo = repo(&dir);
+    let exe = dir.join("orq");
+    let log = dir.join("calls.log");
+    // One argument per line, so an answer's spaces and newlines stay inside it.
+    let script = format!("#!/bin/sh\nfor a in \"$@\"; do printf '[%s]' \"$a\" >> {log}; done\necho >> {log}\necho 'run: run-79'\n", log = log.display());
+    std::fs::write(&exe, script).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = CliLauncher::new(exe, None);
+    let request = |answer, review_again| orq_remote::projects::ResumeRequest { answer, review_again };
+
+    assert_eq!(launcher.resume_with(&repo, "r-1", &request(Some("use v2 --yes"), false)).unwrap(), "run-79");
+    assert_eq!(launcher.resume_with(&repo, "r-1", &request(None, true)).unwrap(), "run-79");
+    assert_eq!(launcher.resume_with(&repo, "r-1", &request(None, false)).unwrap(), "run-79");
+    let calls: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_string).collect();
+    let tail = format!("[--detach][--in-herdr][--repo][{}]", repo.display());
+    assert_eq!(calls, vec![
+        format!("[run][resume][r-1][--yes][--answer][use v2 --yes]{tail}"),
+        format!("[run][resume][r-1][--yes][--review-again]{tail}"),
+        format!("[run][resume][r-1][--yes]{tail}"),
+    ]);
+}

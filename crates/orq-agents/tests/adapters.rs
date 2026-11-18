@@ -46,6 +46,7 @@ fn the_claude_implement_argv_runs_implement_and_review_with_the_runs_reviewer_as
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();
@@ -84,6 +85,7 @@ fn an_implement_request_the_adapter_cannot_serve_is_a_typed_error() {
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     // The implementer model must belong to the adapter's own harness.
@@ -121,6 +123,7 @@ fn the_implementers_thinking_level_is_passed_to_claude_as_its_effort() {
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();
@@ -149,6 +152,7 @@ fn a_reviewer_harness_no_adapter_exists_for_is_refused_before_any_argv_is_built(
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     assert!(matches!(
@@ -174,6 +178,7 @@ fn extra_context_is_appended_to_the_request_as_one_argument_and_bad_text_is_refu
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();
@@ -230,6 +235,7 @@ fn an_exit_marker_makes_the_claude_prompt_ask_for_the_file_as_the_last_step() {
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
 
@@ -259,6 +265,7 @@ fn an_exit_marker_with_spaces_is_quoted_and_one_that_cannot_be_named_safely_is_r
             leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
         })
     };
@@ -287,6 +294,7 @@ fn a_remote_control_name_makes_claude_start_with_remote_control_before_the_promp
             leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
         })
     };
@@ -377,6 +385,7 @@ fn a_group_implement_request_lists_the_features_in_order_and_asks_for_a_commit_p
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();
@@ -417,6 +426,7 @@ fn a_group_implement_request_asks_for_every_feature_to_be_completed_the_usual_wa
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let prompt = claude.implement_argv(&request).unwrap().pop().unwrap();

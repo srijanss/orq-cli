@@ -221,12 +221,16 @@ struct RunArgs {
     /// Set by `orq run resume --fix-conflicts`: a session of the implementer resolves the rebase the
     /// run blocked on.
     fix_conflicts: bool,
+    /// Set by `orq run resume --review-again`: the run is reviewed again, a failed one from its last review.
+    review_again: bool,
+    /// Set by `orq run resume --answer`: what the person resuming answered, for the implement session.
+    answer: Option<String>,
     /// Set by a detached launch for the runner it starts; not meant for people.
     run_id: Option<String>,
 }
 
 /// The `orq run` flags that take a value; parsing and forwarding both read this list.
-const RUN_VALUE_FLAGS: [&str; 14] = [
+const RUN_VALUE_FLAGS: [&str; 15] = [
     "--repo",
     "--feature",
     "--group",
@@ -241,6 +245,7 @@ const RUN_VALUE_FLAGS: [&str; 14] = [
     "--mr-reviewer",
     "--delivery",
     "--run-id",
+    "--answer",
 ];
 
 fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
@@ -260,10 +265,12 @@ fn parse_run_args(args: &[OsString]) -> Option<RunArgs> {
             "--check" => parsed.check = true,
             "--set-aside" => parsed.set_aside = true,
             "--fix-conflicts" => parsed.fix_conflicts = true,
+            "--review-again" => parsed.review_again = true,
             name if RUN_VALUE_FLAGS.contains(&name) => {
                 let value = iter.next()?;
                 match name {
                     "--run-id" => parsed.run_id = Some(value.to_str()?.to_string()),
+                    "--answer" => parsed.answer = Some(value.to_str()?.to_string()),
                     "--repo" => parsed.repo = Some(PathBuf::from(value)),
                     "--feature" => parsed.feature = Some(value.to_str()?.to_string()),
                     "--group" => parsed.group = Some(value.to_str()?.to_string()),
@@ -495,6 +502,8 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         delivery_named: named_delivery.is_some(),
         set_aside: parsed.set_aside,
         fix_conflicts: parsed.fix_conflicts,
+        review_again: parsed.review_again,
+        answer: parsed.answer.as_deref(),
         max_active_runs: project_limits.0,
         min_free_disk_gb: project_limits.1,
         machine: machine_limits,
@@ -5179,12 +5188,19 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     let mut detach = false;
     let mut in_herdr = false;
     let mut fix_conflicts = false;
+    let mut review_again = false;
+    let mut answer: Option<OsString> = None;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
             Some("--fix-conflicts") => fix_conflicts = true,
+            Some("--review-again") => review_again = true,
+            Some("--answer") => match iter.next() {
+                Some(value) => answer = Some(value.clone()),
+                None => return usage_error(),
+            },
             Some("--detach") => detach = true,
             Some("--in-herdr") => in_herdr = true,
             Some("--no-ci-check") => no_ci_check = true,
@@ -5246,7 +5262,12 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
         (Err(err), _) => return fail(format!("cannot read the run: {err:?}")),
         (_, Err(reason)) => return fail(reason),
     };
-    if let Err(reason) = orq_orchestrator::check_group_resume_fixing(&store, &repo, &run_id, fix_conflicts) {
+    let checked = if review_again {
+        orq_orchestrator::check_group_resume_reviewing_again(&store, &repo, &run_id)
+    } else {
+        orq_orchestrator::check_group_resume_fixing(&store, &repo, &run_id, fix_conflicts)
+    };
+    if let Err(reason) = checked {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
     }
     // A run waiting for a review decision kept its features; reviewing again starts them anew.
@@ -5303,6 +5324,12 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     }
     if fix_conflicts {
         forwarded.push("--fix-conflicts".into());
+    }
+    if review_again {
+        forwarded.push("--review-again".into());
+    }
+    if let Some(answer) = answer {
+        forwarded.extend(["--answer".into(), answer]);
     }
     run_as(&forwarded, Some(&run_id))
 }

@@ -139,7 +139,19 @@ pub fn plan_group_resume_fixing(
     members: &[String],
     fix_conflicts: bool,
 ) -> Result<ResumePlan, String> {
-    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, fix_conflicts)
+    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, fix_conflicts, false)
+}
+
+/// [`plan_group_resume`], asked to review the run again: a run waiting on a review decision from
+/// the review that escalated, and a failed one from its last review, provided something was
+/// committed after it. Any other run is refused.
+pub fn plan_group_resume_reviewing_again(
+    store: &RunStore,
+    repo: &Path,
+    project_id: &str,
+    members: &[String],
+) -> Result<ResumePlan, String> {
+    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, false, true)
 }
 
 /// The run of `project_id` named after `feature_id` (a single feature's run, or a group's that it
@@ -225,7 +237,7 @@ pub fn plan_group_resume_with(
     members: &[String],
     alive: &dyn Fn(u32, Option<u64>) -> bool,
 ) -> Result<ResumePlan, String> {
-    plan(store, repo, project_id, members, alive, false)
+    plan(store, repo, project_id, members, alive, false, false)
 }
 
 fn plan(
@@ -235,6 +247,7 @@ fn plan(
     members: &[String],
     alive: &dyn Fn(u32, Option<u64>) -> bool,
     fix_conflicts: bool,
+    review_again: bool,
 ) -> Result<ResumePlan, String> {
     let feature_id = members
         .first()
@@ -249,6 +262,11 @@ fn plan(
     let events = store
         .events(&from.run_id)
         .map_err(|e| format!("cannot read the events of {}: {e:?}", from.run_id))?;
+    let phase = summarize_run(&events).phase;
+    if review_again && !matches!(phase, RunPhase::NeedsReview | RunPhase::Failed) {
+        let phase = phase.as_str().replace('_', " ");
+        return Err(format!("{} is {phase}: only a run that needs review or failed can be reviewed again", from.run_id));
+    }
     // A failed run never keeps its features, whether it just now proved dead or an earlier attempt
     // recorded that and died before releasing. Each release checks ownership, so this is repeatable.
     if summarize_run(&events).phase == RunPhase::Failed {
@@ -372,6 +390,17 @@ fn plan(
                     )
                 })?,
         ),
+        // A failed run is reviewed again only when asked, from its last review, and only when
+        // something came after it: otherwise there is nothing new to review.
+        RunPhase::Failed if review_again => {
+            let review = crate::review_escalation::last_review(&from.worktree, &from.base_sha)
+                .map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
+                .ok_or_else(|| format!("{}: its worktree has no review to review again; resume it instead", from.run_id))?;
+            if review.unreviewed_commits.is_empty() {
+                return Err(format!("{}: nothing was committed after its last review; resume it instead", from.run_id));
+            }
+            Some(review)
+        }
         _ => None,
     };
     // A rebase that stopped on a conflict counts as finished by hand only once the branch has what
@@ -597,6 +626,20 @@ pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result
 /// [`check_group_resume`] for a resume that, with `fix_conflicts`, has a session resolve the rebase
 /// the run blocked on.
 pub fn check_group_resume_fixing(store: &RunStore, repo: &Path, run_id: &str, fix_conflicts: bool) -> Result<(), String> {
+    check_group_resume_as(store, run_id, &|record, members| plan_group_resume_fixing(store, repo, &record.project_id, members, fix_conflicts))
+}
+
+/// [`check_group_resume_fixing`] for a resume asked to review the run again
+/// ([`plan_group_resume_reviewing_again`]).
+pub fn check_group_resume_reviewing_again(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
+    check_group_resume_as(store, run_id, &|record, members| plan_group_resume_reviewing_again(store, repo, &record.project_id, members))
+}
+
+fn check_group_resume_as(
+    store: &RunStore,
+    run_id: &str,
+    plan: &dyn Fn(&RunRecord, &[String]) -> Result<ResumePlan, String>,
+) -> Result<(), String> {
     let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     let members = run_members(store, run_id)?;
     // A later run named after the same feature took it over, whatever else it was for.
@@ -607,7 +650,7 @@ pub fn check_group_resume_fixing(store: &RunStore, repo: &Path, run_id: &str, fi
             format!("{later} is a later run that took {}; this run can no longer be resumed", taken.join(", "))
         });
     }
-    plan_group_resume_fixing(store, repo, &record.project_id, &members, fix_conflicts).map(|_| ())
+    plan(&record, &members).map(|_| ())
 }
 
 /// Where run `run_id` would continue if resumed now: the next stage of a paused run's checkpoint,

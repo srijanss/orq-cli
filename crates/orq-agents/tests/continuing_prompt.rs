@@ -22,6 +22,7 @@ fn request<'a>(continuing: Option<Continuing<'a>>) -> ImplementRequest<'a> {
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     }
 }

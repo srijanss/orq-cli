@@ -26,6 +26,7 @@ fn request<'a>(implementer: &str, declared_files: &'a [String], undeclared_files
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files,
+        answer: None,
         undeclared_files,
     }
 }

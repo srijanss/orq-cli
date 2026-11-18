@@ -200,6 +200,17 @@ impl RunLauncher for CliLauncher {
         self.carry_on(run, &["resume", run, "--yes"], repo)
     }
 
+    fn resume_with(&self, repo: &Path, run: &str, request: &orq_remote::projects::ResumeRequest) -> Result<String, LaunchError> {
+        let mut command = vec!["resume", run, "--yes"];
+        if let Some(answer) = request.answer {
+            command.extend(["--answer", answer]);
+        }
+        if request.review_again {
+            command.push("--review-again");
+        }
+        self.carry_on(run, &command, repo)
+    }
+
     fn merge_set_aside(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
         // `orq run merge --set-aside` resumes the run, so it carries on as a resumed run does.
         self.carry_on(run, &["merge", run, "--set-aside"], repo)

@@ -53,6 +53,16 @@ pub struct UnreviewedCommit {
 /// is still in the branch. Reviews of anything else are passed over, however recent.
 /// No ledger, or a latest round that did not escalate, is `None`.
 pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedReview>, String> {
+    latest_review(worktree, base, true)
+}
+
+/// The last review of this run's work in `worktree`, as [`escalated_review`] finds it, whether or
+/// not it escalated: what a failed run's review again starts from. No such review is `None`.
+pub fn last_review(worktree: &Path, base: &str) -> Result<Option<EscalatedReview>, String> {
+    latest_review(worktree, base, false)
+}
+
+fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Option<EscalatedReview>, String> {
     let Some(rounds) = read_ledger(&worktree.join(ROUNDS_FILE))? else {
         return Ok(None);
     };
@@ -106,7 +116,7 @@ pub fn escalated_review(worktree: &Path, base: &str) -> Result<Option<EscalatedR
     let rejected_twice = blocking
         .iter()
         .any(|f| f.get("rejectedCount").and_then(Value::as_u64).unwrap_or(0) >= 2);
-    if blocking.is_empty() || (number < ROUND_CAP && !rejected_twice) {
+    if escalated_only && (blocking.is_empty() || (number < ROUND_CAP && !rejected_twice)) {
         return Ok(None);
     }
     let live = read_ledger(&worktree.join(FINDINGS_FILE))?;

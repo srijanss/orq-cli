@@ -21,6 +21,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         leave_full_suite_to_gate: false,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();

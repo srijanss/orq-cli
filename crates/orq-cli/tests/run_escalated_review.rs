@@ -239,3 +239,60 @@ fn a_marker_saying_ok_with_notes_does_not_fail_the_run() {
     assert!(!stderr.contains("reported a problem"), "{stdout}\n{stderr}");
     assert!(stderr.contains("review request"), "the run reached the review request: {stdout}\n{stderr}");
 }
+
+/// Bring a run to `failed` after a review that did not escalate, let `then` work in its worktree, and
+/// resume it with `extra` flags. Gives back the head the review last reviewed too.
+fn resume_failed(tag: &str, then: impl Fn(&Path), extra: &[&str]) -> (World, String, Output) {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world(tag, &agent, Some(1));
+    let first = run(&w);
+    assert!(text(&first.stdout).contains("state: failed"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let reviewed = worktree_head(w.repo.root());
+    then(&worktree_path(w.repo.root()));
+    let run_id = std::fs::read_dir(w.state.join("orq/runs")).unwrap().next().unwrap().unwrap().file_name().into_string().unwrap();
+    let mut args = vec!["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let resumed = orq(&w, &args);
+    (w, reviewed, resumed)
+}
+
+/// The prompt of the second session, which the resume started.
+fn second_prompt(w: &World, resumed: &Output) -> String {
+    let prompts = std::fs::read_to_string(&w.prompts).unwrap();
+    prompts.split("\n--\n").filter(|p| !p.is_empty()).nth(1).unwrap_or_else(|| panic!("no second session\n{}\n{}", text(&resumed.stdout), text(&resumed.stderr))).to_string()
+}
+
+/// Commits work on the run's branch that no review saw.
+fn commit_unreviewed(worktree: &Path) {
+    std::fs::write(worktree.join("later.txt"), "later\n").unwrap();
+    git(worktree, &["add", "later.txt"]);
+    git(worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fix: after the review"]);
+}
+
+#[test]
+fn a_failed_run_with_commits_after_its_last_review_is_reviewed_again_when_asked() {
+    let (w, reviewed, resumed) = resume_failed("failed-again", commit_unreviewed, &["--review-again"]);
+
+    let second = second_prompt(&w, &resumed);
+    assert!(second.starts_with(&format!("/review-and-fix {reviewed}..HEAD --reviewer ")), "{second}");
+    assert!(second.contains("The run failed after its review and a human asked for another review of the commits since the head it last reviewed."), "{second}");
+    assert!(second.contains("the token reaches the log"), "{second}");
+}
+
+#[test]
+fn a_failed_run_with_nothing_committed_after_its_last_review_is_not_reviewed_again() {
+    let (w, _, resumed) = resume_failed("failed-nothing-new", |_| {}, &["--review-again"]);
+
+    let stderr = text(&resumed.stderr);
+    assert_eq!(sessions(&w), 1, "{stderr}");
+    assert_ne!(resumed.status.code(), Some(0));
+    assert!(stderr.contains("nothing was committed after its last review; resume it instead"), "{stderr}");
+}
+
+#[test]
+fn a_resume_with_an_answer_puts_the_answer_in_the_resumed_session_s_prompt() {
+    let (w, _, resumed) = resume_failed("answer", |_| {}, &["--answer", "use the v2 endpoint"]);
+
+    let second = second_prompt(&w, &resumed);
+    assert!(second.contains("\n\nThe person who resumed this run answered:\nuse the v2 endpoint"), "{second}");
+}

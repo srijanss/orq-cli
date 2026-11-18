@@ -24,6 +24,7 @@ fn request(implementer: &str, leave_full_suite_to_gate: bool) -> ImplementReques
         leave_full_suite_to_gate,
         allowed_commands: &[],
         declared_files: &[],
+        answer: None,
         undeclared_files: &[],
     }
 }
@@ -54,7 +55,7 @@ fn a_session_not_asked_to_leave_the_full_suite_gets_todays_prompt() {
 fn a_review_again_session_is_told_to_leave_the_full_suite_to_the_gate_too() {
     let findings = "- leak (high, src/log.rs:7): the token reaches the log";
     let again = ImplementRequest {
-        review_again: Some(ReviewAgain { from: "0123456789abcdef0123456789abcdef01234567", findings }),
+        review_again: Some(ReviewAgain { from: "0123456789abcdef0123456789abcdef01234567", findings, failed: false }),
         ..request("claude", true)
     };
     let prompt = prompt(&again);

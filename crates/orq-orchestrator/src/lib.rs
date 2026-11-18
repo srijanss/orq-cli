@@ -101,7 +101,7 @@ pub use reap::{
 };
 pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, RebaseOutcome};
 pub use resume::{
-    active_runs, carry_rebase, check_group_resume, check_group_resume_fixing, holds_run_slot, later_run_of, resume_takes_a_slot, newest_run_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
+    active_runs, carry_rebase, check_group_resume, check_group_resume_fixing, check_group_resume_reviewing_again, holds_run_slot, later_run_of, resume_takes_a_slot, newest_run_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_reviewing_again, plan_group_resume_with, plan_resume, rebased_onto, record_group, resumable_members,
     record_inherited_implement, resume_check, run_members,
     supersede_resumed, ResumePlan,
 };
@@ -119,7 +119,7 @@ pub use run_settings::{
     load_run_settings, model as checked_model, save_mcp_servers_setting, RunSettings, SettingsError,
 };
 pub use run_activity::{activity_line, newest_log_tail, run_activity, step_lines, test_progress, test_total_line, LogTail, RunActivity, TestProgress};
-pub use review_escalation::{escalated_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
+pub use review_escalation::{escalated_review, last_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
 pub use run_status::{
     record_capability_skipped, record_mcp_setup, record_model_switched, record_run_completed, request_model_switch,
     request_pause, summarize_run, AcceptFailure, RunPhase, RunSummary,

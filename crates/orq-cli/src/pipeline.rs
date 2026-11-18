@@ -64,6 +64,10 @@ pub struct Options<'a> {
     pub set_aside: bool,
     /// On resume of a run blocked mid-rebase on a conflict: a session of the implementer resolves it.
     pub fix_conflicts: bool,
+    /// On resume (`orq run resume --review-again`): review the run again, a failed one from its last review.
+    pub review_again: bool,
+    /// On resume (`orq run resume --answer`): what the person resuming answered, given to the implement session.
+    pub answer: Option<&'a str>,
     /// The project's settings: at most this many of its runs active at once (a resume does not
     /// count against it), and this much free disk, in GB, to start or resume a run.
     pub max_active_runs: Option<u8>,
@@ -356,7 +360,12 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     project_limits(options, store)?;
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
-        Some(orq_orchestrator::plan_group_resume_fixing(store, repo, &project_id(options.project), &members, options.fix_conflicts).map_err(other)?)
+        let planned = if options.review_again {
+            orq_orchestrator::plan_group_resume_reviewing_again(store, repo, &project_id(options.project), &members)
+        } else {
+            orq_orchestrator::plan_group_resume_fixing(store, repo, &project_id(options.project), &members, options.fix_conflicts)
+        };
+        Some(planned.map_err(other)?)
     } else {
         None
     };
@@ -473,6 +482,8 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let root = state_root().ok_or_else(|| other("no state location: set XDG_STATE_HOME or HOME"))?;
     let store = RunStore::new(&root);
     let Preflight { settings, resumed, naming, provider, repository } = preflight(options, &store).map_err(refused)?;
+    // Read before the resumed run is marked as resumed, which ends its failure.
+    let review_again_failed = resumed.as_ref().is_some_and(|r| r.review_again.is_some() && resumed_failed(&store, &r.from));
     // A paused run's resume continues a run that was already counted; a new run, and the resume of a
     // run that holds no slot (blocked, failed, waiting on review), are held to the limit.
     // Read with the rest of the resume's checks, before anything else is read or started.
@@ -681,7 +692,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     let resumed_from = Resumed {
         from: resumed.as_ref().map(|r| &r.from),
         implement_inherited_from: inherited.map(|r| r.from.run_id.as_str()),
-        paused_at: checkpoint.as_ref(), review_again: review_again.as_ref() };
+        paused_at: checkpoint.as_ref(), review_again: review_again.as_ref(), review_again_failed };
     let outcome = std::fs::create_dir_all(&logs)
         .map_err(StoreError::from)
         .and_then(|()| stages(&store, &record, options, &settings, provider.cli(), &logs, &resumed_from));
@@ -756,6 +767,13 @@ fn escalation_reason(review: &orq_orchestrator::EscalatedReview) -> String {
 }
 
 /// The findings still open in an escalated review, one line each, for the session that reviews again.
+/// Whether the run being resumed failed, rather than waiting on a review decision: a review asked of
+/// it again starts from its last review, not from one that escalated.
+fn resumed_failed(store: &RunStore, from: &RunRecord) -> bool {
+    store.events(&from.run_id).ok()
+        .is_some_and(|events| orq_orchestrator::summarize_run(&events).phase == orq_orchestrator::RunPhase::Failed)
+}
+
 fn open_findings_text(review: &orq_orchestrator::EscalatedReview) -> String {
     let lines: Vec<String> = review
         .findings
@@ -1657,6 +1675,8 @@ struct Resumed<'a> {
     paused_at: Option<&'a orq_orchestrator::Checkpoint>,
     /// That run's review escalated, so this run's session reviews again from where it stopped.
     review_again: Option<&'a orq_orchestrator::EscalatedReview>,
+    /// That run failed after its last review, rather than waiting on a decision after its review escalated.
+    review_again_failed: bool,
 }
 
 fn stages(
@@ -1668,7 +1688,7 @@ fn stages(
     logs: &Path,
     resumed: &Resumed<'_>,
 ) -> Result<Report, StoreError> {
-    let Resumed { from: resumed_from, implement_inherited_from, paused_at, review_again } = *resumed;
+    let Resumed { from: resumed_from, implement_inherited_from, paused_at, review_again, review_again_failed } = *resumed;
     let run_id = record.run_id.as_str();
     // Settled when the stages end, however they end, so the last fix session's features are recorded too.
     let fix_features = FixFeatureWatch::new(store, record, orq_features::ledger_path(options.project));
@@ -1777,12 +1797,13 @@ fn stages(
                     remote_control: (settings.remote_control != Some(false)).then_some(record.branch.as_str()),
                     handoff: handoff.as_deref(),
                     continuing,
-                    review_again: review_again.zip(open_findings.as_deref()).map(|(review, findings)| orq_agents::ReviewAgain { from: &review.reviewed_head, findings }),
+                    review_again: review_again.zip(open_findings.as_deref()).map(|(review, findings)| orq_agents::ReviewAgain { from: &review.reviewed_head, findings, failed: review_again_failed }),
                     // The gate runs the full suite after the session, so the session need not; a project
                     // whose gate is not a full suite opts out.
                     leave_full_suite_to_gate: options.gate && settings.full_suite_in_session != Some(true),
                     allowed_commands: &allowed_commands,
                     declared_files: &declared_files,
+                    answer: options.answer,
                     undeclared_files: &undeclared_files,
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;

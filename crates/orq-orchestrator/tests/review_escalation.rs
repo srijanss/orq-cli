@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::escalated_review;
+use orq_orchestrator::{escalated_review, last_review};
 use serde_json::{json, Value};
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -272,4 +272,84 @@ fn a_ledger_that_is_not_a_plain_readable_json_file_is_an_error_and_a_missing_one
     std::os::unix::fs::symlink(&elsewhere, &findings).unwrap();
     let err = escalated_review_in_time(&dir, &base).unwrap_err();
     assert!(err.contains(".tdd-review-findings.json"), "a symlinked findings ledger is refused too: {err}");
+}
+
+#[test]
+fn the_last_review_of_a_run_is_read_whether_or_not_it_escalated() {
+    let (dir, base) = repo("last-review");
+    let reviewed = commit(&dir, "a.txt", "feature");
+    ledger(&dir, &base, vec![round(&base, &reviewed, 1, vec![finding("open-one", "high", "open"), finding("minor", "low", "open")])], vec![finding("open-one", "high", "open")]);
+    let unseen = commit(&dir, "b.txt", "fix after the review");
+
+    assert_eq!(escalated_review(&dir, &base).unwrap(), None, "one round with a blocking finding did not escalate");
+    let review = last_review(&dir, &base).unwrap().expect("the run's last review");
+    assert_eq!((review.reviewed_head.as_str(), review.rounds), (reviewed.as_str(), 1));
+    let findings: Vec<(&str, &str)> = review.findings.iter().map(|f| (f.id.as_str(), f.status.as_str())).collect();
+    assert_eq!(findings, vec![("open-one", "open")]);
+    let commits: Vec<&str> = review.unreviewed_commits.iter().map(|c| c.sha.as_str()).collect();
+    assert_eq!(commits, vec![unseen.as_str()]);
+
+    let (empty, empty_base) = repo("last-review-none");
+    assert_eq!(last_review(&empty, &empty_base).unwrap(), None, "no ledger is no review");
+}
+
+/// [`stored_run`], with its worktree where orq keeps a run's, as a resume plan requires.
+fn resumable_run(tag: &str) -> (orq_test_support::GitFixture, PathBuf, orq_orchestrator::RunStore, orq_orchestrator::RunRecord) {
+    let repo = orq_test_support::GitFixture::new();
+    let base = git(repo.root(), &["rev-parse", "HEAD"]);
+    let worktree = repo.root().join(".claude/worktrees/run-1");
+    git(repo.root(), &["worktree", "add", "-q", "-b", "orq/run-1", worktree.to_str().unwrap()]);
+    commit(&worktree, "work.txt", "work");
+    let root = orq_test_support::process_temp_dir().join(format!("orq-review-again-store-{}-{tag}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let store = orq_orchestrator::RunStore::new(&root);
+    let record = orq_orchestrator::RunRecord {
+        delivery: Default::default(),
+        run_id: "run-1".into(),
+        project_id: "p".into(),
+        feature_id: "F".into(),
+        remote: "origin".into(),
+        provider: "github".into(),
+        target_branch: "main".into(),
+        base_sha: base,
+        branch: "orq/run-1".into(),
+        worktree: worktree.clone(),
+        repository: String::new(),
+        profiles: Default::default(),
+    };
+    store.start_run(&record).unwrap();
+    (repo, worktree, store, record)
+}
+
+#[test]
+fn a_review_again_asked_of_a_failed_run_starts_from_its_last_review_when_something_came_after_it() {
+    use orq_orchestrator::{plan_group_resume_reviewing_again, record_run_completed};
+    let members = ["F".to_string()];
+    let (repo, worktree, store, record) = resumable_run("again-failed");
+    let reviewed = git(&worktree, &["rev-parse", "HEAD"]);
+    ledger(&worktree, &record.base_sha, vec![round(&record.base_sha, &reviewed, 1, vec![finding("open-one", "high", "open")])], vec![finding("open-one", "high", "open")]);
+    record_run_completed(&store, &record, "failed", Some("the implement session reported a problem")).unwrap();
+
+    let nothing_new = plan_group_resume_reviewing_again(&store, repo.root(), "p", &members).unwrap_err();
+    assert_eq!(nothing_new, "run-1: nothing was committed after its last review; resume it instead");
+
+    commit(&worktree, "later.txt", "fix after the review");
+    let plan = plan_group_resume_reviewing_again(&store, repo.root(), "p", &members).unwrap();
+    let again = plan.review_again.expect("a review again");
+    assert_eq!(again.reviewed_head, reviewed);
+    assert!(!plan.skip_implement, "the session reviews again");
+    assert!(orq_orchestrator::plan_group_resume(&store, repo.root(), "p", &members).unwrap().review_again.is_none(), "a plain resume of a failed run is not a review again");
+}
+
+#[test]
+fn a_review_again_is_refused_for_a_run_that_neither_failed_nor_needs_review_or_that_was_never_reviewed() {
+    use orq_orchestrator::{plan_group_resume_reviewing_again, record_run_completed};
+    let members = ["F".to_string()];
+    let (repo, _worktree, store, record) = resumable_run("again-blocked");
+    record_run_completed(&store, &record, "blocked", Some("rebase conflict")).unwrap();
+    assert_eq!(plan_group_resume_reviewing_again(&store, repo.root(), "p", &members).unwrap_err(), "run-1 is blocked: only a run that needs review or failed can be reviewed again");
+
+    let (repo, _worktree, store, record) = resumable_run("again-unreviewed");
+    record_run_completed(&store, &record, "failed", None).unwrap();
+    assert_eq!(plan_group_resume_reviewing_again(&store, repo.root(), "p", &members).unwrap_err(), "run-1: its worktree has no review to review again; resume it instead");
 }

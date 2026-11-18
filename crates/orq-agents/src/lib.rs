@@ -83,7 +83,12 @@ pub struct ImplementRequest<'a> {
     /// The files an earlier session of the run changed outside the features' declared files: a resumed
     /// or review-again session is told to check each change is needed and tested. Empty says nothing.
     pub undeclared_files: &'a [String],
+    /// What the person who resumed the run answered, for the session to act on. `None` or blank says nothing.
+    pub answer: Option<&'a str>,
 }
+
+/// The most of a person's answer a resumed session is given.
+pub const MAX_ANSWER_CHARS: usize = 8000;
 
 /// The run a resumed run continues, and the commits its session already made on the branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +108,8 @@ pub struct ReviewAgain<'a> {
     pub from: &'a str,
     /// The open findings, in words, one per line.
     pub findings: &'a str,
+    /// The run failed after its last review, rather than waiting on a decision after its review escalated.
+    pub failed: bool,
 }
 
 /// What a stage asks an adapter to start when a check went red: a session that repairs it.
@@ -129,6 +136,18 @@ pub fn checked_context(text: &str) -> Result<Option<&str>, AdapterError> {
     if bad {
         let shown: String = text.chars().take(40).collect();
         return Err(AdapterError::InvalidValue { field: "context", value: shown });
+    }
+    let trimmed = text.trim();
+    Ok((!trimmed.is_empty()).then_some(trimmed))
+}
+
+/// A person's answer, trimmed, as a resumed session may be given it: no control character but a
+/// newline or tab, and at most [`MAX_ANSWER_CHARS`]. A blank one is `None`.
+fn checked_answer(text: &str) -> Result<Option<&str>, AdapterError> {
+    let bad = text.chars().count() > MAX_ANSWER_CHARS || text.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t'));
+    if bad {
+        let shown: String = text.chars().take(40).collect();
+        return Err(AdapterError::InvalidValue { field: "answer", value: shown });
     }
     let trimmed = text.trim();
     Ok((!trimmed.is_empty()).then_some(trimmed))
@@ -526,7 +545,11 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
         prompt.push_str(thinking);
     }
     if let Some(again) = &request.review_again {
-        prompt.push_str("\n\nThe review of this branch escalated and a human asked for another review of the commits since the head it last reviewed. These findings were open when it escalated:\n");
+        prompt.push_str(if again.failed {
+            "\n\nThe run failed after its review and a human asked for another review of the commits since the head it last reviewed. These findings were open when its review ended:\n"
+        } else {
+            "\n\nThe review of this branch escalated and a human asked for another review of the commits since the head it last reviewed. These findings were open when it escalated:\n"
+        });
         prompt.push_str(&again.findings.replace('\0', " "));
     } else if request.features.len() > 1 {
         prompt.push_str("\n\nThese features share one branch. Make one commit per feature, in the order given. Complete every one of these features the usual way, so that all of them end with the same status. Never set any of these features to abandoned: orq does not count an abandoned feature as done, so the run fails; if one cannot be finished, say why instead.");
@@ -547,6 +570,10 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     if let Some(handoff) = request.handoff.map(str::trim).filter(|h| !h.is_empty()) {
         prompt.push_str("\n\nHandoff from the previous session:\n");
         prompt.push_str(&handoff.replace('\0', " "));
+    }
+    if let Some(answer) = request.answer.map(checked_answer).transpose()?.flatten() {
+        prompt.push_str("\n\nThe person who resumed this run answered:\n");
+        prompt.push_str(answer);
     }
     if request.attended {
         prompt.push_str(&attended_wording(harness));
