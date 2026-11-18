@@ -556,18 +556,31 @@ pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, Strin
 /// continued on its branch or in its worktree, which is that later run's business whatever the
 /// run's own events last said.
 pub fn active_runs(runs: &[(String, RunRecord, Vec<Event>)]) -> Vec<(String, String)> {
+    use std::collections::HashMap;
     let ordered: Vec<RunOrder> = runs.iter().map(|(run_id, _, events)| run_order(run_id, events)).collect();
+    // The latest run of each project on each branch and in each worktree, so whether a later run
+    // continued a run is one lookup per run rather than a scan of every other run.
+    let mut by_branch: HashMap<(&str, &str), &RunOrder> = HashMap::new();
+    let mut by_worktree: HashMap<(&str, &Path), &RunOrder> = HashMap::new();
+    for ((_, record, _), order) in runs.iter().zip(&ordered) {
+        if !record.branch.is_empty() {
+            let latest = by_branch.entry((&record.project_id, &record.branch)).or_insert(order);
+            *latest = (*latest).max(order);
+        }
+        if !record.worktree.as_os_str().is_empty() {
+            let latest = by_worktree.entry((&record.project_id, &record.worktree)).or_insert(order);
+            *latest = (*latest).max(order);
+        }
+    }
+    let continued = |record: &RunRecord, own: &RunOrder| {
+        let later = |latest: Option<&&RunOrder>| latest.is_some_and(|latest| *latest > own);
+        (!record.branch.is_empty() && later(by_branch.get(&(record.project_id.as_str(), record.branch.as_str()))))
+            || (!record.worktree.as_os_str().is_empty() && later(by_worktree.get(&(record.project_id.as_str(), record.worktree.as_path()))))
+    };
     runs.iter()
         .zip(&ordered)
         .filter(|((_, _, events), _)| holds_run_slot(summarize_run(events).phase))
-        .filter(|((run_id, record, _), own)| {
-            !runs.iter().zip(&ordered).any(|((other_id, other, _), order)| {
-                other_id != run_id
-                    && other.project_id == record.project_id
-                    && shares_checkout(record, other)
-                    && order > own
-            })
-        })
+        .filter(|((_, record, _), own)| !continued(record, own))
         .map(|((run_id, record, _), _)| (run_id.clone(), record.feature_id.clone()))
         .collect()
 }

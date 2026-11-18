@@ -151,3 +151,39 @@ fn resuming_a_run_holding_no_slot_takes_one_and_resuming_a_paused_or_pausing_one
     }
     assert!(orq_orchestrator::resume_takes_a_slot(&store, "run-missing").is_err(), "a run that cannot be read is not guessed at");
 }
+
+#[test]
+fn a_running_run_is_continued_only_by_a_later_run_of_its_own_project_on_its_branch_or_in_its_worktree() {
+    let started = |run_id: &str, at: &str| Event {
+        schema_version: 1,
+        event_id: format!("{run_id}-0"),
+        run_id: run_id.into(),
+        project_id: String::new(),
+        feature_id: String::new(),
+        kind: "stage.started".into(),
+        stage: None,
+        attempt: 1,
+        occurred_at: at.into(),
+        payload: serde_json::json!({}),
+    };
+    let run = |run_id: &str, project: &str, branch: &str, worktree: &str, at: &str| {
+        let record = RunRecord { branch: branch.into(), worktree: worktree.into(), ..record(project, run_id, run_id) };
+        (run_id.to_string(), record, vec![started(run_id, at)])
+    };
+    let runs = vec![
+        // Continued in its worktree by a later run on another branch.
+        run("run-1", "p", "orq/a", "/w/a", "2026-11-01T00:00:00Z"),
+        run("run-2", "p", "orq/a2", "/w/a", "2026-11-02T00:00:00Z"),
+        // A later run of another project on the same branch and worktree continues nothing here.
+        run("run-3", "p", "orq/b", "/w/b", "2026-11-01T00:00:00Z"),
+        run("run-4", "q", "orq/b", "/w/b", "2026-11-02T00:00:00Z"),
+        // An earlier run on the same branch does not continue a later one.
+        run("run-5", "p", "orq/c", "/w/c1", "2026-11-01T00:00:00Z"),
+        run("run-6", "p", "orq/c", "/w/c2", "2026-11-03T00:00:00Z"),
+        // Runs with no recorded branch or worktree share nothing.
+        run("run-7", "p", "", "", "2026-11-01T00:00:00Z"),
+        run("run-8", "p", "", "", "2026-11-02T00:00:00Z"),
+    ];
+    let active: Vec<String> = orq_orchestrator::active_runs(&runs).into_iter().map(|(run_id, _)| run_id).collect();
+    assert_eq!(active, ["run-2", "run-3", "run-4", "run-6", "run-7", "run-8"]);
+}
