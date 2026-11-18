@@ -226,8 +226,13 @@ impl StoreProjects {
             let machine_active = match machine.limits.max_active {
                 Some(_) if keeps_slot => Vec::new(),
                 Some(_) => {
+                    // Every project's queued Accepts that are running their tests hold a machine slot.
                     let mut all = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
-                    all.extend(accepting);
+                    for going in self.machine_queued_accepts_going(store, &runs)? {
+                        if !all.iter().any(|(_, run)| *run == going.1) {
+                            all.push(going);
+                        }
+                    }
                     all
                 }
                 None => Vec::new(),
@@ -328,6 +333,20 @@ impl StoreProjects {
                 accepting.then(|| (run.clone(), entry.feature.clone()))
             })
             .collect()
+    }
+
+    /// The queued Accepts of every project's queue in `store` whose tests are running, as (project id,
+    /// run id) like the machine's active runs.
+    fn machine_queued_accepts_going(&self, store: &Store, runs: &RunStore) -> Result<Vec<(String, String)>, String> {
+        let mut going = Vec::new();
+        for root in store.queued_projects().map_err(|error| error.to_string())? {
+            let queue = store.queue(Path::new(&root)).map_err(|error| error.to_string())?;
+            for (run, _) in self.queued_accepts_going(&queue, runs) {
+                let project = runs.load(&run).map_or_else(|_| String::new(), |record| record.project_id);
+                going.push((project, run));
+            }
+        }
+        Ok(going)
     }
 
     /// Starts queued `action` in project `id` the way the web's Resume, Review again and Accept do:

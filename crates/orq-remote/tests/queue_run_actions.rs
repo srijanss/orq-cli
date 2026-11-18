@@ -395,3 +395,36 @@ fn a_queued_resume_of_a_paused_run_starts_on_the_slot_the_paused_run_still_holds
     round(&s);
     assert_eq!(resumed(&s), [("run-p".to_string(), None, false)], "the paused run's own slot is the one its resume carries on in");
 }
+
+/// A second project `name` next to alpha, with alpha's settings and features, as its main checkout.
+fn second_project(s: &Setup, name: &str) -> PathBuf {
+    let path = s.repo.parent().unwrap().join(name);
+    std::fs::create_dir_all(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "main"]);
+    git(&path, &["commit", "-q", "--allow-empty", "-m", "start"]);
+    std::fs::copy(s.repo.join(".tdd-features.json"), path.join(".tdd-features.json")).unwrap();
+    let settings = ProjectSettings { delivery: Delivery::MergeLocal, ..ProjectSettings::default() };
+    Store::open(&s.roots.database()).unwrap().save_project_settings(&path, 0, &settings).unwrap();
+    path
+}
+
+#[test]
+fn an_accept_queued_in_another_project_holds_a_machine_slot_while_its_tests_run() {
+    let s = setup("qra-machine", |settings| settings.max_active_runs = None);
+    std::fs::write(s.roots.config_file(), "remote_actions = true\n[runs]\nmax_active = 1\n").unwrap();
+    let beta = second_project(&s, "beta");
+    let worktree = beta.join(".claude/worktrees/run-b");
+    git(&beta, &["worktree", "add", "-q", "-b", "orq/run-b", worktree.to_str().unwrap()]);
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work of run-b"]);
+    seed_run(&s.roots.state, &beta, "run-b", "COM-00");
+    end_run(&s, "run-b", "needs_review");
+    let (status, answer) = send(&s, "POST", "/api/projects/beta/queue", json!({"action": "accept", "run": "run-b"}).to_string().as_bytes());
+    assert_eq!(status, 200, "{answer}");
+    round(&s);
+    assert_eq!(send(&s, "GET", "/api/projects/beta/queue", b"").1["queue"]["entries"][0]["state"], "running", "beta's accept is running its tests");
+
+    add(&s, json!({"features": ["COM-01"]}));
+    round(&s);
+    assert_eq!(started(&s), Vec::<String>::new(), "the machine's one slot is held by beta's accept");
+    s.accept_outcomes.lock().unwrap().push(Ok(()));
+}
