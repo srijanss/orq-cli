@@ -274,3 +274,30 @@ fn a_second_start_with_no_result_between_keeps_what_the_run_goes_back_to() {
     assert_eq!(summary.phase, RunPhase::Failed);
     assert_eq!(summary.reason.as_deref(), Some("gate failed"));
 }
+
+#[test]
+fn an_accept_whose_tests_are_still_running_is_not_recorded_as_interrupted() {
+    let (_repo, _worktree, store) = ended_run("live", "failed");
+    let (started, on_start) = std::sync::mpsc::channel::<()>();
+    let (finish, on_finish) = std::sync::mpsc::channel::<()>();
+    let (started, on_finish) = (std::sync::Mutex::new(started), std::sync::Mutex::new(on_finish));
+    std::thread::scope(|scope| {
+        let accept = scope.spawn(|| {
+            accept_run_by(&store, "run-1", "web", &|_: &Path| {
+                started.lock().unwrap().send(()).unwrap();
+                on_finish.lock().unwrap().recv().unwrap();
+                Ok(())
+            })
+        });
+        on_start.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let recorded = fail_interrupted_accept(&store, "run-1");
+        let phase = summarize_run(&store.events("run-1").unwrap()).phase;
+        // Let the tests finish before asserting, so a failure does not leave the accept waiting forever.
+        finish.send(()).unwrap();
+        let accepted = accept.join().unwrap();
+        assert_eq!(recorded, Ok(false));
+        assert_eq!(phase, RunPhase::Accepting);
+        accepted.unwrap();
+    });
+    assert!(!kinds(&store).contains(&"run.accept_failed".to_string()), "{:?}", kinds(&store));
+}

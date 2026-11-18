@@ -270,3 +270,28 @@ fn tests_that_panic_leave_the_run_free_to_accept_again() {
     }
     assert_eq!(again.0, 202, "{}", again.1);
 }
+
+#[test]
+fn another_server_starting_while_an_accept_runs_leaves_that_accept_running() {
+    let s = setup("run-accept-live");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-live", &["run.started", "run.failed"]);
+    let (started, on_start) = mpsc::channel::<()>();
+    let (finish, on_finish) = mpsc::channel::<()>();
+    let gate = Mutex::new((started, on_finish));
+    let tests: Tests = Arc::new(move |_: &Path| {
+        let gate = gate.lock().unwrap();
+        gate.0.send(()).unwrap();
+        gate.1.recv().unwrap();
+        Ok(())
+    });
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+    assert_eq!(post(&s, &provider, "r-live").0, 202);
+    on_start.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let other = StoreProjects::new(s.roots.clone(), s.scan.clone());
+    assert_eq!(run_json(&s, &other, "r-live")["state"], "accepting");
+
+    finish.send(()).unwrap();
+    assert_eq!(kinds_once(&s, "r-live", 4), ["run.started", "run.failed", "run.accept_started", "run.completed"]);
+}

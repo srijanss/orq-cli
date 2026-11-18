@@ -130,6 +130,11 @@ pub const ACCEPT_INTERRUPTED: &str = "the server stopped while the tests were ru
 /// When `run_id` is still accepting (started, no result) and nothing is running its tests anymore, record the
 /// accept as failed because the server stopped. Says whether it recorded anything.
 pub fn fail_interrupted_accept(store: &RunStore, run_id: &str) -> Result<bool, String> {
+    if summarize_run(&store.events(run_id).map_err(|e| e.to_string())?).phase != RunPhase::Accepting {
+        return Ok(false);
+    }
+    // A held lock means an accept, in this process or another, is still running the tests: leave it alone.
+    let Some(_lock) = lock_accept(store, run_id)? else { return Ok(false) };
     record_interrupted(store, run_id)
 }
 
