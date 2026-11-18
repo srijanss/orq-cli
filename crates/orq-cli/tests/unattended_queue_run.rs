@@ -391,3 +391,20 @@ fn findings_whose_ids_clean_to_the_same_name_each_get_a_follow_up_of_their_own()
     assert!(names.contains("review-followup-COM-01-a-b"), "{names:?}");
     assert!(names.iter().all(|n| n.starts_with("review-followup-COM-01-a-b") && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')), "{names:?}");
 }
+
+/// A session that crashed, leaving no finish report, has failed whatever review it left: an escalated
+/// one does not carry the run on, and nothing is drafted from it.
+#[test]
+fn an_unattended_run_whose_session_crashed_after_its_review_escalated_fails_and_drafts_nothing() {
+    let agent = feature_agent();
+    let crash = format!("{}
+exit 7", escalated_review(&[("minor-thing", "medium", "bugs")]));
+    let w = world("crashed", &agent, &crash, "");
+
+    let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
+
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(stdout.contains("state: failed"), "{stdout}\n{stderr}");
+    assert!(!stdout.contains("state: merged"), "{stdout}");
+    assert_eq!(followups(w.repo.root()), Vec::<serde_json::Value>::new());
+}

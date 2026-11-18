@@ -1973,8 +1973,10 @@ fn stages(
             }
             // Nobody decides for an unattended run whose review escalated, however its session
             // reported: what is left open becomes a draft follow-up and the run carries on, unless a
-            // finding is one a person must see first.
+            // finding is one a person must see first. A session that left no report crashed: whatever
+            // review it left, it has failed, and nothing is drafted from it.
             let drafted = options.unattended
+                && (outcome.success || outcome.reported.is_some())
                 && match escalated(worktree, &record.base_sha) {
                     Some(review) => {
                         if let Err(reason) = draft_followups(store, record, &orq_features::ledger_path(options.project), &review) {
