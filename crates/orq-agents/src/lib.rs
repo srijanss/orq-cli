@@ -630,6 +630,10 @@ impl HarnessAdapter for Pi {
             argv.push("--thinking".to_string());
             argv.push(thinking.clone());
         }
+        // Nobody watches an unattended session, so it runs headless, as a fix session nobody attends does.
+        if request.unattended {
+            argv.insert(0, "-p".to_string());
+        }
         // pi has no Remote Control: `remote_control` is a Claude-only capability and is not passed on.
         argv.push(prompt);
         Ok(argv)

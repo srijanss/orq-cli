@@ -45,3 +45,13 @@ fn an_unattended_claude_session_runs_in_print_mode_without_remote_control_and_is
     assert!(prompt.contains("needs a decision:"), "{prompt}");
     assert!(!prompt.contains("AskUserQuestion"), "{prompt}");
 }
+
+#[test]
+fn an_unattended_pi_session_runs_in_print_mode_and_an_attended_or_ordinary_one_does_not() {
+    let unattended = argv(&request("pi", true));
+    assert_eq!(unattended.first().map(String::as_str), Some("-p"), "{unattended:?}");
+    assert!(unattended.last().unwrap().contains("Nobody is watching this session"), "{unattended:?}");
+
+    let ordinary = argv(&request("pi", false));
+    assert!(!ordinary.iter().any(|a| a == "-p"), "{ordinary:?}");
+}
