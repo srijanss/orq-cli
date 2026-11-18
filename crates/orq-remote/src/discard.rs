@@ -111,8 +111,9 @@ pub fn discard_warning_or_refusal(root: &Path, run_id: &str, repo: &Path) -> Res
 
 /// Put the features of a discarded run back to `pending`, and say which were. Only the ledger of the
 /// run's own project is touched: another repository may have features of the same names. A feature
-/// marked `completed` is reopened too, as its work goes with the run, unless a later run took it. A
-/// ledger that cannot be updated is only warned about: the run is going regardless.
+/// marked `completed` is reopened too, as its work goes with the run, unless a later run took it or it
+/// was finished outside the run (see [`orq_orchestrator::features_finished_elsewhere`]), which is said.
+/// A ledger that cannot be updated is only warned about: the run is going regardless.
 fn reopen_discarded(store: &orq_orchestrator::RunStore, run_id: &str, repo: &Path, project_id: &str, members: &[String]) -> String {
     let project = match orq_git::resolve_project(repo) {
         Ok(project) => project,
@@ -130,15 +131,41 @@ fn reopen_discarded(store: &orq_orchestrator::RunStore, run_id: &str, repo: &Pat
         Vec::new()
     });
     let ledger = orq_features::ledger_path(&project);
-    let mut note = match orq_features::reopen_discarded_features(&ledger, members, &completed_too) {
+    let finished = finished_elsewhere(store, run_id, repo, &ledger, &completed_too);
+    let completed_too: Vec<String> = completed_too.into_iter().filter(|feature| !finished.iter().any(|(kept, _)| kept == feature)).collect();
+    let mut note: String = finished.iter().map(|(feature, why)| format!(" {} stays completed: {}.", printable(feature), printable(why))).collect();
+    note.push_str(&match orq_features::reopen_discarded_features(&ledger, members, &completed_too) {
         Ok(reopened) => features_are(&reopened, "pending again"),
         Err(err) => {
             eprintln!("orq: cannot put {} back to pending: {}", printable(&members.join(",")), printable(&err));
             String::new()
         }
-    };
+    });
     note.push_str(&abandon_fix_features(store, run_id, &ledger));
     note
+}
+
+/// Of `features`, those the ledger at `ledger` marks `completed` that were finished outside run
+/// `run_id`, each with why. When that cannot be told every one is kept completed, as wrongly keeping
+/// `completed` can be seen and corrected and launching finished work again cannot.
+fn finished_elsewhere(store: &orq_orchestrator::RunStore, run_id: &str, repo: &Path, ledger: &Path, features: &[String]) -> Vec<(String, String)> {
+    if features.is_empty() {
+        return Vec::new();
+    }
+    let entries = match orq_features::load_ledger(ledger) {
+        Ok(entries) => entries,
+        // The reopen reads the ledger again and says what is wrong with it.
+        Err(_) => return Vec::new(),
+    };
+    let completed: Vec<(String, Option<String>)> = entries
+        .into_iter()
+        .filter(|entry| entry.status.known() == Some(orq_core::FeatureStatus::Completed) && features.contains(&entry.feature_name))
+        .map(|entry| (entry.feature_name, entry.recorded_at))
+        .collect();
+    orq_orchestrator::features_finished_elsewhere(store, run_id, repo, &completed).unwrap_or_else(|err| {
+        eprintln!("orq: features marked completed stay completed: cannot tell whether they were finished outside the run: {}", printable(&err));
+        completed.into_iter().map(|(feature, _)| (feature, "cannot tell whether it was finished outside this run".to_string())).collect()
+    })
 }
 
 /// Set the features the discarded run's fix sessions started `abandoned`, but for those a later run

@@ -60,7 +60,7 @@ pub use accept::{accept_check, accept_run, run_steps, run_worktree_tests};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use merge_local::{merge_into_base, merge_setting_aside, waiting_on_dirty_checkout, MergeOutcome, SetAsideOutcome};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};
-pub use discard::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, features_no_later_run_took, DeletedBranch, DiscardOutcome};
+pub use discard::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, features_finished_elsewhere, features_no_later_run_took, DeletedBranch, DiscardOutcome};
 pub use fix_features::{carry_fix_features, fix_features, record_fix_features_added};
 pub use ledger_events::record_ledger_features;
 pub use review_events::{created_reviews, local_merges, record_review_action};

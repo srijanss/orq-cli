@@ -47,8 +47,8 @@ pub fn discard_run(store: &RunStore, run_id: &str, repo: &Path) -> Result<Discar
 
 /// [`discard_run`], calling `orphaned(project_id, features)` once the worktree is gone and before any
 /// lock is released, with the run's features that no other run holds: nothing continues those, and
-/// no new run can take them while the call runs. A failed or review-waiting run whose work is
-/// already on its target branch was merged by hand: its features are done, and `orphaned` is not
+/// no new run can take them while the call runs. A failed, blocked or review-waiting run whose work
+/// is already on its target branch was merged by hand: its features are done, and `orphaned` is not
 /// called.
 pub fn discard_run_then(store: &RunStore, run_id: &str, repo: &Path, orphaned: &mut dyn FnMut(&str, &[String])) -> Result<DiscardOutcome, String> {
     discard_run_before_remove(store, run_id, repo, orphaned, &mut || {})
@@ -139,7 +139,7 @@ pub fn discard_run_before_remove(
     // stops the discard before anything is removed.
     let commits = if has_worktree && kept_worktree.is_none() { Some(branch_commits(repo, &record)?) } else { None };
     // Told while the branch is still there.
-    let merged = matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::run_list::work_on_target(repo, &record)?;
+    let merged = matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview) && crate::run_list::work_on_target(repo, &record)?;
     if has_worktree && kept_worktree.is_none() {
         before_remove();
         // Without --force git checks again as it removes, so work written since the check above is
@@ -268,6 +268,86 @@ pub fn features_no_later_run_took(store: &RunStore, run_id: &str, features: &[St
         }
     }
     Ok(free)
+}
+
+/// Of `completed`, the features a ledger marks `completed` (each with its `recordedAt`, if any), those
+/// that were finished outside run `run_id`, so a discard of it must leave them completed, each with why:
+/// one recorded at a later second than the run's last event ("finished after this run stopped"), or one
+/// a commit on the run's local target branch in `repo` since the run's base names in the house form,
+/// `(<feature>)` or `(review finding …, <feature>)` ("its work is on <target> (<commit>)"). A
+/// target or base git cannot find names no commit; a git that fails is an error.
+pub fn features_finished_elsewhere(
+    store: &RunStore,
+    run_id: &str,
+    repo: &Path,
+    completed: &[(String, Option<String>)],
+) -> Result<Vec<(String, String)>, String> {
+    if completed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    let events = store.events(run_id).map_err(|e| e.to_string())?;
+    let stopped = events.last().and_then(|event| utc_second(&event.occurred_at));
+    let commits = target_commits_since_base(repo, &record)?;
+    let mut kept = Vec::new();
+    for (feature, recorded_at) in completed {
+        let after = matches!((recorded_at.as_deref().and_then(utc_second), stopped), (Some(recorded), Some(stopped)) if recorded > stopped);
+        if after {
+            kept.push((feature.clone(), "finished after this run stopped".to_string()));
+        } else if let Some((sha, _)) = commits.iter().find(|(_, subject)| names_feature(subject, feature)) {
+            kept.push((feature.clone(), format!("its work is on {} ({})", record.target_branch, &sha[..sha.len().min(8)])));
+        }
+    }
+    Ok(kept)
+}
+
+/// The second an RFC 3339 UTC time names, as `YYYY-MM-DDTHH:MM:SS` text that sorts by time; `None`
+/// for a time in another zone or not in that form, which is then never later than anything.
+fn utc_second(time: &str) -> Option<&str> {
+    let (second, rest) = (time.get(..19)?, time.get(19..)?);
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    let well_formed = second.len() == 19
+        && [4, 7].iter().all(|&i| &second[i..=i] == "-")
+        && &second[10..11] == "T"
+        && [13, 16].iter().all(|&i| &second[i..=i] == ":")
+        && [&second[..4], &second[5..7], &second[8..10], &second[11..13], &second[14..16], &second[17..19]].iter().all(|part| digits(part));
+    let zone = match rest.strip_prefix('.') {
+        Some(fraction) => fraction.trim_start_matches(|c: char| c.is_ascii_digit()),
+        None => rest,
+    };
+    (well_formed && matches!(zone, "Z" | "z" | "+00:00")).then_some(second)
+}
+
+/// The commits on the local target branch of `record` in `repo` that its base does not have, newest
+/// first, as (SHA, subject); none when the target branch or the base is not there.
+fn target_commits_since_base(repo: &Path, record: &crate::store::RunRecord) -> Result<Vec<(String, String)>, String> {
+    if record.target_branch.is_empty() || record.base_sha.is_empty() {
+        return Ok(Vec::new());
+    }
+    let target = format!("refs/heads/{}", record.target_branch);
+    let failed = |e: String| format!("could not read the commits on {} since the base of {}: {e}", record.target_branch, record.run_id);
+    for rev in [&target, &record.base_sha] {
+        let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| failed(e.to_string()))?;
+        match out.code {
+            Some(0) => {}
+            Some(1) => return Ok(Vec::new()),
+            _ => return Err(failed(out.stderr.trim().to_string())),
+        }
+    }
+    let out = git_raw(repo, &["log", "--format=%H%x1f%s", "--end-of-options", &target, &format!("^{}", record.base_sha)]).map_err(|e| failed(e.to_string()))?;
+    if !out.success {
+        return Err(failed(out.stderr.trim().to_string()));
+    }
+    Ok(out.stdout.lines().filter_map(|line| line.split_once('\u{1f}')).map(|(sha, subject)| (sha.to_string(), subject.to_string())).collect())
+}
+
+/// Whether a commit `subject` names `feature` in the house form: `(<feature>)` or
+/// `(review finding …, <feature>)`.
+fn names_feature(subject: &str, feature: &str) -> bool {
+    let finding_of = format!(", {feature}");
+    subject.split('(').skip(1).filter_map(|group| group.split_once(')').map(|(inside, _)| inside)).any(|inside| {
+        inside == feature || (inside.starts_with("review finding ") && inside.ends_with(&finding_of))
+    })
 }
 
 /// The runs `run_id` carried on from, as its fix-session features or its sessions record them: the

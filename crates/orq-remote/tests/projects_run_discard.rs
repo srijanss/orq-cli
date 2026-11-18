@@ -189,3 +189,57 @@ fn a_run_a_later_run_continued_is_refused_with_the_reason_and_the_refusal_is_aud
     let refusals: Vec<Value> = audit.lines().map(|line| serde_json::from_str(line).unwrap()).filter(|line: &Value| line["reason"] == json!("r-old was continued as r-new; discard or accept that run instead")).collect();
     assert_eq!(refusals.len(), 2, "{audit}");
 }
+
+fn ledger_status(repo: &Path, feature: &str) -> Value {
+    let ledger: Value = serde_json::from_slice(&std::fs::read(repo.join(".tdd-features.json")).unwrap()).unwrap();
+    ledger.as_array().unwrap().iter().find(|entry| entry["featureName"] == feature).unwrap()["status"].clone()
+}
+
+#[test]
+fn a_discard_leaves_completed_a_feature_finished_after_the_run_stopped_or_whose_work_is_on_main_and_says_why() {
+    let s = setup("run-discard-finished");
+    // The runs' events are at 2026-11-01T10:00:00Z and 10:00:01Z.
+    let cases: [(&str, &str, &str); 4] = [
+        ("late", "completed", "2026-11-05T00:00:00Z"),
+        ("onmain", "completed", "2026-11-01T09:00:00Z"),
+        ("own", "completed", "2026-11-01T10:00:00Z"),
+        ("wip", "in_progress", ""),
+    ];
+    let mut repos = Vec::new();
+    for (name, status, at) in cases {
+        let repo = git_repo(&s.scan, name);
+        let run = format!("r-{name}");
+        add_run(&s, &repo, &run, &["run.started", "run.blocked"]);
+        let feature = format!("f-{run}");
+        let recorded = if at.is_empty() { String::new() } else { format!(r#","recordedAt":"{at}""#) };
+        std::fs::write(repo.join(".tdd-features.json"), format!(r#"[{{"featureName":"{feature}","status":"{status}"{recorded}}}]"#)).unwrap();
+        repos.push(repo);
+    }
+    // The person finished `late` after the run blocked, and threw its checkout away.
+    let late = &repos[0];
+    git(late, &["worktree", "remove", "--force", late.join(".claude/worktrees/r-late").to_str().unwrap()]);
+    git(late, &["branch", "-D", "orq/r-late"]);
+    // The work of `onmain` reached main by a commit of its own.
+    git(&repos[1], &["commit", "-q", "--allow-empty", "-m", "fix(web): the settings cog (f-r-onmain)"]);
+    let sha = git(&repos[1], &["rev-parse", "--short=8", "HEAD"]);
+
+    let (status, body) = send(&s, "POST", "/api/projects/late/runs/r-late/discard");
+    assert_eq!(status, 202, "{body}");
+    assert!(body["note"].as_str().unwrap().contains("f-r-late stays completed: finished after this run stopped."), "{body}");
+    assert_eq!(ledger_status(late, "f-r-late"), "completed");
+
+    let (status, body) = send(&s, "POST", "/api/projects/onmain/runs/r-onmain/discard");
+    assert_eq!(status, 202, "{body}");
+    assert!(body["note"].as_str().unwrap().contains(&format!("f-r-onmain stays completed: its work is on main ({sha}).")), "{body}");
+    assert_eq!(ledger_status(&repos[1], "f-r-onmain"), "completed");
+
+    let (status, body) = send(&s, "POST", "/api/projects/own/runs/r-own/discard");
+    assert_eq!(status, 202, "{body}");
+    assert!(body["note"].as_str().unwrap().contains("f-r-own is pending again."), "{body}");
+    assert_eq!(ledger_status(&repos[2], "f-r-own"), "pending");
+
+    let (status, body) = send(&s, "POST", "/api/projects/wip/runs/r-wip/discard");
+    assert_eq!(status, 202, "{body}");
+    assert!(body["note"].as_str().unwrap().contains("f-r-wip is pending again."), "{body}");
+    assert_eq!(ledger_status(&repos[3], "f-r-wip"), "pending");
+}

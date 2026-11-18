@@ -730,3 +730,73 @@ fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and
         assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{case}");
     }
 }
+
+/// Commits nothing but `subject` on the branch checked out in `dir` and returns the commit's SHA.
+fn commit_subject(dir: &Path, subject: &str) -> String {
+    git_in(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "--no-verify", "-m", subject]);
+    head_sha(dir)
+}
+
+#[test]
+fn discard_finished_a_blocked_run_whose_branch_was_fast_forwarded_onto_its_target_is_merged_and_hands_back_nothing() {
+    let repo = GitFixture::new();
+    let base = head_sha(repo.root());
+    let worktree = repo.add_linked_worktree("orq-run-1");
+    commit_ahead(&worktree, 1);
+    git_in(repo.root(), &["merge", "-q", "--ff-only", "orq-run-1"]);
+    let (_, store) = store("blocked-merged");
+    let mut rec = record(&worktree, "orq-run-1");
+    rec.base_sha = base;
+    rec.target_branch = current_branch(repo.root());
+    store.start_run(&rec).unwrap();
+    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+
+    let mut handed_back = Vec::new();
+    let outcome = discard_run_then(&store, "run-1", repo.root(), &mut |_, features| handed_back.extend_from_slice(features)).unwrap();
+
+    assert!(outcome.merged, "{outcome:?}");
+    assert!(handed_back.is_empty(), "{handed_back:?}");
+}
+
+#[test]
+fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_target_commit_since_its_base_stays_completed() {
+    let repo = GitFixture::new();
+    let target = current_branch(repo.root());
+    commit_subject(repo.root(), "fix: before the run (F-early)");
+    let base = head_sha(repo.root());
+    let named = commit_subject(repo.root(), "fix(web): the settings cog (F-main)");
+    let finding = commit_subject(repo.root(), "fix(run): a finding (review finding some-finding, F-finding)");
+    commit_subject(repo.root(), "fix: a feature whose name only starts the same (F-main-extra)");
+    let (_, store) = store("finished");
+    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-finished-gone-{}", std::process::id()));
+    let mut rec = record(&gone, "orq-run-1");
+    rec.base_sha = base;
+    rec.target_branch = target.clone();
+    store.start_run(&rec).unwrap();
+    // The run's last event is at 2026-11-02T10:00:00Z.
+    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+
+    let completed: Vec<(String, Option<String>)> = [
+        ("F-late", Some("2026-11-02T10:00:01Z")),
+        ("F-same-second", Some("2026-11-02T10:00:00.900Z")),
+        ("F-own", Some("2026-11-02T09:59:00Z")),
+        ("F-undated", None),
+        ("F-main", Some("2026-11-01T00:00:00Z")),
+        ("F-finding", None),
+        ("F-early", None),
+        ("F-main-ext", None),
+    ]
+    .into_iter()
+    .map(|(name, at)| (name.to_string(), at.map(str::to_string)))
+    .collect();
+    let kept = orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed).unwrap();
+
+    assert_eq!(
+        kept,
+        vec![
+            ("F-late".to_string(), "finished after this run stopped".to_string()),
+            ("F-main".to_string(), format!("its work is on {target} ({})", &named[..8])),
+            ("F-finding".to_string(), format!("its work is on {target} ({})", &finding[..8])),
+        ]
+    );
+}
