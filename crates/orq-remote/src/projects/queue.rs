@@ -200,6 +200,9 @@ pub(super) fn queue_summary(store: Option<&Store>, git: &orq_git::Project) -> Re
     Ok(json!({"count": queue.entries.len(), "paused": queue.paused.is_some()}))
 }
 
+/// The most features a project's queue holds: as many as one reorder request may name.
+const QUEUE_LIMIT: usize = 200;
+
 /// Applies `change` to the queue of project `git`, whose main checkout is `root`, as `by` (`web` or
 /// `cli`) asked: what was done, or why it may not be.
 pub fn change_queue(store: &Store, git: &orq_git::Project, root: &Path, change: &QueueChange, by: &str) -> Result<Result<String, String>, String> {
@@ -215,6 +218,11 @@ pub fn change_queue(store: &Store, git: &orq_git::Project, root: &Path, change: 
                     }
                     Some(_) => {}
                 }
+            }
+            let queued = store.queue(root).map_err(failed)?.entries;
+            let new: std::collections::BTreeSet<&String> = features.iter().filter(|feature| !queued.iter().any(|entry| &entry.feature == *feature)).collect();
+            if queued.len() + new.len() > QUEUE_LIMIT {
+                return Ok(Err(format!("the queue holds at most {QUEUE_LIMIT} features; {} are queued", queued.len())));
             }
             let profiles = profiles.as_ref().map(|p| QueueProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
             let additions: Vec<QueueAddition> = features.iter().map(|feature| QueueAddition { feature: feature.clone(), profiles: profiles.clone() }).collect();

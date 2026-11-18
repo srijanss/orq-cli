@@ -378,6 +378,27 @@ fn a_queued_run_that_cannot_be_read_is_marked_failed_and_pauses_only_under_stop_
 }
 
 #[test]
+fn the_queue_holds_at_most_200_features_so_it_can_always_be_reordered_in_one_request() {
+    let s = setup("queue-cap");
+    let names: Vec<String> = (1..=201).map(|i| format!("COM-{i:03}")).collect();
+    let ledger: Vec<(&str, &str, &[&str])> = names.iter().map(|name| (name.as_str(), "pending", &[][..])).collect();
+    git_repo(&s, &ledger);
+    let first: Vec<&str> = names[..199].iter().map(String::as_str).collect();
+    assert_eq!(queue_add(&s, &first).0, 200);
+
+    let (status, body) = queue_add(&s, &["COM-200", "COM-201"]);
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"], "the queue holds at most 200 features; 199 are queued");
+    assert_eq!(queue(&s)["entries"].as_array().unwrap().len(), 199, "nothing of a refused request is queued");
+    assert_eq!(queue_add(&s, &["COM-001", "COM-200"]).0, 200, "one already queued and one more fit");
+
+    let reversed: Vec<&str> = names[..200].iter().rev().map(String::as_str).collect();
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/queue/reorder", json!({"order": reversed}).to_string().as_bytes());
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(queue(&s)["entries"][0]["feature"], "COM-200");
+}
+
+#[test]
 fn only_an_approved_feature_can_be_queued() {
     let s = setup("queue-draft");
     git_repo(&s, &[("COM-01", "draft", &[]), ("COM-02", "pending", &[])]);
