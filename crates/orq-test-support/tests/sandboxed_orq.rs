@@ -54,19 +54,40 @@ fn orq_nextest_config_sets_the_sandbox_flag_for_its_tests() {
 
 #[test]
 fn a_leaking_start_fails_naming_the_real_folder_and_writes_nothing_there() {
-    // What the leaking tests did: only the state folder moved into a temp dir.
-    let real = FakeRealHome::new("leak");
-    let state = orq_test_support::TempDir::new("orq-leak-state");
+    assert_a_leaking_start_fails(&std::env::temp_dir(), "plain");
+}
+
+/// A checkout (and so Cargo's target dir) under the temp dir must not let the stand-in real HOME
+/// count as temporary.
+#[test]
+fn a_leaking_start_fails_even_when_the_checkout_is_inside_the_temp_dir() {
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
+    assert_a_leaking_start_fails(target, "checkout-in-temp");
+}
+
+/// What the leaking tests did: only the state folder moved into a temp dir. `temp_dir` is the
+/// temporary directory of the environment the test runs in (the checkout may be inside it). The
+/// child gets its own temp dir, `<fixture>/tmp`, and the stand-in real HOME is its sibling
+/// `<fixture>/real-home`, so the HOME is outside the child's temp dir wherever the checkout is.
+fn assert_a_leaking_start_fails(temp_dir: &Path, tag: &str) {
+    let fixture = FakeRealHome(temp_dir.join(format!("orq-leak-{tag}-{}", std::process::id())));
+    let child_temp = fixture.0.join("tmp");
+    let real = fixture.0.join("real-home");
+    let _ = std::fs::remove_dir_all(&fixture.0);
+    std::fs::create_dir_all(&child_temp).unwrap();
+    std::fs::create_dir_all(&real).unwrap();
     let mut command = std::process::Command::new(orq_test_support::orq_binary());
     command
         .env("ORQ_TEST_SANDBOX", "1")
-        .env("HOME", &real.0)
-        .env("XDG_STATE_HOME", state.path())
+        .env("TMPDIR", &child_temp)
+        .env("HOME", &real)
+        .env("XDG_STATE_HOME", child_temp.join("state"))
         .env_remove("XDG_DATA_HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_CACHE_HOME");
 
     let output = command.args(["review", "backfill"]).output().unwrap();
+    let real = FakeRealHome(real);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "a leaking start must fail");
