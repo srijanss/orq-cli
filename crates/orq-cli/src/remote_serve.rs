@@ -53,7 +53,7 @@ fn restart_command(args: &[OsString]) -> ExitCode {
     }
     let installed = installed_binary();
     for server in &servers {
-        if let Err(why) = restart_target(&server.exe, &installed) {
+        if let Err(why) = restart_plan(&server.exe, &installed, server.systemd) {
             return fail(format!("cannot restart orq serve (pid {}): {why}", server.pid));
         }
     }
@@ -88,6 +88,8 @@ struct LiveServer {
     pid: u32,
     exe: PathBuf,
     listen: String,
+    /// Started by systemd, which starts it again when it exits.
+    systemd: bool,
 }
 
 /// Where each running server keeps a file naming it, locked for as long as it runs.
@@ -114,7 +116,7 @@ fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
         }
         let Ok(info) = std::fs::read_to_string(&path).map_err(|_| ()).and_then(|text| serde_json::from_str::<serde_json::Value>(&text).map_err(|_| ())) else { continue };
         let (Some(pid), Some(exe)) = (info["pid"].as_u64(), info["exe"].as_str()) else { continue };
-        live.push(LiveServer { pid: pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string() });
+        live.push(LiveServer { pid: pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string(), systemd: info["systemd"] == true });
     }
     live
 }
@@ -133,7 +135,7 @@ fn announce_server(roots: &orq_core::storage::StorageRoots, listen: &str) -> Opt
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}") });
+    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}"), "systemd": under_systemd() });
     file.set_len(0).ok()?;
     file.write_all(info.to_string().as_bytes()).ok()?;
     Some((path, file))
@@ -309,7 +311,7 @@ fn run(args: &[OsString]) -> ExitCode {
     if let Err(err) = std::fs::write(&marker, serde_json::json!({ "from": format!("orq {BUILD}") }).to_string()) {
         eprintln!("orq serve: cannot note the restart for the next server: {:?}", err.kind());
     }
-    if std::env::var_os("INVOCATION_ID").is_some() {
+    if under_systemd() {
         println!("orq serve: exiting with status {RESTART_EXIT} for systemd to start {}", target.display());
         let _ = std::io::Write::flush(&mut std::io::stdout());
         return ExitCode::from(RESTART_EXIT);
@@ -429,11 +431,7 @@ fn under_target(path: &std::path::Path) -> bool {
 /// The binary a restart starts: the running one, unless it is a build under `target/`, which is never
 /// started again; then `installed`, if it is a file and not a build either. Otherwise why there is none.
 fn restart_target(exe: &std::path::Path, installed: &std::path::Path) -> Result<PathBuf, String> {
-    // Linux names a binary replaced on disk "<path> (deleted)"; the path is what is started again.
-    let exe = match exe.to_str().and_then(|text| text.strip_suffix(" (deleted)")) {
-        Some(stripped) => PathBuf::from(stripped),
-        None => exe.to_path_buf(),
-    };
+    let exe = on_disk(exe);
     if !under_target(&exe) {
         runnable(&exe)?;
         return Ok(exe);
@@ -443,6 +441,34 @@ fn restart_target(exe: &std::path::Path, installed: &std::path::Path) -> Result<
         return Ok(installed.to_path_buf());
     }
     Err(format!("orq runs from a build under target/ ({}) and no installed orq is at {}", exe.display(), installed.display()))
+}
+
+/// Linux names a binary replaced on disk "<path> (deleted)"; the path is what is started again.
+fn on_disk(exe: &std::path::Path) -> PathBuf {
+    match exe.to_str().and_then(|text| text.strip_suffix(" (deleted)")) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => exe.to_path_buf(),
+    }
+}
+
+/// The binary a restart starts, as [`restart_target`] chooses it. Under systemd the server only exits and
+/// systemd starts the unit's ExecStart again, which is the running binary; so a restart is refused there
+/// unless that binary is the one to start, never leaving systemd to start a build under target/ again.
+fn restart_plan(exe: &std::path::Path, installed: &std::path::Path, systemd: bool) -> Result<PathBuf, String> {
+    let target = restart_target(exe, installed)?;
+    if systemd && target != on_disk(exe) {
+        return Err(format!(
+            "orq serve runs under systemd from a build under target/ ({}), which systemd would start again; point the unit's ExecStart at {} instead",
+            on_disk(exe).display(),
+            target.display()
+        ));
+    }
+    Ok(target)
+}
+
+/// Whether this server was started by systemd, which restarts it when it exits.
+fn under_systemd() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
 }
 
 /// Whether `path` can be started: an executable regular file. Checked before the server stops, so a
@@ -495,7 +521,7 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
         Box::new(move || active_run_ids(&state).unwrap_or_else(|why| vec![why])),
         Box::new(move || {
             let exe = std::env::current_exe().map_err(|err| format!("cannot find the running orq: {:?}", err.kind()))?;
-            restart_target(&exe, &target_installed)
+            restart_plan(&exe, &target_installed, under_systemd())
         }),
     )
 }
@@ -611,6 +637,18 @@ mod restart_tests {
         assert_eq!(restart_signal(false, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, false), libc::SIGUSR1);
         assert_eq!(restart_signal(true, true), libc::SIGUSR2);
+    }
+
+    #[test]
+    fn under_systemd_the_restart_target_must_be_the_binary_systemd_starts_again() {
+        let dir = temp("systemd");
+        let installed = dir.join("bin/orq");
+        executable(&installed);
+        let built = dir.join("repo/target/release/orq");
+        assert_eq!(restart_plan(&built, &installed, false), Ok(installed.clone()), "without systemd it execs the installed orq");
+        let refused = restart_plan(&built, &installed, true).unwrap_err();
+        assert!(refused.contains("systemd") && refused.contains("target/") && refused.contains("ExecStart"), "{refused}");
+        assert_eq!(restart_plan(&installed, &installed, true), Ok(installed.clone()), "systemd starts the installed orq again");
     }
 
     fn executable(path: &std::path::Path) {

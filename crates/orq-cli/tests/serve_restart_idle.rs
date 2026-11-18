@@ -61,7 +61,12 @@ impl World {
     }
 
     fn command(&self, installed: &Path) -> Command {
-        let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
+        self.command_from(Path::new(env!("CARGO_BIN_EXE_orq")), installed)
+    }
+
+    /// `binary` run in this world.
+    fn command_from(&self, binary: &Path, installed: &Path) -> Command {
+        let mut command = orq_test_support::sandboxed_command(binary);
         for (name, dir) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"), ("HOME", "home")] {
             command.env(name, self.root.join(dir));
         }
@@ -233,9 +238,18 @@ impl World {
         vec!["serve".into(), "--repo".into(), self.repo.display().to_string(), "--listen".into(), "127.0.0.1:0".into()]
     }
 
-    /// `orq serve` as systemd would start it: `INVOCATION_ID` is set.
-    fn serve_under_systemd(&self, installed: &Path) -> Running {
-        let mut command = self.command(installed);
+    /// This build at `bin/orq`, outside target/, as a unit's ExecStart names the installed orq.
+    fn installed_build(&self) -> PathBuf {
+        let dir = self.root.join("bin");
+        fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join("orq");
+        fs::hard_link(env!("CARGO_BIN_EXE_orq"), &installed).or_else(|_| fs::copy(env!("CARGO_BIN_EXE_orq"), &installed).map(|_| ())).unwrap();
+        installed
+    }
+
+    /// `orq serve` as systemd would start it from `binary`: `INVOCATION_ID` is set.
+    fn serve_under_systemd(&self, binary: &Path, installed: &Path) -> Running {
+        let mut command = self.command_from(binary, installed);
         command.env("INVOCATION_ID", "0123abcd");
         let mut child = command.arg("serve").arg("--repo").arg(&self.repo).args(["--listen", "127.0.0.1:0"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
@@ -348,8 +362,8 @@ fn a_restart_with_no_server_running_says_so() {
 #[test]
 fn under_systemd_a_restart_exits_with_a_status_systemd_restarts() {
     let world = World::new("systemd");
-    let installed = world.installed();
-    let mut server = world.serve_under_systemd(&installed);
+    let installed = world.installed_build();
+    let mut server = world.serve_under_systemd(&installed, &installed);
     assert!(world.restart(&installed, &["--when-idle"]).status.success());
     let deadline = Instant::now() + WAIT;
     let status = loop {
@@ -361,6 +375,20 @@ fn under_systemd_a_restart_exits_with_a_status_systemd_restarts() {
     };
     assert_eq!(status.code(), Some(75), "{}", server.output());
     assert!(world.execd().is_none(), "systemd starts the new server, not serve");
+}
+
+#[test]
+fn under_systemd_a_server_run_from_a_target_build_refuses_a_restart_systemd_would_start_it_again() {
+    let world = World::new("systemd-target");
+    let installed = world.installed();
+    let mut server = world.serve_under_systemd(Path::new(env!("CARGO_BIN_EXE_orq")), &installed);
+    let refused = world.restart(&installed, &["--when-idle"]);
+    assert!(!refused.status.success(), "{}", text(&refused.stdout));
+    let why = text(&refused.stderr);
+    assert!(why.contains("systemd") && why.contains("target/") && why.contains("ExecStart"), "{why}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(server.child.try_wait().unwrap().is_none(), "the server keeps running: {}", server.output());
+    assert!(world.execd().is_none());
 }
 
 #[test]
