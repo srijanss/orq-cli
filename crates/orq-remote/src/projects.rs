@@ -348,19 +348,22 @@ fn fnv1a(text: &str, seed: u64) -> u64 {
 
 /// Before serve opens orq.db: an upgrade that would leave active runs of an older Orq unable to use the database
 /// waits for them unless `upgrade_now`, which applies it and records `store.upgraded_under_runs` on each of them.
-/// The error lists those runs. A run launched before runs recorded their schema is taken to have the file's.
+/// The error lists those runs. A run launched before runs recorded their schema was started by an Orq from before
+/// the compat marker, and blocks any upgrade.
 pub fn check_upgrade(roots: &orq_core::storage::StorageRoots, upgrade_now: bool) -> Result<(), String> {
     use orq_core::store::Store;
     let database = roots.database();
-    let Some((from, needed)) = Store::breaking_upgrade(&database).map_err(|error| format!("cannot read orq.db: {error}"))? else { return Ok(()) };
+    let Some((from, needed)) = Store::pending_upgrade(&database).map_err(|error| format!("cannot read orq.db: {error}"))? else { return Ok(()) };
     let runs = orq_orchestrator::RunStore::new(&roots.state);
     let active = runs.active_machine_runs().map_err(|error| format!("cannot read the runs: {error:?}"))?;
     let mut older = Vec::new();
     for (_, run_id) in active {
         let events = runs.events(&run_id).map_err(|error| format!("cannot read {run_id}: {error:?}"))?;
         let launched = events.iter().rev().find(|event| event.kind == "run.launched");
-        let schema = launched.and_then(|event| event.payload.get("schema")).and_then(serde_json::Value::as_u64).map_or(from, |schema| schema.min(u32::MAX as u64) as u32);
-        if schema < needed {
+        // A run whose launch names no schema was started by an Orq from before the compat marker, which refuses
+        // any newer schema: every upgrade leaves it unable to record its reviews.
+        let schema = launched.and_then(|event| event.payload.get("schema")).and_then(serde_json::Value::as_u64);
+        if schema.is_none_or(|schema| schema < u64::from(needed)) {
             older.push(run_id);
         }
     }

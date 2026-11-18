@@ -213,16 +213,16 @@ impl Store {
         store.project_settings_at(root, version)
     }
 
-    /// The schema `Store::open` would upgrade the database at `path` from, and the version an Orq must understand
-    /// afterwards, when the upgrade is breaking: when it would raise the database's `compat_from`, leaving an Orq that
-    /// uses it now unable to. `None` without a database, or when the pending migrations only add.
-    pub fn breaking_upgrade(path: &Path) -> Result<Option<(u32, u32)>> {
+    /// The schema `Store::open` would upgrade the database at `path` from, and the version an Orq that reads the
+    /// compat marker must understand afterwards, when an upgrade is pending. An Orq from before the marker refuses
+    /// any newer schema, so it cannot use the upgraded database whatever that version is. `None` without a database,
+    /// or when it is up to date.
+    pub fn pending_upgrade(path: &Path) -> Result<Option<(u32, u32)>> {
         if !path.exists() {
             return Ok(None);
         }
         let (_, version) = Self::open_read_only_at_any_version(path)?;
-        let needed = compat_after(Self::LATEST_VERSION);
-        Ok((version < Self::LATEST_VERSION && needed > compat_after(version)).then_some((version, needed)))
+        Ok((version < Self::LATEST_VERSION).then_some((version, compat_after(Self::LATEST_VERSION))))
     }
 
     fn open_read_only_at_any_version(path: &Path) -> Result<(Store, u32)> {

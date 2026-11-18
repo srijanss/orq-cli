@@ -125,3 +125,17 @@ fn serve_starts_with_no_database_yet() {
     running_run(&roots, "run-old", Some(6));
     orq_remote::projects::check_upgrade(&roots, false).unwrap();
 }
+
+#[test]
+fn a_run_of_an_orq_from_before_the_marker_blocks_even_an_additive_upgrade() {
+    let roots = roots("upgrade-legacy-additive");
+    // An Orq from before the marker refuses any newer schema, additive or not; its runs launch without a schema.
+    database_at(&roots, 7);
+    running_run(&roots, "run-legacy", None);
+    running_run(&roots, "run-marked", Some(7));
+
+    let refused = orq_remote::projects::check_upgrade(&roots, false).expect_err("a legacy Orq cannot use any newer schema");
+    assert!(refused.contains("run-legacy"), "{refused}");
+    assert!(!refused.contains("run-marked"), "an Orq that reads the marker keeps using an additive upgrade: {refused}");
+    assert_eq!(version(&roots), 7, "nothing was migrated");
+}
