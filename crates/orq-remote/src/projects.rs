@@ -1204,7 +1204,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let measured = self.scan_root.ancestors().find(|path| path.exists()).unwrap_or(&self.scan_root);
         // Shown to one decimal, rounded down, as a refusal words it.
         let free_disk_gb = orq_orchestrator::free_disk(measured).ok().map(|free| (free.bytes / 100_000_000) as f64 / 10.0);
-        Ok(Some(serde_json::json!({"active_runs": machine.active.len(), "max_active_runs": limits.max_active, "min_free_disk_gb": limits.min_free_disk_gb, "free_disk_gb": free_disk_gb})))
+        // Without a run limit the active runs were not counted for a refusal; the line still shows them.
+        let active = match limits.max_active {
+            Some(_) => machine.active.len(),
+            None => orq_orchestrator::RunStore::new(&self.roots.state).active_machine_runs().map_err(|error| format!("{error:?}"))?.len(),
+        };
+        Ok(Some(serde_json::json!({"active_runs": active, "max_active_runs": limits.max_active, "min_free_disk_gb": limits.min_free_disk_gb, "free_disk_gb": free_disk_gb})))
     }
 
     fn start_blocked(&self, id: &str) -> Result<Option<String>, String> {

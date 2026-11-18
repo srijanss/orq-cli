@@ -199,3 +199,14 @@ fn under_the_machines_disk_floor_the_listing_shows_the_free_disk_and_a_start_is_
     assert_eq!(started, (409, json!({"error": blocked})));
     assert!(s.launcher.started.lock().unwrap().is_empty());
 }
+
+#[test]
+fn with_only_a_disk_floor_the_listing_still_counts_the_machines_active_runs() {
+    let s = setup("machine-disk-only-count", "[runs]\nmin_free_disk_gb = 1\n");
+    let alpha = git_repo(&s, "alpha");
+    let beta = git_repo(&s, "beta");
+    seeded_run(&s, &alpha, "run-a", "COM-01");
+    seeded_run(&s, &beta, "run-b", "COM-01");
+    let body = listing(&s);
+    assert_eq!((&body["machine"]["active_runs"], &body["machine"]["max_active_runs"]), (&json!(2), &Value::Null), "{body}");
+}
