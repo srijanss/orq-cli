@@ -168,6 +168,35 @@ fn add_dirty_files(row: &mut serde_json::Value, files: Option<&[String]>) {
     }
 }
 
+/// Adds what the run's accepts say to a run's JSON: `accepting_since` while its tests run, `accept_failure`
+/// (reason, output tail, when) after the latest one failed, and `accepted` once a passing accept ended it.
+fn add_accept(row: &mut serde_json::Value, events: &[orq_orchestrator::Event], summary: &orq_orchestrator::RunSummary) {
+    use orq_core::redact::redact;
+    if summary.phase == orq_orchestrator::RunPhase::Accepting {
+        row["accepting_since"] = serde_json::json!(summary.phase_at);
+    }
+    if let Some(failure) = &summary.accept_failure {
+        row["accept_failure"] = serde_json::json!({"reason": redact(&failure.reason), "output": redact(&failure.output), "at": failure.at});
+    }
+    let accepted = summary.phase == orq_orchestrator::RunPhase::Completed
+        && events.iter().rev().find(|event| event.kind == "run.completed").and_then(|event| event.payload.get("note")).and_then(|note| note.as_str()) == Some("accepted: tests passed");
+    if accepted {
+        row["accepted"] = serde_json::json!(true);
+    }
+}
+
+/// Records as failed every accept a server that stopped left without a result: nothing runs its tests anymore.
+fn fail_interrupted_accepts(store: &orq_orchestrator::RunStore) {
+    let Ok(runs) = store.run_ids() else { return };
+    for run in runs {
+        match orq_orchestrator::fail_interrupted_accept(store, &run) {
+            Ok(true) => eprintln!("orq serve: {run} was being accepted when the server stopped; recorded as failed"),
+            Ok(false) => {}
+            Err(why) => eprintln!("orq serve: cannot check whether {run} was being accepted: {}", orq_core::redact::redact(&why)),
+        }
+    }
+}
+
 type ListedRun = (Option<u64>, String, serde_json::Value, orq_orchestrator::RunRecord);
 
 fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
@@ -330,7 +359,10 @@ struct LogSnapshot {
 }
 
 impl StoreProjects {
+    /// A new server's provider. Accepts a stopped server left running are recorded as failed first, since this
+    /// server runs none of their tests.
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
+        fail_interrupted_accepts(&orq_orchestrator::RunStore::new(&roots.state));
         StoreProjects {
             roots,
             scan_root,
@@ -529,7 +561,7 @@ impl StoreProjects {
     /// and the run must not be resumed, stopped, paused, switched or discarded under them.
     fn being_accepted(&self, run: &str) -> Option<String> {
         let accepting = self.accepting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        accepting.contains(run).then(|| format!("{run} is being accepted; try again when its tests have finished"))
+        accepting.contains(run).then(|| format!("{run}: an accept is running; try again when its tests have finished"))
     }
 
     /// The popup's Accept: the run is checked now, as the popup checks it, and its tests then run in the
@@ -551,7 +583,8 @@ impl StoreProjects {
         drop(accepting);
         let (tests, in_flight, run_id) = (self.accept_tests.clone(), self.accepting.clone(), run.to_string());
         std::thread::spawn(move || {
-            if let Err(why) = orq_orchestrator::accept_run(&store, &run_id, &*tests) {
+            // A failure is recorded on the run (run.accept_failed), so every device sees it; the log keeps a line too.
+            if let Err(why) = orq_orchestrator::accept_run_by(&store, &run_id, "web", &*tests) {
                 eprintln!("orq serve: accepting {run_id} failed: {}", orq_core::redact::redact(&why));
             }
             in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&run_id);
@@ -1435,6 +1468,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
+        add_accept(&mut shown, &events, &summary);
         Ok(Some(serde_json::json!({
             "run": shown,
             "events": listed,

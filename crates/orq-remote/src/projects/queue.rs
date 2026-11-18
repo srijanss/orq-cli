@@ -408,7 +408,7 @@ fn settle(runs: &RunStore, run: &str) -> Settled {
     match summary.phase {
         RunPhase::Completed | RunPhase::Merged => Settled::Done,
         RunPhase::Failed | RunPhase::Blocked => Settled::Failed(summary.reason),
-        RunPhase::Running | RunPhase::NeedsReview | RunPhase::PauseRequested | RunPhase::Paused => Settled::Going,
+        RunPhase::Running | RunPhase::NeedsReview | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Settled::Going,
     }
 }
 

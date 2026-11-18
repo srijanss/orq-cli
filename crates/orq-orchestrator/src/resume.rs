@@ -296,6 +296,9 @@ fn plan(
                 from.run_id
             ))
         }
+        RunPhase::Accepting => {
+            return Err(format!("{}: an accept is running; wait for its tests to finish", from.run_id))
+        }
         RunPhase::Paused => {
             // A paused run continues only from a checkpoint that still describes its checkout.
             checkpoint = Some(crate::checkpoint::validate_checkpoint(

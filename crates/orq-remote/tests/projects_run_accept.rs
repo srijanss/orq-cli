@@ -109,7 +109,7 @@ fn a_failed_run_with_clean_committed_work_is_tested_after_the_reply_and_refusals
     let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
 
     assert_eq!(post(&s, &provider, "r-fail"), (202, json!({"run": "r-fail"})));
-    assert_eq!(kinds_once(&s, "r-fail", 3), ["run.started", "run.failed", "run.completed"], "its tests passed, so it is review ready");
+    assert_eq!(kinds_once(&s, "r-fail", 4), ["run.started", "run.failed", "run.accept_started", "run.completed"], "its tests passed, so it is review ready");
     assert_eq!(post(&s, &provider, "r-dirty"), (409, json!({"error": "r-dirty has uncommitted changes in its worktree; commit or discard them first"})));
     assert_eq!(post(&s, &provider, "r-run"), (409, json!({"error": "r-run is running; only a failed run can be accepted, or one waiting on a review decision"})));
     assert_eq!(post(&s, &provider, "r-beta").0, 404, "a run of another project is not this project's");
@@ -136,8 +136,7 @@ fn a_run_whose_tests_are_running_is_not_accepted_twice_and_failing_tests_leave_i
     on_start.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(post(&s, &provider, "r-fail"), (409, json!({"error": "r-fail is already being accepted"})));
     finish.send(()).unwrap();
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(kinds(&s, "r-fail"), ["run.started", "run.failed"], "failing tests leave the run failed");
+    assert_eq!(kinds_once(&s, "r-fail", 4), ["run.started", "run.failed", "run.accept_started", "run.accept_failed"], "failing tests are recorded");
 }
 
 fn act(s: &Setup, provider: &StoreProjects, run: &str, action: &str, body: &str) -> (u16, Value) {
@@ -166,11 +165,86 @@ fn while_its_tests_run_a_run_being_accepted_cannot_be_resumed_stopped_paused_swi
 
     assert_eq!(post(&s, &provider, "r-fail").0, 202);
     on_start.recv_timeout(Duration::from_secs(5)).unwrap();
-    let busy = json!({"error": "r-fail is being accepted; try again when its tests have finished"});
+    let busy = json!({"error": "r-fail: an accept is running; try again when its tests have finished"});
     for (action, body) in [("resume", ""), ("pause", ""), ("stop", ""), ("discard", ""), ("model", r#"{"role":"implementer","profile":"fast"}"#)] {
         assert_eq!(act(&s, &provider, "r-fail", action, body), (409, busy.clone()), "{action}");
     }
     assert!(alpha.join(".claude/worktrees/r-fail").exists(), "nothing was discarded");
     finish.send(()).unwrap();
-    assert_eq!(kinds_once(&s, "r-fail", 3), ["run.started", "run.failed", "run.completed"]);
+    assert_eq!(kinds_once(&s, "r-fail", 4), ["run.started", "run.failed", "run.accept_started", "run.completed"]);
+}
+
+fn run_json(s: &Setup, provider: &StoreProjects, run: &str) -> Value {
+    let config = RemoteConfig { token: "tok".into() };
+    let path = format!("/api/projects/alpha/runs/{run}");
+    let request = Request { method: "GET", path: &path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
+    let r = handle_with(&s.roots, &config, "server-project", "server", &request, provider);
+    assert_eq!(r.status, 200, "{}", r.body);
+    r.body["run"].clone()
+}
+
+#[test]
+fn while_accepting_the_run_says_so_with_since_when_and_a_failure_shows_why_with_the_output() {
+    let s = setup("run-accept-shown");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-fail", &["run.started", "run.failed"]);
+    let (started, on_start) = mpsc::channel::<()>();
+    let (finish, on_finish) = mpsc::channel::<()>();
+    let gate = Mutex::new((started, on_finish));
+    let tests: Tests = Arc::new(move |_: &Path| {
+        let gate = gate.lock().unwrap();
+        gate.0.send(()).unwrap();
+        gate.1.recv().unwrap();
+        Err("`cargo test` failed: test result: FAILED. 1 failed".into())
+    });
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+
+    assert_eq!(post(&s, &provider, "r-fail").0, 202);
+    on_start.recv_timeout(Duration::from_secs(5)).unwrap();
+    let during = run_json(&s, &provider, "r-fail");
+    assert_eq!(during["state"], "accepting");
+    assert!(during["accepting_since"].is_string(), "{during}");
+    let (status, body) = act(&s, &provider, "r-fail", "resume", "");
+    assert_eq!(status, 409);
+    assert!(body["error"].as_str().unwrap().contains("an accept is running"), "{body}");
+
+    finish.send(()).unwrap();
+    kinds_once(&s, "r-fail", 4);
+    let after = run_json(&s, &provider, "r-fail");
+    assert_eq!(after["state"], "failed");
+    assert!(after["accept_failure"]["reason"].as_str().unwrap().contains("`cargo test` failed"), "{after}");
+    assert!(after["accept_failure"]["output"].as_str().unwrap().contains("1 failed"), "{after}");
+    assert!(after["accept_failure"]["at"].is_string(), "{after}");
+}
+
+#[test]
+fn a_server_started_after_one_stopped_mid_accept_records_the_accept_as_failed() {
+    let s = setup("run-accept-restart");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-stuck", &["run.started", "run.failed", "run.accept_started"]);
+    add_run(&s, &alpha, "r-other", &["run.started", "run.failed"]);
+
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone());
+
+    assert_eq!(kinds(&s, "r-stuck").last().map(String::as_str), Some("run.accept_failed"));
+    assert_eq!(kinds(&s, "r-other"), ["run.started", "run.failed"], "a run that was not accepting is left alone");
+    let shown = run_json(&s, &provider, "r-stuck");
+    assert_eq!(shown["state"], "failed");
+    assert_eq!(shown["accept_failure"]["reason"], "the server stopped while the tests were running; accept again");
+}
+
+#[test]
+fn a_passing_accept_shows_the_run_review_ready_with_its_delivery() {
+    let s = setup("run-accept-passed");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, &alpha, "r-fail", &["run.started", "run.failed"]);
+    let tests: Tests = Arc::new(|_: &Path| Ok(()));
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+
+    assert_eq!(post(&s, &provider, "r-fail").0, 202);
+    kinds_once(&s, "r-fail", 4);
+    let shown = run_json(&s, &provider, "r-fail");
+    assert_eq!(shown["state"], "completed");
+    assert_eq!(shown["accepted"], true, "{shown}");
+    assert!(shown["accept_failure"].is_null(), "{shown}");
 }

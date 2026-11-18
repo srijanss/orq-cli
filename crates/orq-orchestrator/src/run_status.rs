@@ -49,6 +49,9 @@ pub enum RunPhase {
     /// A failed or review-waiting run whose commits were all merged into its target branch by
     /// hand. Never read off the events: only [`crate::mark_merged_runs`] says so, from git.
     Merged,
+    /// A failed or review-waiting run whose tests are running so it can be accepted: `run.accept_started`
+    /// with no result after it.
+    Accepting,
 }
 
 impl RunPhase {
@@ -62,6 +65,7 @@ impl RunPhase {
             RunPhase::PauseRequested => "pause_requested",
             RunPhase::Paused => "paused",
             RunPhase::Merged => "merged",
+            RunPhase::Accepting => "accepting",
         }
     }
 }
@@ -210,6 +214,16 @@ pub struct RunSummary {
     pub phase_at: Option<String>,
     /// The run this one was continued as, once a resume took it over.
     pub resumed_as: Option<String>,
+    /// Why the latest accept failed, until another accept starts.
+    pub accept_failure: Option<AcceptFailure>,
+}
+
+/// What the `run.accept_failed` event said: why, the end of the test output, and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptFailure {
+    pub reason: String,
+    pub output: String,
+    pub at: String,
 }
 
 /// Summarize a run from its events in order. The latest event that says something about the
@@ -222,9 +236,25 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
         reason: None,
         phase_at: None,
         resumed_as: None,
+        accept_failure: None,
     };
+    // What the run was before an accept started, given back when the accept fails.
+    let mut before_accept: Option<(RunPhase, Option<String>, Option<String>)> = None;
     for event in events {
         let phase = match event.kind.as_str() {
+            "run.accept_started" => {
+                before_accept = Some((summary.phase, summary.reason.take(), summary.phase_at.take()));
+                summary.accept_failure = None;
+                RunPhase::Accepting
+            }
+            "run.accept_failed" if summary.phase == RunPhase::Accepting => {
+                if let Some((phase, reason, at)) = before_accept.take() {
+                    (summary.phase, summary.reason, summary.phase_at) = (phase, reason, at);
+                }
+                let text = |key: &str| event.payload.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                summary.accept_failure = Some(AcceptFailure { reason: text("reason"), output: text("output"), at: event.occurred_at.clone() });
+                continue;
+            }
             // A requested pause or a pause itself outlives the stages that finish around it.
             "stage.started" | "stage.completed" | "stage.skipped"
                 if matches!(summary.phase, RunPhase::PauseRequested | RunPhase::Paused) =>

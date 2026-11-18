@@ -56,7 +56,7 @@ pub use checkpoint::{
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
-pub use accept::{accept_check, accept_run, run_steps, run_worktree_tests};
+pub use accept::{accept_check, accept_run, accept_run_by, fail_interrupted_accept, run_steps, run_worktree_tests, ACCEPT_INTERRUPTED};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use merge_local::{merge_into_base, merge_setting_aside, waiting_on_dirty_checkout, MergeOutcome, SetAsideOutcome};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};
@@ -120,7 +120,7 @@ pub use run_activity::{activity_line, newest_log_tail, run_activity, step_lines,
 pub use review_escalation::{escalated_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
 pub use run_status::{
     record_capability_skipped, record_mcp_setup, record_model_switched, record_run_completed, request_model_switch,
-    request_pause, summarize_run, RunPhase, RunSummary,
+    request_pause, summarize_run, AcceptFailure, RunPhase, RunSummary,
 };
 pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,

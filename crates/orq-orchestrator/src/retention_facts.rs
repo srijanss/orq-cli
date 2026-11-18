@@ -48,7 +48,8 @@ fn facts_of(
         return Ok(None);
     };
     let state = match summarize_run(&events).phase {
-        RunPhase::Running => RunState::Running,
+        // Its tests are running in the worktree.
+        RunPhase::Running | RunPhase::Accepting => RunState::Running,
         // Waiting on a human decision, like a blocked run.
         RunPhase::Blocked | RunPhase::NeedsReview => RunState::Blocked,
         // Only a listing marks a run merged; its events say it failed or waits for review.

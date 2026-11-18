@@ -3397,7 +3397,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   );
 }
 
-const RUN_STATES = { running: "Running", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", resumed: "Resumed" };
+const RUN_STATES = { running: "Running", accepting: "Accepting", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", resumed: "Resumed" };
 
 function isOrchestration(run) {
   const text = (value) => value === null || typeof value === "string";
@@ -3409,7 +3409,7 @@ function parseOrchestrations(data) {
 }
 
 // The states a run is shown in, needs-attention first, as the state filter offers them.
-const STATE_ORDER = ["running", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "resumed"];
+const STATE_ORDER = ["running", "accepting", "pause_requested", "paused", "needs_review", "blocked", "failed", "completed", "resumed"];
 
 // The state a run is shown, filtered and grouped in. A run merged by hand finished like a completed
 // one, so it is Completed; how it was delivered is said beside the pill, never in it.
@@ -3425,7 +3425,7 @@ function byUpdated(runs, order) {
 }
 
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
-const RUN_ICONS = { running: "play", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock", resumed: "rotate" };
+const RUN_ICONS = { running: "play", accepting: "clock", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock", resumed: "rotate" };
 
 // How a completed run that was delivered without a review was delivered: pushed, or merged into its base.
 const DELIVERED = { pushed: "Pushed", merged: "Merged locally" };
@@ -3625,6 +3625,37 @@ function DirtyCheckout({ run }) {
   );
 }
 
+// What the run's accepts say: while its tests run, that and since when; after the latest failed, why with the end
+// of the output, so it can be fixed or discarded; after one passed, what is next by how the run delivers. Accept
+// never merges by itself.
+function AcceptNotes({ run }) {
+  if (run.state === "accepting") {
+    return (
+      <p className="accept-progress" role="status" data-accepting>
+        {"Running the tests in the worktree (started "}<Moment at={run.accepting_since} />{")"}
+      </p>
+    );
+  }
+  const failure = run.accept_failure;
+  if (ACCEPTABLE.includes(run.state) && failure !== null && typeof failure === "object" && typeof failure.reason === "string") {
+    return (
+      <div className="banner error-banner accept-failure" role="alert" data-accept-failure>
+        <Icon name="alert" size={18} />
+        <div>
+          <strong>{"Accept failed: " + failure.reason}</strong>
+          {typeof failure.output === "string" && failure.output !== "" ? <pre className="accept-output" data-accept-output>{failure.output}</pre> : null}
+        </div>
+      </div>
+    );
+  }
+  if (run.state === "completed" && run.accepted === true) {
+    const target = typeof run.target_branch === "string" && run.target_branch !== "" ? run.target_branch : "main";
+    const next = run.delivery === "merge_local" ? "Tests passed. Merge into " + target + "?" : "Tests passed. The branch is ready to push and open a review.";
+    return <p className="accept-passed" role="status" data-accepted>{next}</p>;
+  }
+  return null;
+}
+
 // Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
@@ -3635,6 +3666,8 @@ function DirtyCheckout({ run }) {
 // Resume, and the rest sit behind a ⋯ button; on a phone the CSS shows them all in the row instead.
 function RowActions({ run, control, menu = false }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
+  // Its tests are running in the worktree: nothing may change the run under them, so nothing is offered.
+  if (run.state === "accepting") return <span className="run-actions muted" data-accept-busy>{"Accept, Review again, Resume and Discard wait: an accept is running"}</span>;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
@@ -4074,6 +4107,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
             <RunState state={run.state} />
           </div>
           <DirtyCheckout run={run} />
+          <AcceptNotes run={run} />
           <RowActions run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />
           {validTime(run.started_at) === null && delivery === null ? null : (

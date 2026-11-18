@@ -338,6 +338,8 @@ a, button { -webkit-tap-highlight-color: transparent; }
 }
 .error-banner { color: var(--text); background: var(--status-failed-bg); border-color: var(--status-failed); border-left-width: 4px; }
 .error-banner > .icon { flex: none; color: var(--status-failed); }
+.accept-output { margin: 0.5rem 0 0; max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; }
+.accept-progress, .accept-passed { margin: 0.375rem 0 0; color: var(--text-muted); }
 .content p[role=alert]:not(.banner) { margin: 0.5rem 0; color: var(--status-failed); font-size: 0.875rem; }
 p[role=alert]:empty { display: none; }
 .error-text { color: var(--status-failed); font-size: 0.875rem; }
@@ -654,6 +656,7 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 
 /* Orchestrations: run state pills, the runs table and the run card's steps. */
 .feature-state.run-running { color: var(--status-running); background: var(--status-running-bg); }
+.feature-state.run-accepting { color: var(--status-running); background: var(--status-running-bg); }
 .feature-state.run-completed, .feature-state.run-merged { color: var(--status-completed); background: var(--status-completed-bg); }
 .feature-state.run-failed, .feature-state.run-blocked { color: var(--status-failed); background: var(--status-failed-bg); }
 .feature-state.run-needs_review, .feature-state.run-pause_requested, .feature-state.run-paused { color: var(--status-waiting); background: var(--status-waiting-bg); }
