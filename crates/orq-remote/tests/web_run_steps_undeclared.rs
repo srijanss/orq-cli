@@ -1,5 +1,5 @@
-//! A session that changed files outside its features' files names them under its step on the Timeline;
-//! a step with none shows no such line.
+//! A session that changed files outside its features' files names them under its step on the Timeline,
+//! behind one line that opens to list them; a step with none shows no such line.
 
 mod web_deps;
 
@@ -12,19 +12,20 @@ fn projects() -> Value {
     json!({"status": 200, "json": {"projects": [{"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}})
 }
 
-fn open_run(events: Value) -> Option<Value> {
+fn open_run(events: Value, steps: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let run = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "completed", "stage": "implement_and_review", "started_at": "2026-11-16T15:05:49Z", "updated_at": "2026-11-16T15:35:11Z"});
     let page = json!({"status": 200, "json": {"run": run, "events": events, "next_cursor": null}});
     let dir = env!("CARGO_MANIFEST_DIR");
+    let all: Vec<Value> = std::iter::once(json!({"submit": TOKEN})).chain(steps).collect();
     let selectors = ["[data-step-undeclared]", ".run-step [data-step-undeclared]"];
-    let scenario = json!({"url": "/projects/alpha/orchestrations/run-1", "responses": [page, projects()], "steps": [{"submit": TOKEN}], "selectors": selectors});
+    let scenario = json!({"url": "/projects/alpha/orchestrations/run-1", "responses": [page, projects()], "steps": all, "selectors": selectors});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
-    Some(out["frames"][1].clone())
+    Some(out["frames"].as_array().unwrap().last().unwrap().clone())
 }
 
 fn texts(frame: &Value) -> Vec<String> {
@@ -46,9 +47,10 @@ fn implement_events(files: Option<Value>) -> Value {
 
 #[test]
 fn an_implement_step_names_each_file_changed_outside_its_features_files() {
-    let Some(frame) = open_run(implement_events(Some(json!(["src/other.rs", "fixed.txt", 7])))) else { return };
+    let opened = vec![json!({"click": "[data-step-undeclared-toggle]"})];
+    let Some(frame) = open_run(implement_events(Some(json!(["src/other.rs", "fixed.txt", 7]))), opened) else { return };
     let texts = texts(&frame);
-    for line in ["Changed outside its features' files: src/other.rs", "Changed outside its features' files: fixed.txt"] {
+    for line in ["Changed outside its features' files: 2 files", "src/other.rs", "fixed.txt"] {
         assert!(texts.iter().any(|t| t == line), "{line}: {texts:?}");
     }
     assert_eq!(count(&frame, ".run-step [data-step-undeclared]"), 2, "{frame}");
@@ -57,7 +59,7 @@ fn an_implement_step_names_each_file_changed_outside_its_features_files() {
 
 #[test]
 fn a_step_with_no_undeclared_file_has_no_such_line() {
-    let Some(frame) = open_run(implement_events(None)) else { return };
+    let Some(frame) = open_run(implement_events(None), vec![]) else { return };
     assert_eq!(count(&frame, "[data-step-undeclared]"), 0, "{frame}");
     assert!(!texts(&frame).iter().any(|t| t.starts_with("Changed outside")), "{:?}", texts(&frame));
 }

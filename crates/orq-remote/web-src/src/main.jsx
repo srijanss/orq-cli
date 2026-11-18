@@ -4096,15 +4096,43 @@ function flakyTests(events) {
     .filter((test) => test && typeof test.name === "string" && test.name !== "");
 }
 
-// The files the step's sessions changed outside their features' files, as the run page lists them.
+// The files the step's sessions changed outside their features' files, each once, in the order recorded.
 function undeclaredFiles(events) {
-  return events
+  const files = events
     .filter((event) => event.kind === "session.undeclared_files" && Array.isArray(event.undeclared_files))
     .flatMap((event) => event.undeclared_files)
     .filter((file) => typeof file === "string" && file !== "");
+  return [...new Set(files)];
 }
 
-function RunSteps({ events, rounds, running, ended = false, onLogs }) {
+// The steps whose list of out-of-scope files is open, by run and step, kept while the page lives so new
+// events (which redraw the steps) never close a list someone opened; a reload starts them closed.
+const openUndeclared = new Set();
+
+// One closed line counting the files a step changed outside its features' files; opening it lists them.
+function UndeclaredFiles({ place, files }) {
+  const [open, setOpen] = useState(() => openUndeclared.has(place));
+  const toggle = () => {
+    if (open) openUndeclared.delete(place);
+    else openUndeclared.add(place);
+    setOpen(!open);
+  };
+  return (
+    <div className="run-step-undeclared">
+      <button type="button" className="link-button run-step-undeclared-toggle" data-step-undeclared-toggle aria-expanded={open ? "true" : "false"} onClick={toggle}>
+        <Icon name={open ? "chevronDown" : "chevronRight"} size={14} />
+        <span>{"Changed outside its features' files: " + files.length + (files.length === 1 ? " file" : " files")}</span>
+      </button>
+      {open ? (
+        <ul className="run-step-undeclared-list">
+          {files.map((file) => <li key={file} data-step-undeclared>{file}</li>)}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   return (
     <ol className="run-steps">
@@ -4114,6 +4142,7 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
         const note = cleanupNote(step);
         const flaky = flakyNote(step);
         const took = stepDuration(step.events);
+        const undeclared = undeclaredFiles(step.events);
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         return (
           <li key={step.events[0].event_id} className="run-step" data-step={kind}>
@@ -4126,9 +4155,7 @@ function RunSteps({ events, rounds, running, ended = false, onLogs }) {
             {flakyTests(step.events).map((test, n) => (
               <p key={"flaky" + n} className="run-step-flaky field-hint muted" data-step-flaky>{"Flaky: " + test.name + (Number.isInteger(test.retry) ? " (passed on retry " + test.retry + ")" : " (passed on a retry)")}</p>
             ))}
-            {undeclaredFiles(step.events).map((file, n) => (
-              <p key={"undeclared" + n} className="run-step-undeclared field-hint muted" data-step-undeclared>{"Changed outside its features' files: " + file}</p>
-            ))}
+            {undeclared.length > 0 ? <UndeclaredFiles place={runId + "\n" + step.events[0].event_id} files={undeclared} /> : null}
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />
@@ -4163,7 +4190,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
-        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={() => choose("logs")} />}
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={() => choose("logs")} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
         {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} />}
