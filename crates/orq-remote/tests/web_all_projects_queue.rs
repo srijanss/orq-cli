@@ -17,6 +17,7 @@ const SELECTORS: &[&str] = &[
     "[data-queue-group=\"beta\"]",
     "[data-queue-group=\"gamma\"]",
     "[data-queue-group=\"alpha\"] [data-queue-entry]",
+    "[data-queue-group=\"beta\"] [data-queue-entry]",
     "[data-queue-group=\"alpha\"] [data-queue-group-error]",
     "[data-queue-group=\"beta\"] [data-queue-paused]",
     "[data-queue-entry]",
@@ -183,4 +184,23 @@ fn the_sidebar_project_switcher_keeps_the_queue_section() {
     let steps = vec![json!({"nav": "[data-project-switcher]"}), json!({"select": ""})];
     let Some(out) = run("/projects/alpha/queue", vec![two_queued(), projects(), projects(), empty(), empty(), empty()], steps) else { return };
     assert_eq!(last(&out)["settled"]["path"], "/queue", "{out}");
+}
+
+#[test]
+fn a_project_whose_queue_reply_is_malformed_says_so_in_its_group_and_the_others_still_show() {
+    let malformed = json!({"status": 200, "json": {"queue": {"entries": "not a list", "paused": 3}}});
+    let Some(out) = run("/queue", vec![projects(), malformed, queue(vec![entry("COM-05", "next", Value::Null)], Value::Null), empty()], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-queue-group=\"alpha\"] [data-queue-group-error]"), 1, "{out}");
+    assert_eq!(count(frame, "[data-queue-group=\"beta\"] [data-queue-entry]"), 1, "{out}");
+    assert_eq!(count(frame, "[data-queue-group]"), 2, "{out}");
+}
+
+#[test]
+fn a_queue_request_answered_401_signs_out_instead_of_showing_the_queues() {
+    let Some(out) = run("/queue", vec![projects(), two_queued(), json!({"status": 401, "json": {}}), empty()], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-queue-group]"), 0, "{out}");
+    assert_eq!(count(frame, "[data-queue-empty]"), 0, "{out}");
+    assert!(shows(frame, "Sign in with token"), "{:?}", texts(frame));
 }
