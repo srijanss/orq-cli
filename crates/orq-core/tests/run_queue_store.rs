@@ -136,12 +136,15 @@ fn the_queue_limit_is_checked_in_the_same_write_as_the_addition_so_two_adders_ca
             std::thread::spawn(move || {
                 let store = Store::open(&database).unwrap();
                 barrier.wait();
-                store.queue_add(Path::new("/work/alpha"), &[plain(feature)], "cli", 3).is_ok()
+                store.queue_add(Path::new("/work/alpha"), &[plain(feature)], "cli", 3)
             })
         })
         .into_iter()
         .collect();
-    let added = adders.into_iter().map(|adder| adder.join().unwrap()).filter(|ok| *ok).count();
-    assert_eq!(added, 1);
+    let (added, refused): (Vec<_>, Vec<_>) = adders.into_iter().map(|adder| adder.join().unwrap()).partition(|result| result.is_ok());
+    assert_eq!(added.len(), 1, "exactly one adder gets in: {added:?} {refused:?}");
+    let refused = refused.into_iter().next().unwrap().unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput, "the other is refused by the limit, not a lock: {refused}");
+    assert_eq!(refused.to_string(), "the queue holds at most 200 features; 200 are queued");
     assert_eq!(store.queue(alpha).unwrap().entries.len(), 200);
 }
