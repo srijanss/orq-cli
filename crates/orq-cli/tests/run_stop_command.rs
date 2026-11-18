@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use orq_orchestrator::{Event, RunPhase, RunRecord, RunStore};
 
 fn orq(state_home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq")).args(args).env("XDG_STATE_HOME", state_home).output().unwrap()
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq")).args(args).env("XDG_STATE_HOME", state_home).output().unwrap()
 }
 
 fn seed(tag: &str) -> (PathBuf, RunStore) {

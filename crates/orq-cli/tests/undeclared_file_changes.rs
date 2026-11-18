@@ -103,7 +103,7 @@ fn run(w: &World, path: std::ffi::OsString) -> Output {
 
 /// `orq <args> --repo <repo>` with `path`.
 fn orq(w: &World, path: &std::ffi::OsStr, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .arg("--repo")
         .arg(w.repo.root())

@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::{write_ledger, GitFixture, LedgerEntry};
 
 fn add(repo: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["feature", "add", "--repo"])
         .arg(repo)
         .args(args)

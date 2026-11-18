@@ -1,8 +1,7 @@
-use std::process::Command;
 
 #[test]
 fn orq_version_prints_version_and_exits_zero() {
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .arg("--version")
         .output()
         .expect("failed to run orq");

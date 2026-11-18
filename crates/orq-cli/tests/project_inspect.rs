@@ -1,10 +1,10 @@
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::GitFixture;
 
 fn orq(args: &[&str], cwd_arg: Option<&Path>, pane_dir: Option<&Path>) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command.args(args).env_remove("HERDR_ACTIVE_PANE_CWD");
     if let Some(cwd) = cwd_arg {
         command.arg("--cwd").arg(cwd);

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use orq_test_support::GitFixture;
 
@@ -75,7 +74,7 @@ else:
     sys.stdout.buffer.write(("\n[termios-differs: before=%r after=%r]" % (before, after)).encode())
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
-    let output = Command::new("python3")
+    let output = orq_test_support::sandboxed_command("python3")
         .args(["-I", "-c", DRIVER, env!("CARGO_BIN_EXE_orq")])
         .env("HERDR_ACTIVE_PANE_CWD", pane_dir)
         .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())

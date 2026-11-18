@@ -33,7 +33,7 @@ fn status_of(repo: &Path, name: &str) -> String {
 }
 
 fn project_id(repo: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["project", "inspect", "--cwd"])
         .arg(repo)
         .env_remove("HERDR_ACTIVE_PANE_CWD")
@@ -105,7 +105,7 @@ fn merged_by_hand(tag: &str) -> Merged {
 }
 
 fn orq(m: &Merged, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .env("XDG_STATE_HOME", &m.home)
         .env_remove("TDD_FEATURES_PATH")

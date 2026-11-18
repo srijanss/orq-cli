@@ -112,7 +112,7 @@ fn orq(w: &World, args: &[&str]) -> Output {
     let provider = FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
     let mut dirs = vec![w.bin.clone(), provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)

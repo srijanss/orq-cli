@@ -57,7 +57,7 @@ fn world(tag: &str) -> World {
 }
 
 fn orq(w: &World, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .env("XDG_CONFIG_HOME", w.home.join("config"))
         .env("XDG_DATA_HOME", w.home.join("data"))

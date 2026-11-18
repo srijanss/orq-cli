@@ -112,7 +112,7 @@ fn github() -> orq_test_support::FakeProviderBuilder {
 
 /// `orq run` of COM-01 with `extra` arguments.
 fn run(w: &World, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--repo"])
         .arg(w.repo.root())
         .args(extra)

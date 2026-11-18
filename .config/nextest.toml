@@ -1,6 +1,20 @@
 # cargo-nextest settings for the gate and local runs: every test runs once (no retries hide a flaky
 # one), a failure does not stop the rest, and a test still running after 3 minutes is stopped.
+#
+# Every test process also gets ORQ_TEST_SANDBOX=1 (the orq-sandbox setup script below): orq's
+# storage then refuses folders outside the temp dir, so a test that starts orq without pointing
+# HOME / XDG_* at a temporary directory fails instead of writing into the real orq folders. This
+# lives in orq's own repository config, so other projects' test runs are not affected.
+experimental = ["setup-scripts"]
+
+[scripts.setup.orq-sandbox]
+command = ["sh", "-c", 'printf "ORQ_TEST_SANDBOX=1\n" >> "$NEXTEST_ENV"']
+
 [profile.default]
 fail-fast = false
 retries = 0
 slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.scripts]]
+filter = "all()"
+setup = "orq-sandbox"

@@ -70,6 +70,111 @@ impl Drop for TempDir {
     }
 }
 
+/// Set for everything a test starts: orq's storage then refuses to resolve outside the temp dir.
+pub const SANDBOX_FLAG: &str = "ORQ_TEST_SANDBOX";
+
+/// A HOME for one test, under the temp dir, with orq's data, state, config and cache folders
+/// inside it. Removed with everything in it when dropped.
+pub struct TempHome {
+    dir: TempDir,
+}
+
+impl TempHome {
+    pub fn new() -> Self {
+        TempHome { dir: TempDir::new("orq-home") }
+    }
+
+    /// The temporary HOME.
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// `XDG_DATA_HOME`: orq keeps `orq.db` and `runs/` in its `orq` folder.
+    pub fn data_home(&self) -> PathBuf {
+        self.path().join(".local").join("share")
+    }
+
+    pub fn state_home(&self) -> PathBuf {
+        self.path().join(".local").join("state")
+    }
+
+    pub fn config_home(&self) -> PathBuf {
+        self.path().join(".config")
+    }
+
+    pub fn cache_home(&self) -> PathBuf {
+        self.path().join(".cache")
+    }
+
+    /// Points `command`'s HOME and every XDG folder orq resolves at this home, and sets
+    /// `ORQ_TEST_SANDBOX=1` so an orq it starts refuses folders outside the temp dir.
+    pub fn apply<'a>(&self, command: &'a mut Command) -> &'a mut Command {
+        command
+            .env(SANDBOX_FLAG, "1")
+            .env("HOME", self.path())
+            .env("XDG_DATA_HOME", self.data_home())
+            .env("XDG_STATE_HOME", self.state_home())
+            .env("XDG_CONFIG_HOME", self.config_home())
+            .env("XDG_CACHE_HOME", self.cache_home())
+    }
+}
+
+impl Default for TempHome {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A `Command` for the orq binary whose folders all live in `home`.
+pub fn orq_command(home: &TempHome) -> Command {
+    let mut command = Command::new(orq_binary());
+    home.apply(&mut command);
+    command
+}
+
+/// A `Command` for `program` (usually the orq binary) whose orq data, state, config and cache
+/// folders are this test process's own, under `process_temp_dir()`, with `ORQ_TEST_SANDBOX=1`.
+/// HOME is left alone so git keeps the person's identity; a test that sets an `XDG_*` folder
+/// itself afterwards overrides that one. Under nextest every test is its own process, so its own
+/// folders.
+pub fn sandboxed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let root = process_temp_dir().join("orq-home");
+    let mut command = Command::new(program);
+    command
+        .env(SANDBOX_FLAG, "1")
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_CACHE_HOME", root.join("cache"));
+    command
+}
+
+/// The orq binary: `CARGO_BIN_EXE_orq` when the runner sets it (orq-cli's own tests under
+/// nextest), else built once per process with cargo, which also brings a stale one up to date.
+pub fn orq_binary() -> PathBuf {
+    static BINARY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BINARY
+        .get_or_init(|| {
+            if let Some(path) = std::env::var_os("CARGO_BIN_EXE_orq").map(PathBuf::from).filter(|path| path.is_file()) {
+                return path;
+            }
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let output = Command::new(cargo)
+                .args(["build", "--quiet", "-p", "orq-cli", "--bin", "orq", "--message-format=json"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .expect("run cargo build for the orq binary");
+            assert!(output.status.success(), "cargo build -p orq-cli --bin orq failed: {}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|message| message["target"]["name"] == "orq")
+                .find_map(|message| message["executable"].as_str().map(PathBuf::from))
+                .expect("cargo build named no orq executable")
+        })
+        .clone()
+}
+
 /// The process temp dir, and the open directory whose lock says its process is still running.
 static PROCESS_TEMP_DIR: std::sync::OnceLock<(PathBuf, fs::File)> = std::sync::OnceLock::new();
 

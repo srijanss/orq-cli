@@ -25,7 +25,7 @@ fn env(tag: &str) -> Env {
 }
 
 fn run(repo: &Path, env: &Env, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(repo)
         .args(["--remote", "origin", "--target", "main"])
@@ -463,7 +463,7 @@ fn run_selecting(w: &World, agent: &FakeAgent, provider: &FakeProvider, selectio
 }
 
 fn run_command(w: &World, agent: &FakeAgent, provider: &FakeProvider, selection: &[&str], extra: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command
         .args(["run", "--repo"])
         .arg(w.repo.root())
@@ -877,7 +877,7 @@ fn a_foreground_run_killed_mid_flight_is_recognised_as_interrupted_and_resumes()
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut runner = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -930,7 +930,7 @@ fn the_runs_listing_shows_a_killed_run_as_failed_not_running() {
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut runner = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -948,7 +948,7 @@ fn the_runs_listing_shows_a_killed_run_as_failed_not_running() {
     runner.kill().unwrap();
     runner.wait().unwrap();
 
-    let listing = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let listing = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["runs", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.env.config)
@@ -973,7 +973,7 @@ fn the_runs_listing_leaves_a_live_run_alone_and_records_a_dead_pause_requested_r
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut runner = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -989,7 +989,7 @@ fn the_runs_listing_leaves_a_live_run_alone_and_records_a_dead_pause_requested_r
         .unwrap();
     wait_until("the implement agent to be running", || ready.exists());
     let list = |extra: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
             .args(["runs", "--repo"])
             .arg(w.repo.root())
             .args(extra)
@@ -1030,7 +1030,7 @@ fn the_runs_listing_keeps_a_paused_run_paused_even_though_its_process_is_gone() 
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut runner = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -1061,7 +1061,7 @@ fn the_runs_listing_keeps_a_paused_run_paused_even_though_its_process_is_gone() 
     runner.wait().unwrap();
 
     for extra in [&[][..], &["--json"][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+        let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
             .args(["runs", "--repo"])
             .arg(w.repo.root())
             .args(extra)
@@ -1088,7 +1088,7 @@ fn the_runs_listing_says_so_when_a_dead_run_cannot_be_recorded_as_failed() {
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut runner = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut runner = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -1115,7 +1115,7 @@ fn the_runs_listing_says_so_when_a_dead_run_cannot_be_recorded_as_failed() {
         return;
     }
 
-    let listing = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let listing = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["runs", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.env.config)
@@ -1278,7 +1278,7 @@ fn a_ci_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_to_
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])
@@ -1309,7 +1309,7 @@ fn a_feature_with_a_run_in_progress_is_refused_with_its_own_exit_code() {
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![slow_bin];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut first = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut first = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -1347,7 +1347,7 @@ fn a_harness_found_through_a_relative_path_entry_still_runs_inside_the_worktree(
     let bin = entries[0].clone();
     entries[0] = PathBuf::from(bin.file_name().unwrap());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -1385,7 +1385,7 @@ fn a_lock_that_cannot_be_released_fails_the_run_but_keeps_the_review_url() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -1431,7 +1431,7 @@ fn a_detached_run_returns_at_once_while_the_run_goes_on_and_finishes_after_the_l
     .unwrap();
 
     let started = std::time::Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -1490,7 +1490,7 @@ fn a_group_of_one_runs_the_feature_to_review_ready_like_feature_does_attached_or
         ),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--group", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -1677,7 +1677,7 @@ fn a_resumed_group_run_whose_session_ended_early_runs_the_session_again_and_reac
 
     let second = FakeAgent::builder().write_file("two.txt", "2\n").commit("feat: COM-02").build();
     let completed = [LedgerEntry::new("COM-01", "completed"), LedgerEntry::new("COM-02", "completed").depends_on(&["COM-01"])];
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.env.config)
@@ -1718,7 +1718,7 @@ fn a_detached_launch_of_a_feature_that_is_already_running_fails_with_the_reason_
     let repo = GitFixture::new();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending")]);
     let env = env("detach-busy");
-    let inspected = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let inspected = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["project", "inspect", "--cwd"])
         .arg(repo.root())
         .env_remove("HERDR_ACTIVE_PANE_CWD")
@@ -1757,7 +1757,7 @@ fn a_detached_group_is_refused_when_any_member_not_only_the_first_is_already_run
     let repo = GitFixture::new();
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
     let env = env("detach-group-busy");
-    let inspected = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let inspected = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["project", "inspect", "--cwd"])
         .arg(repo.root())
         .env_remove("HERDR_ACTIVE_PANE_CWD")
@@ -1810,7 +1810,7 @@ fn the_detached_runner_and_its_agent_live_in_a_session_of_their_own() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -1847,7 +1847,7 @@ fn the_runner_log_and_its_directory_are_private_to_the_user() {
     let provider = github();
     let path = path_with(&agent, &provider, &w.tag);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -1885,7 +1885,7 @@ fn detaching_keeps_an_option_value_that_is_spelled_like_the_flag() {
     std::fs::create_dir_all(&odd).unwrap();
     std::os::unix::fs::symlink(w.repo.root(), odd.join("--detach")).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .current_dir(&odd)
         .args(["run", "--repo", "--detach"])
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -2175,7 +2175,7 @@ fn run_with_push_allowed(w: &World, agent: &FakeAgent, provider: &FakeProvider) 
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin.clone()];
     dirs.extend(std::env::split_paths(&path_with(agent, provider, &w.tag)));
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -2262,7 +2262,7 @@ fn push_send_with(tag: &str, claude_script: &str) -> Output {
     let claude = dir.join("claude");
     std::fs::write(&claude, format!("#!/bin/sh\n{claude_script}\n")).unwrap();
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "push-send", "--repo"])
         .arg(&dir)
         .env("ORQ_PUSH_TEXT", "orq: COM-01 review_ready")
@@ -2313,7 +2313,7 @@ fn a_gate_failure_the_fix_session_calls_unrelated_blocks_the_run_and_says_what_t
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -2456,7 +2456,7 @@ fn a_feature_a_fix_session_started_in_a_run_that_failed_is_completed_by_the_run_
     let run_id = printed_run_id(&failed);
     std::fs::write(&ok, "").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.env.config)
@@ -2482,7 +2482,7 @@ fn a_feature_a_fix_session_started_in_a_run_that_is_discarded_is_abandoned() {
     assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
     let run_id = printed_run_id(&failed);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "discard", &run_id, "--yes", "--repo"])
         .arg(w.repo.root())
         .env("XDG_STATE_HOME", &w.env.state)
@@ -2505,7 +2505,7 @@ fn a_feature_a_fix_session_completed_in_a_run_that_is_discarded_is_abandoned() {
     assert_eq!(failed.status.code(), Some(EXIT_FAILED), "{}", stderr(&failed));
     let run_id = printed_run_id(&failed);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "discard", &run_id, "--yes", "--repo"])
         .arg(w.repo.root())
         .env("XDG_STATE_HOME", &w.env.state)

@@ -39,6 +39,21 @@ fn roots_follow_the_xdg_variables_and_fall_back_to_home_defaults() {
 }
 
 #[test]
+fn under_the_test_sandbox_a_folder_outside_the_temp_dir_is_refused_by_name() {
+    let error = StorageRoots::resolve(&env(&[("ORQ_TEST_SANDBOX", "1"), ("TMPDIR", "/t"), ("HOME", "/home/u"), ("XDG_STATE_HOME", "/t/state")])).unwrap_err();
+    assert!(error.to_string().contains("/home/u/.local/share/orq"), "{error}");
+    assert!(error.to_string().contains("ORQ_TEST_SANDBOX"), "{error}");
+
+    // Without TMPDIR the temp dir is /tmp, and every folder inside it is accepted.
+    let roots = StorageRoots::resolve(&env(&[("ORQ_TEST_SANDBOX", "1"), ("HOME", "/tmp/home")])).unwrap();
+    assert_eq!(roots.data, PathBuf::from("/tmp/home/.local/share/orq"));
+
+    // A path that climbs out of the temp dir is not inside it.
+    let error = StorageRoots::resolve(&env(&[("ORQ_TEST_SANDBOX", "1"), ("HOME", "/tmp/home"), ("XDG_CONFIG_HOME", "/tmp/../home/u/.config")])).unwrap_err();
+    assert!(error.to_string().contains("/tmp/../home/u/.config/orq"), "{error}");
+}
+
+#[test]
 fn relative_or_empty_xdg_values_are_ignored_and_a_missing_home_fails() {
     let roots = StorageRoots::resolve(&env(&[("HOME", "/home/u"), ("XDG_DATA_HOME", "relative/dir"), ("XDG_CACHE_HOME", "")])).unwrap();
     assert_eq!(roots.data, PathBuf::from("/home/u/.local/share/orq"));

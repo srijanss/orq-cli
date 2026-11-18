@@ -59,7 +59,7 @@ fn world(tag: &str, claude: &FakeAgent, pi: &FakeAgent) -> World {
 }
 
 fn orq(w: &World, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)

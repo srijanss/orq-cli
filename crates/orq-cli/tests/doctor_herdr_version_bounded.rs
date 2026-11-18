@@ -1,5 +1,5 @@
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use orq_test_support::GitFixture;
@@ -12,7 +12,7 @@ fn a_herdr_that_floods_stdout_is_cut_off_and_reported_unavailable() {
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     let started = Instant::now();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut child = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["doctor", "herdr", "--cwd"])
         .arg(repo.root())
         .env("HERDR_BIN_PATH", &bin)

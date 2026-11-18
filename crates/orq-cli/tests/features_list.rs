@@ -1,10 +1,10 @@
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::{write_ledger, write_ledger_bytes, GitFixture, LedgerEntry};
 
 fn features(repo: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["features", "--repo"])
         .arg(repo)
         .env_remove("HERDR_ACTIVE_PANE_CWD")

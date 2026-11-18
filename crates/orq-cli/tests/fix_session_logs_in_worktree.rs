@@ -116,7 +116,7 @@ fn run(w: &World, agent: &FakeAgent, then: &str, flags: &[&str]) -> Output {
 fn run_with(w: &World, agent: &FakeAgent, provider: &FakeProvider, then: &str, flags: &[&str]) -> Output {
     let mut dirs = vec![fake_claude(w, agent, then), provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])

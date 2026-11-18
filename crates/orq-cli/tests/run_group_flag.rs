@@ -1,9 +1,9 @@
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::{write_ledger, GitFixture, LedgerEntry};
 
 fn run_args(repo: &std::path::Path, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(repo)
         .args(["--remote", "origin", "--target", "main"])

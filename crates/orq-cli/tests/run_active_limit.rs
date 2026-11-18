@@ -39,7 +39,7 @@ fn save(home: &Path, repo: &Path, settings: &ProjectSettings) {
 }
 
 fn orq(repo: &Path, home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command
         .args(args)
         .arg("--repo")

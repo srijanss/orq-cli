@@ -77,7 +77,7 @@ fn run_with_fix(w: &World, fix: &str) -> (Output, PathBuf) {
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])

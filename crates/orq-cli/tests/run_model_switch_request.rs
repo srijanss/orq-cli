@@ -5,7 +5,7 @@ use std::process::{Command, Output, Stdio};
 use orq_orchestrator::{request_pause, Event, RunRecord, RunStore};
 
 fn orq(state_home: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command.args(args).stdin(Stdio::null());
     command.env("XDG_STATE_HOME", state_home);
     command.env("XDG_CONFIG_HOME", state_home.join("no-config"));

@@ -51,7 +51,7 @@ fn hook(w: &World, run: &str, input: &str, notifier_prefix: &str) -> Output {
 fn hook_with(w: &World, run: &str, extra: &[&str], input: &str, notifier_prefix: &str) -> Output {
     let script = format!("{notifier_prefix}printf '%s\\n' \"$NOTIFY_MESSAGE\" >> '{}'", w.sent.display());
     let notifier = serde_json::json!(["sh", "-c", script]).to_string();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut child = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "needs-input", run, "--repo"])
         .arg(w.repo.root())
         .args(extra)
@@ -372,7 +372,7 @@ fn a_transcript_that_is_no_regular_file_is_not_waited_on_and_the_stop_is_still_t
     let transcript = w.sent.with_file_name("transcript.fifo");
     assert!(Command::new("mkfifo").arg(&transcript).status().unwrap().success());
     let marker = marker(&w);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let mut child = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "needs-input", "run-1", "--repo"])
         .arg(w.repo.root())
         .args(["--marker", marker.to_str().unwrap()])

@@ -6,7 +6,7 @@ use orq_test_support::GitFixture;
 /// `orq ui --snapshot` as launched by Herdr: only the active pane's directory
 /// is communicated, through the environment.
 fn ui_snapshot(pane_dir: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["ui", "--snapshot"])
         .env("HERDR_ACTIVE_PANE_CWD", pane_dir)
         // Never walk up from a plain temp dir into some enclosing repository.

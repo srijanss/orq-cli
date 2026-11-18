@@ -60,7 +60,7 @@ fn world_with(tag: &str, agent: &FakeAgent, provider: FakeProvider) -> World {
 }
 
 fn orq(w: &World, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)
@@ -367,7 +367,7 @@ fn a_resume_for_the_web_while_herdr_is_running_runs_in_the_foreground_of_a_herdr
     let (run_id, store) = start_paused(&w);
     let herdr = fake_herdr(&w.base);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--detach", "--in-herdr", "--repo", w.repo.root().to_str().unwrap()])
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)

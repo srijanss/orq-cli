@@ -88,7 +88,7 @@ fn github() -> FakeProvider {
 fn run(w: &World, provider: &FakeProvider) -> Output {
     let mut dirs = vec![w.bin.clone(), provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -176,7 +176,7 @@ fn event(kind: &str) -> Event {
 
 /// The id `orq` files the runs of `repo` under.
 fn project_id(repo: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["project", "inspect", "--cwd"])
         .arg(repo)
         .env_remove("HERDR_ACTIVE_PANE_CWD")
@@ -230,7 +230,7 @@ fn blocked_run(tag: &str, with_worktree: bool) -> Discard {
 }
 
 fn discard(d: &Discard, repo: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "discard", "run-1", "--yes", "--repo"])
         .arg(repo)
         .env("XDG_STATE_HOME", &d.home)

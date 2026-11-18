@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::{write_ledger, write_ledger_bytes, GitFixture, LedgerEntry};
 
@@ -13,7 +13,7 @@ const VARS: [&str; 6] = [
 ];
 
 fn doctor(pane_cwd: Option<&Path>, process_cwd: &Path) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command.args(["doctor", "herdr"]).current_dir(process_cwd);
     for var in VARS {
         command.env_remove(var);

@@ -68,7 +68,7 @@ fn path_with(w: &World, agent: &FakeAgent, provider: &FakeProvider, seen: &Path)
 }
 
 fn run(w: &World, agent: &FakeAgent, seen: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -260,7 +260,7 @@ fn fix_prompt(w: &World, agent: &FakeAgent, provider: &FakeProvider, flags: &[&s
     let mut dirs = vec![bin, provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
 
-    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main"])
@@ -350,7 +350,7 @@ fn the_run(w: &World) -> (String, Vec<orq_orchestrator::Event>) {
 }
 
 fn orq_runs(w: &World, json: bool) -> String {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command.args(["runs", "--repo"]).arg(w.repo.root());
     if json {
         command.arg("--json");

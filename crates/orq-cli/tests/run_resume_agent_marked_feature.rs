@@ -88,7 +88,7 @@ fn path_with(w: &World, agent: &FakeAgent, mark: &str, tag: &str) -> std::ffi::O
 }
 
 fn orq(w: &World, path: std::ffi::OsString, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(args)
         .arg("--repo")
         .arg(w.repo.root())

@@ -89,7 +89,7 @@ fn path_with(w: &World, agent: &FakeAgent, script: &str) -> std::ffi::OsString {
 
 /// `orq run` of COM-01 with `path`.
 fn run(w: &World, path: std::ffi::OsString) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.config)

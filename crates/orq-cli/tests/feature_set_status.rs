@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::{write_ledger, write_ledger_bytes, GitFixture, LedgerEntry};
 
 fn set_status(repo: &Path, id: &str, status: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["feature", "set-status", "--repo"])
         .arg(repo)
         .args(["--id", id, "--status", status])
@@ -42,7 +42,7 @@ fn promoting_a_draft_prints_the_new_entry_and_updates_the_ledger() {
     assert_eq!(entry["name"], "alpha");
     assert_eq!(entry["status"], "pending");
     assert_eq!(entry["description"], "first");
-    let listed = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let listed = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["features", "--repo"])
         .arg(repo.root())
         .env_remove("HERDR_ACTIVE_PANE_CWD")

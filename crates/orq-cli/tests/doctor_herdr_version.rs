@@ -1,5 +1,4 @@
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 
 use orq_test_support::GitFixture;
 
@@ -10,7 +9,7 @@ fn report(body: Option<&str>) -> String {
         std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["doctor", "herdr", "--cwd"])
         .arg(repo.root())
         .env("HERDR_BIN_PATH", &bin)

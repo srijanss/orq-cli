@@ -4,6 +4,9 @@
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
+/// Set by orq's own test runs: storage then refuses roots outside the temp dir.
+pub const TEST_SANDBOX: &str = "ORQ_TEST_SANDBOX";
+
 /// Orq's four roots, each already ending in `orq`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageRoots {
@@ -27,12 +30,32 @@ impl StorageRoots {
             let home = home.as_ref().ok_or_else(|| Error::new(ErrorKind::NotFound, format!("{var} is unset and HOME is not an absolute path")))?;
             Ok(default.iter().fold(home.clone(), |path, part| path.join(part)).join("orq"))
         };
-        Ok(StorageRoots {
+        let roots = StorageRoots {
             data: pick("XDG_DATA_HOME", &[".local", "share"])?,
             config: pick("XDG_CONFIG_HOME", &[".config"])?,
             state: pick("XDG_STATE_HOME", &[".local", "state"])?,
             cache: pick("XDG_CACHE_HOME", &[".cache"])?,
-        })
+        };
+        if env(TEST_SANDBOX).as_deref() == Some("1") {
+            roots.check_sandboxed(env)?;
+        }
+        Ok(roots)
+    }
+
+    /// Under `ORQ_TEST_SANDBOX=1` every root must be inside the temp dir (`TMPDIR`, else `/tmp`),
+    /// so a test that forgot to move one fails instead of writing into the person's real folders.
+    fn check_sandboxed(&self, env: &dyn Fn(&str) -> Option<String>) -> std::io::Result<()> {
+        let temp = env("TMPDIR").map(PathBuf::from).filter(|dir| dir.is_absolute()).unwrap_or_else(|| PathBuf::from("/tmp"));
+        for (var, root) in [("XDG_DATA_HOME", &self.data), ("XDG_CONFIG_HOME", &self.config), ("XDG_STATE_HOME", &self.state), ("XDG_CACHE_HOME", &self.cache)] {
+            let climbs = root.components().any(|part| part == std::path::Component::ParentDir);
+            if climbs || !root.starts_with(&temp) {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    format!("{TEST_SANDBOX}=1 refuses the orq folder {}: it is not inside the temporary directory {}; point HOME or {var} at a temporary directory", root.display(), temp.display()),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn config_file(&self) -> PathBuf {

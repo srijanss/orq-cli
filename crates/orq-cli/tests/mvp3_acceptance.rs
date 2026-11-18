@@ -90,7 +90,7 @@ fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
 
     let projects = [project(), project()];
     let launch = |p: &Project| {
-        let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
             .args(["run", "--repo"])
             .arg(&p.root)
             .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check", "--detach"])
@@ -112,7 +112,7 @@ fn two_projects_run_the_same_feature_at_once_and_each_sees_only_its_own_run() {
 
     // Each project lists exactly its own run.
     let listed = |p: &Project| -> Vec<String> {
-        let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+        let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
             .args(["runs", "--repo"])
             .arg(&p.root)
             .arg("--json")

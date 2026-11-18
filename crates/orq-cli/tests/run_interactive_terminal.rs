@@ -74,7 +74,7 @@ fn github() -> FakeProvider {
 fn command(w: &World, provider: &FakeProvider, program: &str) -> Command {
     let mut dirs = vec![w.bin.clone(), provider.bin_dir()];
     dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut command = Command::new(program);
+    let mut command = orq_test_support::sandboxed_command(program);
     command
         .env("XDG_CONFIG_HOME", &w.config)
         .env("XDG_STATE_HOME", &w.state)

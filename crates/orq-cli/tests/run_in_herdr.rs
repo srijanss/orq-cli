@@ -45,7 +45,7 @@ fn a_run_started_for_the_web_while_herdr_is_running_runs_in_the_foreground_of_a_
     // Named relative to where the launch is made, which is not where the pane starts.
     let parent = repo.root().parent().unwrap();
     let relative = repo.root().file_name().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .current_dir(parent)
         .args(["run", "--repo"])
         .arg(relative)

@@ -47,7 +47,7 @@ fn save(home: &Path, repo: &Path, settings: &ProjectSettings) {
 }
 
 fn check(repo: &Path, home: &Path, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(repo)
         .args(["--remote", "origin", "--target", "main", "--feature", "COM-01", "--check"])
@@ -149,7 +149,7 @@ fn a_run_that_names_no_agents_starts_the_project_s_agents_with_their_effort() {
     let reviewer = ProjectAgent { effort: Some("high".into()), ..agent("pi", "vendor/project") };
     save(&home, repo.root(), &ProjectSettings { implementer: Some(implementer), reviewer: Some(reviewer), ..ProjectSettings::default() });
 
-    let out = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let out = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])

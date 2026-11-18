@@ -65,7 +65,7 @@ fn path_with(w: &World, agent: &FakeAgent, provider: &FakeProvider, seen: &Path)
 }
 
 fn run(w: &World, agent: &FakeAgent, seen: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -146,7 +146,7 @@ fn red_gate_world(tag: &str) -> (World, PathBuf, PathBuf) {
 }
 
 fn run_with_path(w: &World, path: std::ffi::OsString, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])

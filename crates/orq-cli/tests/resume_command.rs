@@ -67,7 +67,7 @@ fn path_with(agent: &FakeAgent, provider: &FakeProvider, tag: &str) -> std::ffi:
 }
 
 fn run_with(w: &World, agent: &FakeAgent, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(w.repo.root())
         .args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"])
@@ -241,7 +241,7 @@ fn a_run_killed_while_a_pause_was_pending_is_resumed_by_the_resume_command() {
     set_gate(&w, "true");
     let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.config)
@@ -271,7 +271,7 @@ fn a_failed_run_is_resumed_by_the_resume_command() {
     set_gate(&w, "true");
     let second_agent = FakeAgent::builder().write_file("again.txt", "second\n").commit("feat: second session").build();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .env("XDG_CONFIG_HOME", &w.config)
@@ -345,7 +345,7 @@ fn only_run_id(w: &World) -> String {
 }
 
 fn resume_with(w: &World, agent: &FakeAgent, run_id: &str, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "resume", run_id, "--yes", "--no-ci-check", "--repo"])
         .arg(w.repo.root())
         .args(extra)

@@ -107,7 +107,7 @@ fn path_with(w: &World, tag: &str, agent: &FakeAgent, script: &str) -> std::ffi:
 
 /// `orq` with `args` on the world's repository and `path`.
 fn orq(w: &World, path: std::ffi::OsString, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command
         .args(args)
         .arg("--repo")

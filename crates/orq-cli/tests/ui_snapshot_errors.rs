@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use orq_test_support::GitFixture;
 
 fn orq_ui() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_orq"));
+    let mut command = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"));
     command.args(["ui", "--snapshot"]);
     command.env_remove("HERDR_ACTIVE_PANE_CWD");
     command

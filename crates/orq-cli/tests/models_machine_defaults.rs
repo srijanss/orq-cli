@@ -4,12 +4,12 @@
 //! `orq models` prints the defaults a run would use, so it shows the resolution `orq run` makes.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use orq_test_support::GitFixture;
 
 fn models(repo: &Path, config_home: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["models", "--repo"])
         .arg(repo)
         .env("XDG_CONFIG_HOME", config_home)

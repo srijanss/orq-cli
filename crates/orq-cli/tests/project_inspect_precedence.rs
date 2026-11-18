@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
-use std::process::Command;
 
 use orq_test_support::GitFixture;
 
@@ -8,7 +7,7 @@ use orq_test_support::GitFixture;
 fn a_valid_explicit_cwd_ignores_a_non_utf8_pane_variable() {
     let repo = GitFixture::new();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["project", "inspect", "--cwd"])
         .arg(repo.nested_dir())
         .env("HERDR_ACTIVE_PANE_CWD", OsString::from_vec(b"/tmp/\xff".to_vec()))
@@ -25,7 +24,7 @@ fn a_valid_explicit_cwd_works_when_the_process_directory_was_deleted() {
     std::fs::create_dir_all(&doomed).unwrap();
 
     // Delete the process's own working directory before orq starts.
-    let output = Command::new("sh")
+    let output = orq_test_support::sandboxed_command("sh")
         .arg("-c")
         .arg("cd \"$1\" && rmdir \"$1\" && exec \"$2\" project inspect --cwd \"$3\"")
         .arg("sh")

@@ -19,7 +19,7 @@ fn env(tag: &str) -> Env {
 }
 
 fn run(repo: &Path, env: &Env, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_orq"))
+    orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["run", "--repo"])
         .arg(repo)
         .args(["--remote", "origin", "--target", "main"])
@@ -80,7 +80,7 @@ fn a_check_refuses_like_a_launch_would_a_feature_that_may_not_start_is_busy_or_b
     assert!(state_is_empty(&env), "nothing was recorded");
 
     let project: serde_json::Value = serde_json::from_slice(
-        &Command::new(env!("CARGO_BIN_EXE_orq")).args(["project", "inspect", "--cwd"]).arg(repo.root()).env_remove("HERDR_ACTIVE_PANE_CWD").output().unwrap().stdout,
+        &orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq")).args(["project", "inspect", "--cwd"]).arg(repo.root()).env_remove("HERDR_ACTIVE_PANE_CWD").output().unwrap().stdout,
     )
     .unwrap();
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));
@@ -134,7 +134,7 @@ fn a_check_of_a_group_is_busy_when_a_later_member_has_an_active_run() {
     write_ledger(repo.root(), &[LedgerEntry::new("COM-01", "pending"), LedgerEntry::new("COM-02", "pending")]);
     let env = env("group-busy");
     let project: serde_json::Value = serde_json::from_slice(
-        &Command::new(env!("CARGO_BIN_EXE_orq")).args(["project", "inspect", "--cwd"]).arg(repo.root()).env_remove("HERDR_ACTIVE_PANE_CWD").output().unwrap().stdout,
+        &orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq")).args(["project", "inspect", "--cwd"]).arg(repo.root()).env_remove("HERDR_ACTIVE_PANE_CWD").output().unwrap().stdout,
     )
     .unwrap();
     let store = orq_orchestrator::RunStore::new(&env.state.join("orq"));

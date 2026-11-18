@@ -54,7 +54,7 @@ fn save(home: &Path, repo: &Path, settings: &ProjectSettings) {
 }
 
 fn models(repo: &Path, home: &Path) -> serde_json::Value {
-    let output: Output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output: Output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["models", "--repo"])
         .arg(repo)
         .env("XDG_CONFIG_HOME", home.join("config"))
@@ -167,7 +167,7 @@ fn settings_still_in_the_write_ahead_log_are_never_read_as_older_ones() {
     // A reader that cannot use the shared-memory file cannot see the -wal file either.
     let shm = roots.data.join("orq.db-shm");
     set_mode(&shm, 0o000);
-    let output = Command::new(env!("CARGO_BIN_EXE_orq"))
+    let output = orq_test_support::sandboxed_command(env!("CARGO_BIN_EXE_orq"))
         .args(["models", "--repo"])
         .arg(repo.root())
         .env("XDG_CONFIG_HOME", home.join("config"))
