@@ -125,7 +125,8 @@ impl StoreProjects {
         for entry in store.queue(root).map_err(failed)?.entries {
             let Some(run) = &entry.run else { continue };
             let mut run = run.clone();
-            let what = entry_label(&entry);
+            // A start's run is named by its feature, as before the queue held other actions.
+            let what = entry.action.as_ref().map_or_else(|| entry.feature.clone(), action_label);
             let mut settled = match &entry.action {
                 Some(QueueAction { kind: QueueKind::Accept, .. }) => self.settle_accept(store, &runs, &run, Some(root), settings.queue_wait_for_review),
                 _ => settle(store, &runs, &run, Some(root), settings.queue_wait_for_review),
