@@ -95,11 +95,52 @@ pub fn disk_refusal(project: &str, floor_gb: Option<u32>, free: &FreeDisk) -> Op
     if free.bytes >= u64::from(floor_gb) * BYTES_PER_GB {
         return None;
     }
-    let free_gb = free.bytes as f64 / BYTES_PER_GB as f64;
-    // Rounded down, so a disk just short of the floor never reads as having it.
-    let shown = (free_gb * 10.0).floor() / 10.0;
     Some(format!(
-        "only {shown:.1} GB free on {} ({project} needs {floor_gb} GB to start a run): free some space, or lower the floor in project settings",
+        "only {} GB free on {} ({project} needs {floor_gb} GB to start a run): free some space, or lower the floor in project settings",
+        shown_gb(free.bytes),
         free.mount.display()
     ))
+}
+
+/// Why the machine may not start another run with `active` (project id, run id) runs active
+/// across every project under a limit of `max_active`; `None` when it may.
+pub fn machine_limit_refusal(max_active: Option<usize>, active: &[(String, String)]) -> Option<String> {
+    if active.len() < max_active? {
+        return None;
+    }
+    let runs = active.iter().map(|(project, run)| format!("{} {run}", project_name(project))).collect::<Vec<_>>().join(", ");
+    let (noun, wait) = if active.len() == 1 { ("run", "it") } else { ("runs", "one") };
+    Some(format!(
+        "this machine already has {} active {noun} ({runs}): wait for {wait} to finish, or raise [runs] max_active",
+        active.len()
+    ))
+}
+
+/// Why the machine may not start a run with `free` space under its floor of `floor_gb`
+/// gigabytes; `None` when it may.
+pub fn machine_disk_refusal(floor_gb: Option<u32>, free: &FreeDisk) -> Option<String> {
+    let floor_gb = floor_gb?;
+    if free.bytes >= u64::from(floor_gb) * BYTES_PER_GB {
+        return None;
+    }
+    Some(format!(
+        "only {} GB free on {} (this machine needs {floor_gb} GB to start a run): free some space, or lower [runs] min_free_disk_gb",
+        shown_gb(free.bytes),
+        free.mount.display()
+    ))
+}
+
+/// A project's name from its id, `<name>-<8 hex digits>`; an id of another shape as it is.
+fn project_name(project_id: &str) -> &str {
+    match project_id.rsplit_once('-') {
+        Some((name, hash)) if !name.is_empty() && hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()) => name,
+        _ => project_id,
+    }
+}
+
+/// `bytes` in GB to one decimal, rounded down, so a disk just short of a floor never reads as
+/// having it.
+fn shown_gb(bytes: u64) -> String {
+    let free_gb = bytes as f64 / BYTES_PER_GB as f64;
+    format!("{:.1}", (free_gb * 10.0).floor() / 10.0)
 }

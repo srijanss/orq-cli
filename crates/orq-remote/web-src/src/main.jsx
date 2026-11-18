@@ -762,6 +762,33 @@ function parseProjects(data) {
   return data && Array.isArray(data.projects) && data.projects.every(isProject) ? data.projects : null;
 }
 
+// This machine's run limits as the listing gives them (its active runs, [runs] limits and free disk),
+// or null when no machine limit is set or the answer is not one.
+function parseMachine(machine) {
+  const limit = (value) => value === null || (Number.isInteger(value) && value > 0);
+  const ok = machine !== null && typeof machine === "object" && Number.isInteger(machine.active_runs) && machine.active_runs >= 0
+    && limit(machine.max_active_runs) && limit(machine.min_free_disk_gb) && (machine.free_disk_gb === null || (typeof machine.free_disk_gb === "number" && machine.free_disk_gb >= 0));
+  return ok ? machine : null;
+}
+
+function parseDashboard(data) {
+  const projects = parseProjects(data);
+  return projects === null ? null : { projects, machine: parseMachine(data.machine ?? null) };
+}
+
+// The dashboard's read-only line for the machine's run limits: how many runs are active of its
+// limit, and its free disk against its floor.
+function MachineRuns({ machine }) {
+  const runs = machine.max_active_runs === null ? "Runs: " + machine.active_runs + " on this machine" : "Runs: " + machine.active_runs + " of " + machine.max_active_runs + " on this machine";
+  const disk = machine.free_disk_gb === null ? null : machine.free_disk_gb + " GB free" + (machine.min_free_disk_gb === null ? "" : ", " + machine.min_free_disk_gb + " GB needed to start");
+  return (
+    <p className="machine-runs" data-machine-runs>
+      <span>{runs}</span>
+      {disk === null ? null : <span>{disk}</span>}
+    </p>
+  );
+}
+
 // The project last opened in this tab, so the Dashboard can mark it.
 let lastProject = null;
 
@@ -836,7 +863,7 @@ function Stat({ icon, tone, value, label, to = null, link = undefined }) {
 }
 
 // The totals above the project cards; a project that could not be read adds nothing to the sums.
-function Dashboard({ projects }) {
+function Dashboard({ projects, machine = null }) {
   const updated = useMemo(checkedTime, [projects]);
   const [pins, setPins] = useState(readPins);
   if (projects.length === 0) {
@@ -859,6 +886,7 @@ function Dashboard({ projects }) {
         <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" to="/reviews" link="reviews" />
         <Stat icon="clock" tone="tone-waiting" value={<Moment at={updated} />} label="Last updated" />
       </div>
+      {machine === null ? null : <MachineRuns machine={machine} />}
       {pinned.length > 0 ? (
         <>
           <h2 className="section-title">Pinned</h2>
@@ -4818,7 +4846,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/dashboard" || hash === "/") {
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <Dashboard projects={projects} />} onSignedOut={onSignedOut} />
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} />} onSignedOut={onSignedOut} />
       </>
     );
   }

@@ -412,7 +412,22 @@ impl StoreProjects {
         } else {
             Vec::new()
         };
-        Ok(start_blocked(git, &settings, &active)?.map(|why| orq_core::redact::redact(&why)))
+        let machine = self.machine_runs_now()?;
+        Ok(start_blocked(git, &settings, &active, &machine)?.map(|why| orq_core::redact::redact(&why)))
+    }
+
+    /// This machine's `[runs]` limits and, under a run limit, its active runs; a malformed setting
+    /// is kept to refuse every start with.
+    pub(super) fn machine_runs_now(&self) -> Result<MachineRuns, String> {
+        let limits = match orq_features::Settings::load(&self.roots.config_file()).map_err(|error| error.to_string()).and_then(|settings| settings.machine_run_limits()) {
+            Ok(limits) => limits,
+            Err(why) => return Ok(MachineRuns { malformed: Some(why), ..MachineRuns::default() }),
+        };
+        let active = match limits.max_active {
+            Some(_) => orq_orchestrator::RunStore::new(&self.roots.state).active_machine_runs().map_err(|error| format!("{error:?}"))?,
+            None => Vec::new(),
+        };
+        Ok(MachineRuns { limits, active, malformed: None })
     }
 
     /// Why resuming `run` of `project` would take the project over its run limit, redacted for the page: a
@@ -420,8 +435,16 @@ impl StoreProjects {
     fn resume_over_limit(&self, project: &Project, store: &orq_orchestrator::RunStore, run: &str) -> Result<Option<String>, String> {
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         let settings = self.settings_of_git(&git)?;
-        if settings.max_active_runs.is_none() || !orq_orchestrator::resume_takes_a_slot(store, run)? {
+        let machine = self.machine_runs_now()?;
+        if let Some(why) = machine.refusal(&git, false)? {
+            return Ok(Some(orq_core::redact::redact(&why)));
+        }
+        let takes_a_slot = (settings.max_active_runs.is_some() || machine.limits.max_active.is_some()) && orq_orchestrator::resume_takes_a_slot(store, run)?;
+        if !takes_a_slot {
             return Ok(None);
+        }
+        if let Some(why) = machine.refusal(&git, true)? {
+            return Ok(Some(orq_core::redact::redact(&why)));
         }
         let active = store.active_project_runs(&orq_git::project_id(&git)).map_err(|error| format!("{error:?}"))?;
         Ok(orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).map(|why| orq_core::redact::redact(&why)))
@@ -717,9 +740,42 @@ struct Counts {
     reviews_waiting: usize,
 }
 
-/// Why a run of project `git` may not start now under its `settings`, with `active` its runs that
-/// have not ended: the run limit or the disk floor, as `orq run` words it. `None` when it may.
-fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::ProjectSettings, active: &[(String, String)]) -> Result<Option<String>, String> {
+/// This machine's `[runs]` limits, its active runs (project id, run id) when it has a run limit,
+/// and why its settings could not be read.
+#[derive(Debug, Default)]
+pub(super) struct MachineRuns {
+    pub(super) limits: orq_features::MachineRunLimits,
+    pub(super) active: Vec<(String, String)>,
+    pub(super) malformed: Option<String>,
+}
+
+impl MachineRuns {
+    /// Why the machine refuses a run of project `git`, as `orq run` words it: its settings, its disk
+    /// floor, and with `counted` its run limit. `None` when it may start.
+    fn refusal(&self, git: &orq_git::Project, counted: bool) -> Result<Option<String>, String> {
+        if let Some(why) = &self.malformed {
+            return Ok(Some(why.clone()));
+        }
+        if counted {
+            if let Some(why) = orq_orchestrator::machine_limit_refusal(self.limits.max_active, &self.active) {
+                return Ok(Some(why));
+            }
+        }
+        if self.limits.min_free_disk_gb.is_none() {
+            return Ok(None);
+        }
+        let free = orq_orchestrator::worktrees_free_disk(&git.root).map_err(|error| format!("cannot measure the free disk of {}: {error}", git.name))?;
+        Ok(orq_orchestrator::machine_disk_refusal(self.limits.min_free_disk_gb, &free))
+    }
+}
+
+/// Why a run of project `git` may not start now under the `machine`'s limits and its own
+/// `settings`, with `active` its runs that have not ended: a run limit or a disk floor, as `orq run`
+/// words it. `None` when it may.
+fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::ProjectSettings, active: &[(String, String)], machine: &MachineRuns) -> Result<Option<String>, String> {
+    if let Some(why) = machine.refusal(git, true)? {
+        return Ok(Some(why));
+    }
     if let Some(why) = orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, active) {
         return Ok(Some(why));
     }
@@ -1139,6 +1195,18 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
     }
 
+    fn machine_runs(&self) -> Result<Option<serde_json::Value>, String> {
+        let machine = self.machine_runs_now()?;
+        let limits = machine.limits;
+        if limits.max_active.is_none() && limits.min_free_disk_gb.is_none() {
+            return Ok(None);
+        }
+        let measured = self.scan_root.ancestors().find(|path| path.exists()).unwrap_or(&self.scan_root);
+        // Shown to one decimal, rounded down, as a refusal words it.
+        let free_disk_gb = orq_orchestrator::free_disk(measured).ok().map(|free| (free.bytes / 100_000_000) as f64 / 10.0);
+        Ok(Some(serde_json::json!({"active_runs": machine.active.len(), "max_active_runs": limits.max_active, "min_free_disk_gb": limits.min_free_disk_gb, "free_disk_gb": free_disk_gb})))
+    }
+
     fn start_blocked(&self, id: &str) -> Result<Option<String>, String> {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
@@ -1370,11 +1438,12 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             None
         };
         let active = active_runs_by_project(&orq_orchestrator::RunStore::new(&self.roots.state));
+        let machine = self.machine_runs_now()?;
         let list = discover(&self.scan_root)
             .into_iter()
             .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
                 let settings = self.settings_of_git(&counts.git)?;
-                let blocked = start_blocked(&counts.git, &settings, &counts.active)?.map(|why| orq_core::redact::redact(&why));
+                let blocked = start_blocked(&counts.git, &settings, &counts.active, &machine)?.map(|why| orq_core::redact::redact(&why));
                 let queue = queue::queue_summary(reviews.as_ref(), &counts.git)?;
                 Ok((counts, settings.max_active_runs, blocked, queue))
             }) {

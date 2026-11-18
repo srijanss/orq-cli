@@ -198,6 +198,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// This machine's run limits as the dashboard shows them (its active runs, `[runs]` limits and
+    /// free disk), `None` when no machine limit is set.
+    fn machine_runs(&self) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// The orchestration runs of project `id`, newest first, as a JSON array; `None` when there is no such project.
     fn runs(&self, _id: &str) -> Result<Option<Value>, String> {
         Ok(None)
@@ -1891,7 +1897,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/projects" {
         return match provider {
             Some(provider) => match provider.projects() {
-                Ok(projects) => reply(200, json!({ "projects": projects })),
+                Ok(projects) => reply(200, json!({ "projects": projects, "machine": provider.machine_runs().ok().flatten() })),
                 Err(why) => error(500, &why),
             },
             None => error(404, "not found"),

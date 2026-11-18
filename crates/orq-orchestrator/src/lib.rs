@@ -129,8 +129,8 @@ pub use mcp_setup::{run_mcp_setup, McpServerVersion, McpSetupReport, McpSetupReq
 pub use session_settings::{exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp, refresh_run_permissions, remove_needs_input_hook, RunPermissions, setup_mcp_servers, write_needs_input_hook, write_run_permissions, write_session_settings};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use stop::{owner_state, owner_state_in, stop_run, terminate_process, OwnerState};
-pub use start_limits::{disk_refusal, free_disk, limit_refusal, worktrees_free_disk, FreeDisk};
-pub use store::{Claim, Event, RoleProfile, RunRecord, RunStore, StoreError};
+pub use start_limits::{disk_refusal, free_disk, limit_refusal, machine_disk_refusal, machine_limit_refusal, worktrees_free_disk, FreeDisk};
+pub use store::{Claim, Event, RoleProfile, RunLimits, RunRecord, RunStore, StoreError};
 pub use worktree_databases::{
     derive_worktree_databases, derive_worktree_databases_with, drop_test_databases,
     drop_test_databases_within, WorktreeDatabases,

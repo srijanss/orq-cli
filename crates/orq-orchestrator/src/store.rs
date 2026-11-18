@@ -97,6 +97,11 @@ pub enum StoreError {
     ProjectAtLimit {
         active: Vec<(String, String)>,
     },
+    /// The machine already has as many active runs as it allows, across every project: each as
+    /// (project id, run id).
+    MachineAtLimit {
+        active: Vec<(String, String)>,
+    },
     NotFound(String),
     Io(std::io::Error),
     Corrupt(String),
@@ -113,6 +118,9 @@ impl std::fmt::Display for StoreError {
             StoreError::ProjectAtLimit { active } => {
                 write!(f, "the project already has {} active runs", active.len())
             }
+            StoreError::MachineAtLimit { active } => {
+                write!(f, "the machine already has {} active runs", active.len())
+            }
             StoreError::NotFound(id) => write!(f, "run {id} not found"),
             StoreError::Io(err) => write!(f, "run store I/O error: {err}"),
             StoreError::Corrupt(why) => write!(f, "run record is corrupt: {why}"),
@@ -121,6 +129,15 @@ impl std::fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+/// The limits on active runs a start is held to; `None` is no limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunLimits {
+    /// At most this many of the project's runs active at once.
+    pub project: Option<usize>,
+    /// At most this many runs active at once on the machine, across every project.
+    pub machine: Option<usize>,
+}
 
 impl From<std::io::Error> for StoreError {
     fn from(err: std::io::Error) -> Self {
@@ -234,7 +251,31 @@ impl RunStore {
         members: &[String],
         max_active: Option<usize>,
     ) -> Result<(), StoreError> {
-        let Some(max_active) = max_active else {
+        self.start_group_run_within(record, members, RunLimits { project: max_active, machine: None })
+    }
+
+    /// [`RunStore::start_group_run`], refused when the machine already has `limits.machine` active
+    /// runs across every project, or the project `limits.project` of its own. Each count and the
+    /// start are made under its lock, the machine's taken before the project's, so of two starts
+    /// at once only as many pass as the limits leave room for. No limit starts as before.
+    pub fn start_group_run_within(
+        &self,
+        record: &RunRecord,
+        members: &[String],
+        limits: RunLimits,
+    ) -> Result<(), StoreError> {
+        let _machine = match limits.machine {
+            Some(max_active) => {
+                let guard = self.machine_guard()?;
+                let active = self.active_machine_runs()?;
+                if active.len() >= max_active {
+                    return Err(StoreError::MachineAtLimit { active });
+                }
+                Some(guard)
+            }
+            None => None,
+        };
+        let Some(max_active) = limits.project else {
             return self.start_group_run(record, members);
         };
         let _project = self.project_guard(&record.project_id)?;
@@ -245,10 +286,20 @@ impl RunStore {
         self.start_group_run(record, members)
     }
 
-    /// The project's active runs, as (run id, feature id) in run id order: running, pausing or
-    /// paused, and not continued by a later run (see [`crate::active_runs`]). A run recorded with
-    /// no events yet has just started.
-    pub fn active_project_runs(&self, project_id: &str) -> Result<Vec<(String, String)>, StoreError> {
+    /// The machine's active runs, across every project, as (project id, run id) in run id order;
+    /// active as [`RunStore::active_project_runs`] counts it.
+    pub fn active_machine_runs(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let runs = self.runs_where(|_| true)?;
+        let projects: std::collections::HashMap<&str, &str> =
+            runs.iter().map(|(run_id, record, _)| (run_id.as_str(), record.project_id.as_str())).collect();
+        Ok(crate::resume::active_runs(&runs)
+            .into_iter()
+            .map(|(run_id, _)| (projects[run_id.as_str()].to_string(), run_id))
+            .collect())
+    }
+
+    /// Every recorded run whose record `keep` accepts, with its events, in run id order.
+    fn runs_where(&self, keep: impl Fn(&RunRecord) -> bool) -> Result<Vec<(String, RunRecord, Vec<Event>)>, StoreError> {
         let mut runs = Vec::new();
         for run_id in self.run_ids()? {
             let record = match self.load(&run_id) {
@@ -257,12 +308,30 @@ impl RunStore {
                 Err(StoreError::NotFound(_)) => continue,
                 Err(err) => return Err(err),
             };
-            if record.project_id != project_id {
+            if !keep(&record) {
                 continue;
             }
             let events = self.events(&run_id)?;
             runs.push((run_id, record, events));
         }
+        Ok(runs)
+    }
+
+    /// An exclusive advisory lock on starts across the whole machine, released when the handle is
+    /// dropped. Its name starts with a dot, which no project id may, so it is never a project's.
+    fn machine_guard(&self) -> Result<fs::File, StoreError> {
+        let dir = self.root.join("guards");
+        fs::create_dir_all(&dir)?;
+        let file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(".machine"))?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    /// The project's active runs, as (run id, feature id) in run id order: running, pausing or
+    /// paused, and not continued by a later run (see [`crate::active_runs`]). A run recorded with
+    /// no events yet has just started.
+    pub fn active_project_runs(&self, project_id: &str) -> Result<Vec<(String, String)>, StoreError> {
+        let runs = self.runs_where(|record| record.project_id == project_id)?;
         Ok(crate::resume::active_runs(&runs))
     }
 

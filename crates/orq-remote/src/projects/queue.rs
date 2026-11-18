@@ -1,8 +1,9 @@
 //! A project's run queue, as the server works it: each round settles the entries whose runs ended (a
 //! completed run's entry leaves, a failed or blocked one stays marked failed) and then starts the
 //! first entries whose dependencies are completed, through the same launch as the web's Start, while
-//! the queue is not paused, the time is inside its hours, no restart is pending and the project has a
-//! free run slot. A full disk or a start that fails pauses the queue with the reason, and nothing is
+//! the queue is not paused, the time is inside its hours, no restart is pending and both the project
+//! and the machine have a free run slot. Under a machine run limit each start goes to the project
+//! whose waiting entry was added first. A full disk or a start that fails pauses the queue with the reason, and nothing is
 //! retried until someone resumes it.
 
 use std::path::Path;
@@ -53,14 +54,38 @@ impl StoreProjects {
             Ok(_) => return,
             Err(error) => return eprintln!("orq: the run queues cannot be read: {error}"),
         };
+        let machine = match self.machine_runs_now() {
+            Ok(machine) => machine,
+            Err(error) => return eprintln!("orq: the run queues cannot be worked: {error}"),
+        };
+        let mut projects = Vec::new();
         for project in discover(&self.scan_root) {
             let Ok(git) = orq_git::resolve_project(&project.path) else { continue };
             let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
-            if !queued.iter().any(|queued| Path::new(queued) == root) {
-                continue;
+            if queued.iter().any(|queued| Path::new(queued) == root) {
+                projects.push((project, git, root));
             }
-            if let Err(error) = self.project_round(&store, &project.id, &git, &root, round) {
-                eprintln!("orq: the run queue of {} stopped: {error}", project.name);
+        }
+        // Under a machine run limit the slots are scarce: one start at a time, each to the project
+        // whose waiting entry was added first, until a pass starts nothing.
+        let one_at_a_time = machine.limits.max_active.is_some();
+        loop {
+            if one_at_a_time {
+                projects.sort_by_cached_key(|(_, _, root)| oldest_waiting(&store, root));
+            }
+            let mut started = false;
+            for (project, git, root) in &projects {
+                match self.project_round(&store, &project.id, git, root, round, &machine, one_at_a_time) {
+                    Ok(true) if one_at_a_time => {
+                        started = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("orq: the run queue of {} stopped: {error}", project.name),
+                }
+            }
+            if !started {
+                return;
             }
         }
     }
@@ -79,7 +104,10 @@ impl StoreProjects {
         })
     }
 
-    fn project_round(&self, store: &Store, id: &str, git: &orq_git::Project, root: &Path, round: &QueueRound) -> Result<(), String> {
+    /// One round of project `id`'s queue under the `machine`'s limits; with `one`, it starts at most
+    /// one run. Whether it started any.
+    #[allow(clippy::too_many_arguments)]
+    fn project_round(&self, store: &Store, id: &str, git: &orq_git::Project, root: &Path, round: &QueueRound, machine: &super::MachineRuns, one: bool) -> Result<bool, String> {
         let settings = self.settings_of_git(git)?;
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
@@ -106,14 +134,15 @@ impl StoreProjects {
         }
         let queue = store.queue(root).map_err(failed)?;
         if queue.paused.is_some() || round.restart_pending {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(hours) = &settings.queue_hours {
             if !orq_core::project_settings::within_queue_hours(hours, round.minute_of_day) {
-                return Ok(());
+                return Ok(false);
             }
         }
         let ledger = read_ledger(&orq_features::ledger_path(git))?;
+        let mut started = false;
         for entry in ordered(&queue.entries, &ledger) {
             if entry.run.is_some() || orq_features::check_run_eligibility(&ledger, &entry.feature).is_err() {
                 continue;
@@ -121,17 +150,25 @@ impl StoreProjects {
             // A start takes a while: what was paused or removed meanwhile holds the starts after it.
             let now = store.queue(root).map_err(failed)?;
             if now.paused.is_some() {
-                return Ok(());
+                return Ok(started);
             }
             if !now.entries.iter().any(|current| current.feature == entry.feature && current.run.is_none()) {
                 continue;
             }
             let active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
             if orq_orchestrator::limit_refusal(&git.name, settings.max_active_runs, &active).is_some() {
-                return Ok(());
+                return Ok(started);
             }
-            // The run limit is waited out; anything else that refuses the start pauses the queue.
-            let refused = match start_blocked(git, &settings, &active)? {
+            let machine_active = match machine.limits.max_active {
+                Some(_) => runs.active_machine_runs().map_err(|error| format!("{error:?}"))?,
+                None => Vec::new(),
+            };
+            if orq_orchestrator::machine_limit_refusal(machine.limits.max_active, &machine_active).is_some() {
+                return Ok(started);
+            }
+            let machine = super::MachineRuns { limits: machine.limits, active: machine_active, malformed: machine.malformed.clone() };
+            // A run limit is waited out; anything else that refuses the start pauses the queue.
+            let refused = match start_blocked(git, &settings, &active, &machine)? {
                 Some(why) => Some(why),
                 None => {
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
@@ -140,6 +177,7 @@ impl StoreProjects {
                             // Removed while it started, the queue no longer follows the run, which
                             // goes on; removed and added again, the new entry follows this run.
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            started = true;
                             None
                         }
                         Ok(RunStart::Refused(why)) => Some(format!("{} could not start: {why}", entry.feature)),
@@ -153,10 +191,13 @@ impl StoreProjects {
             };
             if let Some(why) = refused {
                 store.queue_pause(root, &orq_core::redact::redact(&why)).map_err(failed)?;
-                return Ok(());
+                return Ok(started);
+            }
+            if started && one {
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(started)
     }
 
     /// Project `id`'s queue as the web shows it; `None` when there is no such project.
@@ -406,6 +447,13 @@ fn local_minute_of_day() -> u16 {
     (tm.tm_hour * 60 + tm.tm_min) as u16
 }
 
+/// When the first entry of the queue at `root` still waiting to start was added; a queue with none
+/// comes last.
+fn oldest_waiting(store: &Store, root: &Path) -> i64 {
+    let queue = store.queue(root).unwrap_or_default();
+    queue.entries.iter().filter(|entry| entry.run.is_none() && !entry.failed).map(|entry| entry.added_at).min().unwrap_or(i64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -452,3 +500,4 @@ mod tests {
         assert_eq!(order, ["B", "C", "A", "X", "Y"]);
     }
 }
+

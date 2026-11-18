@@ -125,3 +125,41 @@ impl Settings {
         Ok(())
     }
 }
+
+/// The limits `[runs]` puts on the whole machine, across every project; `None` is no limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MachineRunLimits {
+    /// At most this many runs active at once on the machine.
+    pub max_active: Option<usize>,
+    /// At least this many GB free on the filesystem holding a run's worktree to start it.
+    pub min_free_disk_gb: Option<u32>,
+}
+
+impl Settings {
+    /// `[runs] max_active` and `min_free_disk_gb`. Absent or empty is no limit; anything other
+    /// than a whole number of at least 1 is refused with the file and the key named, never ignored.
+    pub fn machine_run_limits(&self) -> Result<MachineRunLimits, String> {
+        let Some(runs) = self.doc.get("runs") else {
+            return Ok(MachineRunLimits::default());
+        };
+        let Some(runs) = runs.as_table_like() else {
+            return Err(format!("{}: [runs] must be a table", self.path.display()));
+        };
+        let refused = |key: &str, shown: &str| {
+            format!("{}: [runs] {key} must be empty or a whole number of at least 1, got {shown}", self.path.display())
+        };
+        // A whole number of at least 1 that fits `T`; `None` when absent or empty.
+        fn whole<T: TryFrom<i64>>(item: Option<&Item>, refused: impl Fn(&str) -> String) -> Result<Option<T>, String> {
+            let Some(item) = item.filter(|item| item.as_str() != Some("")) else {
+                return Ok(None);
+            };
+            match item.as_integer().filter(|number| *number >= 1).map(T::try_from) {
+                Some(Ok(number)) => Ok(Some(number)),
+                _ => Err(refused(item.to_string().trim())),
+            }
+        }
+        let max_active = whole(runs.get("max_active"), |shown| refused("max_active", shown))?;
+        let min_free_disk_gb = whole(runs.get("min_free_disk_gb"), |shown| refused("min_free_disk_gb", shown))?;
+        Ok(MachineRunLimits { max_active, min_free_disk_gb })
+    }
+}

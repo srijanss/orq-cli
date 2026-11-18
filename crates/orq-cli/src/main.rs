@@ -422,6 +422,10 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     };
     let delivery = named_delivery.unwrap_or(project_settings.delivery);
     let project_limits = (project_settings.max_active_runs, project_settings.min_free_disk_gb);
+    let machine_limits = match load_machine_run_limits() {
+        Ok(limits) => limits,
+        Err(message) => return fail(message),
+    };
     // A record saved before push was removed still names it: the run waits for another choice
     // rather than be delivered some other way. A resumed run keeps the delivery it started with.
     if delivery == orq_core::project_settings::Delivery::Push && !parsed.resume {
@@ -493,6 +497,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
         fix_conflicts: parsed.fix_conflicts,
         max_active_runs: project_limits.0,
         min_free_disk_gb: project_limits.1,
+        machine: machine_limits,
         // A detached runner has no terminal, so it stays headless.
         interactive: {
             use std::io::IsTerminal;
@@ -625,6 +630,17 @@ fn agents_of(settings: orq_core::project_settings::ProjectSettings) -> orq_featu
         agent.map(|agent| orq_features::ResolvedModel { harness: agent.harness, model: agent.model, thinking: agent.effort })
     };
     orq_features::ProjectAgents { implementer: resolved(settings.implementer), reviewer: resolved(settings.reviewer) }
+}
+
+/// The machine's run limits, `[runs]` in the user's settings; none when there is no settings file.
+fn load_machine_run_limits() -> Result<orq_features::MachineRunLimits, String> {
+    let Some(path) = orq_features::settings_path(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    ) else {
+        return Ok(orq_features::MachineRunLimits::default());
+    };
+    orq_features::Settings::load(&path).map_err(|err| err.to_string())?.machine_run_limits()
 }
 
 /// The model profiles and the reviewer policy a project is configured with.

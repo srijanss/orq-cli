@@ -68,6 +68,9 @@ pub struct Options<'a> {
     /// count against it), and this much free disk, in GB, to start or resume a run.
     pub max_active_runs: Option<u8>,
     pub min_free_disk_gb: Option<u32>,
+    /// The machine's settings, `[runs]` in the user's config: at most this many runs active at
+    /// once across every project, and this much free disk to start or resume a run.
+    pub machine: orq_features::MachineRunLimits,
 }
 
 /// A run id no other run has: `run-<seconds>-<pid>-<sequence>`, the sequence telling apart the
@@ -390,12 +393,14 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     Ok(Preflight { settings, resumed, naming, provider, repository })
 }
 
-/// The refusals the project's settings make: too little free disk where the run's worktree is
-/// made, or, for a new run, as many active runs as the project allows. The limit is checked again
-/// when the run is recorded, under the project's lock.
+/// The refusals the project's and the machine's settings make: too little free disk where the
+/// run's worktree is made, or, for a new run, as many active runs as the machine or the project
+/// allows. The limits are checked again when the run is recorded, under the machine's and the
+/// project's locks.
 fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartError> {
     let name = &options.project.name;
-    if options.min_free_disk_gb.is_some() {
+    let machine = options.machine;
+    if options.min_free_disk_gb.is_some() || machine.min_free_disk_gb.is_some() {
         // A resume continues in the worktree its run recorded; a new run is made under the project's.
         let resumed = if options.resume { resumed_worktree(options, store)? } else { None };
         let measured = resumed.as_deref().unwrap_or(&options.project.root);
@@ -404,15 +409,26 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
             None => orq_orchestrator::worktrees_free_disk(&options.project.root),
         }
         .map_err(|err| other(format!("cannot measure the free disk of {}: {err}", measured.display())))?;
-        if let Some(reason) = orq_orchestrator::disk_refusal(name, options.min_free_disk_gb, &free) {
+        let refusal = orq_orchestrator::machine_disk_refusal(machine.min_free_disk_gb, &free)
+            .or_else(|| orq_orchestrator::disk_refusal(name, options.min_free_disk_gb, &free));
+        if let Some(reason) = refusal {
             return Err(StartError::Limit(reason));
         }
     }
     // A blocked run holds no slot, so resuming one is a start; a paused one's resume keeps its slot.
-    if options.max_active_runs.is_some() && (!options.resume || resume_takes_a_slot(options, store)?) {
-        let active = store.active_project_runs(&project_id(options.project))?;
-        if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
-            return Err(StartError::Limit(reason));
+    let counted = options.max_active_runs.is_some() || machine.max_active.is_some();
+    if counted && (!options.resume || resume_takes_a_slot(options, store)?) {
+        if machine.max_active.is_some() {
+            let active = store.active_machine_runs()?;
+            if let Some(reason) = orq_orchestrator::machine_limit_refusal(machine.max_active, &active) {
+                return Err(StartError::Limit(reason));
+            }
+        }
+        if options.max_active_runs.is_some() {
+            let active = store.active_project_runs(&project_id(options.project))?;
+            if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
+                return Err(StartError::Limit(reason));
+            }
         }
     }
     Ok(())
@@ -507,9 +523,18 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     };
     let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
     let max_active = options.max_active_runs.filter(|_| takes_a_slot);
-    match store.start_group_run_limited(&record, &members, max_active.map(usize::from)) {
+    let limits = orq_orchestrator::RunLimits {
+        project: max_active.map(usize::from),
+        machine: options.machine.max_active.filter(|_| takes_a_slot),
+    };
+    match store.start_group_run_within(&record, &members, limits) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
+        Err(StoreError::MachineAtLimit { active }) => {
+            let reason = orq_orchestrator::machine_limit_refusal(limits.machine, &active)
+                .unwrap_or_else(|| "this machine is at its limit of active runs".to_string());
+            return Err(StartError::Limit(reason));
+        }
         Err(StoreError::ProjectAtLimit { active }) => {
             let reason = orq_orchestrator::limit_refusal(&options.project.name, max_active, &active)
                 .unwrap_or_else(|| format!("{} is at its limit of active runs", options.project.name));

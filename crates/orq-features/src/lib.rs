@@ -244,7 +244,7 @@ mod save;
 pub use save::{AppendError, EditFieldsError, FieldEdits, LoadedLedger, SaveError};
 
 mod settings;
-pub use settings::{settings_path, Settings, SettingsError};
+pub use settings::{settings_path, MachineRunLimits, Settings, SettingsError};
 
 mod profiles;
 pub use profiles::{AgentProfile, AgentRole, ProfileError};
