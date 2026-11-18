@@ -371,6 +371,23 @@ fn orq_queue_list_shows_the_run_waiting_for_review_as_the_page_does() {
     assert_eq!(listed, queue(&s), "the terminal and the page show the same queue");
 }
 
+#[test]
+fn a_queued_run_continued_more_times_than_one_round_follows_still_holds_the_queue() {
+    let s = setup("wait-continued-long-chain", Delivery::Review, |_| {});
+    round(&s);
+    let mut run = "run-1-COM-01".to_string();
+    for hop in 1..=20 {
+        let next = format!("run-c{hop}-COM-01");
+        continue_as(&s, &run, &next, (hop == 20).then_some("needs_review"));
+        run = next;
+    }
+    round(&s);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "COM-02 waits while the end of COM-01's long chain of runs may be waiting for review");
+    assert_eq!(queue(&s)["entries"][0]["run"], "run-c20-COM-01", "later rounds follow the rest of the chain");
+    assert_eq!(states(&s), pairs(&[("COM-01", "review"), ("COM-02", "next")]));
+}
+
 mod page {
     //! On the page, a queue that waits for a run's review says so: the entry shows "Waiting for review"
     //! with its MR linked, the queue's head says "Waiting for <feature>'s MR to merge" (or its review, with

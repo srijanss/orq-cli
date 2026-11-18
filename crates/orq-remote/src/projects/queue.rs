@@ -142,7 +142,12 @@ impl StoreProjects {
                 Settled::Going => {}
                 Settled::InReview(_) => in_review = true,
                 Settled::Done => drop(store.queue_remove(root, &entry.feature).map_err(failed)?),
-                Settled::ContinuedAs(next) => store.queue_started(root, &entry.feature, &next).map_err(failed)?,
+                // A chain longer than one round follows: the run at its end may already wait for
+                // review, so a queue that waits for review starts nothing until a later round knows.
+                Settled::ContinuedAs(next) => {
+                    store.queue_started(root, &entry.feature, &next).map_err(failed)?;
+                    in_review |= settings.queue_wait_for_review;
+                }
                 Settled::Failed(reason) => {
                     store.queue_failed(root, &entry.feature).map_err(failed)?;
                     if settings.queue_stop_on_failure {
@@ -511,7 +516,7 @@ fn mr_settled(store: &Store, run: &str) -> Settled {
 }
 
 /// How many runs, each continued as the next, one round follows; a longer chain, or a loop, is
-/// followed further in the rounds after.
+/// followed further in the rounds after, and holds the queue's starts meanwhile.
 const CONTINUATIONS_FOLLOWED: usize = 16;
 
 /// How often the server works every queue even when no queued run ended.
