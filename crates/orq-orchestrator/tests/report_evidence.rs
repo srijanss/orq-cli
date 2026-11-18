@@ -19,7 +19,11 @@ fn commit(dir: &Path, message: &str) -> String {
 }
 
 fn world() -> (RunStore, PathBuf, PathBuf) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-report-evidence-{}", std::process::id()));
+    world_at("own-head")
+}
+
+fn world_at(tag: &str) -> (RunStore, PathBuf, PathBuf) {
+    let root = orq_test_support::process_temp_dir().join(format!("orq-report-evidence-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     std::fs::create_dir_all(&worktree).unwrap();
@@ -66,4 +70,18 @@ fn each_head_gets_its_own_gate_even_after_a_later_gate_ran() {
 
     let unseen = recorded_evidence(&store, "run-1", &"f".repeat(40)).unwrap();
     assert!(!unseen.gate_passed, "a head no gate ran on has no gate evidence: {unseen:?}");
+}
+
+#[test]
+fn a_gate_whose_commit_could_not_be_read_is_no_heads_evidence() {
+    let (store, worktree, log) = world_at("unknown-head");
+    let head = commit(&worktree, "first");
+    run_gate_stage(&store, "run-1", &gate("true"), true, &log).unwrap();
+    // git cannot say what is checked out now: later gates record no commit.
+    std::fs::rename(worktree.join(".git"), worktree.join("git-away")).unwrap();
+    run_gate_stage(&store, "run-1", &gate("exit 3"), true, &log).unwrap();
+    assert!(recorded_evidence(&store, "run-1", &head).unwrap().gate_passed, "a gate of an unknown commit does not undo the head's own");
+
+    run_gate_stage(&store, "run-1", &gate("true"), true, &log).unwrap();
+    assert!(!recorded_evidence(&store, "run-1", &"f".repeat(40)).unwrap().gate_passed, "nor vouches for another head");
 }

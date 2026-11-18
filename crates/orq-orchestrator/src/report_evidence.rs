@@ -23,8 +23,12 @@ pub fn recorded_evidence(store: &RunStore, run_id: &str, head_sha: &str) -> Resu
 
 fn evidence_in(events: &[Event], head_sha: &str) -> RecordedEvidence {
     let ended = |e: &&Event, stage: &str| e.stage.as_deref() == Some(stage) && matches!(e.kind.as_str(), "stage.completed" | "stage.failed" | "stage.skipped");
-    // A gate names the commit it tested; one recorded before gates did is taken as the head's.
-    let gate = events.iter().rev().filter(|e| ended(e, "verify")).find(|e| e.payload.get("head_sha").and_then(|h| h.as_str()).is_none_or(|h| h == head_sha));
+    // A gate names the commit it tested. One recorded before gates did (no head_sha at all) is taken as the head's;
+    // one that could not read its commit (head_sha null) is no head's.
+    let gate = events.iter().rev().filter(|e| ended(e, "verify")).find(|e| match e.payload.get("head_sha") {
+        None => true,
+        Some(head) => head.as_str() == Some(head_sha),
+    });
     let gate_passed = gate.is_some_and(|e| e.kind == "stage.completed");
     let gate_steps = gate.filter(|_| gate_passed).and_then(|e| serde_json::from_value(e.payload.get("commands")?.clone()).ok());
     let ci = events
