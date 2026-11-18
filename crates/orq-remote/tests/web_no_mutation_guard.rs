@@ -35,6 +35,8 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     // The model switch and the launch picker read the launch profiles through one reader; nothing else.
     let paths = |name: &str| -> Vec<String> {
         let body = code.split(&format!("function {name}(")).nth(1).unwrap_or_else(|| panic!("{name}")).split("\nfunction ").next().unwrap();
+        // A function ends at the next top-level one, async or not.
+        let body = body.split("\nasync function ").next().unwrap();
         body.split("controlPath(control, ").skip(1).map(|tail| tail.split(';').next().unwrap().to_string()).collect()
     };
     let read = paths("readLaunchProfiles");
