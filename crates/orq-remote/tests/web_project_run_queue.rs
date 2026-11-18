@@ -241,7 +241,7 @@ fn settings_show_the_queue_hours_and_stop_on_failure_and_save_sends_both() {
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(
         sent[0].1,
-        json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": "09:00-17:30", "queue_stop_on_failure": true, "revision": 3})
+        json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": "09:00-17:30", "queue_stop_on_failure": true, "queue_wait_for_review": true, "revision": 3})
     );
 }
 

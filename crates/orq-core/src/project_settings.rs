@@ -48,7 +48,7 @@ pub struct ProjectAgent {
     pub effort: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectSettings {
     pub implementer: Option<ProjectAgent>,
     pub reviewer: Option<ProjectAgent>,
@@ -62,6 +62,24 @@ pub struct ProjectSettings {
     pub queue_hours: Option<String>,
     /// Whether a queued run that fails or is blocked pauses the queue.
     pub queue_stop_on_failure: bool,
+    /// Whether the queue starts nothing more while a run it started waits for review: an open MR,
+    /// or a run that needs a person's review. On by default; off, only the run limit holds it.
+    pub queue_wait_for_review: bool,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> ProjectSettings {
+        ProjectSettings {
+            implementer: None,
+            reviewer: None,
+            delivery: Delivery::default(),
+            max_active_runs: None,
+            min_free_disk_gb: None,
+            queue_hours: None,
+            queue_stop_on_failure: false,
+            queue_wait_for_review: true,
+        }
+    }
 }
 
 /// The range a project's run limit may take.

@@ -511,7 +511,7 @@ fn the_dashboard_card_counts_the_queue_and_says_when_it_is_paused() {
     let (status, body) = send(&s, "GET", "/api/projects", b"");
     assert_eq!(status, 200, "{body}");
     let card = body["projects"].as_array().unwrap().iter().find(|p| p["id"] == "alpha").cloned().unwrap();
-    assert_eq!(card["queue"], json!({"count": 2, "paused": true}));
+    assert_eq!(card["queue"], json!({"count": 2, "paused": true, "waiting_for_review": null}));
 }
 
 #[test]

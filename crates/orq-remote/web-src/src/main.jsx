@@ -805,10 +805,12 @@ function CardStat({ icon, value, label, to, id }) {
   );
 }
 
-// "Queue: 3 (paused)" for a project with features queued; null when nothing is.
+// "Queue: 3 (paused)", or "Queue: 2 (waiting for COM-01's review)", for a project with features queued;
+// null when nothing is.
 function queueLine(queue) {
   if (queue === null || typeof queue !== "object" || !isCount(queue.count) || queue.count === 0) return null;
-  return "Queue: " + queue.count + (queue.paused === true ? " (paused)" : "");
+  const waiting = typeof queue.waiting_for_review === "string" ? " (waiting for " + queue.waiting_for_review + "'s review)" : "";
+  return "Queue: " + queue.count + (queue.paused === true ? " (paused)" : waiting);
 }
 
 function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
@@ -2683,13 +2685,35 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-const QUEUE_STATES = ["running", "failed", "next", "queued", "waiting"];
-const QUEUE_STATE_LABELS = { running: "Running", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting" };
+const QUEUE_STATES = ["running", "review", "failed", "next", "queued", "waiting"];
+const QUEUE_STATE_LABELS = { running: "Running", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting" };
 
 function isQueue(queue) {
   const text = (value) => value === null || typeof value === "string";
+  const wait = queue === null || typeof queue !== "object" ? null : queue.waiting_for_review ?? null;
   return queue !== null && typeof queue === "object" && text(queue.paused) && Array.isArray(queue.entries)
-    && queue.entries.every((entry) => entry !== null && typeof entry === "object" && typeof entry.feature === "string" && QUEUE_STATES.includes(entry.state) && text(entry.run ?? null) && text(entry.reason ?? null));
+    && (wait === null || (typeof wait === "object" && typeof wait.feature === "string" && text(wait.mr_url ?? null)))
+    && queue.entries.every((entry) => entry !== null && typeof entry === "object" && typeof entry.feature === "string" && QUEUE_STATES.includes(entry.state) && text(entry.run ?? null) && text(entry.reason ?? null) && text(entry.mr_url ?? null));
+}
+
+// "Waiting for COM-01's MR to merge" (or its review, with no MR) while the queue starts nothing more
+// until a run it started is reviewed; null when it does not wait.
+function QueueReviewWait({ queue }) {
+  const wait = queue.waiting_for_review ?? null;
+  if (wait === null) return null;
+  return <p className="queue-waiting" data-queue-waiting-review><Icon name="clock" size={16} />{"Waiting for " + wait.feature + (typeof wait.mr_url === "string" ? "'s MR to merge" : "'s review")}</p>;
+}
+
+// The link to a queued run's MR, when it has one an https address points to.
+function QueueMr({ entry }) {
+  const href = typeof entry.mr_url === "string" ? safeHttpsLink(entry.mr_url) : null;
+  if (href === null) return null;
+  return (
+    <a className="queue-mr" data-queue-mr href={href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">
+      MR
+      <Icon name="external" size={16} />
+    </a>
+  );
 }
 
 function parseQueue(data) {
@@ -2746,7 +2770,7 @@ function QueueView({ data, control, projectId }) {
   return (
     <section className="card queue-section" data-queue-section>
       <div className="queue-head">
-        {queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : <p className="muted">{queue.entries.length === 0 ? "Nothing is queued." : "The server starts the next feature when the project's limits and queue hours allow."}</p>}
+        {queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : (queue.waiting_for_review ?? null) !== null ? <QueueReviewWait queue={queue} /> : <p className="muted">{queue.entries.length === 0 ? "Nothing is queued." : "The server starts the next feature when the project's limits and queue hours allow."}</p>}
         {control !== null ? (
           queue.paused !== null
             ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button>
@@ -2764,6 +2788,7 @@ function QueueView({ data, control, projectId }) {
               <span className="queue-feature">{entry.feature}</span>
               <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
               {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
+              <QueueMr entry={entry} />
               {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
               {control !== null ? (
                 <span className="queue-controls">
@@ -4027,6 +4052,7 @@ function QueueGroup({ project, queue }) {
       </div>
       {queue === null ? <p className="error-text" data-queue-group-error>The queue could not be read.</p> : null}
       {queue !== null && queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : null}
+      {queue !== null && queue.paused === null ? <QueueReviewWait queue={queue} /> : null}
       {queue !== null && queue.entries.length > 0 ? (
         <ol className="queue-list">
           {queue.entries.map((entry) => (
@@ -4034,6 +4060,7 @@ function QueueGroup({ project, queue }) {
               <span className="queue-feature">{entry.feature}</span>
               <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
               {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
+              <QueueMr entry={entry} />
               {typeof entry.run === "string" ? <OpenRun projectId={project.id} run={entry.run} /> : null}
             </li>
           ))}
@@ -4808,8 +4835,10 @@ function parseProjectSettings(data) {
   const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && (settings.delivery === "push" || DELIVERIES.some(([value]) => value === settings.delivery)) && Number.isInteger(settings.revision) && settings.revision >= 0
     && limit(settings.max_active_runs, ACTIVE_RUNS_RANGE) && limit(settings.min_free_disk_gb, FREE_DISK_RANGE)
     && (settings.queue_hours === undefined || settings.queue_hours === null || typeof settings.queue_hours === "string")
-    && (settings.queue_stop_on_failure === undefined || typeof settings.queue_stop_on_failure === "boolean");
-  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true } : null;
+    && (settings.queue_stop_on_failure === undefined || typeof settings.queue_stop_on_failure === "boolean")
+    && (settings.queue_wait_for_review === undefined || typeof settings.queue_wait_for_review === "boolean");
+  // Waiting for each run's review is on unless the server says it is off, as its default is.
+  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false } : null;
 }
 
 // The limits a project may put on starting a run, as the server checks them; empty is no limit.
@@ -4962,7 +4991,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -4975,7 +5004,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, revision: draft.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -5047,6 +5076,14 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           </label>
         ) : (
           <SettingsRow label="When a run fails" editing={false} value={<span data-project-queue-stop>{settings.queue_stop_on_failure ? "Pauses the queue" : "Keeps going; only its dependents wait"}</span>} />
+        )}
+        {editing ? (
+          <label className="settings-row settings-check">
+            <input type="checkbox" data-queue-wait-for-review checked={draft.waitForReview} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, waitForReview: event.target.checked })} />
+            <span>Wait for each run's review (and MR) before the next</span>
+          </label>
+        ) : (
+          <SettingsRow label="Wait for each run's review (and MR) before the next" editing={false} value={<span data-project-queue-wait>{settings.queue_wait_for_review ? "Waits until it is merged, accepted or discarded" : "Starts the next as the run limit allows"}</span>} />
         )}
       </section>
       {phase === "editing" ? (

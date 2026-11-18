@@ -783,6 +783,7 @@ impl StoreProjects {
             "min_free_disk_gb": stored.settings.min_free_disk_gb,
             "queue_hours": stored.settings.queue_hours,
             "queue_stop_on_failure": stored.settings.queue_stop_on_failure,
+            "queue_wait_for_review": stored.settings.queue_wait_for_review,
             "revision": stored.revision,
         })
     }
@@ -1742,14 +1743,15 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         } else {
             None
         };
-        let active = active_runs_by_project(&orq_orchestrator::RunStore::new(&self.roots.state));
+        let runs = orq_orchestrator::RunStore::new(&self.roots.state);
+        let active = active_runs_by_project(&runs);
         let machine = self.machine_runs_now()?;
         let list = discover(&self.scan_root)
             .into_iter()
             .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
                 let settings = self.settings_of_git(&counts.git)?;
                 let blocked = start_blocked(&counts.git, &settings, &counts.active, &machine)?.map(|why| orq_core::redact::redact(&why));
-                let queue = queue::queue_summary(reviews.as_ref(), &counts.git)?;
+                let queue = queue::queue_summary(reviews.as_ref(), &runs, &counts.git, settings.queue_wait_for_review)?;
                 Ok((counts, settings.max_active_runs, blocked, queue))
             }) {
                 Ok((counts, max_active_runs, start_blocked, queue)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "queue": queue, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),

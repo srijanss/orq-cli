@@ -848,3 +848,5 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .queue-group .queue-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 .queue-group .queue-entry { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.25rem 0; }
 .queue-group .queue-feature { overflow-wrap: anywhere; min-width: 0; }
+.queue-waiting { display: flex; align-items: center; gap: 0.375rem; margin: 0.5rem 0 0; overflow-wrap: anywhere; min-width: 0; }
+.queue-mr { display: inline-flex; align-items: center; gap: 0.25rem; }

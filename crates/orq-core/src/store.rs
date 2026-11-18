@@ -28,7 +28,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 9] = ["
+const MIGRATIONS: [&str; 10] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -104,12 +104,14 @@ const MIGRATIONS: [&str; 9] = ["
     );
     ALTER TABLE project_settings ADD COLUMN queue_hours TEXT;
     ALTER TABLE project_settings ADD COLUMN queue_stop_on_failure INTEGER NOT NULL DEFAULT 0;
+", "
+    ALTER TABLE project_settings ADD COLUMN queue_wait_for_review INTEGER NOT NULL DEFAULT 1;
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false];
 
 /// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
 pub fn is_breaking(version: u32) -> bool {
@@ -143,6 +145,9 @@ const RUN_LIMITS_VERSION: u32 = 8;
 
 /// The schema version whose migration added the run queue and a project's queue settings.
 const RUN_QUEUE_VERSION: u32 = 9;
+
+/// The schema version whose migration added whether a project's queue waits for each run's review.
+const QUEUE_WAIT_FOR_REVIEW_VERSION: u32 = 10;
 
 pub struct Store {
     conn: Connection,
@@ -560,10 +565,11 @@ impl Store {
         let key = project_key(root)?;
         let limits = if version >= RUN_LIMITS_VERSION { "max_active_runs, min_free_disk_gb" } else { "NULL, NULL" };
         let queue = if version >= RUN_QUEUE_VERSION { "queue_hours, queue_stop_on_failure" } else { "NULL, 0" };
+        let wait = if version >= QUEUE_WAIT_FOR_REVIEW_VERSION { "queue_wait_for_review" } else { "1" };
         let row = self
             .conn
             .query_row(
-                &format!("SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, {limits}, {queue} FROM project_settings WHERE project_root = ?1"),
+                &format!("SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, {limits}, {queue}, {wait} FROM project_settings WHERE project_root = ?1"),
                 params![key],
                 |row| {
                     let agent = |at: usize| -> rusqlite::Result<Option<ProjectAgent>> {
@@ -572,12 +578,12 @@ impl Store {
                         let effort: Option<String> = row.get(at + 2)?;
                         Ok(harness.zip(model).map(|(harness, model)| ProjectAgent { harness, model, effort }))
                     };
-                    Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, Option<i64>>(9)?, row.get::<_, Option<String>>(10)?, row.get::<_, bool>(11)?))
+                    Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, Option<i64>>(9)?, row.get::<_, Option<String>>(10)?, row.get::<_, bool>(11)?, row.get::<_, bool>(12)?))
                 },
             )
             .optional()
             .map_err(db)?;
-        let Some((implementer, reviewer, delivery, revision, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure)) = row else {
+        let Some((implementer, reviewer, delivery, revision, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review)) = row else {
             return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
         };
         let delivery = Delivery::parse(&delivery)
@@ -585,7 +591,7 @@ impl Store {
         let out_of_range = |field: &str, value: i64| Error::new(ErrorKind::InvalidData, format!("orq.db has {field} {value} for {key}, out of range"));
         let max_active_runs = max_active_runs.map(|v| u8::try_from(v).map_err(|_| out_of_range("max_active_runs", v))).transpose()?;
         let min_free_disk_gb = min_free_disk_gb.map(|v| u32::try_from(v).map_err(|_| out_of_range("min_free_disk_gb", v))).transpose()?;
-        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure }, revision: revision as u64 })
+        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review }, revision: revision as u64 })
     }
 
     /// Saves a project's settings if it is still at `expected_revision`; otherwise nothing is
@@ -607,14 +613,15 @@ impl Store {
         let field = |agent: &Option<ProjectAgent>, pick: fn(&ProjectAgent) -> Option<&str>| agent.as_ref().and_then(pick).map(str::to_string);
         let (implementer, reviewer) = (&settings.implementer, &settings.reviewer);
         tx.execute(
-            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT (project_root) DO UPDATE SET
                  implementer_harness = excluded.implementer_harness, implementer_model = excluded.implementer_model, implementer_effort = excluded.implementer_effort,
                  reviewer_harness = excluded.reviewer_harness, reviewer_model = excluded.reviewer_model, reviewer_effort = excluded.reviewer_effort,
                  delivery = excluded.delivery, revision = excluded.revision, updated_at = excluded.updated_at,
                  max_active_runs = excluded.max_active_runs, min_free_disk_gb = excluded.min_free_disk_gb,
-                 queue_hours = excluded.queue_hours, queue_stop_on_failure = excluded.queue_stop_on_failure",
+                 queue_hours = excluded.queue_hours, queue_stop_on_failure = excluded.queue_stop_on_failure,
+                 queue_wait_for_review = excluded.queue_wait_for_review",
             params![
                 key,
                 field(implementer, |a| Some(&a.harness)),
@@ -629,7 +636,8 @@ impl Store {
                 settings.max_active_runs.map(i64::from),
                 settings.min_free_disk_gb.map(i64::from),
                 settings.queue_hours,
-                settings.queue_stop_on_failure
+                settings.queue_stop_on_failure,
+                settings.queue_wait_for_review
             ],
         )
         .map_err(db)?;

@@ -28,14 +28,19 @@ pub struct QueueRound {
 
 /// What became of a queued feature's run.
 enum Settled {
-    /// It is still going (or waits for a review): the entry stays as it is.
+    /// It is still going (or waits for a review that does not hold the queue): the entry stays as it is.
     Going,
+    /// It waits for a person's review, of its open MR at this address or of the run itself (an
+    /// escalated review): the entry stays and the entries after it wait.
+    InReview(Option<String>),
     /// It completed or was delivered: the entry leaves the queue.
     Done,
     /// It was continued as another run, which the entry now follows.
     ContinuedAs(String),
     /// It failed or was blocked, for this reason.
     Failed(Option<String>),
+    /// Its MR was closed without merging: it counts as a failed run.
+    MrClosed,
 }
 
 impl StoreProjects {
@@ -97,10 +102,15 @@ impl StoreProjects {
         let Ok(store) = (if database.exists() { Store::open(&database) } else { return false }) else { return false };
         let runs = RunStore::new(&self.roots.state);
         let Ok(roots) = store.queued_projects() else { return false };
-        roots.iter().filter_map(|root| store.queue(Path::new(root)).ok()).flat_map(|queue| queue.entries).any(|entry| match (&entry.run, entry.failed) {
-            (Some(run), false) => !matches!(settle(&runs, run), Settled::Going),
-            (Some(run), true) => matches!(settle(&runs, run), Settled::ContinuedAs(_)),
-            _ => false,
+        roots.iter().any(|root| {
+            let root = Path::new(root);
+            let Ok(queue) = store.queue(root) else { return false };
+            let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
+            queue.entries.iter().any(|entry| match (&entry.run, entry.failed) {
+                (Some(run), false) => !matches!(settle(&store, &runs, run, None, wait), Settled::Going | Settled::InReview(_)),
+                (Some(run), true) => matches!(settle(&store, &runs, run, None, wait), Settled::ContinuedAs(_)),
+                _ => false,
+            })
         })
     }
 
@@ -111,15 +121,17 @@ impl StoreProjects {
         let settings = self.settings_of_git(git)?;
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
+        let mut in_review = false;
         for entry in store.queue(root).map_err(failed)?.entries {
             let Some(run) = &entry.run else { continue };
-            let settled = settle(&runs, run);
+            let settled = settle(store, &runs, run, Some(root), settings.queue_wait_for_review);
             // A failure already marked is only looked at again for the run it was resumed as.
             if entry.failed && !matches!(settled, Settled::ContinuedAs(_)) {
                 continue;
             }
             match settled {
                 Settled::Going => {}
+                Settled::InReview(_) => in_review = true,
                 Settled::Done => drop(store.queue_remove(root, &entry.feature).map_err(failed)?),
                 Settled::ContinuedAs(next) => store.queue_started(root, &entry.feature, &next).map_err(failed)?,
                 Settled::Failed(reason) => {
@@ -130,10 +142,17 @@ impl StoreProjects {
                         store.queue_pause(root, &reason).map_err(failed)?;
                     }
                 }
+                Settled::MrClosed => {
+                    store.queue_failed(root, &entry.feature).map_err(failed)?;
+                    if settings.queue_stop_on_failure {
+                        let reason = orq_core::redact::redact(&format!("{}'s MR was closed without merging", entry.feature));
+                        store.queue_pause(root, &reason).map_err(failed)?;
+                    }
+                }
             }
         }
         let queue = store.queue(root).map_err(failed)?;
-        if queue.paused.is_some() || round.restart_pending {
+        if queue.paused.is_some() || round.restart_pending || in_review {
             return Ok(false);
         }
         if let Some(hours) = &settings.queue_hours {
@@ -219,8 +238,19 @@ impl StoreProjects {
     pub(super) fn queue_answer(&self, id: &str) -> Result<Option<Value>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
         let queue = self.read_queue(&root)?;
+        let wait = self.settings_of_git(&git)?.queue_wait_for_review;
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
-        Ok(Some(queue_json(&queue, &ledger)))
+        let mut review = std::collections::HashMap::new();
+        if self.roots.database().exists() {
+            let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
+            let runs = RunStore::new(&self.roots.state);
+            for entry in queue.entries.iter().filter(|entry| !entry.failed) {
+                if let Some(Settled::InReview(url)) = entry.run.as_ref().map(|run| settle(&store, &runs, run, Some(git.root.as_path()), wait)) {
+                    review.insert(entry.feature.clone(), url);
+                }
+            }
+        }
+        Ok(Some(queue_json_with(&queue, &ledger, &review)))
     }
 
     fn read_queue(&self, root: &Path) -> Result<RunQueue, String> {
@@ -252,10 +282,18 @@ impl StoreProjects {
 
 /// How many features project `git`'s queue in `store` holds and whether it is paused, for the
 /// dashboard card; without orq.db, none.
-pub(super) fn queue_summary(store: Option<&Store>, git: &orq_git::Project) -> Result<Value, String> {
+/// With `wait` (the project waits for each run's review), it names the feature whose review the
+/// queue waits for, read from `runs` without asking git.
+pub(super) fn queue_summary(store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, wait: bool) -> Result<Value, String> {
     let root = orq_git::main_checkout_root(git).unwrap_or_else(|| git.root.clone());
     let queue = store.map(|store| store.queue(&root)).transpose().map_err(|error| error.to_string())?.unwrap_or_default();
-    Ok(json!({"count": queue.entries.len(), "paused": queue.paused.is_some()}))
+    let waiting_for_review = store.filter(|_| wait).and_then(|store| {
+        queue.entries.iter().filter(|entry| !entry.failed).find_map(|entry| {
+            let run = entry.run.as_ref()?;
+            matches!(settle(store, runs, run, None, true), Settled::InReview(_)).then(|| entry.feature.clone())
+        })
+    });
+    Ok(json!({"count": queue.entries.len(), "paused": queue.paused.is_some(), "waiting_for_review": waiting_for_review}))
 }
 
 /// Applies `change` to the queue of project `git`, whose main checkout is `root`, as `by` (`web` or
@@ -321,12 +359,20 @@ pub fn project_queue_json(store: &Store, git: &orq_git::Project, root: &Path) ->
 /// The queue as the page and `orq queue list` show it: entries in the order they will start, each
 /// with its state (`running`, `failed`, `next`, `queued` or `waiting`) and why it waits.
 pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
+    queue_json_with(queue, ledger, &std::collections::HashMap::new())
+}
+
+/// [`queue_json`], with the entries whose run waits for a person's review (`review`: feature to its
+/// open MR's address, if any) shown waiting for review.
+fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>) -> Value {
     let mut next_given = false;
+    let mut waiting_for_review = None;
     let entries: Vec<Value> = ordered(&queue.entries, ledger)
         .into_iter()
         .map(|entry| {
             let (state, reason) = match (&entry.run, entry.failed) {
                 (Some(_), true) => ("failed", None),
+                (Some(_), false) if review.contains_key(&entry.feature) => ("review", None),
                 (Some(_), false) => ("running", None),
                 (None, _) => match orq_features::check_run_eligibility(ledger, &entry.feature) {
                     Ok(_) if !next_given => {
@@ -342,6 +388,10 @@ pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
                 }
             };
             let profiles = entry.profiles.as_ref();
+            let mr_url = review.get(&entry.feature).cloned().flatten().map(|url| orq_core::redact::redact(&url));
+            if state == "review" && waiting_for_review.is_none() {
+                waiting_for_review = Some(json!({"feature": entry.feature, "mr_url": mr_url}));
+            }
             json!({
                 "feature": entry.feature,
                 "state": state,
@@ -351,10 +401,11 @@ pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
                 "added_by": entry.added_by,
                 "implementer": profiles.map(|p| &p.implementer),
                 "reviewer": profiles.map(|p| &p.reviewer),
+                "mr_url": mr_url,
             })
         })
         .collect();
-    json!({"entries": entries, "count": entries.len(), "paused": queue.paused})
+    json!({"entries": entries, "count": entries.len(), "paused": queue.paused, "waiting_for_review": waiting_for_review})
 }
 
 /// The entries in the order they may start: one never comes before a queued feature it depends on,
@@ -398,17 +449,43 @@ fn launch_error_line(feature: &str, why: &str) -> String {
     orq_core::redact::redact(&format!("orq: the queue could not start {feature}: {why}"))
 }
 
-/// What became of run `run`, from its events. A run that cannot be read anymore counts as failed.
-fn settle(runs: &RunStore, run: &str) -> Settled {
+/// What became of run `run`, from its events and, for a run delivered for review, what the review
+/// refresh saved in `store` about its MR. With the project's `repo`, a run that waits for review but
+/// whose work is on its target branch, merged by hand, is done; without it (looked at often, so no git
+/// is asked) it still waits. Unless the project's queue is to `wait` for review, a run delivered for
+/// review is done and one that needs a person's review is still going, as before the queue waited.
+/// A run that cannot be read anymore counts as failed.
+fn settle(store: &Store, runs: &RunStore, run: &str, repo: Option<&Path>, wait: bool) -> Settled {
     let Ok(events) = runs.events(run) else { return Settled::Failed(Some(format!("the run {run} cannot be read"))) };
     let summary = orq_orchestrator::summarize_run(&events);
     if let Some(next) = summary.resumed_as {
         return Settled::ContinuedAs(next);
     }
     match summary.phase {
+        RunPhase::Completed if wait && ending(&events) == Some("review_ready") => mr_settled(store, run),
         RunPhase::Completed | RunPhase::Merged => Settled::Done,
         RunPhase::Failed | RunPhase::Blocked => Settled::Failed(summary.reason),
-        RunPhase::Running | RunPhase::NeedsReview | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Settled::Going,
+        RunPhase::NeedsReview if !wait => Settled::Going,
+        RunPhase::NeedsReview if repo.is_some_and(|repo| runs.load(run).is_ok_and(|record| orq_orchestrator::work_is_on_target(repo, &record))) => Settled::Done,
+        RunPhase::NeedsReview => Settled::InReview(None),
+        RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Settled::Going,
+    }
+}
+
+/// How run `events` said the run ended, from the last `run.completed`.
+fn ending(events: &[orq_orchestrator::Event]) -> Option<&str> {
+    events.iter().rev().find(|event| event.kind == "run.completed").and_then(|event| event.payload.get("ending")).and_then(Value::as_str)
+}
+
+/// What became of run `run`, delivered for review, from the newest MR `store` holds for it: open, it
+/// waits for review; closed, it failed; merged, or with no MR, it is done.
+fn mr_settled(store: &Store, run: &str) -> Settled {
+    use orq_core::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
+    let newest = store.lifecycles_for_run(run).ok().and_then(|all| all.into_iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER));
+    match newest {
+        Some(mr) if mr.state == ProviderState::Open => Settled::InReview(Some(mr.url)),
+        Some(mr) if mr.state == ProviderState::Closed => Settled::MrClosed,
+        _ => Settled::Done,
     }
 }
 

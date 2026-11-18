@@ -78,18 +78,20 @@ fn assert_viewing(chromium: &Path, width: u32, hours: Value, stop: bool, shown: 
     let result = load(chromium, width, &replies(hours, stop), vec![json!({"wait": "[data-project-queue-stop]"})], &[CARD, ROWS, LABELS, VALUES]);
     let card = rects(&result, CARD)[0];
     let (rows, labels, values) = (rects(&result, ROWS), rects(&result, LABELS), rects(&result, VALUES));
-    assert_eq!((rows.len(), labels.len(), values.len()), (2, 2, 2), "{width} px: two rows, each with a label and a value: {result}");
-    for at in 0..2 {
+    assert_eq!((rows.len(), labels.len(), values.len()), (3, 3, 3), "{width} px: three rows, each with a label and a value: {result}");
+    for at in 0..3 {
         assert!(!overlap(labels[at], values[at]), "{width} px: row {at}'s label {:?} and value {:?} overlap", labels[at], values[at]);
         for each in [rows[at], labels[at], values[at]] {
             assert!(inside(each, card, 0), "{width} px: {each:?} is outside the card {card:?}");
         }
         assert!(inside(labels[at], card, 12) && inside(values[at], card, 12), "{width} px: row {at}'s text is inside the card's padding: {:?} {:?} in {card:?}", labels[at], values[at]);
     }
-    assert!(rows[1].top >= rows[0].bottom, "{width} px: the second row {:?} starts below the first {:?}", rows[1], rows[0]);
-    assert!(labels[1].top >= labels[0].bottom && labels[1].top >= values[0].bottom, "{width} px: the second row's label {:?} is below the first row {:?} {:?}", labels[1], labels[0], values[0]);
+    for at in 1..3 {
+        assert!(rows[at].top >= rows[at - 1].bottom, "{width} px: row {at} {:?} starts below the one before {:?}", rows[at], rows[at - 1]);
+        assert!(labels[at].top >= labels[at - 1].bottom && labels[at].top >= values[at - 1].bottom, "{width} px: row {at}'s label {:?} is below the row before {:?} {:?}", labels[at], labels[at - 1], values[at - 1]);
+    }
     let text = result["text"].as_str().unwrap();
-    for expected in shown.iter().chain(["Hours the queue starts runs", "When a run fails"].iter()) {
+    for expected in shown.iter().chain(["Hours the queue starts runs", "When a run fails", "Wait for each run's review (and MR) before the next"].iter()) {
         assert!(text.contains(expected), "{width} px: {expected} is shown: {text}");
     }
 }

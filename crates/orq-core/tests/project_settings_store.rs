@@ -196,3 +196,24 @@ fn a_database_from_before_the_limits_reads_its_settings_with_no_limits() {
     let read = Store::read_project_settings(&db, alpha).unwrap();
     assert_eq!((read.settings, read.revision), (chosen, 1));
 }
+
+#[test]
+fn waiting_for_each_run_s_review_before_the_next_is_on_by_default_and_saved_off() {
+    let (mut store, db) = open("wait-for-review");
+    let alpha = Path::new("/work/alpha");
+    assert!(ProjectSettings::default().queue_wait_for_review, "on by default, for every delivery");
+    assert!(store.project_settings(alpha).unwrap().settings.queue_wait_for_review);
+
+    let off = ProjectSettings { delivery: Delivery::MergeLocal, queue_wait_for_review: false, ..ProjectSettings::default() };
+    store.save_project_settings(alpha, 0, &off).unwrap();
+    assert!(!store.project_settings(alpha).unwrap().settings.queue_wait_for_review);
+    store.save_project_settings(Path::new("/work/beta"), 0, &ProjectSettings::default()).unwrap();
+    drop(store);
+
+    // Schema version 9 had no such column: a project saved then waits, as the default does.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE project_settings DROP COLUMN queue_wait_for_review;").unwrap();
+    conn.pragma_update(None, "user_version", 9).unwrap();
+    drop(conn);
+    assert!(Store::read_project_settings(&db, Path::new("/work/beta")).unwrap().settings.queue_wait_for_review);
+}

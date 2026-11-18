@@ -19,12 +19,12 @@ fn has_pins_table(db: &std::path::Path) -> bool {
 }
 
 /// Puts the database back at version 6, as an Orq from before pins were removed left it (without
-/// the run limit columns version 8 added or the run queue version 9 added).
+/// the run limit columns version 8 added, the run queue version 9 added or the review wait version 10 added).
 fn back_to_version_six(db: &std::path::Path, pins: &[&str]) {
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); \
          ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
-         ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; \
+         ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; ALTER TABLE project_settings DROP COLUMN queue_wait_for_review; \
          ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
          PRAGMA user_version = 6;").unwrap();
     for pin in pins {

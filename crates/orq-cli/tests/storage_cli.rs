@@ -145,13 +145,13 @@ fn storage_status_has_no_pinned_line_and_prune_removes_a_run_that_would_once_hav
 }
 
 /// The database as an Orq from before pins were removed left it: at schema version 6, with a
-/// `run_pins` table holding `pins` and no run limit columns (version 8 adds them) nor run queue (version 9 adds it).
+/// `run_pins` table holding `pins` and no run limit columns (version 8 adds them), run queue (version 9 adds it) nor review wait (version 10 adds it).
 fn database_from_before_pins_were_removed(s: &Sandbox, pins: &[&str]) -> rusqlite::Connection {
     assert!(s.orq(&["storage", "status"]).status.success());
     let db = rusqlite::Connection::open(s.data_file("orq.db")).unwrap();
     db.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); \
          ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
-         ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; \
+         ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; ALTER TABLE project_settings DROP COLUMN queue_wait_for_review; \
          ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
          PRAGMA user_version = 6;").unwrap();
     for pin in pins {

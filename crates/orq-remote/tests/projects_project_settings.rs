@@ -86,6 +86,7 @@ fn a_saved_role_and_delivery_are_given_with_the_revision_and_an_unset_role_says_
         "min_free_disk_gb": null,
         "queue_hours": null,
         "queue_stop_on_failure": false,
+        "queue_wait_for_review": true,
         "revision": revision
     }}));
 }
