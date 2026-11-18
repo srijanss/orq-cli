@@ -67,11 +67,11 @@ impl StoreProjects {
             }
         }
         // Under a machine run limit the slots are scarce: one start at a time, each to the project
-        // whose waiting entry was added first, until a pass starts nothing.
+        // whose entry that may start now was added first, until a pass starts nothing.
         let one_at_a_time = machine.limits.max_active.is_some();
         loop {
             if one_at_a_time {
-                projects.sort_by_cached_key(|(_, _, root)| oldest_waiting(&store, root));
+                projects.sort_by_cached_key(|(_, git, root)| oldest_waiting(&store, git, root));
             }
             let mut started = false;
             for (project, git, root) in &projects {
@@ -462,11 +462,14 @@ fn local_minute_of_day() -> u16 {
     (tm.tm_hour * 60 + tm.tm_min) as u16
 }
 
-/// When the first entry of the queue at `root` still waiting to start was added; a queue with none
-/// comes last.
-fn oldest_waiting(store: &Store, root: &Path) -> i64 {
+/// When the first entry of project `git`'s queue at `root` that may start now was added; a queue
+/// with none comes last.
+fn oldest_waiting(store: &Store, git: &orq_git::Project, root: &Path) -> i64 {
     let queue = store.queue(root).unwrap_or_default();
-    queue.entries.iter().filter(|entry| entry.run.is_none() && !entry.failed).map(|entry| entry.added_at).min().unwrap_or(i64::MAX)
+    // An entry still waiting on its dependencies cannot take a slot, so it does not count.
+    let ledger = read_ledger(&orq_features::ledger_path(git)).unwrap_or_default();
+    let may_start = |entry: &&QueuedFeature| entry.run.is_none() && !entry.failed && orq_features::check_run_eligibility(&ledger, &entry.feature).is_ok();
+    queue.entries.iter().filter(may_start).map(|entry| entry.added_at).min().unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

@@ -209,3 +209,19 @@ fn a_start_refused_because_another_took_the_last_machine_slot_meanwhile_is_waite
     round(&s);
     assert_eq!(started(&s), ["A-01"]);
 }
+
+#[test]
+fn an_older_entry_that_cannot_start_yet_does_not_put_its_project_first() {
+    let s = setup("queue-machine-eligible", "[runs]\nmax_active = 1\n");
+    git_repo(&s, "alpha", &[("A-00", "pending", &[]), ("A-01", "pending", &["A-00"]), ("A-02", "pending", &[])]);
+    git_repo(&s, "beta", &[("B-01", "pending", &[])]);
+    // A-01 is the oldest entry, but it waits on A-00, which is not queued.
+    queue_add(&s, "alpha", &["A-01"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    queue_add(&s, "beta", &["B-01"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    queue_add(&s, "alpha", &["A-02"]);
+
+    round(&s);
+    assert_eq!(started(&s), ["B-01"], "the oldest entry that can start goes first");
+}
