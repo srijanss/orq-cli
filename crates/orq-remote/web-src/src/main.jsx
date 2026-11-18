@@ -776,6 +776,12 @@ function CardStat({ icon, value, label, to, id }) {
   );
 }
 
+// "Queue: 3 (paused)" for a project with features queued; null when nothing is.
+function queueLine(queue) {
+  if (queue === null || typeof queue !== "object" || !isCount(queue.count) || queue.count === 0) return null;
+  return "Queue: " + queue.count + (queue.paused === true ? " (paused)" : "");
+}
+
 function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
@@ -797,6 +803,12 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
             ? <CardStat icon="play" value={project.active_runs + " of " + project.max_active_runs} label="runs active" to={base + "orchestrations"} id={project.id + "/runs"} />
             : <CardStat icon="play" value={project.active_runs} label="Active runs" to={base + "orchestrations"} id={project.id + "/runs"} />}
           <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" to={base + "reviews"} id={project.id + "/reviews"} />
+          {queueLine(project.queue) !== null ? (
+            <button type="button" className="card-stat" data-card-queue={project.id} onClick={() => navigate(base + "queue")}>
+              <Icon name="clock" size={16} />
+              <span className="card-stat-label">{queueLine(project.queue)}</span>
+            </button>
+          ) : null}
         </div>
       ) : (
         <em>Unavailable</em>
@@ -2472,6 +2484,179 @@ function StartMarked({ names, control, onFinished, place = null }) {
   );
 }
 
+// The project's queue page, from its Features list.
+function QueueLink({ projectId }) {
+  const href = "/projects/" + encodeURIComponent(projectId) + "/queue";
+  return <a className="queue-link" data-queue-link href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}><Icon name="clock" size={16} />Queue</a>;
+}
+
+// Sends features to the project's run queue: the server starts each in turn when its limits allow, and
+// never on its own approval. One request for all of them, so the server audits them as one change.
+async function queueFeatures(control, names) {
+  try {
+    const response = await actionRequest(controlPath(control, "queue"), control.token, { features: names });
+    if (response.status === 401) return { signedOut: true };
+    const reply = await jsonOrNull(response);
+    if (response.ok) return { ok: true, text: "Queued " + names.join(", ") + "." };
+    if (response.status === 403) return { ok: false, text: "Not allowed." };
+    return { ok: false, text: reply !== null && typeof reply.error === "string" ? reply.error : "They could not be queued." };
+  } catch (unreachable) {
+    return { ok: false, text: "The server could not be reached." };
+  }
+}
+
+// "Queue" on a pending feature's page: asks, then adds it to the end of the project's queue.
+function QueueAction({ feature, control }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState(null);
+  const send = async () => {
+    setPhase("sending");
+    const result = await queueFeatures(control, [feature.name]);
+    if (result.signedOut) {
+      control.onSignedOut();
+      return;
+    }
+    setNote(result);
+    setPhase("idle");
+  };
+  return (
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-queue-feature onClick={() => { setNote(null); setPhase("asking"); }}><Icon name="clock" size={16} />Queue</button> : null}
+      {phase === "asking" ? (
+        <Confirm question={"Queue " + feature.name + "?"} detail="The server starts it when the project's limits and queue hours allow." answer="Yes, queue" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+      {note !== null ? <span role="status" className={note.ok ? "run-action-note" : "run-action-note error-text"}>{note.text}</span> : null}
+    </div>
+  );
+}
+
+// "Queue N" for the marked pending features: asks once, then queues them in dependency order.
+function QueueMarked({ names, control, onFinished, place = null }) {
+  const [phase, setPhase] = useState("idle");
+  const send = async () => {
+    setPhase("sending");
+    const result = await queueFeatures(control, names);
+    if (result.signedOut) {
+      control.onSignedOut();
+      return;
+    }
+    setPhase("idle");
+    onFinished([{ name: names.join(", "), ok: result.ok, text: result.text }]);
+  };
+  return (
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-queue-marked onClick={() => setPhase("asking")}><Icon name="clock" size={16} />{"Queue " + names.length + placeSuffix(place)}</button> : null}
+      {phase === "asking" ? (
+        <Confirm question={"Queue " + featuresPhrase(names, place) + "?"} detail="The server starts each when the project's limits and queue hours allow." answer="Yes, queue" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
+      ) : null}
+      {phase === "sending" ? <span role="status">Sending…</span> : null}
+    </div>
+  );
+}
+
+const QUEUE_STATES = ["running", "failed", "next", "queued", "waiting"];
+const QUEUE_STATE_LABELS = { running: "Running", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting" };
+
+function isQueue(queue) {
+  const text = (value) => value === null || typeof value === "string";
+  return queue !== null && typeof queue === "object" && text(queue.paused) && Array.isArray(queue.entries)
+    && queue.entries.every((entry) => entry !== null && typeof entry === "object" && typeof entry.feature === "string" && QUEUE_STATES.includes(entry.state) && text(entry.run ?? null) && text(entry.reason ?? null));
+}
+
+function parseQueue(data) {
+  return data && isQueue(data.queue) ? { queue: data.queue, actions: data.remote_actions === true } : null;
+}
+
+// The names in `order` with the one at `from` moved to `to`.
+function moved(order, from, to) {
+  const next = [...order];
+  const [name] = next.splice(from, 1);
+  next.splice(to, 0, name);
+  return next;
+}
+
+// A project's run queue in the order it starts: each entry's state, why it waits, and its run. With
+// remote actions on it pauses and resumes, removes after asking, and reorders by drag or by ↑/↓; each
+// change shows the queue the server answers with.
+function QueueView({ data, control, projectId }) {
+  const [queue, setQueue] = useState(data.queue);
+  const [phase, setPhase] = useState("idle");
+  const [removing, setRemoving] = useState(null);
+  const [note, setNote] = useState("");
+  const [dragged, setDragged] = useState(null);
+  const busy = phase === "sending";
+  const change = async (tail, body) => {
+    setPhase("sending");
+    setNote("");
+    let text = "The queue could not be changed.";
+    try {
+      const response = await actionRequest(controlPath(control, "queue/" + tail), control.token, body);
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const reply = await jsonOrNull(response);
+      if (response.ok) {
+        if (reply !== null && isQueue(reply.queue)) setQueue(reply.queue);
+        setPhase("idle");
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (reply !== null && typeof reply.error === "string") text = reply.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const names = queue.entries.map((entry) => entry.feature);
+  const reorder = (from, to) => {
+    if (to < 0 || to >= names.length || to === from) return;
+    change("reorder", { order: moved(names, from, to) });
+  };
+  return (
+    <section className="card queue-section" data-queue-section>
+      <div className="queue-head">
+        {queue.paused !== null ? <p className="queue-paused" data-queue-paused><Icon name="pause" size={16} />{"Paused: " + queue.paused}</p> : <p className="muted">{queue.entries.length === 0 ? "Nothing is queued." : "The server starts the next feature when the project's limits and queue hours allow."}</p>}
+        {control !== null ? (
+          queue.paused !== null
+            ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button>
+            : <button type="button" data-queue-pause disabled={busy} onClick={() => change("pause", {})}><Icon name="pause" size={16} />Pause</button>
+        ) : null}
+      </div>
+      {queue.entries.length > 0 ? (
+        <ol className="queue-list">
+          {queue.entries.map((entry, index) => (
+            <li key={entry.feature} className={dragged === index ? "queue-entry dragging" : "queue-entry"} data-queue-entry={entry.feature} draggable={control !== null && !busy}
+              onDragStart={(event) => { setDragged(index); if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"; }}
+              onDragOver={(event) => { if (dragged !== null) event.preventDefault(); }}
+              onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); setDragged(null); }}
+              onDragEnd={() => setDragged(null)}>
+              <span className="queue-feature">{entry.feature}</span>
+              <span className={"queue-state queue-" + entry.state} data-queue-state={entry.state}>{QUEUE_STATE_LABELS[entry.state]}</span>
+              {typeof entry.reason === "string" && entry.reason !== "" ? <span className="queue-reason muted">{entry.reason}</span> : null}
+              {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
+              {control !== null ? (
+                <span className="queue-controls">
+                  <button type="button" className="icon-button" data-queue-up aria-label={"Move " + entry.feature + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
+                  <button type="button" className="icon-button" data-queue-down aria-label={"Move " + entry.feature + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
+                  <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + entry.feature} disabled={busy} onClick={() => { setNote(""); setRemoving(entry.feature); }}><Icon name="trash" size={16} /></button>
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {removing !== null ? (
+        <Confirm question={"Remove " + removing + " from the queue?"} detail="A run it already started goes on." answer="Yes, remove" tone="danger" onConfirm={() => { const name = removing; setRemoving(null); change("remove", { feature: name }); }} onCancel={() => setRemoving(null)} />
+      ) : null}
+      {busy ? <span role="status">Sending…</span> : null}
+      {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+    </section>
+  );
+}
+
 // The editable fields a reply of …/features/{name}/fields carries, as the editor holds them: text for the
 // boxes, the parallelizable choice as "", "yes" or "no", and the dependencies as a list of names.
 function featureDraft(fields) {
@@ -2968,6 +3153,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
             <div className="marked-group" key={group.projectId}>
               {group.promote.length > 0 ? <PromoteMarked names={group.promote} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
               {group.start.length > 0 ? <StartMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
+              {group.start.length > 0 ? <QueueMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
             </div>
           ))}
         </div>
@@ -3044,6 +3230,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} />
             {feature.status === "pending" || feature.status === "draft" ? <FeatureAction key={feature.status} feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
+            {feature.status === "pending" ? <QueueAction feature={feature} control={control} /> : null}
           </div>
         ) : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
@@ -3171,6 +3358,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
         <>
           <PageHeader title={name === null ? "Features" : "Feature"} subtitle={name === null ? "The project's feature ledger" : name} badge={name === null ? inProgressBadge(state.data?.rows) : null} onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} />
+          {name === null && projectId !== null ? <QueueLink projectId={projectId} /> : null}
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
         if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} />;
@@ -4218,8 +4406,10 @@ function parseProjectSettings(data) {
   const role = (entry) => entry !== null && typeof entry === "object" && (entry.project === null || isPicked(entry.project)) && (entry.fallback === null || isPicked(entry.fallback));
   const limit = (value, range) => value === undefined || value === null || (Number.isInteger(value) && value >= range[0] && value <= range[1]);
   const ok = settings && typeof settings === "object" && role(settings.implementer) && role(settings.reviewer) && (settings.delivery === "push" || DELIVERIES.some(([value]) => value === settings.delivery)) && Number.isInteger(settings.revision) && settings.revision >= 0
-    && limit(settings.max_active_runs, ACTIVE_RUNS_RANGE) && limit(settings.min_free_disk_gb, FREE_DISK_RANGE);
-  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null } : null;
+    && limit(settings.max_active_runs, ACTIVE_RUNS_RANGE) && limit(settings.min_free_disk_gb, FREE_DISK_RANGE)
+    && (settings.queue_hours === undefined || settings.queue_hours === null || typeof settings.queue_hours === "string")
+    && (settings.queue_stop_on_failure === undefined || typeof settings.queue_stop_on_failure === "boolean");
+  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true } : null;
 }
 
 // The limits a project may put on starting a run, as the server checks them; empty is no limit.
@@ -4228,6 +4418,15 @@ const FREE_DISK_RANGE = [1, 500];
 
 function activeRunsLine(max) {
   return max === null ? "No limit" : "At most " + max + (max === 1 ? " active run" : " active runs");
+}
+
+// Typed queue hours as Save sends them: null for empty, "HH:MM-HH:MM" as typed, or undefined when they are
+// not a window the server reads (two different times of day), which holds Save back.
+function typedHours(text) {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const match = /^([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])$/.exec(trimmed);
+  return match !== null && (match[1] !== match[3] || match[2] !== match[4]) ? trimmed : undefined;
 }
 
 function freeDiskLine(gb) {
@@ -4343,7 +4542,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -4356,7 +4555,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), revision: draft.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -4425,9 +4624,31 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           {editing && typedFloor(draft.minFreeDisk) === undefined ? <span className="error-text" data-min-free-disk-invalid>Leave it empty for no limit, or give a whole number from 1 to 500.</span> : null}
         </label>
       </section>
+      <section className="card settings-card">
+        <SettingsHead icon="clock">Queue</SettingsHead>
+        <label className="settings-block">
+          <span>Hours the queue starts runs</span>
+          {editing ? (
+            <input type="text" data-queue-hours aria-label="Hours the queue starts runs" placeholder="Any time, or 22:00-07:00" value={draft.queueHours} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, queueHours: event.target.value })} />
+          ) : (
+            <span data-project-queue-hours>{settings.queue_hours === null ? "Any time" : settings.queue_hours}</span>
+          )}
+          {editing && typedHours(draft.queueHours) === undefined ? <span className="error-text" data-queue-hours-invalid>Leave it empty for any time, or give a window like 22:00-07:00.</span> : null}
+        </label>
+        <label className="settings-block">
+          {editing ? (
+            <>
+              <input type="checkbox" data-queue-stop-on-failure checked={draft.stopOnFailure} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, stopOnFailure: event.target.checked })} />
+              <span>A failed run pauses the queue</span>
+            </>
+          ) : (
+            <span data-project-queue-stop>{settings.queue_stop_on_failure ? "A failed run pauses the queue" : "A failed run leaves the queue going; only its dependents wait"}</span>
+          )}
+        </label>
+      </section>
       {phase === "editing" ? (
         <div className="settings-block settings-actions">
-          <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery) || typedFloor(draft.minFreeDisk) === undefined} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
+          <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery) || typedFloor(draft.minFreeDisk) === undefined || typedHours(draft.queueHours) === undefined} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
           <button type="button" data-cancel onClick={() => { setPhase("idle"); setNote(""); setConflict(false); }}>Cancel</button>
         </div>
       ) : null}
@@ -4461,6 +4682,17 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
           <ProjectSelect projects={projects} projectId={projectId} section="settings" />
         </>
       )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView settings={settings} path={settingsPath} token={token} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
+    );
+  }
+  if (/^\/projects\/[^/]+\/queue$/.test(address)) {
+    const queuePath = "/api/projects/" + encodeURIComponent(projectId) + "/queue";
+    return (
+      <Loaded key={queuePath} reloads={reloads} header={() => (
+        <>
+          <PageHeader title="Queue" subtitle="The features the server starts in turn, when the project's limits allow" onRefresh={onRefresh} />
+          <ProjectSelect projects={projects} projectId={projectId} />
+        </>
+      )} token={token} path={queuePath} loading="Loading the queue…" parse={parseQueue} draw={(data) => <QueueView key={JSON.stringify(data.queue)} data={data} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
     );
   }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {

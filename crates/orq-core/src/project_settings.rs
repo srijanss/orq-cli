@@ -57,6 +57,11 @@ pub struct ProjectSettings {
     pub max_active_runs: Option<u8>,
     /// The free disk, in GB, a run needs to start or resume; unset is no check.
     pub min_free_disk_gb: Option<u32>,
+    /// When the queue may start runs, as `HH:MM-HH:MM` in local time (the end excluded; a window
+    /// may wrap midnight); unset is any time.
+    pub queue_hours: Option<String>,
+    /// Whether a queued run that fails or is blocked pauses the queue.
+    pub queue_stop_on_failure: bool,
 }
 
 /// The range a project's run limit may take.
@@ -91,6 +96,9 @@ pub(crate) fn check(settings: &ProjectSettings) -> Result<()> {
     if let Some(floor) = settings.min_free_disk_gb.filter(|floor| !MIN_FREE_DISK_GB.contains(floor)) {
         return Err(Error::new(ErrorKind::InvalidInput, format!("min_free_disk_gb must be empty or 1 to 500, got {floor}")));
     }
+    if let Some(hours) = settings.queue_hours.as_deref().filter(|hours| parse_queue_hours(hours).is_none()) {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("queue_hours must be empty or HH:MM-HH:MM with two different times, got {hours:?}")));
+    }
     for (role, agent) in [("implementer", &settings.implementer), ("reviewer", &settings.reviewer)] {
         let Some(agent) = agent else { continue };
         check_value(role, "harness", &agent.harness)?;
@@ -107,4 +115,31 @@ fn check_value(role: &str, field: &str, value: &str) -> Result<()> {
         return Err(Error::new(ErrorKind::InvalidInput, format!("{role} {field} must be a single non-blank line without surrounding spaces, got {value:?}")));
     }
     Ok(())
+}
+
+/// The start and end of a queue window `HH:MM-HH:MM`, in minutes after midnight; `None` when it is
+/// not one, or starts and ends at the same time.
+pub fn parse_queue_hours(hours: &str) -> Option<(u16, u16)> {
+    let minute = |time: &str| -> Option<u16> {
+        let (h, m) = time.split_once(':')?;
+        if h.len() != 2 || m.len() != 2 || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (h, m): (u16, u16) = (h.parse().ok()?, m.parse().ok()?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    };
+    let (start, end) = hours.split_once('-')?;
+    let (start, end) = (minute(start)?, minute(end)?);
+    (start != end).then_some((start, end))
+}
+
+/// Whether `minute_of_day` (minutes after local midnight) falls inside the window `hours`: from its
+/// start up to, not including, its end, across midnight when the end comes first. A window that
+/// cannot be read holds no time.
+pub fn within_queue_hours(hours: &str, minute_of_day: u16) -> bool {
+    match parse_queue_hours(hours) {
+        Some((start, end)) if start < end => (start..end).contains(&minute_of_day),
+        Some((start, end)) => minute_of_day >= start || minute_of_day < end,
+        None => false,
+    }
 }

@@ -105,6 +105,7 @@ fn run(args: &[OsString]) -> ExitCode {
         project_name: project.name.clone(),
     });
     let reviews = orq_remote::review_refresh::ReviewRefresher::new(state_roots.clone(), std::sync::Arc::new(ProviderLook { roots: state_roots.clone() }));
+    let queued = projects.clone();
     let options = orq_remote::ServerOptions { projects: Some(projects), auth: auth.clone(), reviews: Some(reviews.clone()) };
     let started = orq_remote::Server::start_with(listener, state, options);
     let server = match started {
@@ -121,7 +122,10 @@ fn run(args: &[OsString]) -> ExitCode {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     // Open provider reviews are looked at again while the server runs.
     let rounds = orq_remote::review_refresh::start_rounds(reviews, orq_remote::review_refresh::ROUND_EVERY);
+    // Queued features start on their own; no restart is ever pending yet, so starts are never held for one.
+    let queue_rounds = orq_remote::projects::start_queue_rounds(queued, std::time::Duration::from_secs(5), || false);
     wait_for_interrupt();
+    drop(queue_rounds);
     drop(server);
     drop(rounds);
     ExitCode::SUCCESS

@@ -275,6 +275,18 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// Project `id`'s run queue as the web shows it: `{entries: [{feature, state, run, added_at,
+    /// added_by, implementer, reviewer}], paused}`; `None` when there is no such project.
+    fn queue(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Changes project `id`'s run queue (`Done` with what changed), or says why not. A provider that
+    /// cannot does not know the project.
+    fn change_queue(&self, _id: &str, _change: &QueueChange) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Unknown)
+    }
+
     /// Records that the paused run `run` of project `id` continues `role` ("implementer" or "reviewer") on the
     /// model profile `profile` when it resumes (`Done(run)`), or why not. A provider that cannot does not know the run.
     fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
@@ -435,6 +447,18 @@ pub enum RunControlOutcome {
     Refused(String),
     /// There is no such project or run.
     Unknown,
+}
+
+/// A change to a project's run queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueChange {
+    /// Queue these features, each started with `profiles` when given, else the project's own.
+    Add { features: Vec<String>, profiles: Option<LaunchProfiles> },
+    Remove(String),
+    /// Put the queue in this order, which names every entry once.
+    Reorder(Vec<String>),
+    Pause,
+    Resume,
 }
 
 /// How a request to start a run ended.
@@ -1336,6 +1360,97 @@ fn project_target<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
+/// The project and action of `/api/projects/{id}/queue` (add) or `/api/projects/{id}/queue/{action}`.
+fn queue_target(path: &str) -> Option<(&str, &str)> {
+    if let Some(id) = project_target(path, "queue") {
+        return Some((id, "add"));
+    }
+    ["remove", "reorder", "pause", "resume"].into_iter().find_map(|leaf| {
+        let id = path.strip_prefix("/api/projects/")?.strip_suffix(leaf)?.strip_suffix("/queue/")?;
+        (!id.is_empty() && !id.contains('/')).then_some((id, leaf))
+    })
+}
+
+/// Adds to, removes from, reorders, pauses or resumes a project's run queue: only with actions on,
+/// and every attempt audited as `queue.<action>`.
+fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, leaf: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let action = format!("queue.{leaf}");
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: &action, project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    let keys: &[&str] = match leaf {
+        "add" => &["features", "implementer", "reviewer"],
+        "remove" => &["feature"],
+        "reorder" => &["order"],
+        _ => &[],
+    };
+    if let Some(refusal) = body_refusal(body, keys) {
+        audit(Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let names = |key: &str| -> Option<Vec<String>> {
+        let list = fields.get(key)?.as_array()?;
+        let names: Vec<String> = list.iter().map(|name| name.as_str().filter(|name| !name.is_empty() && plain_feature_name(name)).map(str::to_string)).collect::<Option<_>>()?;
+        (!names.is_empty() && names.len() <= 200).then_some(names)
+    };
+    let change = match leaf {
+        "add" => {
+            let text = |key: &str| fields.get(key).and_then(Value::as_str).map(str::to_string);
+            let profiles = match (text("implementer"), text("reviewer"), fields.get("implementer").is_some() || fields.get("reviewer").is_some()) {
+                (Some(implementer), Some(reviewer), _) => Some(Some(LaunchProfiles { implementer, reviewer })),
+                (_, _, true) => None,
+                _ => Some(None),
+            };
+            names("features").zip(profiles).map(|(features, profiles)| QueueChange::Add { features, profiles })
+        }
+        "remove" => fields.get("feature").and_then(Value::as_str).filter(|name| !name.is_empty() && plain_feature_name(name)).map(|name| QueueChange::Remove(name.to_string())),
+        "reorder" => names("order").map(QueueChange::Reorder),
+        "pause" => Some(QueueChange::Pause),
+        _ => Some(QueueChange::Resume),
+    };
+    let Some(change) = change else {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    let named = match &change {
+        QueueChange::Add { features, profiles: Some(p) } => format!("{}; implementer {}, reviewer {}", features.join(", "), p.implementer, p.reviewer),
+        QueueChange::Add { features, profiles: None } => features.join(", "),
+        QueueChange::Remove(feature) => feature.clone(),
+        QueueChange::Reorder(order) => order.join(", "),
+        QueueChange::Pause | QueueChange::Resume => String::new(),
+    };
+    let failed = "the queue could not be changed";
+    match provider.map(|provider| provider.change_queue(id, &change)) {
+        Some(Ok(RunControlOutcome::Done(done))) => {
+            audit(Outcome::Allowed, if named.is_empty() { &done } else { &named });
+            match provider.map(|provider| provider.queue(id)) {
+                Some(Ok(Some(queue))) => reply(200, json!({ "queue": queue })),
+                _ => reply(200, json!({})),
+            }
+        }
+        Some(Ok(RunControlOutcome::Refused(why))) => {
+            audit(Outcome::Refused, &why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, failed);
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
+            error(404, "not found")
+        }
+    }
+}
+
 /// The profiles a run can be started or switched with, for the web's pickers. It changes nothing, so it
 /// is not audited, but it is there only while actions are on.
 fn launch_profiles(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str) -> Response {
@@ -1554,7 +1669,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("remote actions are off"));
         return error(404, "not found");
     }
-    const KEYS: [&str; 6] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "revision"];
+    const KEYS: [&str; 8] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "revision"];
     if let Some(refusal) = body_refusal(body, &KEYS) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
@@ -1627,7 +1742,20 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
             return error(422, "That effort is not one this harness takes");
         }
     }
-    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb };
+    // The queue's window is absent or null (any time) or `HH:MM-HH:MM`; stopping on failure is off unless true.
+    let queue_hours = match fields.get("queue_hours") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(hours)) if crate::project_settings::parse_queue_hours(hours).is_some() => Some(hours.clone()),
+        Some(_) => {
+            audit(Outcome::Refused, Some("queue hours not understood"));
+            return error(422, "Queue hours must be empty or HH:MM-HH:MM, such as 22:00-07:00");
+        }
+    };
+    let Some(queue_stop_on_failure) = fields.get("queue_stop_on_failure").map_or(Some(false), Value::as_bool) else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
             audit(Outcome::Allowed, None);
@@ -1719,6 +1847,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "settings")).flatten() {
         return save_project_settings(roots, provider, id, body);
     }
+    if let Some((id, leaf)) = (request.method == "POST").then(|| queue_target(path)).flatten() {
+        return change_queue(roots, provider, id, leaf, body);
+    }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
     }
@@ -1727,6 +1858,15 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = run_target(path, "discard-warning") {
         return discard_warning(roots, provider, id, run);
+    }
+    if let Some(id) = project_target(path, "queue") {
+        // A read: there with actions off, like the project's settings, and its failure names no path;
+        // it says whether actions are on, so the page offers its changes only then.
+        return match provider.map(|provider| provider.queue(id)) {
+            Some(Ok(Some(queue))) => reply(200, json!({ "queue": queue, "remote_actions": remote_actions_on(roots) })),
+            Some(Err(_)) => error(500, "the queue could not be read"),
+            _ => error(404, "not found"),
+        };
     }
     if let Some(id) = project_target(path, "launch-profiles") {
         return launch_profiles(roots, provider, id);

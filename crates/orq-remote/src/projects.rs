@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use orq_core::retention::PrunePlan;
 
+mod queue;
+pub use queue::{change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub id: String,
@@ -469,6 +472,8 @@ impl StoreProjects {
             "delivery": stored.settings.delivery.as_str(),
             "max_active_runs": stored.settings.max_active_runs,
             "min_free_disk_gb": stored.settings.min_free_disk_gb,
+            "queue_hours": stored.settings.queue_hours,
+            "queue_stop_on_failure": stored.settings.queue_stop_on_failure,
             "revision": stored.revision,
         })
     }
@@ -768,6 +773,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {
         self.launch(id, Launch::One(feature), None)
+    }
+
+    fn queue(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        self.queue_answer(id)
+    }
+
+    fn change_queue(&self, id: &str, change: &orq_core::remote_inbox::QueueChange) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        self.change_queue_of(id, change)
     }
 
     fn start_run_with(&self, id: &str, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<orq_core::remote_inbox::RunStart, String> {
@@ -1362,9 +1375,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
                 let settings = self.settings_of_git(&counts.git)?;
                 let blocked = start_blocked(&counts.git, &settings, &counts.active)?.map(|why| orq_core::redact::redact(&why));
-                Ok((counts, settings.max_active_runs, blocked))
+                let queue = queue::queue_summary(reviews.as_ref(), &counts.git)?;
+                Ok((counts, settings.max_active_runs, blocked, queue))
             }) {
-                Ok((counts, max_active_runs, start_blocked)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
+                Ok((counts, max_active_runs, start_blocked, queue)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "queue": queue, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
                 Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null, "failed_runs": null, "failed_window_hours": FAILED_WINDOW_HOURS}),
             })
             .collect::<Vec<_>>();
