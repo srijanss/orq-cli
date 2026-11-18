@@ -772,7 +772,6 @@ fn escalation_reason(review: &orq_orchestrator::EscalatedReview) -> String {
     format!("the review escalated after {} {rounds} with {open} {findings} open", review.rounds)
 }
 
-/// How an unattended session's reported problem says a person has to decide something.
 /// Records on the run that it runs unattended, so its record and the runs lists say so; a note
 /// when the event cannot be written.
 fn record_unattended(store: &RunStore, record: &RunRecord) -> Option<String> {
@@ -791,7 +790,15 @@ fn record_unattended(store: &RunStore, record: &RunRecord) -> Option<String> {
     store.append_event(&event).err().map(|err| format!("the run's events do not record that it runs unattended: {err:?}"))
 }
 
+/// How an unattended session's reported problem says a person has to decide something.
 const NEEDS_A_DECISION: &str = "needs a decision:";
+
+/// The decision an unattended session's reported problem says a person has to make, from
+/// [`NEEDS_A_DECISION`] on, if it names one.
+fn needed_decision(reported: Option<&str>) -> Option<String> {
+    let problem = reported?;
+    problem.find(NEEDS_A_DECISION).map(|at| problem[at..].to_string())
+}
 
 /// Why an unattended run stops when its session asked for something nobody can give: the last need its
 /// needs-input hook put on the run, if one did.
@@ -1950,6 +1957,11 @@ fn stages(
                 if let Some(reason) = unanswered_need(store, run_id) {
                     return stopped(Ending::Blocked, reason);
                 }
+                // What the session could not decide waits for a person, whatever else it left: a
+                // review that escalated too is drafted only once that is decided.
+                if let Some(decision) = needed_decision(outcome.reported.as_deref()) {
+                    return stopped(Ending::Blocked, decision);
+                }
             }
             if !outcome.success {
                 // A session that stopped for its escalated review has done what it could; the
@@ -1964,11 +1976,6 @@ fn stages(
                         }
                     }
                     Some(review) => return stopped(Ending::NeedsReview, escalation_reason(&review)),
-                    // What an unattended session could not decide waits for a person, not a fix.
-                    None if options.unattended && outcome.reported.as_deref().is_some_and(|p| p.contains(NEEDS_A_DECISION)) => {
-                        let problem = outcome.reported.as_deref().unwrap_or_default();
-                        return stopped(Ending::Blocked, problem[problem.find(NEEDS_A_DECISION).unwrap_or(0)..].to_string());
-                    }
                     None => {
                         return stopped(Ending::Failed, match outcome.reported {
                             Some(problem) => format!("the implement session reported a problem: {problem}"),

@@ -339,3 +339,18 @@ fn a_run_the_queue_starts_runs_unattended_outside_herdr_even_while_herdr_runs() 
     assert_eq!(argv_lines(&w).first().map(String::as_str), Some("-p"), "{:?}", argv_lines(&w));
     assert!(!herdr_calls.exists(), "the queue's run went to Herdr: {}", std::fs::read_to_string(&herdr_calls).unwrap_or_default());
 }
+
+/// A decision the session says it cannot make is a person's, even when its review escalated too with
+/// findings that would only be drafted: the run ends blocked on the decision, and nothing is drafted.
+#[test]
+fn an_unattended_run_that_needs_a_decision_ends_blocked_on_it_even_when_its_review_escalated() {
+    let agent = feature_agent();
+    let w = world("decision-and-escalation", &agent, &escalated_review(&[("minor-thing", "medium", "bugs")]), "PROBLEM\\nneeds a decision: whether to drop the v1 API\\n");
+
+    let output = run(&w, &["--unattended", "--delivery", "merge-local"]);
+
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(stdout.contains("state: blocked"), "{stdout}\n{stderr}");
+    assert!(stderr.contains("needs a decision: whether to drop the v1 API"), "{stderr}");
+    assert_eq!(followups(w.repo.root()), Vec::<serde_json::Value>::new());
+}
