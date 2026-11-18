@@ -34,15 +34,16 @@ fn upgrade_as_newer_orq(db: &std::path::Path, breaking: bool) -> u32 {
 }
 
 #[test]
-fn version_9_is_additive_so_a_schema_8_orq_keeps_recording_reviews_in_a_schema_9_database() {
-    let db = scratch("v9");
+fn version_10_is_additive_so_a_schema_9_orq_keeps_recording_reviews_in_a_schema_10_database() {
+    let db = scratch("v10");
     drop(Store::open(&db).unwrap());
-    assert_eq!(Store::LATEST_VERSION, 9);
+    assert_eq!(Store::LATEST_VERSION, 10);
     assert!(!orq_core::store::is_breaking(9));
+    assert!(!orq_core::store::is_breaking(10));
 
-    let older = Store::open_understanding(&db, 8).unwrap();
+    let older = Store::open_understanding(&db, 9).unwrap();
     older.record_review(&record("r-older")).unwrap();
-    assert_eq!(older.schema_version().unwrap(), 9, "an older Orq never downgrades the database");
+    assert_eq!(older.schema_version().unwrap(), 10, "an older Orq never downgrades the database");
     drop(older);
     assert_eq!(Store::open(&db).unwrap().reviews_for_run("r-older").unwrap().len(), 1);
 }
