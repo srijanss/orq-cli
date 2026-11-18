@@ -978,3 +978,18 @@ fn without_pytest_among_the_dependencies_there_is_no_note() {
         assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS])), "{tag}");
     }
 }
+
+/// An app directory named like an option stays a path once `src/` is dropped, so the repository
+/// cannot hand pytest an option such as `--ignore=shop`.
+#[test]
+fn an_app_named_like_an_option_is_still_a_path_when_pytest_runs_from_src() {
+    let dir = django_configured_in_src("django-src-option-app");
+    touch(&dir, "src/pytest.ini", "[pytest]\n");
+    touch(&dir, "src/--ignore=shop/tests/test_x.py", "");
+    let changed = ["src/--ignore=shop/views.py".to_string()];
+
+    assert_eq!(
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "--directory", "src", "pytest", "./--ignore=shop"]]))
+    );
+}

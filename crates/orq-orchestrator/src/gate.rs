@@ -209,12 +209,14 @@ fn python_steps(
     if let (true, Some(changed)) = (django, changed) {
         match changed_tested_apps(dir, changed) {
             Some(targets) if targets.is_empty() => return,
-            // Paths are relative to where pytest runs.
-            Some(targets) if in_src => pytest.extend(
-                targets
-                    .iter()
-                    .map(|target| target.strip_prefix("src/").unwrap_or(target).to_string()),
-            ),
+            // Paths are relative to where pytest runs; one that would start with `-` keeps a `./`
+            // so pytest never reads an app's name as an option.
+            Some(targets) if in_src => pytest.extend(targets.iter().map(|target| {
+                match target.strip_prefix("src/").unwrap_or(target) {
+                    path if path.starts_with('-') => format!("./{path}"),
+                    path => path.to_string(),
+                }
+            })),
             Some(targets) => pytest.extend(targets),
             None => {}
         }
