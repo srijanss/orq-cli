@@ -428,12 +428,26 @@ fn restart_target(exe: &std::path::Path, installed: &std::path::Path) -> Result<
         None => exe.to_path_buf(),
     };
     if !under_target(&exe) {
+        runnable(&exe)?;
         return Ok(exe);
     }
-    if installed.is_file() && !under_target(installed) {
+    if installed.exists() && !under_target(installed) {
+        runnable(installed)?;
         return Ok(installed.to_path_buf());
     }
     Err(format!("orq runs from a build under target/ ({}) and no installed orq is at {}", exe.display(), installed.display()))
+}
+
+/// Whether `path` can be started: an executable regular file. Checked before the server stops, so a
+/// binary that is gone or cannot run refuses the restart instead of leaving no server.
+fn runnable(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
+        Ok(meta) if meta.is_file() => Err(format!("{} is not executable", path.display())),
+        Ok(_) => Err(format!("{} is not a file", path.display())),
+        Err(err) => Err(format!("cannot start {}: {:?}", path.display(), err.kind())),
+    }
 }
 
 /// The runs a restart waits for: the active runs as the Runs view counts them, less the paused ones,
@@ -583,13 +597,41 @@ mod restart_tests {
         dir
     }
 
+    fn executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn restart_target_is_refused_unless_it_is_an_executable_file_so_the_server_never_stops_for_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("unrunnable");
+        let built = dir.join("repo/target/release/orq");
+        let plain = dir.join("bin/orq");
+        std::fs::create_dir_all(plain.parent().unwrap()).unwrap();
+        std::fs::write(&plain, "").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let refused = restart_target(&built, &plain).unwrap_err();
+        assert!(refused.contains("not executable") && refused.contains(&plain.display().to_string()), "{refused}");
+        let removed = dir.join("usr/local/bin/orq");
+        let refused = restart_target(&removed, &plain).unwrap_err();
+        assert!(refused.contains(&removed.display().to_string()), "an installed binary that is gone is refused: {refused}");
+        let folder = dir.join("folder/orq");
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(restart_target(&folder, &plain).is_err(), "a directory is not a binary");
+        assert!(restart_target(&plain, &plain).is_err(), "nor is a file without the execute bit");
+    }
+
     #[test]
     fn restart_target_keeps_an_installed_binary_and_never_one_under_target() {
         let dir = temp("target");
         let installed = dir.join("bin/orq");
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        std::fs::write(&installed, "").unwrap();
-        let usr = PathBuf::from("/usr/local/bin/orq");
+        executable(&installed);
+        let usr = dir.join("usr/local/bin/orq");
+        executable(&usr);
         assert_eq!(restart_target(&usr, &installed), Ok(usr.clone()), "an installed binary re-execs itself");
         let built = dir.join("repo/target/release/orq");
         assert_eq!(restart_target(&built, &installed), Ok(installed.clone()), "a build under target/ restarts into the installed one");
@@ -599,8 +641,7 @@ mod restart_tests {
         let refused = restart_target(&built, &missing).unwrap_err();
         assert!(refused.contains("target/") && refused.contains(&missing.display().to_string()), "{refused}");
         let also_built = dir.join("other/target/debug/orq");
-        std::fs::create_dir_all(also_built.parent().unwrap()).unwrap();
-        std::fs::write(&also_built, "").unwrap();
+        executable(&also_built);
         assert!(restart_target(&built, &also_built).is_err(), "an installed path under target/ is no better");
     }
 }
