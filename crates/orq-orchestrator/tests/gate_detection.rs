@@ -993,3 +993,28 @@ fn an_app_named_like_an_option_is_still_a_path_when_pytest_runs_from_src() {
         Ok(run(&[MIGRATIONS, &["uv", "run", "--directory", "src", "pytest", "./--ignore=shop"]]))
     );
 }
+
+/// A root `tests/` directory is only where pytest looks when nothing configures it, so pytest
+/// settings beside manage.py still decide where it runs.
+#[test]
+fn settings_beside_manage_py_win_over_a_root_tests_directory_that_configures_nothing() {
+    let dir = django_configured_in_src("django-src-and-root-tests");
+    touch(&dir, "src/pytest.ini", "[pytest]\n");
+    touch(&dir, "tests/test_smoke.py", "");
+
+    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])));
+}
+
+/// The root's settings are found the way those beside manage.py are, and win over them.
+#[test]
+fn root_setup_cfg_or_tox_ini_settings_win_over_those_beside_manage_py() {
+    for (tag, name, text) in [
+        ("setup-cfg", "setup.cfg", "[tool:pytest]\naddopts = -q\n"),
+        ("tox-ini", "tox.ini", "[pytest]\naddopts = -q\n"),
+    ] {
+        let dir = django_configured_in_src(&format!("django-root-{tag}-and-src"));
+        touch(&dir, "src/pytest.ini", "[pytest]\n");
+        touch(&dir, name, text);
+        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])), "{tag}");
+    }
+}

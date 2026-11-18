@@ -144,11 +144,11 @@ fn python_steps(
             ),
         }
     }
-    let at_root =
-        pytest_in_pyproject || dir.join("pytest.ini").is_file() || dir.join("tests").is_dir();
-    // A Django project may keep its pytest settings beside manage.py; the root's win when both exist.
-    let in_src = !at_root && django && pytest_settings_in(&dir.join("src"));
-    let pytest_configured = at_root || in_src;
+    // Settings decide where pytest runs: the root's win, then those a Django project keeps beside
+    // manage.py. A root `tests/` directory configures nothing, so it only counts when neither has any.
+    let root_settings = pytest_in_pyproject || pytest_settings_in(dir);
+    let in_src = !root_settings && django && pytest_settings_in(&dir.join("src"));
+    let pytest_configured = root_settings || in_src || dir.join("tests").is_dir();
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
