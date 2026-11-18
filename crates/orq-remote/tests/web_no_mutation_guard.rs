@@ -1,4 +1,4 @@
-//! The page offers exactly twelve run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup and the kept worktrees' delete, each behind a confirmation,
+//! The page offers exactly twelve run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, pause, resume, stop, discard, accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and no other merge, nor any approve, restart or edit control or request.
 
 fn code() -> String {
@@ -66,7 +66,18 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let kept: Vec<&str> = kept_body.split("API_WORKTREES").skip(1).map(|tail| tail.split(',').next().unwrap()).collect();
     assert_eq!(kept, [""," + \"/\" + encodeURIComponent(project) + \"/\" + branchPath(worktree.branch) + \"/delete\"", " + \"/delete-merged\""]);
     let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1);
-    assert_eq!(code.matches("controlPath(control, ").count(), 18, "the definition, the eight actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked and the feature editor's read and save are the only users");
+    // Queueing posts the chosen features to the project's queue; the queue view posts to its pause,
+    // resume, remove and reorder routes; nothing else.
+    let queued = paths("queueFeatures");
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(queued[0].starts_with("\"queue\")"), "{}", queued[0]);
+    let queue_view = paths("QueueView");
+    assert_eq!(queue_view.len(), 1, "{queue_view:?}");
+    assert!(queue_view[0].starts_with("\"queue/\" + tail)"), "{}", queue_view[0]);
+    let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
+    let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
+    assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
+    assert_eq!(code.matches("controlPath(control, ").count(), 20, "the definition, the eight actions, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

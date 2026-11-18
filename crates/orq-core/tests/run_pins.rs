@@ -19,11 +19,13 @@ fn has_pins_table(db: &std::path::Path) -> bool {
 }
 
 /// Puts the database back at version 6, as an Orq from before pins were removed left it (without
-/// the run limit columns version 8 added).
+/// the run limit columns version 8 added or the run queue version 9 added).
 fn back_to_version_six(db: &std::path::Path, pins: &[&str]) {
     let conn = rusqlite::Connection::open(db).unwrap();
     conn.execute_batch("CREATE TABLE run_pins (run_id TEXT NOT NULL PRIMARY KEY, pinned_at INTEGER NOT NULL); \
          ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
+         ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; \
+         ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
          PRAGMA user_version = 6;").unwrap();
     for pin in pins {
         conn.execute("INSERT INTO run_pins (run_id, pinned_at) VALUES (?1, 1)", [pin]).unwrap();
@@ -86,7 +88,7 @@ fn a_version_two_database_is_upgraded_keeping_its_reviews_and_no_pins_table() {
     store.save_review(&roots.data, "run-1", "p-0a1b2c3d", "F", &"a".repeat(40), br#"{"status":"current","risks":[]}"#).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed;").unwrap();
+    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed; ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old;").unwrap();
     conn.pragma_update(None, "user_version", 2).unwrap();
     drop(conn);
     let store = Store::open(&db).unwrap();
