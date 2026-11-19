@@ -250,10 +250,11 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
     }
 }
 
-/// What a run's session may do without asking: edit the worktree, read, use its skills, the local
-/// git commands, building and testing, and the MCP tools the implement-and-review skill works through.
+/// What a run's session may do without asking, beside editing the worktree: read, use its skills,
+/// the local git commands, building and testing, and the MCP tools the implement-and-review skill
+/// works through.
 const ALLOWED: &[&str] = &[
-    "Edit(./**)", "Read", "Glob", "Grep", "Skill", "ToolSearch", "TodoWrite",
+    "Read", "Glob", "Grep", "Skill", "ToolSearch", "TodoWrite",
     "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git add:*)",
     "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(git branch:*)", "Bash(git stash:*)",
     "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(git ls-files:*)", "Bash(git grep:*)",
@@ -262,6 +263,9 @@ const ALLOWED: &[&str] = &[
     "Bash(cargo tree:*)", "Bash(npm ci)", "Bash(ls:*)", "Bash(cat:*)",
     "Bash(head:*)", "Bash(wc:*)", "mcp__outside-in-tdd", "mcp__project-mcp",
 ];
+/// Rules an earlier orq wrote and no longer does, taken out of the settings it rewrites. They allow
+/// no more than what replaced them, so settings that still hold one never stop a session.
+const RETIRED: [&str; 1] = ["Edit(./**)"];
 /// Rules of orq's own that run a project's script from the folder that holds it, with the script's
 /// file name: each is allowed only while every file of that name in the worktree is one the run's
 /// base holds checked in and the run has not changed.
@@ -507,7 +511,10 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     let logs = logs.to_string_lossy();
     // A path rule beginning with `//` is absolute: the session writes its exit marker there.
     let marker_rule = format!("Edit(/{logs}/**)");
-    let mut allowed: Vec<&str> = ALLOWED.to_vec();
+    let worktree_rule = worktree_edit_rule(worktree);
+    let mut allowed: Vec<&str> = worktree_rule.as_deref().into_iter().collect();
+    let refused = worktree_rule.as_ref().err().cloned();
+    allowed.extend(ALLOWED);
     allowed.push(&marker_rule);
     // A rule left out now goes from the settings too: an earlier session may have been allowed it.
     let mut withdrawn: Vec<&str> = Vec::new();
@@ -578,7 +585,7 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
             let list = permissions.entry(key).or_insert_with(|| serde_json::json!([]));
             let list = list.as_array_mut().ok_or_else(|| format!("its permissions.{key} is not a JSON array"))?;
             if key == "allow" {
-                list.retain(|item| !item.as_str().is_some_and(|item| withdrawn.contains(&item)));
+                list.retain(|item| !item.as_str().is_some_and(|item| withdrawn.contains(&item) || RETIRED.contains(&item)));
             }
             for rule in rules {
                 if !list.iter().any(|item| item.as_str() == Some(rule)) {
@@ -597,7 +604,7 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         Ok(())
     });
     let Err(why) = edited else {
-        return (notes, None, commands);
+        return (notes, refused, commands);
     };
     // Rules a file Claude Code still reads allows; one it cannot parse allows nothing.
     let held = std::fs::read_to_string(worktree.join(SETTINGS)).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
@@ -605,10 +612,31 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     if still.is_empty() {
         // Settings that were not written allow none of the rules: the session is told of none.
         notes.push(format!("{SETTINGS} was not updated: {why}"));
-        return (notes, None, Vec::new());
+        return (notes, refused, Vec::new());
     }
     let unrevoked = format!("{SETTINGS} was not updated ({why}) and still allows {}, which must be left out", still.join(", "));
+    let unrevoked = match refused {
+        Some(refused) => format!("{refused}; {unrevoked}"),
+        None => unrevoked,
+    };
     (notes, Some(unrevoked), Vec::new())
+}
+
+/// Characters a permission rule's path reads as a pattern rather than as themselves.
+const PATTERN_CHARACTERS: [char; 8] = ['*', '?', '[', ']', '{', '}', '(', ')'];
+
+/// The rule letting the session edit the worktree and nothing else: absolute, by the worktree's
+/// canonical path, as a `./` rule is read from the session's current folder, which a `cd` moves.
+/// Fails, saying why, for a path no rule names exactly: one a pattern or control character, or a
+/// byte UTF-8 does not allow, would make the rule allow more or less than the worktree.
+fn worktree_edit_rule(worktree: &Path) -> Result<String, String> {
+    let cannot = |why: String| format!("orq cannot allow editing the worktree {}: {why}, so no session was given it", worktree.display());
+    let canonical = worktree.canonicalize().map_err(|error| cannot(format!("its path cannot be resolved ({error})")))?;
+    let path = canonical.to_str().ok_or_else(|| cannot("its path is not UTF-8".to_string()))?;
+    if let Some(found) = path.chars().find(|c| PATTERN_CHARACTERS.contains(c) || c.is_control()) {
+        return Err(cannot(format!("its path holds {found:?}, which a permission rule does not read as itself; move the worktree to a path without it")));
+    }
+    Ok(format!("Edit(/{path}/**)"))
 }
 
 /// Whether the deny rule `deny` refuses every command the allow rule `allow` lets run. Checked on

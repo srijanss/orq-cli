@@ -109,7 +109,8 @@ fn an_added_rule_that_would_publish_to_a_remote_is_left_out_with_a_note() {
     assert!(notes.iter().all(|note| note.contains("allowed_tools")), "{notes:?}");
     let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
     assert!(allow.iter().any(|rule| rule == "Bash(make lint:*)"), "{allow:?}");
-    assert!(!allow.iter().any(|rule| rule.contains("push") || rule.contains("publish")), "{allow:?}");
+    // The worktree's own edit rule names its path, which here holds "publish".
+    assert!(!allow.iter().any(|rule| rule.starts_with("Bash(") && (rule.contains("push") || rule.contains("publish"))), "{allow:?}");
 }
 
 /// A rule broad enough to reach publishing another way, a whole program that can publish or a
@@ -466,6 +467,8 @@ fn settings_the_permissions_cannot_join_are_a_note_and_are_left_as_they_were() {
 }
 
 /// A session that refuses what it was not allowed still edits the worktree and writes its marker.
+/// The edit rule names the worktree by its canonical path: a `./` rule follows the session's
+/// current folder, so a `cd` would shrink it to that folder.
 #[test]
 fn the_session_may_edit_the_worktree_and_write_into_the_runs_logs() {
     let (_repo, worktree) = checkout("permissions-edits");
@@ -473,10 +476,58 @@ fn the_session_may_edit_the_worktree_and_write_into_the_runs_logs() {
     assert_eq!(write_run_permissions(&worktree, &[], Path::new("/state/orq/logs/run-1"), &head(&worktree)), Vec::<String>::new());
 
     let allow = strings(&read_json(&worktree.join(".claude/settings.local.json"))["permissions"]["allow"]);
-    for wanted in ["Edit(./**)", "Edit(//state/orq/logs/run-1/**)", "Read", "Skill"] {
+    let worktree_rule = format!("Edit(/{}/**)", worktree.canonicalize().unwrap().display());
+    for wanted in [worktree_rule.as_str(), "Edit(//state/orq/logs/run-1/**)", "Read", "Skill"] {
         assert!(allow.iter().any(|rule| rule == wanted), "{wanted} in {allow:?}");
     }
     assert!(!allow.iter().any(|rule| rule == "Edit"), "no edit anywhere: {allow:?}");
+    assert!(!allow.iter().any(|rule| rule == "Edit(./**)"), "no edit relative to the session's folder: {allow:?}");
+}
+
+/// Settings an earlier orq wrote allowed edits relative to the session's folder: rewritten, they
+/// lose that rule and keep the rest, a person's own rule included.
+#[test]
+fn rewriting_older_settings_withdraws_the_relative_edit_rule_and_keeps_a_persons_rule() {
+    let (_repo, worktree) = checkout("permissions-older-edit");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::write(
+        worktree.join(".claude/settings.local.json"),
+        r#"{"permissions":{"allow":["Edit(./**)","Bash(make docs:*)","Read"],"deny":["Bash(git push:*)"]}}"#,
+    )
+    .unwrap();
+
+    assert_eq!(write_run_permissions(&worktree, &[], Path::new("/logs/r"), &head(&worktree)), Vec::<String>::new());
+
+    let allow = allowed(&worktree);
+    assert!(!allow.iter().any(|rule| rule == "Edit(./**)"), "{allow:?}");
+    let worktree_rule = format!("Edit(/{}/**)", worktree.canonicalize().unwrap().display());
+    for wanted in [worktree_rule.as_str(), "Bash(make docs:*)", "Read", "Bash(git status:*)"] {
+        assert_eq!(allow.iter().filter(|rule| *rule == wanted).count(), 1, "{wanted} once in {allow:?}");
+    }
+}
+
+/// A worktree path holding a character a permission pattern reads as special can't be named by an
+/// edit rule that allows exactly the worktree: the refresh before a session fails saying why, and
+/// no rule for it is written.
+#[test]
+fn a_worktree_path_with_a_pattern_character_fails_the_refresh_with_its_reason() {
+    let (_repo, worktree) = checkout("permissions-pattern-path");
+    let odd = worktree.parent().unwrap().join("odd[1]");
+    fs::create_dir_all(&odd).unwrap();
+    git(&odd, &["init", "--quiet"]);
+
+    let refreshed = refresh_run_permissions(&odd, &[], Path::new("/logs/r"), "");
+
+    let why = refreshed.expect_err("the path can't be written as a rule");
+    assert!(why.contains("odd[1]") && why.contains('['), "{why}");
+    let notes = write_run_permissions(&odd, &[], Path::new("/logs/r"), "");
+    assert!(notes.iter().any(|note| note.contains("odd[1]")), "{notes:?}");
+    let settings = odd.join(".claude/settings.local.json");
+    if settings.exists() {
+        let allow = allowed(&odd);
+        assert!(!allow.iter().any(|rule| rule.contains("odd[1]") || rule == "Edit(./**)"), "{allow:?}");
+        assert!(allow.iter().any(|rule| rule == "Edit(//logs/r/**)"), "the log rule stays: {allow:?}");
+    }
 }
 
 /// What git ignores is checked like what it does not track: an ignored script, repository or link to
