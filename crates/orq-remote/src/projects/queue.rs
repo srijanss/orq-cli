@@ -311,8 +311,8 @@ impl StoreProjects {
                         if !outcome.may_start() {
                             break 'start Some(format!("{}: {}: pull by hand, then resume", git.name, outcome.describe(PULL_REMOTE, &target)));
                         }
-                        // The target is level with origin now, so a merge's warning no longer holds.
-                        PullWarning::of(&self.roots, git).clear();
+                        // The target is level with origin now, so a merge's warning about it no longer holds.
+                        PullWarning::of(&self.roots, git).pulled(PULL_REMOTE, &target);
                     }
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
                     match self.launch(id, Launch::Queued(&entry.feature), profiles.as_ref()) {
@@ -495,22 +495,22 @@ impl StoreProjects {
         }
         let warning = PullWarning::of(&self.roots, &git);
         match outcome {
-            orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } => warning.clear(),
-            _ => warning.set(&format!("{target} not updated after {} merged: {message}", review_ref(&review))),
+            orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } => warning.pulled(remote, &target),
+            _ => warning.set(remote, &target, &format!("{target} not updated after {} merged: {message}", review_ref(&review))),
         }
     }
 
-    /// Pulls project `id`'s target again, as a person asked: what came of it, and whether the warning
-    /// a merge left is gone. `None` for an unknown project.
+    /// Pulls project `id`'s target again, as a person asked: the target a merge's warning is about, or
+    /// else the project's; what came of it, and whether the warning is gone. `None` for an unknown project.
     pub(super) fn pull_target_of(&self, id: &str) -> Result<Option<Value>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
-        let target = project_target(&root);
-        let outcome = orq_git::pull_target(&root, PULL_REMOTE, &target);
         let warning = PullWarning::of(&self.roots, &git);
+        let (remote, target) = warning.about().unwrap_or_else(|| (PULL_REMOTE.to_string(), project_target(&root)));
+        let outcome = orq_git::pull_target(&root, &remote, &target);
         if outcome.may_start() {
-            warning.clear();
+            warning.pulled(&remote, &target);
         }
-        let message = orq_core::redact::redact(&outcome.describe(PULL_REMOTE, &target));
+        let message = orq_core::redact::redact(&outcome.describe(&remote, &target));
         Ok(Some(json!({"outcome": outcome.kind(), "message": message, "target_pull_warning": warning.read()})))
     }
 
@@ -910,7 +910,7 @@ fn utc_now() -> String {
 }
 
 /// What a project shows after a merge whose pull could not bring its target level, kept in a file
-/// under the state root until a pull does.
+/// under the state root until a pull of that same target, from that same remote, does.
 struct PullWarning(std::path::PathBuf);
 
 impl PullWarning {
@@ -918,19 +918,40 @@ impl PullWarning {
         Self(roots.state.join("target-pull").join(orq_git::project_id(git)))
     }
 
-    fn read(&self) -> Option<String> {
-        std::fs::read_to_string(&self.0).ok().map(|text| orq_core::redact::redact(text.trim())).filter(|text| !text.is_empty())
+    /// The stored warning; a file from before warnings named their target is about no target in particular.
+    fn stored(&self) -> Option<Value> {
+        let text = std::fs::read_to_string(&self.0).ok()?;
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        Some(serde_json::from_str::<Value>(text).ok().filter(Value::is_object).unwrap_or_else(|| json!({"message": text})))
     }
 
-    fn set(&self, warning: &str) {
+    fn read(&self) -> Option<String> {
+        self.stored()?["message"].as_str().map(|text| orq_core::redact::redact(text.trim())).filter(|text| !text.is_empty())
+    }
+
+    /// The remote and target the warning is about, when it names them.
+    fn about(&self) -> Option<(String, String)> {
+        let stored = self.stored()?;
+        Some((stored["remote"].as_str()?.to_string(), stored["target"].as_str()?.to_string()))
+    }
+
+    fn set(&self, remote: &str, target: &str, warning: &str) {
         if let Some(dir) = self.0.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&self.0, warning);
+        let _ = std::fs::write(&self.0, json!({"remote": remote, "target": target, "message": warning}).to_string());
     }
 
-    fn clear(&self) {
-        let _ = std::fs::remove_file(&self.0);
+    /// Clears the warning once `target` was pulled level from `remote`, when that is what it is about.
+    fn pulled(&self, remote: &str, target: &str) {
+        let Some(stored) = self.stored() else { return };
+        let names = |key: &str, value: &str| stored[key].as_str().map_or(true, |named| named == value);
+        if names("remote", remote) && names("target", target) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 

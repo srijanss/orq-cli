@@ -507,6 +507,51 @@ fn a_merged_run_on_another_target_pulls_its_own_target() {
     assert_eq!((pulled[0]["outcome"].as_str(), pulled[0]["target"].as_str()), (Some("fast_forwarded"), Some("release")), "{pulled:?}");
 }
 
+/// A run's own target that could not be pulled after its merge keeps warning while the queue pulls
+/// the project's target, and the retry pulls the branch the warning is about.
+#[test]
+fn a_warning_about_a_run_target_outlasts_pulls_of_the_project_target_and_its_retry_pulls_that_target() {
+    let s = setup("pull-warning-own-target", Delivery::Review, |_| {});
+    git(&s.repo, &["branch", "release"]);
+    git(&s.repo, &["push", "-q", "origin", "release"]);
+    let level = git(&s.repo, &["rev-parse", "refs/heads/release"]);
+    git(&s.repo, &["checkout", "-q", "release"]);
+    std::fs::write(s.repo.join("local.txt"), "local\n").unwrap();
+    git(&s.repo, &["add", "local.txt"]);
+    git(&s.repo, &["commit", "-q", "-m", "local only on release"]);
+    git(&s.repo, &["checkout", "-q", "main"]);
+    seed_run_on(&s.roots.state, &s.repo, "run-9-COM-01", "COM-01", "release");
+    git(&s.forge, &["fetch", "-q", "origin"]);
+    git(&s.forge, &["checkout", "-q", "-b", "release", "origin/release"]);
+    std::fs::write(s.forge.join("release.txt"), "release\n").unwrap();
+    git(&s.forge, &["add", "."]);
+    git(&s.forge, &["commit", "-q", "-m", "merged into release"]);
+    git(&s.forge, &["push", "-q", "origin", "release"]);
+    let merged = git(&s.forge, &["rev-parse", "HEAD"]);
+    event(&RunStore::new(&s.roots.state), "run-9-COM-01", "run.completed", json!({"ending": "review_ready"}));
+    mr(&s, "run-9-COM-01", ProviderState::Merged);
+    provider(&s).review_looked_at("run-9-COM-01");
+    let warning = card(&s)["queue"]["target_pull_warning"].clone();
+    assert!(warning.as_str().is_some_and(|text| text.starts_with("release not updated")), "{warning}");
+
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"], "main pulled level and the queue started");
+    assert_eq!(queue(&s)["target_pull_warning"], warning, "a pull of main says nothing about release");
+
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/pull", b"");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["outcome"], "diverged", "{body}");
+    assert!(body["message"].as_str().is_some_and(|text| text.starts_with("release")), "{body}");
+    assert_eq!(queue(&s)["target_pull_warning"], warning);
+
+    git(&s.repo, &["branch", "-f", "release", &level]);
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/pull", b"");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["outcome"], "fast_forwarded", "{body}");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/release"]), merged, "the retry pulled release");
+    assert!(queue(&s).get("target_pull_warning").is_none(), "{}", queue(&s));
+}
+
 #[test]
 fn a_retry_needs_remote_actions_and_a_known_project() {
     let s = setup("pull-retry-off", Delivery::Review, |_| {});
