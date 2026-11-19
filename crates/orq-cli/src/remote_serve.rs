@@ -716,6 +716,14 @@ fn install_command(args: &[OsString]) -> ExitCode {
         // A new unit is enabled and started; a changed one is restarted, so the server runs with the new flags.
         let calls: &[&[&str]] = if before.is_none() { &[&["daemon-reload"], &["enable", "--now", UNIT]] } else { &[&["daemon-reload"], &["enable", UNIT], &["restart", UNIT]] };
         if let Err(why) = systemctl_each(calls) {
+            // The server still runs from the unit that was there, so that unit is put back: installing again
+            // then sees a change and applies it, instead of taking the running server for the new one.
+            if let Some(old) = &before {
+                if let Err(err) = std::fs::write(&path, old) {
+                    return fail(format!("{why}; and cannot put back the previous {}: {:?}", path.display(), err.kind()));
+                }
+                let _ = systemctl(&["daemon-reload"]);
+            }
             return fail(why);
         }
         let done = if before.is_none() { "installed" } else { "updated" };

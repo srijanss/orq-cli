@@ -391,17 +391,22 @@ fn status_shows_what_systemd_and_the_journal_cannot_tell_as_unknown_and_why() {
 }
 
 #[test]
-fn an_update_whose_restart_fails_says_so_and_installing_again_starts_it() {
-    let world = World::new("update-fails");
-    ok(&world.install("127.0.0.1:7999"));
-    world.answer("systemctl", "case \"$*\" in *restart*) echo 'Job failed' >&2; exit 1;; esac");
-    let failed = world.install("127.0.0.1:7998");
-    assert!(!failed.status.success(), "{}", text(&failed.stdout));
-    assert!(text(&failed.stderr).contains("Job failed"), "{}", text(&failed.stderr));
-    assert!(world.unit().contains("127.0.0.1:7998"), "the new unit is written");
-    world.answer("systemctl", "case \"$*\" in *show*) printf 'UnitFileState=enabled\\nActiveState=failed\\nNRestarts=0\\n';; esac");
-    world.forget_calls();
-    let out = ok(&world.install("127.0.0.1:7998"));
-    assert!(out.contains("enabled and started it"), "{out}");
-    assert_eq!(world.systemctl_calls(), format!("{SHOW}systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\n"));
+fn an_update_that_fails_at_any_step_keeps_the_old_unit_so_installing_again_applies_it() {
+    for step in ["daemon-reload", "enable", "restart"] {
+        let world = World::new(&format!("update-fails-{step}"));
+        ok(&world.install("127.0.0.1:7999"));
+        let old = world.unit();
+        // The old server stays enabled and running through it all.
+        world.answer("systemctl", &format!("case \"$*\" in *show*) printf 'UnitFileState=enabled\\nActiveState=active\\nNRestarts=0\\n';; *{step}*) echo 'Job failed' >&2; exit 1;; esac"));
+        let failed = world.install("127.0.0.1:7998");
+        assert!(!failed.status.success(), "{step}: {}", text(&failed.stdout));
+        assert!(text(&failed.stderr).contains("Job failed"), "{step}: {}", text(&failed.stderr));
+        assert_eq!(world.unit(), old, "{step}: the unit the running server came from is put back");
+        world.healthy();
+        world.forget_calls();
+        let out = ok(&world.install("127.0.0.1:7998"));
+        assert!(out.contains("updated"), "{step}: {out}");
+        assert!(world.unit().contains("127.0.0.1:7998"), "{step}");
+        assert_eq!(world.systemctl_calls(), "systemctl --user daemon-reload\nsystemctl --user enable orq-serve.service\nsystemctl --user restart orq-serve.service\n", "{step}");
+    }
 }
