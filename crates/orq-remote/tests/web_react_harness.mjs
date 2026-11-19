@@ -209,7 +209,10 @@ window.fetch = (url, options = {}) => {
     todoRequests.push({ url, method: options.method || "GET", body: options.body === undefined ? null : options.body });
     const next = todoReplies.shift() || { status: 404, json: { error: "not found" } };
     if (next.reject) return Promise.reject(new Error("offline"));
-    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
+    const answer = () => ({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
+    // {"hold": "fetch"} keeps the answer back until a {"release": "todo:<n>"} step, n counting the Todo requests from 0.
+    if (next.hold === "fetch") return new Promise((resolve) => { held["todo:" + (todoRequests.length - 1)] = () => resolve(answer()); });
+    return Promise.resolve(answer());
   }
   const signal = options.signal;
   requests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body, get aborted() { return signal ? signal.aborted : null; } });

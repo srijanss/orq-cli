@@ -172,6 +172,34 @@ fn escape_cancel_and_close_leave_the_edit_popup_unsaved_and_give_edit_the_focus_
 }
 
 #[test]
+fn while_a_save_is_out_nothing_closes_the_edit_popup_and_after_a_failure_it_closes_again() {
+    let held = json!({"status": 409, "json": {"error": "The item changed since it was read."}, "hold": "fetch"});
+    let steps = vec![
+        json!({"click": "[data-todo-edit]"}),
+        json!({"set": ".feature-modal [data-todo-name]", "value": "typed"}),
+        json!({"click": ".feature-modal [data-todo-save]"}),
+        json!({"keydown": "Escape"}),
+        json!({"click": ".feature-modal [data-cancel]"}),
+        json!({"click": ".feature-modal [data-modal-close]"}),
+        json!({"click": "[data-todo-edit-dialog]"}),
+        json!({"release": "todo:1"}),
+        json!({"keydown": "Escape"}),
+    ];
+    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(7, "one")]), held], steps, &EDIT) else { return };
+    let all = frames(&out);
+    for (at, how) in [(5, "Escape"), (6, "Cancel"), (7, "Close"), (8, "the backdrop")] {
+        assert_eq!(count(&all[at], EDIT[0]), 1, "{how} leaves it open while the save is out: {out}");
+        assert!(texts(&all[at]).iter().any(|t| t == "Sending…"), "{how}: still sending: {out}");
+    }
+    let failed = &all[9];
+    assert_eq!(count(failed, EDIT[0]), 1, "{out}");
+    assert!(texts(failed).iter().any(|t| t == "The item changed since it was read."), "{out}");
+    assert_eq!(name_values(failed), ["typed"], "what was typed stays: {out}");
+    assert_eq!(count(all.last().unwrap(), EDIT[0]), 0, "Escape closes it again once the save failed: {out}");
+    assert_eq!(todo_posts(&out).len(), 1, "{out}");
+}
+
+#[test]
 fn tab_stays_in_the_edit_popup_and_another_items_edit_starts_from_that_items_text() {
     const CLOSE: &str = ".feature-modal [data-modal-close]";
     const CANCEL: &str = ".feature-modal [data-cancel]";
