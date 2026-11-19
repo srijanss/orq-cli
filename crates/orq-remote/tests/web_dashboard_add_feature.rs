@@ -1,4 +1,4 @@
-//! The Dashboard's fourth tile is Add feature: a popup whose Project choice starts at "Todo (no project)",
+//! The Dashboard's fourth tile (the Todo count) opens Add feature: a popup whose Project choice starts at "Todo (no project)",
 //! which keeps a name and a description on the Todo list, or names a project, which opens the full feature
 //! editor and saves a draft there. Above the projects sits the Todo list, newest first, ten at a time, each
 //! item with Move to project, Edit and Delete. A draft moved with "Queue once approved" says so on its page,
@@ -77,13 +77,13 @@ fn posts(out: &Value) -> Vec<(String, Value)> {
 }
 
 #[test]
-fn the_fourth_tile_is_add_feature_and_an_empty_todo_list_sits_above_the_projects() {
+fn the_fourth_tile_opens_add_feature_and_an_empty_todo_list_sits_above_the_projects() {
     let Some(out) = run("/dashboard", vec![projects()], vec![todos(vec![], true)], vec![]) else { return };
     let frame = last(&out);
     assert_eq!(count(frame, SELECTORS[0]), 1, "{out}");
     assert!(!has(frame, "Last updated"), "the tile replaces Last updated: {out}");
     let shown = texts(frame);
-    let todo = shown.iter().position(|t| t == "Todo").expect("a Todo heading");
+    let todo = shown.iter().position(|t| t == "Todos").expect("a Todos heading");
     let empty = shown.iter().position(|t| t == "Nothing to do. Add feature puts ideas here.").expect("the empty text");
     let heading = shown.iter().rposition(|t| t == "Projects").unwrap();
     assert!(todo < empty && empty < heading, "{shown:?}");

@@ -957,7 +957,7 @@ function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraf
   return (
     <li className="todo-item card" data-todo-item={item.id}>
       {mode === "edit" ? (
-        <div className="todo-edit" role="group" aria-label={"Edit " + item.name}>
+        <div className="todo-edit feature-editor-fields" role="group" aria-label={"Edit " + item.name}>
           <TodoFields name={name} description={description} onName={setName} onDescription={setDescription} />
           <div className="feature-editor-actions">
             <button type="button" className="primary-button" data-todo-save disabled={busy || name.trim() === ""} onClick={() => send(itemPath, { name, description, version: item.version }, "The item could not be saved.")}><Icon name="check" size={16} />Save</button>
@@ -1009,7 +1009,7 @@ function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
   }
   return (
     <section className="todo" data-todo>
-      <h2 className="section-title">Todo</h2>
+      <h2 className="section-title">Todos</h2>
       {body}
     </section>
   );
@@ -1240,6 +1240,24 @@ function useTodo(token, onSignedOut, reads) {
   return todo;
 }
 
+// The fourth tile: how many Todo items there are ("–" while loading or when the list can't be read, the reason
+// as its title). Pressing it opens Add feature.
+function TodoStat({ todo, onAdd }) {
+  const known = todo !== null && typeof todo === "object";
+  const value = known ? todo.items.length : "–";
+  const label = known && todo.items.length === 1 ? "Todo" : "Todos";
+  const name = (known ? value + " " + label : label) + ", add feature";
+  return (
+    <button type="button" className="stat stat-link stat-add" data-dashboard-add aria-label={name} title={typeof todo === "string" ? todo : undefined} onClick={onAdd}>
+      <span className="stat-icon tone-accent"><Icon name="plus" size={24} /></span>
+      <span className="stat-text">
+        <span className="stat-value">{value}</span>
+        <span className="stat-label">{label}</span>
+      </span>
+    </button>
+  );
+}
+
 // The totals above the project cards; a project that could not be read adds nothing to the sums.
 function Dashboard({ projects, machine = null, token, onSignedOut }) {
   const [pins, setPins] = useState(readPins);
@@ -1271,13 +1289,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
         <Stat icon="layers" tone="tone-accent" value={projects.length} label="Projects" />
         <Stat icon="play" tone="tone-accent" value={sum("active_runs")} label="Active runs" to="/orchestrations" link="runs" />
         <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" to="/reviews" link="reviews" />
-        <button type="button" className="stat stat-link stat-add" data-dashboard-add onClick={() => { setNotice(""); setAdding({ item: null }); }}>
-          <span className="stat-icon tone-accent"><Icon name="plus" size={24} /></span>
-          <span className="stat-text">
-            <span className="stat-value">Add feature</span>
-            <span className="stat-label">To Todo or a project</span>
-          </span>
-        </button>
+        <TodoStat todo={todo} onAdd={() => { setNotice(""); setAdding({ item: null }); }} />
       </div>
       {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
       {machine === null ? null : <MachineRuns machine={machine} />}

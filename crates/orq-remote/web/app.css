@@ -217,7 +217,8 @@ input, select, textarea { max-width: 100%; }
 a { color: var(--accent); }
 button { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.75rem; font: inherit; font-size: 0.9375rem; cursor: pointer; }
 input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
-textarea { font: inherit; }
+/* A text area is an input that grows: the same tokens, about four lines tall, resized only in height. */
+textarea { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: calc(4 * 1.5em + 1rem); padding: 0.5rem 0.75rem; box-sizing: border-box; font: inherit; line-height: 1.5; resize: vertical; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 0.75rem 1rem; }
 .ticket-id { display: block; font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted); }
 .signin-page { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; background: var(--bg); }
@@ -397,7 +398,9 @@ p[role=alert]:empty { display: none; }
 .todo-item-actions, .queue-wish { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .queue-wish { margin: 0.75rem 0 0; }
 .todo-show-all { margin-top: 0.5rem; }
-.todo textarea, .feature-modal textarea { font: inherit; width: 100%; box-sizing: border-box; }
+/* The Edit form is the feature editor's card, already inside the item's card: no second border. */
+.todo-item .feature-editor-fields { max-width: none; padding: 0; border: 0; }
+.todo textarea, .feature-modal textarea { width: 100%; }
 @media (max-width: 700px) {
   .feature-table-wrap:has(.run-table) { overflow-x: visible; }
   .run-table thead { display: none; }
