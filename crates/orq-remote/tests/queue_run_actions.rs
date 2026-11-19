@@ -517,6 +517,26 @@ fn ending_accepts_mid_round_with(end_in_round: &EndInRound, outcome: Result<(), 
 }
 
 #[test]
+fn an_accept_this_server_is_running_shows_running_though_its_run_still_reads_as_needing_review() {
+    let s = setup("qra-accept-view", |_| {});
+    worktree_run(&s, "run-nr", "COM-00", "needs_review");
+    add(&s, json!({"action": "accept", "run": "run-nr"}));
+    round(&s);
+    let runs = RunStore::new(&s.roots.state);
+    let until = Instant::now() + Duration::from_secs(5);
+    while !runs.events("run-nr").unwrap().iter().any(|e| e.kind == "run.accept_started") {
+        assert!(Instant::now() < until, "the accept of run-nr did not start its tests");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // As just after the accept starts, before its thread records it: the run still reads as needing review.
+    end_run(&s, "run-nr", "needs_review");
+    assert!(s.projects.is_being_accepted("run-nr"));
+
+    assert_eq!(states(&s), triples(&[("accept", "run-nr", "running")]), "an accept whose tests run here is running, not waiting for review");
+    s.accept_outcomes.lock().unwrap().push(Err("3 tests failed".to_string()));
+}
+
+#[test]
 fn under_a_machine_run_limit_an_accept_read_as_going_keeps_the_machine_slot_for_the_whole_round_however_it_ends() {
     for passes in [false, true] {
         let end_in_round = EndInRound::default();

@@ -389,12 +389,18 @@ impl StoreProjects {
         let queue = self.read_queue(&root)?;
         let wait = self.settings_of_git(&git)?.queue_wait_for_review;
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
-        let review = if self.roots.database().exists() {
+        let mut review = if self.roots.database().exists() {
             let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
             in_review(&store, &RunStore::new(&self.roots.state), &queue, &git, wait)
         } else {
             std::collections::HashMap::new()
         };
+        // An Accept whose tests run here is running, though its run may not have recorded it yet.
+        review.retain(|feature, _| {
+            !queue.entries.iter().any(|entry| {
+                entry.feature == *feature && matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) && entry.run.as_deref().is_some_and(|run| self.being_accepted(run).is_some())
+            })
+        });
         Ok(Some(queue_json_with(&queue, &ledger, &review)))
     }
 
