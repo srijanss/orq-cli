@@ -235,6 +235,35 @@ fn worktree_run(s: &Setup, run: &str, feature: &str, ending: &str) {
     end_run(s, run, ending);
 }
 
+/// [`worktree_run`] for a merge-local run, its worktree outside the project's checkout, its one commit
+/// adding `work.txt`.
+fn merge_local_run(s: &Setup, run: &str, feature: &str, ending: &str) -> PathBuf {
+    let worktree = s.repo.parent().unwrap().join(format!("{run}-worktree"));
+    git(&s.repo, &["worktree", "add", "-q", "-b", &format!("orq/{run}"), worktree.to_str().unwrap()]);
+    std::fs::write(worktree.join("work.txt"), "work\n").unwrap();
+    git(&worktree, &["add", "work.txt"]);
+    git(&worktree, &["commit", "-q", "-m", &format!("work of {run}")]);
+    let store = RunStore::new(&s.roots.state);
+    let record = RunRecord {
+        delivery: Delivery::MergeLocal,
+        run_id: run.into(),
+        project_id: orq_git::project_id(&orq_git::resolve_project(&s.repo).unwrap()),
+        feature_id: feature.into(),
+        remote: "origin".into(),
+        provider: "gitlab".into(),
+        target_branch: "main".into(),
+        base_sha: git(&s.repo, &["rev-parse", "HEAD"]),
+        branch: format!("orq/{run}"),
+        worktree: worktree.clone(),
+        repository: String::new(),
+        profiles: Default::default(),
+    };
+    store.create(&record).unwrap();
+    event(&store, run, "stage.started", json!({}));
+    end_run(s, run, ending);
+    worktree
+}
+
 /// A run `run` of COM-00 that ended with `ending`.
 fn stopped_run(s: &Setup, run: &str, ending: &str) {
     seed_run(&s.roots.state, &s.repo, run, "COM-00");
@@ -285,6 +314,53 @@ fn a_queued_accept_of_a_needs_review_run_accepts_it_in_turn_and_holds_the_slot_w
     finish_accept(&s, "run-nr", Ok(()));
     assert_eq!(states(&s), triples(&[("start", "COM-02", "running")]), "an accepted run leaves the queue and the next one starts");
     assert_eq!(started(&s), ["COM-01", "COM-02"]);
+}
+
+#[test]
+fn a_queued_accept_of_a_merge_local_run_merges_it_and_leaves_the_queue_once_it_is_merged() {
+    let s = setup("qra-accept-merge-local", |_| {});
+    let worktree = merge_local_run(&s, "run-ml", "COM-00", "needs_review");
+    add(&s, json!({"action": "accept", "run": "run-ml"}));
+    round(&s);
+    assert_eq!(states(&s), triples(&[("accept", "run-ml", "running")]));
+
+    finish_accept(&s, "run-ml", Ok(()));
+
+    assert_eq!(states(&s), Vec::<(String, String, String)>::new(), "a merged run leaves the queue");
+    assert_eq!(git(&s.repo, &["log", "-1", "--format=%s", "main"]), "work of run-ml", "main is fast-forwarded to the run's work");
+    assert!(!worktree.exists(), "the merged run's worktree is removed");
+    let events = RunStore::new(&s.roots.state).events("run-ml").unwrap();
+    let completed = events.iter().rev().find(|e| e.kind == "run.completed").unwrap();
+    assert_eq!(completed.payload["ending"], "merged", "{}", completed.payload);
+    assert_eq!(completed.payload["note"], "accepted: tests passed, merged into main");
+    let ledger: Value = serde_json::from_str(&std::fs::read_to_string(s.repo.join(".tdd-features.json")).unwrap()).unwrap();
+    assert_eq!(ledger[0]["featureName"], "COM-00");
+    assert_eq!(ledger[0]["status"], "completed", "the merged run's feature is completed: {ledger}");
+}
+
+#[test]
+fn a_merge_local_run_accepted_before_accepting_merged_shows_it_waits_to_merge_and_accept_merges_it() {
+    let s = setup("qra-merge-accepted", |_| {});
+    let worktree = merge_local_run(&s, "run-acc", "COM-00", "needs_review");
+    let store = RunStore::new(&s.roots.state);
+    // How an accept ended a merge-local run before accepting merged it.
+    event(&store, "run-acc", "run.accept_started", json!({"by": "web"}));
+    event(&store, "run-acc", "run.completed", json!({"ending": "review_ready", "note": "accepted: tests passed", "by": "web"}));
+    let run = |s: &Setup| send(s, "GET", "/api/projects/alpha/runs/run-acc", b"").1["run"].clone();
+    assert_eq!(run(&s)["merge_pending"], true, "{}", run(&s));
+
+    let (status, answer) = send(&s, "POST", "/api/projects/alpha/runs/run-acc/accept", b"");
+    assert_eq!((status, answer), (202, json!({"run": "run-acc"})));
+    // No accept outcome is given: tests run again would wait for one, and the merge would not end.
+    let until = Instant::now() + Duration::from_secs(10);
+    while run(&s)["ending"] != "merged" {
+        assert!(Instant::now() < until, "the accepted run was not merged: {}", run(&s));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert_eq!(run(&s).get("merge_pending"), None, "a merged run has nothing left to merge");
+    assert_eq!(git(&s.repo, &["log", "-1", "--format=%s", "main"]), "work of run-acc");
+    assert!(!worktree.exists(), "the merged run's worktree is removed");
 }
 
 #[test]

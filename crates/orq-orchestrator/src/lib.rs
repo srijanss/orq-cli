@@ -58,9 +58,15 @@ pub use checkpoint::{
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
-pub use accept::{accept_check, accept_run, accept_run_by, fail_interrupted_accept, run_steps, run_steps_with_env, run_worktree_tests, ACCEPT_INTERRUPTED};
+pub use accept::{
+    accept_check, accept_run, accept_run_by, accept_run_delivering, fail_interrupted_accept, merge_accepted_check, merge_accepted_run, merge_after_accept_pending, run_steps, run_steps_with_env, run_worktree_tests, CompleteFeatures,
+    ACCEPT_INTERRUPTED,
+};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
-pub use merge_local::{merge_into_base, merge_setting_aside, waiting_on_dirty_checkout, MergeOutcome, SetAsideOutcome};
+pub use merge_local::{
+    land_on_target, merge_into_base, merge_setting_aside, remove_merged_run, waiting_on_dirty_checkout, Landing, MergeOutcome, SetAsideOutcome,
+    MERGE_LOCAL_RETRIES,
+};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};
 pub use discard::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, features_finished_elsewhere, features_no_later_run_took, DeletedBranch, DiscardOutcome};
 pub use fix_features::{carry_fix_features, fix_features, record_fix_features_added};

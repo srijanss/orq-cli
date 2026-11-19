@@ -82,6 +82,101 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
 /// (with `by` and the head being tested) is recorded; a failure after that is recorded as `run.accept_failed`,
 /// which gives the run back the phase it had, and is returned as the reason.
 pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+    accept_run_delivering(store, run_id, by, tests, &|_, _, _| Ok(Vec::new()))
+}
+
+/// Sets each of the features (second argument) of a run of the project (first argument) completed in the
+/// project's ledger, recorded at the time given (third argument, RFC 3339), and says which it set.
+pub type CompleteFeatures<'a> = dyn Fn(&str, &[String], &str) ->Result<Vec<String>, String> + 'a;
+
+/// What an accept whose tests passed went on to do.
+enum Delivered {
+    /// Nothing more: the run is review ready.
+    ReviewReady,
+    /// The run is merge-local and its branch landed on the target at `head_sha`.
+    Merged { head_sha: String, note: Option<String> },
+    /// The run is merge-local and its target could not take it; it waits on a person.
+    Blocked { reason: String },
+}
+
+/// [`accept_run_by`], and a merge-local run whose tests pass is carried on to the merge as the pipeline
+/// carries a run whose gate passes ([`crate::land_on_target`]): a target that moved is caught up with by
+/// a rebase, and the tests run again on the rebased head; the target is fast-forwarded; the worktree and
+/// branch are removed ([`crate::remove_merged_run`]); and `complete` sets the run's features completed.
+/// A rebase conflict is undone and fails the accept, naming the files; a target that cannot take the run
+/// (a dirty checkout) ends it blocked.
+pub fn accept_run_delivering(
+    store: &RunStore,
+    run_id: &str,
+    by: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+    complete: &CompleteFeatures<'_>,
+) -> Result<String, String> {
+    accept_or_merge(store, run_id, by, tests, complete, false)
+}
+
+/// Whether `record`'s run is merge-local and was accepted, from `events`, before an accept merged such a run:
+/// it ended review ready with its worktree kept and nothing merged, so [`merge_accepted_run`] can land it.
+pub fn merge_after_accept_pending(record: &crate::store::RunRecord, events: &[crate::store::Event]) -> bool {
+    if record.delivery != orq_core::project_settings::Delivery::MergeLocal || summarize_run(events).phase != RunPhase::Completed {
+        return false;
+    }
+    let Some(ended) = events.iter().rposition(|event| event.kind == "run.completed") else { return false };
+    let payload = &events[ended].payload;
+    let accepted = payload["ending"] == "review_ready" && payload["note"] == "accepted: tests passed";
+    accepted && !events[ended..].iter().any(|event| matches!(event.kind.as_str(), "merge.completed" | "worktree.removed"))
+}
+
+/// Carry the merge-local run `run_id`, accepted before an accept merged such a run, on to the merge as
+/// [`accept_run_delivering`] does once the tests pass: the tests run again only when catching up with the
+/// target changed the head. A run whose branch the target already holds is refused.
+pub fn merge_accepted_run(
+    store: &RunStore,
+    run_id: &str,
+    by: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+    complete: &CompleteFeatures<'_>,
+) -> Result<String, String> {
+    accept_or_merge(store, run_id, by, tests, complete, true)
+}
+
+/// Whether [`merge_accepted_run`] may merge `run_id`, checked as it checks before landing anything: the reason if not.
+pub fn merge_accepted_check(store: &RunStore, run_id: &str) -> Result<(), String> {
+    check_accepted(store, run_id).map(drop)
+}
+
+/// [`merge_accepted_run`]'s check: the run was accepted, and its own clean worktree holds work its target lacks.
+fn check_accepted(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, String> {
+    let record = store.load(run_id).map_err(|e| e.to_string())?;
+    crate::discard::refuse_taken_over(store, run_id)?;
+    let events = store.events(run_id).map_err(|e| e.to_string())?;
+    if !merge_after_accept_pending(&record, &events) {
+        return Err(format!("{run_id} is not a merge-local run accepted and waiting to be merged"));
+    }
+    if !record.worktree.is_dir() {
+        return Err(format!("the worktree of {run_id} is gone; there is no work to merge"));
+    }
+    verify_own_worktree(run_id, &record.worktree, &record.branch)?;
+    let status = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    if !status.trim().is_empty() {
+        return Err(format!("{run_id} has uncommitted changes in its worktree; commit or discard them first"));
+    }
+    let target = format!("refs/heads/{}", record.target_branch);
+    if git_raw(&record.worktree, &["merge-base", "--is-ancestor", "HEAD", &target]).map_err(|e| e.to_string())?.success {
+        return Err(format!("{} already holds the work of {run_id}", record.target_branch));
+    }
+    Ok(record)
+}
+
+/// An accept, or with `merge_only` the merge of a run accepted before: the tests of an accept run first.
+fn accept_or_merge(
+    store: &RunStore,
+    run_id: &str,
+    by: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+    complete: &CompleteFeatures<'_>,
+    merge_only: bool,
+) -> Result<String, String> {
     store.load(run_id).map_err(|e| e.to_string())?;
     // Held until the result is recorded, so only one accept of a run runs at a time, whoever starts it.
     let Some(_lock) = lock_accept(store, run_id)? else {
@@ -89,26 +184,95 @@ pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&P
     };
     // With the lock ours, an accept still shown running has nothing running its tests.
     record_interrupted(store, run_id)?;
-    let record = check(store, run_id)?;
+    let record = if merge_only { check_accepted(store, run_id)? } else { check(store, run_id)? };
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     append(store, &record, "run.accept_started", serde_json::json!({ "by": by, "head": head_before.trim() }))?;
     let log = open_accept_log(store, run_id);
     let outcome = {
         let _teeing = log.as_ref().map(|(_, file)| StepLog::tee_into(file));
-        test_and_confirm(run_id, &record, &head_before, tests)
+        let tested = if merge_only { Ok(()) } else { test_and_confirm(run_id, &record, &head_before, tests) };
+        tested.and_then(|()| match record.delivery {
+            orq_core::project_settings::Delivery::MergeLocal => land(store, run_id, &record, tests),
+            _ => Ok(Delivered::ReviewReady),
+        })
     };
     let log = log.map(|(path, _)| path);
     if let Err(why) = &outcome {
         record_accept_failed(store, &record, why, log.as_deref())?;
     }
-    outcome?;
-    let mut completed = serde_json::json!({ "ending": "review_ready", "note": "accepted: tests passed" });
+    let (ending, note, said) = match outcome? {
+        Delivered::ReviewReady => ("review_ready", "accepted: tests passed".to_string(), format!("Accepted {run_id}: its tests pass and it is review ready")),
+        Delivered::Merged { head_sha, note } => {
+            let target = &record.target_branch;
+            let mut said = format!("Accepted {run_id}: its tests pass and it is merged into {target} at {head_sha}");
+            if let Some(note) = note {
+                said.push_str(&format!("; {note}"));
+            }
+            if let Some(kept) = finish_merged(store, &record, complete) {
+                said.push_str(&format!("; {kept}"));
+            }
+            ("merged", format!("accepted: tests passed, merged into {target}"), said)
+        }
+        Delivered::Blocked { reason } => {
+            let mut blocked = serde_json::json!({ "ending": "blocked", "reason": reason, "by": by });
+            if let Some(log) = &log {
+                blocked["log"] = log.to_string_lossy().into_owned().into();
+            }
+            append(store, &record, "run.completed", blocked)?;
+            return Err(format!("{run_id} passed its tests but is blocked: {reason}"));
+        }
+    };
+    let mut completed = serde_json::json!({ "ending": ending, "note": note });
     completed["by"] = serde_json::Value::String(by.to_string());
     if let Some(log) = &log {
         completed["log"] = log.to_string_lossy().into_owned().into();
     }
     append(store, &record, "run.completed", completed)?;
-    Ok(format!("Accepted {run_id}: its tests pass and it is review ready"))
+    Ok(said)
+}
+
+/// Land the accepted merge-local run on its target ([`crate::land_on_target`]). A rebase that stops on a
+/// conflict is undone, so the worktree is left as it was, and fails the accept; a rebased head is tested again.
+fn land(store: &RunStore, run_id: &str, record: &crate::store::RunRecord, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<Delivered, String> {
+    let mut conflict = |reason: String| -> Result<Option<String>, crate::store::StoreError> {
+        let files: Vec<String> = crate::rebase::unmerged_files(&record.worktree)?.iter().map(|file| crate::cleanup::printable(file)).collect();
+        let aborted = git_raw(&record.worktree, &["rebase", "--abort"])?;
+        let undone = if aborted.success { "the rebase was undone" } else { "the rebase could not be undone" };
+        Ok(Some(format!("{reason} in {}; {undone} and {} was left as it was", files.join(", "), record.target_branch)))
+    };
+    let mut check = || -> Result<Option<String>, crate::store::StoreError> {
+        let head = git(&record.worktree, &["rev-parse", "HEAD"]).map_err(crate::store::StoreError::Corrupt)?;
+        Ok(test_and_confirm(run_id, record, &head, tests).err())
+    };
+    let landed = crate::merge_local::land_on_target(store, run_id, false, true, &mut conflict, &mut check).map_err(|e| format!("{e:?}"))?;
+    match landed {
+        crate::merge_local::Landing::Merged { head_sha, note } => Ok(Delivered::Merged { head_sha, note }),
+        crate::merge_local::Landing::Blocked { reason } => Ok(Delivered::Blocked { reason }),
+        crate::merge_local::Landing::Stopped(why) => Err(why),
+    }
+}
+
+/// After an accepted run merged: its worktree and branch go, and its features no later run took are set
+/// completed. Best effort, as the run is merged whatever happens here: what went wrong is returned to be said.
+fn finish_merged(store: &RunStore, record: &crate::store::RunRecord, complete: &CompleteFeatures<'_>) -> Option<String> {
+    let mut notes = Vec::new();
+    match crate::merge_local::remove_merged_run(store, &record.run_id) {
+        Ok(crate::cleanup::CleanupOutcome::Removed) => {}
+        Ok(crate::cleanup::CleanupOutcome::Kept { reason }) => notes.push(format!("its worktree was kept: {reason}")),
+        Err(err) => notes.push(format!("its worktree could not be removed: {err:?}")),
+    }
+    let members = store.events(&record.run_id).map(|events| crate::resume::members_of(record, &events)).unwrap_or_else(|_| vec![record.feature_id.clone()]);
+    let free = crate::discard::features_no_later_run_took(store, &record.run_id, &members);
+    match free.and_then(|free| complete(&record.project_id, &free, &crate::implement::now_rfc3339())) {
+        Ok(completed) if completed.is_empty() => {}
+        Ok(completed) => {
+            if let Err(err) = crate::ledger_events::record_ledger_features(store, record, "ledger.completed_by_run", &completed) {
+                notes.push(format!("cannot record its completed features: {err:?}"));
+            }
+        }
+        Err(err) => notes.push(format!("its features could not be set completed: {err}")),
+    }
+    (!notes.is_empty()).then(|| notes.join("; "))
 }
 
 fn test_and_confirm(run_id: &str, record: &crate::store::RunRecord, head_before: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {

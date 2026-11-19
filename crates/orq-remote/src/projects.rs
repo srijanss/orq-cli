@@ -243,6 +243,19 @@ fn fail_interrupted_accepts(store: &orq_orchestrator::RunStore) {
     }
 }
 
+/// Whether run `run` in `store` is a merge-local run accepted before an accept merged it, still to be merged.
+fn merge_after_accept_pending(store: &orq_orchestrator::RunStore, run: &str) -> bool {
+    let (Ok(record), Ok(events)) = (store.load(run), store.events(run)) else { return false };
+    orq_orchestrator::merge_after_accept_pending(&record, &events)
+}
+
+/// Sets `features` completed in the ledger of the project at `repo`, recorded at `at`, as a run that
+/// delivered completes them; the names it set.
+fn complete_in_ledger(repo: &Path, features: &[String], at: &str) -> Result<Vec<String>, String> {
+    let project = orq_git::resolve_project(repo).map_err(|error| format!("{error:?}"))?;
+    orq_features::complete_run_features(&orq_features::ledger_path(&project), features, at)
+}
+
 /// Takes a run out of the accepting set when dropped.
 struct Released(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>, String);
 
@@ -880,26 +893,36 @@ impl StoreProjects {
     /// The popup's Accept: the run is checked now, as the popup checks it, and its tests then run in the
     /// background, since they can take as long as the project's whole suite. A run already being accepted is
     /// refused; one that passes ends review ready, and one that fails stays as it was, its reason logged here.
-    fn accept(&self, store: orq_orchestrator::RunStore, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+    /// A merge-local run that passes is merged into its target, and its features are completed in the ledger
+    /// of the project at `repo`; a merge-local run accepted before an accept merged it is merged now.
+    fn accept(&self, repo: &Path, store: orq_orchestrator::RunStore, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
         use orq_core::remote_inbox::RunControlOutcome;
         let mut accepting = self.accepting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if accepting.contains(run) {
             return Ok(RunControlOutcome::Refused(format!("{run} is already being accepted")));
         }
+        let merge_only = merge_after_accept_pending(&store, run);
+        let checked = if merge_only { orq_orchestrator::merge_accepted_check(&store, run) } else { orq_orchestrator::accept_check(&store, run) };
         // A failed git command is for this machine's operator; any other answer is why the run cannot be accepted.
-        match orq_orchestrator::accept_check(&store, run) {
+        match checked {
             Ok(()) => {}
             Err(why) if why.starts_with("git ") => return Err(why),
             Err(why) => return Ok(RunControlOutcome::Refused(orq_core::redact::redact(&why))),
         }
         accepting.insert(run.to_string());
         drop(accepting);
-        let (tests, in_flight, run_id) = (self.accept_tests.clone(), self.accepting.clone(), run.to_string());
+        let (tests, in_flight, run_id, repo) = (self.accept_tests.clone(), self.accepting.clone(), run.to_string(), repo.to_path_buf());
         std::thread::spawn(move || {
             // Let go of the run however this thread ends, an unwind included, so it can be accepted again.
             let _release = Released(in_flight, run_id.clone());
+            let complete = |_: &str, features: &[String], at: &str| complete_in_ledger(&repo, features, at);
+            let accepted = if merge_only {
+                orq_orchestrator::merge_accepted_run(&store, &run_id, "web", &*tests, &complete)
+            } else {
+                orq_orchestrator::accept_run_delivering(&store, &run_id, "web", &*tests, &complete)
+            };
             // A failure is recorded on the run (run.accept_failed), so every device sees it; the log keeps a line too.
-            if let Err(why) = orq_orchestrator::accept_run_by(&store, &run_id, "web", &*tests) {
+            if let Err(why) = accepted {
                 eprintln!("orq serve: accepting {run_id} failed: {}", orq_core::redact::redact(&why));
             }
         });
@@ -1268,7 +1291,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 }
                 self.resume_now(&project, &store, run, &ResumeRequest { answer: None, review_again: true })
             }
-            RunControl::Accept => self.accept(store, run),
+            RunControl::Accept => self.accept(&project.path, store, run),
             RunControl::BuildReport => self.build_report_now(&project, run),
             RunControl::MergeSetAside => {
                 // Only a run whose last merge was refused over the checkout's changes may set them aside.
@@ -1839,6 +1862,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
         add_accept(&mut shown, &events, &summary, &logs_dir);
+        // A merge-local run accepted before an accept merged it, whose work its target lacks (the page's Merge).
+        if orq_orchestrator::merge_after_accept_pending(&record, &events) && !orq_orchestrator::work_is_on_target(&project.path, &record) {
+            shown["merge_pending"] = serde_json::json!(true);
+        }
         add_missing_report(&mut shown, &self.roots, run);
         // A failed run with commits its last review never saw may be reviewed again (the page's Review again).
         let reviewable_again = summary.phase == orq_orchestrator::RunPhase::Failed

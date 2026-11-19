@@ -371,7 +371,7 @@ impl StoreProjects {
     fn start_queued_action(&self, id: &str, action: &QueueAction) -> Result<RunControlOutcome, String> {
         let Some((project, store)) = self.own_run(id, &action.run)? else { return Ok(RunControlOutcome::Unknown) };
         match action.kind {
-            QueueKind::Accept => self.accept(store, &action.run),
+            QueueKind::Accept => self.accept(&project.path, store, &action.run),
             kind => {
                 if let Some(busy) = self.being_accepted(&action.run) {
                     return Ok(RunControlOutcome::Refused(busy));

@@ -116,6 +116,97 @@ pub fn merge_into_base(store: &RunStore, run_id: &str) -> Result<MergeOutcome, S
     Ok(MergeOutcome::Merged { head_sha })
 }
 
+/// How many times a target branch that moved on is caught up with before the run stops blocked.
+pub const MERGE_LOCAL_RETRIES: u32 = 3;
+
+/// How landing a merge-local run on its target branch ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landing<S> {
+    /// The target branch now points at the run's head; `note` says what the person must do about
+    /// changes set aside that could not be put back cleanly.
+    Merged { head_sha: String, note: Option<String> },
+    /// The target branch was left where it was, and the run waits on a person, for this reason.
+    Blocked { reason: String },
+    /// A step given to [`land_on_target`] stopped it.
+    Stopped(S),
+}
+
+/// The steps after a passing gate of a merge-local run, shared by the pipeline and an accept: the
+/// target branch is fast-forwarded to the run's branch. A target that moved on is caught up with,
+/// a few times at most: the branch is rebased onto where the target is now, `conflict(reason)`
+/// handles a rebase that stopped on a conflict, and `check()` checks the rebased head; either stops
+/// the landing by returning `Some`. With `rebase` off a target that moved blocks the run. With
+/// `set_aside`, a run waiting on uncommitted changes in the checkout has them set aside while it is
+/// merged ([`merge_setting_aside`]); without it they block the run.
+pub fn land_on_target<S>(
+    store: &RunStore,
+    run_id: &str,
+    set_aside: bool,
+    rebase: bool,
+    conflict: &mut dyn FnMut(String) -> Result<Option<S>, StoreError>,
+    check: &mut dyn FnMut() -> Result<Option<S>, StoreError>,
+) -> Result<Landing<S>, StoreError> {
+    let record = store.load(run_id)?;
+    let mut retries = 0;
+    loop {
+        let base_sha = match merge_into_base(store, run_id)? {
+            MergeOutcome::Merged { head_sha } => return Ok(Landing::Merged { head_sha, note: None }),
+            MergeOutcome::Refused { reason } => {
+                if !set_aside || !waiting_on_dirty_checkout(&store.events(run_id)?) {
+                    return Ok(Landing::Blocked { reason });
+                }
+                match merge_setting_aside(store, run_id)? {
+                    SetAsideOutcome::Merged { head_sha, note } => return Ok(Landing::Merged { head_sha, note }),
+                    SetAsideOutcome::Refused { reason } => return Ok(Landing::Blocked { reason }),
+                    SetAsideOutcome::BaseMoved { base_sha } => base_sha,
+                }
+            }
+            MergeOutcome::BaseMoved { base_sha } => base_sha,
+        };
+        if !rebase || retries == MERGE_LOCAL_RETRIES {
+            return Ok(Landing::Blocked {
+                reason: format!(
+                    "{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept",
+                    record.target_branch
+                ),
+            });
+        }
+        retries += 1;
+        if let crate::rebase::RebaseOutcome::Conflict { reason } = crate::rebase::rebase_onto_commit(store, run_id, &base_sha)? {
+            if let Some(stop) = conflict(reason)? {
+                return Ok(Landing::Stopped(stop));
+            }
+        }
+        if let Some(stop) = check()? {
+            return Ok(Landing::Stopped(stop));
+        }
+    }
+}
+
+/// After a merge-local run landed: its worktree goes, as a delivered run's does, and then its branch,
+/// which the target branch now holds. A worktree that is kept (uncommitted work in it) keeps its branch.
+pub fn remove_merged_run(store: &RunStore, run_id: &str) -> Result<crate::cleanup::CleanupOutcome, StoreError> {
+    let record = store.load(run_id)?;
+    let common = git_raw(&record.worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let outcome = crate::cleanup::cleanup_worktree(store, run_id, true, &crate::ci_wait::CiOutcome::Skipped)?;
+    if outcome != crate::cleanup::CleanupOutcome::Removed || !common.success {
+        return Ok(outcome);
+    }
+    let repo = PathBuf::from(common.stdout.trim());
+    let branch = format!("refs/heads/{}", record.branch);
+    let head = git_raw(&repo, &["rev-parse", "--verify", "--quiet", &format!("{branch}^{{commit}}")])?;
+    let head = head.stdout.trim();
+    // Only a branch the target holds goes, and only from the commit checked here.
+    let held = !head.is_empty() && git_raw(&repo, &["merge-base", "--is-ancestor", head, &format!("refs/heads/{}", record.target_branch)])?.success;
+    if held && record.branch != record.target_branch {
+        let deleted = git_raw(&repo, &["update-ref", "-d", &branch, head])?;
+        if deleted.success {
+            record_event(store, &record, "branch.deleted", serde_json::json!({ "branch": record.branch, "head_sha": head }))?;
+        }
+    }
+    Ok(outcome)
+}
+
 /// How a merge that set the checkout's overlapping changes aside ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetAsideOutcome {

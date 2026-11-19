@@ -90,6 +90,42 @@ fn accept_shows_on_failed_and_review_waiting_runs_and_posts_after_asking() {
 }
 
 #[test]
+fn accepting_a_merge_local_run_asks_whether_to_merge_it_into_its_target() {
+    let mut row = one("r-fail", "failed");
+    row["delivery"] = json!("merge_local");
+    row["target_branch"] = json!("trunk");
+    let body = json!({"run": row, "events": [], "next_cursor": null, "remote_actions": true});
+    let responses = vec![json!({"status": 200, "json": body}), projects(), json!({"status": 200, "stream": [], "end": "hold"}), json!({"status": 202, "json": {"run": "r-fail"}})];
+    let steps = vec![json!({"submit": TOKEN}), json!({"click": "[data-accept]"}), json!({"click": "[data-confirm]"})];
+    let Some(out) = run(json!({"url": "/projects/alpha/orchestrations/r-fail", "responses": responses, "steps": steps, "selectors": SELECTORS})) else { return };
+    let asked = texts(&out["frames"][2]);
+    assert!(asked.iter().any(|t| t == "Accept r-fail? Its tests run in its worktree; if they pass it is merged into trunk."), "{asked:?}");
+    assert!(texts(last(&out)).iter().any(|t| t == "Accepting r-fail: its tests are running. It is merged into trunk when they pass."), "{out}");
+}
+
+#[test]
+fn an_accepted_merge_local_run_not_yet_merged_offers_merge_into_its_target_and_posts_the_accept() {
+    let mut row = one("r-done", "completed");
+    row["delivery"] = json!("merge_local");
+    row["accepted"] = json!(true);
+    row["merge_pending"] = json!(true);
+    let body = json!({"run": row, "events": [], "next_cursor": null, "remote_actions": true});
+    let responses = vec![json!({"status": 200, "json": body}), projects(), json!({"status": 200, "stream": [], "end": "hold"}), json!({"status": 202, "json": {"run": "r-done"}})];
+    let steps = vec![json!({"submit": TOKEN}), json!({"click": "[data-merge-accepted]"}), json!({"click": "[data-confirm]"})];
+    let selectors = ["[data-accept]", "[data-merge-accepted]", "[data-confirm]"];
+    let Some(out) = run(json!({"url": "/projects/alpha/orchestrations/r-done", "responses": responses, "steps": steps, "selectors": selectors})) else { return };
+    let first = &out["frames"][1];
+    assert_eq!(first["settled"]["matches"]["[data-merge-accepted]"], 1, "{out}");
+    assert_eq!(first["settled"]["matches"]["[data-accept]"], 0, "{out}");
+    assert!(texts(first).iter().any(|t| t == "Merge into main"), "{out}");
+    assert!(texts(&out["frames"][2]).iter().any(|t| t == "Merge r-done into main? Its tests passed when it was accepted; they run again only if main moved since."), "{out}");
+    let posts = sent(&out, "POST");
+    assert_eq!(posts.len(), 1, "{out}");
+    assert_eq!(posts[0]["url"], "/api/projects/alpha/runs/r-done/accept");
+    assert!(texts(last(&out)).iter().any(|t| t == "Merging r-done into main."), "{out}");
+}
+
+#[test]
 fn a_refused_accept_shows_the_reason_in_the_run_detail() {
     let refused = json!({"status": 409, "json": {"error": "r-review has uncommitted changes in its worktree; commit or discard them first"}});
     let Some(out) = detail("r-review", "needs_review", vec![refused], vec![json!({"click": "[data-accept]"}), json!({"click": "[data-confirm]"})]) else { return };

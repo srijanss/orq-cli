@@ -18,8 +18,6 @@ use orq_orchestrator::{
 /// How many times a red gate is handed to a fix session before the run fails.
 const GATE_FIX_ATTEMPTS: u32 = 2;
 const CI_FIX_ATTEMPTS: u32 = 2;
-/// How many times a merge-local run catches up with a base branch that keeps moving before it stops.
-const MERGE_LOCAL_RETRIES: u32 = 3;
 
 #[derive(Clone)]
 pub struct Options<'a> {
@@ -2225,45 +2223,19 @@ fn stages(
         // A base branch that cannot take the run as it is stops it, with its branch and worktree kept.
         // A base branch that moved on since the run was rebased is caught up with: the run is
         // rebased onto where it is now and checked again, a few times at most.
-        let mut retries = 0;
-        loop {
-            let base_sha = match orq_orchestrator::merge_into_base(store, run_id)? {
-                orq_orchestrator::MergeOutcome::Merged { head_sha } => return delivered(&head_sha, Ending::Merged),
-                orq_orchestrator::MergeOutcome::Refused { reason } => {
-                    // Asked to set aside uncommitted changes in the way: they are stashed, the run merged,
-                    // and the changes put back (or named in their stash when they conflict with the run).
-                    if !options.set_aside || !orq_orchestrator::waiting_on_dirty_checkout(&store.events(run_id)?) {
-                        return stopped(Ending::Blocked, reason);
-                    }
-                    match orq_orchestrator::merge_setting_aside(store, run_id)? {
-                        orq_orchestrator::SetAsideOutcome::Merged { head_sha, note } => {
-                            let mut report = delivered(&head_sha, Ending::Merged)?;
-                            report.detail = note;
-                            return Ok(report);
-                        }
-                        orq_orchestrator::SetAsideOutcome::Refused { reason } => return stopped(Ending::Blocked, reason),
-                        orq_orchestrator::SetAsideOutcome::BaseMoved { base_sha } => base_sha,
-                    }
-                }
-                orq_orchestrator::MergeOutcome::BaseMoved { base_sha } => base_sha,
-            };
-            if !options.rebase || retries == MERGE_LOCAL_RETRIES {
-                return stopped(
-                    Ending::Blocked,
-                    format!("{} moved since this run rebased onto it, so it cannot be fast-forwarded to this run's branch; the branch and worktree are kept", record.target_branch),
-                );
+        // Asked to set aside uncommitted changes in the way: they are stashed, the run merged, and the
+        // changes put back (or named in their stash when they conflict with the run). A conflict
+        // resolved here is checked by the gate again before the next merge attempt.
+        let landed = orq_orchestrator::land_on_target(store, run_id, options.set_aside, options.rebase, &mut |reason| resolve_conflict(reason), &mut || check())?;
+        return match landed {
+            orq_orchestrator::Landing::Merged { head_sha, note } => {
+                let mut report = delivered(&head_sha, Ending::Merged)?;
+                report.detail = note;
+                Ok(report)
             }
-            retries += 1;
-            // A conflict resolved here is checked by the gate again before the next merge attempt.
-            if let RebaseOutcome::Conflict { reason } = orq_orchestrator::rebase_onto_commit(store, run_id, &base_sha)? {
-                if let Some(stop) = resolve_conflict(reason)? {
-                    return Ok(stop);
-                }
-            }
-            if let Some(stop) = check()? {
-                return Ok(stop);
-            }
-        }
+            orq_orchestrator::Landing::Blocked { reason } => stopped(Ending::Blocked, reason),
+            orq_orchestrator::Landing::Stopped(stop) => Ok(stop),
+        };
     }
 
     if !done("push") && at_boundary(store, run_id, &["implement_and_review", "rebase", "gate"], "push", None, None)? {
