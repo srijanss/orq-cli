@@ -1,4 +1,4 @@
-//! The page offers exactly fifteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, queue a run's resume, review again or accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and the Settings server card's restart when idle and its cancel, and no other merge, nor any approve,
 //! restart or edit control or request.
 
@@ -15,7 +15,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
         Some(kind) => kind.split('"').next().unwrap(),
         None => call.split("kind={").nth(1).unwrap().split('}').next().unwrap(),
     }).collect();
-    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "review-again", "kind", "merge-set-aside"]);
+    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "merge-accepted", "review-again", "kind", "merge-set-aside"]);
     let tail = |call: &str| call.split("controlPath(control, ").nth(1).unwrap().to_string();
     assert!(tail(calls[0]).starts_with("\"features/\"") && tail(calls[0]).contains("+ \"/runs\")"), "{}", tail(calls[0]));
     assert!(tail(calls[1]).starts_with("\"features/\"") && tail(calls[1]).contains("+ \"/promote\")"), "{}", tail(calls[1]));
@@ -31,14 +31,18 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert!(tail(calls[5]).starts_with("\"runs/\"") && tail(calls[5]).contains("+ \"/discard\")"), "{}", tail(calls[5]));
     let warning = calls[5].split("check={controlPath(control, ").nth(1).expect("discard asks the discard warning first");
     assert!(warning.starts_with("\"runs/\"") && warning.contains("+ \"/discard-warning\")"), "{warning}");
-    assert!(tail(calls[6]).starts_with("\"runs/\"") && tail(calls[6]).contains("+ \"/accept\")"), "{}", tail(calls[6]));
-    assert!(!calls[6].contains("check="), "accept asks nothing of the server first");
-    // Review again posts to the run's review-again route through the row's run path; nothing else.
+    // Accept, merging an accepted merge-local run, and review again post through the row's run path:
+    // the first two to the run's accept route, the last to its review-again route; nothing else.
     const RUN_PATH: &str = "const runPath = (tail) => controlPath(control, \"runs/\" + encodeURIComponent(run.run_id) + \"/\" + tail);";
     assert_eq!(code.matches(RUN_PATH).count(), 1, "the row's run path is defined once");
-    assert_eq!(code.matches("runPath(").count(), 1, "only Review again uses the row's run path");
-    assert!(calls[7].contains("path={runPath(\"review-again\")}"), "{}", calls[7]);
-    assert!(!calls[7].contains("check="), "review again asks nothing of the server first");
+    assert_eq!(code.matches("runPath(").count(), 3, "only Accept, Merge into and Review again use the row's run path");
+    assert!(calls[6].contains("path={runPath(\"accept\")}"), "{}", calls[6]);
+    assert!(!calls[6].contains("check="), "accept asks nothing of the server first");
+    assert!(calls[7].contains("path={runPath(\"accept\")}"), "{}", calls[7]);
+    assert!(!calls[7].contains("check="), "merging an accepted run asks nothing of the server first");
+    assert!(calls[8].contains("path={runPath(\"review-again\")}"), "{}", calls[8]);
+    assert!(!calls[8].contains("check="), "review again asks nothing of the server first");
+    let calls = [&calls[..7], &calls[8..]].concat();
     // Queueing a run's Resume, Review again or Accept posts to the project's queue add route; nothing else.
     assert!(tail(calls[8]).starts_with("\"queue/add\")"), "{}", tail(calls[8]));
     assert!(!calls[8].contains("check="), "queueing asks nothing of the server first");
@@ -105,7 +109,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 23, "the definition, the eight run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 22, "the definition, the seven run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }
