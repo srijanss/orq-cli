@@ -1,6 +1,7 @@
 // The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
 // Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
-// brand, the page's Refresh) and a fixed bottom tab bar hold the same destinations. The place lives in the
+// brand, the page's Refresh) and a fixed bottom tab bar hold the same destinations; past five, the bar
+// keeps four and a More tab opens a sheet with the rest. The place lives in the
 // address path, so Back and Forward move it.
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
@@ -136,16 +137,72 @@ function PhoneShell({ projectId = null, children }) {
         ) : <span />}
       </header>
       <main className="content">{children}</main>
+      <TabBar entries={entries} path={path} />
+      <Announcer text={announcement} />
+    </div>
+  );
+}
+
+// The bar holds four tabs; the rest sit behind a More tab.
+const BAR_TABS = 4;
+
+export function TabBar({ entries, path }) {
+  const [open, setOpen] = useState(false);
+  // Five fit the bar as they are; a sixth turns the fifth place into More.
+  const overflows = entries.length > BAR_TABS + 1;
+  const shown = overflows ? entries.slice(0, BAR_TABS) : entries;
+  const rest = overflows ? entries.slice(BAR_TABS) : [];
+  const sheet = useRef(null);
+  const more = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    sheet.current?.querySelector("a")?.focus();
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      more.current?.focus();
+    };
+    // A press anywhere but the sheet or More (which toggles it itself) closes it.
+    const onPress = (event) => {
+      if (!sheet.current?.contains(event.target) && !more.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("click", onPress);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("click", onPress);
+    };
+  }, [open]);
+  return (
+    <>
       <nav className="tabbar" aria-label="Sections">
-        {entries.map((entry) => (
+        {shown.map((entry) => (
           <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
             <Icon name={entry.icon} size={28} />
             <span className="tab-label">{entry.label}</span>
           </a>
         ))}
+        {overflows ? (
+          <button type="button" ref={more} data-tab-more aria-haspopup="dialog" aria-expanded={open ? "true" : "false"} aria-current={rest.some((entry) => within(path, entry.href)) ? "page" : undefined} onClick={() => setOpen(!open)}>
+            <Icon name="dots" size={28} />
+            <span className="tab-label">More</span>
+          </button>
+        ) : null}
       </nav>
-      <Announcer text={announcement} />
-    </div>
+      {open ? (
+        <div className="more-sheet" role="dialog" aria-label="More" data-more-sheet ref={sheet}>
+          {rest.map((entry) => (
+            <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+                setOpen(false);
+                goTo(entry, event);
+              }}>
+              <Icon name={entry.icon} />
+              <span>{entry.label}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }
 

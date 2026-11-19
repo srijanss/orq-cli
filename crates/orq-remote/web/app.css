@@ -270,6 +270,12 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .tabbar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; gap: 0.25rem; padding: 0.375rem 0.5rem; padding-left: calc(0.5rem + env(safe-area-inset-left)); padding-right: calc(0.5rem + env(safe-area-inset-right)); padding-bottom: calc(0.25rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
   .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
+  .tabbar [data-tab-more] { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; border: 0; background: none; font: inherit; color: var(--sidebar-muted); cursor: pointer; }
+  .tabbar [data-tab-more][aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
+  /* The More tab's sheet sits just above the bar (its 48px tabs plus padding and border). */
+  .more-sheet { display: flex; flex-direction: column; gap: 0.25rem; position: fixed; left: 0; right: 0; bottom: calc(3.75rem + env(safe-area-inset-bottom)); z-index: 6; padding: 0.5rem; padding-left: calc(0.5rem + env(safe-area-inset-left)); padding-right: calc(0.5rem + env(safe-area-inset-right)); border-top: 1px solid var(--sidebar-border); border-radius: 1rem 1rem 0 0; background: var(--sidebar); color: var(--sidebar-text); box-shadow: 0 -0.5rem 1.5rem rgb(0 0 0 / 0.25); }
+  .more-sheet a { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-text); }
+  .more-sheet a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
   .tabbar .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .content { padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
   .run-filters .search-box { flex: 1 1 100%; }

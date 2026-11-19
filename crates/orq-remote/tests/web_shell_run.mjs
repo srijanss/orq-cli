@@ -35,8 +35,11 @@ try {
   const entry = `
     import { createElement } from "react";
     import { createRoot } from "react-dom/client";
-    import { Shell } from "./src/shell.jsx";
-    export const mount = (el, projectId) => createRoot(el).render(createElement(Shell, { projectId, onSignOut: () => {} }, createElement("p", { id: "content" }, "page body")));
+    import { Shell${scenario.tabbar ? ", TabBar" : ""} } from "./src/shell.jsx";
+    export const mount = (el, projectId) => createRoot(el).render(${scenario.tabbar
+      // Only the tab bar, given these entries in place of navigationEntries'.
+      ? `createElement(TabBar, { entries: ${JSON.stringify(scenario.tabbar)}, path: ${JSON.stringify(scenario.path || "/")} })`
+      : `createElement(Shell, { projectId, onSignOut: () => {} }, createElement("p", { id: "content" }, "page body"))`});
   `;
   await build({ stdin: { contents: entry, resolveDir: join(here, "../web-src"), loader: "jsx" }, outfile, bundle: true, format: "cjs", platform: "node", jsx: "automatic", logLevel: "silent" });
   const { mount } = require(outfile);
@@ -55,6 +58,19 @@ try {
       bodyOverflow: doc.body.style.overflow,
       focus: active ? (active.hasAttribute("data-menu-button") ? "menu" : active.hasAttribute("data-close-button") ? "close" : active.tagName === "A" ? "link:" + (active.querySelector(".label")?.textContent.trim() ?? "") : active.tagName.toLowerCase()) : null,
       content: doc.getElementById("content")?.textContent ?? null,
+      // Each `probe` selector's matches: their text and the attributes the tab bar and its sheet use.
+      probes: Object.fromEntries((scenario.probe || []).map((sel) => [sel, [...doc.querySelectorAll(sel)].map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        text: el.textContent.trim(),
+        label: el.getAttribute("aria-label"),
+        href: el.getAttribute("href"),
+        current: el.getAttribute("aria-current"),
+        expanded: el.getAttribute("aria-expanded"),
+        popup: el.getAttribute("aria-haspopup"),
+        icon: el.querySelector("svg path")?.getAttribute("d") ?? null,
+        iconSize: el.querySelector("svg")?.getAttribute("width") ?? null,
+      }))])),
+      active: active && active !== doc.body ? { text: active.textContent.trim(), more: active.hasAttribute("data-tab-more"), inSheet: !!active.closest("[data-more-sheet]") } : null,
       path: window.location.pathname + window.location.search,
     };
   };

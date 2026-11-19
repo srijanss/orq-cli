@@ -30,15 +30,83 @@ fn shell(scenario: Value) -> Option<Value> {
     })
 }
 
+const BAR: &str = "nav.tabbar > *";
+
+fn probed<'a>(frame: &'a Value, selector: &str) -> &'a Vec<Value> {
+    frame["probes"][selector].as_array().unwrap_or_else(|| panic!("no probe for {selector}: {frame}"))
+}
+
 #[test]
-fn the_tab_bar_holds_the_six_destinations_and_marks_the_current_one() {
-    let selectors = ["nav.tabbar a", "nav.tabbar a[aria-current=\"page\"]", "nav.tabbar a svg", "nav.tabbar a .tab-label"];
-    let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "selectors": selectors})) else { return };
-    let m = &out["frames"][0]["matches"];
-    assert_eq!(m["nav.tabbar a"], 6, "{out}");
-    assert_eq!(m["nav.tabbar a[aria-current=\"page\"]"], 1, "{out}");
-    assert_eq!(m["nav.tabbar a svg"], 6, "{out}");
-    assert_eq!(m["nav.tabbar a .tab-label"], 6, "{out}");
+fn with_a_project_the_bar_has_four_links_and_a_more_button() {
+    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [BAR]})) else { return };
+    let items = probed(&out["frames"][0], BAR);
+    let shape: Vec<(&str, &str)> = items.iter().map(|item| (item["tag"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
+    assert_eq!(shape, [("a", "Dashboard"), ("a", "Features"), ("a", "Orchestrations"), ("a", "Queue"), ("button", "More")], "{out}");
+    let more = &items[4];
+    assert_eq!((more["popup"].as_str(), more["expanded"].as_str()), (Some("dialog"), Some("false")), "{out}");
+    assert_eq!(more["iconSize"], "28", "{out}");
+    assert_eq!(items[1]["current"], "page", "Features is the current tab: {out}");
+    assert!(items.iter().all(|item| item["icon"].is_string()), "every tab has its icon: {out}");
+}
+
+const SHEET: &str = "[data-more-sheet]";
+const SHEET_LINKS: &str = "[data-more-sheet] a";
+
+#[test]
+fn more_opens_a_sheet_with_the_other_destinations_and_focuses_its_first() {
+    let scenario = json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}]});
+    let Some(out) = shell(scenario) else { return };
+    assert!(probed(&out["frames"][0], SHEET).is_empty(), "the sheet starts closed: {out}");
+    let open = &out["frames"][1];
+    let sheet = probed(open, SHEET);
+    assert_eq!((sheet.len(), sheet[0]["label"].as_str()), (1, Some("More")), "{out}");
+    let links: Vec<(&str, &str)> = probed(open, SHEET_LINKS).iter().map(|link| (link["text"].as_str().unwrap(), link["href"].as_str().unwrap())).collect();
+    assert_eq!(links, [("Reviews", "/projects/demo/reviews"), ("Settings", "/settings")], "{out}");
+    assert!(probed(open, SHEET_LINKS).iter().all(|link| link["icon"].is_string()), "each has its icon: {out}");
+    assert_eq!(probed(open, BAR)[4]["expanded"], "true", "{out}");
+    assert_eq!(open["active"], json!({"text": "Reviews", "more": false, "inSheet": true}), "{out}");
+}
+
+#[test]
+fn escape_closes_the_sheet_and_returns_focus_to_more() {
+    let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET], "steps": [{"click": "[data-tab-more]"}, {"press": "Escape"}]});
+    let Some(out) = shell(scenario) else { return };
+    let closed = &out["frames"][2];
+    assert!(probed(closed, SHEET).is_empty(), "{out}");
+    assert_eq!(probed(closed, BAR)[4]["expanded"], "false", "{out}");
+    assert_eq!(closed["active"], json!({"text": "More", "more": true, "inSheet": false}), "{out}");
+}
+
+#[test]
+fn a_press_outside_the_sheet_closes_it_and_more_toggles_it() {
+    let steps = [json!({"click": "[data-tab-more]"}), json!({"click": "#content"}), json!({"click": "[data-tab-more]"}), json!({"click": "[data-tab-more]"})];
+    let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
+    let open: Vec<bool> = out["frames"].as_array().unwrap().iter().map(|frame| !probed(frame, SHEET).is_empty()).collect();
+    assert_eq!(open, [false, true, false, true, false], "{out}");
+}
+
+#[test]
+fn picking_a_sheet_destination_goes_there_closes_the_sheet_and_marks_more_current() {
+    let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}, {"click": "[data-more-sheet] a[href=\"/settings\"]"}, {"click": "[data-tab-more]"}]});
+    let Some(out) = shell(scenario) else { return };
+    assert_eq!(probed(&out["frames"][0], BAR)[4]["current"], Value::Null, "More is not current on the Dashboard: {out}");
+    let gone = &out["frames"][2];
+    assert_eq!(gone["path"], "/settings", "{out}");
+    assert!(probed(gone, SHEET).is_empty(), "{out}");
+    let bar = probed(gone, BAR);
+    assert_eq!((bar[0]["current"].clone(), bar[4]["current"].clone()), (Value::Null, json!("page")), "More stands for the page it holds: {out}");
+    let reopened: Vec<Value> = probed(&out["frames"][3], SHEET_LINKS).iter().map(|link| link["current"].clone()).collect();
+    assert_eq!(reopened, [Value::Null, json!("page")], "Settings is marked inside the sheet: {out}");
+}
+
+#[test]
+fn five_destinations_fit_the_bar_and_need_no_more_tab() {
+    let entries: Vec<Value> = ["a", "b", "c", "d", "e"].iter().map(|name| json!({"label": name, "icon": "home", "href": format!("/{name}")})).collect();
+    let Some(out) = shell(json!({"tabbar": entries, "path": "/e", "probe": [BAR]})) else { return };
+    let items = probed(&out["frames"][0], BAR);
+    let shape: Vec<(&str, &str)> = items.iter().map(|item| (item["tag"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
+    assert_eq!(shape, [("a", "a"), ("a", "b"), ("a", "c"), ("a", "d"), ("a", "e")], "{out}");
+    assert_eq!(items[4]["current"], "page", "{out}");
 }
 
 #[test]
@@ -97,6 +165,26 @@ fn the_bars_use_the_sidebar_colours_and_the_current_tab_is_the_light_pill() {
     assert!(tab.contains("color: var(--sidebar-muted)"), "{tab}");
     let current = rule(phone(&css), ".tabbar a[aria-current=\"page\"] {");
     assert!(current.contains("background: var(--sidebar-active-bg)") && current.contains("color: var(--sidebar-active-text)"), "{current}");
+}
+
+#[test]
+fn more_looks_like_a_tab_and_the_sheet_rises_above_the_bar_in_its_colours() {
+    let css = css();
+    let phone = phone(&css);
+    let more = rule(phone, ".tabbar [data-tab-more] {");
+    for part in ["flex: 1", "flex-direction: column", "min-height: 48px", "border-radius: 0.75rem", "border: 0", "background: none", "color: var(--sidebar-muted)"] {
+        assert!(more.contains(part), "{part}: {more}");
+    }
+    let current = rule(phone, ".tabbar [data-tab-more][aria-current=\"page\"] {");
+    assert!(current.contains("background: var(--sidebar-active-bg)") && current.contains("color: var(--sidebar-active-text)"), "{current}");
+    let sheet = rule(phone, ".more-sheet {");
+    for part in ["position: fixed", "left: 0", "right: 0", "bottom: calc(", "env(safe-area-inset-bottom)", "background: var(--sidebar)", "color: var(--sidebar-text)", "flex-direction: column"] {
+        assert!(sheet.contains(part), "{part}: {sheet}");
+    }
+    let item = rule(phone, ".more-sheet a {");
+    assert!(item.contains("min-height: 48px") && item.contains("color: var(--sidebar-text)"), "{item}");
+    let marked = rule(phone, ".more-sheet a[aria-current=\"page\"] {");
+    assert!(marked.contains("background: var(--sidebar-active-bg)") && marked.contains("color: var(--sidebar-active-text)"), "{marked}");
 }
 
 #[test]
